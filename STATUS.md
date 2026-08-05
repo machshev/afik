@@ -14,8 +14,9 @@ responses before adding any physical UART support.
 - Target hardware support: not started.
 - Current task: `PROTO-002`.
 - Bounded, paged `LIST_OBJECTS`: complete.
-- Next smallest task: read back every object from an out-of-order multi-object
-  write and prove the listed keys select the expected active objects.
+- Out-of-order multi-object write/list/read-back: complete.
+- Next smallest task: explicitly abort a staged replacement and prove active
+  generation/data remain unchanged and a new transaction can begin.
 
 ## Exit criteria
 

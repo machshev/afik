@@ -43,5 +43,8 @@
 - **Completion notes:** bounded `LIST_OBJECTS` paging is implemented with
   generation and total consistency, strict stable-key ordering, negotiated
   host validation, deterministic simulator ordering independent of insertion,
-  and protocol/simulator integration tests. Multi-object read-back, abort, and
-  the remaining command/error matrix are still open.
+  and protocol/simulator integration tests. `read_configuration` now reads all
+  listed objects in stable-key order, checks descriptor lengths, and confirms
+  the generation/listing afterward; an out-of-order three-object write is
+  verified end to end. Explicit abort and the remaining command/error matrix
+  are still open.

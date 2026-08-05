@@ -20,6 +20,11 @@ unexpected offset, an object count beyond negotiated capacity, an object
 length beyond negotiated capacity, and keys that are not globally strictly
 ordered.
 
+`read_configuration` uses that listing to read every active object in stable-key
+order. It checks each returned payload length against its descriptor and
+repeats the listing afterward, rejecting the result if the active generation or
+object descriptors changed during the read.
+
 The first milestone intentionally supports only generated banks. Project-file
 metadata, explicit groups, regional plans, storage images, CSV, backups,
 firmware updates, serial discovery, CLI, and GUI remain later tasks.

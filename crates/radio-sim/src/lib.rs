@@ -548,7 +548,7 @@ mod tests {
     use radio_domain::{BankId, Frequency, FrequencyStep, TxClass};
     use radio_programmer::{ListedObject, Programmer, RadioProject};
     use radio_protocol::{encode_frame, Command, Frame, Service, MAX_ENCODED_FRAME};
-    use radio_storage::{ObjectKey, ObjectKind, GENERATED_BANK_ENCODED_LEN};
+    use radio_storage::{decode_generated_bank, ObjectKey, ObjectKind, GENERATED_BANK_ENCODED_LEN};
     use radio_tx_policy::TxPolicy;
 
     fn bank(id: u16, name: &str) -> GeneratedBank {
@@ -632,7 +632,7 @@ mod tests {
     }
 
     #[test]
-    fn object_listing_is_bounded_and_independent_of_insertion_order() {
+    fn multi_object_configuration_lists_and_reads_back_in_key_order() {
         let mut project = RadioProject::new();
         project.add_generated_bank(bank(7, "seven"));
         project.add_generated_bank(bank(1, "one"));
@@ -675,6 +675,43 @@ mod tests {
                         id: 7,
                     },
                     encoded_len,
+                },
+            ]
+        );
+        let snapshot = programmer.read_configuration().unwrap();
+        assert_eq!(snapshot.generation, receipt.generation);
+        assert_eq!(
+            snapshot
+                .objects
+                .iter()
+                .map(|object| decode_generated_bank(object).unwrap())
+                .collect::<Vec<_>>(),
+            vec![bank(1, "one"), bank(4, "four"), bank(7, "seven")]
+        );
+        let read_keys = programmer
+            .transport()
+            .device()
+            .trace()
+            .iter()
+            .filter_map(|event| match event.kind {
+                TraceKind::ObjectRead(key) => Some(key),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            read_keys,
+            vec![
+                ObjectKey {
+                    kind: ObjectKind::GeneratedBank,
+                    id: 1,
+                },
+                ObjectKey {
+                    kind: ObjectKind::GeneratedBank,
+                    id: 4,
+                },
+                ObjectKey {
+                    kind: ObjectKind::GeneratedBank,
+                    id: 7,
                 },
             ]
         );

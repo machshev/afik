@@ -261,6 +261,15 @@ pub struct ObjectListing {
     pub objects: Vec<ListedObject>,
 }
 
+/// Complete active configuration read from one stable device generation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConfigurationSnapshot {
+    /// Active storage generation confirmed before and after object reads.
+    pub generation: u32,
+    /// Active objects in strict `(kind, id)` order.
+    pub objects: Vec<StorageObject>,
+}
+
 /// Connected synchronous programmer over an arbitrary byte transport.
 pub struct Programmer<T: ProtocolTransport> {
     transport: T,
@@ -413,6 +422,28 @@ impl<T: ProtocolTransport> Programmer<T> {
 
         Ok(ObjectListing {
             generation: expected_generation.ok_or(ProgrammerError::UnexpectedResponse)?,
+            objects,
+        })
+    }
+
+    /// Reads every active object from one stable listed generation.
+    pub fn read_configuration(
+        &mut self,
+    ) -> Result<ConfigurationSnapshot, ProgrammerError<T::Error>> {
+        let listing = self.list_objects()?;
+        let mut objects = Vec::with_capacity(listing.objects.len());
+        for listed in &listing.objects {
+            let object = self.read_object(listed.key)?;
+            if object.len() != usize::from(listed.encoded_len) {
+                return Err(ProgrammerError::UnexpectedResponse);
+            }
+            objects.push(object);
+        }
+        if self.list_objects()? != listing {
+            return Err(ProgrammerError::UnexpectedResponse);
+        }
+        Ok(ConfigurationSnapshot {
+            generation: listing.generation,
             objects,
         })
     }
