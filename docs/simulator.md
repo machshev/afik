@@ -21,5 +21,10 @@ The simulator caches the most recent request/response exchange. Exact duplicate
 requests replay the prior response and conflicting reuse of the sequence is
 rejected; both paths are explicit deterministic trace events.
 
+Stream recovery tests interleave CRC failure, malformed COBS, fixed-buffer
+overflow, and a valid request delivered one byte at a time. Only the valid
+request produces a response, and discarded packet errors appear in exact input
+order in the trace.
+
 GPIO, display, keypad, BK4819, audio, power, and scenario-YAML models are later
 Work Package 1/2 extensions; no behaviour for them is invented here.

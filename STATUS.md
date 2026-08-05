@@ -2,17 +2,17 @@
 
 ## Current work package
 
-**Work Package 2 — Programmer and simulator protocol loop**
+**No implementation work package is currently active.**
 
-Goal: expand the proven single-object loop with deterministic object listing,
-multi-object operations, explicit abort behaviour, and complete command/error
-responses before adding any physical UART support.
+Work Package 2 — Programmer and simulator protocol loop is complete. The next
+work package and stable task ID must be defined before additional implementation.
 
 ## State
 
 - Repository foundation and first architecture milestone: complete.
+- Work Package 2 programmer and simulator protocol loop: complete.
 - Target hardware support: not started.
-- Current task: `PROTO-002`.
+- `PROTO-002`: complete.
 - Bounded, paged `LIST_OBJECTS`: complete.
 - Out-of-order multi-object write/list/read-back: complete.
 - Explicit abort isolation and subsequent transaction recovery: complete.
@@ -21,9 +21,9 @@ responses before adding any physical UART support.
 - Unsupported service/command, malformed payload, and missing-object matrix:
   complete.
 - Bounded duplicate-sequence replay and conflict rejection: complete.
-- Next smallest task: interleave overflow, malformed COBS, unknown wire values,
-  and fragmented valid frames to complete deterministic stream-recovery
-  coverage.
+- Fragmented and malformed stream recovery: complete.
+- Next smallest task: define the next bounded work package and stable task ID in
+  `TASKS.md` and activate it here before changing implementation.
 
 ## Exit criteria
 
@@ -42,9 +42,9 @@ Verified 2026-08-05:
 - `nix develop path:. -c cargo fmt --all --check` — passed.
 - `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
   — passed for all seven crates and targets.
-- `nix develop path:. -c cargo test --workspace` — passed: 26 unit tests and
+- `nix develop path:. -c cargo test --workspace` — passed: 27 unit tests and
   all doc tests, 0 failures.
 - `env RUSTC=/nix/store/2mm3p5wcy1ifrcx5vp3bwsw7a76r77jc-rustc-1.86.0/bin/rustc CARGO_TARGET_DIR=/tmp/afik-rust-1.86-target /nix/store/npqlgsia03kfhv8m9mav6hfnbawpg0yg-cargo-1.86.0/bin/cargo test --workspace`
-  — passed: 26 unit tests and all doc tests on Rust/Cargo 1.86.0.
+  — passed: 27 unit tests and all doc tests on Rust/Cargo 1.86.0.
 - Renode and hardware-in-loop tests — not run because target and Renode models
   do not exist in this work package.

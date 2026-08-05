@@ -786,11 +786,27 @@ fn cobs_decode(input: &[u8], output: &mut [u8]) -> Result<usize, ProtocolError> 
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_list_objects_request, decode_packet, encode_frame, encode_list_objects_request,
-        Command, DeviceCapabilities, Frame, ObjectDescriptor, ObjectListPage, ProtocolError,
-        Service, StreamDecoder, FLAG_RESPONSE, MAX_ENCODED_FRAME, MAX_LIST_OBJECTS_PER_PAGE,
-        MAX_PAYLOAD,
+        cobs_encode, crc16_ccitt_false, decode_list_objects_request, decode_packet, encode_frame,
+        encode_list_objects_request, Command, DeviceCapabilities, Frame, ObjectDescriptor,
+        ObjectListPage, ProtocolError, Service, StreamDecoder, CRC_LEN, FLAG_RESPONSE, HEADER_LEN,
+        MAGIC, MAX_ENCODED_FRAME, MAX_LIST_OBJECTS_PER_PAGE, MAX_PAYLOAD, PROTOCOL_VERSION,
     };
+
+    fn encode_raw_frame(service: u8, command: u8) -> ([u8; MAX_ENCODED_FRAME], usize) {
+        let mut decoded = [0_u8; HEADER_LEN + CRC_LEN];
+        decoded[0..2].copy_from_slice(&MAGIC);
+        decoded[2] = PROTOCOL_VERSION;
+        decoded[3] = service;
+        decoded[5..7].copy_from_slice(&1_u16.to_le_bytes());
+        decoded[7] = command;
+        let crc = crc16_ccitt_false(&decoded[..HEADER_LEN]);
+        decoded[HEADER_LEN..].copy_from_slice(&crc.to_le_bytes());
+
+        let mut encoded = [0_u8; MAX_ENCODED_FRAME];
+        let packet_len = cobs_encode(&decoded, &mut encoded).unwrap();
+        encoded[packet_len] = 0;
+        (encoded, packet_len + 1)
+    }
 
     #[test]
     fn frame_with_zero_bytes_round_trips() {
@@ -904,5 +920,46 @@ mod tests {
             decode_list_objects_request(&[17, 0, 0]),
             Err(ProtocolError::TrailingPayload)
         );
+    }
+
+    #[test]
+    fn unknown_wire_values_are_discarded_and_stream_recovers() {
+        let (unknown_service, unknown_service_len) = encode_raw_frame(0xfe, Command::Hello as u8);
+        let (unknown_command, unknown_command_len) =
+            encode_raw_frame(Service::DeviceInfo as u8, 0x55);
+        let expected = Frame::new(Service::DeviceInfo, 0, 2, Command::Hello, &[1]).unwrap();
+        let mut valid = [0_u8; MAX_ENCODED_FRAME];
+        let valid_len = encode_frame(&expected, &mut valid).unwrap();
+
+        let mut decoder = StreamDecoder::new();
+        let mut errors = [None; 2];
+        let mut error_count = 0;
+        let mut recovered = None;
+        for packet in [
+            &unknown_service[..unknown_service_len],
+            &unknown_command[..unknown_command_len],
+            &valid[..valid_len],
+        ] {
+            for byte in packet {
+                if let Some(result) = decoder.push(*byte) {
+                    match result {
+                        Ok(frame) => recovered = Some(frame),
+                        Err(error) => {
+                            errors[error_count] = Some(error);
+                            error_count += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        assert_eq!(
+            errors,
+            [
+                Some(ProtocolError::UnknownService),
+                Some(ProtocolError::UnknownCommand),
+            ]
+        );
+        assert_eq!(recovered, Some(expected));
     }
 }

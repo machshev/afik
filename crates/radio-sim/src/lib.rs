@@ -585,8 +585,8 @@ mod tests {
     use radio_domain::{BankId, Frequency, FrequencyStep, TxClass};
     use radio_programmer::{ListedObject, Programmer, RadioProject};
     use radio_protocol::{
-        decode_packet, encode_frame, Command, DeviceErrorCode, Frame, PayloadWriter, Service,
-        FLAG_ERROR, FLAG_RESPONSE, MAX_ENCODED_FRAME, MAX_PAYLOAD,
+        decode_packet, encode_frame, Command, DeviceErrorCode, Frame, PayloadWriter, ProtocolError,
+        Service, FLAG_ERROR, FLAG_RESPONSE, MAX_ENCODED_FRAME, MAX_PAYLOAD,
     };
     use radio_storage::{
         decode_generated_bank, encode_generated_bank, ObjectKey, ObjectKind, StorageObject,
@@ -727,22 +727,40 @@ mod tests {
     }
 
     #[test]
-    fn simulated_stream_recovers_after_a_corrupt_frame() {
+    fn fragmented_stream_recovers_after_crc_cobs_and_overflow_errors() {
         let request = Frame::new(Service::DeviceInfo, 0, 1, Command::Hello, &[1]).unwrap();
         let mut valid = [0_u8; MAX_ENCODED_FRAME];
         let length = encode_frame(&request, &mut valid).unwrap();
         let mut corrupt = valid;
         corrupt[length - 2] ^= 0x20;
         let mut stream = Vec::from(&corrupt[..length]);
+        stream.extend_from_slice(&[2, 0]);
+        stream.extend(core::iter::repeat_n(1, MAX_ENCODED_FRAME + 1));
+        stream.push(0);
         stream.extend_from_slice(&valid[..length]);
 
         let mut device = SimDevice::new();
-        let response = device.ingest(&stream);
+        let mut response = Vec::new();
+        for byte in stream {
+            response.extend(device.ingest(&[byte]));
+        }
         assert!(!response.is_empty());
-        assert!(device
+        let discarded = device
             .trace()
             .iter()
-            .any(|event| matches!(event.kind, TraceKind::PacketDiscarded(_))));
+            .filter_map(|event| match event.kind {
+                TraceKind::PacketDiscarded(error) => Some(error),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            discarded,
+            vec![
+                ProtocolError::CrcMismatch,
+                ProtocolError::MalformedCobs,
+                ProtocolError::StreamOverflow,
+            ]
+        );
         assert!(device.trace().iter().any(|event| matches!(
             event.kind,
             TraceKind::Request {

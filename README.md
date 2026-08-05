@@ -3,11 +3,12 @@
 A ground-up modular Rust radio firmware and programming platform, initially
 targeting the DP32G030-based Quansheng UV-K5 family.
 
-The first architecture milestone is complete: hardware-independent domain
-types, channel plans, safe TX policy, protocol framing, transactional storage,
-a library-first programmer, and deterministic host simulation. Work Package 2
-is expanding the protocol command and error matrix. No target firmware or
-hardware register implementation exists yet.
+The first two architecture work packages are complete: hardware-independent
+domain types, channel plans, safe TX policy, protocol framing, transactional
+storage, a library-first programmer, deterministic host simulation, bounded
+multi-object operations, and the complete protocol command/error matrix. No
+target firmware or hardware register implementation exists yet, and the next
+implementation work package has not been assigned.
 
 ## Host checks
 

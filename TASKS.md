@@ -30,7 +30,7 @@
 
 ## PROTO-002 — Expand object and transaction protocol coverage
 
-- **Status:** in progress (2026-08-05)
+- **Status:** complete (2026-08-05)
 - **Objective:** add list, multiple-object read/write, abort, and explicit error
   response coverage without changing the transport contract.
 - **Scope:** host protocol/programmer/simulator only.
@@ -55,5 +55,8 @@
   wrong-service commands, invalid flags, malformed payloads for every command
   family, out-of-range listing, and missing objects without active mutation.
   Immediate identical retries replay one cached response without repeating
-  mutation, while conflicting sequence reuse is rejected explicitly. A final
-  combined fragmented/malformed stream-recovery audit remains open.
+  mutation, while conflicting sequence reuse is rejected explicitly. Combined
+  stream tests recover deterministically from unknown wire values, invalid CRC,
+  malformed COBS, and overflow before accepting a one-byte-fragmented frame.
+  All acceptance checks recorded in `STATUS.md` pass on the pinned environment
+  and Rust 1.86 minimum toolchain.

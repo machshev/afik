@@ -76,3 +76,8 @@ different service, flags, command, or payload returns `SequenceConflict` and
 does not replace the cache or mutate device state. This bounded one-exchange
 window supports synchronous response-loss retries without an unbounded replay
 table.
+
+Unknown service or command wire values, invalid CRCs, malformed COBS packets,
+and packets exceeding the fixed stream buffer are discarded at their delimiter
+without a response. The decoder then accepts the next valid frame, including
+when it arrives one byte at a time.
