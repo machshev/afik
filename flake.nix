@@ -19,6 +19,8 @@
             rustc
             rustfmt
             llvmPackages.bintools
+            python3
+            renode
           ];
 
           RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";

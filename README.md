@@ -26,6 +26,7 @@ cargo test --workspace
 nix develop
 tool/build-dp32g030.sh
 tool/verify-dp32g030-image.sh
+tool/test-renode.sh
 ```
 
 The target build uses the locked Nix compiler and standard-library sources. It

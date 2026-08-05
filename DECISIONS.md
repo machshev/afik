@@ -103,3 +103,16 @@ meaning.
   state, unpinned downloads, and host-linker wrapper flags.
 - The verifier rejects non-Arm, non-little-endian, non-Armv6-M, dynamic, or
   out-of-range ELF output before the image can be used by simulation.
+
+## ADR-011 — The first Renode platform models only the reset prerequisites
+
+- **Date:** 2026-08-05
+- **Status:** accepted for `DP32-003`
+- The platform contains the evidenced flash and RAM ranges plus Renode's
+  Cortex-M0/NVIC core plumbing. It contains no DP32G030 or board peripheral
+  behaviour and assigns no guessed peripheral reset values.
+- The boot test observes RAM before and after starting the loaded ELF. It does
+  not set PC, SP, or vector-table offset, so the vector/linker contract remains
+  part of the behaviour under test.
+- A passing model proves software behaviour against declared assumptions, not
+  the physical UV-K5 reset map or bootloader packaging.

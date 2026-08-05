@@ -1,0 +1,13 @@
+// DP32-003 minimum model. EVID-DP32-001/002 permit only Cortex-M0 and memory.
+flash: Memory.MappedMemory @ sysbus 0x00000000
+    size: 0x00010000
+
+ram: Memory.MappedMemory @ sysbus 0x20000000
+    size: 0x00004000
+
+nvic: IRQControllers.NVIC @ sysbus 0xE000E000
+    IRQ -> cpu@0
+
+cpu: CPU.CortexM @ sysbus
+    cpuType: "cortex-m0"
+    nvic: nvic

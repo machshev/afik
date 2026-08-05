@@ -18,6 +18,8 @@ board I/O, packaging, and hardware flashing are out of scope.
   complete.
 - `DP32-003` target crate, minimum vector/Reset image, and static ELF bounds
   verification: complete.
+- `DP32-003` minimal Renode platform and pre-start/post-start boot-sentinel
+  test: complete.
 - `PROTO-002`: complete.
 - Bounded, paged `LIST_OBJECTS`: complete.
 - Out-of-order multi-object write/list/read-back: complete.
@@ -28,9 +30,8 @@ board I/O, packaging, and hardware flashing are out of scope.
   complete.
 - Bounded duplicate-sequence replay and conflict rejection: complete.
 - Fragmented and malformed stream recovery: complete.
-- Next smallest task: add a CPU/flash/RAM-only Renode platform and automated
-  test that observes a zero sentinel before start and the exact boot sentinel
-  after starting through the ELF vector table without overriding the PC.
+- Next smallest task: integrate the minimum-Rust target build and pinned Renode
+  boot test into CI, then run and record the complete work-package verification.
 
 ## Exit criteria
 
