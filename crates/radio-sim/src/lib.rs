@@ -553,10 +553,13 @@ mod tests {
     use radio_domain::{BankId, Frequency, FrequencyStep, TxClass};
     use radio_programmer::{ListedObject, Programmer, RadioProject};
     use radio_protocol::{
-        decode_packet, encode_frame, Command, Frame, PayloadWriter, Service, FLAG_RESPONSE,
-        MAX_ENCODED_FRAME, MAX_PAYLOAD,
+        decode_packet, encode_frame, Command, DeviceErrorCode, Frame, PayloadWriter, Service,
+        FLAG_ERROR, FLAG_RESPONSE, MAX_ENCODED_FRAME, MAX_PAYLOAD,
     };
-    use radio_storage::{decode_generated_bank, ObjectKey, ObjectKind, GENERATED_BANK_ENCODED_LEN};
+    use radio_storage::{
+        decode_generated_bank, encode_generated_bank, ObjectKey, ObjectKind, StorageObject,
+        GENERATED_BANK_ENCODED_LEN,
+    };
     use radio_tx_policy::TxPolicy;
 
     fn bank(id: u16, name: &str) -> GeneratedBank {
@@ -587,6 +590,46 @@ mod tests {
         let response = device.ingest(&encoded[..request_len]);
         assert_eq!(response.last(), Some(&0));
         decode_packet(&response[..response.len() - 1]).unwrap()
+    }
+
+    fn write_object_payload(
+        transaction: u32,
+        object: &StorageObject,
+    ) -> ([u8; MAX_PAYLOAD], usize) {
+        let mut payload = [0_u8; MAX_PAYLOAD];
+        let length = {
+            let mut writer = PayloadWriter::new(&mut payload);
+            writer.write_u32(transaction).unwrap();
+            writer.write_u8(object.key().kind as u8).unwrap();
+            writer.write_u16(object.key().id).unwrap();
+            writer
+                .write_u16(u16::try_from(object.len()).unwrap())
+                .unwrap();
+            writer.write_bytes(object.data()).unwrap();
+            writer.len()
+        };
+        (payload, length)
+    }
+
+    fn assert_device_error(response: &Frame, rejected: Command, code: DeviceErrorCode) {
+        assert_eq!(response.flags(), FLAG_RESPONSE | FLAG_ERROR);
+        assert_eq!(response.command(), Command::Error);
+        assert_eq!(response.payload(), [rejected as u8, code as u8]);
+    }
+
+    fn programmed_device(active: GeneratedBank) -> (SimDevice, u32) {
+        let mut project = RadioProject::new();
+        project.add_generated_bank(active);
+        let device = SimDevice::new();
+        let compiled = radio_programmer::ConfigurationCompiler::new(device.capabilities())
+            .compile(&project)
+            .unwrap();
+        let mut programmer = Programmer::connect(SimTransport::new(device)).unwrap();
+        let generation = programmer
+            .write_configuration(&compiled)
+            .unwrap()
+            .generation;
+        (programmer.into_transport().into_device(), generation)
     }
 
     fn run_milestone() -> (GeneratedBank, u32, Vec<super::TraceEvent>) {
@@ -752,15 +795,7 @@ mod tests {
     #[test]
     fn explicit_abort_preserves_active_data_and_allows_a_new_transaction() {
         let original = bank(2, "original");
-        let mut project = RadioProject::new();
-        project.add_generated_bank(original);
-        let device = SimDevice::new();
-        let compiled = radio_programmer::ConfigurationCompiler::new(device.capabilities())
-            .compile(&project)
-            .unwrap();
-        let mut programmer = Programmer::connect(SimTransport::new(device)).unwrap();
-        let receipt = programmer.write_configuration(&compiled).unwrap();
-        let mut device = programmer.into_transport().into_device();
+        let (mut device, generation) = programmed_device(original);
 
         let transaction = 77_u32;
         let begin = configuration_exchange(
@@ -770,21 +805,10 @@ mod tests {
             &transaction.to_le_bytes(),
         );
         assert_eq!(begin.flags(), FLAG_RESPONSE);
-        assert_eq!(begin.payload(), receipt.generation.to_le_bytes());
+        assert_eq!(begin.payload(), generation.to_le_bytes());
 
-        let replacement = radio_storage::encode_generated_bank(bank(2, "replacement")).unwrap();
-        let mut write_payload = [0_u8; MAX_PAYLOAD];
-        let write_len = {
-            let mut writer = PayloadWriter::new(&mut write_payload);
-            writer.write_u32(transaction).unwrap();
-            writer.write_u8(replacement.key().kind as u8).unwrap();
-            writer.write_u16(replacement.key().id).unwrap();
-            writer
-                .write_u16(u16::try_from(replacement.len()).unwrap())
-                .unwrap();
-            writer.write_bytes(replacement.data()).unwrap();
-            writer.len()
-        };
+        let replacement = encode_generated_bank(bank(2, "replacement")).unwrap();
+        let (write_payload, write_len) = write_object_payload(transaction, &replacement);
         let write = configuration_exchange(
             &mut device,
             101,
@@ -802,7 +826,7 @@ mod tests {
         );
         assert_eq!(abort.flags(), FLAG_RESPONSE);
         assert!(abort.payload().is_empty());
-        assert_eq!(device.generation(), receipt.generation);
+        assert_eq!(device.generation(), generation);
 
         let next_transaction = 78_u32;
         let next_begin = configuration_exchange(
@@ -812,7 +836,7 @@ mod tests {
             &next_transaction.to_le_bytes(),
         );
         assert_eq!(next_begin.flags(), FLAG_RESPONSE);
-        assert_eq!(next_begin.payload(), receipt.generation.to_le_bytes());
+        assert_eq!(next_begin.payload(), generation.to_le_bytes());
         let _ = configuration_exchange(
             &mut device,
             104,
@@ -826,9 +850,106 @@ mod tests {
         )));
         let mut programmer = Programmer::connect(SimTransport::new(device)).unwrap();
         assert_eq!(programmer.read_generated_bank(2).unwrap(), original);
-        assert_eq!(
-            programmer.transport().device().generation(),
-            receipt.generation
+        assert_eq!(programmer.transport().device().generation(), generation);
+    }
+
+    #[test]
+    fn transaction_state_errors_preserve_the_active_snapshot() {
+        let original = bank(3, "active");
+        let (mut device, generation) = programmed_device(original);
+        let transaction = 90_u32;
+        let other_transaction = 91_u32;
+
+        let no_transaction = configuration_exchange(
+            &mut device,
+            200,
+            Command::CommitTransaction,
+            &transaction.to_le_bytes(),
         );
+        assert_device_error(
+            &no_transaction,
+            Command::CommitTransaction,
+            DeviceErrorCode::NoTransaction,
+        );
+
+        let begin = configuration_exchange(
+            &mut device,
+            201,
+            Command::BeginTransaction,
+            &transaction.to_le_bytes(),
+        );
+        assert_eq!(begin.flags(), FLAG_RESPONSE);
+        let already_open = configuration_exchange(
+            &mut device,
+            202,
+            Command::BeginTransaction,
+            &other_transaction.to_le_bytes(),
+        );
+        assert_device_error(
+            &already_open,
+            Command::BeginTransaction,
+            DeviceErrorCode::TransactionAlreadyOpen,
+        );
+
+        let replacement = encode_generated_bank(bank(3, "candidate")).unwrap();
+        let (wrong_write_payload, wrong_write_len) =
+            write_object_payload(other_transaction, &replacement);
+        let wrong_write = configuration_exchange(
+            &mut device,
+            203,
+            Command::WriteObject,
+            &wrong_write_payload[..wrong_write_len],
+        );
+        assert_device_error(
+            &wrong_write,
+            Command::WriteObject,
+            DeviceErrorCode::NoTransaction,
+        );
+        let wrong_validate = configuration_exchange(
+            &mut device,
+            204,
+            Command::ValidateTransaction,
+            &other_transaction.to_le_bytes(),
+        );
+        assert_device_error(
+            &wrong_validate,
+            Command::ValidateTransaction,
+            DeviceErrorCode::NoTransaction,
+        );
+
+        let not_validated = configuration_exchange(
+            &mut device,
+            205,
+            Command::CommitTransaction,
+            &transaction.to_le_bytes(),
+        );
+        assert_device_error(
+            &not_validated,
+            Command::CommitTransaction,
+            DeviceErrorCode::NotValidated,
+        );
+        let wrong_abort = configuration_exchange(
+            &mut device,
+            206,
+            Command::AbortTransaction,
+            &other_transaction.to_le_bytes(),
+        );
+        assert_device_error(
+            &wrong_abort,
+            Command::AbortTransaction,
+            DeviceErrorCode::NoTransaction,
+        );
+        let abort = configuration_exchange(
+            &mut device,
+            207,
+            Command::AbortTransaction,
+            &transaction.to_le_bytes(),
+        );
+        assert_eq!(abort.flags(), FLAG_RESPONSE);
+        assert_eq!(device.generation(), generation);
+
+        let mut programmer = Programmer::connect(SimTransport::new(device)).unwrap();
+        assert_eq!(programmer.read_generated_bank(3).unwrap(), original);
+        assert_eq!(programmer.transport().device().generation(), generation);
     }
 }

@@ -48,4 +48,6 @@
   the generation/listing afterward; an out-of-order three-object write is
   verified end to end. Explicit encoded abort discards a staged replacement,
   preserves active data/generation, and allows a subsequent transaction. The
-  remaining transaction and command/error matrix is still open.
+  transaction-state matrix covers already-open, missing/wrong transaction, and
+  commit-before-validation responses without active mutation. Candidate
+  content/capacity failures and the remaining command/error matrix are open.

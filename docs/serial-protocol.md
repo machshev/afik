@@ -44,3 +44,12 @@ descriptors. The host requests successive offsets and requires every page to
 report the same generation and total, preventing pages from different active
 snapshots from being combined. An offset beyond the total, an out-of-range
 count, unordered keys, or trailing payload bytes is malformed.
+
+## Transaction state errors
+
+Beginning a transaction while one is open returns `TransactionAlreadyOpen`.
+Writing, validating, committing, or aborting with no matching active transaction
+returns `NoTransaction`. Committing a matching candidate before successful
+validation returns `NotValidated`. These errors neither activate nor discard the
+candidate and never alter the active generation or objects; the matching
+transaction remains available for an explicit abort.
