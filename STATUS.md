@@ -16,6 +16,8 @@ board I/O, packaging, and hardware flashing are out of scope.
 - Work Package 3 minimal target boot proof: in progress.
 - `DP32-003` CPU, byte-order, flash/RAM, and reset-vector evidence contract:
   complete.
+- `DP32-003` target crate, minimum vector/Reset image, and static ELF bounds
+  verification: complete.
 - `PROTO-002`: complete.
 - Bounded, paged `LIST_OBJECTS`: complete.
 - Out-of-order multi-object write/list/read-back: complete.
@@ -26,9 +28,9 @@ board I/O, packaging, and hardware flashing are out of scope.
   complete.
 - Bounded duplicate-sequence replay and conflict rejection: complete.
 - Fragmented and malformed stream recovery: complete.
-- Next smallest task: add a pinned, embedded-only `thumbv6m-none-eabi` target
-  crate whose linker/vector-table contract is statically checked against the
-  accepted flash and RAM ranges.
+- Next smallest task: add a CPU/flash/RAM-only Renode platform and automated
+  test that observes a zero sentinel before start and the exact boot sentinel
+  after starting through the ELF vector table without overriding the PC.
 
 ## Exit criteria
 

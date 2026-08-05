@@ -18,9 +18,11 @@
             rust-analyzer
             rustc
             rustfmt
+            llvmPackages.bintools
           ];
 
           RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
+          DP32_LLD = "${pkgs.llvmPackages.lld}/bin/ld.lld";
         };
       });
 

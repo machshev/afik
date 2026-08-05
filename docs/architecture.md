@@ -26,3 +26,13 @@ device and in-memory transport.
 
 No host crate is a dependency of an embedded crate. Board, PAC, HAL, display,
 keypad, BK4819, firmware, Renode, CLI, and GUI crates are intentionally deferred.
+
+Work Package 3 adds `radio-firmware-dp32g030` as a standalone embedded target
+leaf. It has no crate dependencies, is `no_std`, and is compiled only when its
+explicit `firmware` feature and `thumbv6m-none-eabi` target are selected. This
+keeps ordinary host workspace checks independent of target startup.
+
+The minimum target image contains only a Cortex-M0 vector table, Reset handler,
+and simulation observation word. Its linker script owns all allocated sections,
+asserts the evidenced flash/RAM bounds, and rejects `.data` or `.bss` until a
+later evidenced startup step deliberately implements their initialisation.

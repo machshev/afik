@@ -1,0 +1,7 @@
+[target.thumbv6m-none-eabi]
+rustflags = [
+    "-C",
+    "link-arg=-Tcrates/radio-firmware-dp32g030/link.x",
+    "-C",
+    "panic=abort",
+]

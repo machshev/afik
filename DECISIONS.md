@@ -79,3 +79,27 @@ meaning.
   window are ordinary new requests.
 - This gives synchronous transports safe response-loss retries with fixed
   memory and no unbounded replay history.
+
+## ADR-009 — The first target image has an explicit minimum reset contract
+
+- **Date:** 2026-08-05
+- **Status:** accepted for `DP32-003`
+- The image defines exactly the initial stack pointer and Reset vector required
+  by Cortex-M0, then writes one simulation-only atomic sentinel and spins.
+- The linker owns flash/RAM placement and asserts the vector size, sentinel
+  position, memory bounds, and absence of `.data`/`.bss` that would require
+  unimplemented runtime initialisation.
+- Rust linking attributes are the only locally allowed unsafe language surface;
+  there are no unsafe operations or raw hardware accesses.
+
+## ADR-010 — Target builds are explicit and use pinned core sources
+
+- **Date:** 2026-08-05
+- **Status:** accepted for `DP32-003`
+- The target binary requires an explicit Cargo feature so default host
+  workspace formatting, linting, and tests do not attempt to link firmware.
+- In the Nix shell, `tool/build-dp32g030.sh` builds `core` from the locked
+  Nixpkgs Rust sources and uses the pinned unwrapped LLD. This avoids rustup
+  state, unpinned downloads, and host-linker wrapper flags.
+- The verifier rejects non-Arm, non-little-endian, non-Armv6-M, dynamic, or
+  out-of-range ELF output before the image can be used by simulation.
