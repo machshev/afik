@@ -13,5 +13,9 @@ supports deterministic bounded listing and read-back from the active snapshot.
 Object listings are sorted by stable `(kind, ID)` key rather than storage
 insertion order and are tagged with the active generation.
 
+Successful explicit aborts are recorded in the deterministic trace. Aborting
+discards staged replacements without advancing the active generation, and the
+device immediately accepts a new transaction.
+
 GPIO, display, keypad, BK4819, audio, power, and scenario-YAML models are later
 Work Package 1/2 extensions; no behaviour for them is invented here.

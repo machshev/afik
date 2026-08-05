@@ -46,5 +46,6 @@
   and protocol/simulator integration tests. `read_configuration` now reads all
   listed objects in stable-key order, checks descriptor lengths, and confirms
   the generation/listing afterward; an out-of-order three-object write is
-  verified end to end. Explicit abort and the remaining command/error matrix
-  are still open.
+  verified end to end. Explicit encoded abort discards a staged replacement,
+  preserves active data/generation, and allows a subsequent transaction. The
+  remaining transaction and command/error matrix is still open.

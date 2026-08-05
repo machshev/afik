@@ -85,6 +85,11 @@ pub enum TraceKind {
         /// Host-selected transaction identifier.
         transaction: u32,
     },
+    /// A candidate transaction was explicitly discarded.
+    TransactionAborted {
+        /// Host-selected transaction identifier.
+        transaction: u32,
+    },
     /// A candidate became the active snapshot.
     TransactionCommitted {
         /// Host-selected transaction identifier.
@@ -394,7 +399,7 @@ impl SimDevice {
             return Self::error_response(request, map_storage_error(error));
         }
         self.active_transaction = None;
-        let _ = transaction;
+        self.record(TraceKind::TransactionAborted { transaction });
         Self::success_response(request, &[])
     }
 
@@ -547,7 +552,10 @@ mod tests {
     use radio_channel_plan::{BankName, GeneratedBank, PlanEncoding};
     use radio_domain::{BankId, Frequency, FrequencyStep, TxClass};
     use radio_programmer::{ListedObject, Programmer, RadioProject};
-    use radio_protocol::{encode_frame, Command, Frame, Service, MAX_ENCODED_FRAME};
+    use radio_protocol::{
+        decode_packet, encode_frame, Command, Frame, PayloadWriter, Service, FLAG_RESPONSE,
+        MAX_ENCODED_FRAME, MAX_PAYLOAD,
+    };
     use radio_storage::{decode_generated_bank, ObjectKey, ObjectKind, GENERATED_BANK_ENCODED_LEN};
     use radio_tx_policy::TxPolicy;
 
@@ -565,6 +573,20 @@ mod tests {
 
     fn expected_bank() -> GeneratedBank {
         bank(6, "PMR446")
+    }
+
+    fn configuration_exchange(
+        device: &mut SimDevice,
+        sequence: u16,
+        command: Command,
+        payload: &[u8],
+    ) -> Frame {
+        let request = Frame::new(Service::Configuration, 0, sequence, command, payload).unwrap();
+        let mut encoded = [0_u8; MAX_ENCODED_FRAME];
+        let request_len = encode_frame(&request, &mut encoded).unwrap();
+        let response = device.ingest(&encoded[..request_len]);
+        assert_eq!(response.last(), Some(&0));
+        decode_packet(&response[..response.len() - 1]).unwrap()
     }
 
     fn run_milestone() -> (GeneratedBank, u32, Vec<super::TraceEvent>) {
@@ -725,5 +747,88 @@ mod tests {
                 }
             )
         }));
+    }
+
+    #[test]
+    fn explicit_abort_preserves_active_data_and_allows_a_new_transaction() {
+        let original = bank(2, "original");
+        let mut project = RadioProject::new();
+        project.add_generated_bank(original);
+        let device = SimDevice::new();
+        let compiled = radio_programmer::ConfigurationCompiler::new(device.capabilities())
+            .compile(&project)
+            .unwrap();
+        let mut programmer = Programmer::connect(SimTransport::new(device)).unwrap();
+        let receipt = programmer.write_configuration(&compiled).unwrap();
+        let mut device = programmer.into_transport().into_device();
+
+        let transaction = 77_u32;
+        let begin = configuration_exchange(
+            &mut device,
+            100,
+            Command::BeginTransaction,
+            &transaction.to_le_bytes(),
+        );
+        assert_eq!(begin.flags(), FLAG_RESPONSE);
+        assert_eq!(begin.payload(), receipt.generation.to_le_bytes());
+
+        let replacement = radio_storage::encode_generated_bank(bank(2, "replacement")).unwrap();
+        let mut write_payload = [0_u8; MAX_PAYLOAD];
+        let write_len = {
+            let mut writer = PayloadWriter::new(&mut write_payload);
+            writer.write_u32(transaction).unwrap();
+            writer.write_u8(replacement.key().kind as u8).unwrap();
+            writer.write_u16(replacement.key().id).unwrap();
+            writer
+                .write_u16(u16::try_from(replacement.len()).unwrap())
+                .unwrap();
+            writer.write_bytes(replacement.data()).unwrap();
+            writer.len()
+        };
+        let write = configuration_exchange(
+            &mut device,
+            101,
+            Command::WriteObject,
+            &write_payload[..write_len],
+        );
+        assert_eq!(write.flags(), FLAG_RESPONSE);
+        assert!(write.payload().is_empty());
+
+        let abort = configuration_exchange(
+            &mut device,
+            102,
+            Command::AbortTransaction,
+            &transaction.to_le_bytes(),
+        );
+        assert_eq!(abort.flags(), FLAG_RESPONSE);
+        assert!(abort.payload().is_empty());
+        assert_eq!(device.generation(), receipt.generation);
+
+        let next_transaction = 78_u32;
+        let next_begin = configuration_exchange(
+            &mut device,
+            103,
+            Command::BeginTransaction,
+            &next_transaction.to_le_bytes(),
+        );
+        assert_eq!(next_begin.flags(), FLAG_RESPONSE);
+        assert_eq!(next_begin.payload(), receipt.generation.to_le_bytes());
+        let _ = configuration_exchange(
+            &mut device,
+            104,
+            Command::AbortTransaction,
+            &next_transaction.to_le_bytes(),
+        );
+
+        assert!(device.trace().iter().any(|event| matches!(
+            event.kind,
+            TraceKind::TransactionAborted { transaction: 77 }
+        )));
+        let mut programmer = Programmer::connect(SimTransport::new(device)).unwrap();
+        assert_eq!(programmer.read_generated_bank(2).unwrap(), original);
+        assert_eq!(
+            programmer.transport().device().generation(),
+            receipt.generation
+        );
     }
 }
