@@ -54,4 +54,6 @@
   snapshots. A table-driven encoded request matrix covers unsupported services,
   wrong-service commands, invalid flags, malformed payloads for every command
   family, out-of-range listing, and missing objects without active mutation.
-  Duplicate-sequence behaviour remains open.
+  Immediate identical retries replay one cached response without repeating
+  mutation, while conflicting sequence reuse is rejected explicitly. A final
+  combined fragmented/malformed stream-recovery audit remains open.

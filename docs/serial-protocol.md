@@ -66,3 +66,13 @@ return `MalformedPayload`. A well-formed read for an absent key returns
 `ObjectNotFound`. All error responses retain the request service and sequence,
 use the error command, set response and error flags, and carry the rejected
 command plus stable error code.
+
+## Duplicate request sequences
+
+The device retains exactly the most recent decoded request and response. An
+immediately repeated byte-identical frame with the same sequence replays that
+response without executing the command again. Reusing the cached sequence for
+different service, flags, command, or payload returns `SequenceConflict` and
+does not replace the cache or mutate device state. This bounded one-exchange
+window supports synchronous response-loss retries without an unbounded replay
+table.

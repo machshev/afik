@@ -66,3 +66,16 @@ meaning.
   than combining an ambiguous listing.
 - Paging decouples complete listings from both the fixed frame payload and a
   device's negotiated object capacity.
+
+## ADR-008 — Immediate duplicate requests replay one cached response
+
+- **Date:** 2026-08-05
+- **Status:** accepted for Work Package 2, wire format provisional
+- The device caches exactly its most recent decoded request and response. An
+  immediate byte-identical retry replays the response without re-executing the
+  command.
+- Reusing that sequence for different request bytes returns `SequenceConflict`
+  without mutation or cache replacement. Older sequences outside the one-entry
+  window are ordinary new requests.
+- This gives synchronous transports safe response-loss retries with fixed
+  memory and no unbounded replay history.

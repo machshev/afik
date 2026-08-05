@@ -130,6 +130,8 @@ pub enum DeviceErrorCode {
     CapacityExceeded = 8,
     /// A commit was requested before successful validation.
     NotValidated = 9,
+    /// A sequence was reused for request bytes that differ from the cached request.
+    SequenceConflict = 10,
     /// An unspecified device-side failure occurred.
     Internal = 255,
 }
@@ -148,6 +150,7 @@ impl TryFrom<u8> for DeviceErrorCode {
             7 => Ok(Self::ValidationFailed),
             8 => Ok(Self::CapacityExceeded),
             9 => Ok(Self::NotValidated),
+            10 => Ok(Self::SequenceConflict),
             255 => Ok(Self::Internal),
             _ => Err(ProtocolError::MalformedPayload),
         }

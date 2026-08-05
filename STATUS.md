@@ -20,8 +20,10 @@ responses before adding any physical UART support.
 - Candidate validation and capacity errors preserve active data: complete.
 - Unsupported service/command, malformed payload, and missing-object matrix:
   complete.
-- Next smallest task: define and test duplicate-sequence replay/conflict
-  behaviour so retries cannot apply a transaction mutation twice.
+- Bounded duplicate-sequence replay and conflict rejection: complete.
+- Next smallest task: interleave overflow, malformed COBS, unknown wire values,
+  and fragmented valid frames to complete deterministic stream-recovery
+  coverage.
 
 ## Exit criteria
 
@@ -40,9 +42,9 @@ Verified 2026-08-05:
 - `nix develop path:. -c cargo fmt --all --check` — passed.
 - `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
   — passed for all seven crates and targets.
-- `nix develop path:. -c cargo test --workspace` — passed: 25 unit tests and
+- `nix develop path:. -c cargo test --workspace` — passed: 26 unit tests and
   all doc tests, 0 failures.
 - `env RUSTC=/nix/store/2mm3p5wcy1ifrcx5vp3bwsw7a76r77jc-rustc-1.86.0/bin/rustc CARGO_TARGET_DIR=/tmp/afik-rust-1.86-target /nix/store/npqlgsia03kfhv8m9mav6hfnbawpg0yg-cargo-1.86.0/bin/cargo test --workspace`
-  — passed: 25 unit tests and all doc tests on Rust/Cargo 1.86.0.
+  — passed: 26 unit tests and all doc tests on Rust/Cargo 1.86.0.
 - Renode and hardware-in-loop tests — not run because target and Renode models
   do not exist in this work package.

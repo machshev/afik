@@ -66,6 +66,16 @@ pub enum TraceKind {
     },
     /// A malformed stream packet was discarded at a delimiter.
     PacketDiscarded(ProtocolError),
+    /// An identical immediately repeated request reused its cached response.
+    DuplicateRequestReplayed {
+        /// Repeated request sequence number.
+        sequence: u16,
+    },
+    /// A sequence was immediately reused for different request bytes.
+    SequenceConflictRejected {
+        /// Conflicting request sequence number.
+        sequence: u16,
+    },
     /// A candidate transaction began from the active generation.
     TransactionBegan {
         /// Host-selected transaction identifier.
@@ -123,6 +133,7 @@ pub struct SimDevice {
     decoder: StreamDecoder,
     store: TransactionalStore<SIM_MAX_OBJECTS>,
     active_transaction: Option<u32>,
+    last_exchange: Option<(Frame, Frame)>,
     trace: Vec<TraceEvent>,
     capabilities: DeviceCapabilities,
 }
@@ -141,6 +152,7 @@ impl SimDevice {
             decoder: StreamDecoder::new(),
             store: TransactionalStore::new(),
             active_transaction: None,
+            last_exchange: None,
             trace: Vec::new(),
             capabilities: DeviceCapabilities {
                 protocol_version: PROTOCOL_VERSION,
@@ -192,7 +204,7 @@ impl SimDevice {
                         service: request.service(),
                         command: request.command(),
                     });
-                    match self.handle_request(&request) {
+                    match self.handle_exchange(&request) {
                         Ok(response) => {
                             let mut encoded = [0_u8; MAX_ENCODED_FRAME];
                             if let Ok(length) = encode_frame(&response, &mut encoded) {
@@ -210,6 +222,26 @@ impl SimDevice {
             }
         }
         responses
+    }
+
+    fn handle_exchange(&mut self, request: &Frame) -> Result<Frame, ProtocolError> {
+        if let Some((previous_request, previous_response)) = self.last_exchange {
+            if previous_request.sequence() == request.sequence() {
+                if previous_request == *request {
+                    self.record(TraceKind::DuplicateRequestReplayed {
+                        sequence: request.sequence(),
+                    });
+                    return Ok(previous_response);
+                }
+                self.record(TraceKind::SequenceConflictRejected {
+                    sequence: request.sequence(),
+                });
+                return Self::error_response(request, DeviceErrorCode::SequenceConflict);
+            }
+        }
+        let response = self.handle_request(request)?;
+        self.last_exchange = Some((*request, response));
+        Ok(response)
     }
 
     fn handle_request(&mut self, request: &Frame) -> Result<Frame, ProtocolError> {
@@ -1233,5 +1265,85 @@ mod tests {
         let mut programmer = Programmer::connect(SimTransport::new(device)).unwrap();
         assert_eq!(programmer.read_generated_bank(5).unwrap(), original);
         assert_eq!(programmer.transport().device().generation(), generation);
+    }
+
+    #[test]
+    fn duplicate_sequences_replay_exact_responses_without_repeating_mutations() {
+        let original = bank(6, "original");
+        let replacement_bank = bank(6, "replacement");
+        let (mut device, generation) = programmed_device(original);
+        let transaction = 600_u32;
+
+        let begin = configuration_exchange(
+            &mut device,
+            600,
+            Command::BeginTransaction,
+            &transaction.to_le_bytes(),
+        );
+        let begin_replay = configuration_exchange(
+            &mut device,
+            600,
+            Command::BeginTransaction,
+            &transaction.to_le_bytes(),
+        );
+        assert_eq!(begin_replay, begin);
+
+        let replacement = encode_generated_bank(replacement_bank).unwrap();
+        let (write_payload, write_len) = write_object_payload(transaction, &replacement);
+        let write = configuration_exchange(
+            &mut device,
+            601,
+            Command::WriteObject,
+            &write_payload[..write_len],
+        );
+        assert_eq!(write.flags(), FLAG_RESPONSE);
+        let validation = configuration_exchange(
+            &mut device,
+            602,
+            Command::ValidateTransaction,
+            &transaction.to_le_bytes(),
+        );
+        assert_eq!(validation.flags(), FLAG_RESPONSE);
+
+        let commit = configuration_exchange(
+            &mut device,
+            603,
+            Command::CommitTransaction,
+            &transaction.to_le_bytes(),
+        );
+        let commit_replay = configuration_exchange(
+            &mut device,
+            603,
+            Command::CommitTransaction,
+            &transaction.to_le_bytes(),
+        );
+        assert_eq!(commit_replay, commit);
+        assert_eq!(commit.payload(), generation.wrapping_add(1).to_le_bytes());
+        assert_eq!(device.generation(), generation + 1);
+
+        let conflict = configuration_exchange(
+            &mut device,
+            603,
+            Command::AbortTransaction,
+            &transaction.to_le_bytes(),
+        );
+        assert_device_error(
+            &conflict,
+            Command::AbortTransaction,
+            DeviceErrorCode::SequenceConflict,
+        );
+        assert_eq!(device.generation(), generation + 1);
+        assert!(device.trace().iter().any(|event| matches!(
+            event.kind,
+            TraceKind::DuplicateRequestReplayed { sequence: 603 }
+        )));
+        assert!(device.trace().iter().any(|event| matches!(
+            event.kind,
+            TraceKind::SequenceConflictRejected { sequence: 603 }
+        )));
+
+        let mut programmer = Programmer::connect(SimTransport::new(device)).unwrap();
+        assert_eq!(programmer.read_generated_bank(6).unwrap(), replacement_bank);
+        assert_eq!(programmer.transport().device().generation(), generation + 1);
     }
 }
