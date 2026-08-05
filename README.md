@@ -7,8 +7,9 @@ The first two architecture work packages are complete: hardware-independent
 domain types, channel plans, safe TX policy, protocol framing, transactional
 storage, a library-first programmer, deterministic host simulation, bounded
 multi-object operations, and the complete protocol command/error matrix. No
-target firmware or hardware register implementation exists yet, and the next
-implementation work package has not been assigned.
+hardware register implementation exists yet. Work Package 3 is active and is
+limited to an evidence-backed minimal DP32G030 Rust image and Renode reset-path
+proof; it does not add radio peripheral behaviour or hardware flashing.
 
 ## Host checks
 

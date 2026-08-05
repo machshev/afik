@@ -60,3 +60,30 @@
   malformed COBS, and overflow before accepting a one-byte-fragmented frame.
   All acceptance checks recorded in `STATUS.md` pass on the pinned environment
   and Rust 1.86 minimum toolchain.
+
+## DP32-003 — Minimal DP32G030 Rust image and Renode boot
+
+- **Status:** in progress (2026-08-05)
+- **Objective:** establish the smallest evidence-backed DP32G030 target image
+  and prove its reset path in a deterministic Renode machine.
+- **Scope:** source-backed CPU and memory facts, one `no_std`/heap-free
+  `thumbv6m-none-eabi` image, its linker/vector-table contract, a CPU-and-memory
+  Renode platform, an automated boot-sentinel test, and pinned build/test
+  integration. No radio peripheral, board I/O, flashing, or packaging logic.
+- **Dependencies:** `PROTO-002`.
+- **Assumptions:** the DP32G030 v1.23 reference manual is sufficient evidence
+  for the core and address ranges; Arm's Cortex-M reset contract is applicable;
+  a RAM sentinel is a simulation-only boot observation and not a hardware
+  register claim.
+- **Likely files:** `Cargo.toml`, `flake.nix`, `.cargo/`, a new DP32G030 target
+  crate, `renode/`, CI, and architecture/hardware/simulator documents.
+- **Tests required:** host workspace checks remain green; the target image
+  builds with the pinned Rust toolchain; ELF/vector/section bounds are checked;
+  Renode starts from the vector table and observes the exact RAM sentinel; a
+  negative or pre-start check demonstrates the assertion is behavioural.
+- **Acceptance criteria:** every encoded hardware fact has a cited source and
+  confidence; the target crate is embedded-only, heap-free, and independent of
+  host crates; the minimal image fits the evidenced flash/RAM ranges; the
+  Renode model contains no invented peripheral behaviour; the automated boot
+  proof is deterministic and runs from the pinned environment; no hardware is
+  flashed.

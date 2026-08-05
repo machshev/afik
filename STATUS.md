@@ -2,16 +2,18 @@
 
 ## Current work package
 
-**No implementation work package is currently active.**
+**Work Package 3 — Minimal DP32G030 Rust image and Renode boot (`DP32-003`) is
+active.**
 
-Work Package 2 — Programmer and simulator protocol loop is complete. The next
-work package and stable task ID must be defined before additional implementation.
+The package is limited to an evidence-backed Cortex-M0 reset path, bounded
+flash/RAM image, and deterministic Renode boot sentinel. Peripheral models,
+board I/O, packaging, and hardware flashing are out of scope.
 
 ## State
 
 - Repository foundation and first architecture milestone: complete.
 - Work Package 2 programmer and simulator protocol loop: complete.
-- Target hardware support: not started.
+- Work Package 3 minimal target boot proof: in progress.
 - `PROTO-002`: complete.
 - Bounded, paged `LIST_OBJECTS`: complete.
 - Out-of-order multi-object write/list/read-back: complete.
@@ -22,16 +24,18 @@ work package and stable task ID must be defined before additional implementation
   complete.
 - Bounded duplicate-sequence replay and conflict rejection: complete.
 - Fragmented and malformed stream recovery: complete.
-- Next smallest task: define the next bounded work package and stable task ID in
-  `TASKS.md` and activate it here before changing implementation.
+- Next smallest task: record the source, confidence, and exact CPU, memory-map,
+  and reset-vector facts needed by `DP32-003` in `docs/hardware-evidence.md`.
 
 ## Exit criteria
 
-- `LIST_OBJECTS` has deterministic bounded ordering.
-- Multiple objects write and read back without insertion-order ambiguity.
-- Explicit abort and every transaction error preserve active storage.
-- Unsupported service/command and malformed payload responses are covered.
-- Fragmented and malformed streams recover deterministically.
+- The target image uses only source-backed Cortex-M0 and memory-map facts.
+- A pinned `thumbv6m-none-eabi` build emits a bounded, heap-free image with a
+  valid initial stack pointer and reset vector.
+- A minimal Renode Cortex-M0/flash/RAM platform boots that exact ELF and an
+  automated test observes the expected RAM sentinel.
+- Host workspace checks remain green and target/Renode commands are recorded.
+- No peripheral behaviour is invented and no hardware is flashed.
 
 ## Last verification
 
