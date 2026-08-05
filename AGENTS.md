@@ -24,6 +24,10 @@ only on the current work package named in `STATUS.md`.
 ## Task and handoff discipline
 
 Use stable task IDs from `TASKS.md`. For each behavioural change, add tests.
+After completing and verifying each step, commit it before starting the next
+step. Keep each commit scoped to that step and do not defer commits until
+handoff.
+
 Before handoff:
 
 1. Enter the pinned environment with `nix develop` (or allow `.envrc`).
