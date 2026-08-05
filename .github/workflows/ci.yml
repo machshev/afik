@@ -13,10 +13,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install pinned Rust toolchain
-        run: rustup toolchain install 1.86.0 --profile minimal --component clippy,rustfmt
+        run: rustup toolchain install 1.86.0 --profile minimal --component clippy,rustfmt --target thumbv6m-none-eabi
       - name: Formatting
         run: cargo +1.86.0 fmt --all --check
       - name: Clippy
         run: cargo +1.86.0 clippy --workspace --all-targets -- -D warnings
       - name: Tests
         run: cargo +1.86.0 test --workspace
+      - name: Minimum DP32G030 target image
+        run: cargo +1.86.0 build --package radio-firmware-dp32g030 --features firmware --bin radio-firmware-dp32g030 --target thumbv6m-none-eabi
+
+  target-simulation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/determinate-nix-action@v3.21.0
+      - name: Evaluate locked environment
+        run: nix flake check path:. --no-build
+      - name: Build pinned DP32G030 target image
+        run: nix develop path:. -c tool/build-dp32g030.sh
+      - name: Verify target ELF contract
+        run: nix develop path:. -c tool/verify-dp32g030-image.sh
+      - name: Prove reset path in Renode
+        run: nix develop path:. -c tool/test-renode.sh

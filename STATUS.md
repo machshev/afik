@@ -20,6 +20,8 @@ board I/O, packaging, and hardware flashing are out of scope.
   verification: complete.
 - `DP32-003` minimal Renode platform and pre-start/post-start boot-sentinel
   test: complete.
+- `DP32-003` Rust 1.86 target build and locked-Nix target/Renode CI gates:
+  complete.
 - `PROTO-002`: complete.
 - Bounded, paged `LIST_OBJECTS`: complete.
 - Out-of-order multi-object write/list/read-back: complete.
@@ -30,8 +32,8 @@ board I/O, packaging, and hardware flashing are out of scope.
   complete.
 - Bounded duplicate-sequence replay and conflict rejection: complete.
 - Fragmented and malformed stream recovery: complete.
-- Next smallest task: integrate the minimum-Rust target build and pinned Renode
-  boot test into CI, then run and record the complete work-package verification.
+- Next smallest task: run the complete pinned host, minimum-Rust target, static
+  ELF, and repeated Renode verification; record results and close `DP32-003`.
 
 ## Exit criteria
 
