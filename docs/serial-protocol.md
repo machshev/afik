@@ -58,3 +58,11 @@ A structurally accepted candidate that fails whole-object validation returns
 `ValidationFailed`. A write beyond the candidate object capacity returns
 `CapacityExceeded`. Both failures leave the active snapshot untouched and the
 matching candidate available for explicit abort.
+
+Recognised but unimplemented services return `UnsupportedService`; recognised
+commands sent to the wrong service return `UnsupportedCommand`. Nonzero request
+flags and command payloads with missing, extra, invalid, or out-of-range fields
+return `MalformedPayload`. A well-formed read for an absent key returns
+`ObjectNotFound`. All error responses retain the request service and sequence,
+use the error command, set response and error flags, and carry the rejected
+command plus stable error code.

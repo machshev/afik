@@ -51,5 +51,7 @@
   transaction-state matrix covers already-open, missing/wrong transaction, and
   commit-before-validation responses without active mutation. Candidate
   validation and capacity failures are abortable and preserve complete active
-  snapshots. Unsupported/malformed command coverage and duplicate-sequence
-  behaviour remain open.
+  snapshots. A table-driven encoded request matrix covers unsupported services,
+  wrong-service commands, invalid flags, malformed payloads for every command
+  family, out-of-range listing, and missing objects without active mutation.
+  Duplicate-sequence behaviour remains open.

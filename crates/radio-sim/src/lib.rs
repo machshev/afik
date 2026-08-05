@@ -578,18 +578,36 @@ mod tests {
         bank(6, "PMR446")
     }
 
+    fn protocol_exchange(
+        device: &mut SimDevice,
+        sequence: u16,
+        service: Service,
+        flags: u8,
+        command: Command,
+        payload: &[u8],
+    ) -> Frame {
+        let request = Frame::new(service, flags, sequence, command, payload).unwrap();
+        let mut encoded = [0_u8; MAX_ENCODED_FRAME];
+        let request_len = encode_frame(&request, &mut encoded).unwrap();
+        let response = device.ingest(&encoded[..request_len]);
+        assert_eq!(response.last(), Some(&0));
+        decode_packet(&response[..response.len() - 1]).unwrap()
+    }
+
     fn configuration_exchange(
         device: &mut SimDevice,
         sequence: u16,
         command: Command,
         payload: &[u8],
     ) -> Frame {
-        let request = Frame::new(Service::Configuration, 0, sequence, command, payload).unwrap();
-        let mut encoded = [0_u8; MAX_ENCODED_FRAME];
-        let request_len = encode_frame(&request, &mut encoded).unwrap();
-        let response = device.ingest(&encoded[..request_len]);
-        assert_eq!(response.last(), Some(&0));
-        decode_packet(&response[..response.len() - 1]).unwrap()
+        protocol_exchange(
+            device,
+            sequence,
+            Service::Configuration,
+            0,
+            command,
+            payload,
+        )
     }
 
     fn write_object_payload(
@@ -1062,5 +1080,158 @@ mod tests {
                 .collect::<Vec<_>>(),
             active
         );
+    }
+
+    struct ErrorCase<'a> {
+        service: Service,
+        flags: u8,
+        command: Command,
+        payload: &'a [u8],
+        code: DeviceErrorCode,
+    }
+
+    const COMMAND_ERROR_CASES: [ErrorCase<'static>; 17] = [
+        ErrorCase {
+            service: Service::RuntimeControl,
+            flags: 0,
+            command: Command::Hello,
+            payload: &[],
+            code: DeviceErrorCode::UnsupportedService,
+        },
+        ErrorCase {
+            service: Service::FirmwareUpdate,
+            flags: 0,
+            command: Command::Hello,
+            payload: &[],
+            code: DeviceErrorCode::UnsupportedService,
+        },
+        ErrorCase {
+            service: Service::Diagnostics,
+            flags: 0,
+            command: Command::Hello,
+            payload: &[],
+            code: DeviceErrorCode::UnsupportedService,
+        },
+        ErrorCase {
+            service: Service::DeviceInfo,
+            flags: 0,
+            command: Command::ReadObject,
+            payload: &[],
+            code: DeviceErrorCode::UnsupportedCommand,
+        },
+        ErrorCase {
+            service: Service::Configuration,
+            flags: 0,
+            command: Command::GetCapabilities,
+            payload: &[],
+            code: DeviceErrorCode::UnsupportedCommand,
+        },
+        ErrorCase {
+            service: Service::DeviceInfo,
+            flags: 0,
+            command: Command::Hello,
+            payload: &[],
+            code: DeviceErrorCode::MalformedPayload,
+        },
+        ErrorCase {
+            service: Service::DeviceInfo,
+            flags: 0,
+            command: Command::GetCapabilities,
+            payload: &[0],
+            code: DeviceErrorCode::MalformedPayload,
+        },
+        ErrorCase {
+            service: Service::Configuration,
+            flags: 0,
+            command: Command::ListObjects,
+            payload: &[],
+            code: DeviceErrorCode::MalformedPayload,
+        },
+        ErrorCase {
+            service: Service::Configuration,
+            flags: 0,
+            command: Command::ListObjects,
+            payload: &[2, 0],
+            code: DeviceErrorCode::MalformedPayload,
+        },
+        ErrorCase {
+            service: Service::Configuration,
+            flags: 0,
+            command: Command::ReadObject,
+            payload: &[ObjectKind::GeneratedBank as u8],
+            code: DeviceErrorCode::MalformedPayload,
+        },
+        ErrorCase {
+            service: Service::Configuration,
+            flags: 0,
+            command: Command::BeginTransaction,
+            payload: &[1, 0, 0],
+            code: DeviceErrorCode::MalformedPayload,
+        },
+        ErrorCase {
+            service: Service::Configuration,
+            flags: 0,
+            command: Command::WriteObject,
+            payload: &[1, 0, 0, 0],
+            code: DeviceErrorCode::MalformedPayload,
+        },
+        ErrorCase {
+            service: Service::Configuration,
+            flags: 0,
+            command: Command::ValidateTransaction,
+            payload: &[1, 0, 0, 0, 0],
+            code: DeviceErrorCode::MalformedPayload,
+        },
+        ErrorCase {
+            service: Service::Configuration,
+            flags: 0,
+            command: Command::CommitTransaction,
+            payload: &[],
+            code: DeviceErrorCode::MalformedPayload,
+        },
+        ErrorCase {
+            service: Service::Configuration,
+            flags: 0,
+            command: Command::AbortTransaction,
+            payload: &[],
+            code: DeviceErrorCode::MalformedPayload,
+        },
+        ErrorCase {
+            service: Service::DeviceInfo,
+            flags: FLAG_RESPONSE,
+            command: Command::Hello,
+            payload: &[radio_protocol::PROTOCOL_VERSION],
+            code: DeviceErrorCode::MalformedPayload,
+        },
+        ErrorCase {
+            service: Service::Configuration,
+            flags: 0,
+            command: Command::ReadObject,
+            payload: &[ObjectKind::GeneratedBank as u8, 0xff, 0xff],
+            code: DeviceErrorCode::ObjectNotFound,
+        },
+    ];
+
+    #[test]
+    fn command_and_payload_errors_are_explicit_and_non_mutating() {
+        let original = bank(5, "active");
+        let (mut device, generation) = programmed_device(original);
+
+        for (index, case) in COMMAND_ERROR_CASES.iter().enumerate() {
+            let response = protocol_exchange(
+                &mut device,
+                500 + u16::try_from(index).unwrap(),
+                case.service,
+                case.flags,
+                case.command,
+                case.payload,
+            );
+            assert_device_error(&response, case.command, case.code);
+            assert_eq!(device.generation(), generation);
+        }
+
+        let mut programmer = Programmer::connect(SimTransport::new(device)).unwrap();
+        assert_eq!(programmer.read_generated_bank(5).unwrap(), original);
+        assert_eq!(programmer.transport().device().generation(), generation);
     }
 }
