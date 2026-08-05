@@ -1,0 +1,22 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  host:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.86.0 --profile minimal --component clippy,rustfmt
+      - name: Formatting
+        run: cargo +1.86.0 fmt --all --check
+      - name: Clippy
+        run: cargo +1.86.0 clippy --workspace --all-targets -- -D warnings
+      - name: Tests
+        run: cargo +1.86.0 test --workspace

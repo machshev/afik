@@ -1,0 +1,21 @@
+[package]
+name = "radio-sim"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Deterministic host functional simulation for the radio platform"
+
+[dependencies]
+radio-channel-plan = { path = "../radio-channel-plan" }
+radio-programmer = { path = "../radio-programmer" }
+radio-protocol = { path = "../radio-protocol" }
+radio-storage = { path = "../radio-storage" }
+
+[dev-dependencies]
+radio-domain = { path = "../radio-domain" }
+radio-tx-policy = { path = "../radio-tx-policy" }
+
+[lints]
+workspace = true

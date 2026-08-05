@@ -1,0 +1,15 @@
+[package]
+name = "radio-storage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Bounded transactional radio configuration object storage"
+
+[dependencies]
+radio-channel-plan = { path = "../radio-channel-plan" }
+radio-domain = { path = "../radio-domain" }
+
+[lints]
+workspace = true
