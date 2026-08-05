@@ -3,13 +3,13 @@
 A ground-up modular Rust radio firmware and programming platform, initially
 targeting the DP32G030-based Quansheng UV-K5 family.
 
-The first two architecture work packages are complete: hardware-independent
+The first three architecture work packages are complete: hardware-independent
 domain types, channel plans, safe TX policy, protocol framing, transactional
 storage, a library-first programmer, deterministic host simulation, bounded
-multi-object operations, and the complete protocol command/error matrix. No
-hardware register implementation exists yet. Work Package 3 is active and is
-limited to an evidence-backed minimal DP32G030 Rust image and Renode reset-path
-proof; it does not add radio peripheral behaviour or hardware flashing.
+multi-object operations, the complete protocol command/error matrix, and an
+evidence-backed minimal DP32G030 Rust image with a Renode reset-path proof. No
+hardware register or radio peripheral implementation exists yet, and no
+hardware flashing has been added.
 
 ## Host checks
 

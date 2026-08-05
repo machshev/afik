@@ -2,18 +2,17 @@
 
 ## Current work package
 
-**Work Package 3 — Minimal DP32G030 Rust image and Renode boot (`DP32-003`) is
-active.**
+**No work package is active.**
 
-The package is limited to an evidence-backed Cortex-M0 reset path, bounded
-flash/RAM image, and deterministic Renode boot sentinel. Peripheral models,
-board I/O, packaging, and hardware flashing are out of scope.
+Work Package 3 — Minimal DP32G030 Rust image and Renode boot (`DP32-003`) was
+completed on 2026-08-05. A stable task must be defined and activated before
+Work Package 4 implementation begins.
 
 ## State
 
 - Repository foundation and first architecture milestone: complete.
 - Work Package 2 programmer and simulator protocol loop: complete.
-- Work Package 3 minimal target boot proof: in progress.
+- Work Package 3 minimal target boot proof: complete.
 - `DP32-003` CPU, byte-order, flash/RAM, and reset-vector evidence contract:
   complete.
 - `DP32-003` target crate, minimum vector/Reset image, and static ELF bounds
@@ -32,10 +31,10 @@ board I/O, packaging, and hardware flashing are out of scope.
   complete.
 - Bounded duplicate-sequence replay and conflict rejection: complete.
 - Fragmented and malformed stream recovery: complete.
-- Next smallest task: run the complete pinned host, minimum-Rust target, static
-  ELF, and repeated Renode verification; record results and close `DP32-003`.
+- Next smallest task: define and activate the smallest bounded Work Package 4
+  storage-format/configuration-compiler task with a stable ID.
 
-## Exit criteria
+## Completed Work Package 3 exit criteria
 
 - The target image uses only source-backed Cortex-M0 and memory-map facts.
 - A pinned `thumbv6m-none-eabi` build emits a bounded, heap-free image with a
@@ -53,10 +52,23 @@ Verified 2026-08-05:
   `aarch64-linux` output was evaluation-skipped by Nix.
 - `nix develop path:. -c cargo fmt --all --check` — passed.
 - `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
-  — passed for all seven crates and targets.
+  — passed for all host crates and targets.
+- `nix develop path:. -c bash -c 'export RUSTC_BOOTSTRAP=1; export __CARGO_TESTS_ONLY_SRC_ROOT="$RUST_SRC_PATH"; export CARGO_TARGET_THUMBV6M_NONE_EABI_LINKER="$DP32_LLD"; cargo clippy -Z build-std=core --package radio-firmware-dp32g030 --features firmware --bin radio-firmware-dp32g030 --target thumbv6m-none-eabi -- -D warnings'`
+  — passed for the embedded target image.
 - `nix develop path:. -c cargo test --workspace` — passed: 27 unit tests and
   all doc tests, 0 failures.
-- `env RUSTC=/nix/store/2mm3p5wcy1ifrcx5vp3bwsw7a76r77jc-rustc-1.86.0/bin/rustc CARGO_TARGET_DIR=/tmp/afik-rust-1.86-target /nix/store/npqlgsia03kfhv8m9mav6hfnbawpg0yg-cargo-1.86.0/bin/cargo test --workspace`
+- `nix develop path:. -c tool/build-dp32g030.sh` — passed.
+- `nix develop path:. -c tool/verify-dp32g030-image.sh` — passed: initial SP
+  `0x20004000`, Reset vector `0x00000101`, boot sentinel `0x20000000`, and
+  flash image end `0x00000268`.
+- `nix develop path:. -c tool/test-renode.sh --repeat 3` — passed all three
+  reset-from-vector boot-sentinel iterations.
+- `env RUSTC=/nix/store/2mm3p5wcy1ifrcx5vp3bwsw7a76r77jc-rustc-1.86.0/bin/rustc CARGO_TARGET_DIR=/tmp/afik-host-rust-1-86-target /nix/store/npqlgsia03kfhv8m9mav6hfnbawpg0yg-cargo-1.86.0/bin/cargo test --workspace`
   — passed: 27 unit tests and all doc tests on Rust/Cargo 1.86.0.
-- Renode and hardware-in-loop tests — not run because target and Renode models
-  do not exist in this work package.
+- `env RUSTC=/tmp/afik-rustup-1-86/toolchains/1.86.0-x86_64-unknown-linux-gnu/bin/rustc CARGO_HOME=/tmp/afik-cargo-home-1-86 CARGO_TARGET_DIR=/tmp/afik-rust-1-86-target /tmp/afik-rustup-1-86/toolchains/1.86.0-x86_64-unknown-linux-gnu/bin/cargo build --package radio-firmware-dp32g030 --features firmware --bin radio-firmware-dp32g030 --target thumbv6m-none-eabi`
+  — passed on Rust/Cargo 1.86.0.
+- `nix develop path:. -c tool/verify-dp32g030-image.sh /tmp/afik-rust-1-86-target/thumbv6m-none-eabi/debug/radio-firmware-dp32g030`
+  — passed: initial SP `0x20004000`, Reset vector `0x000000cd`, boot sentinel
+  `0x20000000`, and flash image end `0x00000220`.
+- Hardware-in-loop tests — not run; flashing and physical-silicon claims were
+  outside `DP32-003`, and recovery/package evidence remains open in `RISKS.md`.

@@ -63,7 +63,7 @@
 
 ## DP32-003 — Minimal DP32G030 Rust image and Renode boot
 
-- **Status:** in progress (2026-08-05)
+- **Status:** complete (2026-08-05)
 - **Objective:** establish the smallest evidence-backed DP32G030 target image
   and prove its reset path in a deterministic Renode machine.
 - **Scope:** source-backed CPU and memory facts, one `no_std`/heap-free
@@ -87,3 +87,14 @@
   Renode model contains no invented peripheral behaviour; the automated boot
   proof is deterministic and runs from the pinned environment; no hardware is
   flashed.
+- **Completion notes:** recorded the DP32G030 v1.23 core, byte-order, memory-map,
+  and Arm reset-vector evidence boundary; added a standalone feature-gated
+  `no_std`/heap-free target crate with an exact two-entry vector table, Reset
+  handler, bounded linker script, and static ELF contract verifier; added a
+  CPU/flash/RAM-only Renode platform whose automated test proves the sentinel
+  is zero before execution and written only after reset-from-vector startup;
+  and gated the minimum Rust target build plus locked-Nix target verification
+  and Renode proof in CI. Pinned host checks, Rust 1.86 host and target builds,
+  static image verification, and three repeated Renode runs all pass as
+  recorded in `STATUS.md`. No peripheral behaviour was modeled and no hardware
+  was flashed.

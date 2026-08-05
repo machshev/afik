@@ -24,8 +24,9 @@ only bytes and wire semantics. `radio-programmer` compiles host projects and
 speaks the protocol through a transport. `radio-sim` supplies the deterministic
 device and in-memory transport.
 
-No host crate is a dependency of an embedded crate. Board, PAC, HAL, display,
-keypad, BK4819, firmware, Renode, CLI, and GUI crates are intentionally deferred.
+No host crate is a dependency of an embedded crate. At the first milestone,
+board, PAC, HAL, display, keypad, BK4819, firmware, Renode, CLI, and GUI crates
+were intentionally deferred.
 
 Work Package 3 adds `radio-firmware-dp32g030` as a standalone embedded target
 leaf. It has no crate dependencies, is `no_std`, and is compiled only when its
