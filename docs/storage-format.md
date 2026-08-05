@@ -10,6 +10,10 @@ active snapshot on commit. Abort or any validation error leaves the active
 snapshot unchanged. This is logical atomicity; physical power-loss durability
 is deferred and tracked as `RISK-004`.
 
+The store exposes active objects without candidate data but does not define a
+wire order. Protocol implementations sort listings by stable object kind and
+ID before encoding them.
+
 Generated-bank payload version 1 contains:
 
 ```text

@@ -284,6 +284,14 @@ impl<const OBJECTS: usize> TransactionalStore<OBJECTS> {
         self.active.read(key).ok_or(StorageError::ObjectNotFound)
     }
 
+    /// Iterates over active objects without exposing candidate data.
+    ///
+    /// The store does not define an external ordering; protocol users must sort
+    /// stable object keys before serialising a listing.
+    pub fn active_objects(&self) -> impl Iterator<Item = &StorageObject> {
+        self.active.iter()
+    }
+
     /// Reports active-snapshot usage.
     pub fn usage(&self) -> StorageUsage {
         self.active.usage()

@@ -30,7 +30,7 @@
 
 ## PROTO-002 — Expand object and transaction protocol coverage
 
-- **Status:** ready
+- **Status:** in progress (2026-08-05)
 - **Objective:** add list, multiple-object read/write, abort, and explicit error
   response coverage without changing the transport contract.
 - **Scope:** host protocol/programmer/simulator only.
@@ -40,4 +40,8 @@
 - **Tests required:** multi-object ordering, abort isolation, duplicate sequence,
   unsupported service/command, and malformed-stream recovery.
 - **Acceptance criteria:** deterministic complete command/error matrix.
-- **Completion notes:** not started.
+- **Completion notes:** bounded `LIST_OBJECTS` paging is implemented with
+  generation and total consistency, strict stable-key ordering, negotiated
+  host validation, deterministic simulator ordering independent of insertion,
+  and protocol/simulator integration tests. Multi-object read-back, abort, and
+  the remaining command/error matrix are still open.

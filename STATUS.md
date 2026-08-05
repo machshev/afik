@@ -13,7 +13,9 @@ responses before adding any physical UART support.
 - Repository foundation and first architecture milestone: complete.
 - Target hardware support: not started.
 - Current task: `PROTO-002`.
-- Next smallest task: define and test the bounded `LIST_OBJECTS` response.
+- Bounded, paged `LIST_OBJECTS`: complete.
+- Next smallest task: read back every object from an out-of-order multi-object
+  write and prove the listed keys select the expected active objects.
 
 ## Exit criteria
 
@@ -32,9 +34,9 @@ Verified 2026-08-05:
 - `nix develop path:. -c cargo fmt --all --check` — passed.
 - `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
   — passed for all seven crates and targets.
-- `nix develop path:. -c cargo test --workspace` — passed: 17 unit tests and
+- `nix develop path:. -c cargo test --workspace` — passed: 20 unit tests and
   all doc tests, 0 failures.
 - `env RUSTC=/nix/store/2mm3p5wcy1ifrcx5vp3bwsw7a76r77jc-rustc-1.86.0/bin/rustc CARGO_TARGET_DIR=/tmp/afik-rust-1.86-target /nix/store/npqlgsia03kfhv8m9mav6hfnbawpg0yg-cargo-1.86.0/bin/cargo test --workspace`
-  — passed: 17 unit tests and all doc tests on Rust/Cargo 1.86.0.
+  — passed: 20 unit tests and all doc tests on Rust/Cargo 1.86.0.
 - Renode and hardware-in-loop tests — not run because target and Renode models
   do not exist in this work package.

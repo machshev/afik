@@ -11,6 +11,13 @@ pub const PROTOCOL_VERSION: u8 = 1;
 pub const MAX_PAYLOAD: usize = 128;
 /// Maximum encoded packet size including the COBS delimiter.
 pub const MAX_ENCODED_FRAME: usize = 144;
+/// Encoded bytes in one object descriptor returned by `LIST_OBJECTS`.
+pub const OBJECT_DESCRIPTOR_ENCODED_LEN: usize = 5;
+/// Fixed metadata bytes preceding descriptors in a `LIST_OBJECTS` response.
+pub const LIST_OBJECTS_RESPONSE_HEADER_LEN: usize = 10;
+/// Maximum object descriptors carried by one bounded `LIST_OBJECTS` response.
+pub const MAX_LIST_OBJECTS_PER_PAGE: usize =
+    (MAX_PAYLOAD - LIST_OBJECTS_RESPONSE_HEADER_LEN) / OBJECT_DESCRIPTOR_ENCODED_LEN;
 /// Flag set on response frames.
 pub const FLAG_RESPONSE: u8 = 1 << 0;
 /// Flag set when a response carries a device error.
@@ -194,6 +201,143 @@ impl DeviceCapabilities {
         reader.finish()?;
         Ok(capabilities)
     }
+}
+
+/// One active object described by a `LIST_OBJECTS` response.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ObjectDescriptor {
+    /// Stable object-kind wire value.
+    pub kind: u8,
+    /// Kind-local object identifier.
+    pub id: u16,
+    /// Encoded object payload length in bytes.
+    pub encoded_len: u16,
+}
+
+const EMPTY_OBJECT_DESCRIPTOR: ObjectDescriptor = ObjectDescriptor {
+    kind: 0,
+    id: 0,
+    encoded_len: 0,
+};
+
+/// One decoded, fixed-capacity page returned by `LIST_OBJECTS`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ObjectListPage {
+    generation: u32,
+    total_objects: u16,
+    offset: u16,
+    len: u8,
+    objects: [ObjectDescriptor; MAX_LIST_OBJECTS_PER_PAGE],
+}
+
+impl ObjectListPage {
+    /// Encodes a page, rejecting oversized, out-of-range, or unordered input.
+    pub fn encode(
+        generation: u32,
+        total_objects: u16,
+        offset: u16,
+        objects: &[ObjectDescriptor],
+        output: &mut [u8],
+    ) -> Result<usize, ProtocolError> {
+        if objects.len() > MAX_LIST_OBJECTS_PER_PAGE {
+            return Err(ProtocolError::PayloadTooLarge);
+        }
+        validate_object_page(total_objects, offset, objects)?;
+        let returned = u16::try_from(objects.len()).map_err(|_| ProtocolError::PayloadTooLarge)?;
+        let mut writer = PayloadWriter::new(output);
+        writer.write_u32(generation)?;
+        writer.write_u16(total_objects)?;
+        writer.write_u16(offset)?;
+        writer.write_u16(returned)?;
+        for object in objects {
+            writer.write_u8(object.kind)?;
+            writer.write_u16(object.id)?;
+            writer.write_u16(object.encoded_len)?;
+        }
+        Ok(writer.len())
+    }
+
+    /// Decodes a page and rejects trailing, oversized, or unordered data.
+    pub fn decode(input: &[u8]) -> Result<Self, ProtocolError> {
+        let mut reader = PayloadReader::new(input);
+        let generation = reader.read_u32()?;
+        let total_objects = reader.read_u16()?;
+        let offset = reader.read_u16()?;
+        let count = usize::from(reader.read_u16()?);
+        if count > MAX_LIST_OBJECTS_PER_PAGE {
+            return Err(ProtocolError::MalformedPayload);
+        }
+        let mut objects = [EMPTY_OBJECT_DESCRIPTOR; MAX_LIST_OBJECTS_PER_PAGE];
+        for object in &mut objects[..count] {
+            *object = ObjectDescriptor {
+                kind: reader.read_u8()?,
+                id: reader.read_u16()?,
+                encoded_len: reader.read_u16()?,
+            };
+        }
+        reader.finish()?;
+        validate_object_page(total_objects, offset, &objects[..count])?;
+        Ok(Self {
+            generation,
+            total_objects,
+            offset,
+            len: u8::try_from(count).map_err(|_| ProtocolError::MalformedPayload)?,
+            objects,
+        })
+    }
+
+    /// Returns the active storage generation described by this page.
+    pub const fn generation(self) -> u32 {
+        self.generation
+    }
+
+    /// Returns the complete active object count.
+    pub const fn total_objects(self) -> u16 {
+        self.total_objects
+    }
+
+    /// Returns the zero-based offset of the first descriptor in this page.
+    pub const fn offset(self) -> u16 {
+        self.offset
+    }
+
+    /// Returns the ordered object descriptors in this page.
+    pub fn objects(&self) -> &[ObjectDescriptor] {
+        &self.objects[..usize::from(self.len)]
+    }
+}
+
+/// Encodes the exact two-byte request payload for a `LIST_OBJECTS` page.
+pub fn encode_list_objects_request(offset: u16, output: &mut [u8]) -> Result<usize, ProtocolError> {
+    let mut writer = PayloadWriter::new(output);
+    writer.write_u16(offset)?;
+    Ok(writer.len())
+}
+
+/// Decodes a `LIST_OBJECTS` request and rejects trailing bytes.
+pub fn decode_list_objects_request(input: &[u8]) -> Result<u16, ProtocolError> {
+    let mut reader = PayloadReader::new(input);
+    let offset = reader.read_u16()?;
+    reader.finish()?;
+    Ok(offset)
+}
+
+fn validate_object_page(
+    total_objects: u16,
+    offset: u16,
+    objects: &[ObjectDescriptor],
+) -> Result<(), ProtocolError> {
+    let returned = u16::try_from(objects.len()).map_err(|_| ProtocolError::MalformedPayload)?;
+    if offset
+        .checked_add(returned)
+        .is_none_or(|end| end > total_objects)
+        || objects
+            .windows(2)
+            .any(|pair| (pair[0].kind, pair[0].id) >= (pair[1].kind, pair[1].id))
+    {
+        return Err(ProtocolError::MalformedPayload);
+    }
+    Ok(())
 }
 
 /// A decoded protocol frame with fixed payload capacity.
@@ -639,8 +783,10 @@ fn cobs_decode(input: &[u8], output: &mut [u8]) -> Result<usize, ProtocolError> 
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_packet, encode_frame, Command, DeviceCapabilities, Frame, ProtocolError, Service,
-        StreamDecoder, FLAG_RESPONSE, MAX_ENCODED_FRAME,
+        decode_list_objects_request, decode_packet, encode_frame, encode_list_objects_request,
+        Command, DeviceCapabilities, Frame, ObjectDescriptor, ObjectListPage, ProtocolError,
+        Service, StreamDecoder, FLAG_RESPONSE, MAX_ENCODED_FRAME, MAX_LIST_OBJECTS_PER_PAGE,
+        MAX_PAYLOAD,
     };
 
     #[test]
@@ -698,5 +844,62 @@ mod tests {
         let mut bytes = [0_u8; DeviceCapabilities::ENCODED_LEN];
         let len = expected.encode(&mut bytes).unwrap();
         assert_eq!(DeviceCapabilities::decode(&bytes[..len]).unwrap(), expected);
+    }
+
+    #[test]
+    fn object_list_page_is_bounded_ordered_and_exact() {
+        let expected = [
+            ObjectDescriptor {
+                kind: 1,
+                id: 2,
+                encoded_len: 31,
+            },
+            ObjectDescriptor {
+                kind: 1,
+                id: 7,
+                encoded_len: 31,
+            },
+        ];
+        let mut bytes = [0_u8; MAX_PAYLOAD];
+        let len = ObjectListPage::encode(4, 5, 2, &expected, &mut bytes).unwrap();
+        let page = ObjectListPage::decode(&bytes[..len]).unwrap();
+        assert_eq!(page.generation(), 4);
+        assert_eq!(page.total_objects(), 5);
+        assert_eq!(page.offset(), 2);
+        assert_eq!(page.objects(), expected);
+
+        let mut too_many = [ObjectDescriptor {
+            kind: 1,
+            id: 1,
+            encoded_len: 31,
+        }; MAX_LIST_OBJECTS_PER_PAGE + 1];
+        for (index, object) in too_many.iter_mut().enumerate() {
+            object.id = u16::try_from(index).unwrap();
+        }
+        assert_eq!(
+            ObjectListPage::encode(
+                0,
+                u16::try_from(too_many.len()).unwrap(),
+                0,
+                &too_many,
+                &mut bytes,
+            ),
+            Err(ProtocolError::PayloadTooLarge)
+        );
+        assert_eq!(
+            ObjectListPage::encode(0, 2, 0, &[expected[1], expected[0]], &mut bytes),
+            Err(ProtocolError::MalformedPayload)
+        );
+    }
+
+    #[test]
+    fn object_list_request_rejects_trailing_bytes() {
+        let mut bytes = [0_u8; 2];
+        let len = encode_list_objects_request(17, &mut bytes).unwrap();
+        assert_eq!(decode_list_objects_request(&bytes[..len]).unwrap(), 17);
+        assert_eq!(
+            decode_list_objects_request(&[17, 0, 0]),
+            Err(ProtocolError::TrailingPayload)
+        );
     }
 }

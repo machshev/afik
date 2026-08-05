@@ -6,9 +6,9 @@ use core::fmt;
 use radio_channel_plan::{GeneratedBank, PlanEncoding};
 pub use radio_protocol::DeviceCapabilities;
 use radio_protocol::{
-    encode_frame, Command, DeviceErrorCode, Frame, PayloadReader, PayloadWriter, ProtocolError,
-    Service, StreamDecoder, FLAG_ERROR, FLAG_RESPONSE, MAX_ENCODED_FRAME, MAX_PAYLOAD,
-    PROTOCOL_VERSION,
+    encode_frame, encode_list_objects_request, Command, DeviceErrorCode, Frame, ObjectListPage,
+    PayloadReader, PayloadWriter, ProtocolError, Service, StreamDecoder, FLAG_ERROR, FLAG_RESPONSE,
+    MAX_ENCODED_FRAME, MAX_PAYLOAD, PROTOCOL_VERSION,
 };
 use radio_storage::{
     decode_generated_bank, encode_generated_bank, ObjectKey, ObjectKind, StorageError,
@@ -243,6 +243,24 @@ pub struct CommitReceipt {
     pub report: CapacityReport,
 }
 
+/// One active object reported by the device.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ListedObject {
+    /// Stable object identity.
+    pub key: ObjectKey,
+    /// Encoded object payload length in bytes.
+    pub encoded_len: u16,
+}
+
+/// Complete, generation-tagged active object listing.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ObjectListing {
+    /// Active storage generation shared by every decoded page.
+    pub generation: u32,
+    /// Objects in strict `(kind, id)` order.
+    pub objects: Vec<ListedObject>,
+}
+
 /// Connected synchronous programmer over an arbitrary byte transport.
 pub struct Programmer<T: ProtocolTransport> {
     transport: T,
@@ -330,6 +348,72 @@ impl<T: ProtocolTransport> Programmer<T> {
         Ok(CommitReceipt {
             generation,
             report: configuration.report(),
+        })
+    }
+
+    /// Lists every active object in deterministic stable-key order.
+    pub fn list_objects(&mut self) -> Result<ObjectListing, ProgrammerError<T::Error>> {
+        let mut offset = 0_u16;
+        let mut expected_generation = None;
+        let mut expected_total = None;
+        let mut objects: Vec<ListedObject> = Vec::new();
+
+        loop {
+            let mut request_payload = [0_u8; 2];
+            let request_len = encode_list_objects_request(offset, &mut request_payload)?;
+            let response = self.exchange(
+                Service::Configuration,
+                Command::ListObjects,
+                &request_payload[..request_len],
+            )?;
+            let page = ObjectListPage::decode(response.payload())?;
+            if page.offset() != offset || page.total_objects() > self.capabilities.max_objects {
+                return Err(ProgrammerError::UnexpectedResponse);
+            }
+
+            match (expected_generation, expected_total) {
+                (None, None) => {
+                    expected_generation = Some(page.generation());
+                    expected_total = Some(page.total_objects());
+                    objects.reserve(usize::from(page.total_objects()));
+                }
+                (Some(generation), Some(total))
+                    if generation == page.generation() && total == page.total_objects() => {}
+                _ => return Err(ProgrammerError::UnexpectedResponse),
+            }
+
+            if page.objects().is_empty() && offset < page.total_objects() {
+                return Err(ProgrammerError::UnexpectedResponse);
+            }
+            for descriptor in page.objects() {
+                let key = ObjectKey {
+                    kind: ObjectKind::try_from(descriptor.kind)?,
+                    id: descriptor.id,
+                };
+                if descriptor.encoded_len > self.capabilities.max_object_size
+                    || objects.last().is_some_and(|previous| previous.key >= key)
+                {
+                    return Err(ProgrammerError::UnexpectedResponse);
+                }
+                objects.push(ListedObject {
+                    key,
+                    encoded_len: descriptor.encoded_len,
+                });
+            }
+
+            let returned = u16::try_from(page.objects().len())
+                .map_err(|_| ProgrammerError::UnexpectedResponse)?;
+            offset = offset
+                .checked_add(returned)
+                .ok_or(ProgrammerError::UnexpectedResponse)?;
+            if offset == page.total_objects() {
+                break;
+            }
+        }
+
+        Ok(ObjectListing {
+            generation: expected_generation.ok_or(ProgrammerError::UnexpectedResponse)?,
+            objects,
         })
     }
 

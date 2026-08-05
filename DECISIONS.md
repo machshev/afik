@@ -54,3 +54,15 @@ meaning.
   advertised maximum. The programmer compiler enforces both negotiated target
   limits and its own local bounds instead of rejecting a device merely because
   that device can accept larger frames or objects.
+
+## ADR-007 — Object listing is bounded, paged, and generation-tagged
+
+- **Date:** 2026-08-05
+- **Status:** accepted for Work Package 2, wire format provisional
+- `LIST_OBJECTS` pages use a zero-based object offset and include active
+  generation, total count, echoed offset, and fixed-size object descriptors.
+- Descriptors are strictly ordered by stable `(kind, ID)` key. The programmer
+  rejects inconsistent generations, totals, offsets, bounds, or ordering rather
+  than combining an ambiguous listing.
+- Paging decouples complete listings from both the fixed frame payload and a
+  device's negotiated object capacity.

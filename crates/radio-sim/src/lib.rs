@@ -6,9 +6,10 @@ use core::{cmp, convert::Infallible};
 use radio_channel_plan::PlanEncoding;
 use radio_programmer::ProtocolTransport;
 use radio_protocol::{
-    encode_frame, Command, DeviceCapabilities, DeviceErrorCode, Frame, PayloadReader,
-    PayloadWriter, ProtocolError, Service, StreamDecoder, FLAG_ERROR, FLAG_RESPONSE,
-    MAX_ENCODED_FRAME, MAX_PAYLOAD, PROTOCOL_VERSION,
+    decode_list_objects_request, encode_frame, Command, DeviceCapabilities, DeviceErrorCode, Frame,
+    ObjectDescriptor, ObjectListPage, PayloadReader, PayloadWriter, ProtocolError, Service,
+    StreamDecoder, FLAG_ERROR, FLAG_RESPONSE, MAX_ENCODED_FRAME, MAX_LIST_OBJECTS_PER_PAGE,
+    MAX_PAYLOAD, PROTOCOL_VERSION,
 };
 use radio_storage::{
     validate_object, ObjectKey, ObjectKind, StorageError, StorageObject, TransactionalStore,
@@ -93,6 +94,15 @@ pub enum TraceKind {
     },
     /// An active configuration object was read.
     ObjectRead(ObjectKey),
+    /// One deterministic page of active object descriptors was listed.
+    ObjectsListed {
+        /// Active storage generation described by the page.
+        generation: u32,
+        /// Zero-based object offset requested by the host.
+        offset: u16,
+        /// Number of descriptors returned in the page.
+        count: u16,
+    },
     /// A response frame was queued for the host.
     Response {
         /// Response sequence number.
@@ -233,6 +243,7 @@ impl SimDevice {
 
     fn handle_configuration(&mut self, request: &Frame) -> Result<Frame, ProtocolError> {
         match request.command() {
+            Command::ListObjects => self.list_objects(request),
             Command::ReadObject => self.read_object(request),
             Command::BeginTransaction => self.begin_transaction(request),
             Command::WriteObject => self.write_object(request),
@@ -241,6 +252,47 @@ impl SimDevice {
             Command::AbortTransaction => self.abort_transaction(request),
             _ => Self::error_response(request, DeviceErrorCode::UnsupportedCommand),
         }
+    }
+
+    fn list_objects(&mut self, request: &Frame) -> Result<Frame, ProtocolError> {
+        let Ok(offset) = decode_list_objects_request(request.payload()) else {
+            return Self::error_response(request, DeviceErrorCode::MalformedPayload);
+        };
+        let mut objects = Vec::new();
+        for object in self.store.active_objects() {
+            objects.push(ObjectDescriptor {
+                kind: object.key().kind as u8,
+                id: object.key().id,
+                encoded_len: u16::try_from(object.len())
+                    .map_err(|_| ProtocolError::PayloadTooLarge)?,
+            });
+        }
+        objects.sort_unstable_by_key(|object| (object.kind, object.id));
+        let total_objects =
+            u16::try_from(objects.len()).map_err(|_| ProtocolError::PayloadTooLarge)?;
+        if offset > total_objects {
+            return Self::error_response(request, DeviceErrorCode::MalformedPayload);
+        }
+        let start = usize::from(offset);
+        let end = cmp::min(
+            start.saturating_add(MAX_LIST_OBJECTS_PER_PAGE),
+            objects.len(),
+        );
+        let page = &objects[start..end];
+        let mut payload = [0_u8; MAX_PAYLOAD];
+        let length = ObjectListPage::encode(
+            self.store.generation(),
+            total_objects,
+            offset,
+            page,
+            &mut payload,
+        )?;
+        self.record(TraceKind::ObjectsListed {
+            generation: self.store.generation(),
+            offset,
+            count: u16::try_from(page.len()).map_err(|_| ProtocolError::PayloadTooLarge)?,
+        });
+        Self::success_response(request, &payload[..length])
     }
 
     fn read_object(&mut self, request: &Frame) -> Result<Frame, ProtocolError> {
@@ -494,20 +546,25 @@ mod tests {
     use super::{SimDevice, SimTransport, TraceKind};
     use radio_channel_plan::{BankName, GeneratedBank, PlanEncoding};
     use radio_domain::{BankId, Frequency, FrequencyStep, TxClass};
-    use radio_programmer::{Programmer, RadioProject};
+    use radio_programmer::{ListedObject, Programmer, RadioProject};
     use radio_protocol::{encode_frame, Command, Frame, Service, MAX_ENCODED_FRAME};
+    use radio_storage::{ObjectKey, ObjectKind, GENERATED_BANK_ENCODED_LEN};
     use radio_tx_policy::TxPolicy;
 
-    fn expected_bank() -> GeneratedBank {
+    fn bank(id: u16, name: &str) -> GeneratedBank {
         GeneratedBank::linear_simplex(
-            BankId::new(6),
-            BankName::new("PMR446").unwrap(),
+            BankId::new(id),
+            BankName::new(name).unwrap(),
             Frequency::from_hz(446_006_250).unwrap(),
             FrequencyStep::from_hz(12_500).unwrap(),
             16,
             TxClass::LicenceFreePlan,
         )
         .unwrap()
+    }
+
+    fn expected_bank() -> GeneratedBank {
+        bank(6, "PMR446")
     }
 
     fn run_milestone() -> (GeneratedBank, u32, Vec<super::TraceEvent>) {
@@ -572,5 +629,64 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn object_listing_is_bounded_and_independent_of_insertion_order() {
+        let mut project = RadioProject::new();
+        project.add_generated_bank(bank(7, "seven"));
+        project.add_generated_bank(bank(1, "one"));
+        project.add_generated_bank(bank(4, "four"));
+
+        let device = SimDevice::new();
+        let compiled = radio_programmer::ConfigurationCompiler::new(device.capabilities())
+            .compile(&project)
+            .unwrap();
+        let transport = SimTransport::new(device).with_max_read_size(3);
+        let mut programmer = Programmer::connect(transport).unwrap();
+        let empty = programmer.list_objects().unwrap();
+        assert_eq!(empty.generation, 0);
+        assert!(empty.objects.is_empty());
+
+        let receipt = programmer.write_configuration(&compiled).unwrap();
+        let listing = programmer.list_objects().unwrap();
+        let encoded_len = u16::try_from(GENERATED_BANK_ENCODED_LEN).unwrap();
+        assert_eq!(listing.generation, receipt.generation);
+        assert_eq!(
+            listing.objects,
+            vec![
+                ListedObject {
+                    key: ObjectKey {
+                        kind: ObjectKind::GeneratedBank,
+                        id: 1,
+                    },
+                    encoded_len,
+                },
+                ListedObject {
+                    key: ObjectKey {
+                        kind: ObjectKind::GeneratedBank,
+                        id: 4,
+                    },
+                    encoded_len,
+                },
+                ListedObject {
+                    key: ObjectKey {
+                        kind: ObjectKind::GeneratedBank,
+                        id: 7,
+                    },
+                    encoded_len,
+                },
+            ]
+        );
+        assert!(programmer.transport().device().trace().iter().any(|event| {
+            matches!(
+                event.kind,
+                TraceKind::ObjectsListed {
+                    generation: 1,
+                    offset: 0,
+                    count: 3,
+                }
+            )
+        }));
     }
 }

@@ -9,7 +9,9 @@ traces.
 complete delimited frame synchronously drives the simulated device and queues
 its encoded response. The device negotiates declared capabilities, stages
 configuration objects transactionally, validates generated-bank objects, and
-supports read-back from the active snapshot.
+supports deterministic bounded listing and read-back from the active snapshot.
+Object listings are sorted by stable `(kind, ID)` key rather than storage
+insertion order and are tagged with the active generation.
 
 GPIO, display, keypad, BK4819, audio, power, and scenario-YAML models are later
 Work Package 1/2 extensions; no behaviour for them is invented here.
