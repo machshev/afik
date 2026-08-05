@@ -617,9 +617,11 @@ mod tests {
         assert_eq!(response.payload(), [rejected as u8, code as u8]);
     }
 
-    fn programmed_device(active: GeneratedBank) -> (SimDevice, u32) {
+    fn programmed_banks(active: &[GeneratedBank]) -> (SimDevice, u32) {
         let mut project = RadioProject::new();
-        project.add_generated_bank(active);
+        for bank in active {
+            project.add_generated_bank(*bank);
+        }
         let device = SimDevice::new();
         let compiled = radio_programmer::ConfigurationCompiler::new(device.capabilities())
             .compile(&project)
@@ -630,6 +632,10 @@ mod tests {
             .unwrap()
             .generation;
         (programmer.into_transport().into_device(), generation)
+    }
+
+    fn programmed_device(active: GeneratedBank) -> (SimDevice, u32) {
+        programmed_banks(&[active])
     }
 
     fn run_milestone() -> (GeneratedBank, u32, Vec<super::TraceEvent>) {
@@ -951,5 +957,110 @@ mod tests {
         let mut programmer = Programmer::connect(SimTransport::new(device)).unwrap();
         assert_eq!(programmer.read_generated_bank(3).unwrap(), original);
         assert_eq!(programmer.transport().device().generation(), generation);
+    }
+
+    #[test]
+    fn candidate_validation_failure_preserves_the_active_snapshot() {
+        let original = bank(4, "active");
+        let (mut device, generation) = programmed_device(original);
+        let transaction = 300_u32;
+        let begin = configuration_exchange(
+            &mut device,
+            300,
+            Command::BeginTransaction,
+            &transaction.to_le_bytes(),
+        );
+        assert_eq!(begin.flags(), FLAG_RESPONSE);
+
+        let malformed = StorageObject::new(
+            ObjectKey {
+                kind: ObjectKind::GeneratedBank,
+                id: 4,
+            },
+            &[0_u8; GENERATED_BANK_ENCODED_LEN],
+        )
+        .unwrap();
+        let (write_payload, write_len) = write_object_payload(transaction, &malformed);
+        let write = configuration_exchange(
+            &mut device,
+            301,
+            Command::WriteObject,
+            &write_payload[..write_len],
+        );
+        assert_eq!(write.flags(), FLAG_RESPONSE);
+
+        let validation = configuration_exchange(
+            &mut device,
+            302,
+            Command::ValidateTransaction,
+            &transaction.to_le_bytes(),
+        );
+        assert_device_error(
+            &validation,
+            Command::ValidateTransaction,
+            DeviceErrorCode::ValidationFailed,
+        );
+        assert_eq!(device.generation(), generation);
+        let abort = configuration_exchange(
+            &mut device,
+            303,
+            Command::AbortTransaction,
+            &transaction.to_le_bytes(),
+        );
+        assert_eq!(abort.flags(), FLAG_RESPONSE);
+
+        let mut programmer = Programmer::connect(SimTransport::new(device)).unwrap();
+        assert_eq!(programmer.read_generated_bank(4).unwrap(), original);
+        assert_eq!(programmer.transport().device().generation(), generation);
+    }
+
+    #[test]
+    fn candidate_capacity_failure_preserves_a_full_active_snapshot() {
+        let active = (1_u16..=8)
+            .map(|id| bank(id, &format!("bank{id}")))
+            .collect::<Vec<_>>();
+        let (mut device, generation) = programmed_banks(&active);
+        let transaction = 400_u32;
+        let begin = configuration_exchange(
+            &mut device,
+            400,
+            Command::BeginTransaction,
+            &transaction.to_le_bytes(),
+        );
+        assert_eq!(begin.flags(), FLAG_RESPONSE);
+
+        let ninth = encode_generated_bank(bank(9, "ninth")).unwrap();
+        let (write_payload, write_len) = write_object_payload(transaction, &ninth);
+        let write = configuration_exchange(
+            &mut device,
+            401,
+            Command::WriteObject,
+            &write_payload[..write_len],
+        );
+        assert_device_error(
+            &write,
+            Command::WriteObject,
+            DeviceErrorCode::CapacityExceeded,
+        );
+        assert_eq!(device.generation(), generation);
+        let abort = configuration_exchange(
+            &mut device,
+            402,
+            Command::AbortTransaction,
+            &transaction.to_le_bytes(),
+        );
+        assert_eq!(abort.flags(), FLAG_RESPONSE);
+
+        let mut programmer = Programmer::connect(SimTransport::new(device)).unwrap();
+        let snapshot = programmer.read_configuration().unwrap();
+        assert_eq!(snapshot.generation, generation);
+        assert_eq!(
+            snapshot
+                .objects
+                .iter()
+                .map(|object| decode_generated_bank(object).unwrap())
+                .collect::<Vec<_>>(),
+            active
+        );
     }
 }

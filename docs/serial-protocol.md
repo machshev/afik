@@ -53,3 +53,8 @@ returns `NoTransaction`. Committing a matching candidate before successful
 validation returns `NotValidated`. These errors neither activate nor discard the
 candidate and never alter the active generation or objects; the matching
 transaction remains available for an explicit abort.
+
+A structurally accepted candidate that fails whole-object validation returns
+`ValidationFailed`. A write beyond the candidate object capacity returns
+`CapacityExceeded`. Both failures leave the active snapshot untouched and the
+matching candidate available for explicit abort.

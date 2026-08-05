@@ -50,4 +50,6 @@
   preserves active data/generation, and allows a subsequent transaction. The
   transaction-state matrix covers already-open, missing/wrong transaction, and
   commit-before-validation responses without active mutation. Candidate
-  content/capacity failures and the remaining command/error matrix are open.
+  validation and capacity failures are abortable and preserve complete active
+  snapshots. Unsupported/malformed command coverage and duplicate-sequence
+  behaviour remain open.
