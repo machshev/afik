@@ -14,6 +14,8 @@ board I/O, packaging, and hardware flashing are out of scope.
 - Repository foundation and first architecture milestone: complete.
 - Work Package 2 programmer and simulator protocol loop: complete.
 - Work Package 3 minimal target boot proof: in progress.
+- `DP32-003` CPU, byte-order, flash/RAM, and reset-vector evidence contract:
+  complete.
 - `PROTO-002`: complete.
 - Bounded, paged `LIST_OBJECTS`: complete.
 - Out-of-order multi-object write/list/read-back: complete.
@@ -24,8 +26,9 @@ board I/O, packaging, and hardware flashing are out of scope.
   complete.
 - Bounded duplicate-sequence replay and conflict rejection: complete.
 - Fragmented and malformed stream recovery: complete.
-- Next smallest task: record the source, confidence, and exact CPU, memory-map,
-  and reset-vector facts needed by `DP32-003` in `docs/hardware-evidence.md`.
+- Next smallest task: add a pinned, embedded-only `thumbv6m-none-eabi` target
+  crate whose linker/vector-table contract is statically checked against the
+  accepted flash and RAM ranges.
 
 ## Exit criteria
 

@@ -1,13 +1,15 @@
 # Risks and unknowns
 
-## RISK-001 — DP32G030 evidence is not yet established
+## RISK-001 — DP32G030 peripheral evidence is incomplete
 
 - **State:** open
-- **Impact:** target startup, memory map, peripheral drivers, and Renode models
-  cannot be implemented responsibly.
-- **Mitigation:** Work Package 1 remained hardware-independent. A later evidence
-  task must cite datasheets or measured behaviour in
-  `docs/hardware-evidence.md` before target code is written.
+- **Impact:** target startup beyond the architectural reset path, peripheral
+  drivers, and a complete Renode model cannot be implemented responsibly.
+- **Mitigation:** `DP32-003` records sourced Cortex-M0, byte-order, flash, RAM,
+  and architectural reset-vector facts in `docs/hardware-evidence.md`. Those
+  facts are sufficient only for a minimal CPU-and-memory Renode boot proof.
+  Target startup details beyond the architectural reset path and every
+  peripheral remain blocked until separately evidenced.
 
 ## RISK-002 — UV-K5 recovery and calibration backup are unverified
 
@@ -30,3 +32,12 @@
   loss on physical non-volatile media.
 - **Mitigation:** model dual-slot headers, generations, and fault injection in
   Work Package 4 after physical storage is identified.
+
+## RISK-005 — Physical reset mapping and firmware packaging are unverified
+
+- **State:** open
+- **Impact:** an ELF that boots from address zero in the minimal Renode model is
+  not evidence that a packaged image will boot safely on a UV-K5-family radio.
+- **Mitigation:** Work Package 3 does not package or flash images. Establish the
+  bootloader mask/remap, application region, image format, board revision, and
+  non-destructive recovery procedure before any hardware deployment task.
