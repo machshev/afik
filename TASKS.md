@@ -1169,3 +1169,12 @@
   clock, TIM15, task, A0/CS, keypad, interrupt execution, DMA transfer, or image
   behavior was adopted. The next boundary is an explicit bootloader-clock
   handoff contract before any runnable async entry point.
+- **Clock-handoff step:** define a bounded local HAL entry which adopts only an
+  explicitly validated inherited 48 MHz `SYSCLK`/`HCLK1`/`PCLK1`/`PCLK1_TIM`
+  state. It must fail before publishing clocks when the observed RCC state does
+  not match the pinned contract, must not switch or configure an oscillator,
+  PLL, prescaler, flash latency, or clock mux, and must remain absent from the
+  firmware entry point. Host tests must cover exact acceptance and every
+  rejected field; target Clippy must compile the handoff with the owned runtime
+  bundle. Physical clock, interrupt, DMA, TIM15, UART, SPI, keypad, display, and
+  flash behavior remain separate gates.

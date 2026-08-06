@@ -117,9 +117,9 @@ features remain outside this bounded slice.
 - Work Package 22 keypad/UI witness definition: complete; the pinned matrix,
   electrical idle/scan levels, one-key decode, explicit-time debounce, and
   display-only result were bounded before implementation.
-- Current smallest actionable task: define and verify an explicit handoff for
-  the observed bootloader-provided clock before any runnable async entry point
-  initializes HAL-managed USART1, SPI1, DMA, interrupts, or TIM15.
+- Current smallest actionable task: implement the bounded `K1ASYNC-023`
+  clock-handoff step in `TASKS.md`: validate and adopt the inherited 48 MHz
+  clock without reconfiguring RCC, while keeping the runnable image unchanged.
 
 ## Work Package 23 dependency and executor milestone
 
