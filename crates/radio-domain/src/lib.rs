@@ -253,6 +253,133 @@ impl TryFrom<u8> for PowerLevel {
     }
 }
 
+/// Behaviour after a scan stops on an occupied channel.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum ScanResume {
+    /// Resume scanning after the configured hold expires.
+    TimeOut = 0,
+    /// Resume scanning only once the carrier disappears.
+    Carrier = 1,
+    /// Stop scanning and stay on the channel.
+    Stop = 2,
+}
+
+impl TryFrom<u8> for ScanResume {
+    type Error = DomainError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::TimeOut),
+            1 => Ok(Self::Carrier),
+            2 => Ok(Self::Stop),
+            _ => Err(DomainError::OutOfRange),
+        }
+    }
+}
+
+/// Highest accepted receive battery-save duty ratio. Zero disables saving.
+pub const MAX_BATTERY_SAVE_RATIO: u8 = 5;
+/// Backlight timeout value meaning the backlight never switches off.
+pub const BACKLIGHT_ALWAYS_ON: u8 = u8::MAX;
+
+/// Global receive-side radio behaviour flags.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RadioFlags {
+    bits: u8,
+}
+
+impl RadioFlags {
+    /// Key presses produce an audible confirmation.
+    pub const KEY_BEEP: u8 = 0b0000_0001;
+    /// New channels default to busy-channel lockout.
+    pub const BUSY_LOCKOUT_DEFAULT: u8 = 0b0000_0010;
+    /// The receiver applies the AM gain-compensation workaround.
+    pub const AM_FIX: u8 = 0b0000_0100;
+    /// Squelch tail elimination is requested on tone-coded channels.
+    pub const TONE_TAIL_ELIMINATION: u8 = 0b0000_1000;
+    /// Bits which must be zero in this format version.
+    pub const RESERVED: u8 = 0b1111_0000;
+
+    /// Validates a raw flag field.
+    pub const fn from_bits(bits: u8) -> Result<Self, DomainError> {
+        if bits & Self::RESERVED != 0 {
+            Err(DomainError::OutOfRange)
+        } else {
+            Ok(Self { bits })
+        }
+    }
+
+    /// Returns the raw flag field.
+    pub const fn bits(self) -> u8 {
+        self.bits
+    }
+
+    /// Reports whether every requested flag is set.
+    pub const fn contains(self, flag: u8) -> bool {
+        self.bits & flag == flag
+    }
+
+    /// Returns these flags with one flag set or cleared.
+    #[must_use]
+    pub const fn with(self, flag: u8, enabled: bool) -> Self {
+        let bits = if enabled {
+            self.bits | flag
+        } else {
+            self.bits & !flag
+        };
+        Self { bits }
+    }
+}
+
+/// Global receive-side radio configuration carrying no transmit authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RadioConfig {
+    /// Squelch level applied when no channel overrides it.
+    pub squelch: SquelchLevel,
+    /// Backlight timeout in seconds; zero disables and 255 never times out.
+    pub backlight_seconds: u8,
+    /// Behaviour after a scan stops on an occupied channel.
+    pub scan_resume: ScanResume,
+    /// Non-zero no-signal scan dwell in milliseconds.
+    pub scan_dwell_ms: u32,
+    /// Non-zero open-squelch scan hold in milliseconds.
+    pub scan_hold_ms: u32,
+    /// Whether the alternate-channel dual watch is enabled.
+    pub dual_watch: bool,
+    /// Receive battery-save duty ratio; zero disables saving.
+    pub battery_save_ratio: u8,
+    /// Global behaviour flags.
+    pub flags: RadioFlags,
+}
+
+impl RadioConfig {
+    /// Returns a conservative default configuration.
+    pub const fn conservative() -> Self {
+        Self {
+            squelch: SquelchLevel(3),
+            backlight_seconds: 10,
+            scan_resume: ScanResume::TimeOut,
+            scan_dwell_ms: 150,
+            scan_hold_ms: 5_000,
+            dual_watch: false,
+            battery_save_ratio: 0,
+            flags: RadioFlags { bits: 0 },
+        }
+    }
+
+    /// Revalidates every constrained field.
+    pub const fn validate(self) -> Result<Self, DomainError> {
+        if self.scan_dwell_ms == 0 || self.scan_hold_ms == 0 {
+            return Err(DomainError::Zero);
+        }
+        if self.battery_save_ratio > MAX_BATTERY_SAVE_RATIO {
+            return Err(DomainError::OutOfRange);
+        }
+        Ok(self)
+    }
+}
+
 /// Stable identifier for a configured channel.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct ChannelId(u16);
@@ -409,6 +536,32 @@ mod tests {
         assert_eq!(Bandwidth::try_from(2), Err(DomainError::OutOfRange));
         assert_eq!(PowerLevel::try_from(2), Ok(PowerLevel::High));
         assert_eq!(PowerLevel::try_from(3), Err(DomainError::OutOfRange));
+    }
+
+    #[test]
+    fn radio_configuration_validates_its_envelope() {
+        use super::{RadioConfig, RadioFlags, ScanResume};
+
+        let config = RadioConfig::conservative();
+        assert_eq!(config.validate(), Ok(config));
+        assert_eq!(config.scan_resume, ScanResume::TimeOut);
+
+        let mut zero_dwell = config;
+        zero_dwell.scan_dwell_ms = 0;
+        assert_eq!(zero_dwell.validate(), Err(DomainError::Zero));
+        let mut zero_hold = config;
+        zero_hold.scan_hold_ms = 0;
+        assert_eq!(zero_hold.validate(), Err(DomainError::Zero));
+        let mut saving = config;
+        saving.battery_save_ratio = 6;
+        assert_eq!(saving.validate(), Err(DomainError::OutOfRange));
+
+        assert_eq!(ScanResume::try_from(2), Ok(ScanResume::Stop));
+        assert_eq!(ScanResume::try_from(3), Err(DomainError::OutOfRange));
+        assert_eq!(RadioFlags::from_bits(0x10), Err(DomainError::OutOfRange));
+        assert!(RadioFlags::from_bits(0x0F)
+            .unwrap()
+            .contains(RadioFlags::AM_FIX));
     }
 
     #[test]

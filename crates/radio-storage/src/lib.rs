@@ -4,8 +4,14 @@
 #![forbid(unsafe_code)]
 
 use core::fmt;
-use radio_channel_plan::{BankName, GeneratedBank, MAX_BANK_NAME_LEN};
-use radio_domain::{BankId, Frequency, FrequencyStep, TxClass};
+use radio_channel_plan::{
+    BankFlags, BankMask, BankName, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
+    ChannelRecord, GeneratedBank, MAX_BANK_NAME_LEN, MAX_CHANNEL_NAME_LEN,
+};
+use radio_domain::{
+    Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, RadioConfig,
+    RadioFlags, ScanResume, SquelchLevel, Tone, TxClass,
+};
 
 /// Current object encoding version.
 pub const STORAGE_FORMAT_VERSION: u8 = 1;
@@ -13,6 +19,14 @@ pub const STORAGE_FORMAT_VERSION: u8 = 1;
 pub const MAX_OBJECT_DATA: usize = 64;
 /// Encoded byte length of a version-1 generated-bank object.
 pub const GENERATED_BANK_ENCODED_LEN: usize = 31;
+/// Encoded byte length of a version-1 explicit channel object.
+pub const CHANNEL_ENCODED_LEN: usize = 42;
+/// Encoded byte length of a version-1 named channel-bank object.
+pub const CHANNEL_BANK_ENCODED_LEN: usize = 22;
+/// Encoded byte length of a version-1 global radio-configuration object.
+pub const RADIO_CONFIG_ENCODED_LEN: usize = 16;
+/// Stable identifier of the single global radio-configuration object.
+pub const RADIO_CONFIG_OBJECT_ID: u16 = 0;
 /// Magic bytes at the start of every canonical configuration image.
 pub const CONFIGURATION_IMAGE_MAGIC: [u8; 4] = *b"AFIK";
 /// Current canonical configuration-image container version.
@@ -28,6 +42,12 @@ pub const CONFIGURATION_IMAGE_OBJECT_HEADER_LEN: usize = 5;
 pub enum ObjectKind {
     /// A compact generated channel bank.
     GeneratedBank = 1,
+    /// One explicit channel record.
+    Channel = 2,
+    /// Named metadata for one channel bank.
+    ChannelBank = 3,
+    /// The single global radio configuration.
+    RadioConfig = 4,
 }
 
 impl TryFrom<u8> for ObjectKind {
@@ -36,6 +56,9 @@ impl TryFrom<u8> for ObjectKind {
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
             1 => Ok(Self::GeneratedBank),
+            2 => Ok(Self::Channel),
+            3 => Ok(Self::ChannelBank),
+            4 => Ok(Self::RadioConfig),
             _ => Err(StorageError::UnsupportedObject),
         }
     }
@@ -387,10 +410,214 @@ pub fn decode_generated_bank(object: &StorageObject) -> Result<GeneratedBank, St
     .map_err(|_| StorageError::MalformedObject)
 }
 
+/// Encodes an explicit channel as a versioned storage object.
+pub fn encode_channel(channel: ChannelRecord) -> Result<StorageObject, StorageError> {
+    let mut data = [0_u8; CHANNEL_ENCODED_LEN];
+    data[0] = STORAGE_FORMAT_VERSION;
+    data[1..3].copy_from_slice(&channel.id().get().to_le_bytes());
+    data[3] = channel.name().len();
+    data[4..4 + MAX_CHANNEL_NAME_LEN].copy_from_slice(&channel.name().field());
+    data[16..20].copy_from_slice(&channel.receive().as_hz().to_le_bytes());
+    data[20..24].copy_from_slice(&channel.transmit().as_hz().to_le_bytes());
+    encode_tone(channel.rx_tone(), &mut data[24..27]);
+    encode_tone(channel.tx_tone(), &mut data[27..30]);
+    data[30] = channel.modulation() as u8;
+    data[31] = channel.bandwidth() as u8;
+    data[32] = channel.power() as u8;
+    data[33..37].copy_from_slice(&channel.step().as_hz().to_le_bytes());
+    data[37] = channel.squelch().get();
+    data[38] = channel.flags().bits();
+    data[39] = channel.tx_class() as u8;
+    data[40..42].copy_from_slice(&channel.banks().bits().to_le_bytes());
+    StorageObject::new(
+        ObjectKey {
+            kind: ObjectKind::Channel,
+            id: channel.id().get(),
+        },
+        &data,
+    )
+}
+
+/// Decodes and fully validates an explicit channel storage object.
+pub fn decode_channel(object: &StorageObject) -> Result<ChannelRecord, StorageError> {
+    if object.key.kind != ObjectKind::Channel {
+        return Err(StorageError::UnsupportedObject);
+    }
+    let data = object.data();
+    if data.len() != CHANNEL_ENCODED_LEN || data[0] != STORAGE_FORMAT_VERSION {
+        return Err(StorageError::MalformedObject);
+    }
+    let id = u16::from_le_bytes([data[1], data[2]]);
+    if id != object.key.id {
+        return Err(StorageError::MalformedObject);
+    }
+    let mut name_field = [0_u8; MAX_CHANNEL_NAME_LEN];
+    name_field.copy_from_slice(&data[4..16]);
+    let name =
+        ChannelName::from_field(name_field, data[3]).map_err(|_| StorageError::MalformedObject)?;
+    let receive = Frequency::from_hz(u32::from_le_bytes([data[16], data[17], data[18], data[19]]))
+        .map_err(|_| StorageError::MalformedObject)?;
+    let transmit = Frequency::from_hz(u32::from_le_bytes([data[20], data[21], data[22], data[23]]))
+        .map_err(|_| StorageError::MalformedObject)?;
+    let rx_tone = decode_tone(&data[24..27])?;
+    let tx_tone = decode_tone(&data[27..30])?;
+    let modulation = Modulation::try_from(data[30]).map_err(|_| StorageError::MalformedObject)?;
+    let bandwidth = Bandwidth::try_from(data[31]).map_err(|_| StorageError::MalformedObject)?;
+    let power = PowerLevel::try_from(data[32]).map_err(|_| StorageError::MalformedObject)?;
+    let step = FrequencyStep::from_hz(u32::from_le_bytes([data[33], data[34], data[35], data[36]]))
+        .map_err(|_| StorageError::MalformedObject)?;
+    let squelch = SquelchLevel::new(data[37]).map_err(|_| StorageError::MalformedObject)?;
+    let flags = ChannelFlags::from_bits(data[38]).map_err(|_| StorageError::MalformedObject)?;
+    let tx_class = TxClass::try_from(data[39]).map_err(|_| StorageError::MalformedObject)?;
+    let banks = BankMask::from_bits(u16::from_le_bytes([data[40], data[41]]));
+    ChannelRecord::new(ChannelDefinition {
+        id: ChannelId::new(id),
+        name,
+        receive,
+        transmit,
+        rx_tone,
+        tx_tone,
+        modulation,
+        bandwidth,
+        power,
+        step,
+        squelch,
+        flags,
+        banks,
+        tx_class,
+    })
+    .map_err(|_| StorageError::MalformedObject)
+}
+
+/// Encodes named channel-bank metadata as a versioned storage object.
+pub fn encode_channel_bank(bank: ChannelBank) -> Result<StorageObject, StorageError> {
+    let mut data = [0_u8; CHANNEL_BANK_ENCODED_LEN];
+    data[0] = STORAGE_FORMAT_VERSION;
+    data[1..3].copy_from_slice(&bank.id().get().to_le_bytes());
+    data[3] = bank.name().len();
+    data[4..4 + MAX_BANK_NAME_LEN].copy_from_slice(&bank.name().field());
+    data[20] = bank.flags().bits();
+    StorageObject::new(
+        ObjectKey {
+            kind: ObjectKind::ChannelBank,
+            id: bank.id().get(),
+        },
+        &data,
+    )
+}
+
+/// Decodes and fully validates a named channel-bank storage object.
+pub fn decode_channel_bank(object: &StorageObject) -> Result<ChannelBank, StorageError> {
+    if object.key.kind != ObjectKind::ChannelBank {
+        return Err(StorageError::UnsupportedObject);
+    }
+    let data = object.data();
+    if data.len() != CHANNEL_BANK_ENCODED_LEN || data[0] != STORAGE_FORMAT_VERSION || data[21] != 0
+    {
+        return Err(StorageError::MalformedObject);
+    }
+    let id = u16::from_le_bytes([data[1], data[2]]);
+    if id != object.key.id {
+        return Err(StorageError::MalformedObject);
+    }
+    let mut name_field = [0_u8; MAX_BANK_NAME_LEN];
+    name_field.copy_from_slice(&data[4..20]);
+    let name =
+        BankName::from_field(name_field, data[3]).map_err(|_| StorageError::MalformedObject)?;
+    let flags = BankFlags::from_bits(data[20]).map_err(|_| StorageError::MalformedObject)?;
+    ChannelBank::new(BankId::new(id), name, flags).map_err(|_| StorageError::MalformedObject)
+}
+
+/// Encodes the global radio configuration as a versioned storage object.
+pub fn encode_radio_config(config: RadioConfig) -> Result<StorageObject, StorageError> {
+    let config = config
+        .validate()
+        .map_err(|_| StorageError::MalformedObject)?;
+    let mut data = [0_u8; RADIO_CONFIG_ENCODED_LEN];
+    data[0] = STORAGE_FORMAT_VERSION;
+    data[1] = config.squelch.get();
+    data[2] = config.backlight_seconds;
+    data[3] = config.scan_resume as u8;
+    data[4..8].copy_from_slice(&config.scan_dwell_ms.to_le_bytes());
+    data[8..12].copy_from_slice(&config.scan_hold_ms.to_le_bytes());
+    data[12] = u8::from(config.dual_watch);
+    data[13] = config.battery_save_ratio;
+    data[14] = config.flags.bits();
+    StorageObject::new(
+        ObjectKey {
+            kind: ObjectKind::RadioConfig,
+            id: RADIO_CONFIG_OBJECT_ID,
+        },
+        &data,
+    )
+}
+
+/// Decodes and fully validates the global radio-configuration object.
+pub fn decode_radio_config(object: &StorageObject) -> Result<RadioConfig, StorageError> {
+    if object.key.kind != ObjectKind::RadioConfig {
+        return Err(StorageError::UnsupportedObject);
+    }
+    if object.key.id != RADIO_CONFIG_OBJECT_ID {
+        return Err(StorageError::MalformedObject);
+    }
+    let data = object.data();
+    if data.len() != RADIO_CONFIG_ENCODED_LEN
+        || data[0] != STORAGE_FORMAT_VERSION
+        || data[15] != 0
+        || data[12] > 1
+    {
+        return Err(StorageError::MalformedObject);
+    }
+    RadioConfig {
+        squelch: SquelchLevel::new(data[1]).map_err(|_| StorageError::MalformedObject)?,
+        backlight_seconds: data[2],
+        scan_resume: ScanResume::try_from(data[3]).map_err(|_| StorageError::MalformedObject)?,
+        scan_dwell_ms: u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
+        scan_hold_ms: u32::from_le_bytes([data[8], data[9], data[10], data[11]]),
+        dual_watch: data[12] == 1,
+        battery_save_ratio: data[13],
+        flags: RadioFlags::from_bits(data[14]).map_err(|_| StorageError::MalformedObject)?,
+    }
+    .validate()
+    .map_err(|_| StorageError::MalformedObject)
+}
+
+fn encode_tone(tone: Tone, field: &mut [u8]) {
+    let (kind, code) = match tone {
+        Tone::None => (0, 0),
+        Tone::Ctcss(tenths_hz) => (1, tenths_hz),
+        Tone::Dcs {
+            code,
+            inverted: false,
+        } => (2, code),
+        Tone::Dcs {
+            code,
+            inverted: true,
+        } => (3, code),
+    };
+    field[0] = kind;
+    field[1..3].copy_from_slice(&code.to_le_bytes());
+}
+
+fn decode_tone(field: &[u8]) -> Result<Tone, StorageError> {
+    let code = u16::from_le_bytes([field[1], field[2]]);
+    let tone = match field[0] {
+        0 if code == 0 => Ok(Tone::None),
+        1 => Tone::ctcss(code),
+        2 => Tone::dcs(code, false),
+        3 => Tone::dcs(code, true),
+        _ => return Err(StorageError::MalformedObject),
+    };
+    tone.map_err(|_| StorageError::MalformedObject)
+}
+
 /// Validates any currently supported configuration object.
 pub fn validate_object(object: &StorageObject) -> bool {
     match object.key.kind {
         ObjectKind::GeneratedBank => decode_generated_bank(object).is_ok(),
+        ObjectKind::Channel => decode_channel(object).is_ok(),
+        ObjectKind::ChannelBank => decode_channel_bank(object).is_ok(),
+        ObjectKind::RadioConfig => decode_radio_config(object).is_ok(),
     }
 }
 
@@ -607,13 +834,22 @@ mod tests {
     extern crate std;
 
     use super::{
-        configuration_image_crc, configuration_image_len, decode_configuration_image,
-        decode_generated_bank, encode_configuration_image, encode_generated_bank, validate_object,
-        ObjectKey, ObjectKind, StorageError, TransactionalStore, CONFIGURATION_IMAGE_HEADER_LEN,
-        CONFIGURATION_IMAGE_MAGIC, CONFIGURATION_IMAGE_VERSION, STORAGE_FORMAT_VERSION,
+        configuration_image_crc, configuration_image_len, decode_channel, decode_channel_bank,
+        decode_configuration_image, decode_generated_bank, decode_radio_config, encode_channel,
+        encode_channel_bank, encode_configuration_image, encode_generated_bank,
+        encode_radio_config, validate_object, ObjectKey, ObjectKind, StorageError, StorageObject,
+        TransactionalStore, CHANNEL_BANK_ENCODED_LEN, CHANNEL_ENCODED_LEN,
+        CONFIGURATION_IMAGE_HEADER_LEN, CONFIGURATION_IMAGE_MAGIC, CONFIGURATION_IMAGE_VERSION,
+        RADIO_CONFIG_ENCODED_LEN, STORAGE_FORMAT_VERSION,
     };
-    use radio_channel_plan::{BankName, GeneratedBank};
-    use radio_domain::{BankId, Frequency, FrequencyStep, TxClass};
+    use radio_channel_plan::{
+        BankFlags, BankMask, BankName, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
+        ChannelRecord, GeneratedBank,
+    };
+    use radio_domain::{
+        Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel,
+        RadioConfig, RadioFlags, ScanResume, SquelchLevel, Tone, TxClass,
+    };
     use std::{vec, vec::Vec};
 
     fn bank(id: u16, name: &str) -> GeneratedBank {
@@ -673,6 +909,198 @@ mod tests {
         let expected = bank(4, "PMR446");
         let encoded = encode_generated_bank(expected).unwrap();
         assert_eq!(decode_generated_bank(&encoded).unwrap(), expected);
+    }
+
+    fn channel(id: u16, name: &str) -> ChannelRecord {
+        ChannelRecord::new(ChannelDefinition {
+            id: ChannelId::new(id),
+            name: ChannelName::new(name).unwrap(),
+            receive: Frequency::from_hz(145_725_000).unwrap(),
+            transmit: Frequency::from_hz(145_125_000).unwrap(),
+            rx_tone: Tone::Ctcss(1_000),
+            tx_tone: Tone::Dcs {
+                code: 23,
+                inverted: true,
+            },
+            modulation: Modulation::Usb,
+            bandwidth: Bandwidth::Narrow,
+            power: PowerLevel::High,
+            step: FrequencyStep::from_hz(12_500).unwrap(),
+            squelch: SquelchLevel::new(9).unwrap(),
+            flags: ChannelFlags::from_bits(ChannelFlags::SCAN_SKIP | ChannelFlags::REVERSE)
+                .unwrap(),
+            banks: BankMask::from_bits(0b0000_0000_0000_0101),
+            tx_class: TxClass::Amateur,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn channel_bank_and_configuration_objects_round_trip() {
+        let expected = channel(12, "GB3AB");
+        let encoded = encode_channel(expected).unwrap();
+        assert_eq!(encoded.len(), CHANNEL_ENCODED_LEN);
+        assert_eq!(
+            encoded.key(),
+            ObjectKey {
+                kind: ObjectKind::Channel,
+                id: 12
+            }
+        );
+        assert_eq!(decode_channel(&encoded).unwrap(), expected);
+        assert!(validate_object(&encoded));
+
+        let bank = ChannelBank::new(
+            BankId::new(3),
+            BankName::new("Amateur 2m").unwrap(),
+            BankFlags::default().with(BankFlags::SCAN_ENABLED, true),
+        )
+        .unwrap();
+        let encoded_bank = encode_channel_bank(bank).unwrap();
+        assert_eq!(encoded_bank.len(), CHANNEL_BANK_ENCODED_LEN);
+        assert_eq!(decode_channel_bank(&encoded_bank).unwrap(), bank);
+        assert!(validate_object(&encoded_bank));
+
+        let mut config = RadioConfig::conservative();
+        config.dual_watch = true;
+        config.battery_save_ratio = 4;
+        config.scan_resume = ScanResume::Carrier;
+        config.flags = RadioFlags::default().with(RadioFlags::KEY_BEEP, true);
+        let encoded_config = encode_radio_config(config).unwrap();
+        assert_eq!(encoded_config.len(), RADIO_CONFIG_ENCODED_LEN);
+        assert_eq!(decode_radio_config(&encoded_config).unwrap(), config);
+        assert!(validate_object(&encoded_config));
+    }
+
+    #[test]
+    fn channel_and_configuration_decoding_rejects_every_invalid_field() {
+        let encoded = encode_channel(channel(12, "GB3AB")).unwrap();
+        let mutate = |index: usize, value: u8| {
+            let mut data = encoded.data().to_vec();
+            data[index] = value;
+            StorageObject::new(encoded.key(), &data).unwrap()
+        };
+
+        // version, identity, name length, tone kind, tone code, modulation,
+        // bandwidth, power, squelch, reserved flag, and TX class are all checked.
+        for (index, value) in [
+            (0, STORAGE_FORMAT_VERSION + 1),
+            (1, 13),
+            (3, 13),
+            (24, 4),
+            (26, 0),
+            (30, 3),
+            (31, 2),
+            (32, 3),
+            (37, 10),
+            (38, 0x10),
+            (39, 7),
+        ] {
+            assert_eq!(
+                decode_channel(&mutate(index, value)),
+                Err(StorageError::MalformedObject),
+                "index {index} value {value} was accepted"
+            );
+        }
+
+        let mut zero_step = encoded.data().to_vec();
+        zero_step[33..37].copy_from_slice(&0_u32.to_le_bytes());
+        assert_eq!(
+            decode_channel(&StorageObject::new(encoded.key(), &zero_step).unwrap()),
+            Err(StorageError::MalformedObject)
+        );
+        assert_eq!(
+            decode_channel(&StorageObject::new(encoded.key(), &encoded.data()[..41]).unwrap()),
+            Err(StorageError::MalformedObject)
+        );
+        assert_eq!(
+            decode_channel(&encode_generated_bank(bank(1, "A")).unwrap()),
+            Err(StorageError::UnsupportedObject)
+        );
+
+        let config = encode_radio_config(RadioConfig::conservative()).unwrap();
+        let mutate_config = |index: usize, value: u8| {
+            let mut data = config.data().to_vec();
+            data[index] = value;
+            StorageObject::new(config.key(), &data).unwrap()
+        };
+        for (index, value) in [(1, 10), (3, 3), (12, 2), (14, 0x10), (15, 1)] {
+            assert_eq!(
+                decode_radio_config(&mutate_config(index, value)),
+                Err(StorageError::MalformedObject),
+                "configuration index {index} value {value} was accepted"
+            );
+        }
+        let mut zero_dwell = config.data().to_vec();
+        zero_dwell[4..8].copy_from_slice(&0_u32.to_le_bytes());
+        assert_eq!(
+            decode_radio_config(&StorageObject::new(config.key(), &zero_dwell).unwrap()),
+            Err(StorageError::MalformedObject)
+        );
+        assert_eq!(
+            decode_radio_config(
+                &StorageObject::new(
+                    ObjectKey {
+                        kind: ObjectKind::RadioConfig,
+                        id: 1
+                    },
+                    config.data()
+                )
+                .unwrap()
+            ),
+            Err(StorageError::MalformedObject)
+        );
+
+        let bank_object = encode_channel_bank(
+            ChannelBank::new(
+                BankId::new(3),
+                BankName::new("Amateur 2m").unwrap(),
+                BankFlags::default(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let mut reserved = bank_object.data().to_vec();
+        reserved[21] = 1;
+        assert_eq!(
+            decode_channel_bank(&StorageObject::new(bank_object.key(), &reserved).unwrap()),
+            Err(StorageError::MalformedObject)
+        );
+        let mut reserved_flag = bank_object.data().to_vec();
+        reserved_flag[20] = 0x02;
+        assert_eq!(
+            decode_channel_bank(&StorageObject::new(bank_object.key(), &reserved_flag).unwrap()),
+            Err(StorageError::MalformedObject)
+        );
+    }
+
+    #[test]
+    fn canonical_images_order_every_object_kind() {
+        let objects = &mut [
+            encode_radio_config(RadioConfig::conservative()).unwrap(),
+            encode_channel(channel(2, "B")).unwrap(),
+            encode_generated_bank(bank(1, "A")).unwrap(),
+            encode_channel_bank(
+                ChannelBank::new(
+                    BankId::new(0),
+                    BankName::new("Bank 0").unwrap(),
+                    BankFlags::default(),
+                )
+                .unwrap(),
+            )
+            .unwrap(),
+        ];
+        assert_eq!(
+            encode_configuration_image(objects, &mut [0; 256]),
+            Err(StorageError::NonCanonicalImage)
+        );
+        objects.sort_unstable_by_key(|object| object.key());
+        let image_len = configuration_image_len(objects).unwrap();
+        let mut image = vec![0; image_len];
+        encode_configuration_image(objects, &mut image).unwrap();
+        let decoded = decode_configuration_image(&image).unwrap();
+        assert_eq!(decoded.object_count(), 4);
+        assert_eq!(decoded.objects().collect::<Vec<_>>(), objects.to_vec());
     }
 
     #[test]
