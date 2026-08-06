@@ -2,13 +2,13 @@
 
 ## Current work package
 
-**No work package is active. Work Package 6 — BK4819 receive path and
-token-gated TX boundary (`RF-006`) is complete.**
+**Work Package 7 — channel activation and deterministic scanning (`SCAN-007`)
+is active.**
 
-The next smallest actionable package is a hardware-independent channel
-activation and scanning state machine built over the completed channel-plan,
-TX-policy, BK4819-command, and virtual-time boundaries. It must be activated in
-`TASKS.md` before implementation and must not add physical timing or RF facts.
+The package is limited to a hardware-independent one-bank controller, explicit
+logical timers and signal samples, policy-gated selected-state TX, and
+deterministic host integration. It does not define physical settle/poll timing,
+multiple-bank or priority scanning, target peripherals, or RF behavior.
 
 ## State
 
@@ -18,6 +18,7 @@ TX-policy, BK4819-command, and virtual-time boundaries. It must be activated in
 - Work Package 4 canonical image/compiler round trip: complete.
 - Work Package 5 simulator-first boot UI and hidden TX permissions: complete.
 - Work Package 6 BK4819 receive path and token-gated TX boundary: complete.
+- Work Package 7 channel activation and deterministic scanning: active.
 - `UI-005` logical key edges, bounded semantic views, exact boot-only entry,
   release gate, draft editor, and checked persistence action: complete.
 - `UI-005` separate persisted/active policy simulation, deterministic timed
@@ -50,8 +51,9 @@ TX-policy, BK4819-command, and virtual-time boundaries. It must be activated in
 - `RF-006` heap-free driver, exact command ordering/status decoding,
   class-bound capability token, fail-closed state recovery, deterministic RF
   simulation, and mismatch/failure trace proofs: complete.
-- Next smallest task: define and activate a bounded channel activation and
-  scanning work package without inventing physical scan timing or RF behavior.
+- Next smallest task: implement the bounded `radio-channel-control` activation,
+  timer-token, dwell/hold, and selected-state TX-authorization contract with
+  exact unit tests.
 
 ## Completed Work Package 6 exit criteria
 

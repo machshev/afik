@@ -70,3 +70,15 @@
   physical bus, board switching, external PA control, flashing, or on-air tests
   until chip/board identity, original register documentation, safe dummy-load
   test equipment, calibration backup, and recovery procedures are established.
+
+## RISK-008 — Physical scan timing and signal inputs are unverified
+
+- **State:** open
+- **Impact:** a deterministic logical scan policy does not establish how long
+  the fitted receiver needs to tune or settle, how often status can be sampled,
+  whether squelch is reliable, or how scan behavior performs on physical RF.
+- **Mitigation:** `SCAN-007` treats dwell/hold durations as explicit workflow
+  configuration and timer expiries plus normalized signal samples as adapter
+  inputs. Do not encode target timer rates, polling cadence, receiver settle
+  time, RSSI thresholds, tone detection, or physical scan claims until the
+  relevant chip/board behavior is sourced and measured safely.

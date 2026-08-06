@@ -247,3 +247,46 @@
   authority emits no write or TX event. Pinned host, `thumbv6m`, and Rust 1.86
   gates all pass as recorded in `STATUS.md`. No physical adapter or RF claim
   was added; `RISK-007` remains open.
+
+## SCAN-007 — Channel activation and deterministic scanning
+
+- **Status:** active
+- **Objective:** add the smallest bounded channel-control state machine that
+  activates generated-bank channels, scans them deterministically, and denies
+  controller-level TX authorization while scanning.
+- **Scope:** a new `no_std`, heap-free `radio-channel-control` crate; one
+  `GeneratedBank`; checked initial/manual channel selection; wraparound next and
+  previous navigation; explicit start/stop scanning; configured integer dwell
+  and hold durations; timer-token generation and stale-expiry rejection;
+  squelch-driven hold/release state; last-signal observation; a policy-backed
+  authorized-transmission bundle only from non-scanning state; and deterministic
+  virtual-time integration with the logical BK4819 simulator. Documentation and
+  host/embedded tests are included. Multiple banks, priority/dual-watch scan,
+  scan lists and lockouts, tone detection, physical tune/settle or polling
+  timing, physical signal/RF behavior, target integration, and on-air TX are
+  excluded.
+- **Dependencies:** `RF-006`, `radio-channel-plan`, `radio-domain`, and
+  `radio-tx-policy`.
+- **Assumptions:** dwell and hold durations are explicit AFIK workflow inputs,
+  not measured hardware requirements; timer expiries and `SignalMeasurement`
+  values are logical adapter events; a `GeneratedBank` expands every valid
+  index without allocation; physical squelch and tuning remain unverified.
+- **Likely files:** `Cargo.toml`, a new `crates/radio-channel-control`,
+  `crates/radio-sim`, channel-plan, simulator, TX-policy, and architecture
+  documents, `DECISIONS.md`, `RISKS.md`, and handoff files.
+- **Tests required:** reject zero timing and invalid initial/manual index without
+  partial state; exact initial activation; next/previous and scan wraparound;
+  start/stop timer lifecycle; dwell expiry retunes exactly once and rearms;
+  squelch-open enters/restarts hold; open hold expiry rearms without retuning;
+  closed hold expiry advances; stale/cancelled timer tokens do nothing; scan
+  state denies TX authorization even when policy permits; selected state yields
+  a matching class-bound token only when policy permits; identical timed scan,
+  hold, stop, and denied/allowed TX scripts produce identical RF/control traces.
+- **Acceptance criteria:** the controller is hardware-independent, `no_std`,
+  heap-free, bounded, and uses integer units; it owns no clock and changes only
+  on explicit inputs; each timer arm has a bounded opaque token and stale
+  expiries cannot mutate state; every activation is checked and emits at most
+  one exact channel retune; scanning never constructs or exposes TX authority;
+  selected-state TX goes through `TxPolicy` and the class-bound BK4819 boundary;
+  simulator time is explicit and repeatable; no hardware timing, register,
+  physical signal, or RF behavior is invented.
