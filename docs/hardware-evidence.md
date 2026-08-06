@@ -1390,3 +1390,12 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   pages under transaction `8a6af71f` without retry. Status is
   `acknowledged_not_read_back`; power-cycle and application probes remain
   separate evidence gates.
+- **Physical serial result:** after power-cycle, normal hello returned
+  `AFIK-K1-0.2` and the no-MMIO request returned marker `0x4b31434c`. Isolated
+  reads returned CR `0x03000500`, ICSCR `0x00e64d14`, CFGR `0x00000012`, and
+  PLLCFGR `0x00000006`; the combined request returned the same values.
+- **Contract result:** rejected. The decoder observes ready HSI and PLL, HSI as
+  PLL source, requested and active PLL system clock, and undivided AHB/APB.
+  `ICSCR.HSI_FS` decodes as `2`, while the provisional 24 MHz contract expects
+  `4`. This records raw silicon state but does not yet assign a frequency to
+  encoding `2` or authorize HAL clock publication.

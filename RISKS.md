@@ -426,3 +426,8 @@
   no-MMIO response distinguishes command/framing progress from an RCC read.
   Static verification does not close the risk; require power-cycle, hello, then
   no-MMIO control before attempting the isolated RCC reads.
+- **Exact-unit result:** serial-only hello, no-MMIO control, and every RCC read
+  passed. The stable snapshot is CR `03000500`, ICSCR `00e64d14`, CFGR
+  `00000012`, PLLCFGR `00000006`; the fail-closed decoder rejects only
+  `ICSCR.HSI_FS=2` versus provisional expected encoding `4`. Do not change the
+  decoder or publish clocks without primary PY32F071 field/frequency evidence.

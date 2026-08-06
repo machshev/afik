@@ -1224,5 +1224,10 @@
   boot and serial responses remain physical gates.
 - **Serial-only isolation write:** bootloader `7.03.01` acknowledged all 201
   pages under transaction `8a6af71f` without retry. This is not read-back or
-  application boot proof; power-cycle, hello, then no-MMIO control remain the
-  next ordered gates.
+  application boot proof.
+- **Serial-only physical result:** after power-cycle, hello and the no-MMIO
+  marker passed. CR `03000500`, ICSCR `00e64d14`, CFGR `00000012`, and PLLCFGR
+  `00000006` were identical in isolated and combined responses. Validation
+  fails only because `ICSCR.HSI_FS` is encoding `2`, while the provisional
+  contract requires `4`. Do not adopt clocks until that field is interpreted
+  from primary PY32F071 evidence and the contract is re-reviewed.

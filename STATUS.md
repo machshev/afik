@@ -117,9 +117,9 @@ features remain outside this bounded slice.
 - Work Package 22 keypad/UI witness definition: complete; the pinned matrix,
   electrical idle/scan levels, one-key decode, explicit-time debounce, and
   display-only result were bounded before implementation.
-- Current smallest actionable task: guarded-write the verified serial-only
-  diagnostic image, then require power-cycle, hello, no-MMIO control, and only
-  then ordered RCC reads; do not publish HAL clocks.
+- Current smallest actionable task: resolve observed `ICSCR.HSI_FS=2` against
+  primary PY32F071 clock evidence before changing the fail-closed contract or
+  publishing HAL clocks.
 
 ## Work Package 23 dependency and executor milestone
 
@@ -420,8 +420,14 @@ features remain outside this bounded slice.
   application response is claimed at this checkpoint.
 - K1 bootloader `7.03.01` acknowledged all 201 serial-only-image pages under
   transaction `8a6af71f` without retry and reported
-  `acknowledged_not_read_back`. Power-cycle and application probes remain
-  required.
+  `acknowledged_not_read_back`.
+- After power-cycle, hello returned `AFIK-K1-0.2`, the no-MMIO marker returned
+  `4b31434c`, and all isolated plus combined RCC reads returned CR `03000500`,
+  ICSCR `00e64d14`, CFGR `00000012`, and PLLCFGR `00000006`.
+- The fail-closed contract rejected the stable snapshot. HSI and PLL are
+  enabled/ready; PLL source, requested/active system source, and AHB/APB
+  prescalers match. `ICSCR.HSI_FS` decodes as `2`, not the provisional required
+  `4`. HAL clocks remain unpublished pending primary-source interpretation.
 
 ## Work Package 22 pure keypad milestone
 
