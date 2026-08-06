@@ -1193,3 +1193,9 @@
   flash was sent during the static milestone. The guarded physical write later
   acknowledged all 252 pages without retry and remains unverified until the
   required power-cycle, normal hello, and `probe-clock` capture.
+- **Exact-unit observation result:** after power-cycle, the normal hello passed,
+  but two combined `probe-clock` attempts timed out; the hello still passed
+  between attempts. No raw RCC field was observed. The next bounded step is an
+  individually identified read-only register response which can distinguish CR,
+  ICSCR, CFGR, PLLCFGR, validation, and response-transfer failure without clock
+  writes, HAL adoption, keypad/display mutation, RF, or TX.

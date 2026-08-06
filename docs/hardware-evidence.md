@@ -1341,3 +1341,8 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   `acknowledged_not_read_back`, not application boot or RCC evidence.
 - **Boundary:** the required power-cycle, normal hello, and clock response are
   pending, so exact-unit RCC values and the contract result remain unobserved.
+- **Physical result:** after power-cycle the image answered the exact normal
+  hello. The combined clock request then timed out twice, while an intervening
+  hello still passed. This proves neither a register fault nor a framing fault;
+  no raw value is recorded until an individually identified response isolates
+  the failing boundary.

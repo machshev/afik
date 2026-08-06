@@ -410,3 +410,7 @@
   Static and Renode gates pass, and all 252 diagnostic-image pages were
   acknowledged without retry. This is not read-back or boot proof; do not
   publish HAL clocks until the post-power-cycle response is captured and reviewed.
+- **Physical observation update:** normal hello remains responsive, but the
+  combined RCC request timed out twice. Treat the source of the timeout as
+  unknown; isolate individual reads/response progress rather than assuming a
+  register value, PAC defect, or UART failure.

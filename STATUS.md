@@ -117,9 +117,9 @@ features remain outside this bounded slice.
 - Work Package 22 keypad/UI witness definition: complete; the pinned matrix,
   electrical idle/scan levels, one-key decode, explicit-time debounce, and
   display-only result were bounded before implementation.
-- Current smallest actionable task: power-cycle the exact K1 into normal mode,
-  then run the normal hello and `probe-clock` capture; do not publish HAL clocks
-  until the observed RCC values pass.
+- Current smallest actionable task: isolate the exact failing boundary in the
+  combined RCC observation by returning individually identified read-only
+  register samples; retain the normal hello and do not publish HAL clocks.
 
 ## Work Package 23 dependency and executor milestone
 
@@ -363,9 +363,14 @@ features remain outside this bounded slice.
 - The exact K1 bootloader `7.03.01` was identified through the CH340 path. The
   guarded write acknowledged all 252 pages under transaction `736f8852` without
   retry and reported `acknowledged_not_read_back`.
-- A manual power-cycle, normal-mode hello, and `probe-clock` capture remain
-  pending. No physical clock observation, clock adoption, TIM15, interrupt,
-  DMA, async peripheral, RF, or TX operation occurred.
+- The manual power-cycle and normal-mode hello completed. A valid clock capture
+  remains pending. No physical clock observation, clock adoption, TIM15,
+  interrupt, DMA, async peripheral, RF, or TX operation occurred.
+- **Post-power-cycle result:** normal hello returned `AFIK-K1-0.2`. Two
+  `probe-clock` attempts timed out, and a normal hello between them still
+  returned `AFIK-K1-0.2`. No RCC value was accepted or inferred. The next
+  diagnostic must isolate individual reads and response progress before another
+  guarded image write.
 
 ## Work Package 22 pure keypad milestone
 
