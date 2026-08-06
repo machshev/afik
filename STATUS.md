@@ -81,9 +81,76 @@ image, and a successful recovery rehearsal on the exact test unit.
   verdict, complete-frame parser, Object/Item voice-repeater advertisements,
   fixed-capacity explicit-time table, and isolated deterministic simulator:
   complete.
-- Current smallest actionable task: record the exact reverse-engineered
-  bootloader-v2 evidence and define the application-image, backup, recovery,
-  and destructive-confirmation contracts for `FLASH-012`.
+- `FLASH-012` sourced bootloader-v2 evidence, reserved bootloader boundary,
+  complete raw application package, read-only EEPROM backup, guarded flashing
+  library, explicit Linux CLI, and deterministic protocol tests: complete.
+- `FLASH-012` exact-unit inspection, physical backup, recovery rehearsal,
+  page-acknowledged AFIK write, and independent application-boot observation:
+  pending; no serial device is visible here.
+- Current smallest actionable task: connect and open the exact UV-K5 V1 test
+  unit, record board and DP32G030 markings, then use its normal firmware to
+  create and validate the 8 KiB EEPROM backup before entering the bootloader or
+  attempting any write.
+
+## Work Package 12 software milestone and verification
+
+- Sources and confidence boundaries are recorded in
+  `docs/hardware-evidence.md`; `docs/k5-flashing.md` is the physical runbook and
+  experiment record. The implementation is intentionally limited to an
+  inspected UV-K5 V1/DP32G030 unit with an exact version-2 bootloader beacon.
+- The target linker owns only `0x0000..=0xEFFF`. Packaging verifies the ELF,
+  emits exactly `0xF000` bytes padded with `0xFF`, and independently rejects
+  truncation, corruption, or any overlap with the preserved
+  `0xF000..=0xFFFF` stock bootloader.
+- `radio-k5-flasher` owns bounded legacy framing, CRC/XOR handling, strict
+  version negotiation, complete read-only EEPROM backup, image validation,
+  prerequisite checks before I/O, and exactly 240 sequential acknowledged
+  256-byte writes without ambiguous retry. `afik-k5` keeps the serial front end
+  explicit and thin.
+- The generated AFIK package is 61,440 bytes, has SHA-256
+  `89f93c262541985182599bebdcc808aa7a9af392f7c781a759c38e619481e14b`,
+  application CRC-32 `78f0bfdc`, initial SP `0x20004000`, and Reset vector
+  `0x00000101`. It is still only the minimal RAM-sentinel firmware, not a
+  user-visible hardware build.
+- No `/dev/ttyUSB*` or `/dev/ttyACM*` character device was visible. No radio was
+  probed, backed up, written, or claimed to boot; physical completion remains
+  gated exactly as specified by `FLASH-012`, ADR-020, RISK-014, and RISK-015.
+
+Verification on 2026-08-06:
+
+- `nix flake check path:. --no-build` — passed for the current x86_64-linux
+  system; the flake reported its aarch64-linux output as incompatible and
+  omitted it.
+- `nix develop path:. -c rustc --version` and
+  `nix develop path:. -c cargo --version` — reported Rust 1.97.1 and Cargo
+  1.97.0 from the pinned shell.
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
+  — passed.
+- `nix develop path:. -c cargo test --workspace` — passed: 123 unit/integration
+  tests and all doc tests.
+- `env RUSTC=/nix/store/2mm3p5wcy1ifrcx5vp3bwsw7a76r77jc-rustc-1.86.0/bin/rustc RUSTDOC=/nix/store/2mm3p5wcy1ifrcx5vp3bwsw7a76r77jc-rustc-1.86.0/bin/rustdoc CARGO_TARGET_DIR=/tmp/afik-flash-012-rust-1-86-target /nix/store/npqlgsia03kfhv8m9mav6hfnbawpg0yg-cargo-1.86.0/bin/cargo test --workspace`
+  — passed: 123 unit/integration tests and all doc tests on Rust/Cargo 1.86.0.
+- `nix develop path:. -c tool/build-dp32g030.sh` and
+  `nix develop path:. -c tool/verify-dp32g030-image.sh` — passed; flash image
+  end `0x00000268`, declared application end `0x0000f000`, and vectors matched
+  the values above.
+- `nix develop path:. -c tool/package-k5-v1-image.sh --force` and
+  `nix develop path:. -c tool/test-k5-v1-package.sh` — passed the package
+  generation plus positive, truncated, and corrupt-image checks; the SHA-256
+  matched the value above.
+- `nix develop path:. -c tool/test-renode.sh --repeat 3` — passed all three
+  Reset-to-Rust-sentinel iterations.
+- `env RUSTC=/tmp/afik-rustup-1-86/toolchains/1.86.0-x86_64-unknown-linux-gnu/bin/rustc CARGO_HOME=/tmp/afik-cargo-home-1-86 CARGO_TARGET_DIR=/tmp/afik-flash-012-rust-1-86-thumb-target /tmp/afik-rustup-1-86/toolchains/1.86.0-x86_64-unknown-linux-gnu/bin/cargo build --package radio-firmware-dp32g030 --features firmware --bin radio-firmware-dp32g030 --target thumbv6m-none-eabi`
+  — passed on Rust/Cargo 1.86.0. An initial attempt with the standalone Nix
+  Rust 1.86 compiler failed before code generation because that output does not
+  contain the `thumbv6m-none-eabi` core library; the target-complete pinned
+  Rustup toolchain above is the applicable minimum-target gate.
+- `nix develop path:. -c cargo run --quiet --package radio-k5-flasher-cli --bin afik-k5 -- inspect target/thumbv6m-none-eabi/debug/radio-firmware-dp32g030-k5-v1.raw`
+  — passed and reported the package size, vectors, and CRC-32 above.
+- `find /dev -maxdepth 1 -type c \\( -name 'ttyUSB*' -o -name 'ttyACM*' \\) -print`
+  — passed with no matches, confirming that a physical serial exercise was not
+  possible in this environment.
 
 ## Completed Work Package 11 exit criteria
 

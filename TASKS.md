@@ -596,3 +596,12 @@
   requires the exact test unit to be identified, its EEPROM backup validated,
   a known-good raw recovery image recorded, recovery rehearsed, the AFIK image
   acknowledged page-by-page, and an independent application-boot observation.
+- **Progress notes:** sourced protocol and hardware boundaries, the
+  bootloader-preserving target/package path, guarded host library, explicit
+  Linux CLI, deterministic success/failure tests, pinned host/minimum-target
+  checks, package checks, and repeated Renode proof are complete in commits
+  `7482299`, `825e1e9`, `33dbdf5`, `9f5247a`, and `24faeae`. Physical acceptance
+  remains pending because no serial device or inspected test radio is available
+  in the execution environment. The next action is exact board/MCU inspection
+  followed by the read-only normal-firmware EEPROM backup; no bootloader write
+  precedes those gates.
