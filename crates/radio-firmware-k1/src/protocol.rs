@@ -1,0 +1,138 @@
+//! Bounded AFIK K1 serial-witness framing.
+
+#![allow(clippy::identity_op)]
+
+/// Encoded request body size: eight payload bytes plus two CRC bytes.
+pub const REQUEST_BODY_BYTES: usize = 10;
+/// Complete encoded response size for the fixed 40-byte hello payload.
+pub const RESPONSE_FRAME_BYTES: usize = 48;
+
+const COMMAND_HELLO_REQUEST: u16 = 0x0514;
+const COMMAND_HELLO_RESPONSE: u16 = 0x0515;
+const SESSION_WORD: u32 = 0x6457_396A;
+const RESPONSE_PAYLOAD_BYTES: usize = 40;
+const RESPONSE_DECLARED_BYTES: u16 = 36;
+const RESPONSE_TRAILER: u16 = 0xFFFF;
+const XOR_KEY: [u8; 16] = [
+    0x16, 0x6C, 0x14, 0xE6, 0x2E, 0x91, 0x0D, 0x40, 0x21, 0x35, 0xD5, 0x40, 0x13, 0x03, 0xE9, 0x80,
+];
+
+/// Printable identity returned by the first AFIK K1 application.
+pub const APPLICATION_VERSION: &[u8] = b"AFIK-K1-0.1";
+
+/// Decodes and validates one bounded normal-mode hello request body.
+pub fn is_valid_hello_request(encoded_body: &mut [u8; REQUEST_BODY_BYTES]) -> bool {
+    xor(encoded_body);
+    let payload = &encoded_body[..8];
+    let expected_crc = u16::from_le_bytes([encoded_body[8], encoded_body[9]]);
+    let command = u16::from_le_bytes([payload[0], payload[1]]);
+    let declared = u16::from_le_bytes([payload[2], payload[3]]);
+    let session = u32::from_le_bytes([payload[4], payload[5], payload[6], payload[7]]);
+    command == COMMAND_HELLO_REQUEST
+        && declared == 4
+        && session == SESSION_WORD
+        && crc16_xmodem(payload) == expected_crc
+}
+
+/// Encodes one normal-mode hello response into a caller-provided frame.
+///
+/// # Panics
+///
+/// This cannot panic because the fixed response payload length fits in `u16`.
+pub fn encode_hello_response(frame: &mut [u8; RESPONSE_FRAME_BYTES]) {
+    frame.fill(0);
+    frame[0..2].copy_from_slice(&[0xAB, 0xCD]);
+    let payload_length = u16::try_from(RESPONSE_PAYLOAD_BYTES).expect("bounded response");
+    frame[2..4].copy_from_slice(&payload_length.to_le_bytes());
+
+    let payload = &mut frame[4..4 + RESPONSE_PAYLOAD_BYTES];
+    payload[0..2].copy_from_slice(&COMMAND_HELLO_RESPONSE.to_le_bytes());
+    payload[2..4].copy_from_slice(&RESPONSE_DECLARED_BYTES.to_le_bytes());
+    payload[4..4 + APPLICATION_VERSION.len()].copy_from_slice(APPLICATION_VERSION);
+    frame[4 + RESPONSE_PAYLOAD_BYTES..6 + RESPONSE_PAYLOAD_BYTES]
+        .copy_from_slice(&RESPONSE_TRAILER.to_le_bytes());
+    xor(&mut frame[4..6 + RESPONSE_PAYLOAD_BYTES]);
+    frame[6 + RESPONSE_PAYLOAD_BYTES..].copy_from_slice(&[0xDC, 0xBA]);
+}
+
+fn crc16_xmodem(bytes: &[u8]) -> u16 {
+    let mut crc = 0_u16;
+    for byte in bytes {
+        crc ^= u16::from(*byte) << 8;
+        for _ in 0..8 {
+            crc = if crc & 0x8000 == 0 {
+                crc << 1
+            } else {
+                (crc << 1) ^ 0x1021
+            };
+        }
+    }
+    crc
+}
+
+fn xor(bytes: &mut [u8]) {
+    for (index, byte) in bytes.iter_mut().enumerate() {
+        *byte ^= XOR_KEY[index % XOR_KEY.len()];
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{encode_hello_response, is_valid_hello_request, APPLICATION_VERSION};
+
+    #[test]
+    fn hello_request_validation_accepts_only_the_fixed_session() {
+        let mut request = [0x14, 0x05, 0x04, 0x00, 0x6A, 0x39, 0x57, 0x64, 0x2C, 0xB7];
+        assert!(!is_valid_hello_request(&mut request));
+
+        // The request body is the encoded form used by the host. Construct it
+        // through the same fixed-key envelope so this test stays wire-exact.
+        let payload = [0x14, 0x05, 0x04, 0x00, 0x6A, 0x39, 0x57, 0x64];
+        let mut crc = 0_u16;
+        for byte in payload {
+            crc ^= u16::from(byte) << 8;
+            for _ in 0..8 {
+                crc = if crc & 0x8000 == 0 {
+                    crc << 1
+                } else {
+                    (crc << 1) ^ 0x1021
+                };
+            }
+        }
+        let mut encoded = [0_u8; 10];
+        encoded[..8].copy_from_slice(&payload);
+        encoded[8..].copy_from_slice(&crc.to_le_bytes());
+        let key = [
+            0x16, 0x6C, 0x14, 0xE6, 0x2E, 0x91, 0x0D, 0x40, 0x21, 0x35, 0xD5, 0x40, 0x13, 0x03,
+            0xE9, 0x80,
+        ];
+        for (index, byte) in encoded.iter_mut().enumerate() {
+            *byte ^= key[index];
+        }
+        assert!(is_valid_hello_request(&mut encoded));
+    }
+
+    #[test]
+    fn hello_response_has_the_observed_envelope_and_afik_identity() {
+        let mut frame = [0_u8; 48];
+        encode_hello_response(&mut frame);
+        assert_eq!(&frame[..2], &[0xAB, 0xCD]);
+        assert_eq!(&frame[2..4], &[40, 0]);
+        assert_eq!(&frame[46..], &[0xDC, 0xBA]);
+
+        let key = [
+            0x16, 0x6C, 0x14, 0xE6, 0x2E, 0x91, 0x0D, 0x40, 0x21, 0x35, 0xD5, 0x40, 0x13, 0x03,
+            0xE9, 0x80,
+        ];
+        for (index, byte) in frame[4..46].iter_mut().enumerate() {
+            *byte ^= key[index % key.len()];
+        }
+        assert_eq!(&frame[4..6], &[0x15, 0x05]);
+        assert_eq!(&frame[6..8], &[36, 0]);
+        assert_eq!(
+            &frame[8..8 + APPLICATION_VERSION.len()],
+            APPLICATION_VERSION
+        );
+        assert_eq!(&frame[48 - 4..48 - 2], &[0xFF, 0xFF]);
+    }
+}

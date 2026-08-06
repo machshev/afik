@@ -798,31 +798,28 @@
 - **Objective:** establish one harmless, independently observable indication
   that an AFIK K1 image reached Reset on the exact unit before authorizing an
   AFIK application write.
-- **Scope:** identify the exact unit's fitted MCU/package and board connection;
-  establish whether the native USB peripheral is routed to the host or whether
-  the documented display path is the viable witness; collect the required
-  primary register/pin facts; independently implement the smallest bounded
-  witness; and verify it on the exact unit while retaining the stock recovery
-  image and backup.
+- **Scope:** use the confirmed external CH340/UART programming path; collect
+  the primary USART1, pin, clock, and register facts; independently implement
+  the smallest bounded serial witness; and verify it on the exact unit while
+  retaining the stock recovery image and backup. Native USB is outside this
+  witness path.
 - **Dependencies:** `K1EVID-013`, `K1HIL-015`, `K1BOOT-016`, the exact unit,
-  and either a direct native-USB connection or a safe display observation
-  setup.
-- **Assumptions:** the Puya USB capability and the pinned board source are
-  evidence inputs, not proof that the exact unit routes USB to the current
-  host; the existing CH340 serial adapter proves only the observed bootloader
-  path; and a witness must not require RF, TX, EEPROM writes, or bootloader
-  replacement.
-- **Exclusions:** flashing the reset-only image before the witness is proven,
-  guessing peripheral registers or board routing, importing Armel driver code,
-  USB identity claims from the CH340 adapter, RF operation, and any general
-  radio application implementation.
+  and the retained CH340/UART path.
+- **Assumptions:** the pinned board source and exact-unit normal-mode backup
+  establish the intended CH340/UART path; source register facts are used only
+  for an independent AFIK implementation; and a witness must not require RF,
+  TX, EEPROM writes, or bootloader replacement.
+- **Exclusions:** flashing before the serial witness image and guarded write
+  path are verified, guessing peripheral registers, importing Armel driver
+  code, native-USB identity claims, RF operation, and any general radio
+  application implementation.
 - **Tests required:** sourced register/pin facts, deterministic host-side
   witness framing or rendering checks, exact-unit observation, immediate stock
   recovery, and complete workspace/build hygiene.
-- **Acceptance criteria:** the witness is independently observable on the
-  exact K1, has no TX or calibration side effect, and is followed by a
-  documented recovery check. The guarded K1 AFIK application-flash workflow
-  may begin only after this task is complete.
-- **Current gate:** the host currently sees only the external CH340 serial
-  adapter in K1 bootloader mode; native K1 USB or a physical display witness
-  has not yet been observed.
+- **Acceptance criteria:** the serial witness is independently observable on
+  the exact K1 through the CH340 path, has no TX or calibration side effect,
+  and is followed by a documented recovery check. The guarded K1 AFIK
+  application-flash workflow may begin only after this task is complete.
+- **Current gate:** source-backed serial witness image and host probe are
+  implemented and locally verified; the image remains unflashed and the
+  exact-unit response is not yet observed.

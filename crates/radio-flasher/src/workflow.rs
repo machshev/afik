@@ -336,6 +336,19 @@ pub fn backup_eeprom<T: Read + Write>(
     Ok((info, backup))
 }
 
+/// Sends the observed read-only normal-firmware hello and returns its identity.
+///
+/// This is intentionally separate from [`backup_eeprom`]: it performs one
+/// hello exchange and never requests EEPROM/configuration data. It is the
+/// host-side witness for an AFIK application running over the K1 serial path.
+pub fn probe_normal_firmware<T: Read + Write>(
+    transport: &mut T,
+) -> Result<NormalFirmwareInfo, FlashError> {
+    let hello = hello_request();
+    send_packet(transport, &hello)?;
+    parse_hello_response(&receive_packet(transport)?)
+}
+
 /// Waits for one exact, printable version-2 bootloader beacon.
 pub fn probe_bootloader_v2<T: Read>(transport: &mut T) -> Result<BootloaderInfo, FlashError> {
     parse_bootloader_beacon(&receive_packet(transport)?)
@@ -656,9 +669,9 @@ mod tests {
     };
 
     use super::{
-        backup_eeprom, detect_bootloader, flash_application, probe_bootloader_v2, BootloaderFamily,
-        FirmwareVersion, FlashError, FlashPrerequisites, FlashPurpose,
-        QUALIFIED_TARGET_CONFIRMATION, RECOVERY_REHEARSED_CONFIRMATION,
+        backup_eeprom, detect_bootloader, flash_application, probe_bootloader_v2,
+        probe_normal_firmware, BootloaderFamily, FirmwareVersion, FlashError, FlashPrerequisites,
+        FlashPurpose, QUALIFIED_TARGET_CONFIRMATION, RECOVERY_REHEARSED_CONFIRMATION,
     };
 
     const TEST_TRANSACTION_ID: u32 = 0xA55A_1234;
@@ -934,6 +947,23 @@ mod tests {
         assert_eq!(info.version(), "k5_2.01.23");
         assert_eq!(backup.bytes(), expected);
         assert_eq!(decode_requests(&transport.writes).len(), 65);
+    }
+
+    #[test]
+    fn normal_probe_is_one_read_only_hello_exchange() {
+        let mut hello = vec![0_u8; 40];
+        hello[0..4].copy_from_slice(&[0x15, 0x05, 0x24, 0x00]);
+        hello[4..16].copy_from_slice(b"AFIK-K1-0.1\0");
+        let mut transport = ScriptedTransport::new(encode_response(&hello), 1);
+
+        let info = probe_normal_firmware(&mut transport).unwrap();
+
+        assert_eq!(info.version(), "AFIK-K1-0.1");
+        let requests = decode_requests(&transport.writes);
+        assert_eq!(
+            requests,
+            vec![vec![0x14, 0x05, 0x04, 0x00, 0x6A, 0x39, 0x57, 0x64]]
+        );
     }
 
     fn decode_requests(frames: &[u8]) -> Vec<Vec<u8>> {

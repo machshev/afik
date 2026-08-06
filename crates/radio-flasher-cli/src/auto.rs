@@ -6,8 +6,8 @@ use std::{
 };
 
 use radio_flasher::{
-    backup_eeprom, crc32, detect_bootloader, flash_application, ApplicationImage, EepromBackup,
-    FlashPrerequisites, FlashPurpose,
+    backup_eeprom, crc32, detect_bootloader, flash_application, probe_normal_firmware,
+    ApplicationImage, EepromBackup, FlashPrerequisites, FlashPurpose,
 };
 use radio_programmer_serial::{discover_usb_serial_devices, LinuxSerialTransport};
 
@@ -26,6 +26,7 @@ pub const HELP: &str = "AFIK K1/K5 auto-detecting recovery flasher\n\
 \n\
 Usage:\n\
   afik-flasher [--device PATH|auto] identify\n\
+  afik-flasher [--device PATH|auto] probe-normal\n\
   afik-flasher [--device PATH|auto] backup-eeprom OUTPUT [--force]\n\
   afik-flasher [--device PATH|auto] flash-recovery IMAGE --backup EEPROM \\\n    --confirm-target TARGET --confirm-image-crc32 CRC32 [--version VERSION]\n\
   afik-flasher --help\n\
@@ -36,6 +37,8 @@ candidate, then classifies the bootloader protocol: K5 V1 2.* or the pinned\n\
 K1 7.03.* family. Zero or multiple candidates fail closed.\n\
 Only recovery images are exposed here; AFIK application flashing remains\n\
 behind the K5-specific, separately confirmed workflow.\n\
+The read-only probe-normal command sends one normal-mode hello and is the\n\
+serial witness command for an AFIK application.\n\
 Serial is fixed at 38400 8-N-1.\n";
 
 /// Runs one generic flasher invocation against supplied output streams.
@@ -73,6 +76,7 @@ enum DeviceSelector {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Command {
     Identify,
+    ProbeNormal,
     Backup { output: PathBuf, force: bool },
     Flash(FlashArguments),
 }
@@ -122,7 +126,7 @@ fn parse(arguments: &[String]) -> Result<Parsed, String> {
         (DeviceSelector::Auto, 0)
     };
     let command = arguments.get(command_index).ok_or_else(|| {
-        "a command is required: identify, backup-eeprom, or flash-recovery".to_owned()
+        "a command is required: identify, probe-normal, backup-eeprom, or flash-recovery".to_owned()
     })?;
     let tail = &arguments[command_index + 1..];
     let command = match command.as_str() {
@@ -131,6 +135,12 @@ fn parse(arguments: &[String]) -> Result<Parsed, String> {
                 return Err("identify does not accept arguments".into());
             }
             Command::Identify
+        }
+        "probe-normal" => {
+            if !tail.is_empty() {
+                return Err("probe-normal does not accept arguments".into());
+            }
+            Command::ProbeNormal
         }
         "backup-eeprom" => parse_backup(tail)?,
         "flash-recovery" => Command::Flash(parse_flash(tail)?),
@@ -208,6 +218,7 @@ fn execute<W: Write>(parsed: Parsed, stdout: &mut W) -> Result<(), CliError> {
     let device = resolve_device(&device)?;
     match command {
         Command::Identify => identify(&device, stdout),
+        Command::ProbeNormal => probe_normal(&device, stdout),
         Command::Backup { output, force } => backup(&device, &output, force, stdout),
         Command::Flash(arguments) => flash(&device, &arguments, stdout),
     }
@@ -248,6 +259,15 @@ fn identify<W: Write>(device: &Path, stdout: &mut W) -> Result<(), CliError> {
     writeln!(stdout, "protocol_family={}", family.label()).map_err(CliError::operation)?;
     writeln!(stdout, "bootloader={}", family.info().version()).map_err(CliError::operation)?;
     writeln!(stdout, "hardware_identity=not_proven_by_beacon").map_err(CliError::operation)
+}
+
+fn probe_normal<W: Write>(device: &Path, stdout: &mut W) -> Result<(), CliError> {
+    let mut serial = open_serial(device)?;
+    let info = probe_normal_firmware(&mut serial).map_err(CliError::operation)?;
+    writeln!(stdout, "device={}", device.display()).map_err(CliError::operation)?;
+    writeln!(stdout, "baud={K5_BAUD}").map_err(CliError::operation)?;
+    writeln!(stdout, "protocol=normal-firmware-hello").map_err(CliError::operation)?;
+    writeln!(stdout, "firmware={}", info.version()).map_err(CliError::operation)
 }
 
 fn backup<W: Write>(

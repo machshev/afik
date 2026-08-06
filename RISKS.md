@@ -236,24 +236,23 @@
   the complete post-flash normal-mode backup. No K1 AFIK image or RF operation
   is permitted until a separate target and stronger observation contract exist.
 
-## RISK-019 — K1 AFIK reset has no physical boot witness yet
+## RISK-019 — K1 AFIK image has no physical boot witness yet
 
 - **State:** open
 - **Impact:** a correctly linked K1 ELF or raw image can still fail to execute
   after the bootloader handoff, and a successful page acknowledgement cannot
   distinguish application boot from a stalled or incompatible image.
-- **Mitigation:** `K1BOOT-016` is limited to a reset-only, RAM-witness image and
-  static/vector checks. Do not flash it. First establish a harmless visible or
-  USB boot witness on the exact unit, then add a guarded K1 AFIK write path and
-  immediately retain the proven Armel recovery route.
+- **Mitigation:** the first image now has a bounded USART1 hello witness over
+  the intended CH340 path and a read-only host `probe-normal` command. Keep
+  the image unflashed until the guarded K1 write path is verified, then require
+  the exact `AFIK-K1-0.1` response and immediately retain the proven Armel
+  recovery route.
 
-## RISK-020 — Native K1 USB routing is unobserved
+## RISK-020 — Native K1 USB routing is unobserved but not required
 
 - **State:** open
-- **Impact:** the PY32F071 USB capability may not be connected to the exposed
-  cable or may use a board/boot mode not visible through the current host
-  adapter. Treating the CH340 serial adapter as a native USB witness would
-  produce a false application-boot claim.
-- **Mitigation:** `K1WIT-017` requires direct native-USB enumeration or an
-  independently sourced and observed display path on the exact unit. Keep the
-  RAM-only image unflashed and do not add guessed USB or GPIO register code.
+- **Impact:** the PY32F071 USB capability is not a usable AFIK application
+  witness on the current unit. Treating the CH340 enumeration as native USB
+  would produce a false USB claim.
+- **Mitigation:** `K1WIT-017` uses the independently evidenced USART1/CH340
+  path instead. AFIK adds no USB implementation or native-USB identity claim.

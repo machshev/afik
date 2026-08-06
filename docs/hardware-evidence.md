@@ -177,6 +177,26 @@ order are maintained in `docs/k1-bring-up.md`.
   candidate; its unit-specific backup bytes and hashes remain outside tracked
   repository content.
 
+### EVID-K1-024 — K1 application serial path
+
+- **Source:** pinned `armel/uv-k1-k5v3-firmware-custom` commit
+  `fe9c4e9432694b50aea651084a043aae0b58673d`.
+- **Source locations:** `App/driver/uart.c` configures USART1 on PA9 TX and
+  PA10 RX with alternate function 1 at 38,400 baud; `Core/Src/main.c` records
+  that the bootloader provides a 48 MHz system clock; the pinned PY32F071
+  device header defines the USART1, GPIOA, and RCC register map and the USART
+  status/control bits used by that configuration.
+- **Exact-unit observation:** the same unit answered the fixed-session normal
+  mode hello and supplied a complete 8 KiB backup through the external CH340
+  adapter, as recorded by `EVID-K1-018` and `EVID-K1-021`.
+- **AFIK use:** AFIK independently implements a bounded polling USART1 hello
+  witness over this serial path. It does not copy, link, or translate the
+  source driver. The witness has not yet been flashed or physically observed.
+- **Confidence:** high for the existing unit's serial transport and normal
+  protocol path; medium for the exact MCU/package register mapping until the
+  physical marking is recorded. Native USB routing is not required by this
+  witness.
+
 ### Puya PY32F071-E product documentation
 
 - **Publisher:** Puya Semiconductor (Shanghai) Co., Ltd.

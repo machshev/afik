@@ -245,9 +245,9 @@ visible or USB witness is independently evidenced on the exact unit.
 
 The official [Puya PY32F071-E product page](https://www.puyasemi.com/en/py32f071/3415.html)
 and [PY32F071-E datasheet v1.4](https://www.puyasemi.com/download_path/%E6%95%B0%E6%8D%AE%E6%89%8B%E5%86%8C/MCU/PY32F071-E_Datasheet_V1.4.pdf)
-establish a PY32F071 USB 2.0 full-speed peripheral. They do not establish the
-exact K1 package, board routing, connector, descriptors, or a host-visible
-native USB identity.
+establish a PY32F071 USB 2.0 full-speed peripheral, but USB is not the K1
+programming interface used here. The exact unit is connected through an
+external CH340 serial adapter.
 
 Read-only host observation on 2026-08-06 found:
 
@@ -255,12 +255,42 @@ Read-only host observation on 2026-08-06 found:
 - USB device `1a86:7523`, QinHeng CH340 serial converter;
 - no native K1 USB device or USB descriptor for the radio.
 
-The AFIK generic identify probe still classifies the external serial path as
-K1 bootloader `7.03.01`, with hardware identity explicitly unproven by the
-beacon. The CH340 is therefore evidence only for the existing bootloader
-transport, not an AFIK USB boot witness. The next safe action is to connect the
-radio's native USB path, if present, or establish the separately evidenced
-display path and exact MCU/package before implementing a physical witness.
+The AFIK generic identify probe classifies the external serial path as K1
+bootloader `7.03.01`, with hardware identity explicitly unproven by the
+beacon. The CH340 is the intended USB-to-UART transport; it is not a native
+USB identity and is not treated as one.
+
+## K1 serial application witness
+
+The pinned exact-board evidence checkout is
+`armel/uv-k1-k5v3-firmware-custom` commit
+`fe9c4e9432694b50aea651084a043aae0b58673d`. Its UART source records USART1,
+PA9 TX, PA10 RX, alternate function 1, and 38,400 baud in
+`App/driver/uart.c`; its startup source records that the bootloader provides
+the 48 MHz system clock in `Core/Src/main.c`. The device header supplies the
+USART1, GPIOA, RCC register bases and status/control bit definitions. These
+files are evidence only; AFIK does not copy or link their driver.
+
+AFIK independently implements the first bounded K1 application slice:
+
+- Reset stores the development RAM witness `0x4B31_B007`.
+- USART1 is configured for 38,400 8-N-1 on the evidenced PA9/PA10 AF1 path.
+- The application accepts only the fixed-session `0x0514` normal-mode hello,
+  validates the existing CRC/XOR envelope, and returns a `0x0515` response
+  identifying itself as `AFIK-K1-0.1`.
+- No EEPROM, RF, TX, display, keypad, USB, external flash, or reset operation
+  is implemented.
+
+The host-side read-only witness command is:
+
+```text
+nix develop path:. -c cargo run --quiet --package radio-flasher-cli \
+  --bin afik-flasher -- --device /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0 probe-normal
+```
+
+It must report `protocol=normal-firmware-hello` and
+`firmware=AFIK-K1-0.1`. The image is built and statically checked, but has not
+been flashed; a physical response is therefore not yet claimed.
 
 ## Pinned CHIRP protocol evidence
 

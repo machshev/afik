@@ -46,14 +46,16 @@ asserts the evidenced flash/RAM bounds, and rejects `.data` or `.bss` until a
 later evidenced startup step deliberately implements their initialisation.
 
 `K1BOOT-016` adds `radio-firmware-k1` as a separate standalone embedded target
-leaf. It has no crate dependencies and uses only the pinned K1/PY32F071
+leaf. It has no host crate dependencies and uses only the pinned K1/PY32F071
 application origin (`0x08002800`), 118 KiB application bound, Cortex-M0+
 Thumb-compatible target, and 16 KiB SRAM facts. Its Reset handler writes one
-development-only RAM witness and then stops; it does not claim a clock,
-bootloader handoff, USB, display, keypad, radio, or TX behavior. The K1 build
-script supplies its own linker script and small ELF page size so program
-segments cannot masquerade as bytes below the application origin. The raw
-package is a bounded application payload, not a physical flashing permission.
+development-only RAM witness, configures the evidenced USART1 serial path, and
+answers one bounded normal-mode hello with the AFIK application identity. The
+image has no USB, display, keypad, radio, TX, EEPROM, or reset behavior. The
+K1 build script supplies its own linker script and small ELF page size so
+program segments cannot masquerade as bytes below the application origin. The
+raw package is a bounded application payload, not a physical flashing
+permission.
 
 Work Package 4 keeps the canonical configuration-image codec in the embedded
 `radio-storage` crate. It reads borrowed bytes, writes caller-provided buffers,

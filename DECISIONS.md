@@ -370,11 +370,13 @@ meaning.
 - **Date:** 2026-08-06
 - **Status:** accepted for `K1WIT-017`
 - Puya's PY32F071 documentation establishes that the MCU family contains a
-  USB 2.0 full-speed peripheral, but this does not establish the exact K1
-  package, board routing, connector, descriptors, or host-visible USB identity.
-- The observed `1a86:7523` CH340 is an external serial adapter on the pinned
-  bootloader path. It is not evidence that an AFIK image can expose USB, and
-  USB code must not be built around that adapter.
-- AFIK may implement a USB or display witness only after the exact board path
-  and primary register facts are recorded. Until then, the reset-only image is
-  not eligible for physical flashing.
+  USB 2.0 full-speed peripheral, but the exact K1 does not expose native USB
+  for this workflow. The observed `1a86:7523` CH340 is the intended external
+  USB-to-UART adapter on the bootloader and normal-mode serial path.
+- The pinned exact-board source records USART1 on PA9/PA10 AF1 at 38,400 baud
+  and a bootloader-provided 48 MHz clock. AFIK may use those facts in an
+  independent bounded serial witness; it must not copy or link the source
+  driver.
+- A CH340 enumeration alone is not an application witness. The AFIK host must
+  receive the exact `AFIK-K1-0.1` normal-mode hello response over the same
+  serial path before physical application flashing is considered proven.
