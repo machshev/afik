@@ -1,0 +1,15 @@
+[package]
+name = "radio-bk4819"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Evidence-bounded BK4819 command driver and TX authority boundary"
+
+[dependencies]
+radio-domain = { path = "../radio-domain" }
+radio-tx-policy = { path = "../radio-tx-policy" }
+
+[lints]
+workspace = true
