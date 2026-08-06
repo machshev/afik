@@ -2,8 +2,8 @@
 
 ## Current work package
 
-**Work Package 15 (`K1HIL-015`) is complete: first AFIK K1 recovery-flasher
-hardware run.**
+**Work Package 16 (`K1BOOT-016`) is complete: first independently implemented
+AFIK K1 reset image.**
 
 K1 has priority because an exact unit running Armel firmware is available for
 inspection. `K1EVID-013` supplies the K1 evidence baseline and same-unit
@@ -13,6 +13,8 @@ incrementally translate its application or driver implementation.
 
 `FLASH-012` is deferred with its software milestone intact and physical gates
 incomplete. It can resume unchanged when the exact K5 V1 hardware is available.
+K1 physical AFIK flashing remains blocked until a harmless visible or USB boot
+witness is independently evidenced.
 
 ## State
 
@@ -34,6 +36,8 @@ incomplete. It can resume unchanged when the exact K5 V1 hardware is available.
 - Work Package 14 K1/K5 auto-detected recovery flasher: complete.
 - Work Package 15 first AFIK K1 recovery-flasher hardware run: complete; this
   was a stock recovery-image exercise, not an AFIK application flash.
+- Work Package 16 K1 reset-only application image and static/raw-image gates:
+  complete; no physical K1 write or boot claim.
 - `UI-005` logical key edges, bounded semantic views, exact boot-only entry,
   release gate, draft editor, and checked persistence action: complete.
 - `UI-005` separate persisted/active policy simulation, deterministic timed
@@ -89,9 +93,9 @@ incomplete. It can resume unchanged when the exact K5 V1 hardware is available.
 - `FLASH-012` exact-unit inspection, physical backup, recovery rehearsal,
   page-acknowledged AFIK write, and independent application-boot observation:
   pending; no serial device is visible here.
-- Current smallest actionable task: define and implement the independently
-  implemented K1 reset/boot-witness package under `K1EVID-013`; K1 AFIK
-  application flashing remains out of scope until that contract exists.
+- Current smallest actionable task: define the independently evidenced K1
+  physical boot witness, then add the guarded K1 AFIK application-flash
+  workflow; the reset-only image itself must not be flashed.
 
 ## Work Package 14 implementation milestone
 
@@ -171,6 +175,44 @@ K1HIL-015 completion verification on 2026-08-06:
 - `nix develop path:. -c cargo fmt --all --check` — passed.
 - `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
   — passed.
+- `nix develop path:. -c cargo test --workspace` — passed; all workspace unit,
+  integration, and doc tests passed.
+- `git diff --check` — passed.
+
+## Work Package 16 K1 reset image milestone
+
+- Added standalone crate `radio-firmware-k1` with no host or hardware-driver
+  dependencies. Its linker contract is `0x08002800..0x08020000` application
+  flash and `0x20000000..0x20004000` SRAM, with initial SP `0x20004000`.
+- The two-word application vector table is at `0x08002800`; the verified Reset
+  vector is `0x08002821`. Reset writes only the development RAM witness
+  `0x4B31_B007` at `0x20000000` and then spins.
+- The generated raw image is 616 bytes with SHA-256
+  `877e2018ef4dd0e985dd16447d7120f61d60ff77259b149b3ad0ab6d37b95021`.
+- No clock, USB, display, keypad, GPIO, external flash, BK4819, audio, RF, TX,
+  reset, or bootloader behavior is implemented. This image has not been
+  flashed and does not establish physical K1 application boot.
+
+K1BOOT-016 verification on 2026-08-06:
+
+- `nix develop path:. -c tool/build-k1.sh` — passed.
+- `nix develop path:. -c tool/verify-k1-image.sh` — passed; origin
+  `0x08002800`, initial SP `0x20004000`, Reset `0x08002821`, image end
+  `0x08002a68`.
+- `nix develop path:. -c tool/package-k1-image.sh --force` — passed; 616-byte
+  raw image generated with the SHA-256 recorded above.
+- `nix develop path:. -c tool/test-k1-image.sh` — passed; positive package
+  comparison plus truncated, oversized, and non-Thumb negative fixtures.
+- `nix develop path:. -c bash -c 'set -euo pipefail; export
+  RUSTC_BOOTSTRAP=1; export __CARGO_TESTS_ONLY_SRC_ROOT="$RUST_SRC_PATH";
+  export CARGO_TARGET_THUMBV6M_NONE_EABI_LINKER="$DP32_LLD"; export
+  RUSTFLAGS="-C link-arg=-Tcrates/radio-firmware-k1/link.x -C
+  link-arg=-z -C link-arg=max-page-size=4 -C panic=abort"; cargo clippy
+  -Z build-std=core --package radio-firmware-k1 --features firmware --bin
+  radio-firmware-k1 --target thumbv6m-none-eabi -- -D warnings'` — passed.
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c cargo clippy --workspace --all-targets -- -D
+  warnings` — passed.
 - `nix develop path:. -c cargo test --workspace` — passed; all workspace unit,
   integration, and doc tests passed.
 - `git diff --check` — passed.

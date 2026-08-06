@@ -40,3 +40,11 @@ jobs:
           nix develop path:. -c tool/test-k5-v1-package.sh
       - name: Prove reset path in Renode
         run: nix develop path:. -c tool/test-renode.sh
+      - name: Build pinned K1 reset image
+        run: nix develop path:. -c tool/build-k1.sh
+      - name: Verify K1 ELF contract
+        run: nix develop path:. -c tool/verify-k1-image.sh
+      - name: Package and verify K1 raw image
+        run: |
+          nix develop path:. -c tool/package-k1-image.sh
+          nix develop path:. -c tool/test-k1-image.sh

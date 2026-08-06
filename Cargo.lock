@@ -42,6 +42,10 @@ name = "radio-firmware-dp32g030"
 version = "0.1.0"
 
 [[package]]
+name = "radio-firmware-k1"
+version = "0.1.0"
+
+[[package]]
 name = "radio-flasher"
 version = "0.1.0"
 

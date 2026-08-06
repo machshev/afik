@@ -210,9 +210,36 @@ identity reported by the exact unit.
   flash end `0x08020000`.
 
 This is a source- and vector-valid recovery candidate. The same-unit recovery
-rehearsal is complete; the next destructive action remains blocked until a
-separate target/image contract exists. The two matching local copies remain
-accepted for the current evidence package.
+rehearsal is complete and the bounded K1 target/image contract now exists in
+`K1BOOT-016`; physical AFIK flashing remains blocked until a separate harmless
+boot witness exists. The two matching local copies remain accepted for the
+current evidence package.
+
+## K1BOOT-016 reset image
+
+The first AFIK K1 target is an independently implemented reset-only image. It
+is deliberately smaller than a radio application and does not copy or link
+the pinned Armel implementation.
+
+- Crate: `radio-firmware-k1`, standalone `no_std`, heap-free, and dependency-free.
+- CPU target: Rust `thumbv6m-none-eabi`, compatible with the evidenced
+  Cortex-M0+ Thumb instruction set.
+- Application origin: `0x08002800`; exclusive application end:
+  `0x08020000` (118 KiB).
+- SRAM: `0x20000000..0x20004000`; initial stack pointer: `0x20004000`.
+- Reset vector: placed in the application vector table at `0x08002800`.
+- Reset behavior: stores development witness `0x4B31_B007` at RAM address
+  `0x20000000`, then spins.
+- Generated raw image: 616 bytes, SHA-256
+  `877e2018ef4dd0e985dd16447d7120f61d60ff77259b149b3ad0ab6d37b95021`.
+
+The linker, ELF verifier, raw-image verifier, and negative package checks are
+implemented in `tool/build-k1.sh`, `tool/verify-k1-image.sh`,
+`tool/verify-k1-raw-image.sh`, `tool/package-k1-image.sh`, and
+`tool/test-k1-image.sh`. The RAM value is not a physical boot witness: no
+clock, USB, display, keypad, GPIO, external flash, BK4819, audio, RF, TX, or
+reset behavior is implemented. Do not flash this image until a harmless
+visible or USB witness is independently evidenced on the exact unit.
 
 ## Pinned CHIRP protocol evidence
 
@@ -238,10 +265,10 @@ accepted for the current evidence package.
 4. Enter and leave DFU without writing; record descriptors and the procedure.
 5. The unchanged known-good Armel recovery rehearsal and the first AFIK-hosted
    recovery write are complete; the next destructive action remains blocked
-   until a separate K1 AFIK target/image contract exists.
-6. Only a later work package may build a minimal AFIK target. Its first physical
-   image must provide a harmless visible or USB boot witness, contain no RF
-   operation, and be followed immediately by proven Armel recovery.
+   until a harmless physical K1 boot witness exists.
+6. `K1BOOT-016` builds the minimal AFIK target. Its first physical image must
+   provide a harmless visible or USB boot witness, contain no RF operation,
+   and be followed immediately by proven Armel recovery.
 
 The serial device was visible for the normal-mode verification above. Passive
 bootloader observation, repeatable read-only backup, and same-unit recovery

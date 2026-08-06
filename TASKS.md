@@ -707,7 +707,7 @@
 
 ## K1HIL-015 — First AFIK K1 recovery-flasher hardware run
 
-- **Status:** active (2026-08-06)
+- **Status:** complete (2026-08-06)
 - **Objective:** exercise the independently implemented AFIK K1 recovery
   flasher against the exact attached unit using the unchanged, already
   recovered Armel `F4HWN v5.5.0` image, and verify the post-flash normal-mode
@@ -748,7 +748,7 @@
 
 ## K1BOOT-016 — Minimal K1 reset image and boot-witness boundary
 
-- **Status:** active (2026-08-06)
+- **Status:** complete (2026-08-06)
 - **Objective:** create the smallest independently implemented AFIK K1
   application image that satisfies the pinned PY32F071 reset, memory, and raw
   application-origin contract.
@@ -781,5 +781,13 @@
   peripheral side effects, and all verification commands are recorded before
   committing the milestone. Physical K1 flashing remains blocked pending a
   separate visible or USB boot-witness contract.
+- **Completion notes:** added `radio-firmware-k1`, its absolute-origin linker,
+  pinned build script, ELF/raw verifiers, raw package, CI gates, and negative
+  package fixtures. The 616-byte image has initial SP `0x20004000`, Reset
+  `0x08002821`, image end `0x08002a68`, and SHA-256
+  `877e2018ef4dd0e985dd16447d7120f61d60ff77259b149b3ad0ab6d37b95021`.
+  Verification passed in the pinned environment, including target Clippy and
+  the full workspace suite. The RAM witness remains development-only; no
+  physical image write or boot claim is permitted.
 - **Next task:** define the independently evidenced K1 physical boot witness
   and only then add the guarded K1 AFIK application-flash workflow.
