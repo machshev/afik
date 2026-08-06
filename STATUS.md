@@ -117,11 +117,27 @@ features remain outside this bounded slice.
 - Work Package 22 keypad/UI witness definition: complete; the pinned matrix,
   electrical idle/scan levels, one-key decode, explicit-time debounce, and
   display-only result were bounded before implementation.
-- Current smallest actionable task: build a separate flashable Embassy witness
-  with a full Cortex-M interrupt/startup contract, guarded inherited-clock
-  initialization, TIM15, async USART1/DMA, cooperative SPI1 display rendering,
-  and the evidenced main keypad. Retain the polling image as recovery evidence;
-  exclude side keys, persistence, RF, and TX.
+- Current smallest actionable task: define and activate Work Package 24 with a
+  stable task ID, bounded objective, explicit exclusions, and evidence gates.
+  No implementation package is active after `K1ASYNC-023`; side keys,
+  persistence/UI policy, RF receive, and other follow-up directions remain
+  separate choices rather than an implied continuation.
+
+## Work Package 23 handoff correction
+
+- Removed the stale next-task description for the already completed runnable
+  Embassy witness and restored the displaced runtime-composition result in
+  `TASKS.md`.
+- `nix flake check path:. --no-build` — passed; `aarch64-linux` remains an
+  evaluation-skipped incompatible system.
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
+  — passed.
+- `nix develop path:. -c cargo test --workspace` — passed; all workspace unit,
+  integration, and doc-test binaries passed.
+- `git diff --check` — passed.
+- No implementation, physical image, hardware state, or flash operation
+  changed.
 
 ## Work Package 23 dependency and executor milestone
 

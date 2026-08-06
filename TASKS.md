@@ -1163,6 +1163,12 @@
   The polling recovery image remains the only runnable K1 application until a
   separate clock/interrupt/DMA adoption package is defined and guarded.
 - **Runtime-composition result:** optional `py32f071-runtime-composition`
+  type-checks one owned bundle containing the heap-free thread executor,
+  USART1/PA9/PA10 with DMA1 channels 1/2, and SPI1/PA5/PA7. Construction takes
+  explicit HAL tokens and remains absent from the firmware binary. No HAL init,
+  clock, TIM15, task, A0/CS, keypad, interrupt execution, DMA transfer, or image
+  behavior was adopted. The next boundary is an explicit bootloader-clock
+  handoff contract before any runnable async entry point.
 - **Clock-publication result:** optional `py32f071-clock-publication` accepts
   only the unforgeable result of the fail-closed exact-unit validator and then
   publishes the 48 MHz SYS/HCLK/PCLK/timer tuple to the HAL software table.
@@ -1203,12 +1209,6 @@
   identified on the second display line. This closes the bounded async runtime
   foundation and keypad/display migration; RF, TX, side keys, persistence,
   and read-back remain outside scope.
-  type-checks one owned bundle containing the heap-free thread executor,
-  USART1/PA9/PA10 with DMA1 channels 1/2, and SPI1/PA5/PA7. Construction takes
-  explicit HAL tokens and remains absent from the firmware binary. No HAL init,
-  clock, TIM15, task, A0/CS, keypad, interrupt execution, DMA transfer, or image
-  behavior was adopted. The next boundary is an explicit bootloader-clock
-  handoff contract before any runnable async entry point.
 - **Clock-handoff step:** define a bounded local HAL entry which adopts only an
   explicitly validated inherited 48 MHz `SYSCLK`/`HCLK1`/`PCLK1`/`PCLK1_TIM`
   state. It must fail before publishing clocks when the observed RCC state does
