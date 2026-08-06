@@ -2,8 +2,8 @@
 
 ## Current work package
 
-**Work Package 19 (`K1DISP-019`) is active: implement a bounded K1 display-only
-boot witness while retaining the independently observed serial witness.**
+**Work Package 20 (`K1BL-020`) is active: add constant active-high PF8
+illumination to the physically verified K1 display witness.**
 
 K1 has priority because an exact unit running Armel firmware is available for
 inspection. `K1EVID-013` supplies the K1 evidence baseline and same-unit
@@ -45,9 +45,10 @@ features remain outside this bounded slice.
   image returned `AFIK-K1-0.1` after power-cycle.
 - Work Package 18 next K1 application slice: complete; selected the bounded
   display-only witness tracked by `K1DISP-019`.
-- Work Package 19 K1 display-only witness: implementation and static verification
-  complete; physical display and `AFIK-K1-0.2` observations pending explicit
-  confirmation and a user power-cycle.
+- Work Package 19 K1 display-only witness: complete; the fixed words were
+  physically visible under bright external light and `AFIK-K1-0.2` responded.
+- Work Package 20 constant K1 backlight: active; bounded PF8 implementation and
+  static verification pending.
 - `UI-005` logical key edges, bounded semantic views, exact boot-only entry,
   release gate, draft editor, and checked persistence action: complete.
 - `UI-005` separate persisted/active policy simulation, deterministic timed
@@ -105,10 +106,9 @@ features remain outside this bounded slice.
   pending; no serial device is visible here.
 - Work Package 18 selected and bounded the next application slice: a fixed
   display-only AFIK boot witness with the serial responder retained.
-- Current smallest actionable task: after explicit user confirmation, perform
-  a bounded backlight-versus-panel diagnosis from the exact unit's blank-screen
-  observation. Do not send another write until that observation is recorded and
-  a corrected evidence-backed slice is separately verified and confirmed.
+- Current smallest actionable task: implement and statically verify the bounded
+  PF8 active-high output for `K1BL-020`. No new physical write is authorized by
+  this task-activation milestone.
 
 ## Work Package 14 implementation milestone
 
@@ -357,6 +357,10 @@ Physical display attempt on 2026-08-06:
   and the illumination is a separate active-high PF8 backlight path. AFIK did
   not configure PF8, so the next non-writing observation must distinguish an
   unlit panel from missing LCD pixels before changing the target.
+- Follow-up physical observation under bright external light showed the fixed
+  words. This closes `K1DISP-019`: LCD controller setup, page/data transfer,
+  orientation, and rendering worked. The isolated missing surface is the
+  separately mapped PF8 backlight, now bounded under `K1BL-020`.
 
 ## Work Package 13 first evidence milestone
 

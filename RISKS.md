@@ -276,3 +276,16 @@
   not drive the independently mapped active-high PF8 backlight. Do not assume
   this explains all missing pixels; distinguish illumination from controller
   traffic before revising the image or claiming a root cause.
+- **Resolution:** bright external light revealed the expected words, so the LCD
+  witness itself is complete. The remaining unlit state is isolated to the
+  separately mapped PF8 backlight and is bounded under `K1BL-020`.
+
+## RISK-022 — Constant K1 backlight has no brightness or power policy
+
+- **State:** open
+- **Impact:** holding PF8 high provides no brightness adjustment, timeout, fade,
+  or battery-aware power management and is unsuitable as the final radio UI.
+- **Mitigation:** `K1BL-020` is a boot witness only. It uses the pinned
+  active-high PF8 mapping and deliberately excludes TIM7, DMA, settings, and
+  persistence. A later UI/power package must define bounded brightness and
+  shutdown behavior before treating the backlight as a production driver.

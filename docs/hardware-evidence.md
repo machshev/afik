@@ -269,6 +269,22 @@ order are maintained in `docs/k1-bring-up.md`.
   AFIK did not configure or drive it. Before another image, distinguish an
   unlit panel from absent pixels and separately bound any PF8 experiment.
 
+### EVID-K1-028 — Display pixels work and PF8 illumination is isolated
+
+- **Physical observation:** under bright external light, the user could see the
+  fixed AFIK words produced by the first display image. The panel was not blank;
+  its backlight was off.
+- **Conclusion:** high confidence on the exact unit for LCD initialization,
+  page/data transfer, visible orientation, and fixed rendering. This closes the
+  display-controller witness without inferring keypad or other UI hardware.
+- **Pinned backlight fact:** `App/driver/gpio.h` maps the backlight to PF8 and
+  implements on as GPIO set/high; `App/board.c` configures PF8 as an output.
+  The more complex existing brightness path uses TIM7 and DMA, which are not
+  needed or authorized for the first AFIK illumination witness.
+- **Permitted experiment:** `K1BL-020` may enable GPIOF, configure only PF8 as a
+  push-pull output, and hold it high. PWM, timer, DMA, fades, settings, storage,
+  RF, and TX remain excluded.
+
 ## Sources used by DP32-003
 
 ### DP32G030 reference manual v1.23

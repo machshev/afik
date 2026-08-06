@@ -853,7 +853,7 @@
 
 ## K1DISP-019 — K1 display-only boot witness
 
-- **Status:** active (2026-08-06)
+- **Status:** complete (2026-08-06)
 - **Objective:** extend the proven K1 serial-witness firmware with one bounded,
   independently implemented display witness while retaining serial recovery
   observability and every TX denial boundary.
@@ -901,3 +901,30 @@
   returned `AFIK-K1-0.2`, so the task remains active and no second write is
   authorized. The next observation must distinguish the separately controlled
   active-high PF8 backlight from LCD pixel generation.
+- **Completion notes:** under bright external light, the user observed the fixed
+  AFIK words on the panel. This establishes LCD initialization, page addressing,
+  orientation, contrast sufficient for passive viewing, and fixed rendering on
+  the exact unit. The separately controlled backlight remained off and is
+  tracked under `K1BL-020`; it is not a display-controller failure.
+
+## K1BL-020 — Constant K1 boot-witness backlight
+
+- **Status:** active (2026-08-06)
+- **Objective:** make the physically verified fixed K1 display witness readable
+  without external illumination using the smallest evidenced backlight action.
+- **Scope:** record PF8 as the pinned active-high backlight output; configure
+  GPIOF clock, PF8 push-pull output mode, and set PF8 high before the display
+  witness; retain the `AFIK-K1-0.2` serial responder and exact LCD image.
+- **Dependencies:** completed `K1DISP-019`, `EVID-K1-027`, retained recovery and
+  backup artifacts, and the pinned PF8 active-high board observation.
+- **Exclusions:** PWM, TIM7, DMA, fading, brightness levels, EEPROM/settings,
+  keypad/PTT, audio, storage, BK4819, RF/TX, USB, interrupts, or a general UI.
+- **Tests required:** pure register-plan assertions for only GPIOF clock/PF8
+  output/high operations; target Clippy/build/image gates; full workspace
+  checks; and one separately confirmed physical write followed by visible
+  illumination, fixed words, and serial identity observation.
+- **Acceptance criteria:** the target touches only the sourced GPIOF/PF8 surface
+  in addition to the already verified display/USART paths; no timer or DMA is
+  enabled; failure cannot grant RF/TX behavior; and success is claimed only if
+  the exact unit shows the already verified words with the backlight illuminated
+  while `probe-normal` still returns `AFIK-K1-0.2`.

@@ -415,3 +415,16 @@ meaning.
   storage, BK4819 access, RF receive, TX, USB, or a general application. A
   physical image write remains separately confirmation-gated after static
   verification and must be followed by both visible-screen and serial probes.
+
+## ADR-029 — First K1 illumination is constant GPIO, not PWM
+
+- **Date:** 2026-08-06
+- **Status:** accepted for `K1BL-020`
+- Bright-light observation proved the fixed LCD pixels while the separately
+  mapped backlight remained off. The next slice configures PF8 as the pinned
+  active-high push-pull output and holds it high for the boot witness.
+- AFIK does not reproduce the existing firmware's TIM7/DMA PWM, fades,
+  brightness settings, or persistence. Those are larger behaviors requiring
+  their own timing, power, UI, and durability contracts.
+- The constant output adds illumination only. It cannot access keypad/PTT,
+  audio, storage, BK4819, RF/TX, USB, interrupts, or EEPROM.
