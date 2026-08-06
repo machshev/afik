@@ -5,6 +5,7 @@ members = [
     "crates/radio-bk4819",
     "crates/radio-firmware-dp32g030",
     "crates/radio-channel-plan",
+    "crates/radio-channel-control",
     "crates/radio-storage",
     "crates/radio-tx-policy",
     "crates/radio-ui",

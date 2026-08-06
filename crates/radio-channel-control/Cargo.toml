@@ -1,0 +1,16 @@
+[package]
+name = "radio-channel-control"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Bounded channel activation and deterministic scanning state machine"
+
+[dependencies]
+radio-channel-plan = { path = "../radio-channel-plan" }
+radio-domain = { path = "../radio-domain" }
+radio-tx-policy = { path = "../radio-tx-policy" }
+
+[lints]
+workspace = true

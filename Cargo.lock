@@ -11,6 +11,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "radio-channel-control"
+version = "0.1.0"
+dependencies = [
+ "radio-channel-plan",
+ "radio-domain",
+ "radio-tx-policy",
+]
+
+[[package]]
 name = "radio-channel-plan"
 version = "0.1.0"
 dependencies = [
