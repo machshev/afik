@@ -356,4 +356,8 @@
   exposes an API.
 - **Observed:** Embassy executor 0.10.0 builds on pinned Rust 1.86. Exact F071
   metadata exists in `py32-metapac 0.5.0`, but `py32-hal 0.4.1` does not expose
-  it, so HAL peripheral support is blocked pending a reviewed extension.
+  it, so HAL peripheral support is blocked pending a reviewed extension. All
+  four F071 package features currently select the same incomplete generated
+  inventory: GPIOA, WWDG, AES_LPUART1, and DMA1_CH1 only. A feature-only HAL
+  extension fails because RCC is absent. Correct the source data upstream;
+  never fill the gap with F072 metadata or inferred register compatibility.

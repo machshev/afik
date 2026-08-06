@@ -1100,3 +1100,8 @@
   target Clippy on Rust 1.86. `py32-metapac 0.5.0` contains four F071 packages,
   but released `py32-hal` through 0.4.1 exposes none. The next step is a bounded
   reviewed HAL chip-surface extension; F072 substitution is not allowed.
+- **Metadata result:** exposing the four exact F071 feature names is
+  insufficient. All select the same generated metadata stub containing only
+  GPIOA, WWDG, AES_LPUART1, and DMA1_CH1; `py32-hal` fails its mandatory RCC
+  lookup before library compilation. The next step is a source-backed upstream
+  `py32-data`/`py32-metapac` inventory correction, not a guessed AFIK mapping.

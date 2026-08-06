@@ -1165,3 +1165,15 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   thread platform. `py32-metapac 0.5.0` contains four F071 chip features, while
   `py32-hal` releases 0.3.0, 0.4.0, and 0.4.1 expose no F071 feature. This is a
   software-support gap, not permission to use F072 metadata.
+- **Generated-metadata observation:** the crates.io `py32-metapac 0.5.0`
+  artifact (SHA-256
+  `27f23b48cc298b69661d8b95bdfd09d91b2b86b4acc3b1b13a52caf0e3d91878`)
+  maps `py32f071c1b`, `py32f071k18`, `py32f071k1b`, and `py32f071r1b` to the
+  same 59-line metadata fragment. Its complete named inventory is GPIOA, WWDG,
+  AES_LPUART1, and DMA1_CH1; it contains none of the RCC, USART1, SPI1, GPIOB,
+  GPIOF, or timer surfaces required to assess this board.
+- **Compile result:** adding only those four feature pass-throughs to an
+  unmodified local review copy of `py32-hal 0.4.1`, with default features off,
+  lets its generator select `py32f071r1b` but then fails the mandatory RCC
+  lookup at `build.rs:410-415`. This is evidence that the released metadata is
+  incomplete, not evidence that F071 shares F072 behavior.

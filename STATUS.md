@@ -117,9 +117,9 @@ features remain outside this bounded slice.
 - Work Package 22 keypad/UI witness definition: complete; the pinned matrix,
   electrical idle/scan levels, one-key decode, explicit-time debounce, and
   display-only result were bounded before implementation.
-- Current smallest actionable task: expose the exact PY32F071 package through
-  a reviewed `py32-hal` extension or upstream change, then compile its
-  peripheral inventory without changing the physical image.
+- Current smallest actionable task: supply reviewed, source-backed PY32F071
+  peripheral metadata upstream of `py32-metapac`, including RCC, USART1, and
+  SPI1, before extending `py32-hal`; do not infer it from F072.
 
 ## Work Package 23 dependency and executor milestone
 
@@ -135,6 +135,22 @@ features remain outside this bounded slice.
   and `py32f071r1b`. `py32-hal` 0.3.0, 0.4.0, and 0.4.1 expose no F071 feature;
   0.4.1 exposes only F002B, selected F030s, and F072C1B. Selecting F072 for
   this unit is prohibited.
+- A local review extension exposed all four F071 package features without USB
+  or any default feature. Each package selects the same 59-line generated
+  metadata fragment, whose complete inventory is only GPIOA, WWDG,
+  AES_LPUART1, and DMA1_CH1. It contains no RCC, USART1, SPI1, GPIOB, GPIOF, or
+  timer metadata.
+- A Rust 1.86 `thumbv6m-none-eabi` build-std/core check of that extension for
+  `py32f071r1b` reached `py32-hal` generation and failed at its required RCC
+  lookup (`build.rs:410-415`). This blocks a truthful HAL surface; copying F072
+  metadata or hand-inventing the missing inventory is prohibited.
+- `nix flake check path:. --no-build` — passed.
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
+  — passed.
+- `nix develop path:. -c cargo test --workspace` — passed; all 156 workspace
+  unit, integration, and doc-test binaries passed.
+- `git diff --check` — passed.
 - No target entry point or physical image changed and no flash was sent.
 
 ## Work Package 22 pure keypad milestone
