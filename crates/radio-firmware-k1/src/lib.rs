@@ -13,5 +13,7 @@ pub mod keypad;
 pub mod protocol;
 #[cfg(feature = "py32f071-hal-inventory")]
 pub mod py32f071_hal_inventory;
+#[cfg(feature = "py32f071-spi1")]
+pub mod py32f071_spi1;
 #[cfg(feature = "py32f071-usart1")]
 pub mod py32f071_usart1;

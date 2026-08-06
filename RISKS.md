@@ -384,3 +384,9 @@
   HAL's own support table and TODO list confirm SPI is unimplemented. Do not
   infer an async display driver from PAC inventory; a bounded AFIK driver or
   separately reviewed HAL extension is required before migration.
+- **SPI1 implementation update:** the local HAL now supplies only the bounded
+  transmit-only display surface, with finite status waits and cooperative
+  16-byte yields. Strict target compilation proves API/register/pin coherence,
+  not executor progress or physical transfers. Keep startup unchanged until a
+  deterministic scheduling proof and then separately guarded UART/display
+  observations pass.

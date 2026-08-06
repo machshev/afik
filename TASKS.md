@@ -1140,3 +1140,10 @@
   write which yields between bounded chunks; report peripheral faults; and
   compile without entry-point adoption. MISO, hardware NSS, DMA, RX, other SPI
   instances/pins, and physical migration remain excluded.
+- **SPI1 implementation result:** the local HAL now exposes generated SCK/MOSI
+  pin traits plus a heap-free `SpiTx` which configures mode 3, MSB first,
+  software NSS, one-line transmit, and divide-by-64. Async writes bound every
+  status wait, report mode/overrun/CRC/timeout faults, and yield every 16 bytes
+  or unsuccessful polls. The F071 SPI1 / PA5 / PA7 constructor passes strict
+  target compilation and remains absent from the firmware entry point. The
+  next boundary is deterministic executor-progress testing before migration.

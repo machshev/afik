@@ -1261,3 +1261,23 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   A later step must bound an independent AFIK display-bus driver or a reviewed
   local HAL extension, retain chunked/yielding rendering, and separately prove
   clocks, transfers, scheduling, and physical UART responsiveness.
+
+### EVID-K1-042 — Compile-only cooperative SPI1 transmit interface
+
+- **Local HAL boundary:** AFIK adds generated SCK/MOSI pin traits and one
+  transmit-only `SpiTx`. Its constructor owns SPI1, PA5, and PA7 and configures
+  exactly mode 3, MSB-first, software NSS, bidirectional-data transmit mode, and
+  `PCLK1 / 64`; it exposes no MISO, hardware NSS, RX, DMA, or other board path.
+- **Async behavior:** each byte waits for TX-empty with a finite poll bound,
+  writes the data register, and the operation waits for not-busy at completion.
+  Mode fault, overrun, CRC error, and exhausted polls return explicit errors.
+  The future yields after every 16 bytes and every 16 unsuccessful polls so it
+  cannot monopolize the cooperative executor for a complete 128-byte page.
+- **Compile result:** `tool/check-py32f071-spi1.sh` passes offline,
+  warning-denied Clippy with build-std/core on Rust 1.86 for
+  `thumbv6m-none-eabi`, including the F071R1B PAC, RCC, generated PA5/PA7 pin
+  traits, local HAL driver, and K1 no-entry-point constructor.
+- **Boundary:** no firmware entry point calls the constructor. Physical clocks,
+  status flags, pin waveforms, display transfers, executor interleaving, and
+  USART1 responsiveness remain unproven until later deterministic and guarded
+  physical milestones.

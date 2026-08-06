@@ -117,9 +117,9 @@ features remain outside this bounded slice.
 - Work Package 22 keypad/UI witness definition: complete; the pinned matrix,
   electrical idle/scan levels, one-key decode, explicit-time debounce, and
   display-only result were bounded before implementation.
-- Current smallest actionable task: implement the bounded local `py32-hal`
-  transmit-only SPI1 interface for PA5 SCK / PA7 MOSI, mode 3, MSB first, and
-  divide-by-64, with cooperative bounded-chunk yields and no startup change.
+- Current smallest actionable task: add a deterministic no-hardware executor
+  proof that a display-sized chunk schedule permits concurrent serial progress,
+  before adopting the SPI interface in the firmware entry point.
 
 ## Work Package 23 dependency and executor milestone
 
@@ -244,6 +244,31 @@ features remain outside this bounded slice.
 - No code, HAL initialization, target entry point, physical image, clock/SPI
   behavior, or flash operation changed. The next driver step must be explicitly
   bounded rather than treating generated PAC metadata as HAL support.
+
+## Work Package 23 async SPI1 interface milestone
+
+- Added a bounded local `py32-hal` SPI surface: generated SCK/MOSI pin traits
+  and a transmit-only `SpiTx` owning the peripheral and pins.
+- The constructor configures only the evidenced display contract: SPI master,
+  mode 3, MSB first, software NSS, one-line transmit, divide-by-64, PA5 SCK AF0,
+  and PA7 MOSI AF0.
+- Async writes use no heap or DMA. Hardware status polling has a finite limit,
+  reports mode-fault, overrun, CRC, and timeout errors, and yields to Embassy
+  every 16 transferred bytes or unsuccessful polls.
+- Added optional `py32f071-spi1` and a no-entry-point K1 constructor plus
+  `tool/check-py32f071-spi1.sh` for offline warning-denied target compilation.
+- Updated the vendored dependency delta; no upstream or trusted-firmware driver
+  implementation was copied.
+- `nix develop path:. -c tool/check-py32f071-spi1.sh` — passed.
+- `nix flake check path:. --no-build` — passed.
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
+  — passed.
+- `nix develop path:. -c cargo test --workspace` — passed; all 159 workspace
+  unit, integration, and doc-test binaries passed.
+- `git diff --check` — passed.
+- No HAL initialization, firmware entry point, physical image, physical SPI,
+  scheduler, UART-coexistence, or flash operation changed.
 
 ## Work Package 22 pure keypad milestone
 

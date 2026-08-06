@@ -17,7 +17,9 @@ local compatibility changes:
 - retain DAC in the PAC inventory without generating a nonexistent HAL driver
   binding; and
 - leave the F071 ADC HAL module and pin bindings disabled until its constants
-  are independently evidenced.
+  are independently evidenced; and
+- add only a bounded transmit-only SPI surface with generated SCK/MOSI pin
+  traits and cooperative fixed-chunk async writes for the evidenced K1 display.
 
 The AFIK firmware selects `py32f071r1b` only for a compile-time inventory
 check because the available primary product-page evidence names that package.
