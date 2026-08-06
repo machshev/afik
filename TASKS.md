@@ -1074,3 +1074,7 @@
   `25f900885cf0a4ca79c10ea16737c72878330e8d0e372eb74cde63c479b28f32`
   and CRC-32 `032e7309`. K1 `7.03.01` acknowledged all 239 pages in transaction
   `7422b31d` without retry; normal-boot observation remains pending.
+- **Raw GPIOB result:** released PB6 was `f43c`; MENU tap latched PB6 `743c`
+  while PB5/PB4/PB3 were unchanged. GPIOB bit 15 therefore goes low only for
+  selected PB6, physically establishing MENU and the raw scan path. Remaining
+  diagnosis is press-path render/SPI latency and visible update.

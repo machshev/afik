@@ -338,3 +338,7 @@
 - **Latch result:** MENU tap/release left no nonzero PB12..PB15 sample in RAM.
   The pinned mapping may not match this exact unit or the held circuit may halt
   sampling; do not change pin assignments without raw-register observation.
+- **Raw observation update:** the wider latch captured PB15 low only during PB6
+  selection, establishing MENU on this exact unit. Mapping uncertainty for that
+  cell is closed; timing, other keys, debounce, and visible display update remain
+  unverified.

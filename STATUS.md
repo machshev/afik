@@ -401,6 +401,18 @@ Raw GPIOB snapshot diagnostic milestone:
   reported `acknowledged_not_read_back`. No retry or reset command was sent;
   normal-boot baseline and tap capture remain pending.
 
+Raw GPIOB MENU observation on 2026-08-06:
+
+- Released baseline was PB6 `f43c`, PB5 `f45c`, PB4 `f46c`, PB3 `f474`.
+- The first immediate post-tap probe timed out. One read-only retry then returned
+  `captured=true`: PB6 `743c`, with PB5/PB4/PB3 unchanged.
+- The exact difference is GPIOB bit 15 changing high-to-low only while PB6 is
+  selected. This physically establishes the pinned PB6/PB15 MENU matrix cell
+  and the AFIK raw scan path on this unit.
+- The several-second response gap after a press localizes the remaining problem
+  above GPIO sampling, in press-path execution/display work. The next smallest
+  task is to measure and bound key frame rendering and SPI transfer separately.
+
 ## Work Package 14 implementation milestone
 
 - `radio-k5-flasher` was renamed to `radio-flasher`; the library now owns both

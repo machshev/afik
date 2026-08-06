@@ -451,6 +451,13 @@ order are maintained in `docs/k1-bring-up.md`.
 - **Write observation:** K1 `7.03.01` acknowledged all 239 pages of the
   61,128-byte raw GPIOB image in transaction `7422b31d` and reported
   `acknowledged_not_read_back`; no normal-boot or GPIO observation is implied.
+- **Physical MENU observation:** released snapshots were PB6 `f43c`, PB5
+  `f45c`, PB4 `f46c`, PB3 `f474`. After MENU tap, the one-shot capture returned
+  PB6 `743c` with the other three unchanged. The `0x8000` difference physically
+  establishes PB15 active-low while PB6 is selected on this exact unit.
+- **Boundary:** the first immediate post-tap serial query timed out and a retry
+  succeeded. This establishes scan input but not debounce timing, display-frame
+  completion, visible labels, or the other 15 cells.
 
 ## Sources used by DP32-003
 
