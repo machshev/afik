@@ -3,7 +3,8 @@
 #![forbid(unsafe_code)]
 
 use core::fmt;
-use radio_channel_plan::{GeneratedBank, PlanEncoding};
+use radio_channel_plan::{ChannelBank, ChannelRecord, GeneratedBank, PlanEncoding};
+use radio_domain::{BankId, RadioConfig};
 pub use radio_protocol::DeviceCapabilities;
 use radio_protocol::{
     encode_frame, encode_list_objects_request, Command, DeviceErrorCode, Frame, ObjectListPage,
@@ -11,9 +12,10 @@ use radio_protocol::{
     MAX_ENCODED_FRAME, MAX_PAYLOAD, PROTOCOL_VERSION,
 };
 use radio_storage::{
-    configuration_image_len, decode_configuration_image, decode_generated_bank,
-    encode_configuration_image, encode_generated_bank, ObjectKey, ObjectKind, StorageError,
-    StorageObject, StorageUsage, MAX_OBJECT_DATA, STORAGE_FORMAT_VERSION,
+    configuration_image_len, decode_channel, decode_channel_bank, decode_configuration_image,
+    decode_generated_bank, decode_radio_config, encode_channel, encode_channel_bank,
+    encode_configuration_image, encode_generated_bank, encode_radio_config, ObjectKey, ObjectKind,
+    StorageError, StorageObject, StorageUsage, MAX_OBJECT_DATA, STORAGE_FORMAT_VERSION,
 };
 
 const MAX_RECEIVE_CALLS: usize = MAX_ENCODED_FRAME + 1;
@@ -92,6 +94,9 @@ impl<E> From<StorageError> for ProgrammerError<E> {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RadioProject {
     generated_banks: Vec<GeneratedBank>,
+    channels: Vec<ChannelRecord>,
+    banks: Vec<ChannelBank>,
+    config: Option<RadioConfig>,
 }
 
 impl RadioProject {
@@ -99,6 +104,9 @@ impl RadioProject {
     pub const fn new() -> Self {
         Self {
             generated_banks: Vec::new(),
+            channels: Vec::new(),
+            banks: Vec::new(),
+            config: None,
         }
     }
 
@@ -107,9 +115,47 @@ impl RadioProject {
         self.generated_banks.push(bank);
     }
 
-    /// Returns project banks in stable insertion order.
+    /// Adds one explicit channel record.
+    pub fn add_channel(&mut self, channel: ChannelRecord) {
+        self.channels.push(channel);
+    }
+
+    /// Adds one named channel bank.
+    pub fn add_bank(&mut self, bank: ChannelBank) {
+        self.banks.push(bank);
+    }
+
+    /// Sets the single global radio configuration.
+    pub fn set_config(&mut self, config: RadioConfig) {
+        self.config = Some(config);
+    }
+
+    /// Returns project generated banks in stable insertion order.
     pub fn generated_banks(&self) -> &[GeneratedBank] {
         &self.generated_banks
+    }
+
+    /// Returns project channels in stable insertion order.
+    pub fn channels(&self) -> &[ChannelRecord] {
+        &self.channels
+    }
+
+    /// Returns project named banks in stable insertion order.
+    pub fn banks(&self) -> &[ChannelBank] {
+        &self.banks
+    }
+
+    /// Returns the global radio configuration when one is set.
+    pub const fn config(&self) -> Option<RadioConfig> {
+        self.config
+    }
+
+    /// Reports whether the project defines no objects at all.
+    pub fn is_empty(&self) -> bool {
+        self.generated_banks.is_empty()
+            && self.channels.is_empty()
+            && self.banks.is_empty()
+            && self.config.is_none()
     }
 }
 
@@ -122,6 +168,12 @@ pub struct CapacityReport {
     pub storage_bytes: u32,
     /// Generated channel count represented by those objects.
     pub generated_channels: u32,
+    /// Explicit channel records represented by those objects.
+    pub explicit_channels: u32,
+    /// Named channel banks represented by those objects.
+    pub banks: u16,
+    /// Whether the configuration carries the global radio configuration.
+    pub has_radio_config: bool,
 }
 
 /// Validated bounded objects ready for a target transaction.
@@ -170,6 +222,13 @@ pub enum CompileError {
     UnsupportedStorageVersion,
     /// A capacity calculation overflowed.
     CapacityOverflow,
+    /// A channel claims membership of a bank the project does not define.
+    UnknownBank {
+        /// The referencing channel.
+        channel: u16,
+        /// The undefined bank identifier.
+        bank: u16,
+    },
 }
 
 impl fmt::Display for CompileError {
@@ -186,6 +245,10 @@ impl fmt::Display for CompileError {
                 formatter.write_str("target does not support the configuration storage version")
             }
             Self::CapacityOverflow => formatter.write_str("configuration capacity overflow"),
+            Self::UnknownBank { channel, bank } => write!(
+                formatter,
+                "channel {channel} references undefined bank {bank}"
+            ),
         }
     }
 }
@@ -211,12 +274,26 @@ impl ConfigurationCompiler {
     /// Validates and compiles a project without contacting or mutating a radio.
     pub fn compile(&self, project: &RadioProject) -> Result<CompiledConfiguration, CompileError> {
         self.require_storage_version()?;
-        if project.generated_banks.len() > usize::from(self.capabilities.max_objects) {
+        Self::require_defined_banks(project)?;
+        let object_count = project.generated_banks.len()
+            + project.channels.len()
+            + project.banks.len()
+            + usize::from(project.config.is_some());
+        if object_count > usize::from(self.capabilities.max_objects) {
             return Err(CompileError::TooManyObjects);
         }
-        let mut objects = Vec::with_capacity(project.generated_banks.len());
+        let mut objects = Vec::with_capacity(object_count);
         for bank in &project.generated_banks {
             objects.push(encode_generated_bank(*bank)?);
+        }
+        for channel in &project.channels {
+            objects.push(encode_channel(*channel)?);
+        }
+        for bank in &project.banks {
+            objects.push(encode_channel_bank(*bank)?);
+        }
+        if let Some(config) = project.config {
+            objects.push(encode_radio_config(config)?);
         }
         objects.sort_unstable_by_key(|object| object.key());
         if let Some(duplicate) = objects
@@ -242,6 +319,22 @@ impl ConfigurationCompiler {
         Ok(CompiledConfiguration { objects, report })
     }
 
+    fn require_defined_banks(project: &RadioProject) -> Result<(), CompileError> {
+        for channel in &project.channels {
+            let membership = channel.banks();
+            for bank in 0..radio_channel_plan::MAX_BANKS {
+                let id = BankId::new(bank);
+                if membership.contains(id) && !project.banks.iter().any(|named| named.id() == id) {
+                    return Err(CompileError::UnknownBank {
+                        channel: channel.id().get(),
+                        bank,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn require_storage_version(&self) -> Result<(), CompileError> {
         if self.capabilities.storage_version != STORAGE_FORMAT_VERSION {
             return Err(CompileError::UnsupportedStorageVersion);
@@ -263,12 +356,36 @@ impl ConfigurationCompiler {
             {
                 return Err(CompileError::ObjectTooLarge);
             }
-            let bank = match object.key().kind {
-                ObjectKind::GeneratedBank => decode_generated_bank(object)?,
-            };
-            let encoding = bank.encoding();
-            if self.capabilities.plan_encodings & encoding.capability_bit() == 0 {
-                return Err(CompileError::UnsupportedPlanEncoding(encoding));
+            match object.key().kind {
+                ObjectKind::GeneratedBank => {
+                    let bank = decode_generated_bank(object)?;
+                    let encoding = bank.encoding();
+                    if self.capabilities.plan_encodings & encoding.capability_bit() == 0 {
+                        return Err(CompileError::UnsupportedPlanEncoding(encoding));
+                    }
+                    report.generated_channels = report
+                        .generated_channels
+                        .checked_add(u32::from(bank.channel_count()))
+                        .ok_or(CompileError::CapacityOverflow)?;
+                }
+                ObjectKind::Channel => {
+                    decode_channel(object)?;
+                    report.explicit_channels = report
+                        .explicit_channels
+                        .checked_add(1)
+                        .ok_or(CompileError::CapacityOverflow)?;
+                }
+                ObjectKind::ChannelBank => {
+                    decode_channel_bank(object)?;
+                    report.banks = report
+                        .banks
+                        .checked_add(1)
+                        .ok_or(CompileError::CapacityOverflow)?;
+                }
+                ObjectKind::RadioConfig => {
+                    decode_radio_config(object)?;
+                    report.has_radio_config = true;
+                }
             }
             report.object_count = report
                 .object_count
@@ -279,10 +396,6 @@ impl ConfigurationCompiler {
                 .checked_add(
                     u32::try_from(object.len()).map_err(|_| CompileError::CapacityOverflow)?,
                 )
-                .ok_or(CompileError::CapacityOverflow)?;
-            report.generated_channels = report
-                .generated_channels
-                .checked_add(u32::from(bank.channel_count()))
                 .ok_or(CompileError::CapacityOverflow)?;
         }
         Ok(report)
@@ -370,6 +483,9 @@ impl ConfigurationSnapshot {
             u16::try_from(self.objects.len()).map_err(|_| StorageError::ImageTooLarge)?;
         let mut storage_bytes = 0_u32;
         let mut generated_channels = 0_u32;
+        let mut explicit_channels = 0_u32;
+        let mut banks = 0_u16;
+        let mut has_radio_config = false;
         let mut previous_key = None;
 
         for object in &self.objects {
@@ -377,12 +493,30 @@ impl ConfigurationSnapshot {
                 return Err(StorageError::NonCanonicalImage);
             }
             previous_key = Some(object.key());
-            let bank = decode_generated_bank(object)?;
+            match object.key().kind {
+                ObjectKind::GeneratedBank => {
+                    let bank = decode_generated_bank(object)?;
+                    generated_channels = generated_channels
+                        .checked_add(u32::from(bank.channel_count()))
+                        .ok_or(StorageError::ImageTooLarge)?;
+                }
+                ObjectKind::Channel => {
+                    decode_channel(object)?;
+                    explicit_channels = explicit_channels
+                        .checked_add(1)
+                        .ok_or(StorageError::ImageTooLarge)?;
+                }
+                ObjectKind::ChannelBank => {
+                    decode_channel_bank(object)?;
+                    banks = banks.checked_add(1).ok_or(StorageError::ImageTooLarge)?;
+                }
+                ObjectKind::RadioConfig => {
+                    decode_radio_config(object)?;
+                    has_radio_config = true;
+                }
+            }
             storage_bytes = storage_bytes
                 .checked_add(u32::try_from(object.len()).map_err(|_| StorageError::ImageTooLarge)?)
-                .ok_or(StorageError::ImageTooLarge)?;
-            generated_channels = generated_channels
-                .checked_add(u32::from(bank.channel_count()))
                 .ok_or(StorageError::ImageTooLarge)?;
         }
 
@@ -390,6 +524,9 @@ impl ConfigurationSnapshot {
             object_count,
             storage_bytes,
             generated_channels,
+            explicit_channels,
+            banks,
+            has_radio_config,
         })
     }
 
@@ -801,6 +938,9 @@ pub const fn report_active_usage(usage: StorageUsage) -> CapacityReport {
         object_count: usage.object_count,
         storage_bytes: usage.payload_bytes,
         generated_channels: 0,
+        explicit_channels: 0,
+        banks: 0,
+        has_radio_config: false,
     }
 }
 
@@ -810,8 +950,8 @@ mod tests {
         CompileError, ConfigurationCompiler, ConfigurationSnapshot, DeviceCapabilities,
         RadioProject, WRITE_ENVELOPE_LEN,
     };
-    use radio_channel_plan::{BankName, GeneratedBank, PlanEncoding};
-    use radio_domain::{BankId, Frequency, FrequencyStep, TxClass};
+    use radio_channel_plan::{BankName, ChannelBank, ChannelRecord, GeneratedBank, PlanEncoding};
+    use radio_domain::{BankId, Frequency, FrequencyStep, RadioConfig, TxClass};
     use radio_storage::{
         decode_configuration_image, encode_generated_bank, ObjectKey, ObjectKind, StorageError,
         StorageObject, GENERATED_BANK_ENCODED_LEN,
@@ -857,6 +997,96 @@ mod tests {
         assert_eq!(compiled.report().object_count, 1);
         assert_eq!(compiled.report().storage_bytes, 31);
         assert_eq!(compiled.report().generated_channels, 16);
+    }
+
+    fn named_bank(id: u16) -> ChannelBank {
+        ChannelBank::new(
+            BankId::new(id),
+            BankName::new("Amateur 2m").unwrap(),
+            radio_channel_plan::BankFlags::default(),
+        )
+        .unwrap()
+    }
+
+    fn channel(id: u16, banks: u16) -> ChannelRecord {
+        ChannelRecord::new(radio_channel_plan::ChannelDefinition {
+            id: radio_domain::ChannelId::new(id),
+            name: radio_channel_plan::ChannelName::new("GB3AB").unwrap(),
+            receive: Frequency::from_hz(145_725_000).unwrap(),
+            transmit: Frequency::from_hz(145_125_000).unwrap(),
+            rx_tone: radio_domain::Tone::Ctcss(1_000),
+            tx_tone: radio_domain::Tone::Ctcss(1_000),
+            modulation: radio_domain::Modulation::Fm,
+            bandwidth: radio_domain::Bandwidth::Wide,
+            power: radio_domain::PowerLevel::Medium,
+            step: FrequencyStep::from_hz(12_500).unwrap(),
+            squelch: radio_domain::SquelchLevel::new(3).unwrap(),
+            flags: radio_channel_plan::ChannelFlags::default(),
+            banks: radio_channel_plan::BankMask::from_bits(banks),
+            tx_class: TxClass::Amateur,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn banked_projects_compile_into_one_canonical_configuration() {
+        let mut project = RadioProject::new();
+        project.add_generated_bank(bank(1));
+        project.add_channel(channel(2, 0b0000_0010));
+        project.add_channel(channel(1, 0b0000_0010));
+        project.add_bank(named_bank(1));
+        project.set_config(RadioConfig::conservative());
+        assert!(!project.is_empty());
+
+        let compiled = ConfigurationCompiler::new(capabilities_for(8))
+            .compile(&project)
+            .unwrap();
+        let report = compiled.report();
+        assert_eq!(report.object_count, 5);
+        assert_eq!(report.generated_channels, 16);
+        assert_eq!(report.explicit_channels, 2);
+        assert_eq!(report.banks, 1);
+        assert!(report.has_radio_config);
+
+        let keys = compiled
+            .objects()
+            .iter()
+            .map(|object| (object.key().kind, object.key().id))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            keys,
+            vec![
+                (ObjectKind::GeneratedBank, 1),
+                (ObjectKind::Channel, 1),
+                (ObjectKind::Channel, 2),
+                (ObjectKind::ChannelBank, 1),
+                (ObjectKind::RadioConfig, 0),
+            ]
+        );
+
+        let mut image = vec![0; compiled.image_len().unwrap()];
+        compiled.encode_image(&mut image).unwrap();
+        assert_eq!(
+            ConfigurationCompiler::new(capabilities_for(8))
+                .decode_image(&image)
+                .unwrap()
+                .report(),
+            report
+        );
+    }
+
+    #[test]
+    fn channels_cannot_reference_an_undefined_bank() {
+        let mut project = RadioProject::new();
+        project.add_channel(channel(1, 0b0000_0100));
+        project.add_bank(named_bank(1));
+        assert_eq!(
+            ConfigurationCompiler::new(capabilities_for(8)).compile(&project),
+            Err(CompileError::UnknownBank {
+                channel: 1,
+                bank: 2
+            })
+        );
     }
 
     #[test]
@@ -977,6 +1207,7 @@ mod tests {
                 object_count: 2,
                 storage_bytes: u32::try_from(GENERATED_BANK_ENCODED_LEN * 2).unwrap(),
                 generated_channels: 32,
+                ..super::CapacityReport::default()
             }
         );
 

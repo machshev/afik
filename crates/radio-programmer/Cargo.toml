@@ -9,11 +9,9 @@ description = "Library-first radio configuration compiler and programmer"
 
 [dependencies]
 radio-channel-plan = { path = "../radio-channel-plan" }
+radio-domain = { path = "../radio-domain" }
 radio-protocol = { path = "../radio-protocol" }
 radio-storage = { path = "../radio-storage" }
-
-[dev-dependencies]
-radio-domain = { path = "../radio-domain" }
 
 [lints]
 workspace = true

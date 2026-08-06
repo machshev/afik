@@ -549,6 +549,9 @@ fn render_capacity(
 const fn object_kind_name(kind: ObjectKind) -> &'static str {
     match kind {
         ObjectKind::GeneratedBank => "generated-bank",
+        ObjectKind::Channel => "channel",
+        ObjectKind::ChannelBank => "channel-bank",
+        ObjectKind::RadioConfig => "radio-config",
     }
 }
 

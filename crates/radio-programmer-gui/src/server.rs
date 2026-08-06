@@ -554,6 +554,9 @@ fn state_json(state: &GuiState) -> String {
         }
         let kind = match object.key.kind {
             ObjectKind::GeneratedBank => "generated-bank",
+            ObjectKind::Channel => "channel",
+            ObjectKind::ChannelBank => "channel-bank",
+            ObjectKind::RadioConfig => "radio-config",
         };
         write!(
             &mut json,
