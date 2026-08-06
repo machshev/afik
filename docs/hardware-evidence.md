@@ -1405,3 +1405,22 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   and the observed undivided tree is 48 MHz. The earlier decoder both assumed
   24 MHz x2 and masked PLLSRC to one bit; the corrected contract validates the
   exact-unit tuple and rejects every independently varied field.
+
+### EVID-K1-049 — First runnable Embassy image write
+
+- **Verified artifact:** the 25,720-byte receive-only async raw image has
+  SHA-256 `874da6e7fe70d9564eb5b650581b3525a4aafa0077613c074a07e3fb4bc7bada`
+  and CRC-32 `7bcffca6`. Its 192-byte vector table and exact DMA1, TIM15, and
+  USART1 handler slots passed static verification and negative package tests.
+- **Recovery gates:** the retained primary/secondary F4HWN v5.5.0 recovery
+  images still matched each other at SHA-256
+  `7b6b277c319e6924bd878f4e4208490875dc3f15beb205c366d20130c02a4463`;
+  the two 8,192-byte EEPROM backups matched at SHA-256
+  `81716a35daa7a7f05bd077e28713dad50be7e6c1cbb9791e330c0a423ccdeafa`.
+- **Write observation:** exact K1 bootloader `7.03.01` acknowledged all 101
+  pages under transaction `9bca3352`, without retry, and reported
+  `acknowledged_not_read_back`.
+- **Boundary:** this proves only bootloader page acknowledgements. A manual
+  power-cycle plus normal hello, visible boot screen, and main-key label are
+  required before claiming Reset, TIM15, DMA, async USART1, display, or keypad
+  behavior.

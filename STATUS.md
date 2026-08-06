@@ -520,6 +520,12 @@ features remain outside this bounded slice.
 - No physical write or runtime claim has occurred yet. The next action is the
   already authorized guarded K1 write, followed by power-cycle, hello, visible
   display, and main-key observations.
+- The guarded writer classified K1 bootloader `7.03.01`, revalidated the
+  recovery/backup gates, and acknowledged all 101 pages under transaction
+  `9bca3352` without retry. Status is `acknowledged_not_read_back`.
+- Current smallest actionable task: manually power-cycle into application mode,
+  run `probe-normal`, observe the boot screen, then press and release MENU and
+  observe whether its label renders while serial remains responsive.
 
 ## Work Package 22 pure keypad milestone
 

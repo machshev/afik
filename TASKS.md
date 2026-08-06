@@ -1188,6 +1188,9 @@
   with SHA-256 `874da6e7fe70d9564eb5b650581b3525a4aafa0077613c074a07e3fb4bc7bada`.
   Static positive/negative image gates pass. Physical write and observations
   remain the next guarded result.
+- **Physical write result:** K1 bootloader `7.03.01` acknowledged all 101 pages
+  under transaction `9bca3352` without retry. This is not read-back or boot
+  proof; power-cycle, hello, display, and MENU observations remain pending.
   type-checks one owned bundle containing the heap-free thread executor,
   USART1/PA9/PA10 with DMA1 channels 1/2, and SPI1/PA5/PA7. Construction takes
   explicit HAL tokens and remains absent from the firmware binary. No HAL init,
