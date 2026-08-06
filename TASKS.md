@@ -1204,3 +1204,6 @@
   The host can issue one named read at a time. Static, host, package, negative,
   and Renode gates pass; the next step is a guarded write and ordered physical
   probes, with all clock adoption still prohibited.
+- **Register-isolation write:** bootloader `7.03.01` acknowledged all 257 pages
+  under transaction `7d527b6f` without retry. This is not read-back or boot
+  proof; power-cycle, normal hello, and the four ordered reads remain pending.

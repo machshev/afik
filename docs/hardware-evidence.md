@@ -1359,3 +1359,7 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
 - **Boundary:** this diagnostic only localizes the prior timeout. No register
   value, 48 MHz contract, HAL adoption, or async runtime behavior is claimed
   until the ordered physical probes complete.
+- **Write observation:** exact K1 bootloader `7.03.01` acknowledged all 257
+  isolation-image pages under transaction `7d527b6f` without retry. Status is
+  `acknowledged_not_read_back`; normal boot and register observations remain
+  pending.

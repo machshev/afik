@@ -117,9 +117,9 @@ features remain outside this bounded slice.
 - Work Package 22 keypad/UI witness definition: complete; the pinned matrix,
   electrical idle/scan levels, one-key decode, explicit-time debounce, and
   display-only result were bounded before implementation.
-- Current smallest actionable task: flash the verified individually identified
-  RCC diagnostic, power-cycle, and probe CR, ICSCR, CFGR, then PLLCFGR in order;
-  retain the normal hello and do not publish HAL clocks.
+- Current smallest actionable task: power-cycle the exact K1 into normal mode,
+  confirm the hello, then probe CR, ICSCR, CFGR, and PLLCFGR individually in
+  order; do not publish HAL clocks.
 
 ## Work Package 23 dependency and executor milestone
 
@@ -386,6 +386,9 @@ features remain outside this bounded slice.
 - `nix develop path:. -c cargo test --workspace` — passed; all 167 workspace
   unit, integration, and doc-test binaries passed.
 - `git diff --check` — passed.
+- K1 bootloader `7.03.01` acknowledged all 257 isolation-image pages under
+  transaction `7d527b6f` without retry and reported
+  `acknowledged_not_read_back`. Normal boot and register reads remain pending.
 
 ## Work Package 22 pure keypad milestone
 

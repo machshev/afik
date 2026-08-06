@@ -415,5 +415,6 @@
   unknown; isolate individual reads/response progress rather than assuming a
   register value, PAC defect, or UART failure.
 - **Isolation update:** one-register request/response pairs now distinguish CR,
-  ICSCR, CFGR, and PLLCFGR progress. They remain read-only and unflashed; their
-  static success does not resolve the physical timeout.
+  ICSCR, CFGR, and PLLCFGR progress. The isolation image was acknowledged in
+  full, but has not yet passed normal boot or any register probe; its static and
+  bootloader success does not resolve the physical timeout.
