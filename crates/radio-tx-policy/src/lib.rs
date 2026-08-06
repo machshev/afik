@@ -196,7 +196,7 @@ impl TxPolicy {
     /// Attempts to mint a token required by the hardware TX boundary.
     pub fn authorise(&self, class: TxClass) -> Result<TxAuthorisation, TxDenied> {
         if self.permissions.allows(class) {
-            Ok(TxAuthorisation { _private: () })
+            Ok(TxAuthorisation { class })
         } else {
             Err(TxDenied)
         }
@@ -209,7 +209,14 @@ impl TxPolicy {
 /// token for the shortest possible scope.
 #[derive(Debug)]
 pub struct TxAuthorisation {
-    _private: (),
+    class: TxClass,
+}
+
+impl TxAuthorisation {
+    /// Returns the exact TX class approved by this capability token.
+    pub const fn class(&self) -> TxClass {
+        self.class
+    }
 }
 
 /// Transmit authorisation was denied by central policy.
@@ -264,7 +271,8 @@ mod tests {
         let bytes = StoredPermissions::new(permissions, 8).encode();
         let (policy, status) = TxPolicy::load(&bytes);
         assert_eq!(status, LoadStatus::Valid);
-        assert!(policy.authorise(TxClass::LicenceFreePlan).is_ok());
+        let authorisation = policy.authorise(TxClass::LicenceFreePlan).unwrap();
+        assert_eq!(authorisation.class(), TxClass::LicenceFreePlan);
         assert!(policy.authorise(TxClass::Amateur).is_err());
         assert!(policy.authorise(TxClass::Never).is_err());
     }
