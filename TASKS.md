@@ -1010,6 +1010,8 @@
   `AFIK-K1-0.2`.
 - **Implementation notes:** the hardware-independent matrix decoder, 20 ms
   explicit-time debounce state machine, fixed labels, exact GPIOB register
-  plan, and cleanup-guaranteed scan trace are implemented and pass focused
-  tests and warning-denied Clippy. Target MMIO remains unimplemented; binding
-  it with display-only labels is the next step.
+  plan, cleanup-guaranteed scan trace, target MMIO binding, and display-only
+  witness are implemented. Host/workspace/embedded Clippy, ELF, packaging, and
+  raw-image gates pass. The 56,828-byte image has SHA-256
+  `4ad5e4e205afd32e791409b371e111c0792110c48e1fc9c67a5c19d8628c06b0`
+  and CRC-32 `a17da806`; physical writing remains separately guarded.

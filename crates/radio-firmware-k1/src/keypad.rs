@@ -210,6 +210,13 @@ pub fn decode(row_low_by_column: [u8; 4]) -> Result<Option<Key>, DecodeError> {
     Ok(found)
 }
 
+/// Converts a GPIOB input register value into PB15-through-PB12 active-low bits.
+#[must_use]
+pub const fn active_rows_from_gpio_idr(idr: u32) -> u8 {
+    let low = ((!idr >> 12) & 0x0F) as u8;
+    ((low & 0x01) << 3) | ((low & 0x02) << 1) | ((low & 0x04) >> 1) | ((low & 0x08) >> 3)
+}
+
 /// A complete sample supplied to the debounce state machine.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Sample {
@@ -312,8 +319,8 @@ impl Default for Debouncer {
 #[cfg(test)]
 mod tests {
     use super::{
-        decode, gpio_plan, scan, Debouncer, DecodeError, Edge, Key, MatrixBus, Sample, ScanError,
-        DEBOUNCE_MILLISECONDS,
+        active_rows_from_gpio_idr, decode, gpio_plan, scan, Debouncer, DecodeError, Edge, Key,
+        MatrixBus, Sample, ScanError, DEBOUNCE_MILLISECONDS,
     };
     use std::vec::Vec;
 
@@ -386,6 +393,16 @@ mod tests {
         assert_eq!(plan.columns_high, 0x0000_0078);
         assert_eq!(plan.selected_low, [0x40, 0x20, 0x10, 0x08]);
         assert_eq!(plan.rows, 0x0000_F000);
+    }
+
+    #[test]
+    fn gpio_input_rows_are_active_low_and_reordered() {
+        assert_eq!(active_rows_from_gpio_idr(0x0000_F000), 0);
+        assert_eq!(active_rows_from_gpio_idr(0x0000_7000), 0b0001);
+        assert_eq!(active_rows_from_gpio_idr(0x0000_B000), 0b0010);
+        assert_eq!(active_rows_from_gpio_idr(0x0000_D000), 0b0100);
+        assert_eq!(active_rows_from_gpio_idr(0x0000_E000), 0b1000);
+        assert_eq!(active_rows_from_gpio_idr(0), 0b1111);
     }
 
     #[test]

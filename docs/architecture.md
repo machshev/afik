@@ -65,6 +65,13 @@ The existing serial hello remains live as an independent observation. This
 slice adds no keypad, storage, BK4819, RF/TX, audio, backlight, USB, interrupt,
 or DMA behavior.
 
+`K1KEY-022` adds a hardware-independent 4-by-4 main-matrix decoder, explicit-
+time debounce state, fixed key labels, and deterministic scan sequencing in
+the standalone K1 crate. The target leaf alone binds it to PB12..PB15 inputs
+and PB3..PB6 outputs and composes debounced presses with the already verified
+display. PTT, side keys, menus, persistence, radio control, and TX authority
+remain outside the composition.
+
 Work Package 4 keeps the canonical configuration-image codec in the embedded
 `radio-storage` crate. It reads borrowed bytes, writes caller-provided buffers,
 and allocates no heap. `radio-programmer` owns host-side canonical ordering,

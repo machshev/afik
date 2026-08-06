@@ -1,5 +1,7 @@
 //! Hardware-independent ST7565-compatible display commands and fixed witness.
 
+use crate::keypad::Key;
+
 /// Visible display width in columns.
 pub const WIDTH: usize = 128;
 /// Visible display height in pixels.
@@ -79,6 +81,14 @@ pub fn render_witness(frame: &mut [u8; FRAME_BYTES]) {
     draw_text(frame, 43, 36, b"K1 0.2");
 }
 
+/// Produces the fixed witness plus one centered debounced main-key label.
+pub fn render_key_witness(frame: &mut [u8; FRAME_BYTES], key: Key) {
+    render_witness(frame);
+    let label = key.label();
+    let width = label.len() * 6 - 1;
+    draw_text(frame, (WIDTH - width) / 2, 50, label);
+}
+
 fn draw_text(frame: &mut [u8; FRAME_BYTES], mut x: usize, y: usize, text: &[u8]) {
     for byte in text {
         let glyph = glyph(*byte);
@@ -109,10 +119,29 @@ fn glyph(byte: u8) -> [u8; 5] {
         b'0' => [0x3E, 0x51, 0x49, 0x45, 0x3E],
         b'1' => [0x00, 0x42, 0x7F, 0x40, 0x00],
         b'2' => [0x42, 0x61, 0x51, 0x49, 0x46],
+        b'3' => [0x21, 0x41, 0x45, 0x4B, 0x31],
+        b'4' => [0x18, 0x14, 0x12, 0x7F, 0x10],
+        b'5' => [0x27, 0x45, 0x45, 0x45, 0x39],
+        b'6' => [0x3C, 0x4A, 0x49, 0x49, 0x30],
+        b'7' => [0x01, 0x71, 0x09, 0x05, 0x03],
+        b'8' => [0x36, 0x49, 0x49, 0x49, 0x36],
+        b'9' => [0x06, 0x49, 0x49, 0x29, 0x1E],
         b'A' => [0x7E, 0x11, 0x11, 0x11, 0x7E],
+        b'D' => [0x7F, 0x41, 0x41, 0x22, 0x1C],
+        b'E' => [0x7F, 0x49, 0x49, 0x49, 0x41],
         b'F' => [0x7F, 0x09, 0x09, 0x09, 0x01],
         b'I' => [0x00, 0x41, 0x7F, 0x41, 0x00],
         b'K' => [0x7F, 0x08, 0x14, 0x22, 0x41],
+        b'M' => [0x7F, 0x02, 0x0C, 0x02, 0x7F],
+        b'N' => [0x7F, 0x04, 0x08, 0x10, 0x7F],
+        b'O' => [0x3E, 0x41, 0x41, 0x41, 0x3E],
+        b'P' => [0x7F, 0x09, 0x09, 0x09, 0x06],
+        b'R' => [0x7F, 0x09, 0x19, 0x29, 0x46],
+        b'S' => [0x46, 0x49, 0x49, 0x49, 0x31],
+        b'T' => [0x01, 0x01, 0x7F, 0x01, 0x01],
+        b'U' => [0x3F, 0x40, 0x40, 0x40, 0x3F],
+        b'W' => [0x3F, 0x40, 0x38, 0x40, 0x3F],
+        b'X' => [0x63, 0x14, 0x08, 0x14, 0x63],
         _ => [0x00, 0x00, 0x00, 0x00, 0x00],
     }
 }
@@ -120,8 +149,10 @@ fn glyph(byte: u8) -> [u8; 5] {
 #[cfg(test)]
 mod tests {
     use super::{
-        initialise, render_witness, write_frame, DisplayBus, TransferKind, FRAME_BYTES, WIDTH,
+        initialise, render_key_witness, render_witness, write_frame, DisplayBus, TransferKind,
+        FRAME_BYTES, WIDTH,
     };
+    use crate::keypad::Key;
     use std::vec::Vec;
 
     #[derive(Debug, Eq, PartialEq)]
@@ -222,5 +253,37 @@ mod tests {
         assert!(first.iter().any(|byte| *byte != 0));
         assert!(first[..2 * WIDTH].iter().all(|byte| *byte == 0));
         assert!(first[6 * WIDTH..].iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn all_key_labels_render_distinct_visible_frames() {
+        let keys = [
+            Key::Menu,
+            Key::Up,
+            Key::Down,
+            Key::Exit,
+            Key::Digit0,
+            Key::Digit1,
+            Key::Digit2,
+            Key::Digit3,
+            Key::Digit4,
+            Key::Digit5,
+            Key::Digit6,
+            Key::Digit7,
+            Key::Digit8,
+            Key::Digit9,
+            Key::Star,
+            Key::Function,
+        ];
+        let mut frames = [[0_u8; FRAME_BYTES]; 16];
+        for (frame, key) in frames.iter_mut().zip(keys) {
+            render_key_witness(frame, key);
+            assert!(frame[6 * WIDTH..7 * WIDTH].iter().any(|byte| *byte != 0));
+        }
+        for first in 0..frames.len() {
+            for second in first + 1..frames.len() {
+                assert_ne!(frames[first], frames[second]);
+            }
+        }
     }
 }

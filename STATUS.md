@@ -112,9 +112,9 @@ features remain outside this bounded slice.
 - Work Package 22 keypad/UI witness definition: active; the pinned matrix,
   electrical idle/scan levels, one-key decode, explicit-time debounce, and
   display-only result are bounded before implementation.
-- Current smallest actionable task: bind the verified GPIOB plan and scanner to
-  the K1 target, render only debounced key labels, then run all target/image and
-  workspace gates before the already authorized physical write.
+- Current smallest actionable task: use the already authorized guarded writer
+  once for the verified `K1KEY-022` image, then power-cycle and observe all 16
+  main-key labels, backlight, fixed display, and serial identity.
 
 ## Work Package 22 pure keypad milestone
 
@@ -153,6 +153,38 @@ features remain outside this bounded slice.
 - `nix develop path:. -c cargo clippy --package radio-firmware-k1 --all-targets
   -- -D warnings` — passed.
 - `git diff --check` — passed.
+
+## Work Package 22 target implementation milestone
+
+- The K1 target now binds only the verified GPIOB PB12..PB15 row inputs and
+  PB3..PB6 column outputs. All columns are driven high before configuration and
+  after every selected-low read. The active-low IDR bits are reordered into the
+  pure PB15-to-PB12 contract.
+- The pinned 10 us per-column settling observation is implemented as a bounded
+  spin at the existing evidenced 48 MHz handoff. The application loop provides
+  a conservative minimum 1 ms elapsed-time step, services a waiting serial
+  hello without blocking keypad idle scans, and redraws only after a debounced
+  press. Invalid/ambiguous scans cannot update the display.
+- All 16 key labels render as distinct bounded frames beneath the unchanged
+  `AFIK` / `K1 0.2` witness. PTT, side keys, interrupts, EEPROM, general menus,
+  BK4819, RF, and TX remain absent.
+- The raw image is 56,828 bytes, SHA-256
+  `4ad5e4e205afd32e791409b371e111c0792110c48e1fc9c67a5c19d8628c06b0`,
+  and CRC-32 `a17da806`.
+- `nix flake check path:. --no-build` — passed.
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
+  — passed.
+- `nix develop path:. -c cargo test --workspace` — passed; all 156 workspace
+  unit, integration, and doc-test binaries passed.
+- Embedded warning-denied Clippy for `radio-firmware-k1` on
+  `thumbv6m-none-eabi` with pinned build-std/linker flags — passed.
+- `nix develop path:. -c tool/build-k1.sh` and
+  `tool/verify-k1-image.sh` — passed.
+- `nix develop path:. -c tool/package-k1-image.sh --force` and
+  `tool/test-k1-image.sh` — passed, including positive and negative raw-image
+  fixtures.
+- `git diff --check` — passed. No keypad image write has yet been sent.
 
 ## Work Package 14 implementation milestone
 

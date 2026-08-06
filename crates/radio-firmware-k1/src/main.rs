@@ -9,8 +9,11 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use radio_firmware_k1::backlight::constant_on_plan;
 use radio_firmware_k1::display::{
-    initialise as display_initialise, render_witness, write_frame, DisplayBus, TransferKind,
-    FRAME_BYTES,
+    initialise as display_initialise, render_key_witness, render_witness, write_frame, DisplayBus,
+    TransferKind, FRAME_BYTES,
+};
+use radio_firmware_k1::keypad::{
+    active_rows_from_gpio_idr, decode, gpio_plan, scan, Debouncer, Edge, MatrixBus, Sample,
 };
 use radio_firmware_k1::protocol::{
     encode_hello_response, is_valid_hello_request, REQUEST_BODY_BYTES,
@@ -43,6 +46,7 @@ const GPIOB_OSPEEDR: usize = GPIOB_BASE + 0x08;
 const GPIOB_PUPDR: usize = GPIOB_BASE + 0x0C;
 const GPIOB_BSRR: usize = GPIOB_BASE + 0x18;
 const GPIOB_BRR: usize = GPIOB_BASE + 0x28;
+const GPIOB_IDR: usize = GPIOB_BASE + 0x10;
 const GPIOF_MODER: usize = GPIOF_BASE;
 const GPIOF_OTYPER: usize = GPIOF_BASE + 0x04;
 const GPIOF_OSPEEDR: usize = GPIOF_BASE + 0x08;
@@ -116,12 +120,30 @@ extern "C" fn reset() -> ! {
     uart_init();
     backlight_init();
     display_init();
+    keypad_init();
+    let mut debounce = Debouncer::new();
+    let mut elapsed_ms = 0_u32;
     loop {
-        if receive_hello_request() {
+        if uart_has_byte() && receive_hello_request() {
             let mut response = [0_u8; 48];
             encode_hello_response(&mut response);
             uart_send(&response);
         }
+
+        let mut matrix = K1MatrixBus;
+        let sample = match scan(&mut matrix).ok().and_then(|rows| decode(rows).ok()) {
+            Some(Some(key)) => Sample::Key(key),
+            Some(None) => Sample::Released,
+            None => Sample::Invalid,
+        };
+        if let Edge::Pressed(key) = debounce.update(elapsed_ms, sample) {
+            let mut frame = [0_u8; FRAME_BYTES];
+            render_key_witness(&mut frame, key);
+            let mut display = K1DisplayBus;
+            let _ = write_frame(&mut display, &frame);
+        }
+        delay_milliseconds(1);
+        elapsed_ms = elapsed_ms.wrapping_add(1);
     }
 }
 
@@ -225,6 +247,22 @@ fn display_init() {
     let _ = display_initialise(&mut display).and_then(|()| write_frame(&mut display, &frame));
 }
 
+fn keypad_init() {
+    let plan = gpio_plan();
+    update_register(RCC_IOPENR, 0, plan.clock_enable);
+    write_register(GPIOB_BSRR, plan.columns_high);
+    update_register(GPIOB_OTYPER, plan.column_type_clear, 0);
+    update_register(
+        GPIOB_OSPEEDR,
+        plan.column_speed_clear,
+        plan.column_speed_set,
+    );
+    update_register(GPIOB_PUPDR, plan.row_pull_clear, plan.row_pull_set);
+    update_register(GPIOB_PUPDR, plan.column_pull_clear, plan.column_pull_set);
+    update_register(GPIOB_MODER, plan.row_mode_clear, 0);
+    update_register(GPIOB_MODER, plan.column_mode_clear, plan.column_mode_set);
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DisplayError {
     Timeout,
@@ -263,9 +301,39 @@ impl DisplayBus for K1DisplayBus {
     }
 
     fn delay_ms(&mut self, milliseconds: u8) {
-        for _ in 0..u32::from(milliseconds) * 12_000 {
+        delay_milliseconds(u32::from(milliseconds));
+    }
+}
+
+struct K1MatrixBus;
+
+impl MatrixBus for K1MatrixBus {
+    type Error = ();
+
+    fn drive_all_columns_high(&mut self) -> Result<(), Self::Error> {
+        write_register(GPIOB_BSRR, gpio_plan().columns_high);
+        Ok(())
+    }
+
+    fn drive_column_low(&mut self, column: usize) -> Result<(), Self::Error> {
+        write_register(GPIOB_BRR, gpio_plan().selected_low[column]);
+        Ok(())
+    }
+
+    fn read_active_rows(&mut self) -> Result<u8, Self::Error> {
+        // The pinned board source uses a 10 us settling interval. At the
+        // evidenced 48 MHz bootloader handoff this bounded spin is conservative
+        // and does not establish a production scan cadence.
+        for _ in 0..120 {
             core::hint::spin_loop();
         }
+        Ok(active_rows_from_gpio_idr(read_register(GPIOB_IDR)))
+    }
+}
+
+fn delay_milliseconds(milliseconds: u32) {
+    for _ in 0..milliseconds * 12_000 {
+        core::hint::spin_loop();
     }
 }
 
@@ -284,6 +352,10 @@ fn uart_receive_byte() -> u8 {
         core::hint::spin_loop();
     }
     read_register(USART1_DR).to_le_bytes()[0]
+}
+
+fn uart_has_byte() -> bool {
+    read_register(USART1_SR) & USART_STATUS_RXNE != 0
 }
 
 fn uart_send_byte(byte: u8) {
