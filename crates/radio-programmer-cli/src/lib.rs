@@ -5,6 +5,7 @@
 use radio_channel_plan::{BankName, GeneratedBank};
 use radio_domain::{BankId, Frequency, FrequencyStep, TxClass};
 use radio_programmer::{Programmer, ProtocolTransport, RadioProject};
+use radio_programmer_serial::{is_supported_baud, LinuxSerialTransport};
 use radio_sim::{SimDevice, SimTransport};
 use radio_storage::ObjectKind;
 use std::{
@@ -13,7 +14,6 @@ use std::{
     fs::{File, OpenOptions},
     io::{self, Read, Write},
     path::{Path, PathBuf},
-    process::Command as ProcessCommand,
 };
 
 /// Successful process exit code.
@@ -43,8 +43,6 @@ TX_CLASS: never, licence-free, amateur, marine, aeronautical, business, experime
 Supported BAUD: 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200\n\
 \n\
 Exit codes: 0 success, 1 operation failure, 2 usage failure.\n";
-
-const SUPPORTED_BAUDS: [u32; 8] = [1_200, 2_400, 4_800, 9_600, 19_200, 38_400, 57_600, 115_200];
 
 /// Captured process output and exit status from one CLI invocation.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -189,7 +187,7 @@ fn parse(arguments: &[String]) -> Result<Parsed, CliError> {
                 let parsed = value
                     .parse::<u32>()
                     .map_err(|_| CliError::Usage(format!("invalid baud: {value}")))?;
-                if !SUPPORTED_BAUDS.contains(&parsed) {
+                if !is_supported_baud(parsed) {
                     return Err(CliError::Usage(format!("unsupported baud: {parsed}")));
                 }
                 baud = Some(parsed);
@@ -393,9 +391,9 @@ fn execute(backend: Backend, command: Command) -> Result<String, CliError> {
         Backend::Simulator => {
             CliTransport::Simulator(Box::new(SimTransport::new(SimDevice::new())))
         }
-        Backend::Serial { path, baud } => {
-            CliTransport::Serial(SerialTransport::open(&path, baud).map_err(CliError::operation)?)
-        }
+        Backend::Serial { path, baud } => CliTransport::Serial(
+            LinuxSerialTransport::open(&path, baud).map_err(CliError::operation)?,
+        ),
     };
     let mut programmer = Programmer::connect(transport).map_err(CliError::operation)?;
     match command {
@@ -589,7 +587,7 @@ fn write_output(path: &Path, bytes: &[u8], force: bool) -> Result<(), CliError> 
 
 enum CliTransport {
     Simulator(Box<SimTransport>),
-    Serial(SerialTransport),
+    Serial(LinuxSerialTransport),
 }
 
 #[derive(Debug)]
@@ -625,74 +623,6 @@ impl ProtocolTransport for CliTransport {
 
 fn infallible(error: Infallible) -> CliTransportError {
     match error {}
-}
-
-struct SerialTransport {
-    file: File,
-}
-
-impl SerialTransport {
-    fn open(path: &Path, baud: u32) -> Result<Self, SerialOpenError> {
-        let baud_text = baud.to_string();
-        let configured = ProcessCommand::new("stty")
-            .arg("-F")
-            .arg(path)
-            .args(["raw", "-echo", "min", "0", "time", "1"])
-            .arg(&baud_text)
-            .output()
-            .map_err(SerialOpenError::Stty)?;
-        if !configured.status.success() {
-            let detail = String::from_utf8_lossy(&configured.stderr)
-                .trim()
-                .to_owned();
-            return Err(SerialOpenError::Configure {
-                status: configured.status.code(),
-                detail,
-            });
-        }
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(path)
-            .map_err(SerialOpenError::Open)?;
-        Ok(Self { file })
-    }
-}
-
-impl ProtocolTransport for SerialTransport {
-    type Error = io::Error;
-
-    fn send(&mut self, frame: &[u8]) -> Result<(), Self::Error> {
-        self.file.write_all(frame)?;
-        self.file.flush()
-    }
-
-    fn receive(&mut self, buffer: &mut [u8]) -> Result<usize, Self::Error> {
-        self.file.read(buffer)
-    }
-}
-
-#[derive(Debug)]
-enum SerialOpenError {
-    Stty(io::Error),
-    Configure { status: Option<i32>, detail: String },
-    Open(io::Error),
-}
-
-impl fmt::Display for SerialOpenError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Stty(error) => write!(formatter, "could not execute stty: {error}"),
-            Self::Configure { status, detail } => {
-                write!(formatter, "stty configuration failed with {status:?}")?;
-                if !detail.is_empty() {
-                    write!(formatter, ": {detail}")?;
-                }
-                Ok(())
-            }
-            Self::Open(error) => write!(formatter, "could not open serial device: {error}"),
-        }
-    }
 }
 
 #[cfg(test)]

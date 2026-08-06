@@ -11,6 +11,7 @@ description = "Thin command-line front end for the AFIK programmer library"
 radio-channel-plan = { path = "../radio-channel-plan" }
 radio-domain = { path = "../radio-domain" }
 radio-programmer = { path = "../radio-programmer" }
+radio-programmer-serial = { path = "../radio-programmer-serial" }
 radio-sim = { path = "../radio-sim" }
 radio-storage = { path = "../radio-storage" }
 

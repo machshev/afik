@@ -51,8 +51,16 @@ dependencies = [
  "radio-channel-plan",
  "radio-domain",
  "radio-programmer",
+ "radio-programmer-serial",
  "radio-sim",
  "radio-storage",
+]
+
+[[package]]
+name = "radio-programmer-serial"
+version = "0.1.0"
+dependencies = [
+ "radio-programmer",
 ]
 
 [[package]]

@@ -1,0 +1,14 @@
+[package]
+name = "radio-programmer-serial"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Explicit Linux serial byte transport for AFIK programmer front ends"
+
+[dependencies]
+radio-programmer = { path = "../radio-programmer" }
+
+[lints]
+workspace = true
