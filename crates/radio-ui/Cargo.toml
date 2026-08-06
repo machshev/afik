@@ -1,0 +1,15 @@
+[package]
+name = "radio-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Heap-free hardware-independent radio UI state machine"
+
+[dependencies]
+radio-domain = { path = "../radio-domain" }
+radio-tx-policy = { path = "../radio-tx-policy" }
+
+[lints]
+workspace = true
