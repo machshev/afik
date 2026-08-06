@@ -101,7 +101,7 @@
 
 ## STORE-004 — Canonical configuration image and compiler round trip
 
-- **Status:** active
+- **Status:** complete (2026-08-06)
 - **Objective:** define a canonical, versioned, checksummed configuration image
   and make the authoritative host compiler emit and consume it without device
   mutation.
@@ -127,3 +127,14 @@
   exposing objects; the compiler produces stable-key order and will not accept
   an image outside negotiated target bounds; existing protocol/simulator
   behaviour remains green; physical durability claims remain explicitly open.
+- **Completion notes:** added a caller-buffer `AFIK` image codec with explicit
+  container and object-format versions, exact lengths, canonical object
+  envelopes, and CRC-32 integrity; decoding validates the complete image,
+  strict keys, and all object payloads before iteration. The compiler now sorts
+  by stable key, emits images, imports them back to the same objects and
+  capacity report, and rechecks storage version, object count/size, write-frame
+  size, and plan-encoding support. Exact vectors, order independence, empty and
+  maximum-count images, corruption and structure rejection, capability
+  rejection, simulator compatibility, pinned workspace gates, and Rust 1.86
+  tests all pass as recorded in `STATUS.md`. Physical persistence remains open
+  in `RISK-004`.

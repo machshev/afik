@@ -2,20 +2,22 @@
 
 ## Current work package
 
-**Work Package 4 — Canonical configuration image and compiler round trip
-(`STORE-004`) is active.**
+**No work package is active.**
 
-The package is limited to an offline, canonical logical-object image and the
-host compiler round trip. It does not define physical non-volatile placement,
-claim power-loss durability, change the serial protocol, or add hardware
-behaviour.
+Work Package 4 — Canonical configuration image and compiler round trip
+(`STORE-004`) was completed on 2026-08-06. A stable task must be defined and
+activated before Work Package 5 implementation begins.
 
 ## State
 
 - Repository foundation and first architecture milestone: complete.
 - Work Package 2 programmer and simulator protocol loop: complete.
 - Work Package 3 minimal target boot proof: complete.
-- Work Package 4 canonical image/compiler round trip: active.
+- Work Package 4 canonical image/compiler round trip: complete.
+- `STORE-004` allocation-free image codec, exact version/length/CRC contract,
+  complete pre-iteration validation, and maximum-count bound: complete.
+- `STORE-004` canonical compiler ordering, image round trip, capacity report,
+  and negotiated-capability revalidation: complete.
 - `DP32-003` CPU, byte-order, flash/RAM, and reset-vector evidence contract:
   complete.
 - `DP32-003` target crate, minimum vector/Reset image, and static ELF bounds
@@ -34,8 +36,42 @@ behaviour.
   complete.
 - Bounded duplicate-sequence replay and conflict rejection: complete.
 - Fragmented and malformed stream recovery: complete.
-- Next smallest task: specify the canonical image byte contract and implement
-  its allocation-free codec with exact format and rejection tests.
+- Next smallest task: define and activate the smallest bounded Work Package 5
+  simulator-first display/keypad and hidden TX-permission-menu task with a
+  stable ID, without inventing target peripheral behaviour.
+
+## Completed Work Package 4 exit criteria
+
+- The `no_std` storage codec has no heap dependency and encodes only into a
+  caller-provided buffer.
+- The `AFIK` image header, object envelopes, versions, lengths, canonical key
+  order, and CRC-32 coverage are explicit and tested with an exact byte vector.
+- Decoding checks the complete checksum, structure, order, and every object
+  before returning an iterable image.
+- Compiler output is byte-identical for equal logical projects regardless of
+  insertion order; importing an image reconstructs the same objects and
+  capacity report after enforcing every negotiated target bound.
+- Empty and maximum-`u16`-count images pass; corrupt, truncated, trailing,
+  reordered, duplicate, malformed, unsupported-version, and over-capacity
+  images fail explicitly.
+- Existing protocol and simulator behaviour remains green. The image remains
+  offline and logical; physical layout and durability stay open in `RISK-004`.
+
+## Last verification
+
+Verified 2026-08-06:
+
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
+  — passed for all host crates and targets.
+- `nix develop path:. -c cargo test --workspace` — passed: 35 unit tests and
+  all doc tests, 0 failures.
+- `env RUSTC=/nix/store/2mm3p5wcy1ifrcx5vp3bwsw7a76r77jc-rustc-1.86.0/bin/rustc RUSTDOC=/nix/store/2mm3p5wcy1ifrcx5vp3bwsw7a76r77jc-rustc-1.86.0/bin/rustdoc CARGO_TARGET_DIR=/tmp/afik-store-004-rust-1-86-target /nix/store/npqlgsia03kfhv8m9mav6hfnbawpg0yg-cargo-1.86.0/bin/cargo test --workspace`
+  — passed: 35 unit tests and all doc tests on Rust/Cargo 1.86.0.
+- An initial minimum-toolchain invocation pinned `RUSTC` but not `RUSTDOC`;
+  all 35 unit tests passed, then ambient Rustdoc 1.97 rejected the Rust 1.86
+  artifacts as compiler-incompatible. Pinning both tools as above fixed the
+  environment mismatch without a code change.
 
 ## Completed Work Package 3 exit criteria
 
@@ -47,7 +83,7 @@ behaviour.
 - Host workspace checks remain green and target/Renode commands are recorded.
 - No peripheral behaviour is invented and no hardware is flashed.
 
-## Last verification
+## Work Package 3 verification
 
 Verified 2026-08-05:
 

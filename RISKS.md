@@ -30,8 +30,11 @@
 - **State:** open
 - **Impact:** candidate/commit isolation does not yet prove recovery from power
   loss on physical non-volatile media.
-- **Mitigation:** model dual-slot headers, generations, and fault injection in
-  Work Package 4 after physical storage is identified.
+- **Mitigation:** `STORE-004` adds checksum and complete validation only to an
+  offline logical configuration image; it deliberately does not claim physical
+  durability. After physical storage is identified, separately define and
+  model dual-slot headers, generations, and power-loss fault injection before
+  implementing a device persistence layout.
 
 ## RISK-005 — Physical reset mapping and firmware packaging are unverified
 

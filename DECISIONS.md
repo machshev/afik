@@ -116,3 +116,18 @@ meaning.
   part of the behaviour under test.
 - A passing model proves software behaviour against declared assumptions, not
   the physical UV-K5 reset map or bootloader packaging.
+
+## ADR-012 — Configuration images are canonical logical containers
+
+- **Date:** 2026-08-06
+- **Status:** accepted for `STORE-004`
+- `radio-storage` owns a versioned, CRC-32-protected image containing a complete
+  logical object set in strict `(kind, ID)` order. Its codec is `no_std`, uses
+  borrowed input and caller-provided output, and validates the complete image
+  before exposing objects.
+- `radio-programmer` canonicalises compiled objects and revalidates all
+  negotiated object, frame, storage-version, and plan-encoding limits when
+  importing an image. Image import remains an offline compiler operation.
+- The image format is not a DP32G030 flash layout, transactional journal,
+  project-file syntax, or proof of power-loss durability. Those concerns
+  require separate evidence and decisions.
