@@ -329,7 +329,17 @@ First raw-matrix physical observation on 2026-08-06:
 - Embedded build, ELF/package positive and negative checks, three repeated
   Renode runs, Nix flake evaluation, workspace formatting, warning-denied
   workspace Clippy, all workspace tests, and `git diff --check` passed. No
-  SPI-suppressed image write has yet been sent.
+  source or artifact gate failed.
+
+SPI-suppressed diagnostic write on 2026-08-06:
+
+- A fresh read-only identify reported K1 bootloader `7.03.01` on the expected
+  external CH340 path.
+- The guarded writer revalidated the 57,852-byte image, recovery image, retained
+  EEPROM backup (`backup_crc32=99765400`), exact guards, and CRC-32 `0b98c076`.
+- K1 `7.03.01` acknowledged all `226/226` pages in transaction `1a79dec2` and
+  reported `acknowledged_not_read_back`. No retry or reset command was sent.
+- Normal boot and released/held-MENU raw observations remain pending.
 
 ## Work Package 14 implementation milestone
 

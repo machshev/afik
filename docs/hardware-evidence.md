@@ -422,6 +422,10 @@ order are maintained in `docs/k1-bring-up.md`.
   by the prebuilt host binary; response returned after release. This does not
   yet establish the raw held mask because the key-triggered synchronous SPI
   path executes before a later serial request can be serviced.
+- **Isolated-image write:** K1 `7.03.01` acknowledged all 226 pages of the
+  57,852-byte SPI-suppressed diagnostic in transaction `1a79dec2` and reported
+  `acknowledged_not_read_back`. Normal boot and raw held-key behavior are not
+  implied by these acknowledgments.
 
 ## Sources used by DP32-003
 

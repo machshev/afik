@@ -1052,4 +1052,5 @@
 - **SPI-suppressed diagnostic artifact:** all focused, workspace, embedded,
   image, and three-repeat Renode gates pass. The 57,852-byte image has SHA-256
   `c50baea15ebcf11805e7fff670cc4e0734c5ad1d52e09512acdb58c68c6e7fb9`
-  and CRC-32 `0b98c076`; physical write remains pending.
+  and CRC-32 `0b98c076`. K1 `7.03.01` acknowledged all 226 pages in transaction
+  `1a79dec2` without retry; normal-boot raw observations remain pending.
