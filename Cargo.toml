@@ -6,6 +6,7 @@ members = [
     "crates/radio-bk4819",
     "crates/radio-firmware-dp32g030",
     "crates/radio-k5-flasher",
+    "crates/radio-k5-flasher-cli",
     "crates/radio-channel-plan",
     "crates/radio-channel-control",
     "crates/radio-storage",

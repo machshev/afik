@@ -1,0 +1,19 @@
+[package]
+name = "radio-k5-flasher-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Thin explicit-device CLI for recovery-gated UV-K5 V1 flashing"
+
+[dependencies]
+radio-k5-flasher = { path = "../radio-k5-flasher" }
+radio-programmer-serial = { path = "../radio-programmer-serial" }
+
+[[bin]]
+name = "afik-k5"
+path = "src/main.rs"
+
+[lints]
+workspace = true

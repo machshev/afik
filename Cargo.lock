@@ -46,6 +46,14 @@ name = "radio-k5-flasher"
 version = "0.1.0"
 
 [[package]]
+name = "radio-k5-flasher-cli"
+version = "0.1.0"
+dependencies = [
+ "radio-k5-flasher",
+ "radio-programmer-serial",
+]
+
+[[package]]
 name = "radio-programmer"
 version = "0.1.0"
 dependencies = [

@@ -94,16 +94,32 @@ impl LinuxSerialTransport {
     }
 }
 
+impl Read for LinuxSerialTransport {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.file.read(buffer)
+    }
+}
+
+impl Write for LinuxSerialTransport {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.file.write(buffer)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
+    }
+}
+
 impl ProtocolTransport for LinuxSerialTransport {
     type Error = io::Error;
 
     fn send(&mut self, frame: &[u8]) -> Result<(), Self::Error> {
-        self.file.write_all(frame)?;
-        self.file.flush()
+        Write::write_all(self, frame)?;
+        Write::flush(self)
     }
 
     fn receive(&mut self, buffer: &mut [u8]) -> Result<usize, Self::Error> {
-        self.file.read(buffer)
+        Read::read(self, buffer)
     }
 }
 
