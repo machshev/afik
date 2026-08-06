@@ -1,7 +1,7 @@
 use std::{error::Error, fmt, io, io::Read, io::Write};
 
 use crate::{
-    codec::{receive_packet, send_packet, Packet},
+    codec::{receive_packet, receive_packet_with_response_crc, send_packet, Packet},
     image::{ApplicationImage, EepromBackup, ImageError, EEPROM_BYTES, FLASH_PAGE_BYTES},
 };
 
@@ -343,7 +343,12 @@ pub fn probe_bootloader_v2<T: Read>(transport: &mut T) -> Result<BootloaderInfo,
 
 /// Reads one beacon and classifies only the pinned K1 or qualified K5 protocol.
 pub fn detect_bootloader<T: Read>(transport: &mut T) -> Result<BootloaderFamily, FlashError> {
-    parse_bootloader_family(&receive_packet(transport)?)
+    let (packet, response_crc) = receive_packet_with_response_crc(transport)?;
+    let family = parse_bootloader_family(&packet)?;
+    if response_crc != 0xFFFF && !matches!(family, BootloaderFamily::K1(_)) {
+        return Err(FlashError::InvalidResponseCrc(response_crc));
+    }
+    Ok(family)
 }
 
 /// Writes all 240 application pages after validating every prerequisite.
@@ -646,7 +651,7 @@ mod tests {
     use std::{collections::VecDeque, io, io::Read, io::Write};
 
     use crate::{
-        codec::{crc16_xmodem, encode_response},
+        codec::{crc16_xmodem, encode_response, encode_response_with_trailer},
         image::{ApplicationImage, EepromBackup, EEPROM_BYTES, FLASH_PAGE_COUNT},
     };
 
@@ -891,7 +896,7 @@ mod tests {
         let mut k1_payload = vec![0_u8; 36];
         k1_payload[0..4].copy_from_slice(&[0x18, 0x05, 0x20, 0x00]);
         k1_payload[20..27].copy_from_slice(b"7.03.01");
-        let mut k1 = ScriptedTransport::new(encode_response(&k1_payload), 1);
+        let mut k1 = ScriptedTransport::new(encode_response_with_trailer(&k1_payload, 0x6ED1), 1);
         assert!(matches!(
             detect_bootloader(&mut k1).unwrap(),
             BootloaderFamily::K1(ref info) if info.version() == "7.03.01"

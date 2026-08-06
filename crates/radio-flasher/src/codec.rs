@@ -63,6 +63,27 @@ pub fn send_packet<T: Write>(transport: &mut T, payload: &[u8]) -> Result<(), Fl
 
 /// Reads and decodes one complete legacy packet with bounded resynchronisation.
 pub fn receive_packet<T: Read>(transport: &mut T) -> Result<Packet, FlashError> {
+    let (packet, response_crc) = receive_packet_with_response_crc(transport)?;
+    if response_crc != 0xFFFF {
+        return Err(FlashError::InvalidResponseCrc(response_crc));
+    }
+    Ok(packet)
+}
+
+/// Reads a device packet without interpreting its decoded trailer.
+///
+/// The K1 bootloader emits a bounded frame whose device-side trailer is not
+/// the K5 response marker. K1 callers still validate the complete envelope and
+/// payload structure, then apply their command-specific checks.
+pub(crate) fn receive_packet_without_response_crc<T: Read>(
+    transport: &mut T,
+) -> Result<Packet, FlashError> {
+    receive_packet_with_response_crc(transport).map(|(packet, _)| packet)
+}
+
+pub(crate) fn receive_packet_with_response_crc<T: Read>(
+    transport: &mut T,
+) -> Result<(Packet, u16), FlashError> {
     find_header(transport)?;
     let length_low = read_byte(transport)?;
     let length_high = read_byte(transport)?;
@@ -79,10 +100,8 @@ pub fn receive_packet<T: Read>(transport: &mut T) -> Result<Packet, FlashError> 
     }
     xor(&mut encoded[..length + 2]);
     let response_crc = u16::from_le_bytes([encoded[length], encoded[length + 1]]);
-    if response_crc != 0xFFFF {
-        return Err(FlashError::InvalidResponseCrc(response_crc));
-    }
-    Packet::from_slice(&encoded[..length])
+    let packet = Packet::from_slice(&encoded[..length])?;
+    Ok((packet, response_crc))
 }
 
 fn find_header<T: Read>(transport: &mut T) -> Result<(), FlashError> {
@@ -146,6 +165,11 @@ fn xor(bytes: &mut [u8]) {
 
 #[cfg(test)]
 pub(crate) fn encode_response(payload: &[u8]) -> Vec<u8> {
+    encode_response_with_trailer(payload, 0xFFFF)
+}
+
+#[cfg(test)]
+pub(crate) fn encode_response_with_trailer(payload: &[u8], trailer: u16) -> Vec<u8> {
     let mut frame = vec![0_u8; payload.len() + 8];
     frame[0..2].copy_from_slice(&[0xAB, 0xCD]);
     frame[2..4].copy_from_slice(
@@ -154,7 +178,7 @@ pub(crate) fn encode_response(payload: &[u8]) -> Vec<u8> {
             .to_le_bytes(),
     );
     frame[4..4 + payload.len()].copy_from_slice(payload);
-    frame[4 + payload.len()..6 + payload.len()].copy_from_slice(&0xFFFF_u16.to_le_bytes());
+    frame[4 + payload.len()..6 + payload.len()].copy_from_slice(&trailer.to_le_bytes());
     xor(&mut frame[4..6 + payload.len()]);
     frame[6 + payload.len()..].copy_from_slice(&[0xDC, 0xBA]);
     frame
@@ -164,7 +188,10 @@ pub(crate) fn encode_response(payload: &[u8]) -> Vec<u8> {
 mod tests {
     use std::io::Cursor;
 
-    use super::{crc16_xmodem, encode_response, receive_packet, send_packet};
+    use super::{
+        crc16_xmodem, encode_response, encode_response_with_trailer, receive_packet,
+        receive_packet_without_response_crc, send_packet,
+    };
     use crate::workflow::FlashError;
 
     const SOURCED_V2_BEACON: [u8; 44] = [
@@ -225,6 +252,21 @@ mod tests {
             receive_packet(&mut Cursor::new(oversized)),
             Err(FlashError::PacketTooLarge(273))
         ));
+    }
+
+    #[test]
+    fn explicit_k1_path_decodes_non_marker_device_trailer() {
+        let frame = encode_response_with_trailer(&CLEAR_V2_BEACON, 0x6ED1);
+        assert!(matches!(
+            receive_packet(&mut Cursor::new(frame.clone())),
+            Err(FlashError::InvalidResponseCrc(0x6ED1))
+        ));
+        assert_eq!(
+            receive_packet_without_response_crc(&mut Cursor::new(frame))
+                .unwrap()
+                .as_slice(),
+            CLEAR_V2_BEACON
+        );
     }
 
     #[test]

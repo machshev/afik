@@ -2,7 +2,7 @@
 
 use std::{fmt, io::Read, io::Write};
 
-use crate::{receive_packet, send_packet, FlashError, Packet};
+use crate::{codec::receive_packet_without_response_crc, send_packet, FlashError, Packet};
 
 /// Exact operator phrase for the validated K1 recovery protocol.
 pub const K1_RECOVERY_TARGET_CONFIRMATION: &str = "UV-K1-F4HWN-7.03.01";
@@ -229,7 +229,7 @@ where
     }
 
     for _ in 0..3 {
-        let beacon = receive_packet(transport)?;
+        let beacon = receive_packet_without_response_crc(transport)?;
         let actual_version = parse_k1_beacon(&beacon)?;
         if actual_version != bootloader_version {
             return Err(K1FlashError::UnsupportedBootloader(actual_version));
@@ -308,7 +308,7 @@ fn receive_page_ack<T: Read>(
     expected_page: u16,
 ) -> Result<(), K1FlashError> {
     loop {
-        let packet = receive_packet(transport)?;
+        let packet = receive_packet_without_response_crc(transport)?;
         if packet_command(packet.as_slice()) == K1_BEACON {
             parse_k1_beacon(&packet)?;
             continue;
@@ -357,7 +357,7 @@ mod tests {
         flash_recovery, K1FlashError, K1ImageError, K1RecoveryImage,
         K1_RECOVERY_TARGET_CONFIRMATION,
     };
-    use crate::codec::encode_response;
+    use crate::codec::encode_response_with_trailer;
 
     struct ScriptedTransport {
         input: Cursor<Vec<u8>>,
@@ -391,7 +391,7 @@ mod tests {
         payload[0..2].copy_from_slice(&0x0518_u16.to_le_bytes());
         payload[2..4].copy_from_slice(&32_u16.to_le_bytes());
         payload[20..27].copy_from_slice(b"7.03.01");
-        encode_response(&payload)
+        encode_response_with_trailer(&payload, 0x6ED1)
     }
 
     fn ack(transaction: u32, page: u16, result: u16) -> Vec<u8> {
@@ -401,7 +401,7 @@ mod tests {
         payload[4..8].copy_from_slice(&transaction.to_le_bytes());
         payload[8..10].copy_from_slice(&page.to_le_bytes());
         payload[10..12].copy_from_slice(&result.to_le_bytes());
-        encode_response(&payload)
+        encode_response_with_trailer(&payload, 0x6ED1)
     }
 
     fn raw_image(length: usize) -> Vec<u8> {
