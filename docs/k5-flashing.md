@@ -19,6 +19,8 @@ minimal AFIK image a usable radio firmware.
   version. Bootloader v5 and unknown variants are rejected.
 - Flashing is one full 240-page write. There is no address, length, partial,
   resume, retry, bootloader-write, or wildcard-version option.
+- Each run uses a new explicit nonzero transaction identifier and requires the
+  bootloader to echo it with the exact page index and zero result.
 - A bootloader acknowledgement is not flash read-back and is not proof that the
   application booted.
 

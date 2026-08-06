@@ -660,16 +660,18 @@ explicitly bounded.
   36-byte sample contains printable version `2.00.06`. A `0x0530` request sends
   a zero-padded, at-most-16-byte ASCII firmware-family version. The wildcard
   accepted by third-party tools bypasses the observed version check.
-- **Observation:** a `0x0519` request carries header-size `0x010C`, transaction
-  word `0x1D9F8D8A`, little-endian 256-byte page index and total page count,
-  actual length, zero padding, and one 256-byte data area. `0x051A` returns the
-  transaction word, page index, and a zero success result. Bootloader beacons
-  may continue before the first page acknowledgement.
+- **Observation:** a `0x0519` request carries header-size `0x010C`, a 32-bit
+  transaction word, little-endian 256-byte page index and total page count,
+  actual length, zero padding, and one 256-byte data area. k5prog uses observed
+  word `0x1D9F8D8A`; K5TOOL generates a nonzero word per run. `0x051A` returns
+  that word, the page index, and a zero success result. Bootloader beacons may
+  continue before the first page acknowledgement.
 - **Inference:** AFIK will accept only a 36-byte `2.*` beacon, prohibit version
-  wildcards, write all 240 full pages in ascending order, accept only exact
-  matching zero-result acknowledgements, and stop on the first deviation. It
-  will not retry an unacknowledged page because whether the prior write took
-  effect is not observable.
+  wildcards, take an explicit nonzero per-run transaction word, write all 240
+  full pages in ascending order, accept only exact matching zero-result
+  acknowledgements, and stop on the first deviation. It will not retry an
+  unacknowledged page because whether the prior write took effect is not
+  observable.
 - **Confidence:** medium for bootloader 2.00.06 on a qualified old V1 unit; low
   for other bootloaders. Page acknowledgement is not flash read-back.
 - **Permitted use:** implement one fail-closed bootloader-v2 host workflow and

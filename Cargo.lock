@@ -42,6 +42,10 @@ name = "radio-firmware-dp32g030"
 version = "0.1.0"
 
 [[package]]
+name = "radio-k5-flasher"
+version = "0.1.0"
+
+[[package]]
 name = "radio-programmer"
 version = "0.1.0"
 dependencies = [

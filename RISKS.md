@@ -188,9 +188,9 @@
   partial image, and blindly retrying an ambiguous page may have undocumented
   effects.
 - **Mitigation:** validate every prerequisite before the first write; write only
-  one complete 240-page image in ascending order; require an exact page/result
+  one complete 240-page image in ascending order; use a nonzero per-run
+  transaction identifier; require an exact transaction/page/result
   acknowledgement; stop without retry on the first missing or mismatched
   acknowledgement; keep the bootloader region outside all artifacts; maintain
-  power and cable stability; and prove stock recovery before AFIK. Report
-  completion as acknowledged writes until separate read-back and boot evidence
-  exists.
+  power and cable stability; and prove stock recovery before AFIK. Report only
+  acknowledged writes until separate read-back and boot evidence exists.
