@@ -415,3 +415,45 @@
   per-process token and explicit confirmation header. Model, endpoint, HTTP,
   asset, binary, CLI-regression, full workspace, and Rust 1.86 tests pass; local
   service and physical serial limits remain open in `RISK-010` and `RISK-009`.
+
+## FREQ-010 — Frequency Copy research
+
+- **Status:** active
+- **Objective:** determine what a safe AFIK Frequency Copy feature could claim,
+  represent, and require before any BK4819 scan command or target integration is
+  implemented.
+- **Scope:** distinguish the UV-K5 Fast Copy/Frequency Meter workflow from Air
+  Copy; record the FCC-filed user-visible behavior; confirm only Beken's public
+  chip-level capabilities as high-confidence facts; assess the mirrored
+  machine-translated BK4819(V3) scan fields and existing UV-K5-family firmware
+  as separately labeled low-confidence evidence; inventory observable and
+  non-observable channel properties; define a bounded receive-only result,
+  explicit-input state-machine proposal, failure/timeout semantics, user review
+  and storage handoff, TX-policy boundary, evidence gaps, and non-transmitting
+  experiments; and issue an implementation-readiness verdict. Register-driver
+  changes, target adapters, simulator register behavior, automatic channel
+  writes, transmit defaults, Air Copy replication, RF emission, flashing, and
+  physical-success claims are excluded.
+- **Dependencies:** `RF-006`, `SCAN-007`, the logical UI/storage/TX-policy
+  boundaries, official Beken product material, the FCC-filed Quansheng manual,
+  and explicitly qualified secondary register/firmware evidence.
+- **Assumptions:** the public product manual describes intended user behavior
+  but not silicon behavior; Beken's product page confirms feature existence but
+  not commands; the available V3 note and firmware descendants may guide
+  experiments but cannot establish the fitted revision, board RF path, crystal,
+  register preservation masks, timing, accuracy, or safe production sequence.
+- **Likely files:** `docs/hardware-evidence.md`, a Frequency Copy feasibility
+  document, `DECISIONS.md`, `RISKS.md`, `TASKS.md`, and `STATUS.md`.
+- **Tests required:** no behavioral code is authorized. Review must trace every
+  proposed field/transition to a source, label copied fact versus inference,
+  reject unsupported channel properties and TX authority, and name bounded
+  deterministic tests for a future implementation. Existing formatting,
+  Clippy, workspace tests, and Rust 1.86 checks must remain green.
+- **Acceptance criteria:** research records source identity/provenance and exact
+  Fast Copy semantics; separates official capability, unverified register
+  description, firmware observation, AFIK inference, and unknowns; defines a
+  heap-free bounded candidate/state proposal with no transmit-capable output;
+  identifies false-lock, timeout, tone/code, crystal, accuracy, cleanup, and
+  board-path risks; specifies reproducible receive-only experiments and future
+  simulator/fault tests; gives a clear implement/defer verdict; and makes no
+  production or physical behavior claim.

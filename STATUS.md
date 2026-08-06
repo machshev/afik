@@ -2,13 +2,13 @@
 
 ## Current work package
 
-**Work Package 9 — local programmer web GUI (`GUI-009`) is complete. No later
-work package is active.**
+**Work Package 10 — Frequency Copy research (`FREQ-010`) is active.**
 
-The package is limited to shared programmer workflows/serial transport and a
-single-user, loopback-only graphical web front end over a persistent simulator
-or explicit serial session. It does not add remote service, target behavior,
-raw writes, unsupported project formats, or security/physical success claims.
+The package is evidence and design research only. It distinguishes one-channel
+frequency measurement from Air Copy, records chip/register confidence, defines
+a fail-closed candidate-data boundary, and names required experiments. It does
+not add register commands, target integration, automatic channel mutation,
+transmit permission, flashing, or physical measurement claims.
 
 ## State
 
@@ -21,6 +21,7 @@ raw writes, unsupported project formats, or security/physical success claims.
 - Work Package 7 channel activation and deterministic scanning: complete.
 - Work Package 8 programmer CLI: complete.
 - Work Package 9 programmer GUI: complete.
+- Work Package 10 Frequency Copy research: active.
 - `UI-005` logical key edges, bounded semantic views, exact boot-only entry,
   release gate, draft editor, and checked persistence action: complete.
 - `UI-005` separate persisted/active policy simulation, deterministic timed
@@ -63,8 +64,9 @@ raw writes, unsupported project formats, or security/physical success claims.
   session, bounded loopback HTTP, responsive object workflow, canonical
   downloads/uploads, confirmed token-gated mutation, and binary tests:
   complete.
-- Next smallest task: define and activate the evidence-only Frequency Copy
-  research package from roadmap item 10 before making any implementation claim.
+- Next smallest task: record the FCC-filed manual's exact Fast Copy workflow and
+  its distinction from Wireless Radio Replication, with source confidence and
+  no register inference.
 
 ## Completed Work Package 9 exit criteria
 

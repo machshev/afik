@@ -110,3 +110,20 @@
   sends that header only after deliberate confirmation. Do not add non-loopback
   bind, claim authentication, or deploy it as a shared service without a
   separate threat model and security package.
+
+## RISK-011 — Frequency Copy silicon behavior is unverified
+
+- **State:** open
+- **Impact:** a frequency/tone result derived from unverified BK4819 scan
+  fields, crystal assumptions, unexplained register constants, or an unknown
+  board RF path may be wrong, stale, aliased, or leave the receiver in an
+  unknown state. Automatically turning such a result into a transmit-capable
+  channel could cause unintended transmission on an unverified frequency.
+- **Mitigation:** `FREQ-010` is research-only. Treat the FCC-filed radio manual
+  as user-workflow evidence, Beken's product page as feature-existence evidence,
+  and the mirrored V3 note plus existing firmware only as experiment-planning
+  evidence. A future feature must yield a receive-only reviewed candidate,
+  never TX authority, and remain blocked until the fitted chip/crystal/board are
+  identified and bounded non-transmitting signal-generator experiments verify
+  scan start, completion, units, accuracy, false locks, tone/code results,
+  timeout, retrigger, and safe cleanup.
