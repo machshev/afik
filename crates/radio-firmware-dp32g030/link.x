@@ -1,10 +1,14 @@
 OUTPUT_ARCH(arm)
 ENTRY(Reset)
 
-/* EVID-DP32-002: DP32G030 reference manual v1.23, sections 5.1-5.2. */
+/*
+ * EVID-DP32-002: DP32G030 has 64 KiB program flash.
+ * EVID-K5-009: qualified UV-K5 V1 deployment reserves the final 4 KiB for the
+ * stock bootloader, leaving an application region ending at 0x0000F000.
+ */
 MEMORY
 {
-  FLASH (rx)  : ORIGIN = 0x00000000, LENGTH = 64K
+  FLASH (rx)  : ORIGIN = 0x00000000, LENGTH = 60K
   RAM   (rwx) : ORIGIN = 0x20000000, LENGTH = 16K
 }
 
@@ -48,6 +52,7 @@ SECTIONS
   } > RAM
 
   __ram_image_end = .;
+  __application_end = ORIGIN(FLASH) + LENGTH(FLASH);
   __stack_top = ORIGIN(RAM) + LENGTH(RAM);
 
   .ARM.attributes 0 :

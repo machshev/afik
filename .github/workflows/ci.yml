@@ -34,5 +34,9 @@ jobs:
         run: nix develop path:. -c tool/build-dp32g030.sh
       - name: Verify target ELF contract
         run: nix develop path:. -c tool/verify-dp32g030-image.sh
+      - name: Package and verify UV-K5 V1 application
+        run: |
+          nix develop path:. -c tool/package-k5-v1-image.sh
+          nix develop path:. -c tool/test-k5-v1-package.sh
       - name: Prove reset path in Renode
         run: nix develop path:. -c tool/test-renode.sh

@@ -39,7 +39,7 @@ fi
 while read -r virtual_address memory_size; do
   segment_start=$((virtual_address))
   segment_end=$((virtual_address + memory_size))
-  if (( segment_start >= 0 && segment_end <= 0x00010000 )); then
+  if (( segment_start >= 0 && segment_end <= 0x0000f000 )); then
     continue
   fi
   if (( segment_start >= 0x20000000 && segment_end <= 0x20004000 )); then
@@ -58,6 +58,7 @@ symbol_address() {
 stack_top="$(symbol_address __stack_top)"
 sentinel_start="$(symbol_address __boot_sentinel_start)"
 flash_end="$(symbol_address __flash_image_end)"
+application_end="$(symbol_address __application_end)"
 
 [[ "$stack_top" == "20004000" ]] || {
   echo "unexpected stack top: $stack_top" >&2
@@ -67,8 +68,12 @@ flash_end="$(symbol_address __flash_image_end)"
   echo "unexpected boot sentinel address: $sentinel_start" >&2
   exit 1
 }
-if (( 16#$flash_end > 16#00010000 )); then
-  echo "flash image exceeds 64 KiB: $flash_end" >&2
+[[ "$application_end" == "0000f000" ]] || {
+  echo "unexpected qualified K5 V1 application end: $application_end" >&2
+  exit 1
+}
+if (( 16#$flash_end > 16#0000f000 )); then
+  echo "flash image reaches the reserved K5 V1 bootloader region: $flash_end" >&2
   exit 1
 fi
 
@@ -91,8 +96,8 @@ if (( (16#$reset_vector & 1) == 0 )); then
   echo "Reset vector does not select Thumb code: $reset_vector" >&2
   exit 1
 fi
-if (( 16#$reset_vector < 8 || 16#$reset_vector > 16#0000ffff )); then
-  echo "Reset vector is outside evidenced flash: $reset_vector" >&2
+if (( 16#$reset_vector < 8 || 16#$reset_vector >= 16#0000f000 )); then
+  echo "Reset vector is outside the qualified K5 V1 application: $reset_vector" >&2
   exit 1
 fi
 
@@ -101,3 +106,4 @@ echo "  initial SP: 0x$initial_stack"
 echo "  Reset vector: 0x$reset_vector"
 echo "  boot sentinel: 0x$sentinel_start"
 echo "  flash image end: 0x$flash_end"
+echo "  application end: 0x$application_end"
