@@ -1367,3 +1367,22 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   request timed out, and a subsequent hello passed. No other register was
   requested and no raw value was observed. A no-MMIO response through the same
   command path is required before assigning the fault to RCC access.
+
+### EVID-K1-048 — Serial-only clock diagnostic image
+
+- **Runtime boundary:** Reset stores the RAM witness, initializes only
+  GPIOA/USART1, and polls for hello or clock-diagnostic commands. Display,
+  keypad, backlight, debounce, matrix scanning, SPI1, GPIOB, and GPIOF are not
+  initialized or serviced by this image.
+- **No-MMIO control:** request `0x7f1c` returns response `0x7f1d` with fixed
+  marker `0x4b31434c`. The host rejects the wrong command, length, reserved
+  fields, or marker before reporting success.
+- **Verified artifact:** Nix flake evaluation, formatting, warning-denied
+  workspace Clippy, all 130 workspace tests, target clock-handoff Clippy, ELF
+  and raw-image validation, and negative package fixtures passed. The
+  51,340-byte raw image has SHA-256
+  `ce97df6718d6ff2b9bee88ca8443ef15a63ea2484231b265501eef7739803585`
+  and CRC-32 `b8731d25`.
+- **Boundary:** the existing keypad Renode scenario is intentionally
+  inapplicable because this entry point excludes keypad behavior. No physical
+  write, application boot, no-MMIO response, or RCC value is claimed yet.

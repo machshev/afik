@@ -14,6 +14,9 @@ const COMMAND_CLOCK_REQUEST: u16 = 0x7F12;
 const COMMAND_CLOCK_RESPONSE: u16 = 0x7F13;
 const COMMAND_CLOCK_REGISTER_REQUESTS: [u16; 4] = [0x7F14, 0x7F16, 0x7F18, 0x7F1A];
 const COMMAND_CLOCK_REGISTER_RESPONSES: [u16; 4] = [0x7F15, 0x7F17, 0x7F19, 0x7F1B];
+const COMMAND_CLOCK_CONTROL_REQUEST: u16 = 0x7F1C;
+const COMMAND_CLOCK_CONTROL_RESPONSE: u16 = 0x7F1D;
+const CLOCK_CONTROL_MARKER: u32 = 0x4B31_434C;
 const COMMAND_READ_EEPROM_REQUEST: u16 = 0x051B;
 const COMMAND_READ_EEPROM_RESPONSE: u16 = 0x051C;
 const COMMAND_V2_BEACON: u16 = 0x0518;
@@ -441,6 +444,38 @@ pub fn probe_clock_register<T: Read + Write>(
     parse_clock_register_response(&receive_packet(transport)?, index)
 }
 
+/// Exercises the clock diagnostic command/response path without any MMIO read.
+pub fn probe_clock_control<T: Read + Write>(transport: &mut T) -> Result<u32, FlashError> {
+    send_packet(transport, &session_request(COMMAND_CLOCK_CONTROL_REQUEST))?;
+    let packet = receive_packet(transport)?;
+    let payload = packet.as_slice();
+    require_packet(
+        payload,
+        COMMAND_CLOCK_CONTROL_RESPONSE,
+        8,
+        12,
+        "AFIK K1 no-MMIO clock control",
+    )?;
+    if payload[4] != 0xA5 || payload[5..8] != [0, 0, 0] {
+        return Err(FlashError::UnexpectedPacket {
+            expected: "bounded AFIK K1 no-MMIO clock control fields",
+            command: Some(COMMAND_CLOCK_CONTROL_RESPONSE),
+            length: payload.len(),
+        });
+    }
+    let mut marker_bytes = [0_u8; 4];
+    marker_bytes.copy_from_slice(&payload[8..12]);
+    let marker = u32::from_le_bytes(marker_bytes);
+    if marker != CLOCK_CONTROL_MARKER {
+        return Err(FlashError::UnexpectedPacket {
+            expected: "AFIK K1 no-MMIO clock control marker",
+            command: Some(COMMAND_CLOCK_CONTROL_RESPONSE),
+            length: payload.len(),
+        });
+    }
+    Ok(marker)
+}
+
 /// Waits for one exact, printable version-2 bootloader beacon.
 pub fn probe_bootloader_v2<T: Read>(transport: &mut T) -> Result<BootloaderInfo, FlashError> {
     parse_bootloader_beacon(&receive_packet(transport)?)
@@ -847,9 +882,9 @@ mod tests {
 
     use super::{
         backup_eeprom, detect_bootloader, flash_application, probe_bootloader_v2,
-        probe_clock_registers, probe_clock_snapshot, probe_keypad_matrix, probe_normal_firmware,
-        BootloaderFamily, FirmwareVersion, FlashError, FlashPrerequisites, FlashPurpose,
-        QUALIFIED_TARGET_CONFIRMATION, RECOVERY_REHEARSED_CONFIRMATION,
+        probe_clock_control, probe_clock_registers, probe_clock_snapshot, probe_keypad_matrix,
+        probe_normal_firmware, BootloaderFamily, FirmwareVersion, FlashError, FlashPrerequisites,
+        FlashPurpose, QUALIFIED_TARGET_CONFIRMATION, RECOVERY_REHEARSED_CONFIRMATION,
     };
 
     const TEST_TRANSACTION_ID: u32 = 0xA55A_1234;
@@ -1221,6 +1256,17 @@ mod tests {
                 .map(|request| u16::from_le_bytes([request[0], request[1]]))
                 .collect::<Vec<_>>(),
             [0x7F14, 0x7F16, 0x7F18, 0x7F1A]
+        );
+    }
+
+    #[test]
+    fn clock_control_proves_the_path_without_register_data() {
+        let response = [0x1D, 0x7F, 8, 0, 0xA5, 0, 0, 0, 0x4C, 0x43, 0x31, 0x4B];
+        let mut transport = ScriptedTransport::new(encode_response(&response), 1);
+        assert_eq!(probe_clock_control(&mut transport).unwrap(), 0x4B31_434C);
+        assert_eq!(
+            decode_requests(&transport.writes),
+            vec![vec![0x1C, 0x7F, 0x04, 0x00, 0x6A, 0x39, 0x57, 0x64]]
         );
     }
 

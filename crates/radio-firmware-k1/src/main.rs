@@ -1,4 +1,4 @@
-//! Minimal UV-K1/PY32F071 Cortex-M0+ serial witness application.
+//! Minimal UV-K1/PY32F071 Cortex-M0+ serial-only clock diagnostic.
 
 #![no_std]
 #![no_main]
@@ -7,19 +7,10 @@
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use radio_firmware_k1::backlight::constant_on_plan;
 use radio_firmware_k1::clock_handoff::{snapshot_from_registers, validate};
-use radio_firmware_k1::display::{
-    initialise as display_initialise, render_key_witness, render_witness, write_frame, DisplayBus,
-    TransferKind, FRAME_BYTES,
-};
-use radio_firmware_k1::keypad::{
-    active_rows_from_gpio_idr, decode, gpio_plan, scan, Debouncer, Edge, MatrixBus, RawGpioLatch,
-    Sample,
-};
 use radio_firmware_k1::protocol::{
-    decode_request, encode_clock_register_response, encode_clock_response, encode_hello_response,
-    encode_keypad_response, Request, REQUEST_BODY_BYTES,
+    decode_request, encode_clock_control_response, encode_clock_register_response,
+    encode_clock_response, encode_hello_response, Request, REQUEST_BODY_BYTES,
 };
 
 const INITIAL_STACK_POINTER: u32 = 0x2000_4000;
@@ -27,9 +18,6 @@ const BOOT_SENTINEL_VALUE: u32 = 0x4B31_B007;
 
 const RCC_BASE: usize = 0x4002_1000;
 const GPIOA_BASE: usize = 0x5000_0000;
-const GPIOB_BASE: usize = 0x5000_0400;
-const GPIOF_BASE: usize = 0x5000_1400;
-const SPI1_BASE: usize = 0x4001_3000;
 const USART1_BASE: usize = 0x4001_3800;
 
 const RCC_IOPENR: usize = RCC_BASE + 0x34;
@@ -43,26 +31,7 @@ const GPIOA_MODER: usize = GPIOA_BASE;
 const GPIOA_OTYPER: usize = GPIOA_BASE + 0x04;
 const GPIOA_OSPEEDR: usize = GPIOA_BASE + 0x08;
 const GPIOA_PUPDR: usize = GPIOA_BASE + 0x0C;
-const GPIOA_BSRR: usize = GPIOA_BASE + 0x18;
-const GPIOA_AFRL: usize = GPIOA_BASE + 0x20;
 const GPIOA_AFRH: usize = GPIOA_BASE + 0x24;
-const GPIOA_BRR: usize = GPIOA_BASE + 0x28;
-const GPIOB_MODER: usize = GPIOB_BASE;
-const GPIOB_OTYPER: usize = GPIOB_BASE + 0x04;
-const GPIOB_OSPEEDR: usize = GPIOB_BASE + 0x08;
-const GPIOB_PUPDR: usize = GPIOB_BASE + 0x0C;
-const GPIOB_BSRR: usize = GPIOB_BASE + 0x18;
-const GPIOB_BRR: usize = GPIOB_BASE + 0x28;
-const GPIOB_IDR: usize = GPIOB_BASE + 0x10;
-const GPIOF_MODER: usize = GPIOF_BASE;
-const GPIOF_OTYPER: usize = GPIOF_BASE + 0x04;
-const GPIOF_OSPEEDR: usize = GPIOF_BASE + 0x08;
-const GPIOF_PUPDR: usize = GPIOF_BASE + 0x0C;
-const GPIOF_BSRR: usize = GPIOF_BASE + 0x18;
-const SPI1_CR1: usize = SPI1_BASE;
-const SPI1_CR2: usize = SPI1_BASE + 0x04;
-const SPI1_SR: usize = SPI1_BASE + 0x08;
-const SPI1_DR: usize = SPI1_BASE + 0x0C;
 const USART1_SR: usize = USART1_BASE;
 const USART1_DR: usize = USART1_BASE + 0x04;
 const USART1_BRR: usize = USART1_BASE + 0x08;
@@ -71,9 +40,6 @@ const USART1_CR2: usize = USART1_BASE + 0x10;
 const USART1_CR3: usize = USART1_BASE + 0x14;
 
 const RCC_GPIOA_ENABLE: u32 = 1 << 0;
-const RCC_GPIOB_ENABLE: u32 = 1 << 1;
-const RCC_SPI1_RESET: u32 = 1 << 12;
-const RCC_SPI1_ENABLE: u32 = 1 << 12;
 const RCC_USART1_RESET: u32 = 1 << 14;
 const RCC_USART1_ENABLE: u32 = 1 << 14;
 const USART_STATUS_RXNE: u32 = 1 << 5;
@@ -82,18 +48,6 @@ const USART_CONTROL_ENABLE: u32 = 1 << 13;
 const USART_RECEIVER_ENABLE: u32 = 1 << 2;
 const USART_TRANSMITTER_ENABLE: u32 = 1 << 3;
 const UART_BAUD_DIVISOR_48MHZ_38400: u32 = 1_250;
-const SPI_STATUS_RXNE: u32 = 1 << 0;
-const SPI_STATUS_TXE: u32 = 1 << 1;
-const SPI_STATUS_BUSY: u32 = 1 << 7;
-const SPI_CONTROL_MODE_3: u32 = (1 << 0) | (1 << 1);
-const SPI_CONTROL_MASTER: u32 = 1 << 2;
-const SPI_CONTROL_DIVIDE_64: u32 = 0b101 << 3;
-const SPI_CONTROL_ENABLE: u32 = 1 << 6;
-const SPI_CONTROL_INTERNAL_SELECT: u32 = 1 << 8;
-const SPI_CONTROL_SOFTWARE_SELECT: u32 = 1 << 9;
-const DISPLAY_A0_PIN: u32 = 1 << 6;
-const DISPLAY_CS_PIN: u32 = 1 << 2;
-const DISPLAY_POLL_LIMIT: usize = 96_000;
 
 #[repr(C)]
 struct VectorTable {
@@ -125,78 +79,45 @@ static BOOT_SENTINEL: AtomicU32 = AtomicU32::new(0);
 extern "C" fn reset() -> ! {
     BOOT_SENTINEL.store(BOOT_SENTINEL_VALUE, Ordering::Release);
     uart_init();
-    backlight_init();
-    display_init();
-    keypad_init();
-    let mut debounce = Debouncer::new();
-    let mut elapsed_ms = 0_u32;
-    let mut raw_latch = RawGpioLatch::new();
     loop {
-        if uart_has_byte() {
-            match receive_request() {
-                Some(Request::Hello) => {
-                    let mut response = [0_u8; 48];
-                    encode_hello_response(&mut response);
-                    uart_send(&response);
-                }
-                Some(Request::KeypadMatrix) => {
-                    let mut matrix = K1MatrixBus::new();
-                    let valid = scan(&mut matrix).is_ok();
-                    raw_latch.observe(matrix.raw_idr);
-                    let (reported, captured) = raw_latch.take_or(matrix.raw_idr);
-                    let mut response = [0_u8; 24];
-                    encode_keypad_response(&mut response, reported, valid, captured);
-                    uart_send(&response);
-                }
-                Some(Request::ClockSnapshot) => {
-                    let registers = [
-                        read_register(RCC_CR),
-                        read_register(RCC_ICSCR),
-                        read_register(RCC_CFGR),
-                        read_register(RCC_PLLCFGR),
-                    ];
-                    let snapshot = snapshot_from_registers(
-                        registers[0],
-                        registers[1],
-                        registers[2],
-                        registers[3],
-                    );
-                    let mut response = [0_u8; 32];
-                    encode_clock_response(&mut response, registers, validate(snapshot).is_ok());
-                    uart_send(&response);
-                }
-                Some(Request::ClockRegister(register)) => {
-                    let addresses = [RCC_CR, RCC_ICSCR, RCC_CFGR, RCC_PLLCFGR];
-                    if let Some(address) = addresses.get(usize::from(register)) {
-                        let value = read_register(*address);
-                        let mut response = [0_u8; 20];
-                        encode_clock_register_response(&mut response, register, value);
-                        uart_send(&response);
-                    }
-                }
-                None => {}
+        if !uart_has_byte() {
+            continue;
+        }
+        match receive_request() {
+            Some(Request::Hello) => {
+                let mut response = [0_u8; 48];
+                encode_hello_response(&mut response);
+                uart_send(&response);
             }
+            Some(Request::ClockSnapshot) => {
+                let registers = [
+                    read_register(RCC_CR),
+                    read_register(RCC_ICSCR),
+                    read_register(RCC_CFGR),
+                    read_register(RCC_PLLCFGR),
+                ];
+                let snapshot =
+                    snapshot_from_registers(registers[0], registers[1], registers[2], registers[3]);
+                let mut response = [0_u8; 32];
+                encode_clock_response(&mut response, registers, validate(snapshot).is_ok());
+                uart_send(&response);
+            }
+            Some(Request::ClockRegister(register)) => {
+                let addresses = [RCC_CR, RCC_ICSCR, RCC_CFGR, RCC_PLLCFGR];
+                if let Some(address) = addresses.get(usize::from(register)) {
+                    let value = read_register(*address);
+                    let mut response = [0_u8; 20];
+                    encode_clock_register_response(&mut response, register, value);
+                    uart_send(&response);
+                }
+            }
+            Some(Request::ClockControl) => {
+                let mut response = [0_u8; 20];
+                encode_clock_control_response(&mut response);
+                uart_send(&response);
+            }
+            Some(Request::KeypadMatrix) | None => {}
         }
-
-        let mut matrix = K1MatrixBus::new();
-        let scanned_rows = scan(&mut matrix).ok();
-        raw_latch.observe(matrix.raw_idr);
-        let sample = match scanned_rows.and_then(|rows| decode(rows).ok()) {
-            Some(Some(key)) => Sample::Key(key),
-            Some(None) => Sample::Released,
-            None => Sample::Invalid,
-        };
-        if let Edge::Pressed(key) = debounce.update(elapsed_ms, sample) {
-            let mut frame = [0_u8; FRAME_BYTES];
-            render_key_witness(&mut frame, key);
-            // Physical MENU observation showed that entering the synchronous
-            // SPI transfer prevents the retained serial diagnostic from
-            // answering. Keep decode/render execution for the bounded Renode
-            // proof, but suppress the physical transfer while raw matrix
-            // sampling localises the GPIO/display boundary.
-        }
-        delay_milliseconds(1);
-        elapsed_ms = elapsed_ms.wrapping_add(1);
     }
 }
 
@@ -212,13 +133,6 @@ fn write_register(address: usize, value: u32) {
     // SAFETY: addresses and access widths are taken from the pinned PY32F071
     // device header; this function is used only for volatile MMIO access.
     unsafe { core::ptr::write_volatile(address as *mut u32, value) }
-}
-
-#[allow(unsafe_code)]
-fn write_register_u8(address: usize, value: u8) {
-    // SAFETY: the pinned device header specifies an eight-bit access to the
-    // SPI data register for eight-bit transfers.
-    unsafe { core::ptr::write_volatile(address as *mut u8, value) }
 }
 
 fn update_register(address: usize, clear: u32, set: u32) {
@@ -250,6 +164,7 @@ fn uart_init() {
     );
 }
 
+#[cfg(any())]
 fn backlight_init() {
     let plan = constant_on_plan();
     update_register(RCC_IOPENR, 0, plan.clock_enable);
@@ -260,6 +175,7 @@ fn backlight_init() {
     update_register(GPIOF_MODER, plan.mode_clear, plan.mode_set);
 }
 
+#[cfg(any())]
 fn display_init() {
     update_register(RCC_IOPENR, 0, RCC_GPIOA_ENABLE | RCC_GPIOB_ENABLE);
     update_register(RCC_APBENR2, 0, RCC_SPI1_ENABLE);
@@ -300,6 +216,7 @@ fn display_init() {
     let _ = display_initialise(&mut display).and_then(|()| write_frame(&mut display, &frame));
 }
 
+#[cfg(any())]
 fn keypad_init() {
     let plan = gpio_plan();
     update_register(RCC_IOPENR, 0, plan.clock_enable);
@@ -316,13 +233,16 @@ fn keypad_init() {
     update_register(GPIOB_MODER, plan.column_mode_clear, plan.column_mode_set);
 }
 
+#[cfg(any())]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DisplayError {
     Timeout,
 }
 
+#[cfg(any())]
 struct K1DisplayBus;
 
+#[cfg(any())]
 impl DisplayBus for K1DisplayBus {
     type Error = DisplayError;
 
@@ -358,11 +278,13 @@ impl DisplayBus for K1DisplayBus {
     }
 }
 
+#[cfg(any())]
 struct K1MatrixBus {
     raw_idr: [u16; 4],
     read_index: usize,
 }
 
+#[cfg(any())]
 impl K1MatrixBus {
     const fn new() -> Self {
         Self {
@@ -372,6 +294,7 @@ impl K1MatrixBus {
     }
 }
 
+#[cfg(any())]
 impl MatrixBus for K1MatrixBus {
     type Error = ();
 
@@ -400,12 +323,14 @@ impl MatrixBus for K1MatrixBus {
     }
 }
 
+#[cfg(any())]
 fn delay_milliseconds(milliseconds: u32) {
     for _ in 0..milliseconds * 12_000 {
         core::hint::spin_loop();
     }
 }
 
+#[cfg(any())]
 fn poll_register(address: usize, mask: u32, set: bool) -> bool {
     for _ in 0..DISPLAY_POLL_LIMIT {
         if (read_register(address) & mask != 0) == set {

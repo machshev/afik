@@ -21,6 +21,10 @@ const COMMAND_CLOCK_REQUEST: u16 = 0x7F12;
 const COMMAND_CLOCK_RESPONSE: u16 = 0x7F13;
 const COMMAND_CLOCK_REGISTER_REQUESTS: [u16; 4] = [0x7F14, 0x7F16, 0x7F18, 0x7F1A];
 const COMMAND_CLOCK_REGISTER_RESPONSES: [u16; 4] = [0x7F15, 0x7F17, 0x7F19, 0x7F1B];
+const COMMAND_CLOCK_CONTROL_REQUEST: u16 = 0x7F1C;
+const COMMAND_CLOCK_CONTROL_RESPONSE: u16 = 0x7F1D;
+/// Fixed no-MMIO marker returned by the clock-path control request.
+pub const CLOCK_CONTROL_MARKER: u32 = 0x4B31_434C;
 const SESSION_WORD: u32 = 0x6457_396A;
 const RESPONSE_PAYLOAD_BYTES: usize = 40;
 const RESPONSE_DECLARED_BYTES: u16 = 36;
@@ -43,6 +47,8 @@ pub enum Request {
     ClockSnapshot,
     /// One individually identified raw RCC register observation.
     ClockRegister(u8),
+    /// No-MMIO control for the clock diagnostic command/response path.
+    ClockControl,
 }
 
 /// Decodes one bounded normal-mode request body.
@@ -64,8 +70,24 @@ pub fn decode_request(encoded_body: &mut [u8; REQUEST_BODY_BYTES]) -> Option<Req
         command if command == COMMAND_CLOCK_REGISTER_REQUESTS[1] => Some(Request::ClockRegister(1)),
         command if command == COMMAND_CLOCK_REGISTER_REQUESTS[2] => Some(Request::ClockRegister(2)),
         command if command == COMMAND_CLOCK_REGISTER_REQUESTS[3] => Some(Request::ClockRegister(3)),
+        COMMAND_CLOCK_CONTROL_REQUEST => Some(Request::ClockControl),
         _ => None,
     }
+}
+
+/// Encodes the no-MMIO clock-path control response.
+pub fn encode_clock_control_response(frame: &mut [u8; CLOCK_REGISTER_RESPONSE_FRAME_BYTES]) {
+    frame.fill(0);
+    frame[0..2].copy_from_slice(&[0xAB, 0xCD]);
+    frame[2..4].copy_from_slice(&12_u16.to_le_bytes());
+    let payload = &mut frame[4..16];
+    payload[0..2].copy_from_slice(&COMMAND_CLOCK_CONTROL_RESPONSE.to_le_bytes());
+    payload[2..4].copy_from_slice(&8_u16.to_le_bytes());
+    payload[4] = 0xA5;
+    payload[8..12].copy_from_slice(&CLOCK_CONTROL_MARKER.to_le_bytes());
+    frame[16..18].copy_from_slice(&RESPONSE_TRAILER.to_le_bytes());
+    xor(&mut frame[4..18]);
+    frame[18..20].copy_from_slice(&[0xDC, 0xBA]);
 }
 
 /// Encodes one individually identified raw RCC register observation.
@@ -185,9 +207,9 @@ fn xor(bytes: &mut [u8]) {
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_request, encode_clock_register_response, encode_clock_response,
-        encode_hello_response, encode_keypad_response, is_valid_hello_request, Request,
-        APPLICATION_VERSION,
+        decode_request, encode_clock_control_response, encode_clock_register_response,
+        encode_clock_response, encode_hello_response, encode_keypad_response,
+        is_valid_hello_request, Request, APPLICATION_VERSION, CLOCK_CONTROL_MARKER,
     };
 
     #[test]
@@ -318,6 +340,29 @@ mod tests {
             assert_eq!(&frame[..4], &[0xAB, 0xCD, 12, 0]);
             assert_eq!(&frame[18..], &[0xDC, 0xBA]);
         }
+    }
+
+    #[test]
+    fn no_mmio_clock_control_is_wire_exact() {
+        let payload = [0x1C, 0x7F, 0x04, 0x00, 0x6A, 0x39, 0x57, 0x64];
+        let mut encoded = encode_request_for_test(payload);
+        assert_eq!(decode_request(&mut encoded), Some(Request::ClockControl));
+
+        let mut frame = [0_u8; 20];
+        encode_clock_control_response(&mut frame);
+        let key = [
+            0x16, 0x6C, 0x14, 0xE6, 0x2E, 0x91, 0x0D, 0x40, 0x21, 0x35, 0xD5, 0x40, 0x13, 0x03,
+            0xE9, 0x80,
+        ];
+        for (index, byte) in frame[4..18].iter_mut().enumerate() {
+            *byte ^= key[index % key.len()];
+        }
+        assert_eq!(&frame[4..8], &[0x1D, 0x7F, 8, 0]);
+        assert_eq!(frame[8], 0xA5);
+        assert_eq!(
+            u32::from_le_bytes(frame[12..16].try_into().unwrap()),
+            CLOCK_CONTROL_MARKER
+        );
     }
 
     fn encode_request_for_test(payload: [u8; 8]) -> [u8; 10] {

@@ -421,3 +421,8 @@
 - **First-read result:** CR timed out while hello remained recoverable. This
   still does not distinguish MMIO fault from command/response behavior; require
   a no-MMIO control rather than inferring RCC accessibility.
+- **Serial-only isolation update:** the runnable image now excludes display,
+  keypad, backlight, debounce, matrix scans, SPI1, GPIOB, and GPIOF. A fixed
+  no-MMIO response distinguishes command/framing progress from an RCC read.
+  Static verification does not close the risk; require power-cycle, hello, then
+  no-MMIO control before attempting the isolated RCC reads.

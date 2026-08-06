@@ -1216,3 +1216,9 @@
   RAM boot witness, polling USART hello, no-MMIO control, combined clock probe,
   and individual RCC reads. Existing pure modules/tests remain, but no board UI
   peripheral may initialize or run in this image.
+- **Serial-only isolation implementation:** complete. The target entry point
+  initializes only GPIOA/USART1 and services hello, a fixed no-MMIO marker,
+  combined clock observation, and one-register clock observations. UI modules
+  remain host-tested but are compiled out of the runnable image. The verified
+  51,340-byte artifact is ready for the guarded exact-unit write; application
+  boot and serial responses remain physical gates.

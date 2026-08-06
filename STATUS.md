@@ -117,9 +117,9 @@ features remain outside this bounded slice.
 - Work Package 22 keypad/UI witness definition: complete; the pinned matrix,
   electrical idle/scan levels, one-key decode, explicit-time debounce, and
   display-only result were bounded before implementation.
-- Current smallest actionable task: build a serial-only diagnostic image which
-  retains hello, no-MMIO control, and individual RCC reads but never initializes
-  or services display, keypad, or backlight; do not publish HAL clocks.
+- Current smallest actionable task: guarded-write the verified serial-only
+  diagnostic image, then require power-cycle, hello, no-MMIO control, and only
+  then ordered RCC reads; do not publish HAL clocks.
 
 ## Work Package 23 dependency and executor milestone
 
@@ -393,6 +393,31 @@ features remain outside this bounded slice.
   first isolated CR request timed out before any later register was requested;
   a following normal hello passed again. No RCC value is observed. The next
   diagnostic must return a constant marker through the same path without MMIO.
+
+## Work Package 23 serial-only diagnostic milestone
+
+- Removed display, keypad, backlight, debounce, matrix scanning, SPI1, GPIOB,
+  and GPIOF from the runnable entry point. Reset now initializes only the RAM
+  witness and polling GPIOA/USART1 path.
+- Added exact no-MMIO control request `0x7f1c`, response `0x7f1d`, and marker
+  `0x4b31434c`, with strict firmware, host-library, and CLI tests.
+- The raw image is 51,340 bytes, SHA-256
+  `ce97df6718d6ff2b9bee88ca8443ef15a63ea2484231b265501eef7739803585`,
+  CRC-32 `b8731d25`, Reset `0x08002905`, and ELF end `0x0800f08c`.
+- `nix flake check path:. --no-build` — passed.
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
+  — passed.
+- `nix develop path:. -c cargo test --workspace` — passed; all 130 unit and
+  integration tests plus doc tests passed.
+- `nix develop path:. -c tool/build-k1.sh` — passed.
+- `nix develop path:. -c tool/package-k1-image.sh --force` — passed.
+- `nix develop path:. -c tool/test-k1-image.sh` — passed, including negative
+  truncated and oversized fixtures.
+- `nix develop path:. -c tool/check-py32f071-clock-handoff.sh` — passed.
+- `git diff --check` — passed.
+- The keypad Renode scenario is intentionally inapplicable to this image. No
+  physical write or application response is claimed at this checkpoint.
 
 ## Work Package 22 pure keypad milestone
 
