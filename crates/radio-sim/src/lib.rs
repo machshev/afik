@@ -4,11 +4,15 @@
 
 use core::{cmp, convert::Infallible};
 use radio_bk4819::{
-    Bk4819, DriverError as RfDriverError, DriverState as RfDriverState, ReceiveStatus,
-    RegisterAddress, RegisterBus,
+    Bk4819, DriverError as RfDriverError, DriverState as RfDriverState, FrequencyWord,
+    ReceiveStatus, RegisterAddress, RegisterBus,
 };
-use radio_channel_plan::PlanEncoding;
-use radio_domain::{ActiveChannel, Frequency, TxClass};
+use radio_channel_control::{
+    ChannelController, ChannelTxError, ControlError as ChannelControlError, ControlState,
+    ControlUpdate as ChannelControlUpdate, ScanConfig, TimerDirective, TimerToken,
+};
+use radio_channel_plan::{GeneratedBank, PlanEncoding};
+use radio_domain::{ActiveChannel, Frequency, SignalMeasurement, TxClass};
 use radio_programmer::ProtocolTransport;
 use radio_protocol::{
     decode_list_objects_request, encode_frame, Command, DeviceCapabilities, DeviceErrorCode, Frame,
@@ -449,6 +453,313 @@ impl RfSimulator {
         self.driver.stop_transmit()?;
         self.shared.record(RfTraceKind::TransmitStopped);
         Ok(())
+    }
+}
+
+/// One armed deterministic channel-scan timer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ChannelSimTimer {
+    /// Opaque token required by the controller expiry input.
+    pub token: TimerToken,
+    /// Absolute virtual deadline in milliseconds.
+    pub due_ms: u64,
+}
+
+/// One deterministic channel-control simulator observation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ChannelTraceEvent {
+    /// Explicit virtual timestamp.
+    pub at_ms: u64,
+    /// Observable channel-control input or completed action.
+    pub kind: ChannelTraceKind,
+}
+
+/// Observable channel activation, scheduling, signal, and TX events.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChannelTraceKind {
+    /// One exact generated-bank channel completed RF activation.
+    ChannelActivated {
+        /// Zero-based generated-bank index.
+        index: u16,
+        /// Fully expanded active channel.
+        channel: ActiveChannel,
+    },
+    /// Scanning started on the current channel.
+    ScanStarted,
+    /// Scanning stopped on the current channel.
+    ScanStopped,
+    /// A logical timer was armed.
+    TimerArmed(ChannelSimTimer),
+    /// The current logical timer was cancelled.
+    TimerCancelled,
+    /// A timer expiry was delivered to the controller.
+    TimerDelivered {
+        /// Token carried by the expiry input.
+        token: TimerToken,
+    },
+    /// One normalized adapter signal sample was delivered.
+    SignalObserved(SignalMeasurement),
+    /// A controller-level TX request was denied before RF operations.
+    TransmitDenied(ChannelTxError),
+    /// A class-bound TX request completed through the RF simulator.
+    TransmitStarted {
+        /// Selected generated-bank index.
+        index: u16,
+        /// Exact centrally approved class.
+        class: TxClass,
+    },
+    /// TX stopped and receive mode resumed on the selected channel.
+    TransmitStopped,
+}
+
+/// Channel simulator command failure.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ChannelSimError {
+    /// The hardware-independent controller rejected an input.
+    Control(ChannelControlError),
+    /// The logical BK4819 driver rejected or faulted an operation.
+    Radio(RfDriverError<RfSimBusError>),
+    /// Controller-level TX authority was unavailable.
+    Transmit(ChannelTxError),
+    /// A current timer expiry arrived before its virtual deadline.
+    TimerNotDue {
+        /// Current virtual time.
+        now_ms: u64,
+        /// Armed deadline.
+        due_ms: u64,
+    },
+    /// Channel activation or scanning was requested during simulated TX.
+    Transmitting,
+}
+
+impl core::fmt::Display for ChannelSimError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Control(error) => write!(formatter, "channel controller failed: {error}"),
+            Self::Radio(error) => write!(formatter, "channel RF command failed: {error}"),
+            Self::Transmit(error) => write!(formatter, "channel TX request failed: {error}"),
+            Self::TimerNotDue { now_ms, due_ms } => {
+                write!(formatter, "scan timer due at {due_ms} ms, not {now_ms} ms")
+            }
+            Self::Transmitting => {
+                formatter.write_str("channel control is unavailable during transmit")
+            }
+        }
+    }
+}
+
+impl From<ChannelControlError> for ChannelSimError {
+    fn from(error: ChannelControlError) -> Self {
+        Self::Control(error)
+    }
+}
+
+impl From<RfDriverError<RfSimBusError>> for ChannelSimError {
+    fn from(error: RfDriverError<RfSimBusError>) -> Self {
+        Self::Radio(error)
+    }
+}
+
+/// Virtual-time integration of channel control, policy, and logical RF commands.
+pub struct ChannelSimulator {
+    clock: SimClock,
+    controller: ChannelController,
+    rf: RfSimulator,
+    timer: Option<ChannelSimTimer>,
+    transmitting: bool,
+    trace: Vec<ChannelTraceEvent>,
+}
+
+impl ChannelSimulator {
+    /// Activates one initial generated-bank channel at virtual time zero.
+    pub fn activate(
+        bank: GeneratedBank,
+        index: u16,
+        config: ScanConfig,
+    ) -> Result<Self, ChannelSimError> {
+        for channel_index in 0..bank.channel_count() {
+            let channel = bank
+                .channel(channel_index)
+                .map_err(ChannelControlError::from)?;
+            FrequencyWord::from_frequency(channel.receive).map_err(RfDriverError::Frequency)?;
+            FrequencyWord::from_frequency(channel.transmit).map_err(RfDriverError::Frequency)?;
+        }
+        let (controller, update) = ChannelController::activate(bank, index, config)?;
+        let mut rf = RfSimulator::new();
+        rf.recover_to_standby()?;
+        let mut simulator = Self {
+            clock: SimClock::new(),
+            controller,
+            rf,
+            timer: None,
+            transmitting: false,
+            trace: Vec::new(),
+        };
+        simulator.apply(update)?;
+        Ok(simulator)
+    }
+
+    /// Returns current virtual milliseconds.
+    pub const fn now_ms(&self) -> u64 {
+        self.clock.now_ms()
+    }
+
+    /// Returns current hardware-independent control state.
+    pub const fn state(&self) -> ControlState {
+        self.controller.state()
+    }
+
+    /// Returns the current generated-bank index.
+    pub const fn current_index(&self) -> u16 {
+        self.controller.current_index()
+    }
+
+    /// Returns the current fully expanded channel.
+    pub const fn current_channel(&self) -> ActiveChannel {
+        self.controller.current_channel()
+    }
+
+    /// Returns the currently armed scan timer, if any.
+    pub const fn timer(&self) -> Option<ChannelSimTimer> {
+        self.timer
+    }
+
+    /// Returns the ordered channel-control trace.
+    pub fn trace(&self) -> &[ChannelTraceEvent] {
+        &self.trace
+    }
+
+    /// Returns a stable snapshot of underlying logical RF events.
+    pub fn rf_trace(&self) -> Vec<RfTraceEvent> {
+        self.rf.trace()
+    }
+
+    /// Advances both control and RF virtual time without implicit work.
+    pub fn advance_ms(&mut self, duration_ms: u64) {
+        self.clock.advance_ms(duration_ms);
+        self.rf.advance_ms(duration_ms);
+    }
+
+    /// Manually selects one exact channel and cancels scanning.
+    pub fn select(&mut self, index: u16) -> Result<(), ChannelSimError> {
+        self.require_not_transmitting()?;
+        let update = self.controller.select(index)?;
+        self.apply(update)
+    }
+
+    /// Starts scanning the current channel.
+    pub fn start_scanning(&mut self) -> Result<(), ChannelSimError> {
+        self.require_not_transmitting()?;
+        let update = self.controller.start_scanning()?;
+        self.record(ChannelTraceKind::ScanStarted);
+        self.apply(update)
+    }
+
+    /// Stops scanning on the current channel.
+    pub fn stop_scanning(&mut self) -> Result<(), ChannelSimError> {
+        self.require_not_transmitting()?;
+        let update = self.controller.stop_scanning()?;
+        self.record(ChannelTraceKind::ScanStopped);
+        self.apply(update)
+    }
+
+    /// Delivers one normalized adapter signal sample.
+    pub fn observe_signal(&mut self, signal: SignalMeasurement) -> Result<(), ChannelSimError> {
+        self.require_not_transmitting()?;
+        self.record(ChannelTraceKind::SignalObserved(signal));
+        let update = self.controller.observe_signal(signal)?;
+        self.apply(update)
+    }
+
+    /// Delivers a timer token, enforcing the deadline only for the current arm.
+    ///
+    /// Old or cancelled tokens are still delivered so controller stale-token
+    /// behavior remains visible and deterministic.
+    pub fn deliver_timer(&mut self, token: TimerToken) -> Result<(), ChannelSimError> {
+        self.require_not_transmitting()?;
+        if let Some(timer) = self.timer {
+            if timer.token == token && self.now_ms() < timer.due_ms {
+                return Err(ChannelSimError::TimerNotDue {
+                    now_ms: self.now_ms(),
+                    due_ms: timer.due_ms,
+                });
+            }
+        }
+        self.record(ChannelTraceKind::TimerDelivered { token });
+        let update = self.controller.timer_elapsed(token)?;
+        self.apply(update)
+    }
+
+    /// Requests selected-state policy authority and starts logical TX.
+    pub fn start_transmit(&mut self, policy: &TxPolicy) -> Result<(), ChannelSimError> {
+        self.require_not_transmitting()?;
+        match self.controller.authorise_transmit(policy) {
+            Ok(transmission) => {
+                self.rf
+                    .start_transmit(transmission.channel(), transmission.authorisation())?;
+                self.transmitting = true;
+                self.record(ChannelTraceKind::TransmitStarted {
+                    index: self.controller.current_index(),
+                    class: transmission.authorisation().class(),
+                });
+                Ok(())
+            }
+            Err(error) => {
+                self.record(ChannelTraceKind::TransmitDenied(error));
+                Err(ChannelSimError::Transmit(error))
+            }
+        }
+    }
+
+    /// Stops logical TX and resumes receive on the still-selected channel.
+    pub fn stop_transmit(&mut self) -> Result<(), ChannelSimError> {
+        self.rf.stop_transmit()?;
+        self.rf
+            .start_receive(self.controller.current_channel().receive)?;
+        self.transmitting = false;
+        self.record(ChannelTraceKind::TransmitStopped);
+        Ok(())
+    }
+
+    fn apply(&mut self, update: ChannelControlUpdate) -> Result<(), ChannelSimError> {
+        if let Some(activation) = update.activation {
+            self.rf.start_receive(activation.channel.receive)?;
+            self.record(ChannelTraceKind::ChannelActivated {
+                index: activation.index,
+                channel: activation.channel,
+            });
+        }
+        match update.timer {
+            TimerDirective::Unchanged => {}
+            TimerDirective::Cancel => {
+                self.timer = None;
+                self.record(ChannelTraceKind::TimerCancelled);
+            }
+            TimerDirective::Arm { token, after_ms } => {
+                let timer = ChannelSimTimer {
+                    token,
+                    due_ms: self.now_ms().saturating_add(u64::from(after_ms)),
+                };
+                self.timer = Some(timer);
+                self.record(ChannelTraceKind::TimerArmed(timer));
+            }
+        }
+        Ok(())
+    }
+
+    fn require_not_transmitting(&self) -> Result<(), ChannelSimError> {
+        if self.transmitting {
+            Err(ChannelSimError::Transmitting)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn record(&mut self, kind: ChannelTraceKind) {
+        self.trace.push(ChannelTraceEvent {
+            at_ms: self.now_ms(),
+            kind,
+        });
     }
 }
 
@@ -996,9 +1307,11 @@ const fn map_storage_error(error: StorageError) -> DeviceErrorCode {
 #[cfg(test)]
 mod tests {
     use super::{
-        map_storage_error, RfBusOperation, RfSimulator, RfTraceEvent, RfTraceKind, SimDevice,
-        SimTransport, TraceKind, UiSimulator, UiTraceKind,
+        map_storage_error, ChannelSimError, ChannelSimulator, ChannelTraceEvent, ChannelTraceKind,
+        RfBusOperation, RfSimulator, RfTraceEvent, RfTraceKind, SimDevice, SimTransport, TraceKind,
+        UiSimulator, UiTraceKind,
     };
+    use radio_channel_control::{ChannelTxError, ControlState, ScanConfig};
     use radio_channel_plan::{BankName, GeneratedBank, PlanEncoding};
     use radio_domain::{ActiveChannel, BankId, Frequency, FrequencyStep, TxClass};
     use radio_programmer::{ListedObject, Programmer, RadioProject};
@@ -1124,6 +1437,147 @@ mod tests {
             RfTraceKind::TransmitStarted { .. }
                 | RfTraceKind::RegisterWritten { value: 0x80FE, .. }
         )));
+    }
+
+    fn scan_policy(enabled: bool) -> TxPolicy {
+        let permissions = PermissionSet::none().with(TxClass::LicenceFreePlan, enabled);
+        TxPolicy::load(&StoredPermissions::new(permissions, 1).encode()).0
+    }
+
+    fn run_channel_script() -> (Vec<ChannelTraceEvent>, Vec<RfTraceEvent>, u16, ControlState) {
+        let mut simulator =
+            ChannelSimulator::activate(bank(7, "SCAN"), 0, ScanConfig::new(10, 30).unwrap())
+                .unwrap();
+        simulator.start_scanning().unwrap();
+        let first = simulator.timer().unwrap();
+        simulator.advance_ms(10);
+        simulator.deliver_timer(first.token).unwrap();
+        assert_eq!(simulator.current_index(), 1);
+
+        simulator.advance_ms(2);
+        simulator
+            .observe_signal(radio_domain::SignalMeasurement {
+                strength: 90,
+                squelch_open: true,
+            })
+            .unwrap();
+        let open_hold = simulator.timer().unwrap();
+        simulator.advance_ms(30);
+        simulator.deliver_timer(open_hold.token).unwrap();
+        assert_eq!(simulator.current_index(), 1);
+
+        simulator
+            .observe_signal(radio_domain::SignalMeasurement {
+                strength: 20,
+                squelch_open: false,
+            })
+            .unwrap();
+        let closed_hold = simulator.timer().unwrap();
+        simulator.advance_ms(30);
+        simulator.deliver_timer(closed_hold.token).unwrap();
+        assert_eq!(simulator.current_index(), 2);
+
+        simulator.stop_scanning().unwrap();
+        simulator.start_transmit(&scan_policy(true)).unwrap();
+        simulator.advance_ms(5);
+        simulator.stop_transmit().unwrap();
+
+        (
+            simulator.trace().to_vec(),
+            simulator.rf_trace(),
+            simulator.current_index(),
+            simulator.state(),
+        )
+    }
+
+    #[test]
+    fn identical_timed_channel_scripts_have_identical_control_and_rf_traces() {
+        let first = run_channel_script();
+        let second = run_channel_script();
+        assert_eq!(first, second);
+        assert_eq!(first.2, 2);
+        assert_eq!(first.3, ControlState::Selected);
+        assert_eq!(
+            first
+                .0
+                .iter()
+                .filter(|event| matches!(event.kind, ChannelTraceKind::ChannelActivated { .. }))
+                .count(),
+            3
+        );
+        assert_eq!(
+            first
+                .0
+                .iter()
+                .filter(|event| matches!(event.kind, ChannelTraceKind::TransmitStarted { .. }))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn channel_simulator_rejects_an_rf_incompatible_bank_before_activation() {
+        let incompatible = GeneratedBank::linear_simplex(
+            BankId::new(9),
+            BankName::new("ODD-HZ").unwrap(),
+            Frequency::from_hz(145_500_001).unwrap(),
+            FrequencyStep::from_hz(10).unwrap(),
+            2,
+            TxClass::Amateur,
+        )
+        .unwrap();
+        assert!(matches!(
+            ChannelSimulator::activate(incompatible, 0, ScanConfig::new(10, 30).unwrap(),),
+            Err(ChannelSimError::Radio(
+                radio_bk4819::DriverError::Frequency(
+                    radio_bk4819::FrequencyError::NotTenHertzAligned
+                )
+            ))
+        ));
+    }
+
+    #[test]
+    fn channel_simulator_denies_scan_tx_and_ignores_cancelled_timer() {
+        let mut simulator =
+            ChannelSimulator::activate(bank(8, "DENY"), 0, ScanConfig::new(10, 30).unwrap())
+                .unwrap();
+        simulator.start_scanning().unwrap();
+        let cancelled = simulator.timer().unwrap();
+        assert_eq!(
+            simulator.deliver_timer(cancelled.token),
+            Err(ChannelSimError::TimerNotDue {
+                now_ms: 0,
+                due_ms: 10,
+            })
+        );
+        assert_eq!(simulator.current_index(), 0);
+        let rf_before = simulator.rf_trace();
+        assert_eq!(
+            simulator.start_transmit(&scan_policy(true)),
+            Err(ChannelSimError::Transmit(ChannelTxError::Scanning))
+        );
+        assert_eq!(simulator.rf_trace(), rf_before);
+
+        simulator.stop_scanning().unwrap();
+        simulator.advance_ms(10);
+        simulator.deliver_timer(cancelled.token).unwrap();
+        assert_eq!(simulator.current_index(), 0);
+        assert!(simulator.timer().is_none());
+
+        let rf_before = simulator.rf_trace();
+        assert_eq!(
+            simulator.start_transmit(&scan_policy(false)),
+            Err(ChannelSimError::Transmit(ChannelTxError::PolicyDenied))
+        );
+        assert_eq!(simulator.rf_trace(), rf_before);
+        assert_eq!(
+            simulator
+                .trace()
+                .iter()
+                .filter(|event| matches!(event.kind, ChannelTraceKind::TransmitDenied(_)))
+                .count(),
+            2
+        );
     }
 
     fn run_permission_script() -> UiSimulator {
