@@ -704,3 +704,38 @@
   the source of K1/K5 family selection. K1/K5 beacon, image, page, ambiguity,
   acknowledgement, and CLI routing tests pass. The next task is the physical
   K1 board/MCU and AFIK reset/boot-witness work retained under `K1EVID-013`.
+
+## K1HIL-015 — First AFIK K1 recovery-flasher hardware run
+
+- **Status:** active (2026-08-06)
+- **Objective:** exercise the independently implemented AFIK K1 recovery
+  flasher against the exact attached unit using the unchanged, already
+  recovered Armel `F4HWN v5.5.0` image, and verify the post-flash normal-mode
+  identity and configuration/calibration backup.
+- **Scope:** preserve strict envelope, command, length, transaction, page, and
+  result checks; accommodate the observed K1 device-side trailer convention;
+  add a captured-frame regression test; validate the selected image and two
+  private backup/image copies; run one explicitly confirmed K1 recovery write;
+  and record the exact command/result without storing unit secrets.
+- **Dependencies:** `K1FLASH-014`, `K1EVID-013`, the two retained private
+  backup and recovery-image copies, the exact `/dev/ttyUSB0` K1 in bootloader
+  mode, and the prior same-unit recovery proof.
+- **Assumptions:** the K1 bootloader envelope/footer and response payloads are
+  bounded and structurally checked, but the decoded device trailer is not a
+  reusable K5 response-integrity marker; the known-good stock image remains
+  the only validated K1 image; and a successful recovery write is not an AFIK
+  application boot.
+- **Exclusions:** K1 AFIK image generation or flashing, target startup or
+  peripheral implementation, reset commands, EEPROM writes, RF operation,
+  retries after ambiguous results, and any board/MCU identity claim inferred
+  only from the serial adapter or beacon.
+- **Tests required:** the captured K1 beacon with trailer `0x6ed1` must decode
+  and classify as `7.03.01`; malformed envelope/footer and page
+  command/transaction/result checks must remain fail-closed; all workspace
+  tests and required Nix checks must pass.
+- **Acceptance criteria:** AFIK's generic command identifies the exact live
+  `7.03.01` protocol family, the unchanged private image is written with all
+  exact page acknowledgements, and after a user power-cycle a complete
+  read-only normal-mode backup matches the pre-write backup byte-for-byte.
+  The next task remains the independently implemented K1 reset/boot-witness
+  package under `K1EVID-013`.

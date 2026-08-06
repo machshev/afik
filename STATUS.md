@@ -2,8 +2,8 @@
 
 ## Current work package
 
-**Work Package 14 (`K1FLASH-014`) is complete: auto-detected K1/K5 recovery
-flasher.**
+**Work Package 15 (`K1HIL-015`) is active: first AFIK K1 recovery-flasher
+hardware run.**
 
 K1 has priority because an exact unit running Armel firmware is available for
 inspection. `K1EVID-013` supplies the K1 evidence baseline and same-unit
@@ -32,6 +32,8 @@ incomplete. It can resume unchanged when the exact K5 V1 hardware is available.
 - Work Package 13 UV-K1/PY32F071 hardware evidence and target contract: evidence
   baseline complete; board/MCU and AFIK boot-witness follow-up remains open.
 - Work Package 14 K1/K5 auto-detected recovery flasher: complete.
+- Work Package 15 first AFIK K1 recovery-flasher hardware run: active; this is
+  a stock recovery-image exercise, not an AFIK application flash.
 - `UI-005` logical key edges, bounded semantic views, exact boot-only entry,
   release gate, draft editor, and checked persistence action: complete.
 - `UI-005` separate persisted/active policy simulation, deterministic timed
@@ -87,10 +89,11 @@ incomplete. It can resume unchanged when the exact K5 V1 hardware is available.
 - `FLASH-012` exact-unit inspection, physical backup, recovery rehearsal,
   page-acknowledged AFIK write, and independent application-boot observation:
   pending; no serial device is visible here.
-- Current smallest actionable task: record the exact K1 board/MCU and define the
-  smallest independently implemented AFIK reset/boot-witness package under
-  `K1EVID-013`; K1 AFIK image flashing remains out of scope until that contract
-  exists.
+- Current smallest actionable task: complete `K1HIL-015` with one AFIK-hosted
+  stock recovery write and post-flash backup comparison, then return to the
+  independently implemented AFIK reset/boot-witness package under
+  `K1EVID-013`; K1 AFIK application flashing remains out of scope until that
+  contract exists.
 
 ## Work Package 14 implementation milestone
 
@@ -107,7 +110,8 @@ incomplete. It can resume unchanged when the exact K5 V1 hardware is available.
 - K1 recovery validates vectors and the bounded application range, performs the
   observed `0x0530` handshakes, sends 256-byte `0x0519` pages with final-page
   zero padding, and requires exact transaction/page/result acknowledgements
-  without retry. K1 AFIK flashing remains unavailable.
+  without retry. The K1 device-side trailer convention is now a separate
+  compatibility gate under `K1HIL-015`; K1 AFIK flashing remains unavailable.
 
 Verification on 2026-08-06:
 

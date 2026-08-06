@@ -221,3 +221,17 @@
   separately from hardware identity, enumerates USB candidates without trusting
   the adapter alone, and does not expose K1 AFIK flashing. Physical markings
   and image contracts remain separate evidence gates.
+
+## RISK-018 — K1 device trailer does not provide a checked integrity marker
+
+- **State:** open
+- **Impact:** the observed K1 device-side trailer is not the K5 decoder's
+  `0xffff` marker and does not match the recorded CRC calculation. Accepting
+  the K1 frame without a trailer check could allow some serial corruption to
+  pass unnoticed.
+- **Mitigation:** the K1 path retains bounded resynchronisation, exact footer,
+  declared-length, command, version, transaction, page, and zero-result
+  acknowledgement checks; it never retries an ambiguous page. The first AFIK
+  hardware exercise uses only the unchanged known-good stock image and compares
+  the complete post-flash normal-mode backup. No K1 AFIK image or RF operation
+  is permitted until a separate target and stronger observation contract exist.

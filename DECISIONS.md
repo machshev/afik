@@ -330,3 +330,19 @@ meaning.
   path. No K1 AFIK application image or target contract exists, so the generic
   flasher must reject K1 AFIK flashing rather than route it to the K5 image
   path.
+
+## ADR-024 — K1 device trailers are not the K5 response marker
+
+- **Date:** 2026-08-06
+- **Status:** accepted for `K1HIL-015`
+- The captured K1 `0x0518` device-info frame has the expected bounded legacy
+  envelope, footer, command, declared length, UID/version payload, and a
+  decoded trailer of `0x6ed1`. The K5-oriented AFIK decoder expected the
+  decoded device trailer to be `0xffff`, so it rejected the live K1 beacon.
+- The K1 path may therefore skip only the decoded trailer-value check while
+  retaining envelope/footer, payload length, command, version, transaction,
+  page, and result validation. This is an evidence-bounded interoperability
+  rule, not a claim that the K1 serial link has integrity protection.
+- K1 application flashing remains unavailable. The only physical image
+  permitted by `K1HIL-015` is the independently validated, unchanged stock
+  recovery image, followed by normal-mode backup comparison.
