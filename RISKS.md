@@ -464,3 +464,16 @@
 - **Correction result:** writing VTOR to `0x08002800` before inherited
   initialization restored the boot screen, async UART hello, display updates,
   and all observed main-key labels after power-cycle.
+
+## RISK-026 — K1 side-key mapping and electrical behavior are unverified
+
+- **State:** open
+- **Impact:** the pinned source identifies a special side-key path but does not
+  provide AFIK with an independently recorded exact GPIO mapping, polarity,
+  settling, debounce, or interaction behavior. Guessing from the main matrix
+  could misread controls or interfere with the board.
+- **Mitigation:** `K1SIDE-024` remains evidence-first and receive-only. PTT
+  PB10 stays a separate source fact; side-key pins remain unknown until the
+  exact mapping and a bounded experiment are recorded. Raw samples, if later
+  exposed, must be bounded, provenance-tagged, fail-closed, and unable to
+  create semantic UI state or RF/TX authority.

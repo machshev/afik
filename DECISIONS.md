@@ -692,3 +692,18 @@ meaning.
 - Any clock, initialization, task-allocation, display, or timer failure stops
   in a non-transmitting loop. Side keys, persistence, general UI, radio/RF, and
   TX remain unreachable.
+
+## ADR-049 — Side keys remain evidence-first and receive-only
+
+- **Date:** 2026-08-06
+- **Status:** accepted for `K1SIDE-024`
+- The pinned K1 source identifies PTT on PB10 and refers to a separate special
+  side-key path, but AFIK has no independently recorded exact side-key GPIO
+  mapping, polarity, settling, or electrical behavior. The main 4-by-4 matrix
+  mapping must not be extended by inference.
+- The first side-key package may define only bounded raw observations with
+  explicit validity and provenance. Ambiguous, malformed, stale, or unverified
+  samples remain untrusted and produce no semantic key edge.
+- No side-key/PTT observation may alter the display, persistence, channel plan,
+  RF state, or TX authority. Any physical experiment must be separately
+  guarded, receive-only, and retain the known-good recovery path.

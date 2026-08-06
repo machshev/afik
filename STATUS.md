@@ -2,9 +2,9 @@
 
 ## Current work package
 
-**Work Package 23 (`K1ASYNC-023`) is complete: establish a pinned Embassy/PY32
-runtime foundation before migrating the proven K1 keypad, UART, and display
-paths.**
+**Work Package 24 (`K1SIDE-024`) is active: establish an evidence-backed,
+receive-only K1 side-key/PTT observation boundary before any semantic UI or RF
+behavior.**
 
 K1 has priority because an exact unit running Armel firmware is available for
 inspection. `K1EVID-013` supplies the K1 evidence baseline and same-unit
@@ -57,6 +57,9 @@ features remain outside this bounded slice.
 - Work Package 23 Embassy/PY32 runtime foundation: complete; the corrected
   runnable async image passed power-cycle, boot-screen, UART hello, and full
   main-key label observations.
+- Work Package 24 side-key/PTT evidence boundary: active; the pinned source
+  identifies PTT PB10 and special side-key handling but does not establish an
+  exact side-key GPIO mapping or safe physical observation contract.
 - `UI-005` logical key edges, bounded semantic views, exact boot-only entry,
   release gate, draft editor, and checked persistence action: complete.
 - `UI-005` separate persisted/active policy simulation, deterministic timed
@@ -117,11 +120,26 @@ features remain outside this bounded slice.
 - Work Package 22 keypad/UI witness definition: complete; the pinned matrix,
   electrical idle/scan levels, one-key decode, explicit-time debounce, and
   display-only result were bounded before implementation.
-- Current smallest actionable task: define and activate Work Package 24 with a
-  stable task ID, bounded objective, explicit exclusions, and evidence gates.
-  No implementation package is active after `K1ASYNC-023`; side keys,
-  persistence/UI policy, RF receive, and other follow-up directions remain
-  separate choices rather than an implied continuation.
+- Current smallest actionable task: complete the source/evidence review and
+  bounded host contract for `K1SIDE-024`; do not infer side-key pins from the
+  main matrix or from unverified firmware behavior.
+
+## Work Package 24 handoff
+
+- **Scope:** source-backed side-key/PTT identity and a receive-only raw
+  observation contract; no semantic key actions, display mutation, persistence,
+  RF, TX, or physical write is included.
+- **Current boundary:** PTT PB10 is identified by the pinned source. The
+  special side-key path is mentioned but its exact pins, polarity, settling,
+  debounce, and interaction with the async display/runtime are not established
+  in AFIK evidence.
+- **Next step:** add focused bounded types/tests for untrusted raw observations
+  only after the exact source mapping and required experiment are recorded.
+- **Planning-step verification:** `nix flake check path:. --no-build`,
+  `nix develop path:. -c cargo fmt --all --check`,
+  `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`,
+  `nix develop path:. -c cargo test --workspace`, and `git diff --check` all
+  passed. No implementation, image, hardware, or flash state changed.
 
 ## Work Package 23 handoff correction
 

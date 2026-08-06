@@ -1209,6 +1209,28 @@
   identified on the second display line. This closes the bounded async runtime
   foundation and keypad/display migration; RF, TX, side keys, persistence,
   and read-back remain outside scope.
+
+## K1SIDE-024 — Receive-only side-key and PTT evidence boundary
+
+- **Status:** active (2026-08-06)
+- **Objective:** establish the smallest evidence-backed contract for observing
+  K1 side keys and PTT without interpreting them as UI actions or reaching RF.
+- **Scope:** review the pinned source and exact-unit evidence; identify PTT and
+  side-key GPIO surfaces only where independently supported; define bounded raw
+  observation data, validity, provenance, and fail-closed handling; add focused
+  host tests and documentation.
+- **Dependencies:** completed `K1ASYNC-023`; pinned K1 source and existing
+  recovery/serial witness remain evidence only.
+- **Exclusions:** guessed side-key pins or polarity, copied firmware logic,
+  semantic key events, display changes, persistence, menus, interrupts/DMA,
+  audio, BK4819, RF, TX, and physical image writes.
+- **Acceptance criteria:** PTT PB10 remains separately identified; side-key
+  mapping is either source-backed with confidence and experiment requirements
+  or explicitly recorded as unknown; raw observations are bounded and
+  untrusted; malformed/ambiguous observations fail closed; no result can mint
+  UI state, configuration, or transmit authority.
+- **First step:** add the source/evidence decision and a hardware-independent
+  raw-observation contract before any target binding.
 - **Clock-handoff step:** define a bounded local HAL entry which adopts only an
   explicitly validated inherited 48 MHz `SYSCLK`/`HCLK1`/`PCLK1`/`PCLK1_TIM`
   state. It must fail before publishing clocks when the observed RCC state does
