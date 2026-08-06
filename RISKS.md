@@ -414,3 +414,6 @@
   combined RCC request timed out twice. Treat the source of the timeout as
   unknown; isolate individual reads/response progress rather than assuming a
   register value, PAC defect, or UART failure.
+- **Isolation update:** one-register request/response pairs now distinguish CR,
+  ICSCR, CFGR, and PLLCFGR progress. They remain read-only and unflashed; their
+  static success does not resolve the physical timeout.

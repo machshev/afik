@@ -1346,3 +1346,16 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   hello still passed. This proves neither a register fault nor a framing fault;
   no raw value is recorded until an individually identified response isolates
   the failing boundary.
+
+### EVID-K1-047 — Individually identified RCC register diagnostic
+
+- **Isolation:** commands `0x7f14`, `0x7f16`, `0x7f18`, and `0x7f1a` read only
+  CR, ICSCR, CFGR, and PLLCFGR respectively. Responses identify the register and
+  carry one 32-bit value with strict zero reserved bytes.
+- **Verified artifact:** focused host tests, ELF/raw package validation,
+  negative fixtures, and keypad Renode pass. The 65,656-byte image has SHA-256
+  `d319d961a93cad6d219a4d21b7a60a2d7337ea989ff4aff2b6e9e92c2f51c955`
+  and CRC-32 `a895d521`.
+- **Boundary:** this diagnostic only localizes the prior timeout. No register
+  value, 48 MHz contract, HAL adoption, or async runtime behavior is claimed
+  until the ordered physical probes complete.

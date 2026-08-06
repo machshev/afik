@@ -117,9 +117,9 @@ features remain outside this bounded slice.
 - Work Package 22 keypad/UI witness definition: complete; the pinned matrix,
   electrical idle/scan levels, one-key decode, explicit-time debounce, and
   display-only result were bounded before implementation.
-- Current smallest actionable task: isolate the exact failing boundary in the
-  combined RCC observation by returning individually identified read-only
-  register samples; retain the normal hello and do not publish HAL clocks.
+- Current smallest actionable task: flash the verified individually identified
+  RCC diagnostic, power-cycle, and probe CR, ICSCR, CFGR, then PLLCFGR in order;
+  retain the normal hello and do not publish HAL clocks.
 
 ## Work Package 23 dependency and executor milestone
 
@@ -371,6 +371,21 @@ features remain outside this bounded slice.
   returned `AFIK-K1-0.2`. No RCC value was accepted or inferred. The next
   diagnostic must isolate individual reads and response progress before another
   guarded image write.
+- **Isolation implementation:** four strict request/response pairs now read one
+  named RCC register each. Host code can probe them independently, so a timeout
+  cannot erase earlier register evidence. Focused protocol/flasher/CLI tests,
+  ELF/raw package gates, negative fixtures, and keypad Renode passed.
+- The isolation image is 65,656 bytes, SHA-256
+  `d319d961a93cad6d219a4d21b7a60a2d7337ea989ff4aff2b6e9e92c2f51c955`,
+  CRC-32 `a895d521`, Reset `0x08002939`, and ELF end `0x08012878`.
+- `nix develop path:. -c tool/check-py32f071-clock-handoff.sh` — passed.
+- `nix flake check path:. --no-build` — passed.
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
+  — passed.
+- `nix develop path:. -c cargo test --workspace` — passed; all 167 workspace
+  unit, integration, and doc-test binaries passed.
+- `git diff --check` — passed.
 
 ## Work Package 22 pure keypad milestone
 

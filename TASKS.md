@@ -1199,3 +1199,8 @@
   individually identified read-only register response which can distinguish CR,
   ICSCR, CFGR, PLLCFGR, validation, and response-transfer failure without clock
   writes, HAL adoption, keypad/display mutation, RF, or TX.
+- **Register-isolation implementation:** CR, ICSCR, CFGR, and PLLCFGR now have
+  separate fixed-session requests and individually identified exact responses.
+  The host can issue one named read at a time. Static, host, package, negative,
+  and Renode gates pass; the next step is a guarded write and ordered physical
+  probes, with all clock adoption still prohibited.

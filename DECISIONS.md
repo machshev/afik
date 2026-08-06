@@ -618,3 +618,14 @@ meaning.
   access persistence, or reach RF/TX.
 - A physical run remains separately guarded by the existing K1 recovery,
   image-validation, explicit-confirmation, power-cycle, and serial-probe path.
+
+## ADR-043 — Clock-probe timeout is isolated with one register per request
+
+- **Date:** 2026-08-06
+- **Status:** accepted for `K1ASYNC-023`
+- Four new fixed-session requests read CR, ICSCR, CFGR, and PLLCFGR separately.
+  Each exact response identifies its register, reserves zeroed fields, and
+  returns one raw 32-bit value. A failure therefore names the first boundary
+  that did not complete rather than losing all progress in a combined response.
+- The diagnostic retains the combined request for comparison but changes no
+  clock, HAL, keypad/display, persistence, RF, or TX state.

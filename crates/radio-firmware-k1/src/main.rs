@@ -18,8 +18,8 @@ use radio_firmware_k1::keypad::{
     Sample,
 };
 use radio_firmware_k1::protocol::{
-    decode_request, encode_clock_response, encode_hello_response, encode_keypad_response, Request,
-    REQUEST_BODY_BYTES,
+    decode_request, encode_clock_register_response, encode_clock_response, encode_hello_response,
+    encode_keypad_response, Request, REQUEST_BODY_BYTES,
 };
 
 const INITIAL_STACK_POINTER: u32 = 0x2000_4000;
@@ -164,6 +164,15 @@ extern "C" fn reset() -> ! {
                     let mut response = [0_u8; 32];
                     encode_clock_response(&mut response, registers, validate(snapshot).is_ok());
                     uart_send(&response);
+                }
+                Some(Request::ClockRegister(register)) => {
+                    let addresses = [RCC_CR, RCC_ICSCR, RCC_CFGR, RCC_PLLCFGR];
+                    if let Some(address) = addresses.get(usize::from(register)) {
+                        let value = read_register(*address);
+                        let mut response = [0_u8; 20];
+                        encode_clock_register_response(&mut response, register, value);
+                        uart_send(&response);
+                    }
                 }
                 None => {}
             }

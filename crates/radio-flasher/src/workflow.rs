@@ -12,6 +12,8 @@ const COMMAND_KEYPAD_REQUEST: u16 = 0x7F10;
 const COMMAND_KEYPAD_RESPONSE: u16 = 0x7F11;
 const COMMAND_CLOCK_REQUEST: u16 = 0x7F12;
 const COMMAND_CLOCK_RESPONSE: u16 = 0x7F13;
+const COMMAND_CLOCK_REGISTER_REQUESTS: [u16; 4] = [0x7F14, 0x7F16, 0x7F18, 0x7F1A];
+const COMMAND_CLOCK_REGISTER_RESPONSES: [u16; 4] = [0x7F15, 0x7F17, 0x7F19, 0x7F1B];
 const COMMAND_READ_EEPROM_REQUEST: u16 = 0x051B;
 const COMMAND_READ_EEPROM_RESPONSE: u16 = 0x051C;
 const COMMAND_V2_BEACON: u16 = 0x0518;
@@ -414,6 +416,31 @@ pub fn probe_clock_snapshot<T: Read + Write>(
     parse_clock_response(&receive_packet(transport)?)
 }
 
+/// Requests the four inherited RCC registers as individually identified reads.
+pub fn probe_clock_registers<T: Read + Write>(transport: &mut T) -> Result<[u32; 4], FlashError> {
+    let mut registers = [0_u32; 4];
+    for (index, register) in registers.iter_mut().enumerate() {
+        *register = probe_clock_register(transport, index)?;
+    }
+    Ok(registers)
+}
+
+/// Requests one indexed inherited RCC register without touching the others.
+pub fn probe_clock_register<T: Read + Write>(
+    transport: &mut T,
+    index: usize,
+) -> Result<u32, FlashError> {
+    let Some(command) = COMMAND_CLOCK_REGISTER_REQUESTS.get(index) else {
+        return Err(FlashError::UnexpectedPacket {
+            expected: "AFIK K1 RCC register index 0..3",
+            command: None,
+            length: 0,
+        });
+    };
+    send_packet(transport, &session_request(*command))?;
+    parse_clock_register_response(&receive_packet(transport)?, index)
+}
+
 /// Waits for one exact, printable version-2 bootloader beacon.
 pub fn probe_bootloader_v2<T: Read>(transport: &mut T) -> Result<BootloaderInfo, FlashError> {
     parse_bootloader_beacon(&receive_packet(transport)?)
@@ -574,6 +601,32 @@ fn parse_clock_response(packet: &Packet) -> Result<ClockSnapshotReport, FlashErr
         registers,
         contract_valid: payload[20] == 1,
     })
+}
+
+fn parse_clock_register_response(
+    packet: &Packet,
+    expected_index: usize,
+) -> Result<u32, FlashError> {
+    let payload = packet.as_slice();
+    require_packet(
+        payload,
+        COMMAND_CLOCK_REGISTER_RESPONSES[expected_index],
+        8,
+        12,
+        "AFIK K1 individually identified RCC register",
+    )?;
+    if payload[4] != u8::try_from(expected_index).expect("four registers")
+        || payload[5..8] != [0, 0, 0]
+    {
+        return Err(FlashError::UnexpectedPacket {
+            expected: "bounded AFIK K1 RCC register fields",
+            command: Some(COMMAND_CLOCK_REGISTER_RESPONSES[expected_index]),
+            length: payload.len(),
+        });
+    }
+    Ok(u32::from_le_bytes(
+        payload[8..12].try_into().expect("four bytes"),
+    ))
 }
 
 fn parse_hello_response(packet: &Packet) -> Result<NormalFirmwareInfo, FlashError> {
@@ -794,8 +847,8 @@ mod tests {
 
     use super::{
         backup_eeprom, detect_bootloader, flash_application, probe_bootloader_v2,
-        probe_clock_snapshot, probe_keypad_matrix, probe_normal_firmware, BootloaderFamily,
-        FirmwareVersion, FlashError, FlashPrerequisites, FlashPurpose,
+        probe_clock_registers, probe_clock_snapshot, probe_keypad_matrix, probe_normal_firmware,
+        BootloaderFamily, FirmwareVersion, FlashError, FlashPrerequisites, FlashPurpose,
         QUALIFIED_TARGET_CONFIRMATION, RECOVERY_REHEARSED_CONFIRMATION,
     };
 
@@ -1142,6 +1195,33 @@ mod tests {
             probe_clock_snapshot(&mut transport),
             Err(FlashError::UnexpectedPacket { .. })
         ));
+    }
+
+    #[test]
+    fn individual_clock_register_probe_preserves_order_and_identity() {
+        let mut responses = Vec::new();
+        for (index, command) in [0x7F15_u16, 0x7F17, 0x7F19, 0x7F1B].into_iter().enumerate() {
+            let mut payload = [0_u8; 12];
+            payload[0..2].copy_from_slice(&command.to_le_bytes());
+            payload[2..4].copy_from_slice(&8_u16.to_le_bytes());
+            payload[4] = u8::try_from(index).unwrap();
+            let value = 0x1000_u32 + u32::try_from(index).unwrap();
+            payload[8..12].copy_from_slice(&value.to_le_bytes());
+            responses.extend(encode_response(&payload));
+        }
+        let mut transport = ScriptedTransport::new(responses, 1);
+
+        assert_eq!(
+            probe_clock_registers(&mut transport).unwrap(),
+            [0x1000, 0x1001, 0x1002, 0x1003]
+        );
+        assert_eq!(
+            decode_requests(&transport.writes)
+                .iter()
+                .map(|request| u16::from_le_bytes([request[0], request[1]]))
+                .collect::<Vec<_>>(),
+            [0x7F14, 0x7F16, 0x7F18, 0x7F1A]
+        );
     }
 
     fn decode_requests(frames: &[u8]) -> Vec<Vec<u8>> {

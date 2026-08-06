@@ -10,6 +10,8 @@ pub const RESPONSE_FRAME_BYTES: usize = 48;
 pub const KEYPAD_RESPONSE_FRAME_BYTES: usize = 24;
 /// Complete encoded response size for the 24-byte clock diagnostic payload.
 pub const CLOCK_RESPONSE_FRAME_BYTES: usize = 32;
+/// Complete encoded response size for one 12-byte RCC register payload.
+pub const CLOCK_REGISTER_RESPONSE_FRAME_BYTES: usize = 20;
 
 const COMMAND_HELLO_REQUEST: u16 = 0x0514;
 const COMMAND_HELLO_RESPONSE: u16 = 0x0515;
@@ -17,6 +19,8 @@ const COMMAND_KEYPAD_REQUEST: u16 = 0x7F10;
 const COMMAND_KEYPAD_RESPONSE: u16 = 0x7F11;
 const COMMAND_CLOCK_REQUEST: u16 = 0x7F12;
 const COMMAND_CLOCK_RESPONSE: u16 = 0x7F13;
+const COMMAND_CLOCK_REGISTER_REQUESTS: [u16; 4] = [0x7F14, 0x7F16, 0x7F18, 0x7F1A];
+const COMMAND_CLOCK_REGISTER_RESPONSES: [u16; 4] = [0x7F15, 0x7F17, 0x7F19, 0x7F1B];
 const SESSION_WORD: u32 = 0x6457_396A;
 const RESPONSE_PAYLOAD_BYTES: usize = 40;
 const RESPONSE_DECLARED_BYTES: u16 = 36;
@@ -37,6 +41,8 @@ pub enum Request {
     KeypadMatrix,
     /// Raw inherited RCC clock observation.
     ClockSnapshot,
+    /// One individually identified raw RCC register observation.
+    ClockRegister(u8),
 }
 
 /// Decodes one bounded normal-mode request body.
@@ -54,8 +60,35 @@ pub fn decode_request(encoded_body: &mut [u8; REQUEST_BODY_BYTES]) -> Option<Req
         COMMAND_HELLO_REQUEST => Some(Request::Hello),
         COMMAND_KEYPAD_REQUEST => Some(Request::KeypadMatrix),
         COMMAND_CLOCK_REQUEST => Some(Request::ClockSnapshot),
+        command if command == COMMAND_CLOCK_REGISTER_REQUESTS[0] => Some(Request::ClockRegister(0)),
+        command if command == COMMAND_CLOCK_REGISTER_REQUESTS[1] => Some(Request::ClockRegister(1)),
+        command if command == COMMAND_CLOCK_REGISTER_REQUESTS[2] => Some(Request::ClockRegister(2)),
+        command if command == COMMAND_CLOCK_REGISTER_REQUESTS[3] => Some(Request::ClockRegister(3)),
         _ => None,
     }
+}
+
+/// Encodes one individually identified raw RCC register observation.
+pub fn encode_clock_register_response(
+    frame: &mut [u8; CLOCK_REGISTER_RESPONSE_FRAME_BYTES],
+    register: u8,
+    value: u32,
+) {
+    let index = usize::from(register);
+    if index >= COMMAND_CLOCK_REGISTER_RESPONSES.len() {
+        return;
+    }
+    frame.fill(0);
+    frame[0..2].copy_from_slice(&[0xAB, 0xCD]);
+    frame[2..4].copy_from_slice(&12_u16.to_le_bytes());
+    let payload = &mut frame[4..16];
+    payload[0..2].copy_from_slice(&COMMAND_CLOCK_REGISTER_RESPONSES[index].to_le_bytes());
+    payload[2..4].copy_from_slice(&8_u16.to_le_bytes());
+    payload[4] = register;
+    payload[8..12].copy_from_slice(&value.to_le_bytes());
+    frame[16..18].copy_from_slice(&RESPONSE_TRAILER.to_le_bytes());
+    xor(&mut frame[4..18]);
+    frame[18..20].copy_from_slice(&[0xDC, 0xBA]);
 }
 
 /// Encodes one raw, read-only inherited RCC observation.
@@ -152,8 +185,9 @@ fn xor(bytes: &mut [u8]) {
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_request, encode_clock_response, encode_hello_response, encode_keypad_response,
-        is_valid_hello_request, Request, APPLICATION_VERSION,
+        decode_request, encode_clock_register_response, encode_clock_response,
+        encode_hello_response, encode_keypad_response, is_valid_hello_request, Request,
+        APPLICATION_VERSION,
     };
 
     #[test]
@@ -258,6 +292,32 @@ mod tests {
             &[0, 5, 0, 3, 0, 128, 0, 0, 18, 0, 0, 0, 0, 0, 0, 0]
         );
         assert_eq!(&frame[24..30], &[1, 0, 0, 0, 0xFF, 0xFF]);
+    }
+
+    #[test]
+    fn individual_clock_register_responses_are_identified_and_bounded() {
+        for (register, request_command) in
+            [0x7F14_u16, 0x7F16, 0x7F18, 0x7F1A].into_iter().enumerate()
+        {
+            let mut payload = [0_u8; 8];
+            payload[0..2].copy_from_slice(&request_command.to_le_bytes());
+            payload[2..4].copy_from_slice(&4_u16.to_le_bytes());
+            payload[4..8].copy_from_slice(&0x6457_396A_u32.to_le_bytes());
+            let mut encoded = encode_request_for_test(payload);
+            assert_eq!(
+                decode_request(&mut encoded),
+                Some(Request::ClockRegister(u8::try_from(register).unwrap()))
+            );
+
+            let mut frame = [0_u8; 20];
+            encode_clock_register_response(
+                &mut frame,
+                u8::try_from(register).unwrap(),
+                0x1234_0000 | u32::try_from(register).unwrap(),
+            );
+            assert_eq!(&frame[..4], &[0xAB, 0xCD, 12, 0]);
+            assert_eq!(&frame[18..], &[0xDC, 0xBA]);
+        }
     }
 
     fn encode_request_for_test(payload: [u8; 8]) -> [u8; 10] {
