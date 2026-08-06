@@ -928,3 +928,9 @@
   enabled; failure cannot grant RF/TX behavior; and success is claimed only if
   the exact unit shows the already verified words with the backlight illuminated
   while `probe-normal` still returns `AFIK-K1-0.2`.
+- **Implementation notes:** the exact GPIOF/PF8-only register plan and target
+  binding are implemented and pass host, workspace, target Clippy, ELF, and raw
+  image gates. The 48,580-byte image has SHA-256
+  `249bccb1cf66ce3269cc64d80f8171fbafdb6835ab7f31a2df3fc152c9b93489`
+  and CRC-32 `a327eba0`. The task remains active pending one separately
+  confirmed physical write and illumination/serial observations.

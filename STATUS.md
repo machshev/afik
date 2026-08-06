@@ -48,7 +48,7 @@ features remain outside this bounded slice.
 - Work Package 19 K1 display-only witness: complete; the fixed words were
   physically visible under bright external light and `AFIK-K1-0.2` responded.
 - Work Package 20 constant K1 backlight: active; bounded PF8 implementation and
-  static verification pending.
+  static verification complete; physical illumination confirmation pending.
 - `UI-005` logical key edges, bounded semantic views, exact boot-only entry,
   release gate, draft editor, and checked persistence action: complete.
 - `UI-005` separate persisted/active policy simulation, deterministic timed
@@ -106,9 +106,9 @@ features remain outside this bounded slice.
   pending; no serial device is visible here.
 - Work Package 18 selected and bounded the next application slice: a fixed
   display-only AFIK boot witness with the serial responder retained.
-- Current smallest actionable task: implement and statically verify the bounded
-  PF8 active-high output for `K1BL-020`. No new physical write is authorized by
-  this task-activation milestone.
+- Current smallest actionable task: after explicit confirmation for the exact
+  verified 48,580-byte image, perform one guarded write, power-cycle, observe
+  backlight plus fixed words, and probe `AFIK-K1-0.2` over serial.
 
 ## Work Package 14 implementation milestone
 
@@ -361,6 +361,34 @@ Physical display attempt on 2026-08-06:
   words. This closes `K1DISP-019`: LCD controller setup, page/data transfer,
   orientation, and rendering worked. The isolated missing surface is the
   separately mapped PF8 backlight, now bounded under `K1BL-020`.
+
+## Work Package 20 backlight implementation milestone
+
+- Added a pure constant-backlight register plan which sets only the GPIOF clock
+  and PF8 mode/type/speed/pull/output fields. Its exact-mask test passes.
+- The K1 target applies the active-high PF8 output before display setup. It adds
+  no timer, DMA, PWM, fade, brightness state, persistence, keypad, audio,
+  storage, BK4819, RF/TX, USB, or interrupt behavior.
+- The raw image is 48,580 bytes, SHA-256
+  `249bccb1cf66ce3269cc64d80f8171fbafdb6835ab7f31a2df3fc152c9b93489`,
+  CRC-32 `a327eba0`, with initial SP `0x20004000`, Reset `0x08002919`, and
+  ELF image end `0x0800e5c4` below the `0x08020000` application end.
+
+Static verification on 2026-08-06:
+
+- `nix flake check path:. --no-build` — passed on `x86_64-linux`; incompatible
+  `aarch64-linux` output was evaluation-skipped by Nix.
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
+  — passed.
+- `nix develop path:. -c cargo test --workspace` — passed: 133 unit/integration
+  tests and all doc tests.
+- Warning-denied `thumbv6m-none-eabi` Clippy with pinned build-std/core and LLD
+  — passed for `radio-firmware-k1`.
+- `tool/build-k1.sh`, `tool/verify-k1-image.sh`,
+  `tool/package-k1-image.sh --force`, and `tool/test-k1-image.sh` through
+  `nix develop path:. -c` — passed, including negative raw-image fixtures.
+- `git diff --check` — passed. No revised image write was sent.
 
 ## Work Package 13 first evidence milestone
 
