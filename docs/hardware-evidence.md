@@ -107,3 +107,133 @@ The physical key matrix, side-key wiring, scan polarity and timing, display
 controller, dimensions, bus, reset sequence, backlight, and board pins remain
 unknown. A target UI adapter or peripheral simulator requires new sourced facts
 and board experiments under `RISK-006` before implementation.
+
+## Sources used by RF-006
+
+### Beken BK4819 product page
+
+- **Document:** Beken Corporation product page, *BK4819 — Half-duplex TDD FM
+  Transceiver*.
+- **Publisher:** Beken Corporation.
+- **Retrieved:** 2026-08-06 from
+  <https://www.bekencorp.com/en/goods/detail/cid/50.html>.
+- **Scope:** current high-level product identity and capabilities only. The page
+  contains no register map or board integration instructions.
+
+### Beken BK4819 datasheet Rev.1.0
+
+- **Document:** *BK4819 Analog Two Way Radio IC*, Rev.1.0, copyright 2018,
+  22 pages.
+- **Publisher shown in document:** Beken Corporation.
+- **Retrieved:** 2026-08-06 from
+  <https://alfaexploit.com/files/BK4819.pdf>.
+- **Mirror status:** public third-party mirror; an equivalent download was not
+  found on Beken's current product page. The PDF is not vendored.
+- **SHA-256:**
+  `a2b795a1f40f13e2708fc11720cc4df05fe00590eb0a8d82914699153321de02`.
+- **Scope:** product architecture, 3-wire control framing/timing, pins, and
+  electrical characteristics. The datasheet explicitly points to separate
+  application notes and a register table and does not itself define registers.
+
+### Mirrored BK4819(V3) application note
+
+- **Document:** *BK4819(V3) Application Note*, page label 2020; the mirror title
+  includes `20210428` and identifies the content as machine-translated English.
+- **Publisher/authenticity:** the content presents itself as an application
+  note but the accessible Scribd copy is user-uploaded and no original Beken
+  download or untranslated copy has been located.
+- **Retrieved:** 2026-08-06 from
+  <https://www.scribd.com/document/716113950/BK4819-V3-Application-Note-20210428-machine-translated-English>.
+- **Scope:** only the explicitly listed frequency, mode-control, RSSI, and
+  squelch fields below. Function names, prose translations, defaults,
+  initialization code, RF performance, and omitted register behavior are not
+  accepted as facts.
+
+## Accepted BK4819 facts and bounded inferences
+
+### EVID-BK4819-004 — Product mode and 3-wire control envelope
+
+- **Fact:** Beken identifies BK4819 as a half-duplex TDD FM transceiver with an
+  MCU 3-wire interface. Datasheet section 1.3 and figures 5–7 encode one R/W bit,
+  seven address bits `A6..A0`, and sixteen data bits `D15..D0`; input is latched
+  on rising SCK and output changes on falling SCK. Table 6 limits SCK to 8 MHz.
+- **Method:** copied from Beken's product page and Rev.1.0 datasheet pages 1,
+  6, and 9 (PDF pages 1, 6, and 9).
+- **Confidence:** high for an unbound logical register-bus envelope; low for
+  applicability to any particular MCU pins or board timing implementation.
+- **Permitted use:** define a bounded 7-bit register address, 16-bit value, and
+  fallible read/write trait. `RF-006` does not bit-bang pins or model timing.
+- **Required experiment:** identify the fitted chip/board revision and trace
+  SCK, SCN, and bidirectional SDATA; only then verify edge timing with a logic
+  analyzer using non-transmitting reads.
+
+### EVID-BK4819-005 — Frequency word and receive-status fields
+
+- **Fact:** the mirrored application note assigns the 32-bit frequency word to
+  `REG_38` high and `REG_39` low with a 10 Hz unit. It labels `REG_67<8:0>`
+  read-only RSSI with `RSSI dBm ~= raw/2 - 160`, and `REG_0C<1>` as a read-only
+  squelch result where one is link/open and zero is loss/closed.
+- **Method:** copied from the note's Squelch/RSSI and Frequency Setting sections,
+  labeled pages 13–14.
+- **Confidence:** medium-low for a BK4819(V3) simulation contract because the
+  only accessible copy is machine-translated and its revision/authenticity are
+  unconfirmed. The 10 Hz formula's example is internally consistent.
+- **Permitted use:** pack only exactly 10-Hz-aligned integer frequencies into
+  the two words and decode RSSI into signed half-dBm integer units plus one
+  squelch boolean in a fake register-bus model.
+- **Required experiment:** obtain the original application note/register table;
+  confirm word order and status fields by read-only observation on identified
+  hardware before binding a target adapter.
+
+### EVID-BK4819-006 — Mode-control fields and AFIK command-plan inference
+
+- **Fact:** the mirrored application's Tx/Rx Mode Switch table labels
+  `REG_30<15>` VCO calibration, `<13:10>` the receive link blocks
+  LNA/mixer/PGA/ADC, `<9>` AF DAC, `<7:4>` PLL/VCO, `<3>` PA gain, `<2>` MIC
+  ADC, `<1>` TX DSP, and `<0>` RX DSP. Zero disables every listed block.
+- **Inference:** for deterministic simulation, AFIK composes `0xBEF1` as
+  receive (calibration, all link blocks, AF DAC, all PLL/VCO blocks, RX DSP),
+  `0x80FE` as transmit (calibration, all PLL/VCO blocks, PA gain, MIC ADC, TX
+  DSP), and `0x0000` as neutral standby. AFIK writes standby before frequency
+  words and writes the selected mode last so a partially completed command plan
+  cannot intentionally reach transmit enable.
+- **Method:** bit positions are copied from application-note labeled page 12;
+  exact combined values and ordering are local fail-closed design inferences,
+  not copied vendor sequences.
+- **Confidence:** low for physical-chip operation and high only as a transparent
+  deterministic command model. Initialization prerequisites, auto-clearing
+  calibration behavior, high/low frequency write order, and required delays are
+  unknown.
+- **Permitted use:** encode exact command-order tests and a fake-bus simulator.
+  The TX mode word may be emitted only behind a matching `TxAuthorisation`.
+- **Required experiment:** compare an original register table/application note
+  and capture known-safe vendor initialization/RX transitions first. TX
+  verification additionally requires a recovery-proven unit, shielded dummy
+  load, spectrum analyzer, current limiting, and independently controlled
+  external PA/RF switching; it is outside `RF-006`.
+
+### EVID-BK4819-007 — Published frequency ranges conflict
+
+- **Fact:** the current Beken product page states 18–620 MHz and 840–1200 MHz,
+  while the mirrored Rev.1.0 datasheet states 18–660 MHz and 840–1300 MHz.
+- **Confidence:** high that the publications differ; unknown which revision or
+  range applies to the fitted radio and its board filters/matching.
+- **Permitted use:** none as a software acceptance limit. `RF-006` validates
+  only 10 Hz representation; channel/regulatory bounds remain higher-layer
+  responsibilities and board RF limits remain unknown.
+- **Required experiment:** identify the exact fitted silicon revision and obtain
+  its matching official datasheet plus board filter/switch schematic before
+  defining supported receive or transmit bands.
+
+## Unknowns deliberately excluded from RF-006
+
+- BK4819 silicon revision and the BK4819(V3) application's applicability.
+- Original register table, complete reset/initialization sequence, documented
+  mode transition sequence, calibration completion/status, and required delays.
+- MCU pins, electrical direction switching for SDATA, and the UV-K5-family
+  board's RF switches, filters, audio route, external PA, and power controls.
+- Crystal frequency/calibration values and all unit-specific calibration data.
+- Physical RSSI accuracy, squelch behavior, receive sensitivity, emitted power,
+  spectral purity, and regulatory compliance.
+- Hardware access, flashing, physical receive claims, and all on-air TX remain
+  blocked by `RISK-002`, `RISK-005`, and `RISK-007`.

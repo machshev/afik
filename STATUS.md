@@ -45,9 +45,11 @@ physical RF performance.
   complete.
 - Bounded duplicate-sequence replay and conflict rejection: complete.
 - Fragmented and malformed stream recovery: complete.
-- Next smallest task: record the BK4819 source documents, exact accepted
-  interface/register facts, command-plan inferences, confidence, contradictions,
-  and required physical experiments before adding `radio-bk4819` code.
+- `RF-006` official product/datasheet provenance, mirrored-application-note
+  boundary, interface/frequency/status/mode facts, low-confidence command-plan
+  inference, published-band contradiction, and required experiments: complete.
+- Next smallest task: bind `TxAuthorisation` to its approved class, then add the
+  heap-free `radio-bk4819` driver with exact command and failure-path tests.
 
 ## Completed Work Package 5 exit criteria
 
