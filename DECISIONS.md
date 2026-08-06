@@ -213,3 +213,23 @@ meaning.
   replacement-confirmation header. Same-origin delivery, CSP, and these checks
   reduce accidental local mutation but are not authentication or authorization.
   Non-loopback, multi-user, or deployed use requires a separate threat model.
+
+## ADR-018 — Frequency Copy yields only a reviewed receive observation
+
+- **Date:** 2026-08-06
+- **Status:** accepted for `FREQ-010`; production hardware command deferred
+- Fast Copy is local measurement of one received transmission, not the
+  separately documented transmitting Air Copy configuration protocol. Its only
+  candidate outputs are an observed receive frequency, optional signalling
+  evidence, and bounded quality metadata.
+- A capture candidate is not an `ActiveChannel` and cannot contain or infer a
+  transmit frequency, trusted `TxClass`, or `TxAuthorisation`. Decoder timeout
+  is recorded as signalling not observed, not silently converted to a trusted
+  no-tone setting. Saving is a separate confirmed transaction and any future
+  saved receive-only object must remain `TxClass::Never`.
+- Beken confirms scan capability existence, but the accessible register note is
+  machine-translated and revision-unverified, while descendant firmware uses
+  explicitly unexplained bits and non-independent implementation choices.
+  Production commands, register simulation, target binding, and physical claims
+  remain blocked until the documented experiments establish every bit, unit,
+  transition, false-lock case, timeout, fault, and cleanup path.

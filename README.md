@@ -3,7 +3,7 @@
 A ground-up modular Rust radio firmware and programming platform, initially
 targeting the DP32G030-based Quansheng UV-K5 family.
 
-The first nine architecture work packages are complete. They provide
+The first ten architecture work packages are complete. They provide
 hardware-independent domain types, channel plans, safe TX policy, protocol
 framing, transactional storage, canonical logical images, a library-first
 programmer, deterministic host simulation, the complete protocol command/error
@@ -11,7 +11,9 @@ matrix, and an evidence-backed minimal DP32G030 Rust image with a Renode
 reset-path proof. They also provide an allocation-free boot-only TX-permission
 UI, an evidence-bounded post-initialization BK4819 command driver, explicit-input
 channel activation/scanning, and complete CLI and local-GUI programmer front
-ends. No target hardware-register adapter exists yet. These are not physical
+ends. Frequency Copy research defines a receive-only candidate and
+experiment-gated design while deferring unverified BK4819 scan commands. No
+target hardware-register adapter exists yet. These are not physical
 flash, display, keypad, timer, bus, board-RF, or on-air implementations. No
 hardware flashing has been added.
 

@@ -2,13 +2,13 @@
 
 ## Current work package
 
-**Work Package 10 — Frequency Copy research (`FREQ-010`) is active.**
+**Work Package 10 — Frequency Copy research (`FREQ-010`) is complete.**
 
-The package is evidence and design research only. It distinguishes one-channel
-frequency measurement from Air Copy, records chip/register confidence, defines
-a fail-closed candidate-data boundary, and names required experiments. It does
-not add register commands, target integration, automatic channel mutation,
-transmit permission, flashing, or physical measurement claims.
+The package concludes that Frequency Copy is design-ready but hardware-command
+blocked. Its receive-only candidate, failure semantics, storage/TX boundary,
+experiments, and future tests are specified without adding register commands,
+target integration, automatic channel mutation, transmit permission, flashing,
+or physical measurement claims.
 
 ## State
 
@@ -21,7 +21,7 @@ transmit permission, flashing, or physical measurement claims.
 - Work Package 7 channel activation and deterministic scanning: complete.
 - Work Package 8 programmer CLI: complete.
 - Work Package 9 programmer GUI: complete.
-- Work Package 10 Frequency Copy research: active.
+- Work Package 10 Frequency Copy research: complete.
 - `UI-005` logical key edges, bounded semantic views, exact boot-only entry,
   release gate, draft editor, and checked persistence action: complete.
 - `UI-005` separate persisted/active policy simulation, deterministic timed
@@ -64,9 +64,47 @@ transmit permission, flashing, or physical measurement claims.
   session, bounded loopback HTTP, responsive object workflow, canonical
   downloads/uploads, confirmed token-gated mutation, and binary tests:
   complete.
-- Next smallest task: record the FCC-filed manual's exact Fast Copy workflow and
-  its distinction from Wireless Radio Replication, with source confidence and
-  no register inference.
+- `FREQ-010` FCC workflow provenance, Air Copy separation, bounded observation
+  matrix, receive-only candidate/state proposal, storage/TX boundary,
+  experiment plan, and hardware-command defer verdict: complete.
+- Next smallest task: activate Work Package 11 by bounding APRS receive
+  feasibility and repeater discovery without inventing target or RF behavior.
+
+## Completed Work Package 10 exit criteria
+
+- The FCC-filed manual's exhibit identity, checksum, exact Fast Copy controls,
+  displayed/saved outputs, known-frequency CTCSS/DCS scan, and distinct
+  transmitting Air Copy workflow are recorded with scope and confidence.
+- Beken's advertised scan/signalling capabilities are separated from the
+  machine-translated revision-unverified register description and one
+  non-independent descendant firmware observation. Unexplained constants are
+  named and remain prohibited from production or physical simulation.
+- The feasibility design inventories observable and non-observable properties,
+  specifies a heap-free bounded receive-only candidate and explicit-input/token
+  state flow, preserves signalling uncertainty, and treats cleanup failure as a
+  fault latch.
+- Capture cannot become `ActiveChannel` or mint TX authority. Any future save is
+  separately confirmed, requires a new receive-only storage representation,
+  and remains `TxClass::Never`; no RX-to-TX inference is permitted.
+- Receive-only equipment/recovery, register, frequency/level, false-lock,
+  CTCSS/DCS, cancellation, stale-result, bus-fault, and cleanup experiments plus
+  future deterministic tests are specified. The explicit verdict is
+  design-ready but hardware-command blocked under `RISK-011`.
+- No behavioral code, register command, target adapter, register-level
+  simulator, automatic storage mutation, transmission, flashing, or physical
+  success claim was added.
+
+## Work Package 10 verification
+
+Verified 2026-08-06:
+
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
+  — passed for all host crates and targets.
+- `nix develop path:. -c cargo test --workspace` — passed: 82 unit tests and all
+  doc tests, 0 failures.
+- `env RUSTC=/nix/store/2mm3p5wcy1ifrcx5vp3bwsw7a76r77jc-rustc-1.86.0/bin/rustc RUSTDOC=/nix/store/2mm3p5wcy1ifrcx5vp3bwsw7a76r77jc-rustc-1.86.0/bin/rustdoc CARGO_TARGET_DIR=/tmp/afik-freq-010-rust-1-86-target /nix/store/npqlgsia03kfhv8m9mav6hfnbawpg0yg-cargo-1.86.0/bin/cargo test --workspace`
+  — passed: 82 unit tests and all doc tests on Rust/Cargo 1.86.0.
 
 ## Completed Work Package 9 exit criteria
 

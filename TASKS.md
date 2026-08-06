@@ -418,7 +418,7 @@
 
 ## FREQ-010 — Frequency Copy research
 
-- **Status:** active
+- **Status:** complete (2026-08-06)
 - **Objective:** determine what a safe AFIK Frequency Copy feature could claim,
   represent, and require before any BK4819 scan command or target integration is
   implemented.
@@ -457,3 +457,14 @@
   board-path risks; specifies reproducible receive-only experiments and future
   simulator/fault tests; gives a clear implement/defer verdict; and makes no
   production or physical behavior claim.
+- **Completion notes:** recorded the FCC exhibit identity, checksum, exact Fast
+  Copy controls/results, separate known-frequency signalling scan, and distinct
+  transmitting Air Copy workflow. Re-used Beken's advertised feature list only
+  as capability evidence and labeled the mirrored V3 fields plus one exact
+  descendant-firmware commit as low-confidence experiment-planning evidence;
+  unexplained `REG_32` bits remain prohibited. Defined a bounded receive-only
+  candidate, explicit-input/token state proposal, uncertainty/fault semantics,
+  separate confirmed storage path constrained to `TxClass::Never`, required
+  non-transmitting experiments, and a future deterministic test matrix. Verdict:
+  design-ready but hardware-command blocked. No behavior, register driver,
+  simulator register model, target adapter, or physical claim was added.

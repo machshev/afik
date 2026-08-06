@@ -88,3 +88,10 @@ selected session, strict generated-bank form parsing, a bounded loopback HTTP
 boundary, embedded browser assets, downloads/uploads, and presentation. It
 does not introduce a remote service, raw object writes, arbitrary server file
 paths, target behavior, or a physical-programming claim.
+
+Work Package 10 adds no crate or behavior. Its Frequency Copy feasibility
+design keeps a measurement candidate separate from `ActiveChannel`, storage,
+and `TxAuthorisation`; observation cannot infer a transmit frequency or trusted
+class. Any future save must be deliberate and receive-only with
+`TxClass::Never`. Register commands and a physical adapter remain blocked by
+revision, board-path, crystal, false-lock, timing, and cleanup evidence gates.

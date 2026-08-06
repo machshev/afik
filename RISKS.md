@@ -123,7 +123,10 @@
   as user-workflow evidence, Beken's product page as feature-existence evidence,
   and the mirrored V3 note plus existing firmware only as experiment-planning
   evidence. A future feature must yield a receive-only reviewed candidate,
-  never TX authority, and remain blocked until the fitted chip/crystal/board are
-  identified and bounded non-transmitting signal-generator experiments verify
-  scan start, completion, units, accuracy, false locks, tone/code results,
-  timeout, retrigger, and safe cleanup.
+  never TX authority. A decoder timeout must not become a trusted no-tone value;
+  a cleanup failure must leave the adapter faulted; and any later save must be a
+  separate confirmed object with `TxClass::Never`. Production remains blocked
+  until the fitted chip/crystal/board are identified and bounded
+  non-transmitting signal-generator experiments verify scan start, completion,
+  units, accuracy, false locks, tone/code results, timeout, retrigger, and safe
+  cleanup as specified in `docs/frequency-copy-feasibility.md`.
