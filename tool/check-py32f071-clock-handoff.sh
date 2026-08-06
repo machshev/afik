@@ -11,7 +11,7 @@ exec cargo clippy --offline -Z build-std=core \
   --manifest-path "$project_root/Cargo.toml" \
   --package radio-firmware-k1 \
   --lib \
-  --features py32f071-clock-handoff,py32f071-runtime-composition \
+  --features py32f071-clock-publication,py32f071-runtime-composition \
   --target thumbv6m-none-eabi \
   -- \
   -D warnings

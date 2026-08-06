@@ -66,6 +66,17 @@ pub(crate) unsafe fn set_freqs(freqs: Clocks) {
     CLOCK_FREQS = MaybeUninit::new(freqs);
 }
 
+/// Publishes an already-running clock tree without changing RCC registers.
+///
+/// # Safety
+///
+/// The caller must have independently validated that every supplied frequency
+/// matches the active hardware clock tree. This must be called at most once,
+/// before constructing any HAL driver that queries its peripheral clock.
+pub unsafe fn publish_inherited_freqs(freqs: Clocks) {
+    set_freqs(freqs);
+}
+
 /// Safety: Reads a mutable global.
 pub(crate) unsafe fn get_freqs() -> &'static Clocks {
     (*core::ptr::addr_of_mut!(CLOCK_FREQS)).assume_init_ref()

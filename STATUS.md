@@ -452,6 +452,23 @@ features remain outside this bounded slice.
   interrupt, DMA, timer, serial, display, keypad, RF, TX, or flash behavior
   changed.
 
+## Work Package 23 guarded clock-publication milestone
+
+- Made the validated inherited-clock proof unforgeable outside its pure
+  fail-closed validator and added frequency accessors.
+- Added optional `py32f071-clock-publication`: it re-reads and validates the
+  live RCC tuple before publishing only the exact 48 MHz SYS/HCLK1/PCLK1/
+  PCLK1_TIM values, 16 MHz HSI, and 48 MHz PLL to the HAL software clock table.
+- The local HAL primitive is explicitly unsafe; the K1 wrapper is safe because
+  it owns validation and documents the one-time startup ordering contract.
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c tool/check-py32f071-clock-handoff.sh` — passed.
+- `nix develop path:. -c cargo test -p radio-firmware-k1` — passed; all 30 unit
+  tests and doc tests passed.
+- `git diff --check` — passed.
+- No entry point, physical image, RCC register, peripheral ownership, TIM15,
+  interrupt, DMA, UART, SPI, display, keypad, RF, TX, or flash behavior changed.
+
 ## Work Package 22 pure keypad milestone
 
 - Added an allocation-free main-matrix decoder in the standalone K1 firmware

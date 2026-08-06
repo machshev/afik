@@ -653,3 +653,15 @@ meaning.
 - The provisional contract incorrectly assumed 24 MHz x2 and masked PLLSRC to
   one bit. Correct both fields and explicitly validate PLLMUL. Keep every other
   mismatch fail-closed and keep clock publication out of the runnable image.
+
+## ADR-046 — HAL clock publication requires the validated handoff proof
+
+- **Date:** 2026-08-06
+- **Status:** accepted for `K1ASYNC-023`
+- The HAL exposes one unsafe inherited-frequency primitive because its global
+  clock table cannot verify hardware. The K1 wrapper is the safe boundary: it
+  reads the live RCC snapshot, requires the exact fail-closed 48 MHz contract,
+  and only then publishes SYS, HCLK1, PCLK1, PCLK1_TIM, HSI, and PLL values.
+- `InheritedClocks` fields are private so callers cannot forge the proof. This
+  optional function is not selected by the runnable image and does not write
+  RCC, take peripheral tokens, initialize TIM15, or enable interrupts or DMA.

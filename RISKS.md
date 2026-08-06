@@ -436,3 +436,8 @@
   the two-bit source and multiplier explicitly. This resolves register
   interpretation only; runnable HAL clock publication, interrupt/DMA behavior,
   and timer/peripheral coexistence remain open.
+- **Publication-boundary update:** a feature-gated safe K1 wrapper now accepts
+  only the private validated handoff proof before updating the HAL's software
+  frequency table. It is target-compile proven but not called by the image;
+  one-time ordering, TIM15, interrupt/DMA, and peripheral coexistence remain
+  runtime and physical gates.

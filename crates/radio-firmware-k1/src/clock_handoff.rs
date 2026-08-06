@@ -78,13 +78,39 @@ pub const fn snapshot_from_registers(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct InheritedClocks {
     /// System clock frequency in hertz.
-    pub sys_hz: u32,
+    sys: u32,
     /// AHB clock frequency in hertz.
-    pub hclk1_hz: u32,
+    hclk1: u32,
     /// APB clock frequency in hertz.
-    pub pclk1_hz: u32,
+    pclk1: u32,
     /// APB timer clock frequency in hertz.
-    pub pclk1_tim_hz: u32,
+    pclk1_tim: u32,
+}
+
+impl InheritedClocks {
+    /// Returns the validated system clock frequency.
+    #[must_use]
+    pub const fn sys_hz(self) -> u32 {
+        self.sys
+    }
+
+    /// Returns the validated AHB clock frequency.
+    #[must_use]
+    pub const fn hclk1_hz(self) -> u32 {
+        self.hclk1
+    }
+
+    /// Returns the validated APB clock frequency.
+    #[must_use]
+    pub const fn pclk1_hz(self) -> u32 {
+        self.pclk1
+    }
+
+    /// Returns the validated APB timer clock frequency.
+    #[must_use]
+    pub const fn pclk1_tim_hz(self) -> u32 {
+        self.pclk1_tim
+    }
 }
 
 /// Why an inherited RCC snapshot cannot be adopted.
@@ -153,10 +179,10 @@ pub const fn validate(snapshot: ClockSnapshot) -> Result<InheritedClocks, ClockH
     }
 
     Ok(InheritedClocks {
-        sys_hz: K1_INHERITED_CLOCK_HZ,
-        hclk1_hz: K1_INHERITED_CLOCK_HZ,
-        pclk1_hz: K1_INHERITED_CLOCK_HZ,
-        pclk1_tim_hz: K1_INHERITED_CLOCK_HZ,
+        sys: K1_INHERITED_CLOCK_HZ,
+        hclk1: K1_INHERITED_CLOCK_HZ,
+        pclk1: K1_INHERITED_CLOCK_HZ,
+        pclk1_tim: K1_INHERITED_CLOCK_HZ,
     })
 }
 
@@ -182,10 +208,10 @@ mod tests {
     #[test]
     fn accepts_only_the_undivided_48mhz_contract() {
         let clocks = validate(VALID).unwrap();
-        assert_eq!(clocks.sys_hz, K1_INHERITED_CLOCK_HZ);
-        assert_eq!(clocks.hclk1_hz, K1_INHERITED_CLOCK_HZ);
-        assert_eq!(clocks.pclk1_hz, K1_INHERITED_CLOCK_HZ);
-        assert_eq!(clocks.pclk1_tim_hz, K1_INHERITED_CLOCK_HZ);
+        assert_eq!(clocks.sys_hz(), K1_INHERITED_CLOCK_HZ);
+        assert_eq!(clocks.hclk1_hz(), K1_INHERITED_CLOCK_HZ);
+        assert_eq!(clocks.pclk1_hz(), K1_INHERITED_CLOCK_HZ);
+        assert_eq!(clocks.pclk1_tim_hz(), K1_INHERITED_CLOCK_HZ);
     }
 
     #[test]
