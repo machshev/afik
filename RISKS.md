@@ -390,3 +390,8 @@
   not executor progress or physical transfers. Keep startup unchanged until a
   deterministic scheduling proof and then separately guarded UART/display
   observations pass.
+- **Cooperative-progress update:** a deterministic round-robin harness now
+  proves that the exact 16-byte display schedule permits serial work between
+  chunks for a complete 1,024-byte frame, and compile-time equality prevents
+  schedule drift from the HAL driver. Runtime executor startup, interrupts,
+  DMA, clock ownership, and physical UART/display coexistence remain open.

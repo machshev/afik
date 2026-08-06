@@ -565,3 +565,15 @@ meaning.
 - Compile this interface without selecting it from the physical image. Runtime
   scheduler progress, UART responsiveness, and visible display behavior remain
   later Renode and separately guarded physical gates.
+
+## ADR-039 — Display scheduling is proven independently of hardware adoption
+
+- **Date:** 2026-08-06
+- **Status:** accepted for `K1ASYNC-023`
+- One complete visible frame is 1,024 bytes and the cooperative display boundary
+  yields after every 16 bytes. A deterministic round-robin future harness must
+  demonstrate serial-service progress between adjacent display chunks.
+- The hardware-independent schedule and local HAL driver use compile-time-equal
+  chunk constants. This host proof establishes only that the await placement
+  permits interleaving; it does not prove Cortex-M executor startup, interrupt
+  delivery, DMA, peripheral timing, or physical UART/display coexistence.

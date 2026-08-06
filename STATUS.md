@@ -117,9 +117,9 @@ features remain outside this bounded slice.
 - Work Package 22 keypad/UI witness definition: complete; the pinned matrix,
   electrical idle/scan levels, one-key decode, explicit-time debounce, and
   display-only result were bounded before implementation.
-- Current smallest actionable task: add a deterministic no-hardware executor
-  proof that a display-sized chunk schedule permits concurrent serial progress,
-  before adopting the SPI interface in the firmware entry point.
+- Current smallest actionable task: define the separately guarded runtime
+  composition of the proven thread executor, USART1, and SPI1 surfaces while
+  retaining the polling recovery image and excluding keypad acceptance.
 
 ## Work Package 23 dependency and executor milestone
 
@@ -269,6 +269,29 @@ features remain outside this bounded slice.
 - `git diff --check` — passed.
 - No HAL initialization, firmware entry point, physical image, physical SPI,
   scheduler, UART-coexistence, or flash operation changed.
+
+## Work Package 23 cooperative-progress milestone
+
+- Added a deterministic no-hardware round-robin future harness for one complete
+  1,024-byte display frame and a concurrent serial-service future.
+- The display future yields after each 16-byte chunk: exactly 64 chunks complete,
+  with serial work observed between every adjacent pair.
+- The hardware-independent chunk constant is compile-time checked against the
+  local HAL SPI driver's constant, preventing the proof and driver from drifting.
+- `nix develop path:. -c cargo test -p radio-firmware-k1` — passed; all 23 unit
+  tests and doc-tests passed.
+- `nix develop path:. -c tool/check-py32f071-spi1.sh` — passed with strict
+  warning-denied target Clippy and build-std/core offline.
+- `nix flake check path:. --no-build` — passed.
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
+  — passed.
+- `nix develop path:. -c cargo test --workspace` — passed; all 160 workspace
+  unit, integration, and doc-test binaries passed.
+- `git diff --check` — passed.
+- No executor was started on Cortex-M, no HAL initialization or entry point
+  changed, and no physical image, interrupt, DMA, SPI, UART, keypad, or flash
+  behavior changed.
 
 ## Work Package 22 pure keypad milestone
 

@@ -1281,3 +1281,15 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   status flags, pin waveforms, display transfers, executor interleaving, and
   USART1 responsiveness remain unproven until later deterministic and guarded
   physical milestones.
+
+### EVID-K1-043 — Deterministic cooperative display/serial progress
+
+- **Schedule:** the visible display frame is 1,024 bytes and the local async SPI
+  driver yields after each 16-byte chunk. A compile-time equality check binds
+  the hardware-independent schedule to the driver constant.
+- **Proof:** a no-hardware round-robin future harness completes exactly 64
+  display chunks while servicing serial work between every adjacent pair.
+- **Boundary:** this proves that the explicit await placement permits another
+  cooperative task to run. It does not start the Cortex-M executor, initialize
+  the HAL, deliver an interrupt, operate DMA, touch a peripheral, or establish
+  physical UART responsiveness during display transfer.

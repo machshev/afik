@@ -6,6 +6,8 @@
 extern crate std;
 
 pub mod backlight;
+#[cfg(test)]
+mod cooperative_progress;
 pub mod display;
 #[cfg(feature = "embassy-runtime")]
 pub mod embassy_runtime;

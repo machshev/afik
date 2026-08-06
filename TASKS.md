@@ -1147,3 +1147,11 @@
   or unsuccessful polls. The F071 SPI1 / PA5 / PA7 constructor passes strict
   target compilation and remains absent from the firmware entry point. The
   next boundary is deterministic executor-progress testing before migration.
+- **Cooperative-progress result:** a deterministic no-hardware round-robin
+  harness drives one complete 1,024-byte display frame through the exact
+  16-byte chunk schedule and proves serial work runs between every adjacent
+  display chunk. A compile-time equality check ties that schedule to the local
+  HAL SPI driver. This proves the cooperative await boundary, not Cortex-M
+  executor startup, physical SPI, or async USART behavior. The next step is a
+  separately guarded runtime composition of the proven executor, USART1, and
+  SPI1 surfaces without removing the polling recovery image.

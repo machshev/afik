@@ -9,6 +9,13 @@ until exact PY32F071 implementation and physical behavior are verified.
 CPU-bound rendering must contain explicit await boundaries; cooperative
 scheduling does not make an uninterrupted renderer non-blocking.
 
+The first scheduling proof is deliberately hardware-independent: a deterministic
+round-robin harness transfers a complete 1,024-byte frame in 16-byte chunks and
+services serial work between adjacent chunks. The chunk size is compile-time
+matched to the local SPI driver. This validates the await boundary only; it is
+not evidence that the Cortex-M executor, USART interrupts/DMA, or SPI peripheral
+run correctly on the K1.
+
 The PY32 dependency boundary is repository-local. `vendor/py32-metapac` is a
 pinned generated PAC and `vendor/py32-hal` is a bounded compatibility patch;
 root Cargo patches select both without requiring upstream control. The optional

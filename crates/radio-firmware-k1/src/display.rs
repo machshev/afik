@@ -10,6 +10,8 @@ pub const HEIGHT: usize = 64;
 pub const PAGES: usize = HEIGHT / 8;
 /// Complete visible framebuffer size.
 pub const FRAME_BYTES: usize = WIDTH * PAGES;
+/// Maximum display data bytes written before yielding to cooperative tasks.
+pub const ASYNC_WRITE_CHUNK_BYTES: usize = 16;
 
 const COLUMN_OFFSET: u8 = 4;
 const SETUP_COMMANDS: [u8; 8] = [

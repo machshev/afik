@@ -3,6 +3,9 @@
 use py32_hal::peripherals::{PA5, PA7, SPI1};
 use py32_hal::spi::SpiTx;
 
+const _: [(); crate::display::ASYNC_WRITE_CHUNK_BYTES] =
+    [(); py32_hal::spi::ASYNC_WRITE_CHUNK_BYTES];
+
 /// Constructs the prospective cooperative async display SPI interface.
 ///
 /// Type-checking this function proves only the bounded local HAL surface. The
