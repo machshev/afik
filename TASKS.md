@@ -791,3 +791,38 @@
   physical image write or boot claim is permitted.
 - **Next task:** define the independently evidenced K1 physical boot witness
   and only then add the guarded K1 AFIK application-flash workflow.
+
+## K1WIT-017 — Evidence-backed physical K1 boot witness
+
+- **Status:** active (2026-08-06)
+- **Objective:** establish one harmless, independently observable indication
+  that an AFIK K1 image reached Reset on the exact unit before authorizing an
+  AFIK application write.
+- **Scope:** identify the exact unit's fitted MCU/package and board connection;
+  establish whether the native USB peripheral is routed to the host or whether
+  the documented display path is the viable witness; collect the required
+  primary register/pin facts; independently implement the smallest bounded
+  witness; and verify it on the exact unit while retaining the stock recovery
+  image and backup.
+- **Dependencies:** `K1EVID-013`, `K1HIL-015`, `K1BOOT-016`, the exact unit,
+  and either a direct native-USB connection or a safe display observation
+  setup.
+- **Assumptions:** the Puya USB capability and the pinned board source are
+  evidence inputs, not proof that the exact unit routes USB to the current
+  host; the existing CH340 serial adapter proves only the observed bootloader
+  path; and a witness must not require RF, TX, EEPROM writes, or bootloader
+  replacement.
+- **Exclusions:** flashing the reset-only image before the witness is proven,
+  guessing peripheral registers or board routing, importing Armel driver code,
+  USB identity claims from the CH340 adapter, RF operation, and any general
+  radio application implementation.
+- **Tests required:** sourced register/pin facts, deterministic host-side
+  witness framing or rendering checks, exact-unit observation, immediate stock
+  recovery, and complete workspace/build hygiene.
+- **Acceptance criteria:** the witness is independently observable on the
+  exact K1, has no TX or calibration side effect, and is followed by a
+  documented recovery check. The guarded K1 AFIK application-flash workflow
+  may begin only after this task is complete.
+- **Current gate:** the host currently sees only the external CH340 serial
+  adapter in K1 bootloader mode; native K1 USB or a physical display witness
+  has not yet been observed.

@@ -2,8 +2,8 @@
 
 ## Current work package
 
-**Work Package 16 (`K1BOOT-016`) is complete: first independently implemented
-AFIK K1 reset image.**
+**Work Package 17 (`K1WIT-017`) is active: establish an independently observed
+K1 physical boot witness.**
 
 K1 has priority because an exact unit running Armel firmware is available for
 inspection. `K1EVID-013` supplies the K1 evidence baseline and same-unit
@@ -38,6 +38,8 @@ witness is independently evidenced.
   was a stock recovery-image exercise, not an AFIK application flash.
 - Work Package 16 K1 reset-only application image and static/raw-image gates:
   complete; no physical K1 write or boot claim.
+- Work Package 17 K1 physical boot witness: active; current host observation
+  sees only the external CH340 bootloader adapter, not native K1 USB.
 - `UI-005` logical key edges, bounded semantic views, exact boot-only entry,
   release gate, draft editor, and checked persistence action: complete.
 - `UI-005` separate persisted/active policy simulation, deterministic timed
@@ -93,9 +95,9 @@ witness is independently evidenced.
 - `FLASH-012` exact-unit inspection, physical backup, recovery rehearsal,
   page-acknowledged AFIK write, and independent application-boot observation:
   pending; no serial device is visible here.
-- Current smallest actionable task: define the independently evidenced K1
-  physical boot witness, then add the guarded K1 AFIK application-flash
-  workflow; the reset-only image itself must not be flashed.
+- Current smallest actionable task: connect and identify the K1's native USB
+  path, or record the exact display/MCU path needed for a visible witness. The
+  reset-only image itself must not be flashed.
 
 ## Work Package 14 implementation milestone
 
@@ -216,6 +218,24 @@ K1BOOT-016 verification on 2026-08-06:
 - `nix develop path:. -c cargo test --workspace` — passed; all workspace unit,
   integration, and doc tests passed.
 - `git diff --check` — passed.
+
+## Work Package 17 physical witness evidence
+
+- The official PY32F071 evidence establishes a USB 2.0 full-speed MCU
+  peripheral, but the exact K1 package, board routing, connector, and
+  host-visible USB identity remain unobserved.
+- Read-only host USB/sysfs inventory on 2026-08-06 found only the external
+  QinHeng CH340 serial converter `1a86:7523`, exposed as
+  `/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0` and `/dev/ttyUSB0`.
+  No native K1 USB device was present.
+- `nix develop path:. -c cargo run --quiet --package radio-flasher-cli --bin
+  afik-flasher -- --device auto identify` — passed; protocol family `K1`,
+  bootloader `7.03.01`, hardware identity `not_proven_by_beacon`.
+- No image, page, reset, EEPROM, or RF command was sent. The CH340 path is not
+  accepted as an AFIK physical boot witness.
+- Current gate: connect the radio's native USB path, if present, or establish
+  the exact display/MCU path and primary register facts before implementing a
+  visible witness. The reset-only K1 image remains unflashed.
 
 Verification on 2026-08-06:
 

@@ -241,6 +241,27 @@ clock, USB, display, keypad, GPIO, external flash, BK4819, audio, RF, TX, or
 reset behavior is implemented. Do not flash this image until a harmless
 visible or USB witness is independently evidenced on the exact unit.
 
+## K1WIT-017 physical witness status
+
+The official [Puya PY32F071-E product page](https://www.puyasemi.com/en/py32f071/3415.html)
+and [PY32F071-E datasheet v1.4](https://www.puyasemi.com/download_path/%E6%95%B0%E6%8D%AE%E6%89%8B%E5%86%8C/MCU/PY32F071-E_Datasheet_V1.4.pdf)
+establish a PY32F071 USB 2.0 full-speed peripheral. They do not establish the
+exact K1 package, board routing, connector, descriptors, or a host-visible
+native USB identity.
+
+Read-only host observation on 2026-08-06 found:
+
+- `/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0` and `/dev/ttyUSB0`;
+- USB device `1a86:7523`, QinHeng CH340 serial converter;
+- no native K1 USB device or USB descriptor for the radio.
+
+The AFIK generic identify probe still classifies the external serial path as
+K1 bootloader `7.03.01`, with hardware identity explicitly unproven by the
+beacon. The CH340 is therefore evidence only for the existing bootloader
+transport, not an AFIK USB boot witness. The next safe action is to connect the
+radio's native USB path, if present, or establish the separately evidenced
+display path and exact MCU/package before implementing a physical witness.
+
 ## Pinned CHIRP protocol evidence
 
 - Repository: `armel/uv-k5-chirp-driver`

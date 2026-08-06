@@ -246,3 +246,14 @@
   static/vector checks. Do not flash it. First establish a harmless visible or
   USB boot witness on the exact unit, then add a guarded K1 AFIK write path and
   immediately retain the proven Armel recovery route.
+
+## RISK-020 — Native K1 USB routing is unobserved
+
+- **State:** open
+- **Impact:** the PY32F071 USB capability may not be connected to the exposed
+  cable or may use a board/boot mode not visible through the current host
+  adapter. Treating the CH340 serial adapter as a native USB witness would
+  produce a false application-boot claim.
+- **Mitigation:** `K1WIT-017` requires direct native-USB enumeration or an
+  independently sourced and observed display path on the exact unit. Keep the
+  RAM-only image unflashed and do not add guessed USB or GPIO register code.

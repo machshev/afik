@@ -364,3 +364,17 @@ meaning.
 - The RAM witness is a development observation and is not evidence of physical
   K1 boot. A later physical witness must be independently evidenced before the
   K1 AFIK image may be flashed.
+
+## ADR-026 — K1 physical boot witness requires exact board observation
+
+- **Date:** 2026-08-06
+- **Status:** accepted for `K1WIT-017`
+- Puya's PY32F071 documentation establishes that the MCU family contains a
+  USB 2.0 full-speed peripheral, but this does not establish the exact K1
+  package, board routing, connector, descriptors, or host-visible USB identity.
+- The observed `1a86:7523` CH340 is an external serial adapter on the pinned
+  bootloader path. It is not evidence that an AFIK image can expose USB, and
+  USB code must not be built around that adapter.
+- AFIK may implement a USB or display witness only after the exact board path
+  and primary register facts are recorded. Until then, the reset-only image is
+  not eligible for physical flashing.
