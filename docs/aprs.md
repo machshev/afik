@@ -96,4 +96,7 @@ Every input carries an explicit monotonic receive time:
 
 There is no wall clock, implicit timeout, allocation, persistence, channel-plan
 conversion, or TX path. Tests and the host simulator supply frames and times
-directly so identical scripts produce identical events and table state.
+directly so identical scripts produce identical events and table state. The
+host simulator records parse rejection, table admission, full-capacity failure,
+and explicit expiry only; it has no connection from discovery into channel or
+RF control.

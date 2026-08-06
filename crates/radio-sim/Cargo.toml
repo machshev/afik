@@ -8,6 +8,7 @@ repository.workspace = true
 description = "Deterministic host functional simulation for the radio platform"
 
 [dependencies]
+radio-aprs = { path = "../radio-aprs" }
 radio-bk4819 = { path = "../radio-bk4819" }
 radio-channel-control = { path = "../radio-channel-control" }
 radio-channel-plan = { path = "../radio-channel-plan" }

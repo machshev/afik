@@ -3,6 +3,10 @@
 #![forbid(unsafe_code)]
 
 use core::{cmp, convert::Infallible};
+use radio_aprs::{
+    parse_repeater_event, AprsError, DiscoveryEntry, DiscoveryError, DiscoveryTable,
+    DiscoveryUpdate, RepeaterEvent,
+};
 use radio_bk4819::{
     Bk4819, DriverError as RfDriverError, DriverState as RfDriverState, FrequencyWord,
     ReceiveStatus, RegisterAddress, RegisterBus,
@@ -55,6 +59,142 @@ impl SimClock {
     /// Advances virtual time by an exact duration.
     pub fn advance_ms(&mut self, duration_ms: u64) {
         self.now_ms = self.now_ms.saturating_add(duration_ms);
+    }
+}
+
+/// One deterministic APRS parser/discovery simulator observation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AprsTraceEvent {
+    /// Explicit virtual receive timestamp.
+    pub at_ms: u64,
+    /// Observable parser or bounded-table outcome.
+    pub kind: AprsTraceKind,
+}
+
+/// Observable receive-only APRS simulator events.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AprsTraceKind {
+    /// A complete supplied frame failed bounded AX.25/APRS parsing.
+    FrameRejected(AprsError),
+    /// A parsed event failed table admission without eviction.
+    DiscoveryRejected {
+        /// Parsed event that could not be admitted.
+        event: RepeaterEvent,
+        /// Fixed-capacity table error.
+        error: DiscoveryError,
+    },
+    /// A parsed event produced one deterministic table outcome.
+    FrameApplied {
+        /// Parsed receive-only event.
+        event: RepeaterEvent,
+        /// Exact table result.
+        update: DiscoveryUpdate,
+    },
+    /// An explicit cutoff removed live entries or retained kill freshness.
+    Expired {
+        /// Caller-supplied absolute virtual cutoff.
+        cutoff_ms: u64,
+        /// Number of occupied slots removed.
+        removed: usize,
+    },
+}
+
+/// APRS simulator input failed parsing or bounded table admission.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AprsSimError {
+    /// Complete-frame or APRS parsing failed.
+    Parse(AprsError),
+    /// Fixed-capacity discovery admission failed.
+    Discovery(DiscoveryError),
+}
+
+impl core::fmt::Display for AprsSimError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Parse(error) => write!(formatter, "simulated APRS parse failed: {error}"),
+            Self::Discovery(error) => {
+                write!(formatter, "simulated APRS discovery failed: {error}")
+            }
+        }
+    }
+}
+
+/// Deterministic virtual-time harness for receive-only APRS discovery.
+pub struct AprsSimulator<const CAPACITY: usize> {
+    clock: SimClock,
+    table: DiscoveryTable<CAPACITY>,
+    trace: Vec<AprsTraceEvent>,
+}
+
+impl<const CAPACITY: usize> Default for AprsSimulator<CAPACITY> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<const CAPACITY: usize> AprsSimulator<CAPACITY> {
+    /// Constructs an empty parser/table harness at virtual time zero.
+    pub const fn new() -> Self {
+        Self {
+            clock: SimClock::new(),
+            table: DiscoveryTable::new(),
+            trace: Vec::new(),
+        }
+    }
+
+    /// Returns current virtual milliseconds.
+    pub const fn now_ms(&self) -> u64 {
+        self.clock.now_ms()
+    }
+
+    /// Advances virtual receive time without implicit parsing or expiry.
+    pub fn advance_ms(&mut self, duration_ms: u64) {
+        self.clock.advance_ms(duration_ms);
+    }
+
+    /// Returns current visible live discovery entries in stable slot order.
+    pub fn entries(&self) -> impl Iterator<Item = &DiscoveryEntry> {
+        self.table.entries()
+    }
+
+    /// Returns the ordered deterministic APRS trace.
+    pub fn trace(&self) -> &[AprsTraceEvent] {
+        &self.trace
+    }
+
+    /// Parses and applies one complete de-stuffed AX.25 frame at current time.
+    pub fn ingest(&mut self, frame: &[u8]) -> Result<DiscoveryUpdate, AprsSimError> {
+        let event = match parse_repeater_event(frame) {
+            Ok(event) => event,
+            Err(error) => {
+                self.record(AprsTraceKind::FrameRejected(error));
+                return Err(AprsSimError::Parse(error));
+            }
+        };
+        match self.table.apply(event, self.now_ms()) {
+            Ok(update) => {
+                self.record(AprsTraceKind::FrameApplied { event, update });
+                Ok(update)
+            }
+            Err(error) => {
+                self.record(AprsTraceKind::DiscoveryRejected { event, error });
+                Err(AprsSimError::Discovery(error))
+            }
+        }
+    }
+
+    /// Explicitly expires occupied slots strictly older than `cutoff_ms`.
+    pub fn expire_before(&mut self, cutoff_ms: u64) -> usize {
+        let removed = self.table.expire_before(cutoff_ms);
+        self.record(AprsTraceKind::Expired { cutoff_ms, removed });
+        removed
+    }
+
+    fn record(&mut self, kind: AprsTraceKind) {
+        self.trace.push(AprsTraceEvent {
+            at_ms: self.now_ms(),
+            kind,
+        });
     }
 }
 
@@ -1307,10 +1447,12 @@ const fn map_storage_error(error: StorageError) -> DeviceErrorCode {
 #[cfg(test)]
 mod tests {
     use super::{
-        map_storage_error, ChannelSimError, ChannelSimulator, ChannelTraceEvent, ChannelTraceKind,
-        RfBusOperation, RfSimulator, RfTraceEvent, RfTraceKind, SimDevice, SimTransport, TraceKind,
-        UiSimulator, UiTraceKind,
+        map_storage_error, AprsSimError, AprsSimulator, AprsTraceEvent, AprsTraceKind,
+        ChannelSimError, ChannelSimulator, ChannelTraceEvent, ChannelTraceKind, RfBusOperation,
+        RfSimulator, RfTraceEvent, RfTraceKind, SimDevice, SimTransport, TraceKind, UiSimulator,
+        UiTraceKind,
     };
+    use radio_aprs::{AprsError, DiscoveryError, DiscoveryUpdate};
     use radio_channel_control::{ChannelTxError, ControlState, ScanConfig};
     use radio_channel_plan::{BankName, GeneratedBank, PlanEncoding};
     use radio_domain::{ActiveChannel, BankId, Frequency, FrequencyStep, TxClass};
@@ -1338,6 +1480,128 @@ mod tests {
             TxClass::LicenceFreePlan,
         )
         .unwrap()
+    }
+
+    fn aprs_fcs_accumulator(bytes: &[u8]) -> u16 {
+        let mut fcs = 0xffff_u16;
+        for byte in bytes {
+            fcs ^= u16::from(*byte);
+            for _ in 0..8 {
+                fcs = if fcs & 1 == 0 {
+                    fcs >> 1
+                } else {
+                    (fcs >> 1) ^ 0x8408
+                };
+            }
+        }
+        fcs
+    }
+
+    fn aprs_address(callsign: &[u8], ssid: u8, final_address: bool) -> [u8; 7] {
+        let mut encoded = [b' ' << 1; 7];
+        for (destination, source) in encoded.iter_mut().zip(callsign.iter().copied()) {
+            *destination = source << 1;
+        }
+        encoded[6] = 0x60 | (ssid << 1) | u8::from(final_address);
+        encoded
+    }
+
+    fn aprs_frame(source: &[u8], ssid: u8, information: &[u8]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&aprs_address(b"APRS", 0, false));
+        bytes.extend_from_slice(&aprs_address(source, ssid, true));
+        bytes.extend_from_slice(&[0x03, 0xf0]);
+        bytes.extend_from_slice(information);
+        let fcs = !aprs_fcs_accumulator(&bytes);
+        bytes.extend_from_slice(&fcs.to_le_bytes());
+        bytes
+    }
+
+    fn run_aprs_script() -> (Vec<AprsTraceEvent>, Vec<radio_aprs::DiscoveryEntry>) {
+        let live = aprs_frame(
+            b"DIGI",
+            1,
+            b";146.940-A*111111z4903.50N/07201.75WrT107 R25m",
+        );
+        let changed = aprs_frame(
+            b"DIGI",
+            1,
+            b";146.940-A*111111z4903.50N/07201.75WrT088 R25m",
+        );
+        let killed = aprs_frame(b"DIGI", 1, b";146.940-A_111111z4903.50N/07201.75Wrretired");
+        let mut corrupt = live.clone();
+        corrupt[20] ^= 1;
+
+        let mut simulator = AprsSimulator::<2>::new();
+        assert_eq!(simulator.ingest(&live), Ok(DiscoveryUpdate::Inserted));
+        simulator.advance_ms(5);
+        assert_eq!(simulator.ingest(&changed), Ok(DiscoveryUpdate::Updated));
+        assert!(matches!(
+            simulator.ingest(&corrupt),
+            Err(AprsSimError::Parse(AprsError::Ax25(_)))
+        ));
+        simulator.advance_ms(1);
+        assert_eq!(simulator.ingest(&killed), Ok(DiscoveryUpdate::Removed));
+        assert_eq!(simulator.expire_before(7), 1);
+
+        (
+            simulator.trace().to_vec(),
+            simulator.entries().copied().collect(),
+        )
+    }
+
+    #[test]
+    fn identical_timed_aprs_scripts_have_identical_receive_only_traces() {
+        let first = run_aprs_script();
+        let second = run_aprs_script();
+        assert_eq!(first, second);
+        assert!(first.1.is_empty());
+        assert_eq!(first.0.len(), 5);
+        assert!(matches!(
+            first.0[2],
+            AprsTraceEvent {
+                at_ms: 5,
+                kind: AprsTraceKind::FrameRejected(AprsError::Ax25(_)),
+            }
+        ));
+        assert_eq!(
+            first.0.last().copied(),
+            Some(AprsTraceEvent {
+                at_ms: 6,
+                kind: AprsTraceKind::Expired {
+                    cutoff_ms: 7,
+                    removed: 1,
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn aprs_simulator_full_capacity_rejects_without_eviction_or_tx_side_effects() {
+        let first = aprs_frame(b"DIGI", 0, b";146.940-A*111111z4903.50N/07201.75Wr");
+        let second = aprs_frame(b"DIGI", 0, b";147.000-A*111111z4903.50N/07201.75Wr");
+        let mut simulator = AprsSimulator::<1>::new();
+        assert_eq!(simulator.ingest(&first), Ok(DiscoveryUpdate::Inserted));
+        assert_eq!(
+            simulator.ingest(&second),
+            Err(AprsSimError::Discovery(DiscoveryError::Full))
+        );
+        let entries = simulator.entries().collect::<Vec<_>>();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].advertisement.output_frequency.as_hz(),
+            146_940_000
+        );
+        assert!(matches!(
+            simulator.trace().last(),
+            Some(AprsTraceEvent {
+                kind: AprsTraceKind::DiscoveryRejected {
+                    error: DiscoveryError::Full,
+                    ..
+                },
+                ..
+            })
+        ));
     }
 
     fn expected_bank() -> GeneratedBank {
