@@ -28,6 +28,25 @@ model; it does not increase confidence in the underlying silicon fact.
 The initial hashes, source-to-fact matrix, unit record, and safe experiment
 order are maintained in `docs/k1-bring-up.md`.
 
+### EVID-K1-016 — Exact-unit passive bootloader beacon
+
+- **Observation:** on 2026-08-06 the available K1, reported to run Armel Fusion
+  `v5.5`, was placed in bootloader mode and connected through a CH340/CH341
+  `1a86:7523` serial adapter. At 38,400 baud it unsolicitedly emitted a valid
+  `0x0518` device-info frame whose printable bootloader version was `7.03.01`.
+- **Method:** AFIK passively captured for three seconds and decoded the frame
+  using the pinned message-envelope evidence. No handshake or other byte was
+  transmitted. The device UID field was present but is redacted and not stored
+  in repository content.
+- **Confidence:** high for this exact unit, adapter, beacon shape, and version;
+  low for other K1 revisions and no confidence yet in write or recovery
+  behavior.
+- **Permitted use:** identify the exact observed bootloader family and reject
+  K5 V1 bootloader-v2 assumptions. This observation does not authorize a write.
+- **Required next experiment:** return to normal Fusion `v5.5`, create and
+  validate the complete read-only configuration/calibration backup, then
+  validate a known-good recovery image before any bootloader handshake.
+
 ### Puya PY32F071-E product documentation
 
 - **Publisher:** Puya Semiconductor (Shanghai) Co., Ltd.

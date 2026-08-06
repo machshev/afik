@@ -122,8 +122,9 @@ Work-package activation verification on 2026-08-06:
   BK4819, audio, backlight, and external-flash board mappings. These are
   evidence entries, not imported production code.
 - `docs/k1-bring-up.md` records the first evidence matrix, exact-unit checklist,
-  and safe backup/DFU/recovery order. No device was visible to the agent, no
-  hardware operation was performed, and TX remains prohibited.
+  and safe backup/DFU/recovery order. No device was visible during that initial
+  milestone, no hardware operation had then been performed, and TX remains
+  prohibited.
 
 Evidence-milestone verification on 2026-08-06:
 
@@ -136,6 +137,35 @@ Evidence-milestone verification on 2026-08-06:
   invocation could not access the Nix daemon; the permitted identical retry is
   the recorded verification result.
 - `git diff --check` — passed before the final status record.
+
+## Work Package 13 exact-unit passive beacon milestone
+
+- The user identified the installed application as Armel Fusion `v5.5` and
+  connected the exact K1 in bootloader mode through `/dev/ttyUSB0`.
+- Read-only udev/sysfs inspection identified a QinHeng CH340/CH341 adapter,
+  USB `1a86:7523`, Linux driver `ch341-uart`, vendor-specific interface
+  `ff/01/02`, USB 1.10 at 12 Mbit/s.
+- A three-second passive capture at 38,400 baud received 140 bytes. The pinned
+  decoder found one complete `0x0518` device-info frame with printable
+  bootloader version `7.03.01`. The UID field was present but redacted and is
+  not recorded.
+- The host transmitted no handshake, command, reset, or flash bytes. No backup
+  or recovery proof exists yet, so no write is authorized.
+- Current smallest actionable task: reboot the exact unit into normal Fusion
+  `v5.5` and create a complete read-only 8 KiB configuration/calibration backup
+  before returning to bootloader mode.
+
+Passive-beacon verification on 2026-08-06:
+
+- `udevadm info --query=all --name=/dev/ttyUSB0` — passed and reported the
+  adapter and driver metadata above.
+- `stty -F /dev/ttyUSB0 38400 raw -echo -crtscts` — passed; host adapter setup
+  only.
+- `timeout 3s dd if=/dev/ttyUSB0 of=/tmp/afik-k1-passive-beacon.bin bs=512 count=4 status=none`
+  — passed and captured 140 unsolicited bytes without transmitting.
+- Offline decode with pinned `tools/serialtool/msg.py` — passed with one
+  `0x0518` frame, decoded length 36, data length 32, and version `7.03.01`;
+  UID output was suppressed.
 
 ## Work Package 12 software milestone and verification
 

@@ -14,6 +14,7 @@ transmission.
 - Retrieved: 2026-08-06 into a read-only evidence checkout outside this
   repository
 - Project preset at this revision: Fusion `v5.8.0`
+- Exact unit's installed application reported by the user: Fusion `v5.5`
 
 Relevant pinned-file SHA-256 values:
 
@@ -55,7 +56,7 @@ the exact unit supplies the final binding.
 Record locally without committing serial numbers, calibration bytes, or device
 secrets:
 
-1. Displayed Armel/Fusion version and build identity.
+1. Full displayed build identity beyond the user-reported Fusion `v5.5`.
 2. Product and under-battery model/revision markings.
 3. PCB revision and complete readable MCU, BK4819, display-controller, and
    external-flash markings.
@@ -64,6 +65,26 @@ secrets:
 6. Known-good firmware filename, byte length, SHA-256, and two retained copies.
 7. Calibration/configuration backup filename, byte length, SHA-256, and two
    retained copies.
+
+## Exact-unit passive bootloader observation
+
+Observed 2026-08-06 with the user's K1 in bootloader mode:
+
+- Host interface: QinHeng CH340/CH341 USB serial adapter, USB `1a86:7523`,
+  Linux `ch341-uart`, exposed as `/dev/ttyUSB0` at the time of inspection.
+- Serial configuration: 38,400 baud, raw, no flow control, matching the pinned
+  evidence. This changes only host adapter settings.
+- Method: three-second read-only capture of unsolicited bootloader bytes. The
+  host transmitted no handshake, command, payload, reset, or flash data.
+- Capture: 140 bytes containing one complete decoded `0x0518` device-info
+  frame with a 36-byte decoded message and 32-byte data field.
+- Bootloader version field: printable ASCII `7.03.01`.
+- Device UID: a 16-byte field was present. Its value is deliberately redacted,
+  is not reported here, and must not be committed.
+
+This establishes the exact unit's passive beacon shape and version. It does not
+establish a safe write protocol, flash read-back, board identity, calibration
+backup, recovery image, or application boot.
 
 ## Safe experiment order
 
@@ -78,6 +99,6 @@ secrets:
    image must provide a harmless visible or USB boot witness, contain no RF
    operation, and be followed immediately by proven Armel recovery.
 
-No serial device is visible inside the current agent environment. Physical
-observations therefore require results from the user's host and are not yet
-claimed.
+The serial device is visible only through elevated device access in the current
+agent environment. Passive bootloader observation is complete; normal-mode
+backup and physical markings remain pending.
