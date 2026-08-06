@@ -5,5 +5,6 @@
 #[cfg(test)]
 extern crate std;
 
+pub mod backlight;
 pub mod display;
 pub mod protocol;

@@ -7,6 +7,7 @@
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicU32, Ordering};
 
+use radio_firmware_k1::backlight::constant_on_plan;
 use radio_firmware_k1::display::{
     initialise as display_initialise, render_witness, write_frame, DisplayBus, TransferKind,
     FRAME_BYTES,
@@ -21,6 +22,7 @@ const BOOT_SENTINEL_VALUE: u32 = 0x4B31_B007;
 const RCC_BASE: usize = 0x4002_1000;
 const GPIOA_BASE: usize = 0x5000_0000;
 const GPIOB_BASE: usize = 0x5000_0400;
+const GPIOF_BASE: usize = 0x5000_1400;
 const SPI1_BASE: usize = 0x4001_3000;
 const USART1_BASE: usize = 0x4001_3800;
 
@@ -41,6 +43,11 @@ const GPIOB_OSPEEDR: usize = GPIOB_BASE + 0x08;
 const GPIOB_PUPDR: usize = GPIOB_BASE + 0x0C;
 const GPIOB_BSRR: usize = GPIOB_BASE + 0x18;
 const GPIOB_BRR: usize = GPIOB_BASE + 0x28;
+const GPIOF_MODER: usize = GPIOF_BASE;
+const GPIOF_OTYPER: usize = GPIOF_BASE + 0x04;
+const GPIOF_OSPEEDR: usize = GPIOF_BASE + 0x08;
+const GPIOF_PUPDR: usize = GPIOF_BASE + 0x0C;
+const GPIOF_BSRR: usize = GPIOF_BASE + 0x18;
 const SPI1_CR1: usize = SPI1_BASE;
 const SPI1_CR2: usize = SPI1_BASE + 0x04;
 const SPI1_SR: usize = SPI1_BASE + 0x08;
@@ -107,6 +114,7 @@ static BOOT_SENTINEL: AtomicU32 = AtomicU32::new(0);
 extern "C" fn reset() -> ! {
     BOOT_SENTINEL.store(BOOT_SENTINEL_VALUE, Ordering::Release);
     uart_init();
+    backlight_init();
     display_init();
     loop {
         if receive_hello_request() {
@@ -165,6 +173,16 @@ fn uart_init() {
         USART1_CR1,
         USART_CONTROL_ENABLE | USART_RECEIVER_ENABLE | USART_TRANSMITTER_ENABLE,
     );
+}
+
+fn backlight_init() {
+    let plan = constant_on_plan();
+    update_register(RCC_IOPENR, 0, plan.clock_enable);
+    write_register(GPIOF_BSRR, plan.output_high);
+    update_register(GPIOF_OTYPER, plan.output_type_clear, 0);
+    update_register(GPIOF_OSPEEDR, plan.speed_clear, plan.speed_set);
+    update_register(GPIOF_PUPDR, plan.pull_clear, plan.pull_set);
+    update_register(GPIOF_MODER, plan.mode_clear, plan.mode_set);
 }
 
 fn display_init() {
