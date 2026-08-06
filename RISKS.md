@@ -54,3 +54,18 @@
   semantic views. Do not add a target adapter, pin mapping, scan timing, display
   geometry, or peripheral model until board-specific evidence and required
   experiments are recorded in `docs/hardware-evidence.md`.
+
+## RISK-007 — BK4819 register applicability and board RF control are unverified
+
+- **State:** open
+- **Impact:** a register command plan that behaves in simulation may be wrong
+  for the fitted BK4819 revision, crystal, initialization state, RF switches,
+  matching network, calibration, or external power amplifier. Incorrect target
+  integration could emit unintended RF or damage hardware.
+- **Mitigation:** `RF-006` records official high-level facts separately from a
+  mirrored machine-translated BK4819(V3) application note and restricts its
+  register fields to an unbound post-initialization simulator contract. Do not
+  add physical bus, board switching, external PA control, flashing, or on-air
+  tests until chip/board identity, original register documentation, safe dummy
+  load/test equipment, calibration backup, and recovery procedures are
+  established.

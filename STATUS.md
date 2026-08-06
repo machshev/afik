@@ -2,11 +2,14 @@
 
 ## Current work package
 
-**No work package is active.**
+**Work Package 6 — BK4819 receive path and token-gated TX boundary (`RF-006`)
+is active.**
 
-Work Package 5 — Simulator-first boot UI and hidden TX permissions (`UI-005`)
-was completed on 2026-08-06. A stable evidence-first task must be defined and
-activated before Work Package 6 implementation begins.
+The package is limited to a source-backed post-initialization register-command
+model, receive status, central-policy TX gating, fault handling, and
+deterministic host simulation. It does not define physical SPI/GPIO, full chip
+initialization, board RF switching, calibration, external PA behavior, or
+physical RF performance.
 
 ## State
 
@@ -15,6 +18,7 @@ activated before Work Package 6 implementation begins.
 - Work Package 3 minimal target boot proof: complete.
 - Work Package 4 canonical image/compiler round trip: complete.
 - Work Package 5 simulator-first boot UI and hidden TX permissions: complete.
+- Work Package 6 BK4819 receive path and token-gated TX boundary: active.
 - `UI-005` logical key edges, bounded semantic views, exact boot-only entry,
   release gate, draft editor, and checked persistence action: complete.
 - `UI-005` separate persisted/active policy simulation, deterministic timed
@@ -41,9 +45,9 @@ activated before Work Package 6 implementation begins.
   complete.
 - Bounded duplicate-sequence replay and conflict rejection: complete.
 - Fragmented and malformed stream recovery: complete.
-- Next smallest task: define and activate the smallest bounded Work Package 6
-  evidence-first BK4819 receive-path and safe-TX-boundary task with a stable ID;
-  record sourced facts and unknowns before adding any peripheral behavior.
+- Next smallest task: record the BK4819 source documents, exact accepted
+  interface/register facts, command-plan inferences, confidence, contradictions,
+  and required physical experiments before adding `radio-bk4819` code.
 
 ## Completed Work Package 5 exit criteria
 

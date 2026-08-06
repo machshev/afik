@@ -189,3 +189,50 @@
   exhaustion, selected-class authorization, reboot-only activation, and trace
   repeatability pass in tests. Pinned host, embedded `thumbv6m`, and Rust 1.86
   checks are recorded in `STATUS.md`; physical UI remains open in `RISK-006`.
+
+## RF-006 — BK4819 receive path and token-gated TX boundary
+
+- **Status:** active
+- **Objective:** implement the smallest evidence-backed, post-initialization
+  BK4819 receive command path and prove that every modeled transition into
+  transmit mode requires a matching central-policy authorization token.
+- **Scope:** BK4819 source provenance and confidence; a new `no_std`, heap-free
+  `radio-bk4819` crate; bounded 7-bit-register/16-bit-value bus operations;
+  standby recovery, exact 10 Hz frequency-word packing, receive-mode entry,
+  RSSI/squelch sampling, token- and class-gated transmit entry, transmit stop,
+  fault latching, and deterministic virtual-time simulation. Documentation and
+  host/embedded tests are included. Chip reset/initialization tables, physical
+  SPI/GPIO, board RF switching, crystal/calibration choice, filters, audio,
+  external PA control, power levels, interrupts, physical RF behavior,
+  flashing, and on-air testing are excluded.
+- **Dependencies:** `UI-005`, `radio-domain`, and `radio-tx-policy`.
+- **Assumptions:** the current Beken product page and mirrored Beken datasheet
+  establish product/interface facts; a separately mirrored machine-translated
+  BK4819(V3) application note is usable only for an explicitly bounded command
+  model with recorded confidence. The fitted chip revision and application-note
+  applicability are not confirmed. The command path starts from a separately
+  initialized chip; the conflicting published frequency bands are not encoded
+  as target limits.
+- **Likely files:** `Cargo.toml`, a new `crates/radio-bk4819`,
+  `crates/radio-tx-policy`, `crates/radio-sim`, RF, architecture, simulator,
+  TX-policy, and hardware-evidence documents, `DECISIONS.md`, `RISKS.md`, and
+  handoff files.
+- **Tests required:** frequency-word exactness and non-10-Hz rejection;
+  standby-first receive/write order and exact sourced mode fields; signed
+  half-dB RSSI plus squelch decoding; unknown/faulted/invalid-state rejection;
+  authorization class mismatch with zero bus writes; matching authorization as
+  the only path to the final TX-enable write; standby transition on TX stop;
+  injected bus failure at every write/read step latches fault and denies later
+  TX until successful standby recovery; identical timed receive/TX/failure
+  scripts produce identical traces; and no simulator TX event occurs without a
+  matching token.
+- **Acceptance criteria:** every register address, field, formula, inference,
+  and uncertainty is recorded with source and confidence before code; the
+  driver is hardware-adapter-independent, `no_std`, heap-free, bounded, and
+  uses integer units; receive entry neutralizes mode before tuning and enabling
+  only the documented receive blocks; receive status uses read-only sourced
+  fields; the only TX entry API requires a borrowed `TxAuthorisation` whose
+  class matches the channel; invalid state, mismatch, or any bus fault denies
+  the TX-enable write and latches a recoverable fault; no target peripheral,
+  board behavior, external PA operation, physical receive claim, or on-air
+  transmission is added.
