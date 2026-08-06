@@ -194,8 +194,19 @@ features remain outside this bounded slice.
 - The raw image is 26,072 bytes, SHA-256
   `d11bc33a869feca035b8a04ea5c2c16b56e08e875f89c134dc36802b0cce7422`,
   CRC-32 `85387ce8`, and Reset `0x080028c1`.
-- No RF, TX, persistence, EEPROM, or menu behavior was added. No physical write
-  has been sent at this checkpoint.
+- No RF, TX, persistence, EEPROM, or menu behavior was added.
+
+Side-key/PTT write on 2026-08-06:
+
+- A fresh read-only identify reported K1 bootloader `7.03.01` on
+  `/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0`.
+- The guarded writer revalidated the 26,072-byte image, recovery image, retained
+  EEPROM backup (`backup_crc32=99765400`), exact target/rehearsal phrases, and
+  image CRC-32 `85387ce8` before sending any page.
+- K1 `7.03.01` acknowledged all `102/102` pages in transaction `1867be02` and
+  reported `acknowledged_not_read_back`. No retry or reset command was sent.
+- Physical completion remains pending a manual power-cycle, an `AFIK-K1-0.3`
+  hello, and individual observation of both side-key labels and the PTT label.
 
 ## Work Package 24 completion
 
