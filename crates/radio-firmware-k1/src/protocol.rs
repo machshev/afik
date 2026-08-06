@@ -61,6 +61,7 @@ pub fn encode_keypad_response(
     frame: &mut [u8; KEYPAD_RESPONSE_FRAME_BYTES],
     row_low_by_column: [u8; 4],
     scan_valid: bool,
+    captured: bool,
 ) {
     frame.fill(0);
     frame[0..2].copy_from_slice(&[0xAB, 0xCD]);
@@ -70,6 +71,7 @@ pub fn encode_keypad_response(
     payload[2..4].copy_from_slice(&8_u16.to_le_bytes());
     payload[4..8].copy_from_slice(&row_low_by_column);
     payload[8] = u8::from(scan_valid);
+    payload[9] = u8::from(captured);
     frame[16..18].copy_from_slice(&RESPONSE_TRAILER.to_le_bytes());
     xor(&mut frame[4..18]);
     frame[18..20].copy_from_slice(&[0xDC, 0xBA]);
@@ -187,7 +189,7 @@ mod tests {
         assert_eq!(decode_request(&mut encoded), Some(Request::KeypadMatrix));
 
         let mut frame = [0_u8; 20];
-        encode_keypad_response(&mut frame, [1, 2, 4, 8], true);
+        encode_keypad_response(&mut frame, [1, 2, 4, 8], true, true);
         assert_eq!(&frame[..4], &[0xAB, 0xCD, 12, 0]);
         assert_eq!(&frame[18..], &[0xDC, 0xBA]);
         let key = [
@@ -199,7 +201,7 @@ mod tests {
         }
         assert_eq!(
             &frame[4..18],
-            &[0x11, 0x7F, 8, 0, 1, 2, 4, 8, 1, 0, 0, 0, 0xFF, 0xFF]
+            &[0x11, 0x7F, 8, 0, 1, 2, 4, 8, 1, 1, 0, 0, 0xFF, 0xFF]
         );
     }
 

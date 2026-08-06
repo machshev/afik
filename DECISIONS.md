@@ -481,3 +481,7 @@ meaning.
 - This diagnostic does not interpret keys, change the display, persist state,
   include PTT or side keys, or create any RF/TX path. Its sole purpose is to
   separate physical GPIO sampling from the already simulated render path.
+- When held-key serial response is unavailable, the target may retain only the
+  latest nonzero four-mask sample in volatile bounded RAM. The next successful
+  read-only probe identifies, returns, and clears that capture; no timer,
+  interrupt, persistence, or semantic key action is introduced.

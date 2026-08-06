@@ -1058,3 +1058,9 @@
   MENU held still timed out. The synchronous display transfer is therefore not
   the cause. Pre-armed latch-until-release reporting is the next bounded step;
   Embassy remains outside this package until timer/interrupt evidence exists.
+- **Latched diagnostic:** the latest nonzero raw scan is retained in bounded RAM
+  until a released-key probe returns and clears it with `captured=true`. All
+  host, workspace, embedded, image, and repeated-Renode gates pass. The
+  58,380-byte image has SHA-256
+  `eba38cc718a3de0e220bc28c4de657849960ea1d7098085df94c802cf903a328`
+  and CRC-32 `823616ad`; physical write remains pending.

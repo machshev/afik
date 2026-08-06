@@ -123,6 +123,7 @@ extern "C" fn reset() -> ! {
     keypad_init();
     let mut debounce = Debouncer::new();
     let mut elapsed_ms = 0_u32;
+    let mut latched_rows = [0_u8; 4];
     loop {
         if uart_has_byte() {
             match receive_request() {
@@ -137,16 +138,28 @@ extern "C" fn reset() -> ! {
                         Ok(rows) => (rows, true),
                         Err(_) => ([0_u8; 4], false),
                     };
+                    if rows.iter().any(|row| *row != 0) {
+                        latched_rows = rows;
+                    }
+                    let captured = latched_rows.iter().any(|row| *row != 0);
+                    let reported_rows = if captured { latched_rows } else { rows };
                     let mut response = [0_u8; 20];
-                    encode_keypad_response(&mut response, rows, valid);
+                    encode_keypad_response(&mut response, reported_rows, valid, captured);
                     uart_send(&response);
+                    latched_rows = [0_u8; 4];
                 }
                 None => {}
             }
         }
 
         let mut matrix = K1MatrixBus;
-        let sample = match scan(&mut matrix).ok().and_then(|rows| decode(rows).ok()) {
+        let scanned_rows = scan(&mut matrix).ok();
+        if let Some(rows) = scanned_rows {
+            if rows.iter().any(|row| *row != 0) {
+                latched_rows = rows;
+            }
+        }
+        let sample = match scanned_rows.and_then(|rows| decode(rows).ok()) {
             Some(Some(key)) => Sample::Key(key),
             Some(None) => Sample::Released,
             None => Sample::Invalid,

@@ -430,6 +430,10 @@ order are maintained in `docs/k1-bring-up.md`.
   valid all-zero scan, while MENU held still caused a serial timeout. Because
   this image performs no key-triggered SPI frame transfer, that transfer is
   excluded as the timeout cause. A held row mask remains unobserved.
+- **Next construction:** retain the latest nonzero raw scan in volatile RAM and
+  return it only after serial response is available, explicitly marked as a
+  capture. This can distinguish temporary held-state disruption from reset;
+  loss of the capture after release remains a valid negative result.
 
 ## Sources used by DP32-003
 

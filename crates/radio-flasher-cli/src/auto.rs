@@ -355,6 +355,7 @@ fn probe_keypad<W: Write>(device: &Path, stdout: &mut W) -> Result<(), CliError>
     writeln!(stdout, "baud={K5_BAUD}").map_err(CliError::operation)?;
     writeln!(stdout, "protocol=afik-k1-keypad-raw").map_err(CliError::operation)?;
     writeln!(stdout, "scan_valid={}", report.scan_valid()).map_err(CliError::operation)?;
+    writeln!(stdout, "captured={}", report.captured()).map_err(CliError::operation)?;
     writeln!(stdout, "pb6_rows={:01x}", rows[0]).map_err(CliError::operation)?;
     writeln!(stdout, "pb5_rows={:01x}", rows[1]).map_err(CliError::operation)?;
     writeln!(stdout, "pb4_rows={:01x}", rows[2]).map_err(CliError::operation)?;
