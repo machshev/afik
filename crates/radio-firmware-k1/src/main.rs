@@ -16,7 +16,7 @@ use radio_firmware_k1::keypad::{
     active_rows_from_gpio_idr, decode, gpio_plan, scan, Debouncer, Edge, MatrixBus, Sample,
 };
 use radio_firmware_k1::protocol::{
-    encode_hello_response, is_valid_hello_request, REQUEST_BODY_BYTES,
+    decode_request, encode_hello_response, encode_keypad_response, Request, REQUEST_BODY_BYTES,
 };
 
 const INITIAL_STACK_POINTER: u32 = 0x2000_4000;
@@ -124,10 +124,25 @@ extern "C" fn reset() -> ! {
     let mut debounce = Debouncer::new();
     let mut elapsed_ms = 0_u32;
     loop {
-        if uart_has_byte() && receive_hello_request() {
-            let mut response = [0_u8; 48];
-            encode_hello_response(&mut response);
-            uart_send(&response);
+        if uart_has_byte() {
+            match receive_request() {
+                Some(Request::Hello) => {
+                    let mut response = [0_u8; 48];
+                    encode_hello_response(&mut response);
+                    uart_send(&response);
+                }
+                Some(Request::KeypadMatrix) => {
+                    let mut matrix = K1MatrixBus;
+                    let (rows, valid) = match scan(&mut matrix) {
+                        Ok(rows) => (rows, true),
+                        Err(_) => ([0_u8; 4], false),
+                    };
+                    let mut response = [0_u8; 20];
+                    encode_keypad_response(&mut response, rows, valid);
+                    uart_send(&response);
+                }
+                None => {}
+            }
         }
 
         let mut matrix = K1MatrixBus;
@@ -371,7 +386,7 @@ fn uart_send(bytes: &[u8]) {
     }
 }
 
-fn receive_hello_request() -> bool {
+fn receive_request() -> Option<Request> {
     let mut previous_was_header = false;
     loop {
         let byte = uart_receive_byte();
@@ -387,7 +402,7 @@ fn receive_hello_request() -> bool {
         for _ in 0..discard {
             let _ = uart_receive_byte();
         }
-        return false;
+        return None;
     }
 
     let mut body = [0_u8; REQUEST_BODY_BYTES];
@@ -395,7 +410,11 @@ fn receive_hello_request() -> bool {
         *byte = uart_receive_byte();
     }
     let footer = [uart_receive_byte(), uart_receive_byte()];
-    footer == [0xDC, 0xBA] && is_valid_hello_request(&mut body)
+    if footer == [0xDC, 0xBA] {
+        decode_request(&mut body)
+    } else {
+        None
+    }
 }
 
 #[panic_handler]

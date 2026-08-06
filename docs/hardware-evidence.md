@@ -401,6 +401,19 @@ order are maintained in `docs/k1-bring-up.md`.
   receive-only serial witness while one key is held. This separates physical
   scan input from display output without RF, TX, EEPROM, or side-key access.
 
+### EVID-K1-036 — Raw keypad serial diagnostic contract
+
+- **Construction:** one CRC-protected normal-mode request runs the existing
+  PB6-to-PB3 main-matrix scan once and returns four raw, four-bit row masks plus
+  scan validity. Host parsing rejects wrong commands, lengths, CRC, reserved
+  bytes, out-of-range masks, and non-boolean status.
+- **Expected MENU observation:** with no key held all masks should be zero; with
+  MENU held, only `pb6_rows` should contain bit 0. These are predictions from
+  the pinned mapping, not physical observations yet.
+- **Confidence boundary:** the diagnostic is read-only and cannot interpret a
+  key, update the LCD, access PTT/side keys, persist data, or reach RF/TX. A
+  physical result establishes only the sampled matrix state for that request.
+
 ## Sources used by DP32-003
 
 ### DP32G030 reference manual v1.23

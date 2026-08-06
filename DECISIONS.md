@@ -468,3 +468,16 @@ meaning.
   them as PY32 registers. No production firmware diagnostic sentinel, copied
   peripheral implementation, RF/TX behavior, or physical-success claim is
   added.
+
+## ADR-033 — K1 physical keypad diagnosis reports raw matrix samples
+
+- **Date:** 2026-08-06
+- **Status:** accepted for `K1KEY-022`
+- The retained normal-mode serial responder may service one read-only request
+  by performing one existing main-matrix scan and returning the four raw row
+  masks plus scan validity. The response must be exact-length, CRC-protected,
+  bounded to four bits per mask, and rejected on malformed status or reserved
+  fields.
+- This diagnostic does not interpret keys, change the display, persist state,
+  include PTT or side keys, or create any RF/TX path. Its sole purpose is to
+  separate physical GPIO sampling from the already simulated render path.

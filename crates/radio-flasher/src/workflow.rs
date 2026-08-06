@@ -8,6 +8,8 @@ use crate::{
 const SESSION_WORD: u32 = 0x6457_396A;
 const COMMAND_HELLO_REQUEST: u16 = 0x0514;
 const COMMAND_HELLO_RESPONSE: u16 = 0x0515;
+const COMMAND_KEYPAD_REQUEST: u16 = 0x7F10;
+const COMMAND_KEYPAD_RESPONSE: u16 = 0x7F11;
 const COMMAND_READ_EEPROM_REQUEST: u16 = 0x051B;
 const COMMAND_READ_EEPROM_RESPONSE: u16 = 0x051C;
 const COMMAND_V2_BEACON: u16 = 0x0518;
@@ -219,6 +221,25 @@ pub struct NormalFirmwareInfo {
     version: String,
 }
 
+/// Raw receive-only K1 main-key matrix observation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct KeypadMatrixReport {
+    row_low_by_column: [u8; 4],
+    scan_valid: bool,
+}
+
+impl KeypadMatrixReport {
+    /// Returns active-low row masks in PB6, PB5, PB4, PB3 column order.
+    pub const fn row_low_by_column(&self) -> [u8; 4] {
+        self.row_low_by_column
+    }
+
+    /// Returns whether the target completed the raw four-column scan.
+    pub const fn scan_valid(&self) -> bool {
+        self.scan_valid
+    }
+}
+
 impl NormalFirmwareInfo {
     /// Returns the exact bounded normal-firmware version text.
     pub fn version(&self) -> &str {
@@ -349,6 +370,14 @@ pub fn probe_normal_firmware<T: Read + Write>(
     parse_hello_response(&receive_packet(transport)?)
 }
 
+/// Requests one raw, receive-only main-key matrix observation.
+pub fn probe_keypad_matrix<T: Read + Write>(
+    transport: &mut T,
+) -> Result<KeypadMatrixReport, FlashError> {
+    send_packet(transport, &session_request(COMMAND_KEYPAD_REQUEST))?;
+    parse_keypad_response(&receive_packet(transport)?)
+}
+
 /// Waits for one exact, printable version-2 bootloader beacon.
 pub fn probe_bootloader_v2<T: Read>(transport: &mut T) -> Result<BootloaderInfo, FlashError> {
     parse_bootloader_beacon(&receive_packet(transport)?)
@@ -445,11 +474,40 @@ fn validate_prerequisites(prerequisites: FlashPrerequisites<'_>) -> Result<(), F
 }
 
 fn hello_request() -> [u8; 8] {
+    session_request(COMMAND_HELLO_REQUEST)
+}
+
+fn session_request(command: u16) -> [u8; 8] {
     let mut payload = [0_u8; 8];
-    payload[0..2].copy_from_slice(&COMMAND_HELLO_REQUEST.to_le_bytes());
+    payload[0..2].copy_from_slice(&command.to_le_bytes());
     payload[2..4].copy_from_slice(&4_u16.to_le_bytes());
     payload[4..8].copy_from_slice(&SESSION_WORD.to_le_bytes());
     payload
+}
+
+fn parse_keypad_response(packet: &Packet) -> Result<KeypadMatrixReport, FlashError> {
+    let payload = packet.as_slice();
+    require_packet(
+        payload,
+        COMMAND_KEYPAD_RESPONSE,
+        8,
+        12,
+        "AFIK K1 keypad matrix",
+    )?;
+    if payload[4..8].iter().any(|rows| rows & !0x0F != 0)
+        || payload[8] > 1
+        || payload[9..12] != [0, 0, 0]
+    {
+        return Err(FlashError::UnexpectedPacket {
+            expected: "bounded AFIK K1 keypad matrix fields",
+            command: Some(COMMAND_KEYPAD_RESPONSE),
+            length: payload.len(),
+        });
+    }
+    Ok(KeypadMatrixReport {
+        row_low_by_column: [payload[4], payload[5], payload[6], payload[7]],
+        scan_valid: payload[8] == 1,
+    })
 }
 
 fn parse_hello_response(packet: &Packet) -> Result<NormalFirmwareInfo, FlashError> {
@@ -670,8 +728,9 @@ mod tests {
 
     use super::{
         backup_eeprom, detect_bootloader, flash_application, probe_bootloader_v2,
-        probe_normal_firmware, BootloaderFamily, FirmwareVersion, FlashError, FlashPrerequisites,
-        FlashPurpose, QUALIFIED_TARGET_CONFIRMATION, RECOVERY_REHEARSED_CONFIRMATION,
+        probe_keypad_matrix, probe_normal_firmware, BootloaderFamily, FirmwareVersion, FlashError,
+        FlashPrerequisites, FlashPurpose, QUALIFIED_TARGET_CONFIRMATION,
+        RECOVERY_REHEARSED_CONFIRMATION,
     };
 
     const TEST_TRANSACTION_ID: u32 = 0xA55A_1234;
@@ -964,6 +1023,28 @@ mod tests {
             requests,
             vec![vec![0x14, 0x05, 0x04, 0x00, 0x6A, 0x39, 0x57, 0x64]]
         );
+    }
+
+    #[test]
+    fn keypad_probe_returns_only_bounded_raw_masks() {
+        let response = [0x11, 0x7F, 0x08, 0x00, 1, 2, 4, 8, 1, 0, 0, 0];
+        let mut transport = ScriptedTransport::new(encode_response(&response), 1);
+
+        let report = probe_keypad_matrix(&mut transport).unwrap();
+
+        assert_eq!(report.row_low_by_column(), [1, 2, 4, 8]);
+        assert!(report.scan_valid());
+        assert_eq!(
+            decode_requests(&transport.writes),
+            vec![vec![0x10, 0x7F, 0x04, 0x00, 0x6A, 0x39, 0x57, 0x64]]
+        );
+
+        let invalid = [0x11, 0x7F, 0x08, 0x00, 0x10, 0, 0, 0, 1, 0, 0, 0];
+        let mut transport = ScriptedTransport::new(encode_response(&invalid), 1);
+        assert!(matches!(
+            probe_keypad_matrix(&mut transport),
+            Err(FlashError::UnexpectedPacket { .. })
+        ));
     }
 
     fn decode_requests(frames: &[u8]) -> Vec<Vec<u8>> {

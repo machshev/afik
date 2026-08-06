@@ -18,8 +18,8 @@ pub use image::{
     FLASH_PAGE_BYTES, FLASH_PAGE_COUNT,
 };
 pub use workflow::{
-    backup_eeprom, detect_bootloader, flash_application, probe_bootloader_v2,
+    backup_eeprom, detect_bootloader, flash_application, probe_bootloader_v2, probe_keypad_matrix,
     probe_normal_firmware, BootloaderFamily, BootloaderInfo, FirmwareVersion, FlashError,
-    FlashPrerequisites, FlashPurpose, FlashReport, NormalFirmwareInfo,
+    FlashPrerequisites, FlashPurpose, FlashReport, KeypadMatrixReport, NormalFirmwareInfo,
     QUALIFIED_TARGET_CONFIRMATION, RECOVERY_REHEARSED_CONFIRMATION,
 };

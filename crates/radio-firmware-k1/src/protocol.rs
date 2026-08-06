@@ -6,9 +6,13 @@
 pub const REQUEST_BODY_BYTES: usize = 10;
 /// Complete encoded response size for the fixed 40-byte hello payload.
 pub const RESPONSE_FRAME_BYTES: usize = 48;
+/// Complete encoded response size for the 12-byte keypad diagnostic payload.
+pub const KEYPAD_RESPONSE_FRAME_BYTES: usize = 20;
 
 const COMMAND_HELLO_REQUEST: u16 = 0x0514;
 const COMMAND_HELLO_RESPONSE: u16 = 0x0515;
+const COMMAND_KEYPAD_REQUEST: u16 = 0x7F10;
+const COMMAND_KEYPAD_RESPONSE: u16 = 0x7F11;
 const SESSION_WORD: u32 = 0x6457_396A;
 const RESPONSE_PAYLOAD_BYTES: usize = 40;
 const RESPONSE_DECLARED_BYTES: u16 = 36;
@@ -20,18 +24,55 @@ const XOR_KEY: [u8; 16] = [
 /// Printable identity returned by the first AFIK K1 application.
 pub const APPLICATION_VERSION: &[u8] = b"AFIK-K1-0.2";
 
-/// Decodes and validates one bounded normal-mode hello request body.
-pub fn is_valid_hello_request(encoded_body: &mut [u8; REQUEST_BODY_BYTES]) -> bool {
+/// One accepted read-only normal-mode request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Request {
+    /// Existing AFIK application identity probe.
+    Hello,
+    /// Raw main-key matrix observation.
+    KeypadMatrix,
+}
+
+/// Decodes one bounded normal-mode request body.
+pub fn decode_request(encoded_body: &mut [u8; REQUEST_BODY_BYTES]) -> Option<Request> {
     xor(encoded_body);
     let payload = &encoded_body[..8];
     let expected_crc = u16::from_le_bytes([encoded_body[8], encoded_body[9]]);
     let command = u16::from_le_bytes([payload[0], payload[1]]);
     let declared = u16::from_le_bytes([payload[2], payload[3]]);
     let session = u32::from_le_bytes([payload[4], payload[5], payload[6], payload[7]]);
-    command == COMMAND_HELLO_REQUEST
-        && declared == 4
-        && session == SESSION_WORD
-        && crc16_xmodem(payload) == expected_crc
+    if declared != 4 || session != SESSION_WORD || crc16_xmodem(payload) != expected_crc {
+        return None;
+    }
+    match command {
+        COMMAND_HELLO_REQUEST => Some(Request::Hello),
+        COMMAND_KEYPAD_REQUEST => Some(Request::KeypadMatrix),
+        _ => None,
+    }
+}
+
+/// Decodes and validates one bounded normal-mode hello request body.
+pub fn is_valid_hello_request(encoded_body: &mut [u8; REQUEST_BODY_BYTES]) -> bool {
+    decode_request(encoded_body) == Some(Request::Hello)
+}
+
+/// Encodes one raw, read-only main-key matrix response.
+pub fn encode_keypad_response(
+    frame: &mut [u8; KEYPAD_RESPONSE_FRAME_BYTES],
+    row_low_by_column: [u8; 4],
+    scan_valid: bool,
+) {
+    frame.fill(0);
+    frame[0..2].copy_from_slice(&[0xAB, 0xCD]);
+    frame[2..4].copy_from_slice(&12_u16.to_le_bytes());
+    let payload = &mut frame[4..16];
+    payload[0..2].copy_from_slice(&COMMAND_KEYPAD_RESPONSE.to_le_bytes());
+    payload[2..4].copy_from_slice(&8_u16.to_le_bytes());
+    payload[4..8].copy_from_slice(&row_low_by_column);
+    payload[8] = u8::from(scan_valid);
+    frame[16..18].copy_from_slice(&RESPONSE_TRAILER.to_le_bytes());
+    xor(&mut frame[4..18]);
+    frame[18..20].copy_from_slice(&[0xDC, 0xBA]);
 }
 
 /// Encodes one normal-mode hello response into a caller-provided frame.
@@ -78,7 +119,10 @@ fn xor(bytes: &mut [u8]) {
 
 #[cfg(test)]
 mod tests {
-    use super::{encode_hello_response, is_valid_hello_request, APPLICATION_VERSION};
+    use super::{
+        decode_request, encode_hello_response, encode_keypad_response, is_valid_hello_request,
+        Request, APPLICATION_VERSION,
+    };
 
     #[test]
     fn hello_request_validation_accepts_only_the_fixed_session() {
@@ -134,5 +178,42 @@ mod tests {
             APPLICATION_VERSION
         );
         assert_eq!(&frame[48 - 4..48 - 2], &[0xFF, 0xFF]);
+    }
+
+    #[test]
+    fn keypad_request_and_raw_response_are_wire_exact() {
+        let payload = [0x10, 0x7F, 0x04, 0x00, 0x6A, 0x39, 0x57, 0x64];
+        let mut encoded = encode_request_for_test(payload);
+        assert_eq!(decode_request(&mut encoded), Some(Request::KeypadMatrix));
+
+        let mut frame = [0_u8; 20];
+        encode_keypad_response(&mut frame, [1, 2, 4, 8], true);
+        assert_eq!(&frame[..4], &[0xAB, 0xCD, 12, 0]);
+        assert_eq!(&frame[18..], &[0xDC, 0xBA]);
+        let key = [
+            0x16, 0x6C, 0x14, 0xE6, 0x2E, 0x91, 0x0D, 0x40, 0x21, 0x35, 0xD5, 0x40, 0x13, 0x03,
+            0xE9, 0x80,
+        ];
+        for (index, byte) in frame[4..18].iter_mut().enumerate() {
+            *byte ^= key[index % key.len()];
+        }
+        assert_eq!(
+            &frame[4..18],
+            &[0x11, 0x7F, 8, 0, 1, 2, 4, 8, 1, 0, 0, 0, 0xFF, 0xFF]
+        );
+    }
+
+    fn encode_request_for_test(payload: [u8; 8]) -> [u8; 10] {
+        let mut encoded = [0_u8; 10];
+        encoded[..8].copy_from_slice(&payload);
+        encoded[8..].copy_from_slice(&super::crc16_xmodem(&payload).to_le_bytes());
+        let key = [
+            0x16, 0x6C, 0x14, 0xE6, 0x2E, 0x91, 0x0D, 0x40, 0x21, 0x35, 0xD5, 0x40, 0x13, 0x03,
+            0xE9, 0x80,
+        ];
+        for (index, byte) in encoded.iter_mut().enumerate() {
+            *byte ^= key[index];
+        }
+        encoded
     }
 }

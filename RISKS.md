@@ -323,3 +323,7 @@
   fallback, but key labels did not display. No GPIO scan or key mapping is
   physically established; diagnose with a bounded observable witness before
   another write.
+- **Current diagnostic:** a strictly read-only serial request reports one raw
+  four-column scan with bounded row masks and scan validity. Comparing release
+  with held MENU can localize the GPIO/display boundary without treating the
+  response as proof of debounce, visible rendering, or the other 15 keys.

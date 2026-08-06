@@ -113,9 +113,9 @@ features remain outside this bounded slice.
 - Work Package 22 keypad/UI witness definition: complete; the pinned matrix,
   electrical idle/scan levels, one-key decode, explicit-time debounce, and
   display-only result were bounded before implementation.
-- Current smallest actionable task: diagnose why no debounced key label reached
-  the display while `AFIK-K1-0.2` remained responsive by adding a K1 Renode
-  execution harness with synthetic GPIO input and a render-function hook.
+- Current smallest actionable task: flash the verified read-only raw-matrix
+  diagnostic, then compare released and held-MENU reports over the retained
+  serial path.
 
 ## Work Package 22 pure keypad milestone
 
@@ -275,6 +275,25 @@ Corrected keypad write on 2026-08-06:
   cannot validate: actual GPIO levels/timing or the subsequent physical display
   transfer. The next smallest diagnostic is a read-only serial report of raw
   per-column row masks while one main key is held.
+
+## Work Package 22 raw-matrix diagnostic milestone
+
+- Added a read-only `probe-keypad` request to the retained serial session. The
+  target performs one existing four-column scan and returns only the four raw
+  four-bit row masks plus an explicit scan-valid flag; it does not decode a
+  key, mutate display state, access side keys/PTT, or reach RF/TX.
+- The flasher library validates the exact response command, frame size, CRC,
+  reserved bytes, row-mask bounds, and boolean status before exposing a bounded
+  report. The thin CLI prints stable `pb6_rows` through `pb3_rows` fields.
+- Focused firmware/flasher/CLI tests passed (21, 22, and 8 unit tests plus two
+  CLI binary tests). Three repeated K1 Renode diagnostic runs passed.
+- `nix flake check path:. --no-build`, workspace formatting, warning-denied
+  workspace Clippy, all workspace tests, embedded warning-denied Clippy, target
+  build, ELF verification, packaging, positive/negative raw-image tests, and
+  `git diff --check` passed.
+- The diagnostic raw image is 57,860 bytes, SHA-256
+  `c56f5a8d883cf240d4a70626a299ab0cc8a1cf2bba294cffb3e6308ec4426ba9`,
+  and CRC-32 `0a53af07`. No diagnostic image write has yet been sent.
 
 ## Work Package 14 implementation milestone
 

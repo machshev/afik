@@ -1037,3 +1037,10 @@
   returns and synthetic PB6/PB15 MENU reaches the production render function.
   The remaining physical boundary requires a read-only serial raw-matrix probe;
   Renode does not establish actual PY32 GPIO or LCD behavior.
+- **Raw-matrix diagnostic:** the normal-mode serial session now accepts one
+  read-only request which runs the existing bounded scan and returns only four
+  validated row masks plus scan validity. Host, workspace, embedded, image, and
+  three-repeat Renode gates pass. The 57,860-byte image has SHA-256
+  `c56f5a8d883cf240d4a70626a299ab0cc8a1cf2bba294cffb3e6308ec4426ba9`
+  and CRC-32 `0a53af07`; physical write and released/held-MENU observations remain
+  pending.
