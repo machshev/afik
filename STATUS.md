@@ -2003,7 +2003,9 @@ Verified 2026-08-05:
   See `docs/programmer-gui-native.md` and `ADR-052`.
 - **Verification:** `cargo fmt --all --check` — passed.
   `cargo clippy --workspace --all-targets -- -D warnings` — passed.
-  `cargo test --workspace` — passed; 231 tests across 44 result lines.
+  `cargo test --workspace` — passed; 232 tests across 45 result lines,
+  including the `radio-bk4819` `receive_loop` integration proof that banked
+  control drives the receive path and never writes the transmit mode word.
   `tool/check-py32f071-hal.sh` — passed.
   `tool/build-k1-async.sh --release` — passed.
   `tool/verify-k1-async-image.sh` — passed; raw image 26,120 bytes.

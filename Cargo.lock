@@ -2385,6 +2385,8 @@ dependencies = [
 name = "radio-bk4819"
 version = "0.1.0"
 dependencies = [
+ "radio-channel-control",
+ "radio-channel-plan",
  "radio-domain",
  "radio-tx-policy",
 ]

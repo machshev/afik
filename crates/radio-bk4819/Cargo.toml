@@ -11,5 +11,9 @@ description = "Evidence-bounded BK4819 command driver and TX authority boundary"
 radio-domain = { path = "../radio-domain" }
 radio-tx-policy = { path = "../radio-tx-policy" }
 
+[dev-dependencies]
+radio-channel-control = { path = "../radio-channel-control" }
+radio-channel-plan = { path = "../radio-channel-plan" }
+
 [lints]
 workspace = true
