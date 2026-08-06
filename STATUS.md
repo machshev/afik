@@ -136,6 +136,12 @@ incomplete. It can resume unchanged when the exact K5 V1 hardware is available.
   reset, EEPROM, or RF command was sent by AFIK. The next action is a user
   power-cycle into normal Fusion mode and a complete read-only backup/identity
   check before any further flash command.
+- After the user power-cycled the unit, `afik-flasher identify` again timed out
+  without a K1 beacon, and the read-only `afik-flasher backup-eeprom` workflow
+  also timed out without a normal-mode hello. The serial adapter remains
+  present, but the radio is currently reachable in neither observed mode.
+  Recovery is paused until the exact physical bootloader-entry procedure is
+  repeated and the `7.03.01` beacon returns; no further write is authorized.
 
 Verification on 2026-08-06:
 
