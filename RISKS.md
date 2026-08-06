@@ -342,6 +342,11 @@
   selection, establishing MENU on this exact unit. Mapping uncertainty for that
   cell is closed; timing, other keys, debounce, and visible display update remain
   unverified.
+- **Async runtime result:** the corrected Embassy image was power-cycled; the
+  boot screen returned, normal hello passed, and all main-key labels were
+  observed on the second display line. This closes the bounded keypad/display
+  bring-up risk for the migrated path; RF/TX, side keys, persistence, and
+  production calibration remain open.
 
 ## RISK-025 — Embassy/PY32 release and evidence compatibility
 
@@ -456,3 +461,6 @@
   missing VTOR handoff, not a proven TIM15/DMA fault. The pinned K1 startup and
   PY32F071 header explicitly require/support VTOR at `0x08002800`; the next
   image adds that exact write before any interrupt-enabled initialization.
+- **Correction result:** writing VTOR to `0x08002800` before inherited
+  initialization restored the boot screen, async UART hello, display updates,
+  and all observed main-key labels after power-cycle.

@@ -1439,3 +1439,17 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   all 101 pages of the CRC-32 `4401a861` image under transaction `5b0f91b5`,
   without retry. Status remains `acknowledged_not_read_back`; power-cycle and
   application observations are separate gates.
+
+### EVID-K1-050 — Corrected Embassy image physical runtime result
+
+- **Observation:** after power-cycle, the boot screen returned and faded in
+  quickly. The user then observed all main keys correctly identified and
+  rendered on the second display line.
+- **Serial witness:** a post-boot normal-mode probe at 38,400 baud returned
+  `AFIK-K1-0.2` from `/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0`.
+- **Interpretation:** the source-backed VTOR relocation at `0x08002800`,
+  inherited-clock initialization, TIM15 Embassy time path, async USART1/DMA,
+  cooperative SPI1 display path, backlight, matrix scan, debounce, and key
+  rendering all functioned together on this unit. This is bounded bring-up
+  evidence only; no RF, TX, side-key, persistence, or flash read-back claim is
+  made.

@@ -1081,7 +1081,7 @@
 
 ## K1ASYNC-023 — Embassy/PY32 runtime foundation
 
-- **Status:** active (2026-08-06)
+- **Status:** complete (2026-08-06)
 - **Objective:** establish the smallest heap-free Embassy execution foundation
   for the K1 before migrating UART, keypad, display, or timing behavior.
 - **Scope:** pin a Rust-1.86-compatible dependency set; prove PY32F071 chip
@@ -1198,6 +1198,11 @@
 - **Corrected write result:** all 101 pages were acknowledged under transaction
   `5b0f91b5` without retry. Boot, UART, display, and keypad evidence still
   require the post-write power-cycle and observations.
+- **Completion result:** after power-cycle the boot screen returned, normal
+  hello returned `AFIK-K1-0.2`, and the user observed every main key correctly
+  identified on the second display line. This closes the bounded async runtime
+  foundation and keypad/display migration; RF, TX, side keys, persistence,
+  and read-back remain outside scope.
   type-checks one owned bundle containing the heap-free thread executor,
   USART1/PA9/PA10 with DMA1 channels 1/2, and SPI1/PA5/PA7. Construction takes
   explicit HAL tokens and remains absent from the firmware binary. No HAL init,

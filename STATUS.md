@@ -2,7 +2,7 @@
 
 ## Current work package
 
-**Work Package 23 (`K1ASYNC-023`) is active: establish a pinned Embassy/PY32
+**Work Package 23 (`K1ASYNC-023`) is complete: establish a pinned Embassy/PY32
 runtime foundation before migrating the proven K1 keypad, UART, and display
 paths.**
 
@@ -52,11 +52,11 @@ features remain outside this bounded slice.
   and static/physical verification passed.
 - Work Package 21 fixed K1 contrast: complete; exact one-byte command change,
   clearer physical text, backlight, and serial verification passed.
-- Work Package 22 receive-only K1 keypad/UI witness: active; static gates and
-  serial fallback pass, but the first physical keypad-label observation failed.
-- Work Package 23 Embassy/PY32 runtime foundation: active; dependency, chip,
-  MSRV, executor, time-driver, UART, and SPI feasibility must be proven before
-  replacing the current boot path.
+- Work Package 22 receive-only K1 keypad/UI witness: complete; all 16 main-key
+  labels were physically observed on the display with serial hello responsive.
+- Work Package 23 Embassy/PY32 runtime foundation: complete; the corrected
+  runnable async image passed power-cycle, boot-screen, UART hello, and full
+  main-key label observations.
 - `UI-005` logical key edges, bounded semantic views, exact boot-only entry,
   release gate, draft editor, and checked persistence action: complete.
 - `UI-005` separate persisted/active policy simulation, deterministic timed
@@ -1694,6 +1694,16 @@ Verified 2026-08-06:
   object, hardware register access, or TX driver was added.
 
 ## Last verification
+
+Verified 2026-08-06:
+
+- Corrected async image was power-cycled on the exact K1 unit. The user
+  observed the boot screen returning and all main keys correctly identified on
+  the second display line.
+- `nix develop path:. -c cargo run --quiet -p radio-flasher-cli --bin afik-flasher -- --device auto probe-normal` — passed: `AFIK-K1-0.2`
+  at 38,400 baud after the async image booted.
+- The corrected image write remains page-acknowledged under transaction
+  `5b0f91b5`; no read-back claim is made.
 
 Verified 2026-08-06:
 
