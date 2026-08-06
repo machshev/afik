@@ -7,14 +7,16 @@ license.workspace = true
 repository.workspace = true
 description = "Loopback web GUI for the AFIK programmer library"
 
+[[bin]]
+name = "afik-programmer-gui"
+path = "src/main.rs"
+
 [dependencies]
 radio-channel-plan = { path = "../radio-channel-plan" }
 radio-domain = { path = "../radio-domain" }
 radio-programmer = { path = "../radio-programmer" }
 radio-programmer-serial = { path = "../radio-programmer-serial" }
 radio-sim = { path = "../radio-sim" }
-
-[dev-dependencies]
 radio-storage = { path = "../radio-storage" }
 
 [lints]

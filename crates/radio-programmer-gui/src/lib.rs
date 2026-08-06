@@ -12,6 +12,10 @@ use radio_programmer_serial::{LinuxSerialTransport, SerialOpenError};
 use radio_sim::{SimDevice, SimTransport};
 use std::{convert::Infallible, fmt, io, path::Path};
 
+mod server;
+
+pub use server::{main_entry, HELP, MAX_RESTORE_IMAGE_BYTES};
+
 /// Maximum UTF-8 project form bytes accepted by the GUI model.
 pub const MAX_PROJECT_TEXT_BYTES: usize = 64 * 1024;
 /// Embedded accessible application document.
@@ -377,6 +381,7 @@ mod tests {
         assert!(APP_CSS.contains("@media"));
         assert!(APP_CSS.contains(":focus-visible"));
         assert!(APP_JS.contains("X-Afik-Session"));
+        assert!(APP_JS.contains("X-Afik-Confirm"));
         assert!(APP_JS.contains("confirm-write"));
         assert!(APP_JS.contains("confirm-restore"));
     }

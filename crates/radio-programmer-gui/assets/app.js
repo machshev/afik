@@ -1,4 +1,4 @@
-const token = window.AFIK_SESSION_TOKEN;
+const token = document.querySelector('meta[name="afik-session-token"]').content;
 const statusText = document.querySelector("#status");
 const statusDot = document.querySelector("#status-dot");
 
@@ -37,7 +37,7 @@ async function sendProject(path, downloadName) {
   const body = document.querySelector("#project").value;
   const response = await checked(await fetch(path, {
     method: "POST",
-    headers: {"Content-Type": "text/plain; charset=utf-8", "X-Afik-Session": token},
+    headers: {"Content-Type": "text/plain; charset=utf-8", "X-Afik-Session": token, "X-Afik-Confirm": "replace-configuration"},
     body,
   }));
   if (downloadName) download(await response.blob(), downloadName);
@@ -63,7 +63,7 @@ document.querySelector("#restore").addEventListener("click", async () => {
   if (!file) return setStatus("Choose a restore image first", "error");
   if (!document.querySelector("#confirm-restore").checked) return setStatus("Confirm restore intent first", "error");
   try {
-    const response = await checked(await fetch("/api/restore", {method: "POST", headers: {"Content-Type": "application/octet-stream", "X-Afik-Session": token}, body: file}));
+    const response = await checked(await fetch("/api/restore", {method: "POST", headers: {"Content-Type": "application/octet-stream", "X-Afik-Session": token, "X-Afik-Confirm": "replace-configuration"}, body: file}));
     setStatus(await response.text());
     document.querySelector("#confirm-restore").checked = false;
     await refresh();
