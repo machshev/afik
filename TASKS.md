@@ -1185,3 +1185,11 @@
   are host-tested, and the snapshot compiles with the owned runtime bundle. No
   HAL clock is published and the firmware image is unchanged. The next step is
   one bounded, read-only exact-unit RCC observation before defining HAL adoption.
+- **Exact-unit observation surface:** the existing polling image now supports
+  one strict read-only request returning RCC CR, ICSCR, CFGR, PLLCFGR, and the
+  fail-closed contract result. The host library and `probe-clock` CLI validate
+  exact lengths, reserved bytes, and bounded fields. Static image/package and
+  existing keypad Renode gates pass; no device is currently visible and no
+  flash was sent during the static milestone. The guarded physical write later
+  acknowledged all 252 pages without retry and remains unverified until the
+  required power-cycle, normal hello, and `probe-clock` capture.

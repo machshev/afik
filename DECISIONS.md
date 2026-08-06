@@ -605,3 +605,16 @@ meaning.
 - Publishing the validated frequencies, taking peripheral tokens, enabling
   interrupts/DMA/TIM15, and changing the runnable image require a later guarded
   step after the exact-unit snapshot is observed.
+
+## ADR-042 — Exact-unit clock observation reuses the bounded serial witness
+
+- **Date:** 2026-08-06
+- **Status:** accepted for `K1ASYNC-023`
+- Add one fixed-session, read-only normal-mode request returning RCC CR, ICSCR,
+  CFGR, and PLLCFGR plus the target's fail-closed contract result. The response
+  is exact-length, CRC-protected, and reserves zeroed bytes for strict parsing.
+- The request performs four volatile reads only. It cannot write RCC, publish
+  HAL clocks, initialize TIM15/DMA/interrupts, mutate keypad/display state,
+  access persistence, or reach RF/TX.
+- A physical run remains separately guarded by the existing K1 recovery,
+  image-validation, explicit-confirmation, power-cycle, and serial-probe path.

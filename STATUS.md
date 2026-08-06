@@ -117,9 +117,9 @@ features remain outside this bounded slice.
 - Work Package 22 keypad/UI witness definition: complete; the pinned matrix,
   electrical idle/scan levels, one-key decode, explicit-time debounce, and
   display-only result were bounded before implementation.
-- Current smallest actionable task: expose and run one bounded read-only
-  exact-unit RCC observation for the `K1ASYNC-023` handoff contract; do not
-  publish HAL clocks or change the runnable async path until it passes.
+- Current smallest actionable task: power-cycle the exact K1 into normal mode,
+  then run the normal hello and `probe-clock` capture; do not publish HAL clocks
+  until the observed RCC values pass.
 
 ## Work Package 23 dependency and executor milestone
 
@@ -339,6 +339,33 @@ features remain outside this bounded slice.
 - `git diff --check` — passed.
 - No physical image, clock state, peripheral token, interrupt, DMA, TIM15,
   USART1, SPI1, keypad, display, or flash behavior changed.
+
+## Work Package 23 exact-unit observation-surface milestone
+
+- Added normal-mode request `0x7f12` and response `0x7f13`. The target performs
+  exactly four volatile RCC reads and returns CR, ICSCR, CFGR, PLLCFGR, and the
+  fail-closed contract result in a fixed CRC-protected frame.
+- Added host `probe_clock_snapshot` and `afik-flasher probe-clock`; both reject
+  malformed lengths, non-boolean validity, and nonzero reserved fields.
+- Focused K1 firmware, flasher, and CLI tests passed. The regenerated image
+  passed ELF, raw package, negative-fixture, and existing keypad Renode gates.
+- The raw image is 64,384 bytes, SHA-256
+  `c64ffa09da427060fadbc2527713826c3f6db4d70c3639b476fdcf64c64eebd3`,
+  CRC-32 `0ed8ed53`, Reset `0x08002939`, and ELF end `0x08012380`.
+- `nix develop path:. -c tool/check-py32f071-clock-handoff.sh` — passed.
+- `nix flake check path:. --no-build` — passed.
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
+  — passed.
+- `nix develop path:. -c cargo test --workspace` — passed; all 165 workspace
+  unit, integration, and doc-test binaries passed.
+- `git diff --check` — passed.
+- The exact K1 bootloader `7.03.01` was identified through the CH340 path. The
+  guarded write acknowledged all 252 pages under transaction `736f8852` without
+  retry and reported `acknowledged_not_read_back`.
+- A manual power-cycle, normal-mode hello, and `probe-clock` capture remain
+  pending. No physical clock observation, clock adoption, TIM15, interrupt,
+  DMA, async peripheral, RF, or TX operation occurred.
 
 ## Work Package 22 pure keypad milestone
 

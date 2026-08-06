@@ -2,7 +2,7 @@
 
 use py32_hal::pac::RCC;
 
-use crate::clock_handoff::{ClockSnapshot, ClockSourceState};
+use crate::clock_handoff::{snapshot_from_registers, ClockSnapshot};
 
 /// Reads the RCC fields required by the fail-closed clock handoff.
 ///
@@ -14,14 +14,5 @@ pub fn snapshot() -> ClockSnapshot {
     let cfgr = RCC.cfgr().read();
     let pllcfgr = RCC.pllcfgr().read();
 
-    ClockSnapshot {
-        hsi: ClockSourceState::from_flags(cr.hsion(), cr.hsirdy()),
-        hsi_frequency: icscr.hsi_fs().to_bits(),
-        pll: ClockSourceState::from_flags(cr.pllon(), cr.pllrdy()),
-        pll_source: pllcfgr.pllsrc().to_bits(),
-        system_source: cfgr.sw().to_bits(),
-        active_system_source: cfgr.sws().to_bits(),
-        ahb_prescaler: cfgr.hpre().to_bits(),
-        apb_prescaler: cfgr.ppre().to_bits(),
-    }
+    snapshot_from_registers(cr.0, icscr.0, cfgr.0, pllcfgr.0)
 }

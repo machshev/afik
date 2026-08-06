@@ -405,3 +405,8 @@
   read-only, fail-closed snapshot decoder and target compile proof, but it does
   not publish HAL clocks. Exact-unit observation remains required before HAL
   adoption or any runnable async migration.
+- **Observation-surface update:** a bounded serial request can now return the
+  four raw RCC registers and fail-closed result without modifying clock state.
+  Static and Renode gates pass, and all 252 diagnostic-image pages were
+  acknowledged without retry. This is not read-back or boot proof; do not
+  publish HAL clocks until the post-power-cycle response is captured and reviewed.

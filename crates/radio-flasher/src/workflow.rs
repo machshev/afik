@@ -10,6 +10,8 @@ const COMMAND_HELLO_REQUEST: u16 = 0x0514;
 const COMMAND_HELLO_RESPONSE: u16 = 0x0515;
 const COMMAND_KEYPAD_REQUEST: u16 = 0x7F10;
 const COMMAND_KEYPAD_RESPONSE: u16 = 0x7F11;
+const COMMAND_CLOCK_REQUEST: u16 = 0x7F12;
+const COMMAND_CLOCK_RESPONSE: u16 = 0x7F13;
 const COMMAND_READ_EEPROM_REQUEST: u16 = 0x051B;
 const COMMAND_READ_EEPROM_RESPONSE: u16 = 0x051C;
 const COMMAND_V2_BEACON: u16 = 0x0518;
@@ -247,6 +249,25 @@ impl KeypadMatrixReport {
     }
 }
 
+/// Raw read-only K1 inherited-clock observation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ClockSnapshotReport {
+    registers: [u32; 4],
+    contract_valid: bool,
+}
+
+impl ClockSnapshotReport {
+    /// Returns RCC CR, ICSCR, CFGR, and PLLCFGR in that order.
+    pub const fn registers(&self) -> [u32; 4] {
+        self.registers
+    }
+
+    /// Returns whether the target's fail-closed inherited-clock contract passed.
+    pub const fn contract_valid(&self) -> bool {
+        self.contract_valid
+    }
+}
+
 impl NormalFirmwareInfo {
     /// Returns the exact bounded normal-firmware version text.
     pub fn version(&self) -> &str {
@@ -385,6 +406,14 @@ pub fn probe_keypad_matrix<T: Read + Write>(
     parse_keypad_response(&receive_packet(transport)?)
 }
 
+/// Requests one raw, read-only inherited RCC clock observation.
+pub fn probe_clock_snapshot<T: Read + Write>(
+    transport: &mut T,
+) -> Result<ClockSnapshotReport, FlashError> {
+    send_packet(transport, &session_request(COMMAND_CLOCK_REQUEST))?;
+    parse_clock_response(&receive_packet(transport)?)
+}
+
 /// Waits for one exact, printable version-2 bootloader beacon.
 pub fn probe_bootloader_v2<T: Read>(transport: &mut T) -> Result<BootloaderInfo, FlashError> {
     parse_bootloader_beacon(&receive_packet(transport)?)
@@ -517,6 +546,33 @@ fn parse_keypad_response(packet: &Packet) -> Result<KeypadMatrixReport, FlashErr
         ],
         scan_valid: payload[12] == 1,
         captured: payload[13] == 1,
+    })
+}
+
+fn parse_clock_response(packet: &Packet) -> Result<ClockSnapshotReport, FlashError> {
+    let payload = packet.as_slice();
+    require_packet(
+        payload,
+        COMMAND_CLOCK_RESPONSE,
+        20,
+        24,
+        "AFIK K1 raw RCC snapshot",
+    )?;
+    if payload[20] > 1 || payload[21..24] != [0, 0, 0] {
+        return Err(FlashError::UnexpectedPacket {
+            expected: "bounded AFIK K1 raw RCC fields",
+            command: Some(COMMAND_CLOCK_RESPONSE),
+            length: payload.len(),
+        });
+    }
+    let mut registers = [0_u32; 4];
+    for (index, register) in registers.iter_mut().enumerate() {
+        let start = 4 + index * 4;
+        *register = u32::from_le_bytes(payload[start..start + 4].try_into().expect("four bytes"));
+    }
+    Ok(ClockSnapshotReport {
+        registers,
+        contract_valid: payload[20] == 1,
     })
 }
 
@@ -738,9 +794,9 @@ mod tests {
 
     use super::{
         backup_eeprom, detect_bootloader, flash_application, probe_bootloader_v2,
-        probe_keypad_matrix, probe_normal_firmware, BootloaderFamily, FirmwareVersion, FlashError,
-        FlashPrerequisites, FlashPurpose, QUALIFIED_TARGET_CONFIRMATION,
-        RECOVERY_REHEARSED_CONFIRMATION,
+        probe_clock_snapshot, probe_keypad_matrix, probe_normal_firmware, BootloaderFamily,
+        FirmwareVersion, FlashError, FlashPrerequisites, FlashPurpose,
+        QUALIFIED_TARGET_CONFIRMATION, RECOVERY_REHEARSED_CONFIRMATION,
     };
 
     const TEST_TRANSACTION_ID: u32 = 0xA55A_1234;
@@ -1059,6 +1115,31 @@ mod tests {
         let mut transport = ScriptedTransport::new(encode_response(&invalid), 1);
         assert!(matches!(
             probe_keypad_matrix(&mut transport),
+            Err(FlashError::UnexpectedPacket { .. })
+        ));
+    }
+
+    #[test]
+    fn clock_probe_returns_only_bounded_raw_registers() {
+        let response = [
+            0x13, 0x7F, 20, 0, 0, 5, 0, 3, 0, 128, 0, 0, 18, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0,
+        ];
+        let mut transport = ScriptedTransport::new(encode_response(&response), 1);
+
+        let report = probe_clock_snapshot(&mut transport).unwrap();
+
+        assert_eq!(report.registers(), [0x0300_0500, 0x0000_8000, 0x12, 0]);
+        assert!(report.contract_valid());
+        assert_eq!(
+            decode_requests(&transport.writes),
+            vec![vec![0x12, 0x7F, 0x04, 0x00, 0x6A, 0x39, 0x57, 0x64]]
+        );
+
+        let mut invalid = response;
+        invalid[20] = 2;
+        let mut transport = ScriptedTransport::new(encode_response(&invalid), 1);
+        assert!(matches!(
+            probe_clock_snapshot(&mut transport),
             Err(FlashError::UnexpectedPacket { .. })
         ));
     }

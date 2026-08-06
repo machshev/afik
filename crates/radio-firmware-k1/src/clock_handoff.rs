@@ -51,6 +51,26 @@ pub struct ClockSnapshot {
     pub apb_prescaler: u8,
 }
 
+/// Decodes the relevant PY32F071 RCC fields from a read-only register sample.
+#[must_use]
+pub const fn snapshot_from_registers(
+    cr: u32,
+    icscr: u32,
+    cfgr: u32,
+    pllcfgr: u32,
+) -> ClockSnapshot {
+    ClockSnapshot {
+        hsi: ClockSourceState::from_flags(cr & (1 << 8) != 0, cr & (1 << 10) != 0),
+        hsi_frequency: ((icscr >> 13) & 0x07) as u8,
+        pll: ClockSourceState::from_flags(cr & (1 << 24) != 0, cr & (1 << 25) != 0),
+        pll_source: (pllcfgr & 0x01) as u8,
+        system_source: (cfgr & 0x07) as u8,
+        active_system_source: ((cfgr >> 3) & 0x07) as u8,
+        ahb_prescaler: ((cfgr >> 8) & 0x0f) as u8,
+        apb_prescaler: ((cfgr >> 12) & 0x07) as u8,
+    }
+}
+
 /// A validated inherited clock tree. Construction is fail-closed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct InheritedClocks {
@@ -135,7 +155,8 @@ pub const fn validate(snapshot: ClockSnapshot) -> Result<InheritedClocks, ClockH
 #[cfg(test)]
 mod tests {
     use super::{
-        validate, ClockHandoffError, ClockSnapshot, ClockSourceState, K1_INHERITED_CLOCK_HZ,
+        snapshot_from_registers, validate, ClockHandoffError, ClockSnapshot, ClockSourceState,
+        K1_INHERITED_CLOCK_HZ,
     };
 
     const VALID: ClockSnapshot = ClockSnapshot {
@@ -156,6 +177,21 @@ mod tests {
         assert_eq!(clocks.hclk1_hz, K1_INHERITED_CLOCK_HZ);
         assert_eq!(clocks.pclk1_hz, K1_INHERITED_CLOCK_HZ);
         assert_eq!(clocks.pclk1_tim_hz, K1_INHERITED_CLOCK_HZ);
+    }
+
+    #[test]
+    fn raw_register_decoder_preserves_every_contract_field() {
+        let cr = (1 << 8) | (1 << 10) | (1 << 24) | (1 << 25);
+        let icscr = 4 << 13;
+        let cfgr = 2 | (2 << 3);
+        assert_eq!(snapshot_from_registers(cr, icscr, cfgr, 0), VALID);
+
+        let varied = snapshot_from_registers(1 << 10, 1 << 13, 4 << 12, 1);
+        assert_eq!(varied.hsi, ClockSourceState::Inconsistent);
+        assert_eq!(varied.hsi_frequency, 1);
+        assert_eq!(varied.pll, ClockSourceState::Disabled);
+        assert_eq!(varied.pll_source, 1);
+        assert_eq!(varied.apb_prescaler, 4);
     }
 
     #[test]

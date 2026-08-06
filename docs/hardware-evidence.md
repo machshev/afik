@@ -1323,3 +1323,21 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
 - **Boundary:** compilation and source review do not establish the exact-unit
   register values. A read-only physical observation is required before AFIK can
   adopt the handoff or start TIM15, DMA, async USART1, or SPI1.
+
+### EVID-K1-046 — Bounded serial RCC observation surface
+
+- **Target behavior:** normal-mode command `0x7f12` reads RCC CR, ICSCR, CFGR,
+  and PLLCFGR once and returns them under response `0x7f13` with the result of
+  `EVID-K1-045` validation. No target register is written by this request.
+- **Host behavior:** `afik-flasher probe-clock` accepts only the exact 24-byte
+  payload, one-bit validity result, and zero reserved bytes, then prints all
+  four raw registers without treating the software result as physical proof.
+- **Static/simulation result:** protocol, raw-field, malformed-field, image,
+  package, and existing keypad Renode gates pass. The 64,384-byte raw image has
+  SHA-256 `c64ffa09da427060fadbc2527713826c3f6db4d70c3639b476fdcf64c64eebd3`
+  and CRC-32 `0ed8ed53`.
+- **Write observation:** exact K1 bootloader `7.03.01` acknowledged all 252
+  diagnostic-image pages under transaction `736f8852` without retry. This is
+  `acknowledged_not_read_back`, not application boot or RCC evidence.
+- **Boundary:** the required power-cycle, normal hello, and clock response are
+  pending, so exact-unit RCC values and the contract result remain unobserved.

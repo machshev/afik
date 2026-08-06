@@ -8,6 +8,7 @@ use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use radio_firmware_k1::backlight::constant_on_plan;
+use radio_firmware_k1::clock_handoff::{snapshot_from_registers, validate};
 use radio_firmware_k1::display::{
     initialise as display_initialise, render_key_witness, render_witness, write_frame, DisplayBus,
     TransferKind, FRAME_BYTES,
@@ -17,7 +18,8 @@ use radio_firmware_k1::keypad::{
     Sample,
 };
 use radio_firmware_k1::protocol::{
-    decode_request, encode_hello_response, encode_keypad_response, Request, REQUEST_BODY_BYTES,
+    decode_request, encode_clock_response, encode_hello_response, encode_keypad_response, Request,
+    REQUEST_BODY_BYTES,
 };
 
 const INITIAL_STACK_POINTER: u32 = 0x2000_4000;
@@ -31,6 +33,10 @@ const SPI1_BASE: usize = 0x4001_3000;
 const USART1_BASE: usize = 0x4001_3800;
 
 const RCC_IOPENR: usize = RCC_BASE + 0x34;
+const RCC_CR: usize = RCC_BASE;
+const RCC_ICSCR: usize = RCC_BASE + 0x04;
+const RCC_CFGR: usize = RCC_BASE + 0x08;
+const RCC_PLLCFGR: usize = RCC_BASE + 0x0C;
 const RCC_APBRSTR2: usize = RCC_BASE + 0x30;
 const RCC_APBENR2: usize = RCC_BASE + 0x40;
 const GPIOA_MODER: usize = GPIOA_BASE;
@@ -140,6 +146,23 @@ extern "C" fn reset() -> ! {
                     let (reported, captured) = raw_latch.take_or(matrix.raw_idr);
                     let mut response = [0_u8; 24];
                     encode_keypad_response(&mut response, reported, valid, captured);
+                    uart_send(&response);
+                }
+                Some(Request::ClockSnapshot) => {
+                    let registers = [
+                        read_register(RCC_CR),
+                        read_register(RCC_ICSCR),
+                        read_register(RCC_CFGR),
+                        read_register(RCC_PLLCFGR),
+                    ];
+                    let snapshot = snapshot_from_registers(
+                        registers[0],
+                        registers[1],
+                        registers[2],
+                        registers[3],
+                    );
+                    let mut response = [0_u8; 32];
+                    encode_clock_response(&mut response, registers, validate(snapshot).is_ok());
                     uart_send(&response);
                 }
                 None => {}

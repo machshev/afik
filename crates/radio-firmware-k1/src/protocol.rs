@@ -8,11 +8,15 @@ pub const REQUEST_BODY_BYTES: usize = 10;
 pub const RESPONSE_FRAME_BYTES: usize = 48;
 /// Complete encoded response size for the 16-byte keypad diagnostic payload.
 pub const KEYPAD_RESPONSE_FRAME_BYTES: usize = 24;
+/// Complete encoded response size for the 24-byte clock diagnostic payload.
+pub const CLOCK_RESPONSE_FRAME_BYTES: usize = 32;
 
 const COMMAND_HELLO_REQUEST: u16 = 0x0514;
 const COMMAND_HELLO_RESPONSE: u16 = 0x0515;
 const COMMAND_KEYPAD_REQUEST: u16 = 0x7F10;
 const COMMAND_KEYPAD_RESPONSE: u16 = 0x7F11;
+const COMMAND_CLOCK_REQUEST: u16 = 0x7F12;
+const COMMAND_CLOCK_RESPONSE: u16 = 0x7F13;
 const SESSION_WORD: u32 = 0x6457_396A;
 const RESPONSE_PAYLOAD_BYTES: usize = 40;
 const RESPONSE_DECLARED_BYTES: u16 = 36;
@@ -31,6 +35,8 @@ pub enum Request {
     Hello,
     /// Raw main-key matrix observation.
     KeypadMatrix,
+    /// Raw inherited RCC clock observation.
+    ClockSnapshot,
 }
 
 /// Decodes one bounded normal-mode request body.
@@ -47,8 +53,30 @@ pub fn decode_request(encoded_body: &mut [u8; REQUEST_BODY_BYTES]) -> Option<Req
     match command {
         COMMAND_HELLO_REQUEST => Some(Request::Hello),
         COMMAND_KEYPAD_REQUEST => Some(Request::KeypadMatrix),
+        COMMAND_CLOCK_REQUEST => Some(Request::ClockSnapshot),
         _ => None,
     }
+}
+
+/// Encodes one raw, read-only inherited RCC observation.
+pub fn encode_clock_response(
+    frame: &mut [u8; CLOCK_RESPONSE_FRAME_BYTES],
+    registers: [u32; 4],
+    contract_valid: bool,
+) {
+    frame.fill(0);
+    frame[0..2].copy_from_slice(&[0xAB, 0xCD]);
+    frame[2..4].copy_from_slice(&24_u16.to_le_bytes());
+    let payload = &mut frame[4..28];
+    payload[0..2].copy_from_slice(&COMMAND_CLOCK_RESPONSE.to_le_bytes());
+    payload[2..4].copy_from_slice(&20_u16.to_le_bytes());
+    for (index, register) in registers.into_iter().enumerate() {
+        payload[4 + index * 4..8 + index * 4].copy_from_slice(&register.to_le_bytes());
+    }
+    payload[20] = u8::from(contract_valid);
+    frame[28..30].copy_from_slice(&RESPONSE_TRAILER.to_le_bytes());
+    xor(&mut frame[4..30]);
+    frame[30..32].copy_from_slice(&[0xDC, 0xBA]);
 }
 
 /// Decodes and validates one bounded normal-mode hello request body.
@@ -124,8 +152,8 @@ fn xor(bytes: &mut [u8]) {
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_request, encode_hello_response, encode_keypad_response, is_valid_hello_request,
-        Request, APPLICATION_VERSION,
+        decode_request, encode_clock_response, encode_hello_response, encode_keypad_response,
+        is_valid_hello_request, Request, APPLICATION_VERSION,
     };
 
     #[test]
@@ -205,6 +233,31 @@ mod tests {
             &frame[4..22],
             &[0x11, 0x7F, 12, 0, 1, 0x10, 2, 0x20, 4, 0x40, 8, 0x80, 1, 1, 0, 0, 0xFF, 0xFF]
         );
+    }
+
+    #[test]
+    fn clock_request_and_raw_response_are_wire_exact() {
+        let payload = [0x12, 0x7F, 0x04, 0x00, 0x6A, 0x39, 0x57, 0x64];
+        let mut encoded = encode_request_for_test(payload);
+        assert_eq!(decode_request(&mut encoded), Some(Request::ClockSnapshot));
+
+        let mut frame = [0_u8; 32];
+        encode_clock_response(&mut frame, [0x0300_0500, 0x0000_8000, 0x0000_0012, 0], true);
+        assert_eq!(&frame[..4], &[0xAB, 0xCD, 24, 0]);
+        assert_eq!(&frame[30..], &[0xDC, 0xBA]);
+        let key = [
+            0x16, 0x6C, 0x14, 0xE6, 0x2E, 0x91, 0x0D, 0x40, 0x21, 0x35, 0xD5, 0x40, 0x13, 0x03,
+            0xE9, 0x80,
+        ];
+        for (index, byte) in frame[4..30].iter_mut().enumerate() {
+            *byte ^= key[index % key.len()];
+        }
+        assert_eq!(&frame[4..8], &[0x13, 0x7F, 20, 0]);
+        assert_eq!(
+            &frame[8..24],
+            &[0, 5, 0, 3, 0, 128, 0, 0, 18, 0, 0, 0, 0, 0, 0, 0]
+        );
+        assert_eq!(&frame[24..30], &[1, 0, 0, 0, 0xFF, 0xFF]);
     }
 
     fn encode_request_for_test(payload: [u8; 8]) -> [u8; 10] {
