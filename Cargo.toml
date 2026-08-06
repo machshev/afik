@@ -11,6 +11,7 @@ members = [
     "crates/radio-ui",
     "crates/radio-protocol",
     "crates/radio-programmer",
+    "crates/radio-programmer-cli",
     "crates/radio-sim",
 ]
 

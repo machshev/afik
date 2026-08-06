@@ -1,0 +1,22 @@
+[package]
+name = "radio-programmer-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Thin command-line front end for the AFIK programmer library"
+
+[dependencies]
+radio-channel-plan = { path = "../radio-channel-plan" }
+radio-domain = { path = "../radio-domain" }
+radio-programmer = { path = "../radio-programmer" }
+radio-sim = { path = "../radio-sim" }
+radio-storage = { path = "../radio-storage" }
+
+[[bin]]
+name = "afik-programmer"
+path = "src/main.rs"
+
+[lints]
+workspace = true
