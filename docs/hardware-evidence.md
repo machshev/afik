@@ -1313,8 +1313,8 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   calls only `LL_SetSystemCoreClock(48000000)` and says the bootloader configured
   the clock. It does not record the inherited RCC oscillator, PLL, or prescaler
   fields.
-- **Fail-closed decoder:** AFIK accepts only ready 24 MHz HSI, ready fixed x2
-  PLL sourced from HSI, requested and active PLL SYSCLK, and undivided AHB/APB.
+- **Fail-closed decoder:** AFIK accepts only ready 16 MHz HSI, ready x3 PLL
+  sourced from HSI, requested and active PLL SYSCLK, and undivided AHB/APB.
   That exact state yields 48 MHz for SYSCLK, HCLK1, PCLK1, and PCLK1_TIM; every
   individually varied field is rejected by host tests.
 - **Target surface:** optional `py32f071-clock-handoff` compiles a read-only PAC
@@ -1399,3 +1399,9 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   `ICSCR.HSI_FS` decodes as `2`, while the provisional 24 MHz contract expects
   `4`. This records raw silicon state but does not yet assign a frequency to
   encoding `2` or authorize HAL clock publication.
+- **Pinned inventory resolution:** the generated F071 PAC selects the maintained
+  DIE072 RCC inventory. It defines `HSI_FS=2` as 16 MHz, two-bit `PLLSRC=2` as
+  HSI, and `PLLMUL=1` as x3. Raw PLLCFGR `0x00000006` therefore encodes HSI x3,
+  and the observed undivided tree is 48 MHz. The earlier decoder both assumed
+  24 MHz x2 and masked PLLSRC to one bit; the corrected contract validates the
+  exact-unit tuple and rejects every independently varied field.

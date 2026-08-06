@@ -598,8 +598,8 @@ meaning.
   not establish the bootloader's oscillator, PLL, or prescaler register state.
   AFIK therefore treats 48 MHz as a required handoff contract, not sufficient
   evidence to publish HAL clocks.
-- A read-only snapshot must show enabled/ready 24 MHz HSI, the fixed x2 PLL
-  sourced from HSI, PLL selected and active as SYSCLK, and undivided AHB/APB.
+- A read-only snapshot must show enabled/ready 16 MHz HSI, the x3 PLL sourced
+  from HSI, PLL selected and active as SYSCLK, and undivided AHB/APB.
   Every mismatch denies adoption. Reading and validating these fields neither
   changes RCC nor initializes the HAL.
 - Publishing the validated frequencies, taking peripheral tokens, enabling
@@ -641,3 +641,15 @@ meaning.
 - Only the boot RAM witness, polling USART, normal hello, no-MMIO control, and
   read-only RCC requests may execute. This is an isolation image, not a keypad
   or display regression claim.
+
+## ADR-045 — K1 inherited-clock contract follows the observed F071 fields
+
+- **Date:** 2026-08-06
+- **Status:** accepted for `K1ASYNC-023`
+- The exact-unit snapshot is CR `0x03000500`, ICSCR `0x00e64d14`, CFGR
+  `0x00000012`, and PLLCFGR `0x00000006`. The pinned F071 DIE072 register
+  inventory defines `HSI_FS=2` as 16 MHz, `PLLSRC=2` as HSI, and `PLLMUL=1`
+  as x3. With undivided AHB/APB and PLL selected/active, this is 48 MHz.
+- The provisional contract incorrectly assumed 24 MHz x2 and masked PLLSRC to
+  one bit. Correct both fields and explicitly validate PLLMUL. Keep every other
+  mismatch fail-closed and keep clock publication out of the runnable image.

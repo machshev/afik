@@ -117,9 +117,9 @@ features remain outside this bounded slice.
 - Work Package 22 keypad/UI witness definition: complete; the pinned matrix,
   electrical idle/scan levels, one-key decode, explicit-time debounce, and
   display-only result were bounded before implementation.
-- Current smallest actionable task: resolve observed `ICSCR.HSI_FS=2` against
-  primary PY32F071 clock evidence before changing the fail-closed contract or
-  publishing HAL clocks.
+- Current smallest actionable task: define a separate guarded inherited-clock
+  publication boundary using the now-validated 48 MHz tuple; do not yet start
+  TIM15, interrupts, DMA, USART1, SPI1, keypad, or display tasks.
 
 ## Work Package 23 dependency and executor milestone
 
@@ -408,7 +408,7 @@ features remain outside this bounded slice.
 - `nix develop path:. -c cargo fmt --all --check` — passed.
 - `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
   — passed.
-- `nix develop path:. -c cargo test --workspace` — passed; all 130 unit and
+- `nix develop path:. -c cargo test --workspace` — passed; all 169 unit and
   integration tests plus doc tests passed.
 - `nix develop path:. -c tool/build-k1.sh` — passed.
 - `nix develop path:. -c tool/package-k1-image.sh --force` — passed.
@@ -424,10 +424,33 @@ features remain outside this bounded slice.
 - After power-cycle, hello returned `AFIK-K1-0.2`, the no-MMIO marker returned
   `4b31434c`, and all isolated plus combined RCC reads returned CR `03000500`,
   ICSCR `00e64d14`, CFGR `00000012`, and PLLCFGR `00000006`.
-- The fail-closed contract rejected the stable snapshot. HSI and PLL are
-  enabled/ready; PLL source, requested/active system source, and AHB/APB
-  prescalers match. `ICSCR.HSI_FS` decodes as `2`, not the provisional required
-  `4`. HAL clocks remain unpublished pending primary-source interpretation.
+- The provisional contract rejected the stable snapshot because it assumed
+  24 MHz x2 and masked the two-bit PLL source to one bit. The pinned F071 DIE072
+  inventory resolves the observed fields as 16 MHz HSI, HSI source, and x3.
+  The corrected fail-closed contract accepts this exact 48 MHz tuple and now
+  validates the multiplier explicitly. HAL clocks remain unpublished.
+
+## Work Package 23 exact-unit clock-field resolution milestone
+
+- The pinned F071 PAC uses the maintained DIE072 RCC inventory: `HSI_FS=2` is
+  16 MHz, `PLLSRC=2` is HSI, and `PLLMUL=1` is x3. Observed PLLCFGR
+  `0x00000006` therefore completes the inherited 48 MHz clock equation.
+- Corrected the pure decoder to preserve both PLL-source bits and the multiplier
+  field. Validation accepts only ready 16 MHz HSI, ready HSI x3 PLL,
+  requested/active PLL SYSCLK, and undivided AHB/APB.
+- Added direct regression coverage for the exact physical CR/ICSCR/CFGR/
+  PLLCFGR tuple and independent rejection coverage for the multiplier.
+- `nix flake check path:. --no-build` — passed.
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
+  — passed.
+- `nix develop path:. -c cargo test --workspace` — passed; all 170 unit and
+  integration tests plus doc tests passed.
+- `nix develop path:. -c tool/check-py32f071-clock-handoff.sh` — passed.
+- `git diff --check` — passed.
+- No target entry point, physical image, RCC state, HAL clock publication,
+  interrupt, DMA, timer, serial, display, keypad, RF, TX, or flash behavior
+  changed.
 
 ## Work Package 22 pure keypad milestone
 

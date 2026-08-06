@@ -1231,3 +1231,8 @@
   fails only because `ICSCR.HSI_FS` is encoding `2`, while the provisional
   contract requires `4`. Do not adopt clocks until that field is interpreted
   from primary PY32F071 evidence and the contract is re-reviewed.
+- **Clock-field resolution:** the pinned F071 DIE072 register inventory defines
+  `HSI_FS=2` as 16 MHz, two-bit `PLLSRC=2` as HSI, and `PLLMUL=1` as x3.
+  PLLCFGR `00000006` therefore completes the observed 48 MHz contract. The pure
+  decoder now checks all those fields and an exact-unit regression vector;
+  publishing clocks and starting Embassy remain separate guarded steps.

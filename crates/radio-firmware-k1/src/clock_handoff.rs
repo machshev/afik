@@ -41,6 +41,8 @@ pub struct ClockSnapshot {
     pub pll: ClockSourceState,
     /// PLL source encoding.
     pub pll_source: u8,
+    /// PLL multiplier encoding.
+    pub pll_multiplier: u8,
     /// Requested system-clock source encoding.
     pub system_source: u8,
     /// Active system-clock source encoding.
@@ -63,7 +65,8 @@ pub const fn snapshot_from_registers(
         hsi: ClockSourceState::from_flags(cr & (1 << 8) != 0, cr & (1 << 10) != 0),
         hsi_frequency: ((icscr >> 13) & 0x07) as u8,
         pll: ClockSourceState::from_flags(cr & (1 << 24) != 0, cr & (1 << 25) != 0),
-        pll_source: (pllcfgr & 0x01) as u8,
+        pll_source: (pllcfgr & 0x03) as u8,
+        pll_multiplier: ((pllcfgr >> 2) & 0x03) as u8,
         system_source: (cfgr & 0x07) as u8,
         active_system_source: ((cfgr >> 3) & 0x07) as u8,
         ahb_prescaler: ((cfgr >> 8) & 0x0f) as u8,
@@ -99,6 +102,8 @@ pub enum ClockHandoffError {
     PllNotReady,
     /// PLL does not use HSI.
     PllSource,
+    /// PLL does not multiply the 16 MHz HSI by three.
+    PllMultiplier,
     /// Requested system clock is not PLL.
     RequestedSystemSource,
     /// Active system clock is not PLL.
@@ -109,7 +114,7 @@ pub enum ClockHandoffError {
     ApbPrescaler,
 }
 
-/// Validates the exact 24 MHz HSI, fixed x2 PLL, undivided-bus contract.
+/// Validates the exact 16 MHz HSI, x3 PLL, undivided-bus contract.
 pub const fn validate(snapshot: ClockSnapshot) -> Result<InheritedClocks, ClockHandoffError> {
     match snapshot.hsi {
         ClockSourceState::Ready => {}
@@ -118,7 +123,7 @@ pub const fn validate(snapshot: ClockSnapshot) -> Result<InheritedClocks, ClockH
             return Err(ClockHandoffError::HsiOff);
         }
     }
-    if snapshot.hsi_frequency != 4 {
+    if snapshot.hsi_frequency != 2 {
         return Err(ClockHandoffError::HsiFrequency);
     }
     match snapshot.pll {
@@ -128,8 +133,11 @@ pub const fn validate(snapshot: ClockSnapshot) -> Result<InheritedClocks, ClockH
             return Err(ClockHandoffError::PllOff);
         }
     }
-    if snapshot.pll_source != 0 {
+    if snapshot.pll_source != 2 {
         return Err(ClockHandoffError::PllSource);
+    }
+    if snapshot.pll_multiplier != 1 {
+        return Err(ClockHandoffError::PllMultiplier);
     }
     if snapshot.system_source != 2 {
         return Err(ClockHandoffError::RequestedSystemSource);
@@ -161,9 +169,10 @@ mod tests {
 
     const VALID: ClockSnapshot = ClockSnapshot {
         hsi: ClockSourceState::Ready,
-        hsi_frequency: 4,
+        hsi_frequency: 2,
         pll: ClockSourceState::Ready,
-        pll_source: 0,
+        pll_source: 2,
+        pll_multiplier: 1,
         system_source: 2,
         active_system_source: 2,
         ahb_prescaler: 0,
@@ -180,17 +189,26 @@ mod tests {
     }
 
     #[test]
+    fn exact_unit_snapshot_satisfies_the_corrected_contract() {
+        let snapshot = snapshot_from_registers(0x0300_0500, 0x00e6_4d14, 0x0000_0012, 0x0000_0006);
+        assert_eq!(snapshot, VALID);
+        assert!(validate(snapshot).is_ok());
+    }
+
+    #[test]
     fn raw_register_decoder_preserves_every_contract_field() {
         let cr = (1 << 8) | (1 << 10) | (1 << 24) | (1 << 25);
-        let icscr = 4 << 13;
+        let icscr = 2 << 13;
         let cfgr = 2 | (2 << 3);
-        assert_eq!(snapshot_from_registers(cr, icscr, cfgr, 0), VALID);
+        let pllcfgr = 2 | (1 << 2);
+        assert_eq!(snapshot_from_registers(cr, icscr, cfgr, pllcfgr), VALID);
 
-        let varied = snapshot_from_registers(1 << 10, 1 << 13, 4 << 12, 1);
+        let varied = snapshot_from_registers(1 << 10, 1 << 13, 4 << 12, 3 | (2 << 2));
         assert_eq!(varied.hsi, ClockSourceState::Inconsistent);
         assert_eq!(varied.hsi_frequency, 1);
         assert_eq!(varied.pll, ClockSourceState::Disabled);
-        assert_eq!(varied.pll_source, 1);
+        assert_eq!(varied.pll_source, 3);
+        assert_eq!(varied.pll_multiplier, 2);
         assert_eq!(varied.apb_prescaler, 4);
     }
 
@@ -234,10 +252,17 @@ mod tests {
             ),
             (
                 ClockSnapshot {
-                    pll_source: 1,
+                    pll_source: 3,
                     ..VALID
                 },
                 ClockHandoffError::PllSource,
+            ),
+            (
+                ClockSnapshot {
+                    pll_multiplier: 0,
+                    ..VALID
+                },
+                ClockHandoffError::PllMultiplier,
             ),
             (
                 ClockSnapshot {

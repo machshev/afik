@@ -431,3 +431,8 @@
   `00000012`, PLLCFGR `00000006`; the fail-closed decoder rejects only
   `ICSCR.HSI_FS=2` versus provisional expected encoding `4`. Do not change the
   decoder or publish clocks without primary PY32F071 field/frequency evidence.
+- **Field-resolution update:** the pinned F071 DIE072 inventory resolves the
+  tuple as 16 MHz HSI, HSI PLL source, and x3 multiplier. The decoder now checks
+  the two-bit source and multiplier explicitly. This resolves register
+  interpretation only; runnable HAL clock publication, interrupt/DMA behavior,
+  and timer/peripheral coexistence remain open.
