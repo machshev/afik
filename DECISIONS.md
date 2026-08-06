@@ -233,3 +233,25 @@ meaning.
   Production commands, register simulation, target binding, and physical claims
   remain blocked until the documented experiments establish every bit, unit,
   transition, false-lock case, timeout, fault, and cleanup path.
+
+## ADR-019 — APRS discovery begins at a complete validated frame
+
+- **Date:** 2026-08-06
+- **Status:** accepted for `APRS-011`; physical receive chain deferred
+- `radio-aprs` accepts one bounded, de-stuffed, octet-aligned AX.25 UI frame
+  including FCS. It validates addresses, zero through eight APRS path entries,
+  UI control, PID, information length, and FCS before parsing supported
+  uncompressed APRS Object/Item voice-repeater advertisements. RF/audio
+  demodulation, clock/NRZI/HDLC recovery, target peripherals, and BK4819 modem
+  commands remain separate blocked lower layers.
+- Discovery keeps advertised output/alternate-input frequency, CTCSS/DCS text,
+  offset, range, position ambiguity, source, and receive time as untrusted
+  receive data. It cannot create `ActiveChannel`, trusted `Tone`, plan
+  membership, `TxClass`, or `TxAuthorisation`, and it has no automatic tune,
+  save, or transmit path.
+- The fixed-capacity key is report kind, case-sensitive name, and source/SSID.
+  Newer same-key data wins, equal-time differences conflict, older inputs are
+  stale, and no full-table eviction occurs. Same-origin kills retain bounded
+  freshness until explicit expiry, preventing an out-of-order older live report
+  from resurrecting a removed entry. This is a conservative local safety rule,
+  not APRS authentication or network ownership semantics.

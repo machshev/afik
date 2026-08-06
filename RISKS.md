@@ -140,13 +140,13 @@
   service buffers with acceptable loss and power. Invented register, audio,
   clock, DMA, or interrupt behavior would make target and simulator results
   misleading.
-- **Mitigation:** `APRS-011` starts with a source- and layer-specific feasibility
-  report. Software accepts complete de-stuffed frames with FCS as explicit
-  inputs and does not implement physical demodulation, bit recovery, or target
-  integration. Keep those layers blocked until the fitted revisions and board
-  path are identified and receive-only signal-generator/audio/logic-analyzer
-  experiments establish bandwidth, levels, timing, buffering, error rates,
-  cleanup, and recovery.
+- **Mitigation:** `APRS-011` records a source- and layer-specific defer verdict
+  plus a receive-only experiment plan. Implemented software accepts complete
+  de-stuffed frames with FCS as explicit inputs and does not implement physical
+  demodulation, bit recovery, or target integration. Keep those layers blocked
+  until the fitted revisions and board path are identified and receive-only
+  signal-generator/audio/logic-analyzer experiments establish bandwidth,
+  levels, timing, buffering, error rates, cleanup, and recovery.
 
 ## RISK-013 — Repeater advertisements are untrusted and may be stale
 
@@ -154,9 +154,10 @@
 - **Impact:** APRS packets can be malformed, replayed, spoofed, stale, or simply
   incorrect. Automatically converting advertised frequency, offset, or tone
   into a transmit-capable channel could enable unintended or unauthorized RF.
-- **Mitigation:** validate checksums and bounded syntax, retain source and
-  freshness provenance, make table replacement/expiry explicit and
-  deterministic, and present results only as receive-only candidates. Never
+- **Mitigation:** `radio-aprs` validates FCS and bounded syntax, retains source
+  and explicit receive-time provenance, separates conflicting origins, rejects
+  equal-time conflicts, prevents stale same-key resurrection, and never evicts
+  a full table implicitly. Results remain receive-only advertisements. Never
   construct `ActiveChannel`, trusted plan membership, or `TxAuthorisation`, and
   never mutate configuration automatically. Any future reviewed save must be a
   separate transaction constrained to `TxClass::Never`.

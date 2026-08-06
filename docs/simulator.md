@@ -85,6 +85,27 @@ passes through `TxPolicy`, the class-bound capability bundle, and the BK4819
 driver; TX stop resumes receive on the still-selected channel. Identical timed
 scan/hold/stop/TX scripts produce identical control and RF traces.
 
+## APRS receive-only discovery
+
+Work Package 11 adds `AprsSimulator` around the hardware-independent
+complete-frame parser and fixed-capacity discovery table. The caller supplies
+one complete de-stuffed AX.25 frame including FCS at the current explicit
+virtual time. The trace records parse rejection, accepted table outcomes, full
+capacity without eviction, and caller-requested expiry. Advancing time performs
+no reception or expiry implicitly.
+
+Same-kind, case-sensitive name, and originating source/SSID form one local key.
+Newer live data replaces that key; equal-time differing data conflicts; older
+data is stale. A newer same-source kill hides the live entry and retains bounded
+freshness so an older live frame cannot resurrect it. The caller explicitly
+expires live and retained-kill slots by cutoff.
+
+The simulator begins at the already recovered frame boundary. It does not
+model RF tuning, FM/audio, Bell-202 tones, symbol timing, NRZI, flags, stuffed
+bits, the BK4819 modem, ADC/DMA, or target interrupts. It does not connect an
+advertisement to `ChannelSimulator` or `RfSimulator`, so discovery cannot tune,
+save, authorize, or transmit.
+
 ## Minimal DP32G030 target model
 
 Work Package 3 adds a separate Renode model for the target reset proof. It maps

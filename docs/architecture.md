@@ -20,6 +20,7 @@ radio-protocol ──→ radio-programmer ──→ radio-sim
 radio-ui ─────────────────────────────→ radio-sim
 radio-bk4819 ─────────────────────────→ radio-sim
 radio-channel-control ────────────────→ radio-sim
+radio-domain ─────────→ radio-aprs ───→ radio-sim
 ```
 
 `radio-domain` owns checked integer radio types and classifications.
@@ -95,3 +96,14 @@ and `TxAuthorisation`; observation cannot infer a transmit frequency or trusted
 class. Any future save must be deliberate and receive-only with
 `TxClass::Never`. Register commands and a physical adapter remain blocked by
 revision, board-path, crystal, false-lock, timing, and cleanup evidence gates.
+
+Work Package 11 adds `radio-aprs` as an embedded, hardware-independent leaf
+over `radio-domain`. It accepts only complete de-stuffed AX.25 UI frames with
+FCS, parses the supported APRS Object/Item voice-repeater fields, and owns a
+fixed-capacity explicit-time discovery table. Advertised frequencies use the
+domain's checked integer `Frequency`, but no advertisement can become an
+`ActiveChannel`, trusted tone, plan class, or TX capability. `radio-sim`
+supplies complete frames and virtual receive times without composing discovery
+with channel or RF control. Physical RF/audio demodulation, NRZI/HDLC recovery,
+target peripherals, persistence, and automatic tuning remain outside the
+architecture until their evidence gates are satisfied.

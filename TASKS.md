@@ -471,7 +471,7 @@
 
 ## APRS-011 — APRS receive feasibility and bounded repeater discovery
 
-- **Status:** active
+- **Status:** complete (2026-08-06)
 - **Objective:** determine whether an AFIK target could responsibly receive
   APRS and implement the smallest standards-backed, hardware-independent path
   that discovers reviewable voice-repeater advertisements from already
@@ -524,3 +524,18 @@
   exact; invalid/stale/spoofable data fails closed and never mutates channel
   configuration; no physical decoder, target behavior, network data, or RF
   success is claimed.
+- **Completion notes:** recorded primary AX.25/APRS/frequency-spec provenance,
+  checksums, exact complete-frame and advertisement facts, conflicting path
+  bounds, hardware unknowns, and a layer-by-layer verdict. Physical RF,
+  baseband, BK4819 modem, MCU DSP, and bit recovery are deferred under
+  `RISK-012` with a bounded receive-only experiment/corpus plan. Added the
+  `no_std`, heap-free `radio-aprs` crate with strict addresses, zero-through-eight
+  APRS paths, UI/PID, 1-through-256-byte information, CRC-X25/FCS residue,
+  Object/Item, uncompressed position ambiguity, voice-repeater symbol, exact
+  frequency, alternate input, tone/code, offset, and range parsing. Added a
+  fixed-capacity kind/name/source table with explicit time, no eviction,
+  same-origin kill freshness, stale/conflict handling, and explicit expiry.
+  Host simulation yields identical parse/table/expiry traces and has no channel
+  or RF-control connection. No modem/register command, raw-audio decoder,
+  target integration, storage mutation, automatic tune, TX authority,
+  transmission, or physical-success claim was added.

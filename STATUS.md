@@ -2,14 +2,13 @@
 
 ## Current work package
 
-**Work Package 11 — APRS receive feasibility and repeater discovery
-(`APRS-011`) is active.**
+**No work package is active. Work Packages 1 through 11 are complete.**
 
-The package will establish an evidence-backed physical receive-chain verdict
-and implement only the hardware-independent, bounded parsing/discovery layers
-supported by primary AX.25/APRS specifications. RF/audio/bit recovery remains
-outside the code boundary unless separately evidenced. Discovered repeater data
-is untrusted receive-only information and cannot create TX authority.
+Work Package 11 established the evidence-backed physical receive-chain defer
+verdict and implemented only the hardware-independent, bounded
+complete-frame/APRS discovery layers supported by primary specifications.
+RF/audio/bit recovery remains outside the code boundary. Discovered repeater
+data is untrusted receive-only information and cannot create TX authority.
 
 ## State
 
@@ -23,7 +22,7 @@ is untrusted receive-only information and cannot create TX authority.
 - Work Package 8 programmer CLI: complete.
 - Work Package 9 programmer GUI: complete.
 - Work Package 10 Frequency Copy research: complete.
-- Work Package 11 APRS receive feasibility and repeater discovery: active.
+- Work Package 11 APRS receive feasibility and repeater discovery: complete.
 - `UI-005` logical key edges, bounded semantic views, exact boot-only entry,
   release gate, draft editor, and checked persistence action: complete.
 - `UI-005` separate persisted/active policy simulation, deterministic timed
@@ -69,9 +68,59 @@ is untrusted receive-only information and cannot create TX authority.
 - `FREQ-010` FCC workflow provenance, Air Copy separation, bounded observation
   matrix, receive-only candidate/state proposal, storage/TX boundary,
   experiment plan, and hardware-command defer verdict: complete.
-- Next smallest task: record primary AX.25/APRS framing and voice-repeater
-  advertisement facts, then map the complete physical receive chain and its
-  unverified BK4819/board/MCU boundaries before adding parser behavior.
+- `APRS-011` primary AX.25/APRS/frequency provenance, physical-layer defer
+  verdict, complete-frame parser, Object/Item voice-repeater advertisements,
+  fixed-capacity explicit-time table, and isolated deterministic simulator:
+  complete.
+- Next smallest actionable task: execute the first receive-only `RISK-012`
+  experiment by identifying the exact board and fitted chips and tracing the
+  RF/audio/baseband path before proposing any physical APRS decoder package.
+
+## Completed Work Package 11 exit criteria
+
+- Primary AX.25, APRS 1.0.1/addendum, and APRS frequency-spec provenance,
+  checksums, exact framing/field facts, conflicting path bounds, inferences,
+  and hardware unknowns are recorded with confidence boundaries.
+- `docs/aprs-feasibility.md` gives explicit implement/defer verdicts from RF
+  through discovery and names receive-only equipment, recovery, corpus,
+  performance, false-frame, overflow, cancellation, and cleanup experiments.
+- `radio-aprs` is hardware-independent, `no_std`, heap-free, allocation-free,
+  bounded, integer-only, and passes a `thumbv6m-none-eabi` warning-denied lint
+  with `radio-domain`.
+- Complete de-stuffed frames enforce zero through eight APRS path entries,
+  shifted callsign/SSID/reserved/extension bits, UI `0x03`, PID `0xF0`, 1 through
+  256 information octets, exact maximum length, and CRC-X25/FCS residue before
+  exposing APRS information.
+- Supported Object/Item reports validate names, lifecycle, timestamps,
+  uncompressed coordinates and all ambiguity levels, voice-repeater symbol,
+  both standard frequency widths, optional alternate input, CTCSS/DCS/off,
+  signed 10 kHz offset, and nominal range. Values retain source/SSID and remain
+  untrusted advertisements rather than trusted channel fields.
+- The fixed-capacity kind/name/source table uses explicit monotonic receive
+  time, rejects equal-time conflicts and stale input, never evicts, retains
+  same-origin kill freshness against stale resurrection, and expires only on
+  an explicit cutoff. Identical simulator scripts produce identical rejection,
+  update, full-capacity, kill, and expiry traces.
+- Discovery has no channel-control or RF-simulator connection and cannot
+  construct `ActiveChannel`, trusted `Tone`, plan membership, `TxClass`, or
+  `TxAuthorisation`. No modem/register command, audio DSP, NRZI/HDLC recovery,
+  target adapter, persistence mutation, automatic tuning, transmission,
+  flashing, or physical-success claim was added. `RISK-012` and `RISK-013`
+  remain open.
+
+## Work Package 11 verification
+
+Verified 2026-08-06:
+
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
+  — passed for all host crates and targets.
+- `nix develop path:. -c cargo test --workspace` — passed: 104 unit/integration
+  tests and all doc tests, 0 failures.
+- `nix develop path:. -c bash -c 'export RUSTC_BOOTSTRAP=1; export __CARGO_TESTS_ONLY_SRC_ROOT="$RUST_SRC_PATH"; cargo clippy -Z build-std=core --package radio-aprs --target thumbv6m-none-eabi -- -D warnings'`
+  — passed for `radio-aprs` and `radio-domain`.
+- `env RUSTC=/nix/store/2mm3p5wcy1ifrcx5vp3bwsw7a76r77jc-rustc-1.86.0/bin/rustc RUSTDOC=/nix/store/2mm3p5wcy1ifrcx5vp3bwsw7a76r77jc-rustc-1.86.0/bin/rustdoc CARGO_TARGET_DIR=/tmp/afik-aprs-011-rust-1-86-target /nix/store/npqlgsia03kfhv8m9mav6hfnbawpg0yg-cargo-1.86.0/bin/cargo test --workspace`
+  — passed: 104 unit/integration tests and all doc tests on Rust/Cargo 1.86.0.
 
 ## Completed Work Package 10 exit criteria
 
