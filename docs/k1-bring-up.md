@@ -134,6 +134,13 @@ on the same filesystem; they protect against accidental single-file loss but
 not filesystem or disk failure. Before a destructive experiment, copy at least
 one of each to independent storage and verify the same hashes there.
 
+The user additionally requested a private home recovery directory. It was
+created mode `0700` outside the repository with one mode-`0600` backup and
+recovery image, both re-hashed successfully. Its absolute path is deliberately
+omitted from tracked content. The home directory and repository report the
+same filesystem device; this is an extra out-of-Git copy but does not satisfy
+the independent-storage gate against filesystem or disk failure.
+
 ## Candidate v5.5.0 recovery image
 
 Pinned Armel commit `fe9c4e9432694b50aea651084a043aae0b58673d`

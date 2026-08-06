@@ -234,6 +234,22 @@ Passive-beacon verification on 2026-08-06:
   copies. A destructive experiment remains gated on moving at least one backup
   and one recovery image to independent storage and verifying their hashes.
 
+## Work Package 13 home recovery-copy milestone
+
+- At the user's request, a private home recovery directory was created mode
+  `0700` outside the repository. It contains one mode-`0600` unit backup and
+  one mode-`0600` v5.5.0 recovery candidate. Its absolute path is deliberately
+  omitted from tracked content.
+- Both files match their verified source hashes. The unit-specific backup hash
+  remains outside tracked documentation; the recovery image matches pinned
+  SHA-256
+  `7b6b277c319e6924bd878f4e4208490875dc3f15beb205c366d20130c02a4463`.
+- `stat` reports filesystem device `56` for both the repository and home-copy
+  directory. The new location is outside Git and reduces accidental-deletion
+  risk, but it is not independent storage against filesystem or disk failure.
+- The destructive recovery rehearsal remains gated on one verified copy on a
+  different filesystem/device.
+
 ## Work Package 12 software milestone and verification
 
 - Sources and confidence boundaries are recorded in
