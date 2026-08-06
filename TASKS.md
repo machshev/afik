@@ -1044,3 +1044,12 @@
   `c56f5a8d883cf240d4a70626a299ab0cc8a1cf2bba294cffb3e6308ec4426ba9`
   and CRC-32 `0a53af07`. K1 `7.03.01` acknowledged all 227 pages in transaction
   `0e4f6fc9` without retry; released and held-MENU observations remain pending.
+- **Raw-matrix observation:** released returned a valid all-zero scan. Holding
+  MENU caused two serial timeouts, including one with the prebuilt host tool;
+  response recovered after release. The next diagnostic suppresses only the
+  key-triggered synchronous SPI transfer while retaining scan, debounce, pure
+  render execution, and serial raw reporting.
+- **SPI-suppressed diagnostic artifact:** all focused, workspace, embedded,
+  image, and three-repeat Renode gates pass. The 57,852-byte image has SHA-256
+  `c50baea15ebcf11805e7fff670cc4e0734c5ad1d52e09512acdb58c68c6e7fb9`
+  and CRC-32 `0b98c076`; physical write remains pending.

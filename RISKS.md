@@ -327,3 +327,7 @@
   four-column scan with bounded row masks and scan validity. Comparing release
   with held MENU can localize the GPIO/display boundary without treating the
   response as proof of debounce, visible rendering, or the other 15 keys.
+- **Observed diagnostic interference:** holding MENU prevented the serial probe
+  from answering until release, consistent with entry into the synchronous
+  key-triggered display path. A follow-up image suppresses that SPI transfer so
+  raw GPIO observation does not depend on display completion.

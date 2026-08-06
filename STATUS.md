@@ -114,8 +114,8 @@ features remain outside this bounded slice.
   electrical idle/scan levels, one-key decode, explicit-time debounce, and
   display-only result were bounded before implementation.
 - Current smallest actionable task: flash the verified read-only raw-matrix
-  diagnostic, then compare released and held-MENU reports over the retained
-  serial path.
+  diagnostic with key-triggered SPI transfer suppressed, then compare released
+  and held-MENU reports over the retained serial path.
 
 ## Work Package 22 pure keypad milestone
 
@@ -306,6 +306,30 @@ Diagnostic keypad-probe write on 2026-08-06:
   reported `acknowledged_not_read_back`. No retry or reset command was sent.
 - Physical completion remains pending a normal power-cycle followed by released
   and held-MENU `probe-keypad` observations.
+
+First raw-matrix physical observation on 2026-08-06:
+
+- With every key released, `probe-keypad` returned `scan_valid=true` and zero
+  for all four row masks.
+- With MENU held, two independently launched read-only probes timed out; the
+  second used the already-built CLI and removed Nix/Cargo startup latency.
+  Serial response returned after MENU was released, again with a valid all-zero
+  scan.
+- The press enters the key-triggered path before the serial request can be
+  serviced. The next bounded image retains scan/debounce and pure frame render
+  execution but suppresses the subsequent synchronous SPI frame transfer. This
+  is diagnostic isolation, not a display fix or an async-runtime decision.
+- The SPI-suppressed raw image is 57,852 bytes, SHA-256
+  `c50baea15ebcf11805e7fff670cc4e0734c5ad1d52e09512acdb58c68c6e7fb9`,
+  and CRC-32 `0b98c076`.
+- Focused tests and warning-denied Clippy passed. The first embedded Clippy
+  invocation omitted the required build-std environment and failed before
+  source compilation because `core` was unavailable; the recorded pinned
+  build-std/linker invocation then passed.
+- Embedded build, ELF/package positive and negative checks, three repeated
+  Renode runs, Nix flake evaluation, workspace formatting, warning-denied
+  workspace Clippy, all workspace tests, and `git diff --check` passed. No
+  SPI-suppressed image write has yet been sent.
 
 ## Work Package 14 implementation milestone
 

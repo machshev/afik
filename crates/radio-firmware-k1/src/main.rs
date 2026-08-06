@@ -154,8 +154,11 @@ extern "C" fn reset() -> ! {
         if let Edge::Pressed(key) = debounce.update(elapsed_ms, sample) {
             let mut frame = [0_u8; FRAME_BYTES];
             render_key_witness(&mut frame, key);
-            let mut display = K1DisplayBus;
-            let _ = write_frame(&mut display, &frame);
+            // Physical MENU observation showed that entering the synchronous
+            // SPI transfer prevents the retained serial diagnostic from
+            // answering. Keep decode/render execution for the bounded Renode
+            // proof, but suppress the physical transfer while raw matrix
+            // sampling localises the GPIO/display boundary.
         }
         delay_milliseconds(1);
         elapsed_ms = elapsed_ms.wrapping_add(1);

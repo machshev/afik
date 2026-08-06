@@ -417,6 +417,11 @@ order are maintained in `docs/k1-bring-up.md`.
   pages of the 57,860-byte diagnostic image in transaction `0e4f6fc9` and
   reported `acknowledged_not_read_back`. This proves page acknowledgments only;
   normal boot and raw matrix behavior still require separate observation.
+- **First physical observation:** released returned a valid scan with all masks
+  zero. Holding MENU caused two serial response timeouts, including one issued
+  by the prebuilt host binary; response returned after release. This does not
+  yet establish the raw held mask because the key-triggered synchronous SPI
+  path executes before a later serial request can be serviced.
 
 ## Sources used by DP32-003
 
