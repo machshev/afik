@@ -1008,3 +1008,7 @@
   behavior; and physical success is claimed only after all 16 main keys are
   observed correctly on the display and `probe-normal` still returns
   `AFIK-K1-0.2`.
+- **Implementation notes:** the hardware-independent matrix decoder, 20 ms
+  explicit-time debounce state machine, and fixed labels are implemented and
+  pass focused tests and warning-denied Clippy. The next step is a pure GPIOB
+  register/scan plan and exact trace tests; target MMIO remains unimplemented.

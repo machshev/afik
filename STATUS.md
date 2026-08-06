@@ -112,9 +112,30 @@ features remain outside this bounded slice.
 - Work Package 22 keypad/UI witness definition: active; the pinned matrix,
   electrical idle/scan levels, one-key decode, explicit-time debounce, and
   display-only result are bounded before implementation.
-- Current smallest actionable task: implement the hardware-independent
-  `K1KEY-022` matrix decoder and explicit-time debounce contract with exhaustive
-  host tests; do not add GPIO MMIO or flash an image in that step.
+- Current smallest actionable task: implement a hardware-independent GPIOB
+  register/scan plan with exact traces and guaranteed all-columns-high cleanup;
+  do not bind target MMIO or flash an image in that step.
+
+## Work Package 22 pure keypad milestone
+
+- Added an allocation-free main-matrix decoder in the standalone K1 firmware
+  crate. It maps exactly the 16 evidenced PB6..PB3 by PB15..PB12 cells, returns
+  release for no active cell, and rejects multiple cells or row bits outside
+  the evidenced mask.
+- Added an explicit monotonic-millisecond debounce machine with a bounded 20 ms
+  stability interval. Bounce restarts the candidate interval; ambiguity, scan
+  failure, and time reversal reset immediately to no held key without emitting
+  an application edge.
+- Exact fixed labels are bounded to four ASCII bytes. PTT, side keys, GPIO
+  registers, display mutation, target code, RF/TX, persistence, and flashing
+  are absent from this milestone.
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c cargo test --package radio-firmware-k1` — passed; 14
+  unit tests plus doc tests, including exhaustive 16-cell mapping and all 120
+  two-cell ambiguity combinations.
+- `nix develop path:. -c cargo clippy --package radio-firmware-k1 --all-targets
+  -- -D warnings` — passed.
+- `git diff --check` — passed.
 
 ## Work Package 14 implementation milestone
 

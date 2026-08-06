@@ -7,4 +7,5 @@ extern crate std;
 
 pub mod backlight;
 pub mod display;
+pub mod keypad;
 pub mod protocol;
