@@ -25,6 +25,23 @@ model; it does not increase confidence in the underlying silicon fact.
   it corresponds to the selected source line, hash the relevant pinned files,
   and map each accepted fact to a physical observation and confidence.
 
+The initial hashes, source-to-fact matrix, unit record, and safe experiment
+order are maintained in `docs/k1-bring-up.md`.
+
+### Puya PY32F071-E product documentation
+
+- **Publisher:** Puya Semiconductor (Shanghai) Co., Ltd.
+- **Product page:** `PY32F071R1BU7-E`, retrieved 2026-08-06 from
+  <https://www.puyasemi.com/en/py32f071/3415.html>.
+- **Document:** *PY32F071-E Datasheet*, version 1.4, published 2026-01-30 and
+  linked from the official product page.
+- **Facts used now:** Arm Cortex-M0+ up to 72 MHz, product variants with up to
+  128 KiB main flash and 16 KiB SRAM, USB 2.0 full speed, SWD, GPIO, ADC/DAC,
+  timers, serial peripherals, and boot modes.
+- **Boundary:** the exact fitted part suffix is not recorded yet. Maximum
+  family capabilities do not prove the exact unit's memory size, package, pin
+  binding, oscillator, boot selection, or radio-board behavior.
+
 ## Sources used by DP32-003
 
 ### DP32G030 reference manual v1.23

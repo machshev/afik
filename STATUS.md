@@ -106,6 +106,37 @@ Work-package activation verification on 2026-08-06:
   milestone changes documentation only.
 - `git diff --check` — passed before the final status record.
 
+## Work Package 13 first evidence milestone
+
+- Pinned upstream `main` at
+  `fe9c4e9432694b50aea651084a043aae0b58673d`, dated 2026-08-04, and recorded
+  SHA-256 values for the linker, startup, main, and version evidence files.
+- The pinned Fusion preset identifies version `v5.8.0`. The exact displayed
+  version on the available unit remains to be supplied and must not be inferred
+  from the source checkout.
+- Puya's official PY32F071-E product page and datasheet v1.4 establish the
+  Cortex-M0+, maximum 128 KiB flash/16 KiB SRAM, USB, SWD, and peripheral
+  envelope. The exact fitted suffix remains pending physical inspection.
+- Pinned Armel evidence places the application at `0x08002800` with 118 KiB,
+  RAM at `0x20000000` with 16 KiB, and identifies initial LCD, keypad/PTT,
+  BK4819, audio, backlight, and external-flash board mappings. These are
+  evidence entries, not imported production code.
+- `docs/k1-bring-up.md` records the first evidence matrix, exact-unit checklist,
+  and safe backup/DFU/recovery order. No device was visible to the agent, no
+  hardware operation was performed, and TX remains prohibited.
+
+Evidence-milestone verification on 2026-08-06:
+
+- Detached checkout of commit
+  `fe9c4e9432694b50aea651084a043aae0b58673d` — passed and reported commit date
+  2026-08-04 17:45:07 +02:00.
+- `sha256sum Core/py32f071xb.ld Core/startup_py32f071xx.s Core/Inc/main.h Core/Src/main.c App/version.h`
+  in that checkout — passed and matched `docs/k1-bring-up.md`.
+- `nix develop path:. -c cargo fmt --all --check` — passed. An initial sandboxed
+  invocation could not access the Nix daemon; the permitted identical retry is
+  the recorded verification result.
+- `git diff --check` — passed before the final status record.
+
 ## Work Package 12 software milestone and verification
 
 - Sources and confidence boundaries are recorded in
