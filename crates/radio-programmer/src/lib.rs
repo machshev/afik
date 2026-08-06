@@ -320,6 +320,49 @@ pub struct ConfigurationSnapshot {
     pub objects: Vec<StorageObject>,
 }
 
+impl ConfigurationSnapshot {
+    /// Validates the snapshot and reports exact object and channel capacity.
+    pub fn report(&self) -> Result<CapacityReport, StorageError> {
+        let object_count =
+            u16::try_from(self.objects.len()).map_err(|_| StorageError::ImageTooLarge)?;
+        let mut storage_bytes = 0_u32;
+        let mut generated_channels = 0_u32;
+        let mut previous_key = None;
+
+        for object in &self.objects {
+            if previous_key.is_some_and(|key| key >= object.key()) {
+                return Err(StorageError::NonCanonicalImage);
+            }
+            previous_key = Some(object.key());
+            let bank = decode_generated_bank(object)?;
+            storage_bytes = storage_bytes
+                .checked_add(u32::try_from(object.len()).map_err(|_| StorageError::ImageTooLarge)?)
+                .ok_or(StorageError::ImageTooLarge)?;
+            generated_channels = generated_channels
+                .checked_add(u32::from(bank.channel_count()))
+                .ok_or(StorageError::ImageTooLarge)?;
+        }
+
+        Ok(CapacityReport {
+            object_count,
+            storage_bytes,
+            generated_channels,
+        })
+    }
+
+    /// Calculates the exact validated canonical backup-image length.
+    pub fn image_len(&self) -> Result<usize, StorageError> {
+        let _report = self.report()?;
+        configuration_image_len(&self.objects)
+    }
+
+    /// Encodes this validated snapshot into a caller-provided image buffer.
+    pub fn encode_image(&self, output: &mut [u8]) -> Result<usize, StorageError> {
+        let _report = self.report()?;
+        encode_configuration_image(&self.objects, output)
+    }
+}
+
 /// Connected synchronous programmer over an arbitrary byte transport.
 pub struct Programmer<T: ProtocolTransport> {
     transport: T,
@@ -676,10 +719,15 @@ pub const fn report_active_usage(usage: StorageUsage) -> CapacityReport {
 #[cfg(test)]
 mod tests {
     use super::{
-        CompileError, ConfigurationCompiler, DeviceCapabilities, RadioProject, WRITE_ENVELOPE_LEN,
+        CompileError, ConfigurationCompiler, ConfigurationSnapshot, DeviceCapabilities,
+        RadioProject, WRITE_ENVELOPE_LEN,
     };
     use radio_channel_plan::{BankName, GeneratedBank, PlanEncoding};
     use radio_domain::{BankId, Frequency, FrequencyStep, TxClass};
+    use radio_storage::{
+        decode_configuration_image, encode_generated_bank, ObjectKey, ObjectKind, StorageError,
+        StorageObject, GENERATED_BANK_ENCODED_LEN,
+    };
 
     fn capabilities() -> DeviceCapabilities {
         DeviceCapabilities {
@@ -824,6 +872,59 @@ mod tests {
         assert_eq!(
             ConfigurationCompiler::new(limits).decode_image(&image),
             Err(CompileError::UnsupportedStorageVersion)
+        );
+    }
+
+    #[test]
+    fn snapshot_backup_is_validated_canonical_and_capacity_exact() {
+        let first = encode_generated_bank(bank(1)).unwrap();
+        let second = encode_generated_bank(bank(2)).unwrap();
+        let snapshot = ConfigurationSnapshot {
+            generation: 9,
+            objects: vec![first, second],
+        };
+        assert_eq!(
+            snapshot.report().unwrap(),
+            super::CapacityReport {
+                object_count: 2,
+                storage_bytes: u32::try_from(GENERATED_BANK_ENCODED_LEN * 2).unwrap(),
+                generated_channels: 32,
+            }
+        );
+
+        let mut image = vec![0; snapshot.image_len().unwrap()];
+        assert_eq!(snapshot.encode_image(&mut image).unwrap(), image.len());
+        assert_eq!(
+            decode_configuration_image(&image)
+                .unwrap()
+                .objects()
+                .collect::<Vec<_>>(),
+            snapshot.objects
+        );
+        let mut second_encoding = vec![0; image.len()];
+        snapshot.encode_image(&mut second_encoding).unwrap();
+        assert_eq!(second_encoding, image);
+
+        let reversed = ConfigurationSnapshot {
+            generation: 9,
+            objects: vec![second, first],
+        };
+        assert_eq!(reversed.report(), Err(StorageError::NonCanonicalImage));
+        let malformed = ConfigurationSnapshot {
+            generation: 9,
+            objects: vec![StorageObject::new(
+                ObjectKey {
+                    kind: ObjectKind::GeneratedBank,
+                    id: 3,
+                },
+                &[0],
+            )
+            .unwrap()],
+        };
+        assert_eq!(malformed.report(), Err(StorageError::MalformedObject));
+        assert_eq!(
+            snapshot.encode_image(&mut [0; 1]),
+            Err(StorageError::ImageBufferTooSmall)
         );
     }
 }
