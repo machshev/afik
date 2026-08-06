@@ -335,3 +335,6 @@
   the held-MENU timeout. Physical matrix closure may interfere with execution
   or UART response before a raw report can be returned; a pre-armed latch which
   transmits only after release is required to distinguish those cases.
+- **Latch result:** MENU tap/release left no nonzero PB12..PB15 sample in RAM.
+  The pinned mapping may not match this exact unit or the held circuit may halt
+  sampling; do not change pin assignments without raw-register observation.

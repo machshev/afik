@@ -437,6 +437,12 @@ order are maintained in `docs/k1-bring-up.md`.
 - **Write observation:** K1 `7.03.01` acknowledged all 229 pages of the
   58,380-byte latched diagnostic in transaction `20d50457` and reported
   `acknowledged_not_read_back`; this does not establish normal boot or capture.
+- **Latch observation:** after MENU tap/release, the read-only response was
+  valid but reported `captured=false` and four zero masks. The user saw no
+  boot-screen restart; initial display appearance is approximately 15 seconds
+  after power-on, while serial response returned promptly after release. This
+  is evidence against the assumed PB6/PB15 observation on this exact unit, not
+  evidence for any alternate pin mapping.
 
 ## Sources used by DP32-003
 

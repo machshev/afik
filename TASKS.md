@@ -1065,3 +1065,6 @@
   `eba38cc718a3de0e220bc28c4de657849960ea1d7098085df94c802cf903a328`
   and CRC-32 `823616ad`. K1 `7.03.01` acknowledged all 229 pages in transaction
   `20d50457` without retry; normal-boot capture observation remains pending.
+- **Latched observation:** after MENU tap/release, the probe was valid but
+  `captured=false` with all masks zero. No PB12..PB15 MENU input is established;
+  raw GPIOB capture is the next bounded experiment.

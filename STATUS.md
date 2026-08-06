@@ -369,6 +369,20 @@ Latched raw-matrix diagnostic milestone:
   reported `acknowledged_not_read_back`. No retry or reset command was sent;
   normal boot and tap-then-probe observation remain pending.
 
+Latched raw-matrix physical observation on 2026-08-06:
+
+- After a normal boot and MENU tap/release, `probe-keypad` returned
+  `scan_valid=true`, `captured=false`, and four zero masks. No nonzero PB12..PB15
+  scan was retained.
+- The user observed no boot-screen restart on the tap and reports that initial
+  display appearance takes about 15 seconds after power-on. Because serial
+  response resumed promptly after release rather than after that full startup
+  interval, an application reset is less likely, though not independently
+  excluded.
+- No MENU mapping is physically established. The next bounded diagnostic must
+  capture raw GPIOB observations/configuration rather than decoded row masks so
+  an alternate exact-unit routing can be observed instead of invented.
+
 ## Work Package 14 implementation milestone
 
 - `radio-k5-flasher` was renamed to `radio-flasher`; the library now owns both
