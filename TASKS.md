@@ -1068,3 +1068,8 @@
 - **Latched observation:** after MENU tap/release, the probe was valid but
   `captured=false` with all masks zero. No PB12..PB15 MENU input is established;
   raw GPIOB capture is the next bounded experiment.
+- **Raw GPIOB artifact:** four exact 16-bit per-column IDR values are compared
+  against a released baseline while ignoring only PB3..PB6. All required gates
+  pass. The 61,128-byte image has SHA-256
+  `25f900885cf0a4ca79c10ea16737c72878330e8d0e372eb74cde63c479b28f32`
+  and CRC-32 `032e7309`; physical write remains pending.

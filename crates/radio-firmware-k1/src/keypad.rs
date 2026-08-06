@@ -3,6 +3,55 @@
 /// Stable interval required before accepting a press or release.
 pub const DEBOUNCE_MILLISECONDS: u32 = 20;
 
+const COLUMN_BITS: u16 = 0x0078;
+
+/// Volatile raw GPIOB snapshot latch for physical-routing diagnosis.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RawGpioLatch {
+    baseline: Option<[u16; 4]>,
+    captured: Option<[u16; 4]>,
+}
+
+impl RawGpioLatch {
+    /// Creates an empty latch; the first observation becomes its baseline.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            baseline: None,
+            captured: None,
+        }
+    }
+
+    /// Observes four raw GPIOB IDR values, ignoring the scanner's PB3..PB6 bits.
+    pub fn observe(&mut self, values: [u16; 4]) {
+        let Some(baseline) = self.baseline else {
+            self.baseline = Some(values);
+            return;
+        };
+        if values
+            .into_iter()
+            .zip(baseline)
+            .any(|(value, initial)| (value ^ initial) & !COLUMN_BITS != 0)
+        {
+            self.captured = Some(values);
+        }
+    }
+
+    /// Returns and clears a captured deviation, or the supplied current values.
+    pub fn take_or(&mut self, current: [u16; 4]) -> ([u16; 4], bool) {
+        match self.captured.take() {
+            Some(captured) => (captured, true),
+            None => (current, false),
+        }
+    }
+}
+
+impl Default for RawGpioLatch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Exact GPIOB masks for the bounded main-key matrix.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GpioPlan {
@@ -320,7 +369,7 @@ impl Default for Debouncer {
 mod tests {
     use super::{
         active_rows_from_gpio_idr, decode, gpio_plan, scan, Debouncer, DecodeError, Edge, Key,
-        MatrixBus, Sample, ScanError, DEBOUNCE_MILLISECONDS,
+        MatrixBus, RawGpioLatch, Sample, ScanError, DEBOUNCE_MILLISECONDS,
     };
     use std::vec::Vec;
 
@@ -403,6 +452,20 @@ mod tests {
         assert_eq!(active_rows_from_gpio_idr(0x0000_D000), 0b0100);
         assert_eq!(active_rows_from_gpio_idr(0x0000_E000), 0b1000);
         assert_eq!(active_rows_from_gpio_idr(0), 0b1111);
+    }
+
+    #[test]
+    fn raw_gpio_latch_ignores_columns_and_returns_other_changes_once() {
+        let baseline = [0xF078, 0xF078, 0xF078, 0xF078];
+        let mut latch = RawGpioLatch::new();
+        latch.observe(baseline);
+        latch.observe([0xF038, 0xF058, 0xF068, 0xF070]);
+        assert_eq!(latch.take_or(baseline), (baseline, false));
+
+        let changed = [0x7078, 0xF078, 0xF078, 0xF078];
+        latch.observe(changed);
+        assert_eq!(latch.take_or(baseline), (changed, true));
+        assert_eq!(latch.take_or(baseline), (baseline, false));
     }
 
     #[test]

@@ -485,3 +485,7 @@ meaning.
   latest nonzero four-mask sample in volatile bounded RAM. The next successful
   read-only probe identifies, returns, and clears that capture; no timer,
   interrupt, persistence, or semantic key action is introduced.
+- If decoded rows remain zero, the diagnostic may report the exact low 16 bits
+  of GPIOB IDR for each selected column. A released baseline excludes only the
+  known scanner-owned PB3..PB6 changes; any other changed bits are observations,
+  not authorization to adopt an alternate mapping.

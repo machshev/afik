@@ -224,15 +224,15 @@ pub struct NormalFirmwareInfo {
 /// Raw receive-only K1 main-key matrix observation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct KeypadMatrixReport {
-    row_low_by_column: [u8; 4],
+    gpio_b_idr_by_column: [u16; 4],
     scan_valid: bool,
     captured: bool,
 }
 
 impl KeypadMatrixReport {
-    /// Returns active-low row masks in PB6, PB5, PB4, PB3 column order.
-    pub const fn row_low_by_column(&self) -> [u8; 4] {
-        self.row_low_by_column
+    /// Returns raw GPIOB IDR snapshots in PB6, PB5, PB4, PB3 column order.
+    pub const fn gpio_b_idr_by_column(&self) -> [u16; 4] {
+        self.gpio_b_idr_by_column
     }
 
     /// Returns whether the target completed the raw four-column scan.
@@ -497,25 +497,26 @@ fn parse_keypad_response(packet: &Packet) -> Result<KeypadMatrixReport, FlashErr
     require_packet(
         payload,
         COMMAND_KEYPAD_RESPONSE,
-        8,
         12,
-        "AFIK K1 keypad matrix",
+        16,
+        "AFIK K1 raw GPIOB snapshots",
     )?;
-    if payload[4..8].iter().any(|rows| rows & !0x0F != 0)
-        || payload[8] > 1
-        || payload[9] > 1
-        || payload[10..12] != [0, 0]
-    {
+    if payload[12] > 1 || payload[13] > 1 || payload[14..16] != [0, 0] {
         return Err(FlashError::UnexpectedPacket {
-            expected: "bounded AFIK K1 keypad matrix fields",
+            expected: "bounded AFIK K1 raw GPIOB fields",
             command: Some(COMMAND_KEYPAD_RESPONSE),
             length: payload.len(),
         });
     }
     Ok(KeypadMatrixReport {
-        row_low_by_column: [payload[4], payload[5], payload[6], payload[7]],
-        scan_valid: payload[8] == 1,
-        captured: payload[9] == 1,
+        gpio_b_idr_by_column: [
+            u16::from_le_bytes([payload[4], payload[5]]),
+            u16::from_le_bytes([payload[6], payload[7]]),
+            u16::from_le_bytes([payload[8], payload[9]]),
+            u16::from_le_bytes([payload[10], payload[11]]),
+        ],
+        scan_valid: payload[12] == 1,
+        captured: payload[13] == 1,
     })
 }
 
@@ -1036,12 +1037,17 @@ mod tests {
 
     #[test]
     fn keypad_probe_returns_only_bounded_raw_masks() {
-        let response = [0x11, 0x7F, 0x08, 0x00, 1, 2, 4, 8, 1, 1, 0, 0];
+        let response = [
+            0x11, 0x7F, 0x0C, 0x00, 1, 0x10, 2, 0x20, 4, 0x40, 8, 0x80, 1, 1, 0, 0,
+        ];
         let mut transport = ScriptedTransport::new(encode_response(&response), 1);
 
         let report = probe_keypad_matrix(&mut transport).unwrap();
 
-        assert_eq!(report.row_low_by_column(), [1, 2, 4, 8]);
+        assert_eq!(
+            report.gpio_b_idr_by_column(),
+            [0x1001, 0x2002, 0x4004, 0x8008]
+        );
         assert!(report.scan_valid());
         assert!(report.captured());
         assert_eq!(
@@ -1049,7 +1055,7 @@ mod tests {
             vec![vec![0x10, 0x7F, 0x04, 0x00, 0x6A, 0x39, 0x57, 0x64]]
         );
 
-        let invalid = [0x11, 0x7F, 0x08, 0x00, 0x10, 0, 0, 0, 1, 0, 0, 0];
+        let invalid = [0x11, 0x7F, 0x0C, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0];
         let mut transport = ScriptedTransport::new(encode_response(&invalid), 1);
         assert!(matches!(
             probe_keypad_matrix(&mut transport),

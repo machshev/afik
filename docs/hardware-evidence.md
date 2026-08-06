@@ -443,6 +443,11 @@ order are maintained in `docs/k1-bring-up.md`.
   after power-on, while serial response returned promptly after release. This
   is evidence against the assumed PB6/PB15 observation on this exact unit, not
   evidence for any alternate pin mapping.
+- **Raw GPIOB experiment:** the next image captures exact 16-bit GPIOB IDR
+  snapshots for PB6 through PB3 selection, using the first released scan as a
+  baseline and ignoring only PB3..PB6 output changes. Any captured difference
+  identifies an observed GPIOB bit transition but does not establish its
+  electrical role without follow-up repetition.
 
 ## Sources used by DP32-003
 

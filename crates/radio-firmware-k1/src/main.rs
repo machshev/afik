@@ -13,7 +13,8 @@ use radio_firmware_k1::display::{
     TransferKind, FRAME_BYTES,
 };
 use radio_firmware_k1::keypad::{
-    active_rows_from_gpio_idr, decode, gpio_plan, scan, Debouncer, Edge, MatrixBus, Sample,
+    active_rows_from_gpio_idr, decode, gpio_plan, scan, Debouncer, Edge, MatrixBus, RawGpioLatch,
+    Sample,
 };
 use radio_firmware_k1::protocol::{
     decode_request, encode_hello_response, encode_keypad_response, Request, REQUEST_BODY_BYTES,
@@ -123,7 +124,7 @@ extern "C" fn reset() -> ! {
     keypad_init();
     let mut debounce = Debouncer::new();
     let mut elapsed_ms = 0_u32;
-    let mut latched_rows = [0_u8; 4];
+    let mut raw_latch = RawGpioLatch::new();
     loop {
         if uart_has_byte() {
             match receive_request() {
@@ -133,32 +134,21 @@ extern "C" fn reset() -> ! {
                     uart_send(&response);
                 }
                 Some(Request::KeypadMatrix) => {
-                    let mut matrix = K1MatrixBus;
-                    let (rows, valid) = match scan(&mut matrix) {
-                        Ok(rows) => (rows, true),
-                        Err(_) => ([0_u8; 4], false),
-                    };
-                    if rows.iter().any(|row| *row != 0) {
-                        latched_rows = rows;
-                    }
-                    let captured = latched_rows.iter().any(|row| *row != 0);
-                    let reported_rows = if captured { latched_rows } else { rows };
-                    let mut response = [0_u8; 20];
-                    encode_keypad_response(&mut response, reported_rows, valid, captured);
+                    let mut matrix = K1MatrixBus::new();
+                    let valid = scan(&mut matrix).is_ok();
+                    raw_latch.observe(matrix.raw_idr);
+                    let (reported, captured) = raw_latch.take_or(matrix.raw_idr);
+                    let mut response = [0_u8; 24];
+                    encode_keypad_response(&mut response, reported, valid, captured);
                     uart_send(&response);
-                    latched_rows = [0_u8; 4];
                 }
                 None => {}
             }
         }
 
-        let mut matrix = K1MatrixBus;
+        let mut matrix = K1MatrixBus::new();
         let scanned_rows = scan(&mut matrix).ok();
-        if let Some(rows) = scanned_rows {
-            if rows.iter().any(|row| *row != 0) {
-                latched_rows = rows;
-            }
-        }
+        raw_latch.observe(matrix.raw_idr);
         let sample = match scanned_rows.and_then(|rows| decode(rows).ok()) {
             Some(Some(key)) => Sample::Key(key),
             Some(None) => Sample::Released,
@@ -336,7 +326,19 @@ impl DisplayBus for K1DisplayBus {
     }
 }
 
-struct K1MatrixBus;
+struct K1MatrixBus {
+    raw_idr: [u16; 4],
+    read_index: usize,
+}
+
+impl K1MatrixBus {
+    const fn new() -> Self {
+        Self {
+            raw_idr: [0; 4],
+            read_index: 0,
+        }
+    }
+}
 
 impl MatrixBus for K1MatrixBus {
     type Error = ();
@@ -358,7 +360,11 @@ impl MatrixBus for K1MatrixBus {
         for _ in 0..120 {
             core::hint::spin_loop();
         }
-        Ok(active_rows_from_gpio_idr(read_register(GPIOB_IDR)))
+        let idr = read_register(GPIOB_IDR);
+        let bytes = idr.to_le_bytes();
+        self.raw_idr[self.read_index] = u16::from_le_bytes([bytes[0], bytes[1]]);
+        self.read_index += 1;
+        Ok(active_rows_from_gpio_idr(idr))
     }
 }
 

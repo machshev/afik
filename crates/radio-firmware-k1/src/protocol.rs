@@ -6,8 +6,8 @@
 pub const REQUEST_BODY_BYTES: usize = 10;
 /// Complete encoded response size for the fixed 40-byte hello payload.
 pub const RESPONSE_FRAME_BYTES: usize = 48;
-/// Complete encoded response size for the 12-byte keypad diagnostic payload.
-pub const KEYPAD_RESPONSE_FRAME_BYTES: usize = 20;
+/// Complete encoded response size for the 16-byte keypad diagnostic payload.
+pub const KEYPAD_RESPONSE_FRAME_BYTES: usize = 24;
 
 const COMMAND_HELLO_REQUEST: u16 = 0x0514;
 const COMMAND_HELLO_RESPONSE: u16 = 0x0515;
@@ -59,22 +59,24 @@ pub fn is_valid_hello_request(encoded_body: &mut [u8; REQUEST_BODY_BYTES]) -> bo
 /// Encodes one raw, read-only main-key matrix response.
 pub fn encode_keypad_response(
     frame: &mut [u8; KEYPAD_RESPONSE_FRAME_BYTES],
-    row_low_by_column: [u8; 4],
+    gpio_b_idr_by_column: [u16; 4],
     scan_valid: bool,
     captured: bool,
 ) {
     frame.fill(0);
     frame[0..2].copy_from_slice(&[0xAB, 0xCD]);
-    frame[2..4].copy_from_slice(&12_u16.to_le_bytes());
-    let payload = &mut frame[4..16];
+    frame[2..4].copy_from_slice(&16_u16.to_le_bytes());
+    let payload = &mut frame[4..20];
     payload[0..2].copy_from_slice(&COMMAND_KEYPAD_RESPONSE.to_le_bytes());
-    payload[2..4].copy_from_slice(&8_u16.to_le_bytes());
-    payload[4..8].copy_from_slice(&row_low_by_column);
-    payload[8] = u8::from(scan_valid);
-    payload[9] = u8::from(captured);
-    frame[16..18].copy_from_slice(&RESPONSE_TRAILER.to_le_bytes());
-    xor(&mut frame[4..18]);
-    frame[18..20].copy_from_slice(&[0xDC, 0xBA]);
+    payload[2..4].copy_from_slice(&12_u16.to_le_bytes());
+    for (index, idr) in gpio_b_idr_by_column.into_iter().enumerate() {
+        payload[4 + index * 2..6 + index * 2].copy_from_slice(&idr.to_le_bytes());
+    }
+    payload[12] = u8::from(scan_valid);
+    payload[13] = u8::from(captured);
+    frame[20..22].copy_from_slice(&RESPONSE_TRAILER.to_le_bytes());
+    xor(&mut frame[4..22]);
+    frame[22..24].copy_from_slice(&[0xDC, 0xBA]);
 }
 
 /// Encodes one normal-mode hello response into a caller-provided frame.
@@ -188,20 +190,20 @@ mod tests {
         let mut encoded = encode_request_for_test(payload);
         assert_eq!(decode_request(&mut encoded), Some(Request::KeypadMatrix));
 
-        let mut frame = [0_u8; 20];
-        encode_keypad_response(&mut frame, [1, 2, 4, 8], true, true);
-        assert_eq!(&frame[..4], &[0xAB, 0xCD, 12, 0]);
-        assert_eq!(&frame[18..], &[0xDC, 0xBA]);
+        let mut frame = [0_u8; 24];
+        encode_keypad_response(&mut frame, [0x1001, 0x2002, 0x4004, 0x8008], true, true);
+        assert_eq!(&frame[..4], &[0xAB, 0xCD, 16, 0]);
+        assert_eq!(&frame[22..], &[0xDC, 0xBA]);
         let key = [
             0x16, 0x6C, 0x14, 0xE6, 0x2E, 0x91, 0x0D, 0x40, 0x21, 0x35, 0xD5, 0x40, 0x13, 0x03,
             0xE9, 0x80,
         ];
-        for (index, byte) in frame[4..18].iter_mut().enumerate() {
+        for (index, byte) in frame[4..22].iter_mut().enumerate() {
             *byte ^= key[index % key.len()];
         }
         assert_eq!(
-            &frame[4..18],
-            &[0x11, 0x7F, 8, 0, 1, 2, 4, 8, 1, 1, 0, 0, 0xFF, 0xFF]
+            &frame[4..22],
+            &[0x11, 0x7F, 12, 0, 1, 0x10, 2, 0x20, 4, 0x40, 8, 0x80, 1, 1, 0, 0, 0xFF, 0xFF]
         );
     }
 

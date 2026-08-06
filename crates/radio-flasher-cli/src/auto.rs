@@ -350,16 +350,16 @@ fn probe_normal<W: Write>(device: &Path, stdout: &mut W) -> Result<(), CliError>
 fn probe_keypad<W: Write>(device: &Path, stdout: &mut W) -> Result<(), CliError> {
     let mut serial = open_serial(device)?;
     let report = probe_keypad_matrix(&mut serial).map_err(CliError::operation)?;
-    let rows = report.row_low_by_column();
+    let idr = report.gpio_b_idr_by_column();
     writeln!(stdout, "device={}", device.display()).map_err(CliError::operation)?;
     writeln!(stdout, "baud={K5_BAUD}").map_err(CliError::operation)?;
     writeln!(stdout, "protocol=afik-k1-keypad-raw").map_err(CliError::operation)?;
     writeln!(stdout, "scan_valid={}", report.scan_valid()).map_err(CliError::operation)?;
     writeln!(stdout, "captured={}", report.captured()).map_err(CliError::operation)?;
-    writeln!(stdout, "pb6_rows={:01x}", rows[0]).map_err(CliError::operation)?;
-    writeln!(stdout, "pb5_rows={:01x}", rows[1]).map_err(CliError::operation)?;
-    writeln!(stdout, "pb4_rows={:01x}", rows[2]).map_err(CliError::operation)?;
-    writeln!(stdout, "pb3_rows={:01x}", rows[3]).map_err(CliError::operation)
+    writeln!(stdout, "pb6_idr={:04x}", idr[0]).map_err(CliError::operation)?;
+    writeln!(stdout, "pb5_idr={:04x}", idr[1]).map_err(CliError::operation)?;
+    writeln!(stdout, "pb4_idr={:04x}", idr[2]).map_err(CliError::operation)?;
+    writeln!(stdout, "pb3_idr={:04x}", idr[3]).map_err(CliError::operation)
 }
 
 fn backup<W: Write>(

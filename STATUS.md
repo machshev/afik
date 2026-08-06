@@ -383,6 +383,21 @@ Latched raw-matrix physical observation on 2026-08-06:
   capture raw GPIOB observations/configuration rather than decoded row masks so
   an alternate exact-unit routing can be observed instead of invented.
 
+Raw GPIOB snapshot diagnostic milestone:
+
+- The target records the exact low 16 bits of GPIOB IDR for each PB6-to-PB3
+  selection. The first observation is a released baseline; later changes
+  outside the scanner-owned PB3..PB6 bits are latched once and reported after
+  release with explicit validity/capture flags.
+- Focused tests include baseline behavior, exclusion of column-output changes,
+  one-shot capture, and strict 16-bit wire decoding. Workspace and embedded
+  warning-denied Clippy, all workspace tests, target build, ELF/package checks,
+  and three repeated Renode runs passed. The initial embedded gate found and
+  corrected two target-only Clippy findings before packaging.
+- The raw GPIOB image is 61,128 bytes, SHA-256
+  `25f900885cf0a4ca79c10ea16737c72878330e8d0e372eb74cde63c479b28f32`,
+  and CRC-32 `032e7309`. No write has yet been sent.
+
 ## Work Package 14 implementation milestone
 
 - `radio-k5-flasher` was renamed to `radio-flasher`; the library now owns both
