@@ -379,3 +379,8 @@
   constructor is not called by the image; clock preservation, interrupt/DMA
   delivery, serial error recovery, and responsiveness during rendering remain
   physical/runtime gates.
+- **SPI1 update:** generated F071 metadata contains the evidenced SPI1 RCC and
+  PA5 SCK / PA7 MOSI AF0 surfaces, but `py32-hal 0.4.1` has no SPI module. The
+  HAL's own support table and TODO list confirm SPI is unimplemented. Do not
+  infer an async display driver from PAC inventory; a bounded AFIK driver or
+  separately reviewed HAL extension is required before migration.

@@ -117,9 +117,10 @@ features remain outside this bounded slice.
 - Work Package 22 keypad/UI witness definition: complete; the pinned matrix,
   electrical idle/scan levels, one-key decode, explicit-time debounce, and
   display-only result were bounded before implementation.
-- Current smallest actionable task: review the vendored F071 SPI1 RCC, PA5/PA7
-  pin, mode-3, and baud-divider surfaces against the physically proven display
-  path, then compile a no-entry-point SPI1 proof without changing startup.
+- Current smallest actionable task: define the smallest bounded AFIK SPI1
+  display-bus driver contract for PA5 SCK / PA7 MOSI, mode 3, MSB first, and the
+  evidenced divide-by-64 rate, or explicitly bound a local HAL extension,
+  before changing startup.
 
 ## Work Package 23 dependency and executor milestone
 
@@ -232,6 +233,18 @@ features remain outside this bounded slice.
 - `git diff --check` — passed.
 - No HAL initialization, target entry point, physical image, clock behavior,
   interrupt/DMA operation, or flash operation changed.
+
+## Work Package 23 SPI1 feasibility milestone
+
+- Reviewed the generated F071 inventory against the physically proven display
+  path. SPI1 uses `PCLK1`, has `APBENR2.SPI1EN` and `APBRSTR2.SPI1RST`, and
+  exposes PA5 SCK AF0 plus PA7 MOSI AF0.
+- The vendored `py32-hal 0.4.1` contains no SPI module or driver. Its support
+  table marks SPI unimplemented for every family and its TODO list explicitly
+  includes SPI, so no Embassy-compatible constructor exists to compile.
+- No code, HAL initialization, target entry point, physical image, clock/SPI
+  behavior, or flash operation changed. The next driver step must be explicitly
+  bounded rather than treating generated PAC metadata as HAL support.
 
 ## Work Package 22 pure keypad milestone
 

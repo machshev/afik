@@ -1127,3 +1127,10 @@
   ownership, interrupt delivery, DMA operation, and physical responsiveness
   remain unproven. The next independent boundary is the evidenced SPI1 display
   path.
+- **SPI1 feasibility result:** the generated F071 PAC inventory contains the
+  evidenced SPI1 RCC surface and PA5 SCK / PA7 MOSI AF0 mapping, but vendored
+  `py32-hal 0.4.1` implements no SPI module or driver. Its support table marks
+  SPI blank and its TODO list names SPI explicitly. There is therefore no
+  Embassy-compatible SPI constructor to compile. The next step must define a
+  bounded AFIK display-bus driver contract or a separately reviewed local HAL
+  extension before changing startup; PAC inventory alone is not driver proof.

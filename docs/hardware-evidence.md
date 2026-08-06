@@ -1246,3 +1246,18 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   calls no HAL initialization. This is not evidence of clock preservation,
   interrupt or DMA delivery, serial error recovery, coexistence with display
   rendering, or physical async USART behavior.
+
+### EVID-K1-041 — PY32 HAL has no SPI driver surface
+
+- **Generated inventory:** SPI1 is at `0x40013000`, uses `PCLK1`, has
+  `APBENR2.SPI1EN` and `APBRSTR2.SPI1RST`, and exposes PA5 SCK AF0 plus PA7
+  MOSI AF0. Those surfaces agree with the already physically proven K1 display
+  path recorded in `EVID-K1-026` through `EVID-K1-030`.
+- **HAL review:** vendored `py32-hal 0.4.1` exports no `spi` module and contains
+  no SPI driver source. Its README support table leaves SPI blank for every
+  family, defining blank as not implemented, and its TODO list names SPI.
+- **Result:** no honest blocking or async HAL SPI constructor can be compiled.
+  Generated PAC registers and pin metadata prove inventory only, not a driver.
+  A later step must bound an independent AFIK display-bus driver or a reviewed
+  local HAL extension, retain chunked/yielding rendering, and separately prove
+  clocks, transfers, scheduling, and physical UART responsiveness.
