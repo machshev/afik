@@ -117,6 +117,8 @@ only after all 8 KiB arrive. That corrected read-only workflow succeeded:
 
 The temporary backup is not a durable second copy. It must be copied to two
 user-controlled persistent locations and re-hashed before any firmware write.
+The repository reserves ignored `.private/` for local unit-specific artifacts;
+none of its contents may be committed.
 
 ## Candidate v5.5.0 recovery image
 

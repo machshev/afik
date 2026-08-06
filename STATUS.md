@@ -216,6 +216,10 @@ Passive-beacon verification on 2026-08-06:
   is not proven and no firmware write is authorized until both the private
   backup and recovery candidate have two persistent verified copies.
 
+- The user selected a gitignored directory inside this repository for local
+  artifacts. `.private/` is reserved for that purpose; its contents must remain
+  untracked and must not appear in status, diffs, or commits.
+
 ## Work Package 12 software milestone and verification
 
 - Sources and confidence boundaries are recorded in
