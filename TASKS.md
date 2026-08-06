@@ -1207,3 +1207,7 @@
 - **Register-isolation write:** bootloader `7.03.01` acknowledged all 257 pages
   under transaction `7d527b6f` without retry. This is not read-back or boot
   proof; power-cycle, normal hello, and the four ordered reads remain pending.
+- **Register-isolation result:** normal boot passed, but the first CR request
+  timed out; the following hello still passed. No later register was requested.
+  Add one same-path constant marker with no MMIO before attributing the timeout
+  to RCC access, framing, reset, or UART behavior.

@@ -418,3 +418,6 @@
   ICSCR, CFGR, and PLLCFGR progress. The isolation image was acknowledged in
   full, but has not yet passed normal boot or any register probe; its static and
   bootloader success does not resolve the physical timeout.
+- **First-read result:** CR timed out while hello remained recoverable. This
+  still does not distinguish MMIO fault from command/response behavior; require
+  a no-MMIO control rather than inferring RCC accessibility.

@@ -117,9 +117,9 @@ features remain outside this bounded slice.
 - Work Package 22 keypad/UI witness definition: complete; the pinned matrix,
   electrical idle/scan levels, one-key decode, explicit-time debounce, and
   display-only result were bounded before implementation.
-- Current smallest actionable task: power-cycle the exact K1 into normal mode,
-  confirm the hello, then probe CR, ICSCR, CFGR, and PLLCFGR individually in
-  order; do not publish HAL clocks.
+- Current smallest actionable task: add a no-MMIO constant response using the
+  same bounded command path to distinguish command/response failure from the
+  first RCC CR read; retain the hello and do not publish HAL clocks.
 
 ## Work Package 23 dependency and executor milestone
 
@@ -389,6 +389,10 @@ features remain outside this bounded slice.
 - K1 bootloader `7.03.01` acknowledged all 257 isolation-image pages under
   transaction `7d527b6f` without retry and reported
   `acknowledged_not_read_back`. Normal boot and register reads remain pending.
+- **Isolation physical result:** after power-cycle, normal hello passed. The
+  first isolated CR request timed out before any later register was requested;
+  a following normal hello passed again. No RCC value is observed. The next
+  diagnostic must return a constant marker through the same path without MMIO.
 
 ## Work Package 22 pure keypad milestone
 

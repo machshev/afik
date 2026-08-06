@@ -1363,3 +1363,7 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   isolation-image pages under transaction `7d527b6f` without retry. Status is
   `acknowledged_not_read_back`; normal boot and register observations remain
   pending.
+- **Physical isolation result:** normal hello passed, the first isolated CR
+  request timed out, and a subsequent hello passed. No other register was
+  requested and no raw value was observed. A no-MMIO response through the same
+  command path is required before assigning the fault to RCC access.
