@@ -1042,5 +1042,5 @@
   validated row masks plus scan validity. Host, workspace, embedded, image, and
   three-repeat Renode gates pass. The 57,860-byte image has SHA-256
   `c56f5a8d883cf240d4a70626a299ab0cc8a1cf2bba294cffb3e6308ec4426ba9`
-  and CRC-32 `0a53af07`; physical write and released/held-MENU observations remain
-  pending.
+  and CRC-32 `0a53af07`. K1 `7.03.01` acknowledged all 227 pages in transaction
+  `0e4f6fc9` without retry; released and held-MENU observations remain pending.

@@ -413,6 +413,10 @@ order are maintained in `docs/k1-bring-up.md`.
 - **Confidence boundary:** the diagnostic is read-only and cannot interpret a
   key, update the LCD, access PTT/side keys, persist data, or reach RF/TX. A
   physical result establishes only the sampled matrix state for that request.
+- **Write observation:** the guarded K1 `7.03.01` writer acknowledged all 227
+  pages of the 57,860-byte diagnostic image in transaction `0e4f6fc9` and
+  reported `acknowledged_not_read_back`. This proves page acknowledgments only;
+  normal boot and raw matrix behavior still require separate observation.
 
 ## Sources used by DP32-003
 

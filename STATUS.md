@@ -293,7 +293,19 @@ Corrected keypad write on 2026-08-06:
   `git diff --check` passed.
 - The diagnostic raw image is 57,860 bytes, SHA-256
   `c56f5a8d883cf240d4a70626a299ab0cc8a1cf2bba294cffb3e6308ec4426ba9`,
-  and CRC-32 `0a53af07`. No diagnostic image write has yet been sent.
+  and CRC-32 `0a53af07`.
+
+Diagnostic keypad-probe write on 2026-08-06:
+
+- A fresh read-only identify reported K1 bootloader `7.03.01` on
+  `/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0`.
+- The guarded writer revalidated the diagnostic image, recovery image, retained
+  EEPROM backup (`backup_crc32=99765400`), exact target/rehearsal phrases, and
+  image CRC-32 `0a53af07` before sending any page.
+- K1 `7.03.01` acknowledged all `227/227` pages in transaction `0e4f6fc9` and
+  reported `acknowledged_not_read_back`. No retry or reset command was sent.
+- Physical completion remains pending a normal power-cycle followed by released
+  and held-MENU `probe-keypad` observations.
 
 ## Work Package 14 implementation milestone
 
