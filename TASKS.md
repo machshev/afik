@@ -1222,3 +1222,7 @@
   remain host-tested but are compiled out of the runnable image. The verified
   51,340-byte artifact is ready for the guarded exact-unit write; application
   boot and serial responses remain physical gates.
+- **Serial-only isolation write:** bootloader `7.03.01` acknowledged all 201
+  pages under transaction `8a6af71f` without retry. This is not read-back or
+  application boot proof; power-cycle, hello, then no-MMIO control remain the
+  next ordered gates.

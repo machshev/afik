@@ -1384,5 +1384,9 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   `ce97df6718d6ff2b9bee88ca8443ef15a63ea2484231b265501eef7739803585`
   and CRC-32 `b8731d25`.
 - **Boundary:** the existing keypad Renode scenario is intentionally
-  inapplicable because this entry point excludes keypad behavior. No physical
-  write, application boot, no-MMIO response, or RCC value is claimed yet.
+  inapplicable because this entry point excludes keypad behavior. No
+  application boot, no-MMIO response, or RCC value is claimed yet.
+- **Write observation:** exact K1 bootloader `7.03.01` acknowledged all 201
+  pages under transaction `8a6af71f` without retry. Status is
+  `acknowledged_not_read_back`; power-cycle and application probes remain
+  separate evidence gates.

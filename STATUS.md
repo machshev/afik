@@ -417,7 +417,11 @@ features remain outside this bounded slice.
 - `nix develop path:. -c tool/check-py32f071-clock-handoff.sh` — passed.
 - `git diff --check` — passed.
 - The keypad Renode scenario is intentionally inapplicable to this image. No
-  physical write or application response is claimed at this checkpoint.
+  application response is claimed at this checkpoint.
+- K1 bootloader `7.03.01` acknowledged all 201 serial-only-image pages under
+  transaction `8a6af71f` without retry and reported
+  `acknowledged_not_read_back`. Power-cycle and application probes remain
+  required.
 
 ## Work Package 22 pure keypad milestone
 
