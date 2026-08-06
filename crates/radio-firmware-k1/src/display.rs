@@ -10,8 +10,7 @@ pub const PAGES: usize = HEIGHT / 8;
 pub const FRAME_BYTES: usize = WIDTH * PAGES;
 
 const COLUMN_OFFSET: u8 = 4;
-const INIT_COMMANDS: [u8; 12] = [
-    0xE2, // software reset
+const SETUP_COMMANDS: [u8; 8] = [
     0xA2, // 1/9 bias
     0xC0, // normal COM direction
     0xA1, // reverse SEG direction
@@ -20,9 +19,6 @@ const INIT_COMMANDS: [u8; 12] = [
     0x24, // regulator ratio 5.0
     0x81, // electronic volume follows
     0x15, // bounded initial contrast
-    0x2F, // booster, regulator, follower on
-    0x40, // start line zero
-    0xAF, // display on
 ];
 
 /// Whether bytes are controller commands or display RAM data.
@@ -41,11 +37,23 @@ pub trait DisplayBus {
 
     /// Writes one complete chip-selected transfer.
     fn write(&mut self, kind: TransferKind, bytes: &[u8]) -> Result<(), Self::Error>;
+
+    /// Waits for the controller power sequence without owning a target clock.
+    fn delay_ms(&mut self, milliseconds: u8);
 }
 
 /// Sends the fixed, source-backed controller setup sequence.
 pub fn initialise<B: DisplayBus>(bus: &mut B) -> Result<(), B::Error> {
-    bus.write(TransferKind::Command, &INIT_COMMANDS)
+    bus.write(TransferKind::Command, &[0xE2])?;
+    bus.delay_ms(120);
+    bus.write(TransferKind::Command, &SETUP_COMMANDS)?;
+    bus.write(TransferKind::Command, &[0x2B])?;
+    bus.delay_ms(1);
+    bus.write(TransferKind::Command, &[0x2E])?;
+    bus.delay_ms(1);
+    bus.write(TransferKind::Command, &[0x2F])?;
+    bus.delay_ms(40);
+    bus.write(TransferKind::Command, &[0x40, 0xAF])
 }
 
 /// Writes all eight visible pages in deterministic order.
@@ -126,6 +134,7 @@ mod tests {
     struct TraceBus {
         transfers: Vec<Transfer>,
         fail_at: Option<usize>,
+        delays: Vec<u8>,
     }
 
     impl DisplayBus for TraceBus {
@@ -142,18 +151,28 @@ mod tests {
             });
             Ok(())
         }
+
+        fn delay_ms(&mut self, milliseconds: u8) {
+            self.delays.push(milliseconds);
+        }
     }
 
     #[test]
     fn init_trace_is_exact_and_bounded() {
         let mut bus = TraceBus::default();
         initialise(&mut bus).unwrap();
-        assert_eq!(bus.transfers.len(), 1);
+        assert_eq!(bus.transfers.len(), 6);
         assert_eq!(bus.transfers[0].kind, TransferKind::Command);
+        assert_eq!(bus.transfers[0].bytes, [0xE2]);
         assert_eq!(
-            bus.transfers[0].bytes,
-            [0xE2, 0xA2, 0xC0, 0xA1, 0xA6, 0xA4, 0x24, 0x81, 0x15, 0x2F, 0x40, 0xAF]
+            bus.transfers[1].bytes,
+            [0xA2, 0xC0, 0xA1, 0xA6, 0xA4, 0x24, 0x81, 0x15]
         );
+        assert_eq!(bus.transfers[2].bytes, [0x2B]);
+        assert_eq!(bus.transfers[3].bytes, [0x2E]);
+        assert_eq!(bus.transfers[4].bytes, [0x2F]);
+        assert_eq!(bus.transfers[5].bytes, [0x40, 0xAF]);
+        assert_eq!(bus.delays, [120, 1, 1, 40]);
     }
 
     #[test]
@@ -187,6 +206,7 @@ mod tests {
         let mut bus = TraceBus {
             transfers: Vec::new(),
             fail_at: Some(6),
+            delays: Vec::new(),
         };
         assert_eq!(write_frame(&mut bus, &frame), Err(6));
         assert_eq!(bus.transfers.len(), 6);

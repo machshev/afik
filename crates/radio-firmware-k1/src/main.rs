@@ -7,6 +7,10 @@
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicU32, Ordering};
 
+use radio_firmware_k1::display::{
+    initialise as display_initialise, render_witness, write_frame, DisplayBus, TransferKind,
+    FRAME_BYTES,
+};
 use radio_firmware_k1::protocol::{
     encode_hello_response, is_valid_hello_request, REQUEST_BODY_BYTES,
 };
@@ -16,6 +20,8 @@ const BOOT_SENTINEL_VALUE: u32 = 0x4B31_B007;
 
 const RCC_BASE: usize = 0x4002_1000;
 const GPIOA_BASE: usize = 0x5000_0000;
+const GPIOB_BASE: usize = 0x5000_0400;
+const SPI1_BASE: usize = 0x4001_3000;
 const USART1_BASE: usize = 0x4001_3800;
 
 const RCC_IOPENR: usize = RCC_BASE + 0x34;
@@ -25,7 +31,20 @@ const GPIOA_MODER: usize = GPIOA_BASE;
 const GPIOA_OTYPER: usize = GPIOA_BASE + 0x04;
 const GPIOA_OSPEEDR: usize = GPIOA_BASE + 0x08;
 const GPIOA_PUPDR: usize = GPIOA_BASE + 0x0C;
+const GPIOA_BSRR: usize = GPIOA_BASE + 0x18;
+const GPIOA_AFRL: usize = GPIOA_BASE + 0x20;
 const GPIOA_AFRH: usize = GPIOA_BASE + 0x24;
+const GPIOA_BRR: usize = GPIOA_BASE + 0x28;
+const GPIOB_MODER: usize = GPIOB_BASE;
+const GPIOB_OTYPER: usize = GPIOB_BASE + 0x04;
+const GPIOB_OSPEEDR: usize = GPIOB_BASE + 0x08;
+const GPIOB_PUPDR: usize = GPIOB_BASE + 0x0C;
+const GPIOB_BSRR: usize = GPIOB_BASE + 0x18;
+const GPIOB_BRR: usize = GPIOB_BASE + 0x28;
+const SPI1_CR1: usize = SPI1_BASE;
+const SPI1_CR2: usize = SPI1_BASE + 0x04;
+const SPI1_SR: usize = SPI1_BASE + 0x08;
+const SPI1_DR: usize = SPI1_BASE + 0x0C;
 const USART1_SR: usize = USART1_BASE;
 const USART1_DR: usize = USART1_BASE + 0x04;
 const USART1_BRR: usize = USART1_BASE + 0x08;
@@ -34,6 +53,9 @@ const USART1_CR2: usize = USART1_BASE + 0x10;
 const USART1_CR3: usize = USART1_BASE + 0x14;
 
 const RCC_GPIOA_ENABLE: u32 = 1 << 0;
+const RCC_GPIOB_ENABLE: u32 = 1 << 1;
+const RCC_SPI1_RESET: u32 = 1 << 12;
+const RCC_SPI1_ENABLE: u32 = 1 << 12;
 const RCC_USART1_RESET: u32 = 1 << 14;
 const RCC_USART1_ENABLE: u32 = 1 << 14;
 const USART_STATUS_RXNE: u32 = 1 << 5;
@@ -42,6 +64,18 @@ const USART_CONTROL_ENABLE: u32 = 1 << 13;
 const USART_RECEIVER_ENABLE: u32 = 1 << 2;
 const USART_TRANSMITTER_ENABLE: u32 = 1 << 3;
 const UART_BAUD_DIVISOR_48MHZ_38400: u32 = 1_250;
+const SPI_STATUS_RXNE: u32 = 1 << 0;
+const SPI_STATUS_TXE: u32 = 1 << 1;
+const SPI_STATUS_BUSY: u32 = 1 << 7;
+const SPI_CONTROL_MODE_3: u32 = (1 << 0) | (1 << 1);
+const SPI_CONTROL_MASTER: u32 = 1 << 2;
+const SPI_CONTROL_DIVIDE_64: u32 = 0b101 << 3;
+const SPI_CONTROL_ENABLE: u32 = 1 << 6;
+const SPI_CONTROL_INTERNAL_SELECT: u32 = 1 << 8;
+const SPI_CONTROL_SOFTWARE_SELECT: u32 = 1 << 9;
+const DISPLAY_A0_PIN: u32 = 1 << 6;
+const DISPLAY_CS_PIN: u32 = 1 << 2;
+const DISPLAY_POLL_LIMIT: usize = 96_000;
 
 #[repr(C)]
 struct VectorTable {
@@ -73,6 +107,7 @@ static BOOT_SENTINEL: AtomicU32 = AtomicU32::new(0);
 extern "C" fn reset() -> ! {
     BOOT_SENTINEL.store(BOOT_SENTINEL_VALUE, Ordering::Release);
     uart_init();
+    display_init();
     loop {
         if receive_hello_request() {
             let mut response = [0_u8; 48];
@@ -94,6 +129,13 @@ fn write_register(address: usize, value: u32) {
     // SAFETY: addresses and access widths are taken from the pinned PY32F071
     // device header; this function is used only for volatile MMIO access.
     unsafe { core::ptr::write_volatile(address as *mut u32, value) }
+}
+
+#[allow(unsafe_code)]
+fn write_register_u8(address: usize, value: u8) {
+    // SAFETY: the pinned device header specifies an eight-bit access to the
+    // SPI data register for eight-bit transfers.
+    unsafe { core::ptr::write_volatile(address as *mut u8, value) }
 }
 
 fn update_register(address: usize, clear: u32, set: u32) {
@@ -125,11 +167,105 @@ fn uart_init() {
     );
 }
 
+fn display_init() {
+    update_register(RCC_IOPENR, 0, RCC_GPIOA_ENABLE | RCC_GPIOB_ENABLE);
+    update_register(RCC_APBENR2, 0, RCC_SPI1_ENABLE);
+    update_register(RCC_APBRSTR2, 0, RCC_SPI1_RESET);
+    update_register(RCC_APBRSTR2, RCC_SPI1_RESET, 0);
+
+    write_register(GPIOA_BSRR, DISPLAY_A0_PIN);
+    write_register(GPIOB_BSRR, DISPLAY_CS_PIN);
+
+    let gpioa_display_mask = (0b11 << 10) | (0b11 << 12) | (0b11 << 14);
+    let gpioa_display_modes = (0b10 << 10) | (0b01 << 12) | (0b10 << 14);
+    update_register(GPIOA_MODER, gpioa_display_mask, gpioa_display_modes);
+    update_register(GPIOA_OTYPER, (1 << 5) | (1 << 6) | (1 << 7), 0);
+    update_register(GPIOA_OSPEEDR, gpioa_display_mask, gpioa_display_mask);
+    update_register(GPIOA_PUPDR, gpioa_display_mask, 0b01 << 10);
+    update_register(GPIOA_AFRL, (0xF << 20) | (0xF << 28), 0);
+
+    update_register(GPIOB_MODER, 0b11 << 4, 0b01 << 4);
+    update_register(GPIOB_OTYPER, DISPLAY_CS_PIN, 0);
+    update_register(GPIOB_OSPEEDR, 0b11 << 4, 0b11 << 4);
+    update_register(GPIOB_PUPDR, 0b11 << 4, 0b01 << 4);
+
+    write_register(SPI1_CR1, 0);
+    write_register(SPI1_CR2, 0);
+    write_register(
+        SPI1_CR1,
+        SPI_CONTROL_MODE_3
+            | SPI_CONTROL_MASTER
+            | SPI_CONTROL_DIVIDE_64
+            | SPI_CONTROL_INTERNAL_SELECT
+            | SPI_CONTROL_SOFTWARE_SELECT
+            | SPI_CONTROL_ENABLE,
+    );
+
+    let mut display = K1DisplayBus;
+    let mut frame = [0_u8; FRAME_BYTES];
+    render_witness(&mut frame);
+    let _ = display_initialise(&mut display).and_then(|()| write_frame(&mut display, &frame));
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DisplayError {
+    Timeout,
+}
+
+struct K1DisplayBus;
+
+impl DisplayBus for K1DisplayBus {
+    type Error = DisplayError;
+
+    fn write(&mut self, kind: TransferKind, bytes: &[u8]) -> Result<(), Self::Error> {
+        match kind {
+            TransferKind::Command => write_register(GPIOA_BRR, DISPLAY_A0_PIN),
+            TransferKind::Data => write_register(GPIOA_BSRR, DISPLAY_A0_PIN),
+        }
+        write_register(GPIOB_BRR, DISPLAY_CS_PIN);
+
+        for byte in bytes {
+            if !poll_register(SPI1_SR, SPI_STATUS_TXE, true) {
+                write_register(GPIOB_BSRR, DISPLAY_CS_PIN);
+                return Err(DisplayError::Timeout);
+            }
+            write_register_u8(SPI1_DR, *byte);
+            if !poll_register(SPI1_SR, SPI_STATUS_RXNE, true) {
+                write_register(GPIOB_BSRR, DISPLAY_CS_PIN);
+                return Err(DisplayError::Timeout);
+            }
+            let _ = read_register(SPI1_DR);
+        }
+        if !poll_register(SPI1_SR, SPI_STATUS_BUSY, false) {
+            write_register(GPIOB_BSRR, DISPLAY_CS_PIN);
+            return Err(DisplayError::Timeout);
+        }
+        write_register(GPIOB_BSRR, DISPLAY_CS_PIN);
+        Ok(())
+    }
+
+    fn delay_ms(&mut self, milliseconds: u8) {
+        for _ in 0..u32::from(milliseconds) * 12_000 {
+            core::hint::spin_loop();
+        }
+    }
+}
+
+fn poll_register(address: usize, mask: u32, set: bool) -> bool {
+    for _ in 0..DISPLAY_POLL_LIMIT {
+        if (read_register(address) & mask != 0) == set {
+            return true;
+        }
+        core::hint::spin_loop();
+    }
+    false
+}
+
 fn uart_receive_byte() -> u8 {
     while read_register(USART1_SR) & USART_STATUS_RXNE == 0 {
         core::hint::spin_loop();
     }
-    read_register(USART1_DR) as u8
+    read_register(USART1_DR).to_le_bytes()[0]
 }
 
 fn uart_send_byte(byte: u8) {

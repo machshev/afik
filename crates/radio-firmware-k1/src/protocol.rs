@@ -18,7 +18,7 @@ const XOR_KEY: [u8; 16] = [
 ];
 
 /// Printable identity returned by the first AFIK K1 application.
-pub const APPLICATION_VERSION: &[u8] = b"AFIK-K1-0.1";
+pub const APPLICATION_VERSION: &[u8] = b"AFIK-K1-0.2";
 
 /// Decodes and validates one bounded normal-mode hello request body.
 pub fn is_valid_hello_request(encoded_body: &mut [u8; REQUEST_BODY_BYTES]) -> bool {
