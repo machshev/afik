@@ -358,7 +358,7 @@
 
 ## GUI-009 — Local programmer web GUI
 
-- **Status:** active
+- **Status:** complete (2026-08-06)
 - **Objective:** provide a real, readable local graphical front end for the
   complete supported programmer workflow without duplicating programming logic
   or broadening hardware claims.
@@ -404,3 +404,14 @@
   server file paths; status is readable and deterministic; existing CLI output
   and exit contracts remain green; no target, remote-service, security, or
   physical-programming capability is claimed.
+- **Completion notes:** moved verified write, backup, restore, and exact
+  read-back mismatch handling into `radio-programmer`; extracted the explicit
+  Linux `stty`/file adapter into `radio-programmer-serial`; and preserved the
+  CLI's tested contracts over both shared layers. Added a persistent simulator
+  or serial GUI session, strict bounded generated-bank parsing, canonical
+  compile/backup downloads, confirmed verified write/restore, capability and
+  object views, embedded responsive assets, and a single-threaded bounded HTTP
+  server that accepts only loopback IP addresses. Mutation requires a random
+  per-process token and explicit confirmation header. Model, endpoint, HTTP,
+  asset, binary, CLI-regression, full workspace, and Rust 1.86 tests pass; local
+  service and physical serial limits remain open in `RISK-010` and `RISK-009`.

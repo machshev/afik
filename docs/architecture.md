@@ -12,8 +12,11 @@ radio-domain ──→ radio-channel-plan ──→ radio-storage
       └────────→ radio-bk4819
 
 radio-protocol ──→ radio-programmer ──→ radio-sim
+                         ├────────────→ radio-programmer-serial
                          │                 │
                          └─────────────────┴→ radio-programmer-cli
+                         │                 │
+                         └─────────────────┴→ radio-programmer-gui
 radio-ui ─────────────────────────────→ radio-sim
 radio-bk4819 ─────────────────────────→ radio-sim
 radio-channel-control ────────────────→ radio-sim
@@ -76,3 +79,12 @@ listing, backup, restore, and verification logic, and on `radio-sim` only to
 offer the same commands against a deterministic backend. Its binary owns
 argument parsing, files, rendering, process status, and explicit transport
 selection; no programming logic moves out of the library.
+
+Work Package 9 moves verified write, backup, and restore orchestration fully
+into `radio-programmer` and moves the explicit Linux file/`stty` adapter into
+the reusable host-only `radio-programmer-serial` crate. Both CLI and GUI are
+thin leaves over those layers. `radio-programmer-gui` owns one persistent
+selected session, strict generated-bank form parsing, a bounded loopback HTTP
+boundary, embedded browser assets, downloads/uploads, and presentation. It
+does not introduce a remote service, raw object writes, arbitrary server file
+paths, target behavior, or a physical-programming claim.

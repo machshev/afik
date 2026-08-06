@@ -3,18 +3,17 @@
 A ground-up modular Rust radio firmware and programming platform, initially
 targeting the DP32G030-based Quansheng UV-K5 family.
 
-The first eight architecture work packages are complete: hardware-independent
-domain types, channel plans, safe TX policy, protocol framing, transactional
-storage, a library-first programmer, deterministic host simulation, bounded
-multi-object operations, the complete protocol command/error matrix, and an
-evidence-backed minimal DP32G030 Rust image with a Renode reset-path proof. No
-target hardware-register adapter exists yet. Later packages add a canonical
-checksummed logical configuration image, an allocation-free boot-only
-TX-permission UI, and an evidence-bounded post-initialization BK4819 command
-driver with deterministic simulation. A bounded channel controller adds
-explicit-input activation, scanning, and selected-state TX authorization. These
-are not physical flash, display, keypad, timer, bus, board-RF, or on-air
-implementations. No hardware flashing has been added.
+The first nine architecture work packages are complete. They provide
+hardware-independent domain types, channel plans, safe TX policy, protocol
+framing, transactional storage, canonical logical images, a library-first
+programmer, deterministic host simulation, the complete protocol command/error
+matrix, and an evidence-backed minimal DP32G030 Rust image with a Renode
+reset-path proof. They also provide an allocation-free boot-only TX-permission
+UI, an evidence-bounded post-initialization BK4819 command driver, explicit-input
+channel activation/scanning, and complete CLI and local-GUI programmer front
+ends. No target hardware-register adapter exists yet. These are not physical
+flash, display, keypad, timer, bus, board-RF, or on-air implementations. No
+hardware flashing has been added.
 
 ## Programmer CLI
 
@@ -33,6 +32,21 @@ cargo run --package radio-programmer-cli --bin afik-programmer -- \
 canonical images, validated transactions, and read-back verification from the
 programmer library. Serial use requires both `--device PATH` and `--baud BAUD`;
 no physical device/baud default or interoperability claim exists yet.
+
+## Local programmer GUI
+
+The GUI retains one simulator or explicit serial session and serves responsive
+embedded assets only on a loopback IP address:
+
+```sh
+cargo run --package radio-programmer-gui --bin afik-programmer-gui -- --sim
+```
+
+It exposes the same negotiated capability, object, compile, verified write,
+backup, and restore workflows as the programmer library. Mutation requires a
+per-process token plus explicit replacement confirmation. This reduces
+accidental local mutation but is not authentication; the GUI must not be bound
+remotely or treated as a shared service. See `docs/programmer-gui.md`.
 
 ## Host checks
 

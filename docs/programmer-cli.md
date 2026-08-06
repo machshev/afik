@@ -41,9 +41,10 @@ standard error with an `error:` prefix.
 
 ## Serial boundary
 
-The Linux serial adapter runs `stty -F PATH raw -echo min 0 time 1 BAUD`, then
-opens the path for ordered reads and writes through `ProtocolTransport`. It
-contains no unsafe code and adds no raw-object or raw-memory command. This host
-adapter does not establish target pins, boot mode, baud, protocol availability,
-timeout suitability, recovery, or physical programming success; those remain
-open in `RISK-009`.
+The shared host-only `radio-programmer-serial` adapter runs
+`stty -F PATH raw -echo min 0 time 1 BAUD`, then opens the path for ordered reads
+and writes through `ProtocolTransport`. The CLI and GUI select this same
+adapter; neither reimplements serial setup. It contains no unsafe code and adds
+no raw-object or raw-memory command. This host adapter does not establish target
+pins, boot mode, baud, protocol availability, timeout suitability, recovery, or
+physical programming success; those remain open in `RISK-009`.

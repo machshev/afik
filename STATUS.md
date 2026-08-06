@@ -2,7 +2,8 @@
 
 ## Current work package
 
-**Work Package 9 — local programmer web GUI (`GUI-009`) is active.**
+**Work Package 9 — local programmer web GUI (`GUI-009`) is complete. No later
+work package is active.**
 
 The package is limited to shared programmer workflows/serial transport and a
 single-user, loopback-only graphical web front end over a persistent simulator
@@ -19,7 +20,7 @@ raw writes, unsupported project formats, or security/physical success claims.
 - Work Package 6 BK4819 receive path and token-gated TX boundary: complete.
 - Work Package 7 channel activation and deterministic scanning: complete.
 - Work Package 8 programmer CLI: complete.
-- Work Package 9 programmer GUI: active.
+- Work Package 9 programmer GUI: complete.
 - `UI-005` logical key edges, bounded semantic views, exact boot-only entry,
   release gate, draft editor, and checked persistence action: complete.
 - `UI-005` separate persisted/active policy simulation, deterministic timed
@@ -58,8 +59,60 @@ raw writes, unsupported project formats, or security/physical success claims.
 - `CLI-008` snapshot backup encoding, strict simulator/serial command front end,
   bounded safe files, stable output/status, transactional write/restore with
   read-back, and binary tests: complete.
-- Next smallest task: move verified write/backup/restore orchestration into
-  `radio-programmer`, prove it over simulation, then refactor the CLI to use it.
+- `GUI-009` shared verified workflows/serial transport, persistent local
+  session, bounded loopback HTTP, responsive object workflow, canonical
+  downloads/uploads, confirmed token-gated mutation, and binary tests:
+  complete.
+- Next smallest task: define and activate the evidence-only Frequency Copy
+  research package from roadmap item 10 before making any implementation claim.
+
+## Completed Work Package 9 exit criteria
+
+- `radio-programmer` owns verified write, canonical backup, validated restore,
+  and exact generation/object read-back mismatch handling. Both front ends use
+  the shared `radio-programmer-serial` Linux path/baud adapter.
+- `afik-programmer-gui` retains one explicitly selected simulator or serial
+  session. Capability, generation, and object views refresh from that same
+  session; simulator write/backup/restore behavior is repeatable.
+- The dependency-free server accepts only loopback IP addresses, caps headers
+  at 16 KiB and bodies at 8 MiB, rejects ambiguous/chunked framing, and survives
+  client I/O failures without ending the selected device session.
+- Generated-bank text is strict and capped at 64 KiB. Compile and backup return
+  canonical downloads; restore accepts bounded uploaded bytes. No endpoint
+  accepts a server filesystem path or exposes a raw write.
+- Responsive embedded assets provide readable capabilities, object listing,
+  project editing, status, downloads, and deliberate write/restore confirmation.
+  Mutation also requires a random 256-bit per-process token and an explicit
+  replacement header; CSP/no-store/no-sniff responses preserve the local
+  same-origin boundary without claiming authentication.
+- Model, endpoint, parser, asset, launcher, shared-workflow, mismatch, serial,
+  and CLI-regression tests pass. `RISK-009` and `RISK-010` remain open; no target
+  UART, physical programming, remote service, firmware flashing, or security
+  capability is claimed.
+
+## Work Package 9 verification
+
+Verified 2026-08-06:
+
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
+  — passed for all host crates and targets.
+- `nix develop path:. -c cargo test --workspace` — passed: 82 unit/integration
+  tests and all doc tests, 0 failures.
+- `nix develop --command cargo run -q -p radio-programmer-gui --bin afik-programmer-gui -- --help`
+  — passed with the stable help document.
+- `nix develop --command cargo run -q -p radio-programmer-gui --bin afik-programmer-gui -- --version`
+  — passed with `afik-programmer-gui 0.1.0`.
+- The process-level binary test also confirms exact help/version output and
+  exit status 2 for a rejected `0.0.0.0:9000` listener.
+- `env RUSTC=/nix/store/2mm3p5wcy1ifrcx5vp3bwsw7a76r77jc-rustc-1.86.0/bin/rustc RUSTDOC=/nix/store/2mm3p5wcy1ifrcx5vp3bwsw7a76r77jc-rustc-1.86.0/bin/rustdoc CARGO_TARGET_DIR=/tmp/afik-gui-009-rust-1-86-target /nix/store/npqlgsia03kfhv8m9mav6hfnbawpg0yg-cargo-1.86.0/bin/cargo test --workspace`
+  — passed: 82 unit/integration tests and all doc tests on Rust/Cargo 1.86.0.
+- The first minimum-toolchain audit exposed that its sandbox prohibited two
+  test-created TCP sockets. HTTP parsing/serialization tests were made generic
+  over deterministic byte streams, while production remains a loopback
+  `TcpListener`; the final command above then passed. One intermediate retry
+  pointed `RUSTDOC` at a nonexistent store path and stopped before doc tests;
+  correcting that invocation required no code change.
 
 ## Completed Work Package 8 exit criteria
 

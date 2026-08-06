@@ -28,6 +28,14 @@ reports exact object/payload/channel capacity, and encodes directly to the same
 canonical image format as compiled configuration. Backup callers therefore do
 not need to reconstruct compiler internals or duplicate image logic.
 
+`write_configuration_verified`, `backup_configuration`, and
+`restore_configuration_image` are the shared front-end workflows. A verified
+write commits a compiled configuration and then requires the complete
+generation-tagged read-back to match. Backup reads a stable snapshot and emits
+its canonical image. Restore validates and imports the complete canonical image
+against negotiated capabilities before mutation, commits it, and requires the
+same exact read-back verification. A mismatch is an explicit programmer error.
+
 `list_objects` reconstructs bounded `LIST_OBJECTS` pages into one complete
 generation-tagged listing. It rejects a changed generation or total, an
 unexpected offset, an object count beyond negotiated capacity, an object
@@ -41,6 +49,7 @@ object descriptors changed during the read.
 
 The compiler still supports only generated banks. Project-file metadata,
 explicit groups, regional plans, named backup catalogs, CSV, firmware updates,
-serial discovery, and GUI remain later tasks. Work Package 8 supplies a complete
-CLI for the operations the library currently supports; the canonical image
-remains a logical-object container, not a physical flash layout.
+and serial discovery remain later tasks. Work Packages 8 and 9 supply complete
+CLI and local-GUI front ends for the operations the library currently supports;
+the canonical image remains a logical-object container, not a physical flash
+layout.

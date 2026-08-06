@@ -197,3 +197,19 @@ meaning.
   present. Restore validates a bounded canonical image before transaction
   mutation. No command exposes raw memory, raw object writes, or firmware
   flashing.
+
+## ADR-017 — The programmer GUI is one bounded loopback session
+
+- **Date:** 2026-08-06
+- **Status:** accepted for `GUI-009`, not a remote-service security model
+- `radio-programmer-gui` retains exactly one explicitly selected simulator or
+  serial backend. Compilation, canonical images, transactions, backup, restore,
+  and read-back verification remain in `radio-programmer`; Linux serial setup
+  remains in the shared `radio-programmer-serial` adapter.
+- Its dependency-free HTTP listener accepts only an explicit loopback IP,
+  bounds headers and bodies, rejects ambiguous framing, embeds all assets, and
+  exposes uploaded/downloaded bytes rather than arbitrary server paths.
+- Configuration mutation requires a random per-process token plus an explicit
+  replacement-confirmation header. Same-origin delivery, CSP, and these checks
+  reduce accidental local mutation but are not authentication or authorization.
+  Non-loopback, multi-user, or deployed use requires a separate threat model.
