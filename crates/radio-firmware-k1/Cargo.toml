@@ -46,6 +46,7 @@ async-firmware = [
 ]
 
 [dependencies]
+radio-bk4819 = { path = "../radio-bk4819" }
 embassy-executor = { version = "=0.10.0", default-features = false, features = ["executor-thread", "platform-cortex-m"], optional = true }
 py32-hal = { version = "=0.4.1", default-features = false, features = ["py32f071r1b"], optional = true }
 embassy-time = { version = "=0.5.1", default-features = false, optional = true }

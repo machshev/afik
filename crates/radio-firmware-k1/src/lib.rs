@@ -7,6 +7,7 @@ extern crate std;
 
 pub mod aux_inputs;
 pub mod backlight;
+pub mod bk4819_bus;
 pub mod clock_handoff;
 #[cfg(test)]
 mod cooperative_progress;

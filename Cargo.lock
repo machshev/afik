@@ -2422,6 +2422,7 @@ dependencies = [
  "embassy-executor",
  "embassy-time",
  "py32-hal",
+ "radio-bk4819",
 ]
 
 [[package]]
