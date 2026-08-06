@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AFIK Programmer</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header class="app-header">
+    <div>
+      <p class="eyebrow">AFIK radio platform</p>
+      <h1>Programmer</h1>
+    </div>
+    <button id="refresh" class="quiet" type="button">Refresh device</button>
+  </header>
+
+  <main>
+    <section class="status-strip" aria-live="polite" aria-atomic="true">
+      <span id="status-dot" class="status-dot"></span>
+      <p id="status">Connecting to the selected backend…</p>
+    </section>
+
+    <div class="dashboard-grid">
+      <section class="card" aria-labelledby="capabilities-heading">
+        <h2 id="capabilities-heading">Device capabilities</h2>
+        <dl id="capabilities" class="facts"></dl>
+      </section>
+
+      <section class="card" aria-labelledby="objects-heading">
+        <div class="section-heading">
+          <h2 id="objects-heading">Installed objects</h2>
+          <span id="generation" class="badge">Generation —</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Kind</th><th>ID</th><th>Bytes</th></tr></thead>
+            <tbody id="objects"><tr><td colspan="3">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <section class="card project" aria-labelledby="project-heading">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Generated-bank project</p>
+          <h2 id="project-heading">Prepare configuration</h2>
+        </div>
+        <span class="format-hint">One bank per line</span>
+      </div>
+      <label for="project">ID:NAME:BASE_HZ:SPACING_HZ:COUNT:TX_CLASS</label>
+      <textarea id="project" rows="7" spellcheck="false">1:PMR446:446006250:12500:16:licence-free</textarea>
+      <p class="help">Classes: never, licence-free, amateur, marine, aeronautical, business, experimental.</p>
+      <div class="actions">
+        <button id="compile" type="button">Compile image</button>
+        <label class="confirm"><input id="confirm-write" type="checkbox"> I intend to replace the radio configuration</label>
+        <button id="write" class="danger" type="button">Write to radio</button>
+      </div>
+    </section>
+
+    <section class="card transfers" aria-labelledby="transfer-heading">
+      <div>
+        <p class="eyebrow">Canonical images</p>
+        <h2 id="transfer-heading">Backup and restore</h2>
+        <p>Downloads and uploads stay in your browser; the server accepts no filesystem path.</p>
+      </div>
+      <div class="actions stacked-mobile">
+        <button id="backup" class="quiet" type="button">Download backup</button>
+        <label class="file-button">Choose restore image<input id="restore-file" type="file" accept=".afik,application/octet-stream"></label>
+        <label class="confirm"><input id="confirm-restore" type="checkbox"> I intend to replace the radio configuration</label>
+        <button id="restore" class="danger" type="button">Restore image</button>
+      </div>
+    </section>
+  </main>
+
+  <footer>Loopback-only local session · no raw writes or firmware flashing</footer>
+  <script>window.AFIK_SESSION_TOKEN = "__AFIK_SESSION_TOKEN__";</script>
+  <script src="/app.js"></script>
+</body>
+</html>

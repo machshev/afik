@@ -1,0 +1,21 @@
+[package]
+name = "radio-programmer-gui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Loopback web GUI for the AFIK programmer library"
+
+[dependencies]
+radio-channel-plan = { path = "../radio-channel-plan" }
+radio-domain = { path = "../radio-domain" }
+radio-programmer = { path = "../radio-programmer" }
+radio-programmer-serial = { path = "../radio-programmer-serial" }
+radio-sim = { path = "../radio-sim" }
+
+[dev-dependencies]
+radio-storage = { path = "../radio-storage" }
+
+[lints]
+workspace = true
