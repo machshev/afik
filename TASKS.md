@@ -896,3 +896,8 @@
   `94ac835a473a8a910b740eb792c3a3567254ea297b1d23c31e2c7e52d0ec327b`.
   The task remains active until a separately confirmed physical write is
   followed by visible-screen and serial observations.
+- **Physical attempt:** one explicitly authorized write acknowledged all 190
+  pages, but the screen was blank after power-cycle. The serial fallback still
+  returned `AFIK-K1-0.2`, so the task remains active and no second write is
+  authorized. The next observation must distinguish the separately controlled
+  active-high PF8 backlight from LCD pixel generation.

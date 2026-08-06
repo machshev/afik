@@ -106,9 +106,9 @@ features remain outside this bounded slice.
 - Work Package 18 selected and bounded the next application slice: a fixed
   display-only AFIK boot witness with the serial responder retained.
 - Current smallest actionable task: after explicit user confirmation, perform
-  one guarded write of the verified 48,436-byte display-witness image, ask for
-  a power-cycle, observe the fixed screen, and run `probe-normal` for
-  `AFIK-K1-0.2`. No physical write has been sent for Work Package 19.
+  a bounded backlight-versus-panel diagnosis from the exact unit's blank-screen
+  observation. Do not send another write until that observation is recorded and
+  a corrected evidence-backed slice is separately verified and confirmed.
 
 ## Work Package 14 implementation milestone
 
@@ -338,6 +338,25 @@ Static verification on 2026-08-06:
 - `nix develop path:. -c tool/test-k1-image.sh` — passed positive comparison
   plus truncated, oversized, and non-Thumb negative fixtures.
 - `git diff --check` — passed. No physical write or display claim was made.
+
+Physical display attempt on 2026-08-06:
+
+- After explicit user authorization, the exact raw image and both retained
+  recovery/backup pairs were revalidated. Read-only identify reported K1
+  bootloader `7.03.01`; image CRC-32 was `3a2eb51b`.
+- One guarded `flash-afik-k1` invocation acknowledged all `190/190` pages in
+  transaction `d4f83080` and reported `acknowledged_not_read_back`. No retry or
+  reset command was sent.
+- After the user power-cycled the unit, the screen was blank. This is a failed
+  display witness: no pixel, orientation, contrast, or illumination success is
+  claimed.
+- The immediate read-only normal-mode probe passed with
+  `protocol=normal-firmware-hello`, `firmware=AFIK-K1-0.2`. Reset, USART1, and
+  bounded return from display initialization therefore remain observed.
+- Follow-up source inspection confirms the K1 display reset routine is empty
+  and the illumination is a separate active-high PF8 backlight path. AFIK did
+  not configure PF8, so the next non-writing observation must distinguish an
+  unlit panel from missing LCD pixels before changing the target.
 
 ## Work Package 13 first evidence milestone
 

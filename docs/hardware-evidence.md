@@ -252,6 +252,23 @@ order are maintained in `docs/k1-bring-up.md`.
   probe. Do not drive an unobserved reset pin, backlight, keypad/PTT, audio,
   storage, BK4819, RF, or TX.
 
+### EVID-K1-027 — First AFIK display attempt was blank with serial fallback alive
+
+- **Write observation:** the verified 48,436-byte image was written once after
+  explicit authorization. K1 `7.03.01` acknowledged all 190 pages in
+  transaction `d4f83080`; no retry or reset command was sent.
+- **Physical observation:** after power-cycle, the user reported a blank screen.
+  AFIK therefore claims no successful display initialization, pixels,
+  orientation, contrast, or illumination.
+- **Independent fallback:** the immediate read-only normal-mode hello returned
+  `AFIK-K1-0.2`, proving Reset and USART1 still ran and the bounded display path
+  did not trap the application.
+- **New evidence boundary:** pinned `App/driver/st7565.c` states that hardware
+  reset is unsupported on K1. Pinned `App/driver/gpio.h` and
+  `App/driver/backlight.c` identify a separate active-high backlight on PF8;
+  AFIK did not configure or drive it. Before another image, distinguish an
+  unlit panel from absent pixels and separately bound any PF8 experiment.
+
 ## Sources used by DP32-003
 
 ### DP32G030 reference manual v1.23

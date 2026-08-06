@@ -271,3 +271,8 @@
   bytes are host-tested before a separately confirmed physical write. The
   existing USART1 hello and retained stock recovery image remain independent
   observations and rollback paths.
+- **Observed result:** the first guarded image write left the screen blank while
+  the serial `AFIK-K1-0.2` fallback remained responsive. The current image does
+  not drive the independently mapped active-high PF8 backlight. Do not assume
+  this explains all missing pixels; distinguish illumination from controller
+  traffic before revising the image or claiming a root cause.
