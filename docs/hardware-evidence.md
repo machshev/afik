@@ -1435,3 +1435,7 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   `3f39e7c2a9ffa282685da321e2da01006a880d747344cd23222e7480bc30adb2`.
   Static verification additionally requires the retained
   `k1_relocate_vectors` boundary before accepting the package.
+- **Corrected write observation:** exact K1 bootloader `7.03.01` acknowledged
+  all 101 pages of the CRC-32 `4401a861` image under transaction `5b0f91b5`,
+  without retry. Status remains `acknowledged_not_read_back`; power-cycle and
+  application observations are separate gates.

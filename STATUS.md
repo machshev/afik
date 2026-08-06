@@ -536,6 +536,10 @@ features remain outside this bounded slice.
   raw packaging, negative fixtures, 30 focused tests, and `git diff --check`
   passed for the corrected 25,784-byte image. SHA-256 is
   `3f39e7c2a9ffa282685da321e2da01006a880d747344cd23222e7480bc30adb2`.
+- The guarded writer acknowledged all 101 corrected-image pages under
+  transaction `5b0f91b5`, without retry, and reported
+  `acknowledged_not_read_back`. Power-cycle and application observations remain
+  pending.
 
 ## Work Package 22 pure keypad milestone
 

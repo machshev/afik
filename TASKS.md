@@ -1195,6 +1195,9 @@
   exposed the missing source-required VTOR relocation. The corrected entry sets
   VTOR to `0x08002800` before interrupt-enabled initialization; strict target,
   vector, package, negative-fixture, and focused test gates pass.
+- **Corrected write result:** all 101 pages were acknowledged under transaction
+  `5b0f91b5` without retry. Boot, UART, display, and keypad evidence still
+  require the post-write power-cycle and observations.
   type-checks one owned bundle containing the heap-free thread executor,
   USART1/PA9/PA10 with DMA1 channels 1/2, and SPI1/PA5/PA7. Construction takes
   explicit HAL tokens and remains absent from the firmware binary. No HAL init,
