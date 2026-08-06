@@ -1162,3 +1162,10 @@
   keypad GPIO, static tasks, the firmware entry point, or a physical image.
   The polling recovery image remains the only runnable K1 application until a
   separate clock/interrupt/DMA adoption package is defined and guarded.
+- **Runtime-composition result:** optional `py32f071-runtime-composition`
+  type-checks one owned bundle containing the heap-free thread executor,
+  USART1/PA9/PA10 with DMA1 channels 1/2, and SPI1/PA5/PA7. Construction takes
+  explicit HAL tokens and remains absent from the firmware binary. No HAL init,
+  clock, TIM15, task, A0/CS, keypad, interrupt execution, DMA transfer, or image
+  behavior was adopted. The next boundary is an explicit bootloader-clock
+  handoff contract before any runnable async entry point.

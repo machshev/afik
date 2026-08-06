@@ -1293,3 +1293,16 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   cooperative task to run. It does not start the Cortex-M executor, initialize
   the HAL, deliver an interrupt, operate DMA, touch a peripheral, or establish
   physical UART responsiveness during display transfer.
+
+### EVID-K1-044 — Compile-only K1 async ownership composition
+
+- **Composition:** optional `py32f071-runtime-composition` owns one Cortex-M
+  thread executor, USART1 on PA9/PA10 with DMA1 channels 1/2, and transmit-only
+  SPI1 on PA5/PA7. Every peripheral arrives as an explicit HAL token.
+- **Compile result:** `tool/check-py32f071-runtime-composition.sh` passes
+  offline warning-denied target Clippy with Rust 1.86 and build-std/core for
+  `thumbv6m-none-eabi`.
+- **Boundary:** the feature is library-only and absent from the polling firmware
+  image. It does not initialize the HAL or clocks, use TIM15, define static
+  tasks, own display A0/CS or keypad pins, run interrupts/DMA, or prove physical
+  USART/SPI behavior.

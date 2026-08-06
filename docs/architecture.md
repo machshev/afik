@@ -16,6 +16,13 @@ matched to the local SPI driver. This validates the await boundary only; it is
 not evidence that the Cortex-M executor, USART interrupts/DMA, or SPI peripheral
 run correctly on the K1.
 
+The next compile-only layer composes the thread executor, USART1 with its two
+bounded DMA channels, and transmit-only SPI1 into one K1-owned bundle. The
+constructor receives every HAL peripheral token explicitly, making overlapping
+ownership a type error. It remains absent from the firmware entry point and
+does not own clocks, TIM15, display A0/CS, or keypad GPIO. A runnable async image
+requires a separate bootloader-clock handoff contract.
+
 The PY32 dependency boundary is repository-local. `vendor/py32-metapac` is a
 pinned generated PAC and `vendor/py32-hal` is a bounded compatibility patch;
 root Cargo patches select both without requiring upstream control. The optional

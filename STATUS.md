@@ -117,9 +117,9 @@ features remain outside this bounded slice.
 - Work Package 22 keypad/UI witness definition: complete; the pinned matrix,
   electrical idle/scan levels, one-key decode, explicit-time debounce, and
   display-only result were bounded before implementation.
-- Current smallest actionable task: compile one optional ownership bundle for
-  the proven thread executor, USART1, and SPI1 surfaces while retaining the
-  polling recovery image and excluding HAL initialization, tasks, and keypad.
+- Current smallest actionable task: define and verify an explicit handoff for
+  the observed bootloader-provided clock before any runnable async entry point
+  initializes HAL-managed USART1, SPI1, DMA, interrupts, or TIM15.
 
 ## Work Package 23 dependency and executor milestone
 
@@ -292,6 +292,27 @@ features remain outside this bounded slice.
 - No executor was started on Cortex-M, no HAL initialization or entry point
   changed, and no physical image, interrupt, DMA, SPI, UART, keypad, or flash
   behavior changed.
+
+## Work Package 23 runtime-composition milestone
+
+- Added optional `py32f071-runtime-composition`, one compile-only owned bundle
+  for the heap-free thread executor, async USART1/PA9/PA10 with DMA1 channels
+  1/2, and cooperative SPI1/PA5/PA7.
+- The constructor requires explicit caller-supplied HAL peripheral tokens. It
+  does not call HAL initialization, select clocks, reserve TIM15, create tasks,
+  or own display A0/CS or keypad GPIO.
+- Added `tool/check-py32f071-runtime-composition.sh` for offline warning-denied
+  Rust 1.86 `thumbv6m-none-eabi` compilation with build-std/core.
+- `nix develop path:. -c tool/check-py32f071-runtime-composition.sh` — passed.
+- `nix flake check path:. --no-build` — passed.
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
+  — passed.
+- `nix develop path:. -c cargo test --workspace` — passed; all 160 workspace
+  unit, integration, and doc-test binaries passed.
+- `git diff --check` — passed.
+- No firmware entry point, linker contract, physical image, interrupt delivery,
+  DMA operation, peripheral behavior, keypad behavior, or flash path changed.
 
 ## Work Package 22 pure keypad milestone
 

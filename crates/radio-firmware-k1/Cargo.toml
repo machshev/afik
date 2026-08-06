@@ -25,6 +25,11 @@ py32f071-usart1 = [
     "py32-hal/rt",
 ]
 py32f071-spi1 = ["py32f071-hal-inventory"]
+py32f071-runtime-composition = [
+    "embassy-runtime",
+    "py32f071-usart1",
+    "py32f071-spi1",
+]
 
 [dependencies]
 embassy-executor = { version = "=0.10.0", default-features = false, features = ["executor-thread", "platform-cortex-m"], optional = true }

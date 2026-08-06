@@ -395,3 +395,8 @@
   chunks for a complete 1,024-byte frame, and compile-time equality prevents
   schedule drift from the HAL driver. Runtime executor startup, interrupts,
   DMA, clock ownership, and physical UART/display coexistence remain open.
+- **Runtime-composition update:** the executor, async USART1/DMA, and
+  cooperative SPI1 now type-check as one explicitly owned optional bundle.
+  This closes only Rust ownership/API composition. The bundle is not called;
+  bootloader-clock handoff, interrupt and DMA execution, physical serial/SPI
+  behavior, and recovery under peripheral faults remain open.
