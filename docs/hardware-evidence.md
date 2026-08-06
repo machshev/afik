@@ -434,6 +434,9 @@ order are maintained in `docs/k1-bring-up.md`.
   return it only after serial response is available, explicitly marked as a
   capture. This can distinguish temporary held-state disruption from reset;
   loss of the capture after release remains a valid negative result.
+- **Write observation:** K1 `7.03.01` acknowledged all 229 pages of the
+  58,380-byte latched diagnostic in transaction `20d50457` and reported
+  `acknowledged_not_read_back`; this does not establish normal boot or capture.
 
 ## Sources used by DP32-003
 
