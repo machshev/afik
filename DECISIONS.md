@@ -438,3 +438,19 @@ meaning.
   `0x1f` in the exact init trace.
 - This does not create a contrast menu, keypad dependency, EEPROM setting,
   automatic calibration, or final UI policy. Those require later bounded tasks.
+
+## ADR-031 — First K1 keypad slice is a fail-closed 4-by-4 display witness
+
+- **Date:** 2026-08-06
+- **Status:** accepted for `K1KEY-022`
+- The first keypad binding covers only the 16-key PB12..PB15 by PB3..PB6 main
+  matrix. PTT PB10 and the side-key special case are not matrix inputs and are
+  excluded even though the pinned evidence handles them near the keypad code.
+- Rows are pull-up inputs and columns are push-pull outputs held high at idle.
+  One selected column may be driven low at a time, after which all columns must
+  return high. Only one stable low row in one selected column can become a key;
+  absent, ambiguous, changing, invalid, or failed samples produce no action.
+- Debounce is an AFIK hardware-independent explicit-time state machine, not a
+  copied polling loop or assumed target tick rate. Its only application effect
+  is replacing a fixed display label after a debounced press. It cannot invoke
+  general menus, persistence, radio control, or TX authority.

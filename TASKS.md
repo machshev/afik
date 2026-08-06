@@ -969,18 +969,42 @@
   backlight remained on and the words were substantially clearer. The final
   read-only probe returned `AFIK-K1-0.2`.
 
-## K1KEY-022 — Define a receive-only K1 keypad/UI witness
+## K1KEY-022 — Receive-only K1 keypad/UI witness
 
-- **Status:** pending (2026-08-06)
-- **Objective:** bound the next smallest K1 UI driver slice around the keypad
-  matrix without including PTT or any RF behavior.
-- **Scope:** establish the exact PB12..PB15 row and PB3..PB6 column scan table,
-  idle levels, one-key decoding, debounce/time inputs, and a display-only key
-  witness before target implementation.
+- **Status:** active (2026-08-06); evidence and contract defined, pure decoder
+  implementation is next.
+- **Objective:** add the smallest physically observable, receive-only keypad
+  slice: decode one main-key press and show its fixed label without including
+  PTT or any RF behavior.
+- **Scope:** the 4-by-4 main matrix uses pull-up inputs PB15, PB14, PB13, PB12
+  as rows and push-pull outputs PB6, PB5, PB4, PB3 as columns. All columns are
+  high while idle; a scan drives exactly one column low and restores all high.
+  A pressed key is one low row on one selected column. The table, by column,
+  is `MENU/1/4/7`, `UP/2/5/8`, `DOWN/3/6/9`, and `EXIT/*/0/F`.
+- **Behavioral contract:** zero active cells is release; exactly one active
+  cell is a candidate key; multiple active cells, changing samples, invalid
+  row bits, or a scan/read failure produce no key. A hardware-independent
+  debounce machine accepts monotonic elapsed-time samples, emits a press only
+  after the same single candidate has remained stable for an AFIK-defined
+  bounded interval, emits release only after stable absence, and resets to no
+  key on ambiguity or time reversal. The target witness replaces the fixed key
+  label only after a debounced press and otherwise retains the verified
+  display, backlight, and serial behavior.
 - **Dependencies:** completed `K1CON-021`, pinned board/keypad observations, the
   physically verified display/backlight/serial path, and a separately bounded
   no-transmit hardware experiment.
 - **Exclusions:** PTT, side keys, multi-key/chord claims, RF/TX, EEPROM,
   interrupts, arbitrary timing assumptions, copied source, and general menus.
-- **Acceptance criteria:** a stable evidence-backed matrix and fail-closed test
-  contract exists before any GPIO scan implementation or physical write.
+- **Tests required:** exhaustive 16-cell decode and release cases; rejection of
+  every multi-cell row/column combination and invalid sample; explicit-time
+  debounce press/release, bounce, ambiguity, and time-reversal traces; exact
+  display labels; pure GPIO register-plan assertions before target binding;
+  target/image/workspace gates; and one separately guarded physical write
+  followed by all 16 key labels plus backlight and serial observations.
+- **Acceptance criteria:** the evidence-backed table and fail-closed pure tests
+  pass before GPIO implementation; target code touches only PB3..PB6 and
+  PB12..PB15 in addition to the already verified display/backlight/USART paths;
+  no scan state can reach PTT, side-key, RF, TX, persistence, or configuration
+  behavior; and physical success is claimed only after all 16 main keys are
+  observed correctly on the display and `probe-normal` still returns
+  `AFIK-K1-0.2`.

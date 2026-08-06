@@ -55,6 +55,26 @@ MCU sources. They establish the architectural envelope, not the K1 board
 binding. The pinned Armel source supplies the trusted board observations, and
 the exact unit supplies the final binding.
 
+### Bounded main-key matrix for K1KEY-022
+
+The pinned source configures rows PB15..PB12 as pull-up inputs and columns
+PB6..PB3 as push-pull outputs. All columns idle high; selecting one column
+drives only it low, so one pressed key appears as one active-low row. AFIK's
+independent matrix table is:
+
+| Selected low column | PB15 | PB14 | PB13 | PB12 |
+| --- | --- | --- | --- | --- |
+| PB6 | MENU | 1 | 4 | 7 |
+| PB5 | UP | 2 | 5 | 8 |
+| PB4 | DOWN | 3 | 6 | 9 |
+| PB3 | EXIT | STAR | 0 | F |
+
+The table excludes the source's separate PTT PB10 input and special side-key
+handling. Zero keys means release; multiple, changing, invalid, or failed
+samples mean no action. Debounce receives elapsed time explicitly rather than
+assuming the source's polling interval. The first physical witness may only
+show a debounced main-key label on the already verified display.
+
 ## CPU, memory, and image contract
 
 This is the first bounded AFIK target contract. It is sufficient to define a

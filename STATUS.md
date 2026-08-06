@@ -2,8 +2,9 @@
 
 ## Current work package
 
-**Work Package 21 (`K1CON-021`) is complete: the K1 display, constant
-backlight, improved fixed contrast, and serial fallback are physically observed.**
+**Work Package 22 (`K1KEY-022`) is active: define an evidence-backed,
+receive-only K1 keypad matrix and fail-closed display-witness contract before
+any target implementation.**
 
 K1 has priority because an exact unit running Armel firmware is available for
 inspection. `K1EVID-013` supplies the K1 evidence baseline and same-unit
@@ -108,8 +109,12 @@ features remain outside this bounded slice.
   pending; no serial device is visible here.
 - Work Package 18 selected and bounded the next application slice: a fixed
   display-only AFIK boot witness with the serial responder retained.
-- Current smallest actionable task: define `K1KEY-022`, a receive-only keypad
-  matrix/UI witness which excludes PTT, side keys, RF, TX, and persistence.
+- Work Package 22 keypad/UI witness definition: active; the pinned matrix,
+  electrical idle/scan levels, one-key decode, explicit-time debounce, and
+  display-only result are bounded before implementation.
+- Current smallest actionable task: implement the hardware-independent
+  `K1KEY-022` matrix decoder and explicit-time debounce contract with exhaustive
+  host tests; do not add GPIO MMIO or flash an image in that step.
 
 ## Work Package 14 implementation milestone
 

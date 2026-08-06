@@ -303,3 +303,19 @@
 - **Observed result:** value 31 produced substantially clearer fixed words on
   the exact unit while the backlight and serial fallback remained functional.
   The risk remains open for production/runtime calibration.
+
+## RISK-024 — K1 keypad electrical behavior is not yet physically observed by AFIK
+
+- **State:** open
+- **Impact:** the pinned board source gives a coherent 4-by-4 mapping and GPIO
+  configuration, but it does not prove exact-unit contact bounce, settling
+  time, ghosting, simultaneous-key behavior, stuck lines, or AFIK's independent
+  scan implementation. A wrong drive sequence could misreport keys or contend
+  with an unexpected board state.
+- **Mitigation:** `K1KEY-022` holds every column high at idle, drives only one
+  evidenced column low at a time, restores idle after every scan including
+  failures, accepts only one stable matrix cell, and treats ambiguity and time
+  reversal as no key. PTT, side keys, interrupts, RF/TX, persistence, and
+  general menus remain unreachable. Host tests and static image gates precede
+  one guarded receive-only hardware experiment with the serial recovery witness
+  retained.

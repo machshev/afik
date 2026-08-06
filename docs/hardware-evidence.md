@@ -311,6 +311,33 @@ order are maintained in `docs/k1-bring-up.md`.
   witness on the exact unit. It is not a general panel calibration, runtime
   setting, temperature/supply policy, or evidence for other units.
 
+### EVID-K1-031 — K1 main keypad matrix and bounded scan contract
+
+- **Source:** pinned `armel/uv-k1-k5v3-firmware-custom` commit
+  `fe9c4e9432694b50aea651084a043aae0b58673d`, specifically `App/board.c`,
+  `App/driver/keyboard.c`, and the pinned PY32F071 GPIO definitions. This is
+  trusted hardware evidence, not AFIK production source.
+- **Board observation:** PB15, PB14, PB13, and PB12 are pull-up row inputs.
+  PB6, PB5, PB4, and PB3 are push-pull column outputs. The source holds all
+  columns high, selects one by driving it low, reads active-low rows, and
+  restores all columns high.
+- **Main-key table:** PB6 maps rows PB15..PB12 to `MENU, 1, 4, 7`; PB5 maps
+  them to `UP, 2, 5, 8`; PB4 to `DOWN, 3, 6, 9`; and PB3 to
+  `EXIT, STAR, 0, F`.
+- **Excluded evidence:** the same source uses a special no-column condition for
+  side keys and reads PTT separately on PB10. Neither behavior is part of the
+  4-by-4 main matrix or authorized by `K1KEY-022`.
+- **AFIK inference and confidence:** high confidence in the pinned source's
+  intended pins, polarity, idle state, and table; unverified on the exact unit
+  for bounce, settling, ghosting, multi-key behavior, stuck lines, and AFIK
+  MMIO. AFIK will accept only one stable cell and will reject all ambiguity.
+- **Required experiment:** first prove the table, explicit-time debounce,
+  display labels, and exact GPIO register plan on the host, then pass target
+  and raw-image gates. A separately guarded write may display the last
+  debounced main key while retaining the fixed backlight and serial hello.
+  Exercise all 16 keys individually; do not press PTT or side keys and do not
+  add RF, TX, persistence, interrupts, or general menu behavior.
+
 ## Sources used by DP32-003
 
 ### DP32G030 reference manual v1.23
