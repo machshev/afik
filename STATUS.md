@@ -2,21 +2,20 @@
 
 ## Current work package
 
-**Work Package 12 (`FLASH-012`) is active: recovery-gated UV-K5 V1 firmware
-flashing.**
+**Work Package 13 (`K1EVID-013`) is active: UV-K1/PY32F071 hardware evidence
+and target contract.**
 
-This package is limited to an explicitly identified UV-K5 V1 fitted with a
-DP32G030 and the separately pinned reverse-engineered version-2 serial
-bootloader. It will
-reserve the bootloader region, produce and validate a complete AFIK application
-image, preserve a read-only EEPROM/calibration backup, and add a fail-closed
-host flashing workflow. Bootloader v5, later V2/V3 boards, SWD, peripheral
-bring-up, and on-air operation are excluded.
+K1 now has priority because an exact unit running Armel firmware is available
+for inspection while no K5 hardware is available. This evidence package will
+pin that demonstrated firmware revision, record its manufacturer-supported
+provenance, corroborate the PY32F071 contract against Puya documentation, and
+turn board behavior into a source-and-experiment matrix before AFIK target code
+is written. Trusted existing firmware remains evidence, not production source:
+AFIK will not port, link, or incrementally translate its application or driver
+implementation.
 
-No serial device is visible in the current execution environment, so no
-physical read or write has been attempted. Physical acceptance remains gated
-on board/chip identification, a validated EEPROM backup, a known-good recovery
-image, and a successful recovery rehearsal on the exact test unit.
+`FLASH-012` is deferred with its software milestone intact and physical gates
+incomplete. It can resume unchanged when the exact K5 V1 hardware is available.
 
 ## State
 
@@ -31,7 +30,9 @@ image, and a successful recovery rehearsal on the exact test unit.
 - Work Package 9 programmer GUI: complete.
 - Work Package 10 Frequency Copy research: complete.
 - Work Package 11 APRS receive feasibility and repeater discovery: complete.
-- Work Package 12 recovery-gated UV-K5 V1 firmware flashing: active.
+- Work Package 12 recovery-gated UV-K5 V1 firmware flashing: deferred; software
+  complete and physical hardware unavailable.
+- Work Package 13 UV-K1/PY32F071 hardware evidence and target contract: active.
 - `UI-005` logical key edges, bounded semantic views, exact boot-only entry,
   release gate, draft editor, and checked persistence action: complete.
 - `UI-005` separate persisted/active policy simulation, deterministic timed
@@ -87,10 +88,23 @@ image, and a successful recovery rehearsal on the exact test unit.
 - `FLASH-012` exact-unit inspection, physical backup, recovery rehearsal,
   page-acknowledged AFIK write, and independent application-boot observation:
   pending; no serial device is visible here.
-- Current smallest actionable task: connect and open the exact UV-K5 V1 test
-  unit, record board and DP32G030 markings, then use its normal firmware to
-  create and validate the 8 KiB EEPROM backup before entering the bootloader or
-  attempting any write.
+- Current smallest actionable task: record the exact Armel firmware version
+  running on the available UV-K1, its model/PCB/MCU markings, and the recovery
+  and backup artifacts already available; then inspect pinned upstream `main`
+  commit `fe9c4e9432694b50aea651084a043aae0b58673d` and construct the first
+  CPU/memory/image evidence table. Armel's repository has no `master` branch;
+  its default branch is `main`.
+
+Work-package activation verification on 2026-08-06:
+
+- `git ls-remote --symref https://github.com/armel/uv-k1-k5v3-firmware-custom.git HEAD`
+  — passed; upstream `HEAD` is `refs/heads/main` at
+  `fe9c4e9432694b50aea651084a043aae0b58673d`.
+- `git ls-remote --heads https://github.com/armel/uv-k1-k5v3-firmware-custom.git`
+  — passed and confirmed that the repository has no `master` branch.
+- `nix develop path:. -c cargo fmt --all --check` — passed; the activation
+  milestone changes documentation only.
+- `git diff --check` — passed before the final status record.
 
 ## Work Package 12 software milestone and verification
 

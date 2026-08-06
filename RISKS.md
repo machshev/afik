@@ -194,3 +194,18 @@
   acknowledgement; keep the bootloader region outside all artifacts; maintain
   power and cable stability; and prove stock recovery before AFIK. Report only
   acknowledged writes until separate read-back and boot evidence exists.
+
+## RISK-016 — UV-K1 board identity and recovery contract are not yet pinned
+
+- **State:** open
+- **Impact:** a trusted firmware project may support multiple related boards,
+  revisions, image layouts, or recovery methods. Applying the wrong variant or
+  mistaking source behavior for the exact available unit could erase
+  configuration/calibration, prevent boot, drive a peripheral incorrectly, or
+  enable an unsafe RF path.
+- **Mitigation:** `K1EVID-013` pins the exact running firmware and source
+  revision, records the unit's model/PCB/MCU identity, validates backup and
+  known-good recovery artifacts, separates Puya MCU facts from board mappings,
+  and assigns every mapping a physical observation. No AFIK write or TX is
+  permitted in this package; a later target package must begin with a harmless
+  boot witness followed by demonstrated recovery on this unit.

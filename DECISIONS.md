@@ -278,3 +278,24 @@ meaning.
 - Page acknowledgement proves only bootloader acceptance. No retry follows an
   ambiguous write, and no success claim follows without physical recovery and
   independent boot observations on the exact unit.
+
+## ADR-021 — K1 evidence may be trusted without importing its implementation
+
+- **Date:** 2026-08-06
+- **Status:** accepted for `K1EVID-013`
+- The exact Armel firmware demonstrated on the available UV-K1 is accepted as
+  trusted, hardware-tested evidence. Its direct manufacturer support and
+  sponsorship materially raise confidence in its supported target and board
+  observations.
+- AFIK will pin exact source revisions and cite exact locations for facts, then
+  independently implement those facts in Rust. It will not copy, link, port,
+  or incrementally translate existing application or driver code.
+- The user-selected latest Armel development line resolves to the repository's
+  default `main` branch (there is no `master` branch), pinned on 2026-08-06 as
+  commit `fe9c4e9432694b50aea651084a043aae0b58673d`.
+- Puya documentation remains the primary source for the PY32F071 architectural
+  and peripheral contract. Armel evidence binds those capabilities to the
+  exact radio board; physical observations on the available unit validate the
+  binding and recovery path.
+- `FLASH-012` is deferred, not completed or superseded. Its K5-specific image,
+  bootloader, backup, and recovery assumptions do not apply to K1.

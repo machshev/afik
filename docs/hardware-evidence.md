@@ -4,6 +4,27 @@ Hardware facts are recorded before they are encoded in target or simulator
 source. A simulator result confirms software behaviour against its declared
 model; it does not increase confidence in the underlying silicon fact.
 
+## Source selected by K1EVID-013
+
+### Armel UV-K1/K5-V3 firmware
+
+- **Repository:** `armel/uv-k1-k5v3-firmware-custom`.
+- **Revision:** upstream default branch `main`, commit
+  `fe9c4e9432694b50aea651084a043aae0b58673d`, resolved 2026-08-06 with
+  `git ls-remote --symref`; the upstream repository has no `master` branch.
+- **Standing:** the user reports that the firmware currently runs on the exact
+  available UV-K1 and that the project has direct manufacturer support and
+  sponsorship. `K1EVID-013` accepts the pinned project as trusted,
+  hardware-tested board evidence.
+- **Permitted use:** cite exact source locations as evidence for experiments
+  and an independent Rust implementation, corroborating MCU behavior against
+  Puya documentation and board bindings against the exact unit.
+- **Prohibited use:** copying, linking, porting, or incrementally translating
+  its application or driver implementation into AFIK production source.
+- **Pending:** record the version displayed by the available unit, confirm that
+  it corresponds to the selected source line, hash the relevant pinned files,
+  and map each accepted fact to a physical observation and confidence.
+
 ## Sources used by DP32-003
 
 ### DP32G030 reference manual v1.23

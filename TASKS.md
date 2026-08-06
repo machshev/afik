@@ -542,7 +542,8 @@
 
 ## FLASH-012 — Recovery-gated UV-K5 V1 firmware flashing
 
-- **Status:** active (2026-08-06)
+- **Status:** deferred (2026-08-06; software milestone complete, physical K5
+  unavailable)
 - **Objective:** add the smallest host and image path that can safely attempt a
   real firmware update on one explicitly identified UV-K5 V1/DP32G030 radio
   while preserving the stock serial bootloader and unit calibration.
@@ -605,3 +606,50 @@
   in the execution environment. The next action is exact board/MCU inspection
   followed by the read-only normal-firmware EEPROM backup; no bootloader write
   precedes those gates.
+
+## K1EVID-013 — UV-K1/PY32F071 hardware evidence and target contract
+
+- **Status:** active (2026-08-06)
+- **Objective:** establish the smallest reproducible, independently implemented
+  AFIK target contract for one exact Quansheng UV-K1/PY32F071 unit currently
+  available for inspection and recovery testing.
+- **Scope:** pin Armel's latest default-branch UV-K1 firmware revision
+  (`fe9c4e9432694b50aea651084a043aae0b58673d` from upstream `main`, resolved
+  2026-08-06; the repository has no `master` branch) and relate it to the
+  version currently demonstrated on the test unit; record its
+  manufacturer-supported project provenance;
+  identify the exact radio, PCB, MCU, flash/recovery path, and non-secret
+  calibration/configuration boundaries; build a source-to-fact evidence matrix
+  for CPU, memory, image format, boot path, clock, GPIO, display, keypad,
+  BK4819 bus, audio, USB/serial, and RF control; corroborate MCU facts against
+  Puya documentation; and specify the first harmless physical boot witness and
+  recovery experiment for a later target implementation package.
+- **Dependencies:** `FOUND-001`, the available UV-K1 test unit, the exact Armel
+  firmware version and source revision, a retained known-good recovery image,
+  a configuration/calibration backup, Puya PY32F071 documentation, and
+  read-only inspection tools appropriate to the unit.
+- **Assumptions:** the demonstrated Armel firmware is trusted, hardware-tested
+  evidence for the supported UV-K1 configuration; manufacturer support raises
+  its confidence but does not turn its implementation into AFIK production
+  source; AFIK will independently implement evidenced behavior in Rust; model
+  name alone does not identify every future revision; and a successful
+  third-party firmware boot does not prove an AFIK image.
+- **Exclusions:** copying, linking, porting, or incrementally translating Armel
+  or other existing application/driver code; destructive flashing before
+  backup and recovery proof; K5 V3 family-wide claims; guessed registers or
+  pins; production peripheral drivers; RF transmission; and any physical AFIK
+  success claim in this evidence-only package.
+- **Likely files:** `docs/hardware-evidence.md`, a new UV-K1 bring-up document,
+  `docs/architecture.md`, `DECISIONS.md`, `RISKS.md`, `STATUS.md`, and this file.
+- **Tests required:** source hashes and pinned revisions are reproducible;
+  extracted facts cite exact source locations and confidence; contradictory or
+  missing board facts remain explicit; backup/recovery artifacts are validated
+  outside the repository without recording calibration bytes or device
+  secrets; and documentation/build hygiene checks pass.
+- **Acceptance criteria:** the exact test unit and running firmware revision are
+  recorded without secrets; every proposed target/peripheral behavior has
+  provenance, confidence, and a required physical observation; memory and
+  image contracts are sufficient to define a later bounded PY32 target task;
+  recovery is demonstrated before any AFIK image attempt; TX remains denied;
+  and the next task is the smallest independently implemented target reset and
+  boot-witness package rather than a general hardware port.
