@@ -300,3 +300,6 @@
   exact unit showed faint pixels at 21. Treat success as a boot-witness
   readability result. A future UI/persistence package must bound adjustment,
   valid ranges, defaults, and recovery before exposing contrast as a setting.
+- **Observed result:** value 31 produced substantially clearer fixed words on
+  the exact unit while the backlight and serial fallback remained functional.
+  The risk remains open for production/runtime calibration.

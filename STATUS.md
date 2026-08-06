@@ -2,8 +2,8 @@
 
 ## Current work package
 
-**Work Package 21 (`K1CON-021`) is active: calibrate the fixed K1 boot-witness
-contrast after successful display, backlight, and serial observations.**
+**Work Package 21 (`K1CON-021`) is complete: the K1 display, constant
+backlight, improved fixed contrast, and serial fallback are physically observed.**
 
 K1 has priority because an exact unit running Armel firmware is available for
 inspection. `K1EVID-013` supplies the K1 evidence baseline and same-unit
@@ -49,8 +49,8 @@ features remain outside this bounded slice.
   physically visible under bright external light and `AFIK-K1-0.2` responded.
 - Work Package 20 constant K1 backlight: complete; bounded PF8 implementation
   and static/physical verification passed.
-- Work Package 21 fixed K1 contrast: active; exact one-byte command change and
-  static verification complete; physical readability confirmation pending.
+- Work Package 21 fixed K1 contrast: complete; exact one-byte command change,
+  clearer physical text, backlight, and serial verification passed.
 - `UI-005` logical key edges, bounded semantic views, exact boot-only entry,
   release gate, draft editor, and checked persistence action: complete.
 - `UI-005` separate persisted/active policy simulation, deterministic timed
@@ -108,9 +108,8 @@ features remain outside this bounded slice.
   pending; no serial device is visible here.
 - Work Package 18 selected and bounded the next application slice: a fixed
   display-only AFIK boot witness with the serial responder retained.
-- Current smallest actionable task: after explicit confirmation for the exact
-  verified contrast image, perform one guarded write, power-cycle, observe text
-  readability/backlight, and probe `AFIK-K1-0.2` over serial.
+- Current smallest actionable task: define `K1KEY-022`, a receive-only keypad
+  matrix/UI witness which excludes PTT, side keys, RF, TX, and persistence.
 
 ## Work Package 14 implementation milestone
 
@@ -420,6 +419,18 @@ Physical backlight verification on 2026-08-06:
   Clippy and 133 tests, target build/ELF verification, packaging, and positive/
   negative raw-image gates passed. `git diff --check` passed. No contrast image
   write has been sent.
+
+Physical contrast verification on 2026-08-06:
+
+- After explicit authorization and guard revalidation, K1 `7.03.01`
+  acknowledged all `190/190` pages in transaction `3f6392fd`; status was
+  `acknowledged_not_read_back`. No retry or reset was sent.
+- After power-cycle, the user confirmed that the backlight and words were both
+  present and that the words were substantially clearer.
+- The final read-only normal-mode probe passed with
+  `protocol=normal-firmware-hello`, `firmware=AFIK-K1-0.2`.
+- `K1CON-021` is complete. This proves one fixed boot-witness contrast on the
+  exact unit, not a runtime setting or production calibration policy.
 
 ## Work Package 13 first evidence milestone
 

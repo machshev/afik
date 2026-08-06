@@ -940,7 +940,7 @@
 
 ## K1CON-021 — Fixed K1 boot-witness contrast calibration
 
-- **Status:** active (2026-08-06)
+- **Status:** complete (2026-08-06)
 - **Objective:** make the physically verified fixed words clearly readable by
   replacing AFIK's conservative electronic-volume value with the pinned board
   source's fixed startup value.
@@ -964,3 +964,23 @@
   pass. The 48,580-byte image has SHA-256
   `b2e6a38b965fcb0d419ec2ed7309aa3d6518285967c98d1646eddaa8718c8d32`
   and CRC-32 `4dfc4076`; physical writing remains separately confirmation-gated.
+- **Completion notes:** after explicit authorization, K1 `7.03.01` acknowledged
+  all 190 pages without retry. After power-cycle, the user confirmed the
+  backlight remained on and the words were substantially clearer. The final
+  read-only probe returned `AFIK-K1-0.2`.
+
+## K1KEY-022 — Define a receive-only K1 keypad/UI witness
+
+- **Status:** pending (2026-08-06)
+- **Objective:** bound the next smallest K1 UI driver slice around the keypad
+  matrix without including PTT or any RF behavior.
+- **Scope:** establish the exact PB12..PB15 row and PB3..PB6 column scan table,
+  idle levels, one-key decoding, debounce/time inputs, and a display-only key
+  witness before target implementation.
+- **Dependencies:** completed `K1CON-021`, pinned board/keypad observations, the
+  physically verified display/backlight/serial path, and a separately bounded
+  no-transmit hardware experiment.
+- **Exclusions:** PTT, side keys, multi-key/chord claims, RF/TX, EEPROM,
+  interrupts, arbitrary timing assumptions, copied source, and general menus.
+- **Acceptance criteria:** a stable evidence-backed matrix and fail-closed test
+  contract exists before any GPIO scan implementation or physical write.

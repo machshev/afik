@@ -299,6 +299,18 @@ order are maintained in `docs/k1-bring-up.md`.
   during fixed startup, while AFIK used 21. `K1CON-021` may change only that
   command byte and must not infer a runtime setting or final panel policy.
 
+### EVID-K1-030 — Fixed electronic-volume 31 improves readability
+
+- **Write observation:** the exact one-byte contrast image was acknowledged for
+  all 190 pages in transaction `3f6392fd`, without retry or reset.
+- **Physical observation:** after power-cycle, the user confirmed the active
+  backlight, visible fixed words, and substantially improved readability.
+- **Independent fallback:** the immediate read-only serial probe returned
+  `AFIK-K1-0.2`.
+- **Conclusion:** electronic-volume 31 is physically useful for this fixed boot
+  witness on the exact unit. It is not a general panel calibration, runtime
+  setting, temperature/supply policy, or evidence for other units.
+
 ## Sources used by DP32-003
 
 ### DP32G030 reference manual v1.23
