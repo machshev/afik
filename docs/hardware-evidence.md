@@ -240,3 +240,16 @@ and board experiments under `RISK-006` before implementation.
   spectral purity, and regulatory compliance.
 - Hardware access, flashing, physical receive claims, and all on-air TX remain
   blocked by `RISK-002`, `RISK-005`, and `RISK-007`.
+
+## Work Package 7 scanning evidence boundary
+
+`SCAN-007` introduces no hardware facts. Dwell and hold milliseconds are AFIK
+workflow configuration, not BK4819 tune/settle requirements. Timer expiries and
+normalized `SignalMeasurement` values are logical adapter inputs, not claims
+about a DP32G030 timer, interrupt, RSSI threshold, polling interval, or physical
+squelch accuracy.
+
+The deterministic simulator proves controller scheduling, stale-token safety,
+logical RF command ordering, and TX-policy composition against declared inputs.
+Physical scan cadence, receiver settling, status sampling, tone detection, RF
+performance, and target integration remain unknown under `RISK-008`.

@@ -66,6 +66,25 @@ in `docs/hardware-evidence.md`. The harness does not model physical 3-wire
 timing, reset or initialization, calibration timing, board RF switches, filters,
 audio, external PA control, propagation, signal strength, or emitted RF.
 
+## Channel activation and scanning
+
+Work Package 7 adds `ChannelSimulator` as a host composition of
+`ChannelController` and `RfSimulator`. Initial construction validates every
+generated-bank channel against the logical RF frequency representation before
+any retained simulator state exists. Each controller activation then runs the
+same receive command path and appends timestamped control and RF events.
+
+Timer arms become absolute virtual deadlines. Advancing time performs no
+implicit work; the caller must deliver the opaque token. The current token is
+rejected before its deadline, while stale or cancelled tokens are delivered to
+prove that the controller ignores them. Normalized signal samples are explicit
+inputs. They are not synthesized from propagation, RSSI, or a physical receiver.
+
+Scanning denies controller-level TX before RF operations. Selected-state TX
+passes through `TxPolicy`, the class-bound capability bundle, and the BK4819
+driver; TX stop resumes receive on the still-selected channel. Identical timed
+scan/hold/stop/TX scripts produce identical control and RF traces.
+
 ## Minimal DP32G030 target model
 
 Work Package 3 adds a separate Renode model for the target reset proof. It maps

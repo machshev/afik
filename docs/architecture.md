@@ -4,13 +4,17 @@ The current hardware-independent crates have this dependency direction:
 
 ```text
 radio-domain ──→ radio-channel-plan ──→ radio-storage
+      │                   │
       ├────────→ radio-tx-policy ─────→ radio-ui
-      │                 │
-      └─────────────────┴─────────────→ radio-bk4819
+      │                   │
+      └───────────────────┴───────────→ radio-channel-control
+      │                   │
+      └────────→ radio-bk4819
 
 radio-protocol ──→ radio-programmer ──→ radio-sim
 radio-ui ─────────────────────────────→ radio-sim
 radio-bk4819 ─────────────────────────→ radio-sim
+radio-channel-control ────────────────→ radio-sim
 ```
 
 `radio-domain` owns checked integer radio types and classifications.
@@ -56,3 +60,10 @@ mode transition. That transition requires a borrowed, class-matching capability
 from `radio-tx-policy`. It does not depend on a PAC, HAL, board crate, allocator,
 or host crate. `radio-sim` supplies a host-only logical bus with explicit virtual
 time and deterministic one-shot failures; it is not a silicon or RF model.
+
+Work Package 7 adds `radio-channel-control` as an embedded leaf over the domain,
+generated-plan, and TX-policy crates. It owns checked one-bank activation,
+manual navigation, explicit dwell/hold state, opaque logical timer tokens, and
+selected-state policy authorization. It owns neither a clock nor an RF driver.
+`radio-sim` is the host composition root that applies activation outputs to the
+logical BK4819 driver and schedules tokens on explicit virtual time.

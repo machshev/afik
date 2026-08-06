@@ -164,3 +164,19 @@ meaning.
   the inferred TX mode requires a borrowed token whose class matches the active
   channel before any bus operation. This proves a software authority boundary,
   not safe physical transmission or correct silicon/board behavior.
+
+## ADR-015 — Scanning is an explicit-input state machine
+
+- **Date:** 2026-08-06
+- **Status:** accepted for `SCAN-007`
+- `radio-channel-control` owns no clock, scheduler, RF driver, or target adapter.
+  It changes only through manual selection, start/stop, normalized signal, and
+  opaque timer-expiry inputs. Non-zero dwell and hold milliseconds are explicit
+  workflow policy rather than hardware facts.
+- Every timer arm has a fresh bounded token. Replaced, cancelled, early, and
+  stale expiry behavior is explicit, so a delayed adapter event cannot silently
+  advance the current scan state.
+- Scanning cannot request TX authority. Selected state pairs the exact channel
+  with a capability minted by `TxPolicy`; the BK4819 boundary independently
+  checks that class. Host simulation composes these layers and never substitutes
+  simulated success for physical timing or RF evidence.

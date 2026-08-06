@@ -2,13 +2,13 @@
 
 ## Current work package
 
-**Work Package 7 — channel activation and deterministic scanning (`SCAN-007`)
-is active.**
+**No work package is active. Work Package 7 — channel activation and
+deterministic scanning (`SCAN-007`) is complete.**
 
-The package is limited to a hardware-independent one-bank controller, explicit
-logical timers and signal samples, policy-gated selected-state TX, and
-deterministic host integration. It does not define physical settle/poll timing,
-multiple-bank or priority scanning, target peripherals, or RF behavior.
+The next smallest actionable package is the complete programmer CLI over the
+existing `radio-programmer` library. It must be activated in `TASKS.md` before
+implementation; parsing, presentation, and process exit behavior belong in the
+front end while programming logic remains in the library.
 
 ## State
 
@@ -18,7 +18,7 @@ multiple-bank or priority scanning, target peripherals, or RF behavior.
 - Work Package 4 canonical image/compiler round trip: complete.
 - Work Package 5 simulator-first boot UI and hidden TX permissions: complete.
 - Work Package 6 BK4819 receive path and token-gated TX boundary: complete.
-- Work Package 7 channel activation and deterministic scanning: active.
+- Work Package 7 channel activation and deterministic scanning: complete.
 - `UI-005` logical key edges, bounded semantic views, exact boot-only entry,
   release gate, draft editor, and checked persistence action: complete.
 - `UI-005` separate persisted/active policy simulation, deterministic timed
@@ -51,9 +51,44 @@ multiple-bank or priority scanning, target peripherals, or RF behavior.
 - `RF-006` heap-free driver, exact command ordering/status decoding,
   class-bound capability token, fail-closed state recovery, deterministic RF
   simulation, and mismatch/failure trace proofs: complete.
-- Next smallest task: implement the bounded `radio-channel-control` activation,
-  timer-token, dwell/hold, and selected-state TX-authorization contract with
-  exact unit tests.
+- `SCAN-007` checked activation/navigation, explicit timer-token dwell/hold
+  state, stale expiry safety, scan-time TX denial, selected-state policy bundle,
+  and repeatable integrated control/RF traces: complete.
+- Next smallest task: define and activate the complete programmer CLI as a thin
+  front end over `radio-programmer` without duplicating compiler/protocol logic.
+
+## Completed Work Package 7 exit criteria
+
+- `radio-channel-control` is hardware-independent, `no_std`, heap-free,
+  allocation-free, bounded, and passes a `thumbv6m-none-eabi` warning-denied
+  lint with its embedded dependencies.
+- Initial/manual indexes are checked before mutation; navigation and scan
+  advancement wrap exactly; each update emits at most one activation.
+- The controller owns no clock. Non-zero integer dwell/hold configuration,
+  fresh bounded timer tokens, early-deadline enforcement in the host adapter,
+  and stale/cancelled token tests make scheduling explicit and deterministic.
+- Open squelch restarts/rearms hold without retuning; a closed hold expiry
+  advances once and rearms dwell. Signal values remain logical inputs.
+- Scanning cannot obtain TX authority. Selected state goes through `TxPolicy`,
+  carries the exact class-bound token, and reaches logical TX only through the
+  BK4819 driver; denial leaves the RF trace unchanged.
+- Identical timed scan, hold, stop, and TX scripts produce identical control and
+  RF traces. No physical timing, signal, target peripheral, or RF claim was
+  added.
+
+## Work Package 7 verification
+
+Verified 2026-08-06:
+
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
+  — passed for all host crates and targets.
+- `nix develop path:. -c cargo test --workspace` — passed: 60 unit tests and
+  all doc tests, 0 failures.
+- `nix develop path:. -c bash -c 'export RUSTC_BOOTSTRAP=1; export __CARGO_TESTS_ONLY_SRC_ROOT="$RUST_SRC_PATH"; cargo clippy -Z build-std=core --package radio-channel-control --target thumbv6m-none-eabi -- -D warnings'`
+  — passed for `radio-channel-control` and its embedded dependencies.
+- `env RUSTC=/nix/store/2mm3p5wcy1ifrcx5vp3bwsw7a76r77jc-rustc-1.86.0/bin/rustc RUSTDOC=/nix/store/2mm3p5wcy1ifrcx5vp3bwsw7a76r77jc-rustc-1.86.0/bin/rustdoc CARGO_TARGET_DIR=/tmp/afik-scan-007-rust-1-86-target /nix/store/npqlgsia03kfhv8m9mav6hfnbawpg0yg-cargo-1.86.0/bin/cargo test --workspace`
+  — passed: 60 unit tests and all doc tests on Rust/Cargo 1.86.0.
 
 ## Completed Work Package 6 exit criteria
 

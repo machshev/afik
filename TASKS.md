@@ -250,7 +250,7 @@
 
 ## SCAN-007 — Channel activation and deterministic scanning
 
-- **Status:** active
+- **Status:** complete (2026-08-06)
 - **Objective:** add the smallest bounded channel-control state machine that
   activates generated-bank channels, scans them deterministically, and denies
   controller-level TX authorization while scanning.
@@ -290,3 +290,14 @@
   selected-state TX goes through `TxPolicy` and the class-bound BK4819 boundary;
   simulator time is explicit and repeatable; no hardware timing, register,
   physical signal, or RF behavior is invented.
+- **Completion notes:** added `radio-channel-control` with checked one-bank
+  activation, wraparound manual navigation, explicit selected/dwell/hold state,
+  non-zero integer timing configuration, fresh bounded timer tokens, stale and
+  cancelled expiry rejection, normalized signal observation, and non-mutating
+  error paths. Scanning denies policy authority; selected state pairs the exact
+  channel with a class-bound token minted only by `TxPolicy`. `ChannelSimulator`
+  validates the complete bank against RF frequency representation, applies
+  retunes through `RfSimulator`, enforces explicit deadlines, blocks control
+  during TX, resumes receive after TX, and produces repeatable control/RF
+  traces. Pinned host, `thumbv6m`, and Rust 1.86 gates pass as recorded in
+  `STATUS.md`; physical timing and signal behavior remain open in `RISK-008`.

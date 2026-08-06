@@ -24,3 +24,9 @@ requires a borrowed token and checks its class against the active channel before
 performing any register write. Unknown, faulted, invalid, or mismatched state
 denies the TX-mode write. This is not a physical TX adapter, PA controller, or
 persistence implementation.
+
+Work Package 7 adds a higher workflow boundary: channel control refuses to ask
+for policy authority while scanning. Only selected state can return an
+`AuthorisedTransmission`, which pairs the exact active channel with the token
+minted for its class. The RF driver still rechecks the class match; the bundle
+does not create another token constructor or weaken the sole policy authority.
