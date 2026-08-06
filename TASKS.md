@@ -1211,3 +1211,8 @@
   timed out; the following hello still passed. No later register was requested.
   Add one same-path constant marker with no MMIO before attributing the timeout
   to RCC access, framing, reset, or UART behavior.
+- **Serial-only isolation step:** remove display, keypad, backlight, debounce,
+  and matrix scanning from the runnable diagnostic entry point. Retain only the
+  RAM boot witness, polling USART hello, no-MMIO control, combined clock probe,
+  and individual RCC reads. Existing pure modules/tests remain, but no board UI
+  peripheral may initialize or run in this image.

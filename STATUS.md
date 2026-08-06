@@ -117,9 +117,9 @@ features remain outside this bounded slice.
 - Work Package 22 keypad/UI witness definition: complete; the pinned matrix,
   electrical idle/scan levels, one-key decode, explicit-time debounce, and
   display-only result were bounded before implementation.
-- Current smallest actionable task: add a no-MMIO constant response using the
-  same bounded command path to distinguish command/response failure from the
-  first RCC CR read; retain the hello and do not publish HAL clocks.
+- Current smallest actionable task: build a serial-only diagnostic image which
+  retains hello, no-MMIO control, and individual RCC reads but never initializes
+  or services display, keypad, or backlight; do not publish HAL clocks.
 
 ## Work Package 23 dependency and executor milestone
 

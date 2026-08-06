@@ -629,3 +629,15 @@ meaning.
   that did not complete rather than losing all progress in a combined response.
 - The diagnostic retains the combined request for comparison but changes no
   clock, HAL, keypad/display, persistence, RF, or TX state.
+
+## ADR-044 — RCC diagnosis runs in a serial-only image
+
+- **Date:** 2026-08-06
+- **Status:** accepted for `K1ASYNC-023`
+- The physical clock request timed out while the normal hello remained
+  recoverable, and the image still initialized display, keypad, and backlight.
+  The next diagnostic removes those runtime paths rather than assuming they are
+  harmless to serial timing.
+- Only the boot RAM witness, polling USART, normal hello, no-MMIO control, and
+  read-only RCC requests may execute. This is an isolation image, not a keypad
+  or display regression claim.
