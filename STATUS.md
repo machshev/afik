@@ -486,6 +486,14 @@ features remain outside this bounded slice.
 - `git diff --check` — passed.
 - No entry point, physical image, executor task, RCC clock field, UART/SPI pin,
   keypad/display behavior, RF, TX, or flash path changed.
+- `nix flake check path:. --no-build` — passed after the runnable-step boundary
+  was recorded.
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
+  — passed.
+- `nix develop path:. -c cargo test --workspace` — passed; all 170 unit and
+  integration tests plus doc tests passed.
+- `git diff --check` — passed and the worktree was clean.
 
 ## Work Package 22 pure keypad milestone
 
