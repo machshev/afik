@@ -86,6 +86,27 @@ This establishes the exact unit's passive beacon shape and version. It does not
 establish a safe write protocol, flash read-back, board identity, calibration
 backup, recovery image, or application boot.
 
+## Exact-unit normal-mode backup attempt
+
+With the unit visibly booted into normal Fusion `v5.5`, the pinned serial tool
+was invoked in dump-all mode at 38,400 baud through the same CH340 adapter. Its
+only transmitted operation before a response is the documented normal-mode
+hello; the later path contains read requests only.
+
+Three bounded attempts were made on 2026-08-06: initially, after a radio power
+cycle, and after unplugging/replugging both ends of the cable. Each reached
+`Examining device info` and received no response before the 30-second host
+timeout. No backup file was created. No EEPROM write, restore, reboot,
+bootloader handshake, firmware page, or reset command was sent.
+
+The earlier passive bootloader beacon proves only the radio-to-host receive
+path in bootloader mode. The result does not distinguish among an unconnected
+or incompatible host-to-radio conductor, plug/contact behavior, normal-mode
+protocol differences in Fusion `v5.5`, or a requirement to use the direct
+USB-C interface. Identical retries are stopped. The next safe experiment is a
+direct USB-C normal-mode enumeration and read-only calibration dump, or the
+same dump through the pinned Armel UV Studio workflow.
+
 ## Safe experiment order
 
 1. Observe and record the running version and normal USB descriptors.

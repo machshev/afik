@@ -47,6 +47,22 @@ order are maintained in `docs/k1-bring-up.md`.
   validate the complete read-only configuration/calibration backup, then
   validate a known-good recovery image before any bootloader handshake.
 
+### EVID-K1-017 — CH340 normal-mode read path did not answer
+
+- **Observation:** three 30-second dump-all attempts through the exact CH340
+  adapter, with the unit visibly in normal Fusion `v5.5`, received no response
+  to the normal-mode hello. Reconnecting and power-cycling did not change the
+  result; no backup file was created.
+- **Safety boundary:** the selected workflow contains hello and reads only. No
+  write, restore, reboot, bootloader handshake, firmware page, or reset was
+  sent.
+- **Confidence:** high that this exact connection did not answer; insufficient
+  to identify whether the cause is the cable TX path, contact/plug behavior,
+  Fusion `v5.5` protocol behavior, or interface selection.
+- **Required next experiment:** enumerate the radio's direct USB-C interface in
+  normal mode and use the pinned Armel calibration-dump workflow. Do not repeat
+  the unchanged CH340 experiment or enter a write workflow.
+
 ### Puya PY32F071-E product documentation
 
 - **Publisher:** Puya Semiconductor (Shanghai) Co., Ltd.

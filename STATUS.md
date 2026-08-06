@@ -167,6 +167,22 @@ Passive-beacon verification on 2026-08-06:
   `0x0518` frame, decoded length 36, data length 32, and version `7.03.01`;
   UID output was suppressed.
 
+## Work Package 13 normal-mode backup experiment
+
+- Three bounded read-only dump attempts were made through the CH340 adapter:
+  initially, after a radio power cycle, and after both cable ends were
+  reconnected. Each reached the normal-mode device-info hello and timed out
+  after 30 seconds without a response.
+- No backup file was created and no write, restore, reboot, bootloader
+  handshake, firmware page, or reset command was sent.
+- The bootloader beacon established only the radio-to-host path in bootloader
+  mode. Host-to-radio continuity, plug behavior, Fusion `v5.5` normal protocol,
+  and direct USB-C behavior remain unresolved.
+- Current smallest actionable task: connect the radio's direct USB-C data port
+  in normal mode, record its enumeration, and create the read-only calibration
+  backup using the pinned Armel/UV Studio workflow. Do not repeat the unchanged
+  CH340 attempt.
+
 ## Work Package 12 software milestone and verification
 
 - Sources and confidence boundaries are recorded in
