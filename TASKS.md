@@ -658,6 +658,42 @@
   `docs/hardware-evidence.md`. Repeated fixed-session normal-mode reads of the
   exact unit identified `F4HWN v5.5.0`, and the complete 8 KiB backup matched
   the retained private copies byte-for-byte. Physical model/MCU markings, USB
-  identities, and same-unit recovery remain open; two verified local copies are
-  accepted for this evidence package, and no AFIK image write or TX operation
-  is permitted.
+  identities remain open; the unchanged pinned recovery candidate has now been
+  flashed and the unit returned to `F4HWN v5.5.0` with a byte-identical backup.
+  No AFIK image write or TX operation is permitted.
+
+## K1FLASH-014 — Auto-detected K1/K5 recovery flasher
+
+- **Status:** active (2026-08-06)
+- **Objective:** extend the host flasher with an independently implemented,
+  fail-closed K1 recovery path and automatic K1/K5 protocol classification.
+- **Scope:** reuse the bounded legacy frame envelope; enumerate USB serial
+  candidates when `--device auto` is selected; classify only validated
+  bootloader beacons (`2.*` as the qualified K5 V1 protocol and the pinned
+  `7.03.*` shape as the qualified K1 protocol); expose generic identify,
+  read-only 8 KiB backup, and recovery-flash workflows; validate K1 raw image
+  vectors/range and page acknowledgements; preserve the existing K5 V1 path;
+  and test malformed, ambiguous, unsupported, and cross-family inputs.
+- **Dependencies:** `K1EVID-013`, `FLASH-012` software protocol tests, the
+  shared Linux serial transport, the pinned K1 `0x0518/0x0530/0x0519/0x051A`
+  observations, and the K5 V1 beacon/page vectors.
+- **Assumptions:** USB metadata narrows candidate paths but never proves a
+  radio; a bootloader beacon identifies a protocol family, not a physical board
+  or MCU; K1 recovery flashing is supported only for the validated raw-image
+  contract; and K1 AFIK application flashing is not available.
+- **Exclusions:** automatic hardware identity claims from USB or serial alone,
+  K1 AFIK image generation or flashing, K1 bootloader replacement, EEPROM
+  writes, RF operation, retries after ambiguous page results, and importing
+  existing firmware or driver source.
+- **Likely files:** `crates/radio-k5-flasher`, a K1 flasher module/crate, the
+  generic CLI, workspace manifests, programmer documentation, `DECISIONS.md`,
+  `RISKS.md`, and `STATUS.md`.
+- **Tests required:** exact K1/K5 beacon classification, USB candidate
+  enumeration and ambiguity failure, K1 page encoding and zero-padding,
+  transaction/page/error acknowledgement checks, complete K1 image validation,
+  no-retry failure behavior, generic CLI routing, and all existing K5 tests.
+- **Acceptance criteria:** auto mode enumerates candidates and fails closed on
+  zero or multiple viable paths; K1 and K5 are selected only from validated
+  beacon evidence; unsupported/unknown versions fail closed; K1 recovery writes
+  are bounded and acknowledgement-checked; the existing K5 path remains green;
+  and no K1 AFIK flashing capability is claimed.

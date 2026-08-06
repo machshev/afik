@@ -177,6 +177,22 @@ private copies were on device `56`; this is useful cross-filesystem evidence
 but is not durable user-controlled storage. No write, reset, bootloader entry,
 or RF operation was performed.
 
+## Exact-unit recovery rehearsal
+
+After the two local backup and recovery copies were verified, the unchanged
+candidate `archive/f4hwn.fusion.v5.5.0.bin` was written to the exact unit using
+the independently implemented K1 bootloader path. The live beacon was
+`7.03.01`; three `0x0530` version handshakes preceded 375 sequential `0x0519`
+page requests. Every `0x051A` acknowledgement matched the per-run transaction
+identifier and page index and returned zero. No page was retried and no reset
+command was sent.
+
+After a user power-cycle, the radio returned to normal Fusion `v5.5.0`. A new
+complete `0x0514`/`0x051B` read produced 8,192 bytes and matched the pre-flash
+backup byte-for-byte. This demonstrates same-unit recovery and preservation of
+the logical calibration/configuration data; it is not an AFIK K1 application
+boot proof.
+
 ## Candidate v5.5.0 recovery image
 
 Pinned Armel commit `fe9c4e9432694b50aea651084a043aae0b58673d`
@@ -193,11 +209,10 @@ identity reported by the exact unit.
 - File end when loaded at `0x08002800`: `0x08019E5C`, below the 128 KiB main
   flash end `0x08020000`.
 
-This is a source- and vector-valid recovery candidate, not yet a physically
-rehearsed recovery image. The two matching local copies are accepted for the
-current evidence package. The first later write experiment must reflash this unchanged image,
-prove normal `v5.5.0` boot, confirm the calibration/configuration backup, and
-prove that bootloader `7.03.01` remains available.
+This is a source- and vector-valid recovery candidate. The same-unit recovery
+rehearsal is complete; the next destructive action remains blocked until a
+separate target/image contract exists. The two matching local copies remain
+accepted for the current evidence package.
 
 ## Pinned CHIRP protocol evidence
 
@@ -221,8 +236,9 @@ prove that bootloader `7.03.01` remains available.
 3. The known-good Armel recovery candidate is statically validated and retained
    in matching local copies; validate the recovery procedure before writing.
 4. Enter and leave DFU without writing; record descriptors and the procedure.
-5. Reflash the same known-good Armel image only after those gates, confirm normal boot, and confirm
-   that recovery remains available.
+5. The unchanged known-good Armel recovery rehearsal is complete; the next
+   destructive action remains blocked until a separate target/image contract
+   exists.
 6. Only a later work package may build a minimal AFIK target. Its first physical
    image must provide a harmless visible or USB boot witness, contain no RF
    operation, and be followed immediately by proven Armel recovery.

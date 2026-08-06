@@ -313,3 +313,20 @@ meaning.
   AFIK image write, a firmware restore, or RF transmission. Exact-unit physical
   markings, USB identities, and a non-destructive recovery procedure remain
   required before those actions.
+
+## ADR-023 — K1/K5 automatic detection is protocol classification only
+
+- **Date:** 2026-08-06
+- **Status:** accepted for `K1FLASH-014`
+- The generic flasher may classify a live bootloader beacon as the qualified
+  K5 V1 protocol only for validated `2.*` beacons, or as the qualified K1
+  protocol only for the pinned `7.03.*` beacon shape. Unknown and unsupported
+  versions fail closed.
+- USB metadata narrows candidate serial paths but never proves the physical
+  board, MCU, or RF revision. Automatic mode must fail on zero or multiple
+  viable candidates and must report protocol classification separately from
+  hardware identity.
+- K1 support is limited to the independently implemented raw recovery/backup
+  path. No K1 AFIK application image or target contract exists, so the generic
+  flasher must reject K1 AFIK flashing rather than route it to the K5 image
+  path.

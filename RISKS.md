@@ -209,3 +209,15 @@
   and assigns every mapping a physical observation. No AFIK write or TX is
   permitted in this package; a later target package must begin with a harmless
   boot witness followed by demonstrated recovery on this unit.
+
+## RISK-017 — K1/K5 bootloader classification is not board identity
+
+- **State:** open
+- **Impact:** related radios may share a serial envelope or version-shaped
+  beacon; treating a protocol classification as a physical MCU/board identity
+  could select an incompatible image or erase calibration.
+- **Mitigation:** `K1FLASH-014` accepts only pinned K1 `7.03.*` and qualified K5
+  V1 `2.*` beacon shapes, rejects unknown versions, reports protocol family
+  separately from hardware identity, enumerates USB candidates without trusting
+  the adapter alone, and does not expose K1 AFIK flashing. Physical markings
+  and image contracts remain separate evidence gates.

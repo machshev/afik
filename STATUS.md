@@ -2,8 +2,8 @@
 
 ## Current work package
 
-**Work Package 13 (`K1EVID-013`) is active: UV-K1/PY32F071 hardware evidence
-and target contract.**
+**Work Package 14 (`K1FLASH-014`) is active: auto-detected K1/K5 recovery
+flasher.**
 
 K1 now has priority because an exact unit running Armel firmware is available
 for inspection while no K5 hardware is available. This evidence package will
@@ -12,7 +12,8 @@ provenance, corroborate the PY32F071 contract against Puya documentation, and
 turn board behavior into a source-and-experiment matrix before AFIK target code
 is written. Trusted existing firmware remains evidence, not production source:
 AFIK will not port, link, or incrementally translate its application or driver
-implementation.
+implementation. `K1EVID-013` supplies the K1 evidence baseline and same-unit
+recovery proof for this bounded host-tool task.
 
 `FLASH-012` is deferred with its software milestone intact and physical gates
 incomplete. It can resume unchanged when the exact K5 V1 hardware is available.
@@ -33,6 +34,7 @@ incomplete. It can resume unchanged when the exact K5 V1 hardware is available.
 - Work Package 12 recovery-gated UV-K5 V1 firmware flashing: deferred; software
   complete and physical hardware unavailable.
 - Work Package 13 UV-K1/PY32F071 hardware evidence and target contract: active.
+- Work Package 14 K1/K5 auto-detected recovery flasher: active.
 - `UI-005` logical key edges, bounded semantic views, exact boot-only entry,
   release gate, draft editor, and checked persistence action: complete.
 - `UI-005` separate persisted/active policy simulation, deterministic timed
@@ -88,10 +90,10 @@ incomplete. It can resume unchanged when the exact K5 V1 hardware is available.
 - `FLASH-012` exact-unit inspection, physical backup, recovery rehearsal,
   page-acknowledged AFIK write, and independent application-boot observation:
   pending; no serial device is visible here.
-- Current smallest actionable task: obtain the exact unit's model/PCB/MCU/
-  RF/display markings and normal/DFU USB identities. The two verified local
-  copies are accepted for now; the pinned source CPU/memory/image contract is
-  recorded, and no physical recovery or AFIK write is authorized.
+- Current smallest actionable task: implement and test the generic K1/K5
+  recovery flasher and fail-closed USB/device/protocol classifier. K1 AFIK
+  image flashing remains out of scope until an independently evidenced AFIK K1
+  image contract exists.
 
 Work-package activation verification on 2026-08-06:
 
@@ -194,9 +196,8 @@ Passive-beacon verification on 2026-08-06:
 - The existing private primary and secondary copies match this read. One fresh
   mode-`0600` copy on `/tmp` was also byte-identical; its different filesystem
   device supplied a cross-filesystem check, but `/tmp` is not durable storage.
-- Current smallest actionable task: record the exact physical markings and
-  normal/DFU USB identities, then validate the recovery procedure before any
-  firmware write.
+- The same-unit recovery rehearsal is now complete; current implementation
+  work is tracked under `K1FLASH-014`.
 
 ## Work Package 13 repeat normal-mode verification
 
@@ -214,7 +215,8 @@ Passive-beacon verification on 2026-08-06:
 - Exact physical markings/USB identity observations and physical recovery
   remain open. The two verified local copies are accepted for this package;
   their shared filesystem remains a documented durability risk, not a current
-  blocker.
+  blocker. The unchanged recovery image has since been flashed and verified
+  by a byte-identical post-flash backup.
 
 K1 evidence-policy and documentation verification on 2026-08-06:
 
@@ -232,6 +234,24 @@ K1 evidence-policy and documentation verification on 2026-08-06:
 - `nix develop path:. -c cargo test --workspace` — passed; all workspace unit,
   integration, and doc tests passed.
 - `git diff --check` — passed.
+
+## Work Package 13 same-unit recovery rehearsal milestone
+
+- The unchanged pinned 95,836-byte `F4HWN v5.5.0` recovery candidate was
+  flashed to the exact unit after the local backup and recovery copies were
+  verified.
+- The live bootloader beacon was exactly `7.03.01`. Three K1 handshakes
+  preceded 375 sequential 256-byte page requests. Every acknowledgement
+  matched the transaction identifier and page index and returned zero; no page
+  was retried and no reset command was sent.
+- After a user power-cycle, the unit identified as `F4HWN v5.5.0`. A complete
+  8,192-byte read-only backup matched the pre-flash private backup byte-for-
+  byte. This proves same-unit recovery to the known-good firmware, but not an
+  AFIK K1 image boot.
+- `python3 /tmp/afik-k1-flash-once.py --check` — passed; 95,836 bytes and 375
+  pages matched the pinned candidate. The bounded writer and post-flash
+  `python3 /tmp/afik-k1-readonly-backup.py` both passed. No RF operation was
+  performed.
 
 ## Work Package 13 recovery-candidate milestone
 

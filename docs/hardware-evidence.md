@@ -118,9 +118,9 @@ order are maintained in `docs/k1-bring-up.md`.
   `0x08019E5C`, within main flash.
 - **Confidence:** high for source identity, raw shape, vectors, and range; high
   that its version name matches the exact unit's reported `F4HWN v5.5.0`.
-- **Boundary:** static validation is not physical recovery proof. Do not use it
-  for an AFIK attempt until two persistent copies exist and an unchanged-image
-  recovery rehearsal returns this exact unit to normal v5.5.0 operation.
+- **Boundary:** static validation alone is not physical recovery proof. The
+  unchanged-image recovery rehearsal is now recorded by `EVID-K1-022`; it does
+  not authorize an AFIK K1 image, whose target contract does not exist.
 
 ### EVID-K1-020 — Pinned CPU, memory, and raw-image contract
 
@@ -139,6 +139,23 @@ order are maintained in `docs/k1-bring-up.md`.
 - **Permitted use:** define the evidence boundary for a later independent Rust
   reset-and-boot-witness package. It does not authorize an AFIK image write or
   TX.
+
+### EVID-K1-022 — Same-unit recovery rehearsal and post-flash backup
+
+- **Observation:** the unchanged pinned raw `F4HWN v5.5.0` image (95,836 bytes,
+  published SHA-256 above) was written through the exact unit's `7.03.01`
+  bootloader after the local backup and recovery copies were verified. All 375
+  page acknowledgements matched the transaction and page index and returned
+  zero.
+- **Postcondition:** after a user power-cycle, normal mode identified
+  `F4HWN v5.5.0`; a fresh complete 8,192-byte read matched the pre-flash backup
+  byte-for-byte.
+- **Confidence:** high for same-unit recovery to the known-good Armel firmware
+  and preservation of logical calibration/configuration contents. This does not
+  establish an AFIK K1 image contract or AFIK application boot.
+- **Safety boundary:** no page was retried, no reset command was sent, and no
+  EEPROM or RF operation was performed. The write path was an independent host
+  experiment based on pinned protocol evidence, not imported firmware code.
 
 ### Puya PY32F071-E product documentation
 
