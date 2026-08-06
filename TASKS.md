@@ -1054,3 +1054,7 @@
   `c50baea15ebcf11805e7fff670cc4e0734c5ad1d52e09512acdb58c68c6e7fb9`
   and CRC-32 `0b98c076`. K1 `7.03.01` acknowledged all 226 pages in transaction
   `1a79dec2` without retry; normal-boot raw observations remain pending.
+- **SPI-suppressed observation:** released remained a valid all-zero scan, but
+  MENU held still timed out. The synchronous display transfer is therefore not
+  the cause. Pre-armed latch-until-release reporting is the next bounded step;
+  Embassy remains outside this package until timer/interrupt evidence exists.

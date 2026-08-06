@@ -341,6 +341,18 @@ SPI-suppressed diagnostic write on 2026-08-06:
   reported `acknowledged_not_read_back`. No retry or reset command was sent.
 - Normal boot and released/held-MENU raw observations remain pending.
 
+SPI-suppressed physical observation on 2026-08-06:
+
+- After normal boot, the released probe again returned `scan_valid=true` with
+  all four masks zero.
+- Holding MENU still caused the prebuilt host probe to time out. Suppressing the
+  key-triggered SPI frame transfer therefore did not remove the failure, so the
+  LCD write is excluded as its cause.
+- No held row mask is established. The next smallest diagnostic is to pre-arm
+  serial capture while released, latch the first nonzero scan, wait for release,
+  and only then transmit it; this tests whether the held circuit temporarily
+  prevents execution or UART response without introducing async/interrupts.
+
 ## Work Package 14 implementation milestone
 
 - `radio-k5-flasher` was renamed to `radio-flasher`; the library now owns both

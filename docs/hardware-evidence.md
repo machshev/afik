@@ -426,6 +426,10 @@ order are maintained in `docs/k1-bring-up.md`.
   57,852-byte SPI-suppressed diagnostic in transaction `1a79dec2` and reported
   `acknowledged_not_read_back`. Normal boot and raw held-key behavior are not
   implied by these acknowledgments.
+- **Isolated-image observation:** after normal boot, released again returned a
+  valid all-zero scan, while MENU held still caused a serial timeout. Because
+  this image performs no key-triggered SPI frame transfer, that transfer is
+  excluded as the timeout cause. A held row mask remains unobserved.
 
 ## Sources used by DP32-003
 

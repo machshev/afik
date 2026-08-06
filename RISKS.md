@@ -331,3 +331,7 @@
   from answering until release, consistent with entry into the synchronous
   key-triggered display path. A follow-up image suppresses that SPI transfer so
   raw GPIO observation does not depend on display completion.
+- **Isolation result:** suppressing the key-triggered SPI write did not prevent
+  the held-MENU timeout. Physical matrix closure may interfere with execution
+  or UART response before a raw report can be returned; a pre-armed latch which
+  transmits only after release is required to distinguish those cases.
