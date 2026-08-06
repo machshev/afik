@@ -253,3 +253,144 @@ The deterministic simulator proves controller scheduling, stale-token safety,
 logical RF command ordering, and TX-policy composition against declared inputs.
 Physical scan cadence, receiver settling, status sampling, tone detection, RF
 performance, and target integration remain unknown under `RISK-008`.
+
+## Sources used by FREQ-010
+
+### FCC-filed Quansheng UV-K5 user manual
+
+- **Document:** *Quansheng UV-K5 Two Way Radio User Manual*, FCC exhibit
+  document ID `6401561`, 13 pages.
+- **Applicant/publisher:** Fujian Quanzhou Quansheng Electronics Co., Ltd.;
+  filed for FCC ID `XBPUV-K5`.
+- **Created/filed metadata:** 2023-02-17; retrieved 2026-08-06 from
+  <https://fccid.io/XBPUV-K5/User-Manual/User-manual-6401561.pdf> and the
+  accompanying exhibit page
+  <https://fccid.io/XBPUV-K5/User-Manual/User-manual-6401561>.
+- **SHA-256:**
+  `d6f30fea598abdde820ef47e5f9b0b77079dc229ec7039a97b3f87083b33b74b`.
+- **Scope:** intended radio-level controls and displayed/saved results only.
+  The manual contains no BK4819 register sequence, accuracy, timeout, or board
+  implementation details.
+
+### Public UV-K5-family firmware observation
+
+- **Repository:** *egzumer/uv-k5-firmware-custom*, commit
+  `7607f0a4bd6203d1f06b70556fc1ce0d7399d6b3`, retrieved 2026-08-06 from
+  <https://github.com/egzumer/uv-k5-firmware-custom/tree/7607f0a4bd6203d1f06b70556fc1ce0d7399d6b3>.
+- **Files inspected:** `driver/bk4819.c`, `app/scanner.c`, and `misc.c` at that
+  exact commit.
+- **Provenance limit:** the repository states that it combines earlier
+  UV-K5-family firmware projects and derives from DualTachyon's work. It is one
+  descendant implementation, not independent corroboration of the mirrored
+  application note or original Quansheng production source.
+- **Permitted use:** compare its state flow, polling, repeat-result filtering,
+  failure handling, and unexplained constants when designing experiments. No
+  source was copied, translated, linked, or treated as AFIK production code.
+- **Additional repository checked:**
+  `amnemonic/Quansheng_UV-K5_Firmware` at commit
+  `94a36006b75ad2024d9b88f2b33b222c7efe53ba` contained binaries, documents,
+  hardware PDFs, and patch scripts but no buildable firmware source from which
+  an exact Frequency Copy flow could be established.
+
+The Beken product page and mirrored BK4819(V3) application note already
+identified under “Sources used by RF-006” were re-used for the narrowly bounded
+observations below. Their confidence and provenance limitations are unchanged.
+
+## Frequency Copy evidence and bounded inferences
+
+### EVID-FCOPY-008 — Fast Copy measures one received transmission
+
+- **Fact:** user-manual section 6.9 calls the feature “Fast Copy One Channel
+  (ACT AS FREQUENCY METER).” It directs the user to place the radios close with
+  both antennas installed and requires a sufficiently strong signal. `F+4`
+  starts measurement; the display can show the carrier frequency and the
+  transmitting channel's CTCSS/DCS. `*` starts another measurement, `MENU`
+  saves the measured frequency and CTCSS/DCS to a chosen channel, and `EXIT` or
+  PTT leaves the function.
+- **Fact:** the same manual separately describes automatic CTCSS/DCS scanning
+  at an already known receive frequency under `F+*`, with success/failure
+  feedback and an explicit save action.
+- **Method:** copied from manual sections 6.9 and 6.10. Wording here is
+  paraphrased; key names and displayed data are retained because they define
+  the user-visible workflow.
+- **Confidence:** high for intended UV-K5 radio behavior; none for silicon
+  sequence, physical accuracy, or AFIK target behavior.
+- **Permitted use:** define a deliberate, receive-only AFIK measurement and
+  review workflow. It does not establish any saved channel property other than
+  an observed carrier frequency and an optional received tone/code indication.
+
+### EVID-FCOPY-009 — Fast Copy is not Air Copy
+
+- **Fact:** manual section 7.8 describes “Wireless Radio Replication” as a
+  separate transfer between two radios on a shared data frequency, defaulting
+  to 410.0125 MHz. It is entered with PTT plus side key 2 and transfers radio
+  data with progress/error feedback. The feature table likewise lists
+  Frequency Meter and Air Copy separately.
+- **Confidence:** high for the product-level distinction.
+- **Permitted use:** exclude Air Copy protocol discovery, configuration
+  replication, and any transmission from `FREQ-010`. “Frequency Copy” in AFIK
+  means local observation of a received signal, never radio-to-radio cloning.
+
+### EVID-FCOPY-010 — Beken publishes a scan capability, not a command contract
+
+- **Fact:** Beken's current BK4819 product page lists frequency scan, CTCSS
+  receive/tail functions, 23/24-bit DCS, RSSI, and a 3-wire MCU interface.
+- **Fact from low-confidence source:** the mirrored machine-translated
+  BK4819(V3) note describes a frequency scan result spanning `REG_0D<10:0>` and
+  `REG_0E<15:0>` in 10 Hz units, a busy bit in `REG_0D<15>`, and scan enable
+  plus four nominal duration selections in `REG_32`. It describes CTCSS result
+  fields in `REG_68` whose conversion depends on the crystal, and 23/24-bit DCS
+  result fields in `REG_69` and `REG_6A`. The prose also gives an approximate
+  strong-input condition.
+- **Confidence:** high only that Beken advertises the capabilities; low for all
+  named register fields, units, polarity, timing, threshold, latching, or
+  applicability to the fitted radio because the accessible note is
+  machine-translated, user-uploaded, and revision-unverified.
+- **Permitted use:** form hypotheses and measurement vectors for a
+  non-transmitting experiment. These fields are not accepted for a production
+  driver or a simulator that claims physical register behavior.
+- **Required experiment:** obtain original revision-matched documentation and
+  perform the receive-only experiments in `frequency-copy-feasibility.md`.
+
+### EVID-FCOPY-011 — One descendant firmware does not resolve the register gaps
+
+- **Observation:** the inspected descendant polls the note's busy/result
+  fields, seeks repeated nearby frequency results, then retunes and seeks a
+  recognized CTCSS or DCS result. It bounds polling and requires an explicit
+  save prompt. Its save path rounds a captured frequency to one of two channel
+  step grids.
+- **Observation:** its `REG_32` value includes bits which its own comment marks
+  unknown, including an unexplained numeric field. Its code also supplies
+  product choices such as thresholds, repeats, timeouts, code lookup, rounding,
+  and copying receive configuration into transmit configuration; those choices
+  are not BK4819 facts.
+- **Confidence:** low as hardware evidence. Common project ancestry means the
+  code and mirrored note are not independent corroboration.
+- **Permitted use:** identify failure cases and experiments. AFIK must not copy
+  its code, unexplained constants, automatic RX-to-TX configuration, or timing
+  values.
+
+## Unknowns deliberately retained by FREQ-010
+
+- Exact fitted BK4819 revision, board revision, reference crystal/TCXO and
+  calibration, RF switch/filter path, register reset state, and required
+  preservation masks.
+- Meaning of every `REG_32` bit used by existing firmware, start/stop/retrigger
+  order, busy transitions, result latching/read order, stale-result behavior,
+  cleanup sequence, and behavior after bus failure.
+- Physical frequency accuracy, resolution versus displayed rounding, minimum
+  usable level, acquisition time, repeatability, adjacent/multiple-signal
+  behavior, and image/harmonic/strong-interferer false locks.
+- CTCSS conversion for the fitted crystal, nearby-tone discrimination,
+  no-tone and short-burst behavior, and the complete DCS bit-length, polarity,
+  code-validation, and no-result semantics.
+- Duplex/offset, paired repeater input, transmit permission/service, modulation,
+  bandwidth, power, channel name, scan membership, scrambler, contacts, source
+  identity, and any other channel metadata. None is observable from the
+  documented one-transmission workflow.
+- A trustworthy distinction between “no signalling present” and “signalling
+  not detected before timeout” without separately validated carrier and decoder
+  behavior.
+
+Production scan commands, physical target integration, and automatic channel
+creation remain prohibited by `RISK-011`.
