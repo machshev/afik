@@ -130,3 +130,33 @@
   non-transmitting signal-generator experiments verify scan start, completion,
   units, accuracy, false locks, tone/code results, timeout, retrigger, and safe
   cleanup as specified in `docs/frequency-copy-feasibility.md`.
+
+## RISK-012 — The physical APRS receive chain is unverified
+
+- **State:** open
+- **Impact:** standards-correct AX.25/APRS parsing cannot prove that the fitted
+  BK4819 and board expose suitable unfiltered FM/baseband data, that any modem
+  mode matches 1200-baud packet, or that the DP32G030 can recover symbols and
+  service buffers with acceptable loss and power. Invented register, audio,
+  clock, DMA, or interrupt behavior would make target and simulator results
+  misleading.
+- **Mitigation:** `APRS-011` starts with a source- and layer-specific feasibility
+  report. Software accepts complete de-stuffed frames with FCS as explicit
+  inputs and does not implement physical demodulation, bit recovery, or target
+  integration. Keep those layers blocked until the fitted revisions and board
+  path are identified and receive-only signal-generator/audio/logic-analyzer
+  experiments establish bandwidth, levels, timing, buffering, error rates,
+  cleanup, and recovery.
+
+## RISK-013 — Repeater advertisements are untrusted and may be stale
+
+- **State:** open
+- **Impact:** APRS packets can be malformed, replayed, spoofed, stale, or simply
+  incorrect. Automatically converting advertised frequency, offset, or tone
+  into a transmit-capable channel could enable unintended or unauthorized RF.
+- **Mitigation:** validate checksums and bounded syntax, retain source and
+  freshness provenance, make table replacement/expiry explicit and
+  deterministic, and present results only as receive-only candidates. Never
+  construct `ActiveChannel`, trusted plan membership, or `TxAuthorisation`, and
+  never mutate configuration automatically. Any future reviewed save must be a
+  separate transaction constrained to `TxClass::Never`.

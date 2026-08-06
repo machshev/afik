@@ -468,3 +468,59 @@
   non-transmitting experiments, and a future deterministic test matrix. Verdict:
   design-ready but hardware-command blocked. No behavior, register driver,
   simulator register model, target adapter, or physical claim was added.
+
+## APRS-011 — APRS receive feasibility and bounded repeater discovery
+
+- **Status:** active
+- **Objective:** determine whether an AFIK target could responsibly receive
+  APRS and implement the smallest standards-backed, hardware-independent path
+  that discovers reviewable voice-repeater advertisements from already
+  recovered packet frames.
+- **Scope:** primary AX.25/APRS source provenance; a layer-by-layer feasibility
+  analysis from RF input through FM/baseband access, symbol/clock recovery,
+  NRZI/bit unstuffing, frame check, AX.25 UI framing, and APRS information;
+  explicit board/chip/MCU evidence gaps and non-transmitting experiments; a new
+  `no_std`, heap-free, allocation-free `radio-aprs` crate if supported by the
+  primary specifications; bounded parsing of complete de-stuffed AX.25 frames
+  with FCS, source/destination/path validation, UI/PID checks, and APRS
+  object/item voice-repeater frequency fields; receive-only advertisement
+  candidates; a fixed-capacity deterministic discovery table driven by
+  explicit receive/expiry inputs; simulator composition; documentation and
+  host/embedded tests. BK4819 modem/register commands, raw-audio DSP, ADC/DMA,
+  NRZI/clock/HDLC bit recovery, interrupts/timers, target adapters, live RF,
+  network directory services, automatic configuration writes, TX defaults,
+  APRS transmission, igating/digipeating, flashing, and physical-success claims
+  are excluded.
+- **Dependencies:** `FREQ-010`, `SCAN-007`, `radio-domain`, `radio-tx-policy`,
+  the existing deterministic simulator, primary AX.25/APRS specifications,
+  official Beken material, and separately qualified secondary implementation
+  evidence only where primary hardware documentation is unavailable.
+- **Assumptions:** a complete de-stuffed frame including its FCS is a legitimate
+  hardware-independent boundary; correct bytes supplied by a test or simulator
+  do not prove physical demodulation; APRS advertisements are untrusted and may
+  be malformed, stale, spoofed, or wrong; an advertised frequency/offset/tone
+  does not convey regulatory authority or trusted plan membership.
+- **Likely files:** `Cargo.toml`, a new `crates/radio-aprs`, `crates/radio-sim`,
+  `docs/hardware-evidence.md`, APRS feasibility/protocol documents,
+  `docs/architecture.md`, `docs/simulator.md`, `DECISIONS.md`, `RISKS.md`,
+  `TASKS.md`, and `STATUS.md`.
+- **Tests required:** exact sourced FCS vectors and rejection; minimum/maximum
+  AX.25 address counts and malformed extension/reserved/callsign/SSID fields;
+  non-UI or wrong-PID rejection; exact object/item and voice-frequency vectors;
+  bounded text/numeric parsing; invalid range/offset/tone/ambiguity rejection or
+  preservation as explicitly untrusted data; duplicate/newer/older/conflicting
+  advertisement behavior; fixed-capacity and explicit expiry boundaries; stale
+  inputs; identical input scripts yield identical tables/traces; no result can
+  construct `ActiveChannel` or `TxAuthorisation`; full workspace, embedded
+  `thumbv6m`, and Rust 1.86 gates remain green.
+- **Acceptance criteria:** every implemented wire field and checksum rule has a
+  primary citation and exact confidence boundary; the receive-chain report
+  gives a clear implement/defer verdict for each layer and names equipment,
+  recovery, corpus, performance, false-decode, and fault experiments; embedded
+  logic is hardware-independent, `no_std`, heap-free, bounded, integer-only,
+  and deterministic; lower-layer validated frames remain explicit inputs; a
+  discovery candidate preserves packet provenance and uncertainty but contains
+  no TX authority; table mutation is bounded and order/freshness rules are
+  exact; invalid/stale/spoofable data fails closed and never mutates channel
+  configuration; no physical decoder, target behavior, network data, or RF
+  success is claimed.

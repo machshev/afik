@@ -2,13 +2,14 @@
 
 ## Current work package
 
-**Work Package 10 — Frequency Copy research (`FREQ-010`) is complete.**
+**Work Package 11 — APRS receive feasibility and repeater discovery
+(`APRS-011`) is active.**
 
-The package concludes that Frequency Copy is design-ready but hardware-command
-blocked. Its receive-only candidate, failure semantics, storage/TX boundary,
-experiments, and future tests are specified without adding register commands,
-target integration, automatic channel mutation, transmit permission, flashing,
-or physical measurement claims.
+The package will establish an evidence-backed physical receive-chain verdict
+and implement only the hardware-independent, bounded parsing/discovery layers
+supported by primary AX.25/APRS specifications. RF/audio/bit recovery remains
+outside the code boundary unless separately evidenced. Discovered repeater data
+is untrusted receive-only information and cannot create TX authority.
 
 ## State
 
@@ -22,6 +23,7 @@ or physical measurement claims.
 - Work Package 8 programmer CLI: complete.
 - Work Package 9 programmer GUI: complete.
 - Work Package 10 Frequency Copy research: complete.
+- Work Package 11 APRS receive feasibility and repeater discovery: active.
 - `UI-005` logical key edges, bounded semantic views, exact boot-only entry,
   release gate, draft editor, and checked persistence action: complete.
 - `UI-005` separate persisted/active policy simulation, deterministic timed
@@ -67,8 +69,9 @@ or physical measurement claims.
 - `FREQ-010` FCC workflow provenance, Air Copy separation, bounded observation
   matrix, receive-only candidate/state proposal, storage/TX boundary,
   experiment plan, and hardware-command defer verdict: complete.
-- Next smallest task: activate Work Package 11 by bounding APRS receive
-  feasibility and repeater discovery without inventing target or RF behavior.
+- Next smallest task: record primary AX.25/APRS framing and voice-repeater
+  advertisement facts, then map the complete physical receive chain and its
+  unverified BK4819/board/MCU boundaries before adding parser behavior.
 
 ## Completed Work Package 10 exit criteria
 
