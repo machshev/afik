@@ -745,3 +745,41 @@
   `F4HWN v5.5.0`; the complete 8 KiB read matched both retained pre-flash
   backups byte-for-byte. No reset, EEPROM, or RF command was sent, and this
   remains a stock recovery write rather than a K1 AFIK application flash.
+
+## K1BOOT-016 — Minimal K1 reset image and boot-witness boundary
+
+- **Status:** active (2026-08-06)
+- **Objective:** create the smallest independently implemented AFIK K1
+  application image that satisfies the pinned PY32F071 reset, memory, and raw
+  application-origin contract.
+- **Scope:** add a standalone `no_std`/heap-free K1 target leaf; link its
+  vector table and Reset entry at `0x08002800`; bound code to the evidenced
+  `0x08002800..0x08020000` application range and SRAM to
+  `0x20000000..0x20004000`; write a RAM-only boot witness from Reset; emit and
+  statically validate a raw image for the K1 recovery envelope; and cover the
+  vector/range contract with deterministic host checks.
+- **Dependencies:** `K1EVID-013`, `K1FLASH-014`, and `K1HIL-015`.
+- **Assumptions:** the pinned source linker contract is sufficient for the
+  application origin, capacity, Cortex-M0+ instruction set, and SRAM bounds;
+  the bootloader transfers control through the application vector table; and
+  the RAM witness is a software/simulation observation only until a physical
+  witness is separately evidenced.
+- **Exclusions:** copied or translated Armel source; guessed clock startup,
+  USB, display, keypad, GPIO, external flash, BK4819, audio, RF, TX, reset
+  commands, bootloader replacement, physical flashing, and any claim that the
+  image has booted on the K1.
+- **Likely files:** `Cargo.toml`, a new K1 firmware crate, `tool/`,
+  `docs/k1-bring-up.md`, `docs/architecture.md`, `DECISIONS.md`, `RISKS.md`,
+  `STATUS.md`, and CI.
+- **Tests required:** pinned-environment format, clippy, and workspace tests;
+  K1 target build; ELF architecture, vector, section, and range verification;
+  raw-image extraction and vector validation; and negative checks for truncated,
+  out-of-range, and non-Thumb images.
+- **Acceptance criteria:** the target leaf has no host or hardware-driver
+  dependencies, the raw image is bounded below the K1 application end and
+  accepted by the existing K1 vector validator, the Reset handler has no
+  peripheral side effects, and all verification commands are recorded before
+  committing the milestone. Physical K1 flashing remains blocked pending a
+  separate visible or USB boot-witness contract.
+- **Next task:** define the independently evidenced K1 physical boot witness
+  and only then add the guarded K1 AFIK application-flash workflow.

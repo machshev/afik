@@ -350,3 +350,17 @@ meaning.
 - K1 application flashing remains unavailable. The only physical image
   permitted by `K1HIL-015` is the independently validated, unchanged stock
   recovery image, followed by normal-mode backup comparison.
+
+## ADR-025 — The first K1 AFIK image is a reset-only witness image
+
+- **Date:** 2026-08-06
+- **Status:** accepted for `K1BOOT-016`
+- The first independently implemented K1 image uses only the pinned
+  Cortex-M0+, application-origin, and SRAM facts. It places a two-word vector
+  table at `0x08002800`, writes one RAM witness from Reset, and then stops.
+- The image does not initialise a guessed clock, access board peripherals, send
+  USB data, draw the display, scan keys, control the BK4819, access external
+  flash, enable TX, or issue a reset or bootloader command.
+- The RAM witness is a development observation and is not evidence of physical
+  K1 boot. A later physical witness must be independently evidenced before the
+  K1 AFIK image may be flashed.

@@ -235,3 +235,14 @@
   hardware exercise uses only the unchanged known-good stock image and compares
   the complete post-flash normal-mode backup. No K1 AFIK image or RF operation
   is permitted until a separate target and stronger observation contract exist.
+
+## RISK-019 — K1 AFIK reset has no physical boot witness yet
+
+- **State:** open
+- **Impact:** a correctly linked K1 ELF or raw image can still fail to execute
+  after the bootloader handoff, and a successful page acknowledgement cannot
+  distinguish application boot from a stalled or incompatible image.
+- **Mitigation:** `K1BOOT-016` is limited to a reset-only, RAM-witness image and
+  static/vector checks. Do not flash it. First establish a harmless visible or
+  USB boot witness on the exact unit, then add a guarded K1 AFIK write path and
+  immediately retain the proven Armel recovery route.
