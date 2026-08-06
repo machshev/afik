@@ -1,0 +1,117 @@
+// K1KEY-022 execution harness. Test-only register behavior, not a PY32 model.
+flash: Memory.MappedMemory @ sysbus 0x08000000
+    size: 0x00020000
+
+ram: Memory.MappedMemory @ sysbus 0x20000000
+    size: 0x00004000
+
+nvic: IRQControllers.NVIC @ sysbus 0xE000E000
+    IRQ -> cpu@0
+
+cpu: CPU.CortexM @ sysbus
+    cpuType: "cortex-m0"
+    nvic: nvic
+
+rcc: Python.PythonPeripheral @ sysbus 0x40021000
+    size: 0x400
+    initable: true
+    script: '''
+if request.IsInit:
+    data = {}
+if request.IsWrite:
+    data[request.Offset] = request.Value
+if request.IsRead:
+    request.Value = data.get(request.Offset, 0)
+'''
+
+gpioa: Python.PythonPeripheral @ sysbus 0x50000000
+    size: 0x400
+    initable: true
+    script: '''
+if request.IsInit:
+    data = {'odr': 0}
+if request.IsWrite:
+    if request.Offset == 0x18:
+        data['odr'] |= request.Value & 0xffff
+    elif request.Offset == 0x28:
+        data['odr'] &= ~(request.Value & 0xffff)
+    else:
+        data[request.Offset] = request.Value
+if request.IsRead:
+    request.Value = data.get(request.Offset, 0)
+'''
+
+// Offset 0x100 is a simulation-only injection control. Value 1 means MENU.
+gpiob: Python.PythonPeripheral @ sysbus 0x50000400
+    size: 0x400
+    initable: true
+    script: '''
+if request.IsInit:
+    data = {'odr': 0, 'pressed': 0}
+if request.IsWrite:
+    if request.Offset == 0x18:
+        data['odr'] |= request.Value & 0xffff
+    elif request.Offset == 0x28:
+        data['odr'] &= ~(request.Value & 0xffff)
+    elif request.Offset == 0x100:
+        data['pressed'] = request.Value
+    else:
+        data[request.Offset] = request.Value
+if request.IsRead:
+    if request.Offset == 0x10:
+        value = 0xf000
+        if data['pressed'] == 1 and (data['odr'] & 0x78) == 0x38:
+            value &= ~0x8000
+        request.Value = value
+    elif request.Offset == 0x14:
+        request.Value = data['odr']
+    else:
+        request.Value = data.get(request.Offset, 0)
+'''
+
+gpiof: Python.PythonPeripheral @ sysbus 0x50001400
+    size: 0x400
+    initable: true
+    script: '''
+if request.IsInit:
+    data = {'odr': 0}
+if request.IsWrite:
+    if request.Offset == 0x18:
+        data['odr'] |= request.Value & 0xffff
+    elif request.Offset == 0x28:
+        data['odr'] &= ~(request.Value & 0xffff)
+    else:
+        data[request.Offset] = request.Value
+if request.IsRead:
+    request.Value = data.get(request.Offset, 0)
+'''
+
+spi1: Python.PythonPeripheral @ sysbus 0x40013000
+    size: 0x400
+    initable: true
+    script: '''
+if request.IsInit:
+    data = {}
+if request.IsWrite:
+    data[request.Offset] = request.Value
+if request.IsRead:
+    if request.Offset == 0x8:
+        request.Value = 0x3
+    else:
+        request.Value = data.get(request.Offset, 0)
+'''
+
+usart1: Python.PythonPeripheral @ sysbus 0x40013800
+    size: 0x400
+    initable: true
+    script: '''
+if request.IsInit:
+    data = {}
+if request.IsWrite:
+    data[request.Offset] = request.Value
+if request.IsRead:
+    if request.Offset == 0:
+        request.Value = 0x80
+    else:
+        request.Value = data.get(request.Offset, 0)
+'''

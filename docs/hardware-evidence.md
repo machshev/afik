@@ -384,6 +384,23 @@ order are maintained in `docs/k1-bring-up.md`.
   `K1 0.2` on the already verified second text line; only after that should the
   remaining 15 main keys and serial fallback be checked.
 
+### EVID-K1-035 — K1 Renode execution reaches key rendering
+
+- **Simulation construction:** Renode 1.16.1 executes the exact K1 ELF from its
+  application Reset entry using Cortex-M0 instruction compatibility, evidenced
+  flash/RAM bounds, and simulation-only register storage. A test-only control
+  injects active-low PB15 only while the firmware has selected PB6 low.
+- **Observation:** three repeated tests reached a CPU hook after initial display
+  setup and then reached the ELF's `render_key_witness` symbol after synthetic
+  MENU injection.
+- **Confidence boundary:** high for this compiled control-flow path under the
+  declared register responses. This does not model or prove PY32F071 peripheral
+  semantics, instruction timing, physical GPIO levels, switch behavior, SPI
+  electrical transfers, the LCD controller, or visible pixels.
+- **Next experiment:** report the four raw row masks through the existing
+  receive-only serial witness while one key is held. This separates physical
+  scan input from display output without RF, TX, EEPROM, or side-key access.
+
 ## Sources used by DP32-003
 
 ### DP32G030 reference manual v1.23

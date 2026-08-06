@@ -72,6 +72,12 @@ and PB3..PB6 outputs and composes debounced presses with the already verified
 display. PTT, side keys, menus, persistence, radio control, and TX authority
 remain outside the composition.
 
+The `K1KEY-022` Renode harness is a separate execution diagnostic, not a PY32
+peripheral model. It uses test-only register storage and synthetic row input to
+prove the built ELF can return from initial display setup and carry one MENU
+cell through scan/debounce to the render function. Physical GPIO timing,
+electrical behavior, and LCD output remain hardware observations.
+
 Work Package 4 keeps the canonical configuration-image codec in the embedded
 `radio-storage` crate. It reads borrowed bytes, writes caller-provided buffers,
 and allocates no heap. `radio-programmer` owns host-side canonical ordering,

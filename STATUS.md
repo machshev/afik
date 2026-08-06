@@ -257,6 +257,25 @@ Corrected keypad write on 2026-08-06:
   cannot prove PY32 timing, GPIO electrical behavior, LCD behavior, or physical
   key operation, and it will not be used as authority for RF/TX.
 
+## Work Package 22 Renode diagnostic result
+
+- Added a K1 simulation-only Cortex-M execution platform with evidenced
+  flash/RAM bounds and bounded test register storage for only the RCC, GPIO,
+  SPI, and USART addresses touched by this witness. GPIOB offset `0x100` is an
+  explicit test convention which injects MENU only while PB6 is selected low;
+  it is not represented as a PY32 register.
+- The launcher resolves Reset, `keypad_init`, and `render_key_witness` directly
+  from the built ELF, starts at the K1 application entry, and uses CPU hooks
+  without changing production firmware.
+- `nix develop path:. -c tool/test-k1-renode.sh --repeat 3` — passed all three
+  iterations. Each run proved initial display setup returned, then synthetic
+  PB6/PB15 MENU traversed the compiled scan/debounce path and reached
+  `render_key_witness`.
+- This narrows the unresolved physical failure to behavior the bounded model
+  cannot validate: actual GPIO levels/timing or the subsequent physical display
+  transfer. The next smallest diagnostic is a read-only serial report of raw
+  per-column row masks while one main key is held.
+
 ## Work Package 14 implementation milestone
 
 - `radio-k5-flasher` was renamed to `radio-flasher`; the library now owns both

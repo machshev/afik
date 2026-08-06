@@ -1033,3 +1033,7 @@
   register storage, synthetic one-cell GPIO injection, and an ELF-symbol hook
   proving whether MENU reaches `render_key_witness`. This is execution evidence
   only and must not be reported as physical keypad/display validation.
+- **Diagnostic result:** three repeated Renode runs prove initial display setup
+  returns and synthetic PB6/PB15 MENU reaches the production render function.
+  The remaining physical boundary requires a read-only serial raw-matrix probe;
+  Renode does not establish actual PY32 GPIO or LCD behavior.
