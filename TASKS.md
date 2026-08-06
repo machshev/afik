@@ -98,3 +98,32 @@
   static image verification, and three repeated Renode runs all pass as
   recorded in `STATUS.md`. No peripheral behaviour was modeled and no hardware
   was flashed.
+
+## STORE-004 — Canonical configuration image and compiler round trip
+
+- **Status:** active
+- **Objective:** define a canonical, versioned, checksummed configuration image
+  and make the authoritative host compiler emit and consume it without device
+  mutation.
+- **Scope:** a caller-buffer image codec in `radio-storage`, stable object-key
+  ordering, image integrity and structural validation, and negotiated-capability
+  validation in `radio-programmer`. Documentation and host tests are included.
+  Serial protocol changes, physical flash layout, power-loss durability,
+  project-file parsing, and additional channel-plan encodings are excluded.
+- **Dependencies:** `DP32-003`.
+- **Assumptions:** the image is an offline interchange and backup container for
+  a complete logical object set, not evidence for a DP32G030 non-volatile
+  storage layout; existing object payload version 1 remains unchanged.
+- **Likely files:** `crates/radio-storage`, `crates/radio-programmer`, storage
+  and programmer documents, `DECISIONS.md`, `RISKS.md`, and handoff files.
+- **Tests required:** exact image-format vectors; byte-identical output for the
+  same logical objects supplied in different orders; compiler image round trip;
+  empty and maximum-bounded inputs; rejection of bad magic/version/checksum,
+  truncation/trailing bytes, unordered or duplicate keys, malformed objects,
+  and target-capability violations.
+- **Acceptance criteria:** the `no_std` storage codec allocates no heap and
+  writes only to a caller-provided buffer; one canonical image has an explicit
+  length and integrity contract; decoding validates the complete image before
+  exposing objects; the compiler produces stable-key order and will not accept
+  an image outside negotiated target bounds; existing protocol/simulator
+  behaviour remains green; physical durability claims remain explicitly open.

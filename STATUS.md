@@ -2,17 +2,20 @@
 
 ## Current work package
 
-**No work package is active.**
+**Work Package 4 — Canonical configuration image and compiler round trip
+(`STORE-004`) is active.**
 
-Work Package 3 — Minimal DP32G030 Rust image and Renode boot (`DP32-003`) was
-completed on 2026-08-05. A stable task must be defined and activated before
-Work Package 4 implementation begins.
+The package is limited to an offline, canonical logical-object image and the
+host compiler round trip. It does not define physical non-volatile placement,
+claim power-loss durability, change the serial protocol, or add hardware
+behaviour.
 
 ## State
 
 - Repository foundation and first architecture milestone: complete.
 - Work Package 2 programmer and simulator protocol loop: complete.
 - Work Package 3 minimal target boot proof: complete.
+- Work Package 4 canonical image/compiler round trip: active.
 - `DP32-003` CPU, byte-order, flash/RAM, and reset-vector evidence contract:
   complete.
 - `DP32-003` target crate, minimum vector/Reset image, and static ELF bounds
@@ -31,8 +34,8 @@ Work Package 4 implementation begins.
   complete.
 - Bounded duplicate-sequence replay and conflict rejection: complete.
 - Fragmented and malformed stream recovery: complete.
-- Next smallest task: define and activate the smallest bounded Work Package 4
-  storage-format/configuration-compiler task with a stable ID.
+- Next smallest task: specify the canonical image byte contract and implement
+  its allocation-free codec with exact format and rejection tests.
 
 ## Completed Work Package 3 exit criteria
 
