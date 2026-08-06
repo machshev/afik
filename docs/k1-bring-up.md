@@ -289,9 +289,10 @@ nix develop path:. -c cargo run --quiet --package radio-flasher-cli \
   --bin afik-flasher -- --device /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0 probe-normal
 ```
 
-It must report `protocol=normal-firmware-hello` and
-`firmware=AFIK-K1-0.1`. The image is built and statically checked, but has not
-been flashed; a physical response is therefore not yet claimed.
+It reported `protocol=normal-firmware-hello` and
+`firmware=AFIK-K1-0.1` after the user power-cycled the radio. The guarded write
+acknowledged all 172 pages and did not issue a reset. This proves only the
+bounded serial application slice, not a complete radio application.
 
 ## Pinned CHIRP protocol evidence
 
@@ -316,15 +317,16 @@ been flashed; a physical response is therefore not yet claimed.
    in matching local copies; validate the recovery procedure before writing.
 4. Enter and leave DFU without writing; record descriptors and the procedure.
 5. The unchanged known-good Armel recovery rehearsal and the first AFIK-hosted
-   recovery write are complete. The guarded `flash-afik-k1` command is now
-   locally verified; its next physical action is the bounded serial witness
-   image, followed by a user power-cycle and `probe-normal`.
+   recovery write are complete. The guarded `flash-afik-k1` command acknowledged
+   the bounded serial witness image; after power-cycle, `probe-normal` returned
+   the exact AFIK response.
 6. `K1WIT-017` uses the external CH340/UART path, not native USB. The first
-   physical image must provide the exact `AFIK-K1-0.1` response, contain no RF
-   operation, and be followed immediately by proven Armel recovery if the
-   response is absent or wrong.
+   physical image provided the exact `AFIK-K1-0.1` response and contained no RF
+   operation. Any next application slice requires a new bounded evidence and
+   recovery gate.
 
 The serial device was visible for the normal-mode verification above. Passive
-bootloader observation, repeatable read-only backup, and same-unit recovery
-through AFIK are complete; physical markings, normal/DFU USB identities, and
-an AFIK application boot witness remain pending.
+bootloader observation, repeatable read-only backup, same-unit recovery through
+AFIK, and the bounded AFIK serial application boot witness are complete.
+Physical markings, normal/DFU USB identities, and full radio-application
+behavior remain pending.

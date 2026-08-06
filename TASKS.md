@@ -794,7 +794,7 @@
 
 ## K1WIT-017 — Evidence-backed physical K1 boot witness
 
-- **Status:** active (2026-08-06)
+- **Status:** complete (2026-08-06)
 - **Objective:** establish one harmless, independently observable indication
   that an AFIK K1 image reached Reset on the exact unit before authorizing an
   AFIK application write.
@@ -822,6 +822,25 @@
   and is followed by a documented recovery check. The local writer must refuse
   a missing rehearsal, mismatched target, invalid backup, bad CRC, or identical
   recovery image before touching the serial transport.
-- **Current gate:** source-backed serial witness image, host probe, and guarded
-  writer are implemented and locally verified; the image remains unflashed and
-  the exact-unit response is not yet observed.
+- **Completion notes:** the 44,008-byte image was flashed over the external
+  CH340/UART path after K1 `7.03.01` detection. All `172/172` pages were
+  acknowledged; after power-cycle, `probe-normal` returned the exact
+  `AFIK-K1-0.1` response. No reset, EEPROM, RF, or TX command was sent.
+  The retained stock recovery image and complete backup remain available.
+
+## K1APP-018 — Define the next evidence-backed K1 application slice
+
+- **Status:** pending (2026-08-06)
+- **Objective:** choose and bound the smallest useful K1 application feature
+  beyond the proven serial witness without inventing board behavior.
+- **Scope:** use the exact-unit serial witness, retained recovery route, and
+  recorded MCU/source facts to select one next slice; record its inputs,
+  outputs, hardware evidence, failure behavior, and rollback observation.
+- **Dependencies:** `K1WIT-017`, `K1EVID-013`, `K1HIL-015`, and a separately
+  bounded hardware experiment for any display, keypad, storage, or RF surface.
+- **Exclusions:** a general radio application, native USB claims, RF/TX,
+  EEPROM writes, copied Armel source, and physical changes without a new
+  evidence and recovery gate.
+- **Acceptance criteria:** one stable task contract and tests exist before
+  implementation begins; the existing serial witness remains buildable and
+  physically recoverable.

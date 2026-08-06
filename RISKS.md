@@ -237,18 +237,16 @@
   After the write, normal-mode probing and the retained recovery route remain
   required; no RF operation is implemented.
 
-## RISK-019 — K1 AFIK image has no physical boot witness yet
+## RISK-019 — K1 AFIK implementation is still witness-only
 
 - **State:** open
-- **Impact:** a correctly linked K1 ELF or raw image can still fail to execute
-  after the bootloader handoff, and a successful page acknowledgement cannot
-  distinguish application boot from a stalled or incompatible image.
-- **Mitigation:** the first image has a bounded USART1 hello witness over the
-  intended CH340 path and a read-only host `probe-normal` command. The guarded
-  `flash-afik-k1` path refuses missing rehearsal, invalid backup, bad CRC,
-  mismatched version/target, or an image identical to recovery. The physical
-  gate remains the exact `AFIK-K1-0.1` response after power-cycle, followed by
-  the proven Armel recovery route.
+- **Impact:** the serial witness proves only Reset and USART1 response. A future
+  display, keypad, storage, or RF slice can still fail or have unsafe behavior.
+- **Mitigation:** the first image's bounded USART1 hello witness was observed
+  exactly as `AFIK-K1-0.1` after power-cycle. The guarded `flash-afik-k1` path
+  still refuses missing rehearsal, invalid backup, bad CRC, mismatched
+  version/target, or an image identical to recovery. Each future hardware
+  surface requires its own evidence, test, and recovery observation.
 
 ## RISK-020 — Native K1 USB routing is unobserved but not required
 

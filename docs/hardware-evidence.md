@@ -191,7 +191,7 @@ order are maintained in `docs/k1-bring-up.md`.
   adapter, as recorded by `EVID-K1-018` and `EVID-K1-021`.
 - **AFIK use:** AFIK independently implements a bounded polling USART1 hello
   witness over this serial path. It does not copy, link, or translate the
-  source driver. The witness has not yet been flashed or physically observed.
+  source driver. The exact response is recorded in `EVID-K1-025`.
 - **Confidence:** high for the existing unit's serial transport and normal
   protocol path; medium for the exact MCU/package register mapping until the
   physical marking is recorded. Native USB routing is not required by this
@@ -210,6 +210,24 @@ order are maintained in `docs/k1-bring-up.md`.
 - **Boundary:** the exact fitted part suffix is not recorded yet. Maximum
   family capabilities do not prove the exact unit's memory size, package, pin
   binding, oscillator, boot selection, or radio-board behavior.
+
+### EVID-K1-025 — Physical AFIK K1 serial witness
+
+- **Image:** independently built raw `radio-firmware-k1`, 44,008 bytes,
+  SHA-256 `74be18d266e919c24faf1c7b022461c085990f33a6ad34475be3d9ae7424862f`.
+- **Write observation:** the external CH340 path classified K1 bootloader
+  `7.03.01`; the separately guarded AFIK writer acknowledged all 172 ascending
+  pages in transaction `db2b80ec`. It sent no reset, EEPROM, RF, or TX command.
+- **Postcondition:** after a user power-cycle, the same CH340 path accepted one
+  fixed-session normal-mode hello and returned
+  `protocol=normal-firmware-hello`, `firmware=AFIK-K1-0.1`.
+- **Confidence:** high that the bounded AFIK Reset handler reached USART1 and
+  answered on the exact unit through the external UART. This does not establish
+  display, keypad, external flash, BK4819, RF, TX, EEPROM, or full application
+  behavior.
+- **Safety boundary:** the bootloader reported page acknowledgements only; no
+  flash read-back or automatic reset was used. The retained stock recovery
+  image and complete backup remain the rollback path.
 
 ## Sources used by DP32-003
 

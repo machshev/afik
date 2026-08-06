@@ -381,6 +381,9 @@ meaning.
   receive the exact `AFIK-K1-0.1` normal-mode hello response over the same
   serial path after the bounded witness-image write; only then is application
   boot considered proven.
+- This gate passed on 2026-08-06 after 172 acknowledged pages and a user
+  power-cycle. The result proves only the bounded serial application slice;
+  future radio surfaces require their own evidence and recovery gate.
 
 ## ADR-027 — K1 AFIK application writes require a recovery rehearsal
 

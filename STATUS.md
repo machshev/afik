@@ -2,8 +2,8 @@
 
 ## Current work package
 
-**Work Package 17 (`K1WIT-017`) is active: establish an independently observed
-K1 physical boot witness.**
+**Work Package 17 (`K1WIT-017`) is complete: an independently observed K1
+physical boot witness is established.**
 
 K1 has priority because an exact unit running Armel firmware is available for
 inspection. `K1EVID-013` supplies the K1 evidence baseline and same-unit
@@ -13,8 +13,9 @@ incrementally translate its application or driver implementation.
 
 `FLASH-012` is deferred with its software milestone intact and physical gates
 incomplete. It can resume unchanged when the exact K5 V1 hardware is available.
-K1 physical AFIK flashing remains pending until the bounded serial witness is
-physically observed through the intended CH340 path.
+The bounded AFIK witness image was flashed through the intended CH340 path and
+returned the exact normal-mode hello after power-cycle. Full radio application
+features remain outside this bounded slice.
 
 ## State
 
@@ -32,16 +33,16 @@ physically observed through the intended CH340 path.
 - Work Package 12 recovery-gated UV-K5 V1 firmware flashing: deferred; software
   complete and physical hardware unavailable.
 - Work Package 13 UV-K1/PY32F071 hardware evidence and target contract: evidence
-  baseline complete; board/MCU and AFIK boot-witness follow-up remains open.
+  baseline complete; board/MCU and full-application follow-up remains open.
 - Work Package 14 K1/K5 auto-detected recovery flasher: complete.
 - Work Package 15 first AFIK K1 recovery-flasher hardware run: complete; this
   was a stock recovery-image exercise, not an AFIK application flash.
 - Work Package 16 K1 reset-only application image and static/raw-image gates:
   complete; no physical K1 write or boot claim.
-- Work Package 17 K1 physical boot witness: active; the intended CH340/UART
+- Work Package 17 K1 physical boot witness: complete; the intended CH340/UART
   path, source-backed USART1 contract, serial witness image, and separately
-  guarded K1 AFIK writer are implemented and locally verified. No AFIK image
-  has been flashed or physically observed.
+  guarded K1 AFIK writer are implemented and locally verified. The witness
+  image returned `AFIK-K1-0.1` after power-cycle.
 - `UI-005` logical key edges, bounded semantic views, exact boot-only entry,
   release gate, draft editor, and checked persistence action: complete.
 - `UI-005` separate persisted/active policy simulation, deterministic timed
@@ -236,12 +237,14 @@ K1BOOT-016 verification on 2026-08-06:
 - The pinned board source records USART1 on PA9/PA10 AF1 at 38,400 baud and a
   bootloader-provided 48 MHz clock. This is recorded as `EVID-K1-024`; AFIK's
   implementation is independent and uses no copied driver source.
-- No image, page, reset, EEPROM, or RF command was sent in this milestone. The
-  CH340 path is the intended serial witness transport, but no AFIK physical
-  boot response has yet been observed.
-- Current gate: user-confirm the bounded witness-image write, power-cycle the
-  radio, run `probe-normal`, and then immediately restore and verify the
-  retained stock recovery image if the witness response is not exact.
+- The guarded K1 AFIK command sent the 44,008-byte witness image over the CH340
+  path. It acknowledged all 172 pages, with transaction `db2b80ec`, and sent no
+  reset, EEPROM, or RF command. The report was
+  `acknowledged_not_read_back`.
+- After a user power-cycle, the read-only normal-mode probe passed:
+  `protocol=normal-firmware-hello`, `firmware=AFIK-K1-0.1`.
+- This proves the bounded AFIK Reset/USART1 serial witness on the exact unit;
+  it does not prove display, keypad, RF, TX, EEPROM, or a complete radio app.
 
 Serial witness implementation on 2026-08-06:
 
@@ -257,6 +260,11 @@ Serial witness implementation on 2026-08-06:
   `74be18d266e919c24faf1c7b022461c085990f33a6ad34475be3d9ae7424862f`.
 - `nix develop path:. -c cargo test --package radio-flasher --package
   radio-flasher-cli` — passed; K1 writer guards and CLI parser tests passed.
+- Guarded physical write through `/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0`
+  — passed; detected K1 `7.03.01`, acknowledged pages `172/172`, and reported
+  `status=acknowledged_not_read_back`.
+- After user power-cycle, read-only `probe-normal` through the same path —
+  passed; `protocol=normal-firmware-hello`, `firmware=AFIK-K1-0.1`.
 
 Verification on 2026-08-06:
 
@@ -277,6 +285,8 @@ Work-package activation verification on 2026-08-06:
 - `nix develop path:. -c cargo fmt --all --check` — passed; the activation
   milestone changes documentation only.
 - `git diff --check` — passed before the final status record.
+- Next task: `K1APP-018` — define the next smallest evidence-backed K1
+  application slice beyond the verified serial witness.
 
 ## Work Package 13 first evidence milestone
 
