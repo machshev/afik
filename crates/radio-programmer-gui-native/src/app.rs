@@ -1,0 +1,885 @@
+//! The egui application drawing the validated project model.
+
+use std::{fs, path::PathBuf};
+
+use eframe::egui::{self, ComboBox, Grid, RichText, ScrollArea, TextEdit};
+use radio_domain::{
+    Bandwidth, Modulation, PowerLevel, ScanResume, TxClass, BACKLIGHT_ALWAYS_ON,
+    MAX_BATTERY_SAVE_RATIO, MAX_SQUELCH_LEVEL,
+};
+use radio_programmer::CapacityReport;
+
+use crate::{
+    flash::{self, FlashJob, FlashOperation, FlashProgress, FlashRequest},
+    model::{ChannelDraft, ModelError, ProjectModel, ToneDraft, ToneKind, MAX_PROJECT_IMAGE_BYTES},
+    session::DeviceSession,
+    Options,
+};
+
+const BANK_COUNT: usize = 16;
+
+/// Which editor tab is visible.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum Tab {
+    #[default]
+    Channels,
+    Banks,
+    Radio,
+    Device,
+    Flash,
+}
+
+/// The complete native editor.
+pub struct StudioApp {
+    tab: Tab,
+    project: ProjectModel,
+    project_path: String,
+    status: String,
+    errors: Vec<ModelError>,
+    session: Option<DeviceSession>,
+    device_path: String,
+    device_baud: String,
+    last_receipt: Option<CapacityReport>,
+    listing: Vec<(String, u16, u16)>,
+    flash_operation: FlashOperation,
+    flash_request: FlashRequest,
+    flash_transaction: String,
+    flash_crc32: String,
+    flash_job: Option<FlashJob>,
+    flash_progress: Option<(u16, u16)>,
+    flash_status: String,
+    flash_devices: Vec<PathBuf>,
+}
+
+impl Default for StudioApp {
+    fn default() -> Self {
+        Self {
+            tab: Tab::default(),
+            project: ProjectModel::new(),
+            project_path: String::new(),
+            status: "Ready.".to_owned(),
+            errors: Vec::new(),
+            session: None,
+            device_path: String::new(),
+            device_baud: "38400".to_owned(),
+            last_receipt: None,
+            listing: Vec::new(),
+            flash_operation: FlashOperation::BackupEeprom,
+            flash_request: FlashRequest::default(),
+            flash_transaction: String::new(),
+            flash_crc32: String::new(),
+            flash_job: None,
+            flash_progress: None,
+            flash_status: String::new(),
+            flash_devices: Vec::new(),
+        }
+    }
+}
+
+impl StudioApp {
+    /// Builds the editor from start-up options, connecting when requested.
+    pub fn new(options: &Options) -> Self {
+        let mut app = Self::default();
+        if let Some(path) = &options.project {
+            app.project_path = path.display().to_string();
+            app.load_project();
+        }
+        if options.simulator {
+            app.connect_simulator();
+        } else if let (Some(device), Some(baud)) = (&options.device, options.baud) {
+            app.device_path = device.display().to_string();
+            app.device_baud = baud.to_string();
+            app.connect_serial();
+        }
+        app
+    }
+
+    fn connect_simulator(&mut self) {
+        match DeviceSession::connect_simulator() {
+            Ok(session) => {
+                self.status = format!("Connected to {}.", session.description());
+                self.session = Some(session);
+                self.refresh_listing();
+            }
+            Err(error) => self.status = error.to_string(),
+        }
+    }
+
+    fn connect_serial(&mut self) {
+        let Ok(baud) = self.device_baud.trim().parse::<u32>() else {
+            "Baud rate must be a number.".clone_into(&mut self.status);
+            return;
+        };
+        if self.device_path.trim().is_empty() {
+            "Enter a serial device path.".clone_into(&mut self.status);
+            return;
+        }
+        match DeviceSession::connect_serial(&PathBuf::from(self.device_path.trim()), baud) {
+            Ok(session) => {
+                self.status = format!("Connected to {}.", session.description());
+                self.session = Some(session);
+                self.refresh_listing();
+            }
+            Err(error) => self.status = error.to_string(),
+        }
+    }
+
+    fn refresh_listing(&mut self) {
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        match session.listing() {
+            Ok(listing) => {
+                self.listing = listing
+                    .objects
+                    .iter()
+                    .map(|object| {
+                        (
+                            format!("{:?}", object.key.kind),
+                            object.key.id,
+                            object.encoded_len,
+                        )
+                    })
+                    .collect();
+                self.status = format!(
+                    "Device generation {} holds {} objects.",
+                    listing.generation,
+                    listing.objects.len()
+                );
+            }
+            Err(error) => self.status = error.to_string(),
+        }
+    }
+
+    fn write_project(&mut self) {
+        let project = match self.project.validate() {
+            Ok(project) => project,
+            Err(errors) => {
+                self.errors = errors;
+                "Fix the highlighted fields before writing.".clone_into(&mut self.status);
+                return;
+            }
+        };
+        self.errors.clear();
+        let Some(session) = self.session.as_mut() else {
+            "Connect a device first.".clone_into(&mut self.status);
+            return;
+        };
+        match session.write_project(&project) {
+            Ok(receipt) => {
+                self.last_receipt = Some(receipt.report);
+                self.status = format!(
+                    "Wrote and verified generation {} with {} channels in {} banks.",
+                    receipt.generation, receipt.report.explicit_channels, receipt.report.banks
+                );
+                self.refresh_listing();
+            }
+            Err(error) => self.status = error.to_string(),
+        }
+    }
+
+    fn read_project(&mut self) {
+        let Some(session) = self.session.as_mut() else {
+            "Connect a device first.".clone_into(&mut self.status);
+            return;
+        };
+        match session.backup() {
+            Ok(backup) => match ProjectModel::from_image(&backup.image) {
+                Ok(project) => {
+                    self.project = project;
+                    self.errors.clear();
+                    self.status =
+                        format!("Loaded generation {} from the device.", backup.generation);
+                }
+                Err(error) => self.status = error.to_string(),
+            },
+            Err(error) => self.status = error.to_string(),
+        }
+    }
+
+    fn save_project(&mut self) {
+        let path = self.project_path.trim().to_owned();
+        if path.is_empty() {
+            "Enter a project file path.".clone_into(&mut self.status);
+            return;
+        }
+        match self.project.to_image() {
+            Ok(image) => match fs::write(&path, image) {
+                Ok(()) => {
+                    self.errors.clear();
+                    self.status = format!("Saved {path}.");
+                }
+                Err(error) => self.status = format!("Could not save {path}: {error}"),
+            },
+            Err(errors) => {
+                self.errors = errors;
+                "Fix the highlighted fields before saving.".clone_into(&mut self.status);
+            }
+        }
+    }
+
+    fn load_project(&mut self) {
+        let path = self.project_path.trim().to_owned();
+        if path.is_empty() {
+            "Enter a project file path.".clone_into(&mut self.status);
+            return;
+        }
+        match fs::read(&path) {
+            Ok(bytes) if bytes.len() > MAX_PROJECT_IMAGE_BYTES => {
+                self.status = format!("{path} exceeds {MAX_PROJECT_IMAGE_BYTES} bytes.");
+            }
+            Ok(bytes) => match ProjectModel::from_image(&bytes) {
+                Ok(project) => {
+                    self.project = project;
+                    self.errors.clear();
+                    self.status = format!("Loaded {path}.");
+                }
+                Err(error) => self.status = error.to_string(),
+            },
+            Err(error) => self.status = format!("Could not read {path}: {error}"),
+        }
+    }
+
+    fn poll_flash(&mut self) {
+        let Some(job) = self.flash_job.as_ref() else {
+            return;
+        };
+        let mut finished = false;
+        for message in job.drain() {
+            match message {
+                FlashProgress::Step { done, total } => self.flash_progress = Some((done, total)),
+                FlashProgress::Finished(summary) => {
+                    self.flash_status = summary;
+                    finished = true;
+                }
+                FlashProgress::Failed(error) => {
+                    self.flash_status = error;
+                    finished = true;
+                }
+            }
+        }
+        if finished {
+            self.flash_job = None;
+        }
+    }
+
+    fn start_flash(&mut self) {
+        self.flash_request.transaction_id =
+            u32::from_str_radix(self.flash_transaction.trim().trim_start_matches("0x"), 16)
+                .unwrap_or(0);
+        self.flash_request.image_crc32 =
+            u32::from_str_radix(self.flash_crc32.trim().trim_start_matches("0x"), 16).unwrap_or(0);
+        match flash::start(self.flash_operation, self.flash_request.clone()) {
+            Ok(job) => {
+                self.flash_status = format!("Running: {}", job.operation().label());
+                self.flash_progress = None;
+                self.flash_job = Some(job);
+            }
+            Err(error) => self.flash_status = error.to_string(),
+        }
+    }
+}
+
+impl eframe::App for StudioApp {
+    fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
+        self.poll_flash();
+        if self.flash_job.is_some() {
+            context.request_repaint();
+        }
+
+        egui::TopBottomPanel::top("tabs").show(context, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.selectable_value(&mut self.tab, Tab::Channels, "Channels");
+                ui.selectable_value(&mut self.tab, Tab::Banks, "Banks");
+                ui.selectable_value(&mut self.tab, Tab::Radio, "Radio");
+                ui.selectable_value(&mut self.tab, Tab::Device, "Device");
+                ui.selectable_value(&mut self.tab, Tab::Flash, "Flash");
+            });
+        });
+
+        egui::TopBottomPanel::bottom("status").show(context, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(&self.status).strong());
+            });
+            for error in &self.errors {
+                ui.colored_label(egui::Color32::from_rgb(0xC0, 0x39, 0x2B), error.to_string());
+            }
+        });
+
+        egui::CentralPanel::default().show(context, |ui| match self.tab {
+            Tab::Channels => self.channels_tab(ui),
+            Tab::Banks => self.banks_tab(ui),
+            Tab::Radio => self.radio_tab(ui),
+            Tab::Device => self.device_tab(ui),
+            Tab::Flash => self.flash_tab(ui),
+        });
+    }
+}
+
+impl StudioApp {
+    fn project_bar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Project file:");
+            ui.add(TextEdit::singleline(&mut self.project_path).desired_width(320.0));
+            if ui.button("Load").clicked() {
+                self.load_project();
+            }
+            if ui.button("Save").clicked() {
+                self.save_project();
+            }
+        });
+        ui.separator();
+    }
+
+    fn channels_tab(&mut self, ui: &mut egui::Ui) {
+        self.project_bar(ui);
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Add channel").clicked() {
+                self.project.add_channel();
+            }
+            ui.label(format!("{} channels", self.project.channels.len()));
+        });
+        ui.separator();
+
+        let mut remove = None;
+        ScrollArea::both().show(ui, |ui| {
+            for (row, channel) in self.project.channels.iter_mut().enumerate() {
+                ui.push_id(row, |ui| {
+                    Grid::new("channel").num_columns(4).show(ui, |ui| {
+                        ui.label("Id");
+                        ui.add(egui::DragValue::new(&mut channel.id));
+                        ui.label("Name");
+                        ui.add(TextEdit::singleline(&mut channel.name).desired_width(120.0));
+                        ui.end_row();
+
+                        ui.label("Receive MHz");
+                        ui.add(TextEdit::singleline(&mut channel.receive_mhz).desired_width(120.0));
+                        ui.label("Transmit MHz");
+                        ui.add(
+                            TextEdit::singleline(&mut channel.transmit_mhz).desired_width(120.0),
+                        );
+                        ui.end_row();
+
+                        ui.label("RX tone");
+                        tone_editor(ui, "rx", &mut channel.rx_tone);
+                        ui.label("TX tone");
+                        tone_editor(ui, "tx", &mut channel.tx_tone);
+                        ui.end_row();
+
+                        ui.label("Modulation");
+                        modulation_editor(ui, &mut channel.modulation);
+                        ui.label("Bandwidth");
+                        bandwidth_editor(ui, &mut channel.bandwidth);
+                        ui.end_row();
+
+                        ui.label("Power");
+                        power_editor(ui, &mut channel.power);
+                        ui.label("Step Hz");
+                        ui.add(egui::DragValue::new(&mut channel.step_hz).speed(125.0));
+                        ui.end_row();
+
+                        ui.label("Squelch");
+                        ui.add(
+                            egui::DragValue::new(&mut channel.squelch).range(0..=MAX_SQUELCH_LEVEL),
+                        );
+                        ui.label("TX class");
+                        tx_class_editor(ui, &mut channel.tx_class);
+                        ui.end_row();
+
+                        ui.label("Flags");
+                        ui.horizontal_wrapped(|ui| {
+                            ui.checkbox(&mut channel.scan_skip, "Scan skip");
+                            ui.checkbox(&mut channel.busy_lockout, "Busy lockout");
+                            ui.checkbox(&mut channel.reverse, "Reverse");
+                            ui.checkbox(&mut channel.compander, "Compander");
+                        });
+                        ui.label("Banks");
+                        ui.horizontal_wrapped(|ui| {
+                            for bank in 0..BANK_COUNT {
+                                ui.checkbox(&mut channel.banks[bank], format!("{bank}"));
+                            }
+                        });
+                        ui.end_row();
+                    });
+                    if ui.button("Remove channel").clicked() {
+                        remove = Some(row);
+                    }
+                    ui.separator();
+                });
+            }
+        });
+        if let Some(row) = remove {
+            self.project.channels.remove(row);
+        }
+    }
+
+    fn banks_tab(&mut self, ui: &mut egui::Ui) {
+        self.project_bar(ui);
+        if ui.button("Add bank").clicked() {
+            self.project.add_bank();
+        }
+        ui.separator();
+
+        let mut remove = None;
+        ScrollArea::vertical().show(ui, |ui| {
+            for (row, bank) in self.project.banks.iter_mut().enumerate() {
+                ui.push_id(row, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Id");
+                        ui.add(egui::DragValue::new(&mut bank.id).range(0..=15));
+                        ui.label("Name");
+                        ui.add(TextEdit::singleline(&mut bank.name).desired_width(160.0));
+                        ui.checkbox(&mut bank.scan_enabled, "Scan enabled");
+                        if ui.button("Remove").clicked() {
+                            remove = Some(row);
+                        }
+                    });
+                });
+            }
+        });
+        if let Some(row) = remove {
+            self.project.banks.remove(row);
+        }
+    }
+
+    fn radio_tab(&mut self, ui: &mut egui::Ui) {
+        self.project_bar(ui);
+        let config = &mut self.project.config;
+        Grid::new("radio").num_columns(2).show(ui, |ui| {
+            ui.label("Squelch level");
+            ui.add(egui::DragValue::new(&mut config.squelch).range(0..=MAX_SQUELCH_LEVEL));
+            ui.end_row();
+
+            ui.label("Backlight seconds");
+            ui.add(
+                egui::DragValue::new(&mut config.backlight_seconds).range(0..=BACKLIGHT_ALWAYS_ON),
+            );
+            ui.end_row();
+
+            ui.label("Scan resume");
+            ComboBox::from_id_salt("scan-resume")
+                .selected_text(scan_resume_label(config.scan_resume))
+                .show_ui(ui, |ui| {
+                    for resume in [ScanResume::TimeOut, ScanResume::Carrier, ScanResume::Stop] {
+                        ui.selectable_value(
+                            &mut config.scan_resume,
+                            resume,
+                            scan_resume_label(resume),
+                        );
+                    }
+                });
+            ui.end_row();
+
+            ui.label("Scan dwell ms");
+            ui.add(egui::DragValue::new(&mut config.scan_dwell_ms).range(1..=60_000));
+            ui.end_row();
+
+            ui.label("Scan hold ms");
+            ui.add(egui::DragValue::new(&mut config.scan_hold_ms).range(1..=600_000));
+            ui.end_row();
+
+            ui.label("Battery save ratio");
+            ui.add(
+                egui::DragValue::new(&mut config.battery_save_ratio)
+                    .range(0..=MAX_BATTERY_SAVE_RATIO),
+            );
+            ui.end_row();
+
+            ui.label("Options");
+            ui.vertical(|ui| {
+                ui.checkbox(&mut config.dual_watch, "Dual watch");
+                ui.checkbox(&mut config.key_beep, "Key beep");
+                ui.checkbox(&mut config.busy_lockout_default, "Busy lockout by default");
+                ui.checkbox(&mut config.am_fix, "AM gain compensation");
+                ui.checkbox(&mut config.tone_tail_elimination, "Tone tail elimination");
+            });
+            ui.end_row();
+        });
+    }
+
+    fn device_tab(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Connect simulator").clicked() {
+                self.connect_simulator();
+            }
+            ui.label("Device:");
+            ui.add(TextEdit::singleline(&mut self.device_path).desired_width(220.0));
+            ui.label("Baud:");
+            ui.add(TextEdit::singleline(&mut self.device_baud).desired_width(80.0));
+            if ui.button("Connect serial").clicked() {
+                self.connect_serial();
+            }
+        });
+        ui.separator();
+
+        if let Some(session) = self.session.as_ref() {
+            let capabilities = session.capabilities();
+            ui.label(format!(
+                "Connected to {}: protocol {}, storage {}, {} objects, {} object bytes.",
+                session.description(),
+                capabilities.protocol_version,
+                capabilities.storage_version,
+                capabilities.max_objects,
+                capabilities.max_object_size
+            ));
+        } else {
+            ui.label("No device is connected.");
+        }
+
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Refresh listing").clicked() {
+                self.refresh_listing();
+            }
+            if ui.button("Read project from device").clicked() {
+                self.read_project();
+            }
+            if ui.button("Write project to device").clicked() {
+                self.write_project();
+            }
+        });
+        ui.separator();
+
+        if let Some(report) = self.last_receipt {
+            ui.label(format!(
+                "Last verified write: {} objects, {} bytes, {} channels, {} banks.",
+                report.object_count, report.storage_bytes, report.explicit_channels, report.banks
+            ));
+        }
+
+        ScrollArea::vertical().show(ui, |ui| {
+            Grid::new("listing").num_columns(3).show(ui, |ui| {
+                ui.label(RichText::new("Kind").strong());
+                ui.label(RichText::new("Id").strong());
+                ui.label(RichText::new("Bytes").strong());
+                ui.end_row();
+                for (kind, id, bytes) in &self.listing {
+                    ui.label(kind);
+                    ui.label(id.to_string());
+                    ui.label(bytes.to_string());
+                    ui.end_row();
+                }
+            });
+        });
+    }
+
+    fn flash_tab(&mut self, ui: &mut egui::Ui) {
+        ui.label(
+            "Firmware and EEPROM operations use the recovery-gated flasher library. \
+             Every confirmation phrase is required exactly as documented.",
+        );
+        ui.separator();
+
+        ComboBox::from_label("Operation")
+            .selected_text(self.flash_operation.label())
+            .show_ui(ui, |ui| {
+                for operation in FlashOperation::all() {
+                    ui.selectable_value(&mut self.flash_operation, operation, operation.label());
+                }
+            });
+
+        self.flash_device_picker(ui);
+        ui.separator();
+        self.flash_operation_fields(ui);
+        ui.separator();
+        self.flash_controls(ui);
+    }
+
+    fn flash_device_picker(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Serial device:");
+            let mut device = self.flash_request.device.display().to_string();
+            if ui
+                .add(TextEdit::singleline(&mut device).desired_width(280.0))
+                .changed()
+            {
+                self.flash_request.device = PathBuf::from(device.trim());
+            }
+            if ui.button("Discover").clicked() {
+                self.flash_devices = flash::discover_serial_devices();
+                self.flash_status = format!("Found {} candidates.", self.flash_devices.len());
+            }
+        });
+        for candidate in self.flash_devices.clone() {
+            if ui.button(candidate.display().to_string()).clicked() {
+                self.flash_request.device = candidate;
+            }
+        }
+    }
+
+    fn flash_operation_fields(&mut self, ui: &mut egui::Ui) {
+        match self.flash_operation {
+            FlashOperation::BackupEeprom => path_field(
+                ui,
+                "EEPROM backup output",
+                &mut self.flash_request.eeprom_output,
+            ),
+            FlashOperation::K1Recovery => {
+                path_field(ui, "Recovery image", &mut self.flash_request.firmware);
+                self.k1_confirmations(ui, false);
+            }
+            FlashOperation::K1Application => {
+                path_field(ui, "Application image", &mut self.flash_request.firmware);
+                path_field(
+                    ui,
+                    "Known-good recovery image",
+                    &mut self.flash_request.recovery,
+                );
+                self.k1_confirmations(ui, true);
+            }
+            FlashOperation::K5Application => {
+                path_field(ui, "Application image", &mut self.flash_request.firmware);
+                path_field(
+                    ui,
+                    "Known-good recovery image",
+                    &mut self.flash_request.recovery,
+                );
+                path_field(
+                    ui,
+                    "Retained EEPROM backup",
+                    &mut self.flash_request.eeprom_backup,
+                );
+                text_field(
+                    ui,
+                    "Firmware version",
+                    &mut self.flash_request.firmware_version,
+                );
+                text_field(
+                    ui,
+                    "Target confirmation",
+                    &mut self.flash_request.target_confirmation,
+                );
+                text_field(
+                    ui,
+                    "Recovery rehearsed confirmation",
+                    &mut self.flash_request.recovery_rehearsed_confirmation,
+                );
+                text_field(ui, "Image CRC-32 (hex)", &mut self.flash_crc32);
+                text_field(ui, "Transaction id (hex)", &mut self.flash_transaction);
+            }
+        }
+    }
+
+    fn flash_controls(&mut self, ui: &mut egui::Ui) {
+        let running = self.flash_job.is_some();
+        ui.add_enabled_ui(!running, |ui| {
+            let label = if self.flash_operation.is_write() {
+                "Start write"
+            } else {
+                "Start read"
+            };
+            if ui.button(label).clicked() {
+                self.start_flash();
+            }
+        });
+        if let Some((done, total)) = self.flash_progress {
+            ui.label(format!("{done} of {total} pages acknowledged."));
+        }
+        if !self.flash_status.is_empty() {
+            ui.label(RichText::new(&self.flash_status).strong());
+        }
+    }
+
+    fn k1_confirmations(&mut self, ui: &mut egui::Ui, rehearsal: bool) {
+        text_field(
+            ui,
+            "Bootloader version",
+            &mut self.flash_request.bootloader_version,
+        );
+        text_field(
+            ui,
+            "Target confirmation",
+            &mut self.flash_request.target_confirmation,
+        );
+        if rehearsal {
+            text_field(
+                ui,
+                "Recovery rehearsed confirmation",
+                &mut self.flash_request.recovery_rehearsed_confirmation,
+            );
+        }
+        text_field(ui, "Transaction id (hex)", &mut self.flash_transaction);
+    }
+}
+
+fn path_field(ui: &mut egui::Ui, label: &str, path: &mut PathBuf) {
+    ui.horizontal_wrapped(|ui| {
+        ui.label(label);
+        let mut text = path.display().to_string();
+        if ui
+            .add(TextEdit::singleline(&mut text).desired_width(360.0))
+            .changed()
+        {
+            *path = PathBuf::from(text.trim());
+        }
+    });
+}
+
+fn text_field(ui: &mut egui::Ui, label: &str, value: &mut String) {
+    ui.horizontal_wrapped(|ui| {
+        ui.label(label);
+        ui.add(TextEdit::singleline(value).desired_width(360.0));
+    });
+}
+
+fn tone_editor(ui: &mut egui::Ui, id: &str, tone: &mut ToneDraft) {
+    ui.horizontal(|ui| {
+        ComboBox::from_id_salt(id)
+            .selected_text(tone.kind.label())
+            .width(110.0)
+            .show_ui(ui, |ui| {
+                for kind in ToneKind::all() {
+                    ui.selectable_value(&mut tone.kind, kind, kind.label());
+                }
+            });
+        ui.add_enabled(
+            !matches!(tone.kind, ToneKind::None),
+            TextEdit::singleline(&mut tone.value).desired_width(70.0),
+        );
+    });
+}
+
+fn modulation_editor(ui: &mut egui::Ui, modulation: &mut Modulation) {
+    ComboBox::from_id_salt("modulation")
+        .selected_text(match modulation {
+            Modulation::Fm => "FM",
+            Modulation::Am => "AM",
+            Modulation::Usb => "USB",
+        })
+        .show_ui(ui, |ui| {
+            ui.selectable_value(modulation, Modulation::Fm, "FM");
+            ui.selectable_value(modulation, Modulation::Am, "AM");
+            ui.selectable_value(modulation, Modulation::Usb, "USB");
+        });
+}
+
+fn bandwidth_editor(ui: &mut egui::Ui, bandwidth: &mut Bandwidth) {
+    ComboBox::from_id_salt("bandwidth")
+        .selected_text(match bandwidth {
+            Bandwidth::Narrow => "Narrow",
+            Bandwidth::Wide => "Wide",
+        })
+        .show_ui(ui, |ui| {
+            ui.selectable_value(bandwidth, Bandwidth::Narrow, "Narrow");
+            ui.selectable_value(bandwidth, Bandwidth::Wide, "Wide");
+        });
+}
+
+fn power_editor(ui: &mut egui::Ui, power: &mut PowerLevel) {
+    ComboBox::from_id_salt("power")
+        .selected_text(match power {
+            PowerLevel::Low => "Low",
+            PowerLevel::Medium => "Medium",
+            PowerLevel::High => "High",
+        })
+        .show_ui(ui, |ui| {
+            ui.selectable_value(power, PowerLevel::Low, "Low");
+            ui.selectable_value(power, PowerLevel::Medium, "Medium");
+            ui.selectable_value(power, PowerLevel::High, "High");
+        });
+}
+
+fn tx_class_editor(ui: &mut egui::Ui, class: &mut TxClass) {
+    ComboBox::from_id_salt("tx-class")
+        .selected_text(tx_class_label(*class))
+        .show_ui(ui, |ui| {
+            for candidate in [
+                TxClass::Never,
+                TxClass::LicenceFreePlan,
+                TxClass::Amateur,
+                TxClass::Marine,
+                TxClass::Aeronautical,
+                TxClass::Business,
+                TxClass::Experimental,
+            ] {
+                ui.selectable_value(class, candidate, tx_class_label(candidate));
+            }
+        });
+}
+
+const fn tx_class_label(class: TxClass) -> &'static str {
+    match class {
+        TxClass::Never => "Never",
+        TxClass::LicenceFreePlan => "Licence free",
+        TxClass::Amateur => "Amateur",
+        TxClass::Marine => "Marine",
+        TxClass::Aeronautical => "Aeronautical",
+        TxClass::Business => "Business",
+        TxClass::Experimental => "Experimental",
+    }
+}
+
+const fn scan_resume_label(resume: ScanResume) -> &'static str {
+    match resume {
+        ScanResume::TimeOut => "Resume after hold",
+        ScanResume::Carrier => "Resume when carrier drops",
+        ScanResume::Stop => "Stop on signal",
+    }
+}
+
+/// Returns the editor label for one channel row, used by tests and headers.
+pub fn channel_row_label(row: usize, channel: &ChannelDraft) -> String {
+    format!("{}: {} ({})", row + 1, channel.name, channel.receive_mhz)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{channel_row_label, scan_resume_label, tx_class_label, StudioApp, Tab};
+    use crate::Options;
+    use radio_domain::{ScanResume, TxClass};
+
+    #[test]
+    fn a_simulator_start_up_connects_and_lists_objects() {
+        let options = Options {
+            simulator: true,
+            ..Options::default()
+        };
+        let app = StudioApp::new(&options);
+        assert!(app.session.is_some());
+        assert_eq!(app.tab, Tab::Channels);
+        assert!(app.status.contains("0 objects"));
+    }
+
+    #[test]
+    fn writing_an_invalid_project_reports_errors_without_contacting_the_device() {
+        let mut app = StudioApp::new(&Options {
+            simulator: true,
+            ..Options::default()
+        });
+        app.project.add_channel();
+        app.project.channels[0].receive_mhz = "nope".to_owned();
+        app.write_project();
+        assert!(!app.errors.is_empty());
+        assert!(app.last_receipt.is_none());
+    }
+
+    #[test]
+    fn a_valid_project_writes_and_reads_back_through_the_simulator() {
+        let mut app = StudioApp::new(&Options {
+            simulator: true,
+            ..Options::default()
+        });
+        app.project.add_bank();
+        app.project.add_channel();
+        app.project.channels[0].banks[0] = true;
+        app.write_project();
+        assert!(app.errors.is_empty(), "{:?}", app.errors);
+        assert_eq!(app.last_receipt.unwrap().explicit_channels, 1);
+
+        app.project = crate::model::ProjectModel::new();
+        app.read_project();
+        assert_eq!(app.project.channels.len(), 1);
+        assert_eq!(app.project.banks.len(), 1);
+    }
+
+    #[test]
+    fn labels_cover_every_enumerated_value() {
+        assert_eq!(tx_class_label(TxClass::Never), "Never");
+        assert_eq!(scan_resume_label(ScanResume::Stop), "Stop on signal");
+        let mut project = crate::model::ProjectModel::new();
+        project.add_channel();
+        assert_eq!(
+            channel_row_label(0, &project.channels[0]),
+            "1: CH1 (145.500000)"
+        );
+    }
+}

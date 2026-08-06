@@ -17,6 +17,7 @@ members = [
     "crates/radio-programmer",
     "crates/radio-programmer-cli",
     "crates/radio-programmer-gui",
+    "crates/radio-programmer-gui-native",
     "crates/radio-programmer-serial",
     "crates/radio-sim",
 ]
