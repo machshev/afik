@@ -1511,3 +1511,78 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
 - **Required experiment:** extend the read-only `probe-keypad` surface with the
   unselected-column row mask, then observe released, SIDE1-held, and SIDE2-held
   states on the exact unit before any semantic side-key action exists.
+
+### EVID-BK4819-053 — Receive register block from the pinned K1 firmware
+
+- **Source:** `armel/uv-k1-k5v3-firmware-custom` at the pinned commit
+  `fe9c4e9432694b50aea651084a043aae0b58673d`: `App/driver/bk4819.c`,
+  `App/driver/bk4819-regs.h`, `App/radio.c`, and `App/dcs.c`. The operator
+  designated this source authoritative for register values and pinout where
+  primary Beken documentation is silent.
+- **Power and mode:** `BK4819_RX_TurnOn` writes `REG_37 = 0x1F0F`, clears
+  `REG_30`, then writes the receive block `0xBEF1` (VCO calibration, RX link,
+  AF DAC, discriminator, PLL/VCO, RX DSP, with PA gain, MIC ADC, and TX DSP
+  disabled). AFIK writes exactly this block and never derives a transmit word
+  from it.
+- **Demodulator:** `RADIO_SetModulation` reads `REG_31` and sets bit zero for
+  AM or clears it otherwise; AM additionally writes `REG_42 = 0x6F5C` and
+  `REG_2A = 0x7434`, while FM and USB write `REG_42 = 0x6B5A`,
+  `REG_2A = 0x7400`, `REG_2B = 0`, and `REG_2F = 0x9890`. Both paths write
+  `REG_54 = 0x9009`, `REG_55 = 0x31A9`, AF DAC gain `REG_48 = 0xF`, and
+  `REG_3D = 0x2AAB` except for USB which writes zero. AFC (`REG_73` bit 4) is
+  disabled for every non-FM mode.
+- **Audio path:** `BK4819_SetAF` writes `REG_47 = (6 << 12) | (AF << 8) | (1 << 6)`.
+  `AF_MUTE` is 0, `AF_FM` is 1, and `AF_BASEBAND2` (USB) is 5. The pinned
+  source drives AM through `AF_FM` plus the AM demodulator bit, which AFIK
+  reproduces rather than selecting the documented `AF_AM` code.
+- **Bandwidth:** `BK4819_SetFilterBandwidth` writes `REG_43 = 0x3628` for the
+  wide filter and `0x3648` for the narrow filter in the weak-signal-equal
+  variant used by `RADIO_SetupRegisters`.
+- **Squelch:** `BK4819_SetupSquelch` writes `REG_4D = 0xA000 | close_glitch`,
+  `REG_4E = (1 << 14) | (5 << 11) | (6 << 9) | open_glitch`,
+  `REG_4F = (close_noise << 8) | open_noise`, and
+  `REG_78 = (open_rssi << 8) | close_rssi`. RSSI thresholds are 0.5 dB per
+  step and the noise fields are seven bits. The threshold values themselves are
+  per-unit calibration data and are never invented by AFIK.
+- **Sub-audio:** CTCSS uses `REG_51 = 0x904A` with
+  `REG_07 = CTC1 | ((freq_tenths_hz * 206488 + 50000) / 100000)`. CDCSS uses
+  `REG_51 = 0x8033`, `REG_07 = CTC1 | 2775`, then `REG_08` twice with the low
+  twelve bits and `0x8000 |` the high twelve bits of the 23-bit code word.
+  `App/dcs.c` builds that word as `golay(octal_code + 0x800)` with generator
+  `0x08EA`, inverted by `^ 0x7FFFFF` for reverse polarity.
+- **Metering:** RSSI is `REG_67 & 0x01FF` in 0.5 dB steps with
+  `dBm = rssi / 2 - 160`; the glitch indicator is `REG_63 & 0x00FF` and the
+  excess-noise indicator is `REG_65 & 0x007F`. Tone detection is latched in
+  `REG_02`: CTCSS found/lost at bits 7 and 6, CDCSS found/lost at bits 9 and 8,
+  and squelch found/lost at bits 3 and 2.
+- **AGC:** `BK4819_InitAGC` writes gain tables `REG_13 = 0x03BE`,
+  `REG_12 = 0x037B`, `REG_11 = 0x027B`, `REG_10 = 0x007A`, then
+  `REG_14 = 0x0000` with `REG_49 = (50 << 7) | 32` for AM or `REG_14 = 0x0019`
+  with `REG_49 = (84 << 7) | 56` otherwise, followed by `REG_7B = 0x8420`.
+- **Filter path:** `BK4819_PickRXFilterPathBasedOnFrequency` selects the VHF
+  low-noise amplifier below 28 MHz and the UHF path otherwise, driven through
+  the `REG_33` GPIO output word (`0x40 >> pin`, VHF pin 4 and UHF pin 3).
+- **Confidence:** high for reproducing the pinned firmware's behaviour, since
+  every value is copied from a working implementation on the same chip.
+  Medium for the underlying silicon semantics, which remain undocumented for
+  the fields the source itself marks unknown. No AFIK receive register has yet
+  been observed on hardware.
+
+### EVID-K1-054 — K1 BK4819 three-wire pinout and transfer order
+
+- **Source:** `App/driver/bk4819.c` lines 32-34 and the surrounding transfer
+  helpers at the pinned Armel commit.
+- **Pinout:** `PIN_CSN` is `GPIOF` pin 9, `PIN_SCL` is `GPIOB` pin 8, and
+  `PIN_SDA` is `GPIOB` pin 9. `SDA` is bidirectional: reads switch the pin to
+  an input and restore output afterwards. The K1 does not drive the BK4819
+  through the SPI peripheral; the bus is bit-banged.
+- **Transfer order:** every transfer releases chip select, drives the clock
+  low, waits one microsecond, then asserts chip select. The address byte is
+  shifted most significant bit first, data changing while the clock is low and
+  latched on the rising edge, with one microsecond between edges. A write
+  follows with the 16-bit value; a read sets bit 7 of the address and then
+  shifts sixteen bits in. Every transfer ends by releasing chip select and
+  leaving both clock and data high.
+- **Confidence:** high for the pinout and ordering, which come directly from
+  the working reference implementation. No AFIK transfer has been performed on
+  hardware, so the electrical timing on this unit is unverified.

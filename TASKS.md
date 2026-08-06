@@ -1349,3 +1349,73 @@
   passed. Raw image 26,072 bytes, CRC-32 `85387ce8`.
 - **Remaining:** the guarded physical write and the power-cycle observation of
   each side key, PTT, and an `AFIK-K1-0.3` hello.
+
+## STORE-026 — Banked explicit-channel storage
+
+- **Status:** complete (2026-08-07)
+- **Objective:** store complete explicit channels, named banks, and one global
+  radio configuration beside the existing generated banks, without breaking the
+  canonical image contract.
+- **Scope:** validated domain types for tones, squelch, modulation, bandwidth,
+  power, and the global configuration; hardware-independent `ChannelRecord`,
+  `ChannelFlags`, `BankMask`, and `ChannelBank`; exact version-1 encodings for
+  three new object kinds; capacity accounting and referential integrity in the
+  configuration compiler; front-end object naming.
+- **Exclusions:** on-flash layout, power-loss durability, multi-object paging,
+  member lists, and any device-side migration of existing images.
+- **Acceptance criteria:** every encoded field is revalidated on decode;
+  reserved bytes and flag bits must be zero; canonical images order every kind
+  by `(kind, id)`; a channel referencing an undefined bank is rejected before
+  any device mutation; existing generated-bank images still decode unchanged.
+- **Result:** complete. `radio-storage` gained `Channel`, `ChannelBank`, and
+  `RadioConfig` objects at 42, 22, and 16 bytes; `RadioProject` carries all
+  three; `CapacityReport` counts explicit channels, banks, and the singleton
+  configuration. The format is documented in `docs/storage-format.md` and the
+  membership decision in `ADR-050`.
+
+## RX-027 — Complete receive path and banked receive control
+
+- **Status:** complete (2026-08-07)
+- **Objective:** implement the full receive feature set from the pinned K1
+  reference firmware's register values, plus the hardware-independent control
+  layer which drives it.
+- **Scope:** BK4819 receive configuration (power blocks, receive mode,
+  AM/FM/USB demodulator, filter bandwidth, AGC tables, squelch thresholds,
+  CTCSS and CDCSS sub-audio decoding, interrupt mask, RF filter path, audio
+  routing); RSSI, glitch, noise, carrier squelch, and tone metering; banked
+  memory and VFO control with monitor, tone-aware audio gating, scan-skip,
+  three scan resume modes, and dual watch; the K1 three-wire register bus.
+- **Exclusions:** transmit behaviour of any kind, calibration sources, audio
+  amplifier and speaker control, FM broadcast receive, spectrum and frequency
+  scanning, DTMF, VOX, compander programming, and any physical hardware claim.
+- **Acceptance criteria:** every register value traces to `EVID-BK4819-053` or
+  primary documentation; the receive path never writes the transmit mode word;
+  any bus error latches `Faulted`; squelch thresholds remain caller-supplied
+  and internally validated; control-layer inputs are deterministic and mint no
+  transmit authority.
+- **Result:** complete in software. `radio-bk4819` gained `configure_receive`,
+  `set_af_output`, and `receive_metrics`; `radio-channel-control` gained the
+  banked receive controller; `radio-firmware-k1::bk4819_bus` sequences the
+  pinned three-wire pinout. Physical bring-up is deliberately out of scope and
+  is tracked by `RISK-027`; the calibration gap is tracked by `RISK-028`.
+
+## NGUI-028 — Native cross-platform editor and flashing front end
+
+- **Status:** complete (2026-08-07)
+- **Objective:** provide one native desktop application which edits channels,
+  banks, and the radio configuration, programs a radio, and drives the guarded
+  firmware and EEPROM operations.
+- **Scope:** an `eframe`/`egui` application over a validated project model;
+  canonical image load and save; simulator or explicit serial programmer
+  sessions with verified writes and device read-back; a flash tab reusing the
+  recovery-gated flasher workflows on a worker thread with progress reporting.
+- **Exclusions:** remote or shared operation, authentication, automatic device
+  selection for writes, any relaxation of the flasher's confirmation gates, and
+  live receive control of a radio.
+- **Acceptance criteria:** invalid input cannot reach an image, a device
+  transaction, or a flashing workflow; every flashing guard is preserved
+  unchanged; the model, session, flash-request validation, and option parsing
+  are testable without a display.
+- **Result:** complete. `radio-programmer-gui-native` provides `afik-studio`,
+  documented in `docs/programmer-gui-native.md`, with its boundary recorded in
+  `ADR-052` and its accepted local-tool exposure in `RISK-029`.

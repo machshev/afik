@@ -707,3 +707,48 @@ meaning.
 - No side-key/PTT observation may alter the display, persistence, channel plan,
   RF state, or TX authority. Any physical experiment must be separately
   guarded, receive-only, and retain the known-good recovery path.
+
+## ADR-050 — Banked channel storage uses membership masks, not member lists
+
+- **Date:** 2026-08-07
+- **Status:** accepted for `STORE-026`
+- Explicit channels are stored as one bounded object each, and banks are stored
+  as name and flag metadata only. Membership lives in a 16-bit mask on the
+  channel rather than a member list on the bank.
+- A member list would either bound a bank to roughly twenty channels inside the
+  64-byte object limit or require multi-object paging. A mask keeps every object
+  fixed size, lets a channel belong to several banks, and keeps the canonical
+  image order stable when a channel moves between banks.
+- The cost is that bank membership can only address sixteen banks. The
+  compiler rejects any channel referencing a bank the project does not define,
+  so a mask can never point at nothing.
+
+## ADR-051 — The receive path reproduces the pinned firmware's register values
+
+- **Date:** 2026-08-07
+- **Status:** accepted for `RX-027`
+- Where primary Beken documentation does not define a field, AFIK writes the
+  exact value the pinned K1 reference firmware writes, recorded in
+  `EVID-BK4819-053`. This is a deliberate operator decision to treat that
+  source as authoritative for registers and pinout.
+- AFIK still does not copy the reference implementation: the values are facts
+  recorded in evidence, and the driver is an independent state machine with its
+  own ordering guarantees, fail-closed faulting, and TX authority boundary.
+- Calibration data is excluded. Squelch thresholds are inputs supplied by a
+  board layer from the unit's own calibration, never constants in the driver.
+- The receive path writes only the documented receive mode block. The transmit
+  mode word remains reachable solely through the existing central-policy token.
+
+## ADR-052 — The native editor validates before it can reach a radio
+
+- **Date:** 2026-08-07
+- **Status:** accepted for `NGUI-028`
+- The native editor keeps operator input as drafts and converts them to typed
+  records only through validation. An invalid field cannot reach a canonical
+  image, a device transaction, or a flashing workflow.
+- Firmware and EEPROM operations reuse the recovery-gated flasher library
+  unchanged, including every confirmation phrase, the retained recovery image,
+  and the retained EEPROM backup. The editor adds no shortcut and weakens no
+  gate; it only collects input and reports progress.
+- The editor is a local tool for a directly connected radio. It is not a
+  service, exposes no network surface, and holds no authentication.

@@ -67,3 +67,72 @@ bounds, strict key order, and every object before returning an iterable image.
 The object count is bounded by `u16`, each object retains the existing
 `MAX_OBJECT_DATA` bound, and no decoded object is exposed after partial
 validation.
+
+## Explicit channels, named banks, and radio configuration
+
+Work Package 26 adds three object kinds beside the generated bank. Each is a
+fixed-size version-1 payload, revalidated field by field on decode, and ordered
+canonically by `(kind, id)`.
+
+Object kinds are `1` generated bank, `2` channel, `3` channel bank, and `4`
+radio configuration. The radio configuration is a singleton at ID `0`.
+
+Channel payload version 1 is 42 bytes:
+
+```text
+format version : u8
+channel ID     : u16 little endian
+name length    : u8
+name bytes     : fixed 12-byte field
+receive Hz     : u32 little endian
+transmit Hz    : u32 little endian
+RX tone kind   : u8  (0 none, 1 CTCSS, 2 DCS, 3 DCS inverted)
+RX tone value  : u16 little endian (CTCSS tenths of a hertz, or DCS octal code)
+TX tone kind   : u8
+TX tone value  : u16 little endian
+modulation     : u8  (0 FM, 1 AM, 2 USB)
+bandwidth      : u8  (0 narrow, 1 wide)
+power          : u8  (0 low, 1 medium, 2 high)
+step Hz        : u32 little endian
+squelch level  : u8  (0 through 9)
+flags          : u8  (bit 0 scan skip, 1 busy lockout, 2 reverse, 3 compander)
+TX class       : u8
+bank mask      : u16 little endian
+```
+
+Channel-bank payload version 1 is 22 bytes:
+
+```text
+format version : u8
+bank ID        : u16 little endian (0 through 15)
+name length    : u8
+name bytes     : fixed 16-byte field
+flags          : u8  (bit 0 scan enabled)
+reserved       : u8  (must be zero)
+```
+
+Radio-configuration payload version 1 is 16 bytes:
+
+```text
+format version    : u8
+squelch level     : u8  (0 through 9)
+backlight seconds : u8  (0 off, 255 never times out)
+scan resume       : u8  (0 after hold, 1 when carrier drops, 2 stop on signal)
+scan dwell ms     : u32 little endian (non-zero)
+scan hold ms      : u32 little endian (non-zero)
+dual watch        : u8  (0 or 1)
+battery save      : u8  (0 through 5)
+flags             : u8  (bit 0 key beep, 1 busy lockout default, 2 AM fix,
+                         3 tone tail elimination)
+reserved          : u8  (must be zero)
+```
+
+Bank membership is a mask on the channel rather than a member list on the bank,
+so every object stays fixed size and a channel may belong to several banks. See
+`ADR-050`. The configuration compiler rejects any channel whose mask names a
+bank the project does not define, before any device mutation begins.
+
+Reserved bytes and reserved flag bits must be zero. Decoding revalidates every
+constrained field, including tone envelopes, squelch levels, enumerations, and
+the singleton configuration identity, so a malformed object can never become an
+active configuration.

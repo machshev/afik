@@ -482,3 +482,43 @@
   samples stay bounded, provenance-tagged, and fail-closed, and cannot create
   semantic UI state or RF/TX authority. The undefined PB13/PB12 unselected case
   must never be decoded as a key.
+
+## RISK-027 — No AFIK receive register write has been observed on hardware
+
+- **State:** open
+- **Impact:** the receive path reproduces the pinned firmware's register values
+  exactly, but AFIK has never driven a BK4819 on the exact unit. An error in
+  sequencing, timing, or the three-wire bus would produce silence, a deaf
+  receiver, or unexpected chip state rather than an obvious failure.
+- **Mitigation:** the driver only ever writes the documented receive mode block
+  and faults closed on any bus error, so a failed transfer cannot leave the
+  driver believing it is receiving. The transmit word stays behind the existing
+  central-policy token.
+- **Required experiment:** a separately guarded, receive-only bring-up on the
+  exact unit which retains the known-good recovery image and the retained
+  EEPROM backup, reads back a known register before writing any, and confirms
+  RSSI movement against a known signal.
+
+## RISK-028 — Squelch thresholds are calibration inputs AFIK does not yet read
+
+- **State:** open
+- **Impact:** the receive path validates threshold hysteresis but has no source
+  of per-unit, per-band calibration values. Without them the squelch level in
+  the channel record cannot yet be mapped to chip thresholds.
+- **Mitigation:** thresholds are explicit inputs. The driver refuses
+  inconsistent sets and never substitutes a default, so a missing calibration
+  path is a compile-time gap rather than a silent wrong value.
+- **Required experiment:** read the retained EEPROM backup's calibration
+  region under its own evidence entry before defining the mapping from a
+  squelch level to thresholds.
+
+## RISK-029 — The native editor is a local tool with no authentication
+
+- **State:** accepted
+- **Impact:** anyone with access to the running desktop session can write a
+  configuration or start a guarded flashing operation.
+- **Mitigation:** the editor requires an explicit device path or simulator
+  selection, every write is a validated transaction with read-back
+  verification, and firmware writes keep the flasher library's exact
+  confirmation phrases, recovery image, and EEPROM backup requirements. The
+  editor opens no network socket.

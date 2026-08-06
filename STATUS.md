@@ -2,9 +2,17 @@
 
 ## Current work package
 
-**Work Package 24 (`K1SIDE-024`) is complete: establish an evidence-backed,
-receive-only K1 side-key/PTT observation boundary before any semantic UI or RF
-behavior.**
+**Work Packages 26 to 28 (`STORE-026`, `RX-027`, `NGUI-028`) are complete in
+software: banked explicit-channel storage, the complete receive path and its
+banked receive control, and the native cross-platform editor which programs a
+radio and drives the guarded firmware and EEPROM operations.**
+
+The operator designated the pinned Armel K1 firmware authoritative for register
+values and pinout wherever primary documentation is silent. `EVID-BK4819-053`
+and `EVID-K1-054` record exactly which values that covers. No AFIK receive
+register has been written on hardware; `RISK-027` carries that gate.
+
+`K1SIDE-025` remains open for its physical side-key observation.
 
 K1 has priority because an exact unit running Armel firmware is available for
 inspection. `K1EVID-013` supplies the K1 evidence baseline and same-unit
@@ -126,9 +134,15 @@ features remain outside this bounded slice.
   receive-only experiment.
 - Work Package 25 side-key/PTT implementation: complete in software; the
   unselected pass, SIDE1/SIDE2, and PTT are implemented, tested, and packaged.
+- Work Package 26 banked explicit-channel storage: complete.
+- Work Package 27 complete receive path and banked receive control: complete in
+  software; physical bring-up is deliberately out of scope.
+- Work Package 28 native cross-platform editor: complete.
 - Current smallest actionable task: perform the authorized guarded write of the
   `AFIK-K1-0.3` image, then power-cycle and observe the boot screen, an
-  `AFIK-K1-0.3` hello, each side key's label, and the PTT label.
+  `AFIK-K1-0.3` hello, each side key's label, and the PTT label. The next
+  receive step after that is a separately guarded, receive-only BK4819 bring-up
+  on the exact unit which reads back a known register before writing any.
 
 ## Work Package 24 handoff
 
@@ -1960,3 +1974,45 @@ Verified 2026-08-05:
   their rows, exactly as the pinned source implied.
 - A side key and a main key sharing the same row remain indistinguishable while
   the side key is held. No semantic side-key action, RF, or TX behavior exists.
+
+## Work Packages 26 to 28 handoff
+
+- **Scope:** banked explicit-channel storage (`STORE-026`), the complete
+  receive path and banked receive control (`RX-027`), and the native
+  cross-platform editor (`NGUI-028`). No transmit behaviour, no calibration
+  source, and no physical hardware operation is included.
+- **Storage:** `radio-storage` gained `Channel` (42 bytes), `ChannelBank`
+  (22 bytes), and the singleton `RadioConfig` (16 bytes). Bank membership is a
+  16-bit mask on the channel; the compiler rejects a channel naming an
+  undefined bank before any device mutation. `docs/storage-format.md` records
+  the exact encodings and `ADR-050` the membership decision.
+- **Receive:** `radio-bk4819` gained `configure_receive`, `set_af_output`, and
+  `receive_metrics`, built from `EVID-BK4819-053`. The path only ever writes
+  the documented receive mode block, faults closed on any bus error, and takes
+  squelch thresholds as validated caller-supplied calibration.
+  `radio-channel-control::banked` adds memory and VFO modes, bank filtering,
+  monitor, tone-aware audio gating, scan-skip, the three scan resume modes, and
+  dual watch, documented in `docs/receive-control.md`.
+- **Board bus:** `radio-firmware-k1::bk4819_bus` sequences the pinned three-wire
+  pinout (CSN PF9, SCL PB8, shared SDA PB9) with host-tested bit ordering,
+  direction changes, settling delays, and fail-closed pin errors.
+- **Editor:** `radio-programmer-gui-native` provides `afik-studio` over a
+  validated draft model, canonical image load and save, simulator or serial
+  sessions with verified writes and device read-back, and a flash tab which
+  reuses the recovery-gated flasher workflows unchanged on a worker thread.
+  See `docs/programmer-gui-native.md` and `ADR-052`.
+- **Verification:** `cargo fmt --all --check` — passed.
+  `cargo clippy --workspace --all-targets -- -D warnings` — passed.
+  `cargo test --workspace` — passed; 231 tests across 44 result lines.
+  `tool/check-py32f071-hal.sh` — passed.
+  `tool/build-k1-async.sh --release` — passed.
+  `tool/verify-k1-async-image.sh` — passed; raw image 26,120 bytes.
+  `tool/test-k1-async-image.sh` — passed, positive and negative checks.
+  `git diff --check` — passed.
+- **Open gates:** `RISK-027` no AFIK receive register has been written on
+  hardware; `RISK-028` squelch calibration has no source yet; `RISK-029` the
+  editor is an unauthenticated local tool; `K1SIDE-025` still needs its
+  physical side-key observation.
+- **Next smallest actionable task:** the authorized guarded `AFIK-K1-0.3` write
+  and its power-cycle observation, then a separately guarded receive-only
+  BK4819 bring-up which reads back a known register before writing any.

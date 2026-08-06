@@ -51,6 +51,41 @@ per-process token plus explicit replacement confirmation. This reduces
 accidental local mutation but is not authentication; the GUI must not be bound
 remotely or treated as a shared service. See `docs/programmer-gui.md`.
 
+## Native editor and flashing front end
+
+`afik-studio` is a native cross-platform desktop editor for channels, banks,
+the global radio configuration, and guarded firmware and EEPROM operations:
+
+```sh
+cargo run --package radio-programmer-gui-native --bin afik-studio -- --help
+cargo run --package radio-programmer-gui-native --bin afik-studio -- --sim
+```
+
+Operator input is validated before it can reach a canonical image, a device
+transaction, or a radio. Configuration writes use the programmer library's
+transactional write with read-back verification, and firmware writes reuse the
+recovery-gated flasher workflows with every confirmation gate intact. The
+editor is a local tool: it opens no network socket and holds no
+authentication. See `docs/programmer-gui-native.md`.
+
+## Channels, banks, and the receive path
+
+Configuration storage holds explicit channel records, named banks, and one
+global radio configuration beside the original generated banks. Bank
+membership is a mask on the channel, so a channel can belong to several of the
+sixteen addressable banks; see `docs/storage-format.md`.
+
+The receive path programs the BK4819 for FM, AM, and USB with filter
+bandwidth, AGC, calibration-supplied squelch thresholds, CTCSS and CDCSS
+decoding, RF filter path selection, and audio routing, and meters RSSI, glitch,
+noise, carrier squelch, and tone status. Above it, a bounded controller
+provides banked memory and VFO tuning, monitor, tone-aware audio gating,
+scanning with skip and three resume modes, and dual watch. See
+`docs/bk4819.md` and `docs/receive-control.md`. Register values and the K1
+three-wire pinout come from the pinned reference firmware recorded in
+`docs/hardware-evidence.md`; no AFIK receive register has yet been written on
+hardware.
+
 ## UV-K5 V1 recovery and firmware flashing
 
 `afik-flasher` is separate from the AFIK runtime configuration programmer. It
