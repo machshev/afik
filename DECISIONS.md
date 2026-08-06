@@ -665,3 +665,15 @@ meaning.
 - `InheritedClocks` fields are private so callers cannot forge the proof. This
   optional function is not selected by the runnable image and does not write
   RCC, take peripheral tokens, initialize TIM15, or enable interrupts or DMA.
+
+## ADR-047 — Embassy runtime initialization preserves inherited RCC
+
+- **Date:** 2026-08-06
+- **Status:** accepted for `K1ASYNC-023`
+- The K1 runtime may initialize HAL bookkeeping, GPIO, DMA, FLASH access, and
+  the reserved TIM15 time driver only after the safe clock-publication wrapper
+  validates the live exact-unit tuple. It must not call the HAL RCC
+  configurator or select a new oscillator, PLL, or prescaler.
+- This ordering is wrapped in one K1 function returning singleton peripheral
+  tokens. Target compilation is not executor, interrupt, DMA, timing, serial,
+  display, keypad, or physical proof; those remain runnable-image gates.

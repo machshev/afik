@@ -151,6 +151,43 @@ pub fn init(config: Config, #[cfg(feature = "time-driver-systick")] systick: SYS
     })
 }
 
+/// Initializes HAL-owned peripherals around an already validated clock tree.
+///
+/// Unlike [`init`], this does not write RCC clock-selection or prescaler
+/// registers. The caller must publish the active frequencies first.
+///
+/// # Safety
+///
+/// The published frequencies must exactly match the running hardware clocks,
+/// and neither this function nor [`init`] may have been called previously.
+pub unsafe fn init_inherited(config: Config) -> Peripherals {
+    critical_section::with(|cs| {
+        let p = Peripherals::take_with_cs(cs);
+
+        rcc::enable_and_reset_with_cs::<peripherals::DBGMCU>(cs);
+        crate::pac::DBGMCU.cr().modify(|cr| {
+            #[cfg(dbgmcu_f072)]
+            cr.set_dbg_sleep(config.enable_debug_during_sleep);
+            cr.set_dbg_stop(config.enable_debug_during_sleep);
+        });
+
+        crate::_generated::init_syscfg();
+        gpio::init(cs);
+
+        #[cfg(all(feature = "_time-driver", not(feature = "time-driver-systick")))]
+        time_driver::init(cs);
+
+        #[cfg(feature = "exti")]
+        exti::init(cs);
+
+        #[cfg(dma)]
+        dma::init(cs, config.dma_interrupt_priority);
+
+        rcc::enable_and_reset_with_cs::<peripherals::FLASH>(cs);
+        p
+    })
+}
+
 // This must go last, so that it sees all the impl_foo! macros defined earlier.
 pub(crate) mod _generated {
     #![allow(dead_code)]

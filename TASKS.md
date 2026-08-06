@@ -1169,6 +1169,11 @@
   The boundary performs no RCC write, remains absent from the entry point, and
   passes strict target compilation. The next larger step is a separately
   guarded runnable Embassy keypad/display/serial composition.
+- **Inherited-runtime initialization result:** optional
+  `py32f071-runtime-init` validates and publishes the live clock tree before
+  taking singleton tokens and initializing GPIO, DMA, and the reserved TIM15
+  time driver without running the HAL RCC configurator. Strict target Clippy
+  passes. The boundary is not yet an entry point or flashable image.
   type-checks one owned bundle containing the heap-free thread executor,
   USART1/PA9/PA10 with DMA1 channels 1/2, and SPI1/PA5/PA7. Construction takes
   explicit HAL tokens and remains absent from the firmware binary. No HAL init,

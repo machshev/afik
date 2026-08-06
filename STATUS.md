@@ -469,6 +469,22 @@ features remain outside this bounded slice.
 - No entry point, physical image, RCC register, peripheral ownership, TIM15,
   interrupt, DMA, UART, SPI, display, keypad, RF, TX, or flash behavior changed.
 
+## Work Package 23 inherited-runtime initialization milestone
+
+- Added an unsafe local HAL initializer for an already published clock tree. It
+  takes singleton tokens and initializes GPIO, DMA, FLASH, and the configured
+  TIM15 time driver without calling the RCC clock configurator.
+- Added a safe K1 wrapper which first validates and publishes the live clock
+  snapshot, then calls that initializer exactly once and returns the owned
+  peripheral tokens plus validated frequencies.
+- Added `tool/check-py32f071-runtime-init.sh` for warning-denied Rust 1.86
+  `thumbv6m-none-eabi` compilation with build-std/core.
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c tool/check-py32f071-runtime-init.sh` — passed.
+- `git diff --check` — passed.
+- No entry point, physical image, executor task, RCC clock field, UART/SPI pin,
+  keypad/display behavior, RF, TX, or flash path changed.
+
 ## Work Package 22 pure keypad milestone
 
 - Added an allocation-free main-matrix decoder in the standalone K1 firmware

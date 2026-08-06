@@ -441,3 +441,8 @@
   frequency table. It is target-compile proven but not called by the image;
   one-time ordering, TIM15, interrupt/DMA, and peripheral coexistence remain
   runtime and physical gates.
+- **Inherited-init update:** the local HAL can now take singleton tokens and
+  initialize GPIO, DMA, FLASH, and TIM15 after guarded publication without
+  executing RCC clock configuration. Strict target compilation closes the API
+  and ordering boundary only; no runnable image or interrupt/timing behavior
+  has passed yet.
