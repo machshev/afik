@@ -284,7 +284,7 @@ impl From<io::Error> for HttpReadError {
     }
 }
 
-fn read_request(stream: &mut TcpStream) -> Result<Option<Request>, HttpReadError> {
+fn read_request<R: Read>(stream: &mut R) -> Result<Option<Request>, HttpReadError> {
     let mut header = Vec::with_capacity(1024);
     let mut byte = [0_u8; 1];
     while header.len() < MAX_HEADER_BYTES {
@@ -304,7 +304,7 @@ fn read_request(stream: &mut TcpStream) -> Result<Option<Request>, HttpReadError
     Err(HttpReadError::TooLarge)
 }
 
-fn parse_header_and_body(stream: &mut TcpStream, header: &[u8]) -> Result<Request, HttpReadError> {
+fn parse_header_and_body<R: Read>(stream: &mut R, header: &[u8]) -> Result<Request, HttpReadError> {
     let text = std::str::from_utf8(header)
         .map_err(|_| HttpReadError::BadRequest("request headers are not UTF-8"))?;
     let mut lines = text[..text.len() - 4].split("\r\n");
@@ -566,7 +566,7 @@ fn state_json(state: &GuiState) -> String {
     json
 }
 
-fn write_response(stream: &mut TcpStream, response: &Response) -> io::Result<()> {
+fn write_response<W: Write>(stream: &mut W, response: &Response) -> io::Result<()> {
     let reason = match response.status {
         200 => "OK",
         400 => "Bad Request",
@@ -596,16 +596,12 @@ fn write_response(stream: &mut TcpStream, response: &Response) -> io::Result<()>
 #[cfg(test)]
 mod tests {
     use super::{
-        handle_request, parse_invocation, read_request, serve_connection, state_json, Backend,
+        handle_request, parse_invocation, read_request, state_json, write_response, Backend,
         HttpReadError, Invocation, Request, CONFIRMATION, MAX_PROJECT_TEXT_BYTES,
         MAX_RESTORE_IMAGE_BYTES,
     };
     use crate::GuiSession;
-    use std::{
-        io::{Read as _, Write as _},
-        net::{Shutdown, SocketAddr, TcpListener, TcpStream},
-        path::PathBuf,
-    };
+    use std::{io::Cursor, net::SocketAddr, path::PathBuf};
 
     const TOKEN: &str = "test-session-token";
     const PROJECT: &[u8] = b"1:PMR446:446006250:12500:16:licence-free\n";
@@ -629,25 +625,16 @@ mod tests {
     }
 
     fn parse_raw_request(raw: &[u8]) -> Result<Option<Request>, HttpReadError> {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
-        let (mut server, _) = listener.accept().unwrap();
-        client.write_all(raw).unwrap();
-        client.shutdown(Shutdown::Write).unwrap();
-        read_request(&mut server)
+        read_request(&mut Cursor::new(raw))
     }
 
     fn raw_http_round_trip(raw: &[u8]) -> Vec<u8> {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
-        client.write_all(raw).unwrap();
-        client.shutdown(Shutdown::Write).unwrap();
-        let (server, _) = listener.accept().unwrap();
         let mut session = GuiSession::connect_simulator().unwrap();
-        serve_connection(server, &mut session, TOKEN).unwrap();
-        let mut response = Vec::new();
-        client.read_to_end(&mut response).unwrap();
-        response
+        let request = parse_raw_request(raw).unwrap().unwrap();
+        let handled = handle_request(&mut session, TOKEN, &request);
+        let mut encoded = Vec::new();
+        write_response(&mut encoded, &handled).unwrap();
+        encoded
     }
 
     #[test]
@@ -800,7 +787,7 @@ mod tests {
     }
 
     #[test]
-    fn loopback_http_round_trip_frames_secure_embedded_document() {
+    fn http_round_trip_frames_secure_embedded_document() {
         let response = raw_http_round_trip(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n");
         let response = String::from_utf8(response).unwrap();
         assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
