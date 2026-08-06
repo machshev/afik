@@ -220,6 +220,20 @@ Passive-beacon verification on 2026-08-06:
   artifacts. `.private/` is reserved for that purpose; its contents must remain
   untracked and must not appear in status, diffs, or commits.
 
+## Work Package 13 private-artifact milestone
+
+- `.private/k1/` was created mode `0700`. Primary and secondary copies of the
+  8,192-byte unit backup and 95,836-byte v5.5.0 recovery candidate were created
+  mode `0600`.
+- Both backup copies matched the private SHA-256 reported to the user. Both
+  recovery copies matched pinned SHA-256
+  `7b6b277c319e6924bd878f4e4208490875dc3f15beb205c366d20130c02a4463`.
+- `git status --short --ignored` reported only `!! .private/`; no private file
+  is tracked or staged.
+- These pairs share one filesystem and are not independent disaster-recovery
+  copies. A destructive experiment remains gated on moving at least one backup
+  and one recovery image to independent storage and verifying their hashes.
+
 ## Work Package 12 software milestone and verification
 
 - Sources and confidence boundaries are recorded in

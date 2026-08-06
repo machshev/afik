@@ -120,6 +120,20 @@ user-controlled persistent locations and re-hashed before any firmware write.
 The repository reserves ignored `.private/` for local unit-specific artifacts;
 none of its contents may be committed.
 
+On 2026-08-06 the following local pairs were created mode `0600` under a
+mode-`0700` `.private/k1/` directory and re-hashed successfully:
+
+- `unit-backup.primary.raw` and `unit-backup.secondary.raw`: 8,192 bytes each,
+  with identical expected SHA-256 (kept outside tracked documentation).
+- `f4hwn-v5.5.0-recovery.primary.bin` and
+  `f4hwn-v5.5.0-recovery.secondary.bin`: 95,836 bytes each, both matching the
+  published recovery-candidate SHA-256 below.
+
+Git reports the complete `.private/` tree ignored. Both copies in each pair are
+on the same filesystem; they protect against accidental single-file loss but
+not filesystem or disk failure. Before a destructive experiment, copy at least
+one of each to independent storage and verify the same hashes there.
+
 ## Candidate v5.5.0 recovery image
 
 Pinned Armel commit `fe9c4e9432694b50aea651084a043aae0b58673d`
