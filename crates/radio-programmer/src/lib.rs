@@ -11,7 +11,8 @@ use radio_protocol::{
     MAX_ENCODED_FRAME, MAX_PAYLOAD, PROTOCOL_VERSION,
 };
 use radio_storage::{
-    decode_generated_bank, encode_generated_bank, ObjectKey, ObjectKind, StorageError,
+    configuration_image_len, decode_configuration_image, decode_generated_bank,
+    encode_configuration_image, encode_generated_bank, ObjectKey, ObjectKind, StorageError,
     StorageObject, StorageUsage, MAX_OBJECT_DATA, STORAGE_FORMAT_VERSION,
 };
 
@@ -126,7 +127,7 @@ pub struct CompiledConfiguration {
 }
 
 impl CompiledConfiguration {
-    /// Returns compiled objects in deterministic project order.
+    /// Returns compiled objects in canonical stable-key order.
     pub fn objects(&self) -> &[StorageObject] {
         &self.objects
     }
@@ -134,6 +135,16 @@ impl CompiledConfiguration {
     /// Returns the compilation capacity report.
     pub const fn report(&self) -> CapacityReport {
         self.report
+    }
+
+    /// Calculates the exact canonical image length for this configuration.
+    pub fn image_len(&self) -> Result<usize, StorageError> {
+        configuration_image_len(&self.objects)
+    }
+
+    /// Encodes this configuration as a canonical image in a caller buffer.
+    pub fn encode_image(&self, output: &mut [u8]) -> Result<usize, StorageError> {
+        encode_configuration_image(&self.objects, output)
     }
 }
 
@@ -150,6 +161,8 @@ pub enum CompileError {
     ObjectTooLarge,
     /// A bounded storage encoding failed.
     Storage(StorageError),
+    /// The target does not support the image's logical storage version.
+    UnsupportedStorageVersion,
     /// A capacity calculation overflowed.
     CapacityOverflow,
 }
@@ -164,6 +177,9 @@ impl fmt::Display for CompileError {
             Self::TooManyObjects => formatter.write_str("configuration has too many objects"),
             Self::ObjectTooLarge => formatter.write_str("configuration object is too large"),
             Self::Storage(error) => write!(formatter, "storage encoding failed: {error}"),
+            Self::UnsupportedStorageVersion => {
+                formatter.write_str("target does not support the configuration storage version")
+            }
             Self::CapacityOverflow => formatter.write_str("configuration capacity overflow"),
         }
     }
@@ -189,23 +205,51 @@ impl ConfigurationCompiler {
 
     /// Validates and compiles a project without contacting or mutating a radio.
     pub fn compile(&self, project: &RadioProject) -> Result<CompiledConfiguration, CompileError> {
+        self.require_storage_version()?;
         if project.generated_banks.len() > usize::from(self.capabilities.max_objects) {
             return Err(CompileError::TooManyObjects);
         }
         let mut objects = Vec::with_capacity(project.generated_banks.len());
-        let mut report = CapacityReport::default();
         for bank in &project.generated_banks {
-            let encoding = bank.encoding();
-            if self.capabilities.plan_encodings & encoding.capability_bit() == 0 {
-                return Err(CompileError::UnsupportedPlanEncoding(encoding));
-            }
-            let object = encode_generated_bank(*bank)?;
-            if objects
-                .iter()
-                .any(|existing: &StorageObject| existing.key() == object.key())
-            {
-                return Err(CompileError::DuplicateObject(object.key()));
-            }
+            objects.push(encode_generated_bank(*bank)?);
+        }
+        objects.sort_unstable_by_key(|object| object.key());
+        if let Some(duplicate) = objects
+            .windows(2)
+            .find(|pair| pair[0].key() == pair[1].key())
+        {
+            return Err(CompileError::DuplicateObject(duplicate[0].key()));
+        }
+        let report = self.validate_objects(&objects)?;
+        Ok(CompiledConfiguration { objects, report })
+    }
+
+    /// Validates a canonical image against this target and reconstructs its
+    /// compiled configuration without contacting or mutating a radio.
+    pub fn decode_image(&self, bytes: &[u8]) -> Result<CompiledConfiguration, CompileError> {
+        self.require_storage_version()?;
+        let image = decode_configuration_image(bytes)?;
+        if image.object_count() > self.capabilities.max_objects {
+            return Err(CompileError::TooManyObjects);
+        }
+        let objects = image.objects().collect::<Vec<_>>();
+        let report = self.validate_objects(&objects)?;
+        Ok(CompiledConfiguration { objects, report })
+    }
+
+    fn require_storage_version(&self) -> Result<(), CompileError> {
+        if self.capabilities.storage_version != STORAGE_FORMAT_VERSION {
+            return Err(CompileError::UnsupportedStorageVersion);
+        }
+        Ok(())
+    }
+
+    fn validate_objects(&self, objects: &[StorageObject]) -> Result<CapacityReport, CompileError> {
+        if objects.len() > usize::from(self.capabilities.max_objects) {
+            return Err(CompileError::TooManyObjects);
+        }
+        let mut report = CapacityReport::default();
+        for object in objects {
             if object.len() > usize::from(self.capabilities.max_object_size)
                 || object.len() + WRITE_ENVELOPE_LEN
                     > usize::from(self.capabilities.max_frame_payload)
@@ -213,6 +257,13 @@ impl ConfigurationCompiler {
                 || object.len() + WRITE_ENVELOPE_LEN > MAX_PAYLOAD
             {
                 return Err(CompileError::ObjectTooLarge);
+            }
+            let bank = match object.key().kind {
+                ObjectKind::GeneratedBank => decode_generated_bank(object)?,
+            };
+            let encoding = bank.encoding();
+            if self.capabilities.plan_encodings & encoding.capability_bit() == 0 {
+                return Err(CompileError::UnsupportedPlanEncoding(encoding));
             }
             report.object_count = report
                 .object_count
@@ -228,9 +279,8 @@ impl ConfigurationCompiler {
                 .generated_channels
                 .checked_add(u32::from(bank.channel_count()))
                 .ok_or(CompileError::CapacityOverflow)?;
-            objects.push(object);
         }
-        Ok(CompiledConfiguration { objects, report })
+        Ok(report)
     }
 }
 
@@ -625,7 +675,9 @@ pub const fn report_active_usage(usage: StorageUsage) -> CapacityReport {
 
 #[cfg(test)]
 mod tests {
-    use super::{CompileError, ConfigurationCompiler, DeviceCapabilities, RadioProject};
+    use super::{
+        CompileError, ConfigurationCompiler, DeviceCapabilities, RadioProject, WRITE_ENVELOPE_LEN,
+    };
     use radio_channel_plan::{BankName, GeneratedBank, PlanEncoding};
     use radio_domain::{BankId, Frequency, FrequencyStep, TxClass};
 
@@ -637,6 +689,13 @@ mod tests {
             max_objects: 1,
             max_object_size: 64,
             plan_encodings: PlanEncoding::LinearSimplex.capability_bit(),
+        }
+    }
+
+    fn capabilities_for(object_count: u16) -> DeviceCapabilities {
+        DeviceCapabilities {
+            max_objects: object_count,
+            ..capabilities()
         }
     }
 
@@ -675,5 +734,96 @@ mod tests {
             ConfigurationCompiler::new(limits).compile(&project),
             Err(CompileError::DuplicateObject(_))
         ));
+    }
+
+    #[test]
+    fn compiler_images_are_canonical_across_project_order() {
+        let compiler = ConfigurationCompiler::new(capabilities_for(2));
+        let mut forward = RadioProject::new();
+        forward.add_generated_bank(bank(1));
+        forward.add_generated_bank(bank(2));
+        let mut reverse = RadioProject::new();
+        reverse.add_generated_bank(bank(2));
+        reverse.add_generated_bank(bank(1));
+
+        let forward = compiler.compile(&forward).unwrap();
+        let reverse = compiler.compile(&reverse).unwrap();
+        assert_eq!(forward, reverse);
+        assert_eq!(
+            forward
+                .objects()
+                .iter()
+                .map(|object| object.key().id)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+
+        let mut forward_image = vec![0; forward.image_len().unwrap()];
+        let mut reverse_image = vec![0; reverse.image_len().unwrap()];
+        forward.encode_image(&mut forward_image).unwrap();
+        reverse.encode_image(&mut reverse_image).unwrap();
+        assert_eq!(forward_image, reverse_image);
+    }
+
+    #[test]
+    fn compiler_image_round_trip_preserves_objects_and_capacity() {
+        let compiler = ConfigurationCompiler::new(capabilities_for(2));
+        let mut project = RadioProject::new();
+        project.add_generated_bank(bank(2));
+        project.add_generated_bank(bank(1));
+        let configuration = compiler.compile(&project).unwrap();
+        let mut image = vec![0; configuration.image_len().unwrap()];
+        configuration.encode_image(&mut image).unwrap();
+
+        assert_eq!(compiler.decode_image(&image).unwrap(), configuration);
+        image[20] ^= 1;
+        assert_eq!(
+            compiler.decode_image(&image),
+            Err(CompileError::Storage(
+                radio_storage::StorageError::ImageIntegrity
+            ))
+        );
+    }
+
+    #[test]
+    fn image_import_enforces_every_target_capability() {
+        let source_compiler = ConfigurationCompiler::new(capabilities_for(2));
+        let mut project = RadioProject::new();
+        project.add_generated_bank(bank(1));
+        project.add_generated_bank(bank(2));
+        let compiled = source_compiler.compile(&project).unwrap();
+        let mut image = vec![0; compiled.image_len().unwrap()];
+        compiled.encode_image(&mut image).unwrap();
+
+        assert_eq!(
+            ConfigurationCompiler::new(capabilities_for(1)).decode_image(&image),
+            Err(CompileError::TooManyObjects)
+        );
+        let mut limits = capabilities_for(2);
+        limits.max_object_size = 30;
+        assert_eq!(
+            ConfigurationCompiler::new(limits).decode_image(&image),
+            Err(CompileError::ObjectTooLarge)
+        );
+        limits = capabilities_for(2);
+        limits.max_frame_payload = u16::try_from(31 + WRITE_ENVELOPE_LEN - 1).unwrap();
+        assert_eq!(
+            ConfigurationCompiler::new(limits).decode_image(&image),
+            Err(CompileError::ObjectTooLarge)
+        );
+        limits = capabilities_for(2);
+        limits.plan_encodings = 0;
+        assert_eq!(
+            ConfigurationCompiler::new(limits).decode_image(&image),
+            Err(CompileError::UnsupportedPlanEncoding(
+                PlanEncoding::LinearSimplex
+            ))
+        );
+        limits = capabilities_for(2);
+        limits.storage_version += 1;
+        assert_eq!(
+            ConfigurationCompiler::new(limits).decode_image(&image),
+            Err(CompileError::UnsupportedStorageVersion)
+        );
     }
 }

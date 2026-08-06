@@ -574,13 +574,19 @@ const fn map_storage_error(error: StorageError) -> DeviceErrorCode {
         | StorageError::UnsupportedObject
         | StorageError::MalformedObject => DeviceErrorCode::ValidationFailed,
         StorageError::ObjectNotFound => DeviceErrorCode::ObjectNotFound,
-        StorageError::GenerationOverflow => DeviceErrorCode::Internal,
+        StorageError::GenerationOverflow
+        | StorageError::ImageBufferTooSmall
+        | StorageError::ImageTooLarge
+        | StorageError::MalformedImage
+        | StorageError::UnsupportedImageVersion
+        | StorageError::ImageIntegrity
+        | StorageError::NonCanonicalImage => DeviceErrorCode::Internal,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{SimDevice, SimTransport, TraceKind};
+    use super::{map_storage_error, SimDevice, SimTransport, TraceKind};
     use radio_channel_plan::{BankName, GeneratedBank, PlanEncoding};
     use radio_domain::{BankId, Frequency, FrequencyStep, TxClass};
     use radio_programmer::{ListedObject, Programmer, RadioProject};
@@ -589,8 +595,8 @@ mod tests {
         Service, FLAG_ERROR, FLAG_RESPONSE, MAX_ENCODED_FRAME, MAX_PAYLOAD,
     };
     use radio_storage::{
-        decode_generated_bank, encode_generated_bank, ObjectKey, ObjectKind, StorageObject,
-        GENERATED_BANK_ENCODED_LEN,
+        decode_generated_bank, encode_generated_bank, ObjectKey, ObjectKind, StorageError,
+        StorageObject, GENERATED_BANK_ENCODED_LEN,
     };
     use radio_tx_policy::TxPolicy;
 
@@ -608,6 +614,20 @@ mod tests {
 
     fn expected_bank() -> GeneratedBank {
         bank(6, "PMR446")
+    }
+
+    #[test]
+    fn offline_image_failures_map_only_to_internal_device_errors() {
+        for error in [
+            StorageError::ImageBufferTooSmall,
+            StorageError::ImageTooLarge,
+            StorageError::MalformedImage,
+            StorageError::UnsupportedImageVersion,
+            StorageError::ImageIntegrity,
+            StorageError::NonCanonicalImage,
+        ] {
+            assert_eq!(map_storage_error(error), DeviceErrorCode::Internal);
+        }
     }
 
     fn protocol_exchange(
