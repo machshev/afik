@@ -5,6 +5,7 @@
 
 mod ax25;
 mod report;
+mod table;
 
 pub use ax25::{
     parse_ui_frame, Ax25Address, Ax25Callsign, Ax25Error, Ax25UiFrame, MAX_DIGIPEATER_ADDRESSES,
@@ -15,3 +16,4 @@ pub use report::{
     AprsError, AprsReport, CtcssPrefix, ObjectTimestamp, RangeUnit, RawPosition,
     RepeaterAdvertisement, RepeaterEvent, ReportKind, ReportName,
 };
+pub use table::{DiscoveryEntry, DiscoveryError, DiscoveryKey, DiscoveryTable, DiscoveryUpdate};

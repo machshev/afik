@@ -86,9 +86,13 @@ Every input carries an explicit monotonic receive time:
 - an identical report at the same time is unchanged;
 - differing data at the same time is a conflict with no mutation;
 - an older live or kill report is stale with no mutation;
-- a current kill removes only the same key;
-- inserting a new key into a full table fails without eviction;
-- explicit `expire_before(cutoff)` removes entries older than the cutoff.
+- a newer kill hides only the same key and retains an internal freshness marker,
+  so an out-of-order older live report cannot resurrect it;
+- a repeated equal-time kill is unchanged, while an equal-time live report
+  conflicts with the retained kill;
+- inserting a new key into a full live-or-kill slot set fails without eviction;
+- explicit `expire_before(cutoff)` removes live entries and retained kill
+  markers older than the cutoff.
 
 There is no wall clock, implicit timeout, allocation, persistence, channel-plan
 conversion, or TX path. Tests and the host simulator supply frames and times
