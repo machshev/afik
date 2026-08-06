@@ -1119,3 +1119,11 @@
   HAL initialization or changing the image. Runtime adoption remains blocked
   on explicit clock handoff and physical interrupt/timing proof. The next
   independent boundary is the evidenced USART1 path.
+- **USART1 result:** the generated F071 inventory binds USART1 to `PCLK1`,
+  `APBENR2.USART1EN`, `APBRSTR2.USART1RST`, interrupt 27, PA9 TX AF1, and PA10
+  RX AF1. Optional `py32f071-usart1` compiles a real async constructor at the
+  evidenced 38,400 baud with one bounded TX and RX DMA channel under strict
+  target Clippy. It is not called by the firmware entry point, so clock
+  ownership, interrupt delivery, DMA operation, and physical responsiveness
+  remain unproven. The next independent boundary is the evidenced SPI1 display
+  path.

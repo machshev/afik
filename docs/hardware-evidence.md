@@ -1226,3 +1226,23 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   clock ownership, interrupt delivery, tick accuracy, or physical timing.
   Runtime migration requires an evidenced handoff from the bootloader-provided
   clock followed by target and physical verification.
+
+### EVID-K1-040 — Compile-only USART1 Embassy boundary
+
+- **Generated inventory:** USART1 is at `0x40013800`, uses `PCLK1`, has
+  `APBENR2.USART1EN` and `APBRSTR2.USART1RST`, maps to dedicated interrupt 27,
+  and exposes PA9 TX AF1 plus PA10 RX AF1. These match the already recorded and
+  physically exercised K1 serial path in `EVID-K1-024` and `EVID-K1-025`.
+- **Driver review:** the vendored async constructor requires the USART instance,
+  RX/TX pins, its interrupt binding, and one TX plus RX DMA channel. The F071
+  generated metadata supplies bounded DMA1 channel/request bindings for both
+  directions. AFIK selects DMA1 channel 1 for TX and channel 2 for RX in the
+  compile-only contract and fixes the configuration at 38,400 baud.
+- **Compile result:** `tool/check-py32f071-usart1.sh` passes offline,
+  warning-denied Clippy with build-std/core on Rust 1.86 for
+  `thumbv6m-none-eabi`, including the F071R1B PAC, RCC and pin traits, USART1
+  vector binding, DMA types, and real async `Uart` constructor.
+- **Boundary:** the optional feature is absent from the firmware entry point and
+  calls no HAL initialization. This is not evidence of clock preservation,
+  interrupt or DMA delivery, serial error recovery, coexistence with display
+  rendering, or physical async USART behavior.

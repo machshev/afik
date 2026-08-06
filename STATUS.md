@@ -117,9 +117,9 @@ features remain outside this bounded slice.
 - Work Package 22 keypad/UI witness definition: complete; the pinned matrix,
   electrical idle/scan levels, one-key decode, explicit-time debounce, and
   display-only result were bounded before implementation.
-- Current smallest actionable task: review the vendored F071 USART1 RCC,
-  interrupt, and PA9/PA10 metadata against the evidenced 38,400-baud K1 path,
-  then compile a no-entry-point USART1 proof without changing startup.
+- Current smallest actionable task: review the vendored F071 SPI1 RCC, PA5/PA7
+  pin, mode-3, and baud-divider surfaces against the physically proven display
+  path, then compile a no-entry-point SPI1 proof without changing startup.
 
 ## Work Package 23 dependency and executor milestone
 
@@ -210,6 +210,28 @@ features remain outside this bounded slice.
 - `git diff --check` — passed.
 - No HAL initialization, target entry point, physical image, timing behavior,
   or flash operation changed.
+
+## Work Package 23 USART1 async-driver milestone
+
+- Reviewed the pinned F071 generated metadata against the physically evidenced
+  K1 application serial path. USART1 uses `PCLK1`, RCC enable/reset fields, its
+  dedicated interrupt 27, PA9 TX AF1, and PA10 RX AF1.
+- Added optional `py32f071-usart1`, which compiles a real async `Uart`
+  constructor at 38,400 baud using bounded DMA1 channels and the generated
+  USART1 interrupt binding. The feature is not selected by the firmware image
+  and the constructor is not called by its entry point.
+- `nix develop path:. -c tool/check-py32f071-usart1.sh` — passed; strict
+  warning-denied target Clippy compiled the F071R1B USART1 async constructor and
+  build-std/core offline for `thumbv6m-none-eabi`.
+- `nix flake check path:. --no-build` — passed.
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
+  — passed.
+- `nix develop path:. -c cargo test --workspace` — passed; all 159 workspace
+  unit, integration, and doc-test binaries passed.
+- `git diff --check` — passed.
+- No HAL initialization, target entry point, physical image, clock behavior,
+  interrupt/DMA operation, or flash operation changed.
 
 ## Work Package 22 pure keypad milestone
 

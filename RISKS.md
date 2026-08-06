@@ -373,3 +373,9 @@
   initialization would take ownership of RCC state, while the current image
   inherits a 48 MHz clock from the bootloader. Do not migrate startup until
   that handoff and physical TIM15 interrupt/tick behavior are separately proven.
+- **USART1 update:** the evidenced PA9 TX / PA10 RX AF1 path, USART1 RCC and
+  interrupt binding, 38,400-baud configuration, and bounded DMA types now pass
+  strict target compilation through the real async HAL constructor. The
+  constructor is not called by the image; clock preservation, interrupt/DMA
+  delivery, serial error recovery, and responsiveness during rendering remain
+  physical/runtime gates.

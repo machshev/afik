@@ -535,3 +535,19 @@ meaning.
 - Runtime adoption requires an explicit, evidenced clock handoff and separate
   timing/interrupt verification. A successful target compile is not a claim
   that the physical timer runs or that the HAL may reconfigure the board clock.
+
+## ADR-037 — K1 USART1 migration begins as a no-entry-point async proof
+
+- **Date:** 2026-08-06
+- **Status:** accepted for `K1ASYNC-023`
+- The prospective async serial path is exactly USART1 at 38,400 baud on PA9 TX
+  AF1 and PA10 RX AF1. It uses the generated dedicated USART1 interrupt and two
+  bounded DMA1 channels; it does not broaden the normal-mode protocol.
+- Compile the real HAL constructor behind a K1-only optional feature, but do not
+  select it from the firmware image or call it from startup. The current
+  polling serial witness remains the physical recovery and responsiveness
+  observation until async clock, interrupt, and DMA behavior pass separately
+  guarded target tests.
+- A successful compile proves API and generated-metadata compatibility only. It
+  does not prove that HAL clock ownership preserves the bootloader-provided
+  clock or that USART1 remains responsive while display work yields.
