@@ -1,5 +1,5 @@
 MEMORY
 {
-    FLASH : ORIGIN = 0x08000000, LENGTH =  128K /* BANK_1 */
+    FLASH : ORIGIN = 0x08002800, LENGTH =  118K /* AFIK K1 application */
     RAM   : ORIGIN = 0x20000000, LENGTH =   16K /* SRAM */
 }

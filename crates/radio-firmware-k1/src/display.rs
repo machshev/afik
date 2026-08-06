@@ -13,8 +13,10 @@ pub const FRAME_BYTES: usize = WIDTH * PAGES;
 /// Maximum display data bytes written before yielding to cooperative tasks.
 pub const ASYNC_WRITE_CHUNK_BYTES: usize = 16;
 
-const COLUMN_OFFSET: u8 = 4;
-const SETUP_COMMANDS: [u8; 8] = [
+/// Controller column offset for the visible panel.
+pub const COLUMN_OFFSET: u8 = 4;
+/// Fixed source-backed controller setup commands after software reset.
+pub const SETUP_COMMANDS: [u8; 8] = [
     0xA2, // 1/9 bias
     0xC0, // normal COM direction
     0xA1, // reverse SEG direction

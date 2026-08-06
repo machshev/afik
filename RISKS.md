@@ -446,3 +446,9 @@
   executing RCC clock configuration. Strict target compilation closes the API
   and ordering boundary only; no runnable image or interrupt/timing behavior
   has passed yet.
+- **Runnable-image update:** the release ELF contains the complete 192-byte
+  Cortex-M/F071 vector table and exact DMA1, TIM15, and USART1 handlers. Static
+  packaging proves bounds and wiring, not physical interrupt delivery, timer
+  rate, DMA completion, UART responsiveness, keypad input, or visible display.
+  The first guarded write must retain the known-good recovery path and be
+  followed by independent serial and visible keypad/display observations.

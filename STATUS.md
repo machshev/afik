@@ -495,6 +495,32 @@ features remain outside this bounded slice.
   integration tests plus doc tests passed.
 - `git diff --check` — passed and the worktree was clean.
 
+## Work Package 23 runnable Embassy image milestone
+
+- Added a separate release-only `radio-firmware-k1-async` image using
+  cortex-m-rt startup at the existing K1 application origin. Its 192-byte
+  vector table contains 16 core and 32 generated F071 vectors.
+- Required DMA1 channel, TIM15, and USART1 handler addresses are checked against
+  their exact vector slots before packaging.
+- The serial task owns async USART1 with DMA1 channels 1/2 and returns the exact
+  existing hello response. The UI task owns PF8, cooperative SPI1/PA5/PA7,
+  PA6 A0, PB2 CS, and the PB6..PB3 by PB15..PB12 main matrix.
+- Keypad sampling uses TIM15-backed 10 us settling, a 5 ms cadence, and the
+  existing 20 ms fail-closed debounce. A press renders its bounded label; SPI
+  yields every 16 bytes so the serial task remains schedulable.
+- `nix develop path:. -c tool/build-k1-async.sh --release` — passed.
+- `nix develop path:. -c tool/package-k1-async-image.sh --force` — passed.
+- `nix develop path:. -c tool/test-k1-async-image.sh` — passed, including
+  truncated and oversized negative raw fixtures.
+- Warning-denied release target Clippy with build-std/core — passed.
+- `nix develop path:. -c cargo test -p radio-firmware-k1` — passed; all 30
+  focused unit tests and doc tests passed.
+- Raw image: 25,720 bytes; Reset `0x080028c1`; SHA-256
+  `874da6e7fe70d9564eb5b650581b3525a4aafa0077613c074a07e3fb4bc7bada`.
+- No physical write or runtime claim has occurred yet. The next action is the
+  already authorized guarded K1 write, followed by power-cycle, hello, visible
+  display, and main-key observations.
+
 ## Work Package 22 pure keypad milestone
 
 - Added an allocation-free main-matrix decoder in the standalone K1 firmware

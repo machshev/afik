@@ -646,7 +646,9 @@ version = "0.1.0"
 name = "radio-firmware-k1"
 version = "0.1.0"
 dependencies = [
+ "cortex-m-rt",
  "embassy-executor",
+ "embassy-time",
  "py32-hal",
 ]
 

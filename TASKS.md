@@ -1181,6 +1181,13 @@
   Prove interrupt symbols, image bounds, deterministic scheduling, UART
   responsiveness during rendering, and all existing recovery gates before any
   physical write. Side keys, persistence, general UI, RF, and TX stay excluded.
+- **Runnable migration software result:** `radio-firmware-k1-async` uses the
+  full cortex-m-rt/F071 vectors, guarded inherited initialization, two static
+  tasks, async USART1/DMA hello service, TIM15 timing, cooperative SPI1 display,
+  PF8 backlight, and only the main matrix. The release package is 25,720 bytes
+  with SHA-256 `874da6e7fe70d9564eb5b650581b3525a4aafa0077613c074a07e3fb4bc7bada`.
+  Static positive/negative image gates pass. Physical write and observations
+  remain the next guarded result.
   type-checks one owned bundle containing the heap-free thread executor,
   USART1/PA9/PA10 with DMA1 channels 1/2, and SPI1/PA5/PA7. Construction takes
   explicit HAL tokens and remains absent from the firmware binary. No HAL init,

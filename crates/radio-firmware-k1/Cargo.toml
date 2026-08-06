@@ -37,15 +37,30 @@ py32f071-runtime-init = [
     "py32f071-time-driver",
     "py32f071-runtime-composition",
 ]
+async-firmware = [
+    "py32f071-runtime-init",
+    "dep:embassy-time",
+    "dep:cortex-m-rt",
+    "py32-hal/memory-x",
+]
 
 [dependencies]
 embassy-executor = { version = "=0.10.0", default-features = false, features = ["executor-thread", "platform-cortex-m"], optional = true }
 py32-hal = { version = "=0.4.1", default-features = false, features = ["py32f071r1b"], optional = true }
+embassy-time = { version = "=0.5.1", default-features = false, optional = true }
+cortex-m-rt = { version = "=0.7.6", optional = true }
 
 [[bin]]
 name = "radio-firmware-k1"
 path = "src/main.rs"
 required-features = ["firmware"]
+test = false
+bench = false
+
+[[bin]]
+name = "radio-firmware-k1-async"
+path = "src/async_main.rs"
+required-features = ["async-firmware"]
 test = false
 bench = false
 

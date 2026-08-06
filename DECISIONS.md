@@ -677,3 +677,18 @@ meaning.
 - This ordering is wrapped in one K1 function returning singleton peripheral
   tokens. Target compilation is not executor, interrupt, DMA, timing, serial,
   display, keypad, or physical proof; those remain runnable-image gates.
+
+## ADR-048 — First runnable Embassy image is a receive-only witness
+
+- **Date:** 2026-08-06
+- **Status:** accepted for `K1ASYNC-023`
+- The new image uses cortex-m-rt startup at the existing `0x08002800`
+  application origin, with 16 core vectors and all 32 generated F071 interrupt
+  vectors. Static gates require the exact DMA1, TIM15, and USART1 handlers.
+- One static task owns async USART1/DMA and retains the exact hello response.
+  A second owns PF8 backlight, cooperative SPI1 display transfers, and only the
+  evidenced PB6..PB3 by PB15..PB12 keypad. It samples every 5 ms with 10 us
+  column settling and reuses the 20 ms fail-closed debounce contract.
+- Any clock, initialization, task-allocation, display, or timer failure stops
+  in a non-transmitting loop. Side keys, persistence, general UI, radio/RF, and
+  TX remain unreachable.
