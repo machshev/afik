@@ -48,9 +48,10 @@ errors rather than being guessed.
   latitude spaces record ambiguity; longitude digits remain syntactically
   valid and the latitude ambiguity level applies to both axes as specified.
 
-Only live reports with either a frequency Object name or a leading frequency
-comment yield a repeater advertisement. Killed reports yield removal events by
-identity and source without needing frequency fields.
+Only reports using the frequency specification's voice-repeater symbol code
+`r` enter repeater discovery. Live reports also need either a frequency Object
+name or a leading frequency comment. Killed repeater reports yield removal
+events by identity and source without needing frequency fields.
 
 ## Advertisement fields
 
