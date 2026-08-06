@@ -3,6 +3,60 @@
 /// Stable interval required before accepting a press or release.
 pub const DEBOUNCE_MILLISECONDS: u32 = 20;
 
+/// Exact GPIOB masks for the bounded main-key matrix.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GpioPlan {
+    /// GPIOB peripheral clock enable bit.
+    pub clock_enable: u32,
+    /// Row-mode fields to clear for PB12..PB15 inputs.
+    pub row_mode_clear: u32,
+    /// Row pull fields to clear.
+    pub row_pull_clear: u32,
+    /// Pull-up values for all four rows.
+    pub row_pull_set: u32,
+    /// Column-mode fields to clear for PB3..PB6.
+    pub column_mode_clear: u32,
+    /// Push-pull output-mode values for all four columns.
+    pub column_mode_set: u32,
+    /// Column output-type bits to clear for push-pull.
+    pub column_type_clear: u32,
+    /// Column speed fields to clear.
+    pub column_speed_clear: u32,
+    /// High-speed values from the pinned board configuration.
+    pub column_speed_set: u32,
+    /// Column pull fields to clear.
+    pub column_pull_clear: u32,
+    /// Pull-up values from the pinned board configuration.
+    pub column_pull_set: u32,
+    /// PB3..PB6 bits which must all be high at idle.
+    pub columns_high: u32,
+    /// Selected-low column masks, ordered PB6, PB5, PB4, PB3.
+    pub selected_low: [u32; 4],
+    /// PB12..PB15 input mask.
+    pub rows: u32,
+}
+
+/// Returns the exact GPIOB-only main-key configuration plan.
+#[must_use]
+pub const fn gpio_plan() -> GpioPlan {
+    GpioPlan {
+        clock_enable: 1 << 1,
+        row_mode_clear: 0xFF00_0000,
+        row_pull_clear: 0xFF00_0000,
+        row_pull_set: 0x5500_0000,
+        column_mode_clear: 0x0000_3FC0,
+        column_mode_set: 0x0000_1540,
+        column_type_clear: 0x0000_0078,
+        column_speed_clear: 0x0000_3FC0,
+        column_speed_set: 0x0000_3FC0,
+        column_pull_clear: 0x0000_3FC0,
+        column_pull_set: 0x0000_1540,
+        columns_high: 0x0000_0078,
+        selected_low: [1 << 6, 1 << 5, 1 << 4, 1 << 3],
+        rows: 0x0000_F000,
+    }
+}
+
 /// One key in the evidenced 4-by-4 K1 main keypad matrix.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Key {
@@ -79,6 +133,57 @@ pub enum DecodeError {
     InvalidRowBits,
     /// More than one matrix cell was active.
     Ambiguous,
+}
+
+/// Minimal board operation boundary used by the deterministic matrix scanner.
+pub trait MatrixBus {
+    /// Adapter error.
+    type Error;
+
+    /// Drives all four main-key columns high.
+    fn drive_all_columns_high(&mut self) -> Result<(), Self::Error>;
+
+    /// Drives one evidenced column low while the others remain high.
+    fn drive_column_low(&mut self, column: usize) -> Result<(), Self::Error>;
+
+    /// Reads PB12..PB15 after the adapter's independently bounded settling step.
+    ///
+    /// The returned low four bits are ordered PB15 through PB12 and are set for
+    /// active-low rows. Bits above bit three must be zero.
+    fn read_active_rows(&mut self) -> Result<u8, Self::Error>;
+}
+
+/// Failure from one complete main-key matrix scan.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScanError<E> {
+    /// A select or read operation failed; idle cleanup was still attempted.
+    Operation(E),
+    /// Restoring all columns high failed.
+    Cleanup(E),
+}
+
+/// Scans all four main-key columns and restores all columns high.
+///
+/// The bus owns the settling operation before each read. This function records
+/// no target clock rate or delay assumption.
+pub fn scan<B: MatrixBus>(bus: &mut B) -> Result<[u8; 4], ScanError<B::Error>> {
+    bus.drive_all_columns_high().map_err(ScanError::Cleanup)?;
+    let mut rows = [0_u8; 4];
+    for (column, observed) in rows.iter_mut().enumerate() {
+        if let Err(error) = bus.drive_column_low(column) {
+            let _ = bus.drive_all_columns_high();
+            return Err(ScanError::Operation(error));
+        }
+        match bus.read_active_rows() {
+            Ok(value) => *observed = value,
+            Err(error) => {
+                let _ = bus.drive_all_columns_high();
+                return Err(ScanError::Operation(error));
+            }
+        }
+        bus.drive_all_columns_high().map_err(ScanError::Cleanup)?;
+    }
+    Ok(rows)
 }
 
 /// Decodes active-low row observations for selected columns PB6, PB5, PB4,
@@ -206,7 +311,11 @@ impl Default for Debouncer {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode, Debouncer, DecodeError, Edge, Key, Sample, DEBOUNCE_MILLISECONDS};
+    use super::{
+        decode, gpio_plan, scan, Debouncer, DecodeError, Edge, Key, MatrixBus, Sample, ScanError,
+        DEBOUNCE_MILLISECONDS,
+    };
+    use std::vec::Vec;
 
     const EXPECTED: [[Key; 4]; 4] = [
         [Key::Menu, Key::Digit1, Key::Digit4, Key::Digit7],
@@ -214,6 +323,125 @@ mod tests {
         [Key::Down, Key::Digit3, Key::Digit6, Key::Digit9],
         [Key::Exit, Key::Star, Key::Digit0, Key::Function],
     ];
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum Operation {
+        AllHigh,
+        ColumnLow(usize),
+        Read,
+    }
+
+    struct TraceBus {
+        trace: Vec<Operation>,
+        rows: [u8; 4],
+        read_index: usize,
+        fail_at: Option<usize>,
+    }
+
+    impl MatrixBus for TraceBus {
+        type Error = usize;
+
+        fn drive_all_columns_high(&mut self) -> Result<(), Self::Error> {
+            self.record(Operation::AllHigh)
+        }
+
+        fn drive_column_low(&mut self, column: usize) -> Result<(), Self::Error> {
+            self.record(Operation::ColumnLow(column))
+        }
+
+        fn read_active_rows(&mut self) -> Result<u8, Self::Error> {
+            self.record(Operation::Read)?;
+            let value = self.rows[self.read_index];
+            self.read_index += 1;
+            Ok(value)
+        }
+    }
+
+    impl TraceBus {
+        fn record(&mut self, operation: Operation) -> Result<(), usize> {
+            let index = self.trace.len();
+            self.trace.push(operation);
+            if self.fail_at == Some(index) {
+                Err(index)
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn gpio_plan_touches_only_gpio_b_matrix_fields() {
+        let plan = gpio_plan();
+        assert_eq!(plan.clock_enable, 0x0000_0002);
+        assert_eq!(plan.row_mode_clear, 0xFF00_0000);
+        assert_eq!(plan.row_pull_clear, 0xFF00_0000);
+        assert_eq!(plan.row_pull_set, 0x5500_0000);
+        assert_eq!(plan.column_mode_clear, 0x0000_3FC0);
+        assert_eq!(plan.column_mode_set, 0x0000_1540);
+        assert_eq!(plan.column_type_clear, 0x0000_0078);
+        assert_eq!(plan.column_speed_clear, 0x0000_3FC0);
+        assert_eq!(plan.column_speed_set, 0x0000_3FC0);
+        assert_eq!(plan.column_pull_clear, 0x0000_3FC0);
+        assert_eq!(plan.column_pull_set, 0x0000_1540);
+        assert_eq!(plan.columns_high, 0x0000_0078);
+        assert_eq!(plan.selected_low, [0x40, 0x20, 0x10, 0x08]);
+        assert_eq!(plan.rows, 0x0000_F000);
+    }
+
+    #[test]
+    fn scan_trace_selects_each_column_and_restores_idle() {
+        let mut bus = TraceBus {
+            trace: Vec::new(),
+            rows: [1, 2, 4, 8],
+            read_index: 0,
+            fail_at: None,
+        };
+        assert_eq!(scan(&mut bus), Ok([1, 2, 4, 8]));
+        assert_eq!(
+            bus.trace,
+            [
+                Operation::AllHigh,
+                Operation::ColumnLow(0),
+                Operation::Read,
+                Operation::AllHigh,
+                Operation::ColumnLow(1),
+                Operation::Read,
+                Operation::AllHigh,
+                Operation::ColumnLow(2),
+                Operation::Read,
+                Operation::AllHigh,
+                Operation::ColumnLow(3),
+                Operation::Read,
+                Operation::AllHigh,
+            ]
+        );
+    }
+
+    #[test]
+    fn every_select_or_read_failure_attempts_idle_cleanup() {
+        for fail_at in [1, 2, 4, 5, 7, 8, 10, 11] {
+            let mut bus = TraceBus {
+                trace: Vec::new(),
+                rows: [0; 4],
+                read_index: 0,
+                fail_at: Some(fail_at),
+            };
+            assert_eq!(scan(&mut bus), Err(ScanError::Operation(fail_at)));
+            assert_eq!(bus.trace.last(), Some(&Operation::AllHigh));
+        }
+    }
+
+    #[test]
+    fn idle_cleanup_failure_is_reported() {
+        let mut bus = TraceBus {
+            trace: Vec::new(),
+            rows: [0; 4],
+            read_index: 0,
+            fail_at: Some(3),
+        };
+        assert_eq!(scan(&mut bus), Err(ScanError::Cleanup(3)));
+        assert_eq!(bus.trace.last(), Some(&Operation::AllHigh));
+    }
 
     #[test]
     fn all_sixteen_cells_decode_exactly() {

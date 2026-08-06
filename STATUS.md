@@ -112,9 +112,9 @@ features remain outside this bounded slice.
 - Work Package 22 keypad/UI witness definition: active; the pinned matrix,
   electrical idle/scan levels, one-key decode, explicit-time debounce, and
   display-only result are bounded before implementation.
-- Current smallest actionable task: implement a hardware-independent GPIOB
-  register/scan plan with exact traces and guaranteed all-columns-high cleanup;
-  do not bind target MMIO or flash an image in that step.
+- Current smallest actionable task: bind the verified GPIOB plan and scanner to
+  the K1 target, render only debounced key labels, then run all target/image and
+  workspace gates before the already authorized physical write.
 
 ## Work Package 22 pure keypad milestone
 
@@ -133,6 +133,23 @@ features remain outside this bounded slice.
 - `nix develop path:. -c cargo test --package radio-firmware-k1` — passed; 14
   unit tests plus doc tests, including exhaustive 16-cell mapping and all 120
   two-cell ambiguity combinations.
+- `nix develop path:. -c cargo clippy --package radio-firmware-k1 --all-targets
+  -- -D warnings` — passed.
+- `git diff --check` — passed.
+
+## Work Package 22 pure GPIO scan-plan milestone
+
+- Added an exact GPIOB configuration plan for only PB12..PB15 pull-up inputs
+  and PB3..PB6 push-pull outputs, including the pinned high-speed/pull-up fields
+  and PB6-to-PB3 selected-low order.
+- Added a deterministic four-column scan boundary. It begins with all columns
+  high, selects and reads each column in order, restores all columns high after
+  every read, and attempts the same cleanup after every select/read failure.
+  The bus owns settling, so the pure contract invents no target tick or delay.
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c cargo test --package radio-firmware-k1` — passed; 18
+  unit tests plus doc tests, including exact register masks/scan trace and every
+  select/read cleanup-failure position.
 - `nix develop path:. -c cargo clippy --package radio-firmware-k1 --all-targets
   -- -D warnings` — passed.
 - `git diff --check` — passed.
