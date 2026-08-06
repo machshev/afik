@@ -5,6 +5,7 @@
 #[cfg(test)]
 extern crate std;
 
+pub mod aux_inputs;
 pub mod backlight;
 pub mod clock_handoff;
 #[cfg(test)]

@@ -140,6 +140,20 @@ features remain outside this bounded slice.
   `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`,
   `nix develop path:. -c cargo test --workspace`, and `git diff --check` all
   passed. No implementation, image, hardware, or flash state changed.
+- **Raw-observation milestone:** added `aux_inputs` with a bounded raw GPIOB
+  sample, explicit target/test provenance, monotonic sequence gate, stability
+  validation, stale rejection, and raw PB10 extraction. No side-key mapping or
+  polarity is inferred, and no target binding changed.
+- Focused auxiliary-input tests passed: 3 tests.
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
+  — passed.
+- `nix develop path:. -c cargo test --workspace` — passed; all workspace
+  unit, integration, and doc-test binaries passed.
+- Embedded target Clippy was retried with an isolated target directory but the
+  Nix evaluation failed before compilation because the host filesystem had
+  only 66 MiB free (`No space left on device`). No source error was reported.
+- `git diff --check` — passed.
 
 ## Work Package 23 handoff correction
 

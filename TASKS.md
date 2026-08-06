@@ -1231,6 +1231,11 @@
   UI state, configuration, or transmit authority.
 - **First step:** add the source/evidence decision and a hardware-independent
   raw-observation contract before any target binding.
+- **Raw-observation result:** `radio-firmware-k1::aux_inputs` now accepts only
+  stable, strictly newer, nonzero-sequence samples, retains GPIOB IDR and
+  provenance, and exposes PB10 only as an uninterpreted raw bit. Focused and
+  workspace host gates pass; the embedded target gate is pending an available
+  filesystem. Side-key mapping and any physical observation remain unverified.
 - **Clock-handoff step:** define a bounded local HAL entry which adopts only an
   explicitly validated inherited 48 MHz `SYSCLK`/`HCLK1`/`PCLK1`/`PCLK1_TIM`
   state. It must fail before publishing clocks when the observed RCC state does
