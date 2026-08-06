@@ -1,0 +1,14 @@
+[package]
+name = "radio-aprs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Bounded receive-only AX.25 APRS parsing and repeater discovery"
+
+[dependencies]
+radio-domain = { path = "../radio-domain" }
+
+[lints]
+workspace = true

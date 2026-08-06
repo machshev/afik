@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/radio-domain",
+    "crates/radio-aprs",
     "crates/radio-bk4819",
     "crates/radio-firmware-dp32g030",
     "crates/radio-channel-plan",
