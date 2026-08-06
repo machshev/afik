@@ -396,7 +396,10 @@ Raw GPIOB snapshot diagnostic milestone:
   corrected two target-only Clippy findings before packaging.
 - The raw GPIOB image is 61,128 bytes, SHA-256
   `25f900885cf0a4ca79c10ea16737c72878330e8d0e372eb74cde63c479b28f32`,
-  and CRC-32 `032e7309`. No write has yet been sent.
+  and CRC-32 `032e7309`.
+- K1 `7.03.01` acknowledged all `239/239` pages in transaction `7422b31d` and
+  reported `acknowledged_not_read_back`. No retry or reset command was sent;
+  normal-boot baseline and tap capture remain pending.
 
 ## Work Package 14 implementation milestone
 

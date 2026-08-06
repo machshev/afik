@@ -1072,4 +1072,5 @@
   against a released baseline while ignoring only PB3..PB6. All required gates
   pass. The 61,128-byte image has SHA-256
   `25f900885cf0a4ca79c10ea16737c72878330e8d0e372eb74cde63c479b28f32`
-  and CRC-32 `032e7309`; physical write remains pending.
+  and CRC-32 `032e7309`. K1 `7.03.01` acknowledged all 239 pages in transaction
+  `7422b31d` without retry; normal-boot observation remains pending.

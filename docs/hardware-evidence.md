@@ -448,6 +448,9 @@ order are maintained in `docs/k1-bring-up.md`.
   baseline and ignoring only PB3..PB6 output changes. Any captured difference
   identifies an observed GPIOB bit transition but does not establish its
   electrical role without follow-up repetition.
+- **Write observation:** K1 `7.03.01` acknowledged all 239 pages of the
+  61,128-byte raw GPIOB image in transaction `7422b31d` and reported
+  `acknowledged_not_read_back`; no normal-boot or GPIO observation is implied.
 
 ## Sources used by DP32-003
 
