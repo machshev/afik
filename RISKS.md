@@ -361,3 +361,9 @@
   inventory: GPIOA, WWDG, AES_LPUART1, and DMA1_CH1 only. A feature-only HAL
   extension fails because RCC is absent. Correct the source data upstream;
   never fill the gap with F072 metadata or inferred register compatibility.
+- **Local mitigation update:** AFIK now carries a reproducible generated PAC
+  from pinned `py32-data` source plus a small reviewed HAL compatibility delta.
+  All concrete F071 features and the required K1 inventory compile locally.
+  This closes the released-artifact inventory blocker but not the risk: exact
+  package identity, time, USART1, SPI1, DMA, interrupt, clock, and physical HAL
+  behavior still require separate evidence. F071 ADC HAL bindings remain off.

@@ -1177,3 +1177,30 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   lets its generator select `py32f071r1b` but then fails the mandatory RCC
   lookup at `build.rs:410-415`. This is evidence that the released metadata is
   incomplete, not evidence that F071 shares F072 behavior.
+
+### EVID-K1-038 — Local generated F071 inventory
+
+- **Pinned source:** `py32-rs/py32-data` commit
+  `eb33b9ab85aa4652006e3435d84e1f9f7e5eca50`, generated with its `./d gen`
+  pipeline. Source SHA-256 values are `b17d1ab8392855b13eebd6bfdaf1bb29cca45ab7cd4d3d0c3c2e020f1651e471`
+  for `svd/PY32F071xx.svd`,
+  `07051b275aca1e98af6aa94b649ea374036fd0545e53a6ddf93b579cf203aae7`
+  for `data/series/PY32F071.yaml`, and
+  `52ec5a67c337b79835104b78858aeacb36e096c5a7305fbf924cf184db28cc0e`
+  for `data/dies/DIE072/peripherals.yaml`.
+- **Generated result:** all four concrete F071 packages select the same
+  7,205-line metadata inventory (SHA-256
+  `846f83baab53ee95b0faa7a5301fbac9914ead114f9df72830da6912ad7831bb`).
+  It contains 31 peripherals, including RCC, USART1, SPI1, GPIOA/B/F, and the
+  timer surfaces required for the next review. The source explicitly models
+  F071 as a separate series on DIE072 with CAN disabled.
+- **Local HAL result:** the bounded AFIK `py32-hal 0.4.1` patch exposes all four
+  F071 features. Each compiles separately for `thumbv6m-none-eabi` on the
+  pinned Rust toolchain with default features disabled. AFIK's compile-only K1
+  contract additionally names RCC, USART1, SPI1, TIM1/TIM3/TIM15, and the
+  observed USART/display/keypad/backlight pins.
+- **Boundary:** generated inventory is software-source evidence, not proof of
+  exact fitted package identity or peripheral behavior. No HAL init is called,
+  and F071 ADC HAL bindings are deliberately disabled pending independent
+  constants. Time, USART1, SPI1, DMA, interrupts, clocks, and physical behavior
+  remain unproven.

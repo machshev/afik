@@ -9,6 +9,12 @@ until exact PY32F071 implementation and physical behavior are verified.
 CPU-bound rendering must contain explicit await boundaries; cooperative
 scheduling does not make an uninterrupted renderer non-blocking.
 
+The PY32 dependency boundary is repository-local. `vendor/py32-metapac` is a
+pinned generated PAC and `vendor/py32-hal` is a bounded compatibility patch;
+root Cargo patches select both without requiring upstream control. The optional
+K1 inventory feature type-checks required peripheral names only. It is not used
+by the firmware entry point and does not initialize clocks or peripherals.
+
 The current hardware-independent crates have this dependency direction:
 
 ```text

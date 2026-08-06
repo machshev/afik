@@ -1105,3 +1105,10 @@
   GPIOA, WWDG, AES_LPUART1, and DMA1_CH1; `py32-hal` fails its mandatory RCC
   lookup before library compilation. The next step is a source-backed upstream
   `py32-data`/`py32-metapac` inventory correction, not a guessed AFIK mapping.
+- **Local inventory result:** AFIK now vendors a regenerated PAC from pinned
+  `py32-data` commit `eb33b9ab85aa4652006e3435d84e1f9f7e5eca50` and a bounded
+  local `py32-hal 0.4.1` compatibility patch. All four F071 package features
+  compile on the pinned target, and an optional compile-only K1 contract names
+  the evidenced RCC, USART1, SPI1, timer, and GPIO pin surfaces. No HAL init or
+  physical-image path changed. The next independent boundary is time-driver
+  evidence and compilation; USART1 and SPI1 behavior remain later milestones.

@@ -117,9 +117,9 @@ features remain outside this bounded slice.
 - Work Package 22 keypad/UI witness definition: complete; the pinned matrix,
   electrical idle/scan levels, one-key decode, explicit-time debounce, and
   display-only result were bounded before implementation.
-- Current smallest actionable task: supply reviewed, source-backed PY32F071
-  peripheral metadata upstream of `py32-metapac`, including RCC, USART1, and
-  SPI1, before extending `py32-hal`; do not infer it from F072.
+- Current smallest actionable task: review the vendored F071 timer/RCC metadata
+  and `py32-hal` time-driver implementation against the pinned PY32F071 and K1
+  clock evidence, then compile a no-entry-point time proof.
 
 ## Work Package 23 dependency and executor milestone
 
@@ -152,6 +152,38 @@ features remain outside this bounded slice.
   unit, integration, and doc-test binaries passed.
 - `git diff --check` — passed.
 - No target entry point or physical image changed and no flash was sent.
+
+## Work Package 23 local PY32F071 inventory milestone
+
+- Vendored a locally generated `py32-metapac 0.5.0` from pinned `py32-data`
+  commit `eb33b9ab85aa4652006e3435d84e1f9f7e5eca50`. Its explicit PY32F071
+  series uses the maintained DIE072 inventory with CAN disabled; AFIK does not
+  select an F072 chip feature.
+- Vendored the crates.io `py32-hal 0.4.1` source and added only bounded local
+  compatibility changes: four concrete F071 features, regenerated PAC feature
+  naming, safe generic-chip cfg parsing, and suppression of nonexistent DAC
+  bindings. F071 ADC HAL bindings remain disabled because their constants have
+  not been independently evidenced.
+- Added the optional `py32f071-hal-inventory` compile contract. It names RCC,
+  USART1, SPI1, TIM1/TIM3/TIM15, the observed USART/display/keypad pins, and
+  PF8 without calling HAL initialization or changing the firmware entry point.
+- All four concrete F071 package features compile separately for
+  `thumbv6m-none-eabi` with default HAL features disabled. The R1B selection in
+  AFIK's compile contract follows the available primary product-page package;
+  it is not an observation of the exact fitted package suffix.
+- `nix develop path:. -c tool/check-py32f071-hal.sh` — passed for C1B, K18,
+  K1B, and R1B with offline dependency resolution and build-std/core.
+- Warning-denied `thumbv6m-none-eabi` Clippy with build-std/core for
+  `radio-firmware-k1 --features py32f071-hal-inventory --lib` — passed.
+- `nix flake check path:. --no-build` — passed.
+- `nix develop path:. -c cargo fmt --all --check` — passed after applying
+  rustfmt to the new inventory contract.
+- `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
+  — passed.
+- `nix develop path:. -c cargo test --workspace` — passed; all 156 workspace
+  unit, integration, and doc-test binaries passed.
+- No physical image, linker contract, startup path, MMIO behavior, or flash
+  operation changed.
 
 ## Work Package 22 pure keypad milestone
 

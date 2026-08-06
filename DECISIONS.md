@@ -503,3 +503,20 @@ meaning.
   boundary is independently proven.
 - AFIK retains `no_std`, heap-free static tasks, integer units, bounded queues,
   fail-closed TX policy, and no invented register behavior.
+
+## ADR-035 — PY32 support is pinned and patched locally
+
+- **Date:** 2026-08-06
+- **Status:** accepted for `K1ASYNC-023`
+- AFIK vendors the exact generated `py32-metapac` and `py32-hal` sources needed
+  for reproducible F071 work. Cargo patches resolve them locally; AFIK does not
+  require an upstream fork, release, pull request, or network fetch to build the
+  F071 inventory.
+- The generated PAC provenance and HAL delta are recorded in `vendor/README.md`.
+  F071 is an explicit chip/series selection; AFIK must not substitute an F072
+  chip feature. Shared die data is accepted only where the pinned data source
+  explicitly assigns it to the F071 series.
+- A compiling peripheral name proves only the generated software inventory.
+  Driver behavior, clocks, interrupts, time, UART, SPI, DMA, and physical
+  operation remain separately evidenced boundaries. Unsupported ADC bindings
+  stay disabled rather than inheriting unevidenced constants merely to compile.

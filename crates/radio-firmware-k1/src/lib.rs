@@ -11,3 +11,5 @@ pub mod display;
 pub mod embassy_runtime;
 pub mod keypad;
 pub mod protocol;
+#[cfg(feature = "py32f071-hal-inventory")]
+pub mod py32f071_hal_inventory;
