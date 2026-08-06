@@ -50,7 +50,7 @@ features remain outside this bounded slice.
 - Work Package 20 constant K1 backlight: complete; bounded PF8 implementation
   and static/physical verification passed.
 - Work Package 21 fixed K1 contrast: active; exact one-byte command change and
-  static verification pending.
+  static verification complete; physical readability confirmation pending.
 - `UI-005` logical key edges, bounded semantic views, exact boot-only entry,
   release gate, draft editor, and checked persistence action: complete.
 - `UI-005` separate persisted/active policy simulation, deterministic timed
@@ -108,9 +108,9 @@ features remain outside this bounded slice.
   pending; no serial device is visible here.
 - Work Package 18 selected and bounded the next application slice: a fixed
   display-only AFIK boot witness with the serial responder retained.
-- Current smallest actionable task: change and test only the fixed electronic
-  volume from 21 to the pinned startup value 31 for `K1CON-021`. No further
-  physical write is authorized by this activation milestone.
+- Current smallest actionable task: after explicit confirmation for the exact
+  verified contrast image, perform one guarded write, power-cycle, observe text
+  readability/backlight, and probe `AFIK-K1-0.2` over serial.
 
 ## Work Package 14 implementation milestone
 
@@ -405,6 +405,21 @@ Physical backlight verification on 2026-08-06:
   A one-byte contrast calibration is activated separately as `K1CON-021`.
 - The final read-only normal-mode probe passed with
   `protocol=normal-firmware-hello`, `firmware=AFIK-K1-0.2`.
+
+## Work Package 21 contrast implementation milestone
+
+- Changed only the ST7565-compatible electronic-volume data byte from `0x15`
+  to the pinned fixed startup value `0x1f`; its exact initialization trace was
+  updated. Framebuffer, power sequence, SPI/GPIO, PF8, and serial behavior are
+  unchanged.
+- The raw image remains 48,580 bytes, SHA-256
+  `b2e6a38b965fcb0d419ec2ed7309aa3d6518285967c98d1646eddaa8718c8d32`,
+  CRC-32 `4dfc4076`, with initial SP `0x20004000`, Reset `0x08002919`, and
+  ELF image end `0x0800e5c4`.
+- Focused host tests, host/target warning-denied Clippy, full workspace format,
+  Clippy and 133 tests, target build/ELF verification, packaging, and positive/
+  negative raw-image gates passed. `git diff --check` passed. No contrast image
+  write has been sent.
 
 ## Work Package 13 first evidence milestone
 

@@ -959,3 +959,8 @@
 - **Acceptance criteria:** the only controller-stream change is electronic
   volume `0x15` to `0x1f`; existing display/backlight/serial observations remain
   intact; and no production brightness/contrast policy is claimed.
+- **Implementation notes:** the one-byte command change and exact-trace test are
+  implemented. All host, workspace, embedded Clippy, ELF, and raw-image gates
+  pass. The 48,580-byte image has SHA-256
+  `b2e6a38b965fcb0d419ec2ed7309aa3d6518285967c98d1646eddaa8718c8d32`
+  and CRC-32 `4dfc4076`; physical writing remains separately confirmation-gated.
