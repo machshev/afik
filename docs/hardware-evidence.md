@@ -338,6 +338,21 @@ order are maintained in `docs/k1-bring-up.md`.
   Exercise all 16 keys individually; do not press PTT or side keys and do not
   add RF, TX, persistence, interrupts, or general menu behavior.
 
+### EVID-K1-032 — K1 keypad witness image was page-acknowledged
+
+- **Precondition:** read-only auto-identification found the external CH340 path
+  and classified the unsolicited beacon as K1 bootloader `7.03.01`. The exact
+  56,828-byte image had SHA-256
+  `4ad5e4e205afd32e791409b371e111c0792110c48e1fc9c67a5c19d8628c06b0`
+  and CRC-32 `a17da806`; the retained recovery and EEPROM backup gates passed.
+- **Write observation:** the guarded K1 AFIK writer acknowledged all 222 pages
+  in transaction `265b2c89` and reported `acknowledged_not_read_back`. It sent
+  no retry, reset, EEPROM-write, RF, or TX command.
+- **Evidence boundary:** page acknowledgement does not prove application boot,
+  GPIO behavior, key mapping, debounce, or display output. Those claims remain
+  pending a manual power-cycle, all 16 individual main-key observations, and
+  the independent normal-mode serial probe.
+
 ## Sources used by DP32-003
 
 ### DP32G030 reference manual v1.23

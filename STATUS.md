@@ -112,9 +112,9 @@ features remain outside this bounded slice.
 - Work Package 22 keypad/UI witness definition: active; the pinned matrix,
   electrical idle/scan levels, one-key decode, explicit-time debounce, and
   display-only result are bounded before implementation.
-- Current smallest actionable task: use the already authorized guarded writer
-  once for the verified `K1KEY-022` image, then power-cycle and observe all 16
-  main-key labels, backlight, fixed display, and serial identity.
+- Current smallest actionable task: after a user power-cycle, observe all 16
+  main-key labels individually, the backlight and fixed display, then run the
+  read-only normal-mode serial probe.
 
 ## Work Package 22 pure keypad milestone
 
@@ -185,6 +185,19 @@ features remain outside this bounded slice.
   `tool/test-k1-image.sh` — passed, including positive and negative raw-image
   fixtures.
 - `git diff --check` — passed. No keypad image write has yet been sent.
+
+Physical keypad write on 2026-08-06:
+
+- The immediate read-only identify reported
+  `/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0`, K1 bootloader `7.03.01`.
+- The guarded writer revalidated the 56,828-byte image, recovery image, retained
+  EEPROM backup (`backup_crc32=99765400`), exact target/rehearsal phrases, and
+  image CRC-32 `a17da806` before sending any page.
+- K1 `7.03.01` acknowledged all `222/222` pages in transaction `265b2c89` and
+  reported `acknowledged_not_read_back`. No retry or reset command was sent.
+- Physical completion remains pending a user power-cycle, individual
+  observation of all 16 main-key labels, retained display/backlight behavior,
+  and the read-only `AFIK-K1-0.2` serial probe.
 
 ## Work Package 14 implementation milestone
 
