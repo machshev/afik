@@ -330,10 +330,10 @@ meaning.
   board, MCU, or RF revision. Automatic mode must fail on zero or multiple
   viable candidates and must report protocol classification separately from
   hardware identity.
-- K1 support is limited to the independently implemented raw recovery/backup
-  path. No K1 AFIK application image or target contract exists, so the generic
-  flasher must reject K1 AFIK flashing rather than route it to the K5 image
-  path.
+- K1 support includes the independently implemented raw recovery/backup path
+  and a separate AFIK application command. The K1 command must never route
+  through the K5 image path and remains subject to its own target, recovery,
+  image, and version confirmations.
 
 ## ADR-024 — K1 device trailers are not the K5 response marker
 
@@ -347,23 +347,23 @@ meaning.
   retaining envelope/footer, payload length, command, version, transaction,
   page, and result validation. This is an evidence-bounded interoperability
   rule, not a claim that the K1 serial link has integrity protection.
-- K1 application flashing remains unavailable. The only physical image
-  permitted by `K1HIL-015` is the independently validated, unchanged stock
-  recovery image, followed by normal-mode backup comparison.
+- K1 AFIK application flashing is exposed only by a separately guarded command;
+  the recovery command remains restricted to the independently validated,
+  unchanged stock image. Page acknowledgement is not read-back or boot proof.
 
-## ADR-025 — The first K1 AFIK image is a reset-only witness image
+## ADR-025 — The first K1 AFIK image is a reset-and-serial witness image
 
 - **Date:** 2026-08-06
 - **Status:** accepted for `K1BOOT-016`
 - The first independently implemented K1 image uses only the pinned
-  Cortex-M0+, application-origin, and SRAM facts. It places a two-word vector
-  table at `0x08002800`, writes one RAM witness from Reset, and then stops.
+  Cortex-M0+, application-origin, SRAM, and source-backed USART1 facts. It
+  places a two-word vector table at `0x08002800`, writes one RAM witness from
+  Reset, and answers one bounded normal-mode hello.
 - The image does not initialise a guessed clock, access board peripherals, send
   USB data, draw the display, scan keys, control the BK4819, access external
   flash, enable TX, or issue a reset or bootloader command.
-- The RAM witness is a development observation and is not evidence of physical
-  K1 boot. A later physical witness must be independently evidenced before the
-  K1 AFIK image may be flashed.
+- The RAM witness is a development observation. The exact physical witness is
+  the independent `AFIK-K1-0.1` response over the external CH340/UART path.
 
 ## ADR-026 — K1 physical boot witness requires exact board observation
 
@@ -379,4 +379,20 @@ meaning.
   driver.
 - A CH340 enumeration alone is not an application witness. The AFIK host must
   receive the exact `AFIK-K1-0.1` normal-mode hello response over the same
-  serial path before physical application flashing is considered proven.
+  serial path after the bounded witness-image write; only then is application
+  boot considered proven.
+
+## ADR-027 — K1 AFIK application writes require a recovery rehearsal
+
+- **Date:** 2026-08-06
+- **Status:** accepted for `K1WIT-017`
+- The generic flasher exposes `flash-afik-k1` separately from recovery. It
+  requires the exact AFIK target phrase, exact detected `7.03.01` version,
+  image CRC-32, a complete validated EEPROM backup, a distinct retained stock
+  recovery image, and the exact recovery-rehearsal phrase.
+- The K1 writer validates all guards before consuming the post-detection
+  handshake or sending a page. It sends only the AFIK image; the recovery
+  image is a guard and is never written by this command.
+- Every page acknowledgement is checked for transaction, page, and zero
+  result. There is no K1 flash read-back or automatic reset; the operator must
+  power-cycle and run `probe-normal`, then retain the known-good recovery path.

@@ -40,7 +40,7 @@ SECTIONS
     __boot_sentinel_end = .;
   } > RAM
 
-  /* This reset-only image has no runtime data-copy or BSS-zeroing startup. */
+  /* This bounded image has no runtime data-copy or BSS-zeroing startup. */
   .data : ALIGN(4)
   {
     *(.data .data.*);

@@ -219,8 +219,8 @@
 - **Mitigation:** `K1FLASH-014` accepts only pinned K1 `7.03.*` and qualified K5
   V1 `2.*` beacon shapes, rejects unknown versions, reports protocol family
   separately from hardware identity, enumerates USB candidates without trusting
-  the adapter alone, and does not expose K1 AFIK flashing. Physical markings
-  and image contracts remain separate evidence gates.
+  the adapter alone, and routes K1 AFIK flashing through a separate exact-target
+  command. Physical markings and image contracts remain separate evidence gates.
 
 ## RISK-018 — K1 device trailer does not provide a checked integrity marker
 
@@ -231,10 +231,11 @@
   pass unnoticed.
 - **Mitigation:** the K1 path retains bounded resynchronisation, exact footer,
   declared-length, command, version, transaction, page, and zero-result
-  acknowledgement checks; it never retries an ambiguous page. The first AFIK
-  hardware exercise uses only the unchanged known-good stock image and compares
-  the complete post-flash normal-mode backup. No K1 AFIK image or RF operation
-  is permitted until a separate target and stronger observation contract exist.
+  acknowledgement checks; it never retries an ambiguous page. Before the first
+  AFIK hardware exercise the unchanged known-good stock recovery image,
+  complete backup, distinct image, and exact confirmations must be present.
+  After the write, normal-mode probing and the retained recovery route remain
+  required; no RF operation is implemented.
 
 ## RISK-019 — K1 AFIK image has no physical boot witness yet
 
@@ -242,11 +243,12 @@
 - **Impact:** a correctly linked K1 ELF or raw image can still fail to execute
   after the bootloader handoff, and a successful page acknowledgement cannot
   distinguish application boot from a stalled or incompatible image.
-- **Mitigation:** the first image now has a bounded USART1 hello witness over
-  the intended CH340 path and a read-only host `probe-normal` command. Keep
-  the image unflashed until the guarded K1 write path is verified, then require
-  the exact `AFIK-K1-0.1` response and immediately retain the proven Armel
-  recovery route.
+- **Mitigation:** the first image has a bounded USART1 hello witness over the
+  intended CH340 path and a read-only host `probe-normal` command. The guarded
+  `flash-afik-k1` path refuses missing rehearsal, invalid backup, bad CRC,
+  mismatched version/target, or an image identical to recovery. The physical
+  gate remains the exact `AFIK-K1-0.1` response after power-cycle, followed by
+  the proven Armel recovery route.
 
 ## RISK-020 — Native K1 USB routing is unobserved but not required
 

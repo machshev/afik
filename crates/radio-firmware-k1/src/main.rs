@@ -1,4 +1,4 @@
-//! Minimal UV-K1/PY32F071 Cortex-M0+ reset image.
+//! Minimal UV-K1/PY32F071 Cortex-M0+ serial witness application.
 
 #![no_std]
 #![no_main]

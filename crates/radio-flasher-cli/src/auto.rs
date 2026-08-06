@@ -29,14 +29,18 @@ Usage:\n\
   afik-flasher [--device PATH|auto] probe-normal\n\
   afik-flasher [--device PATH|auto] backup-eeprom OUTPUT [--force]\n\
   afik-flasher [--device PATH|auto] flash-recovery IMAGE --backup EEPROM \\\n    --confirm-target TARGET --confirm-image-crc32 CRC32 [--version VERSION]\n\
+  afik-flasher [--device PATH|auto] flash-afik-k1 IMAGE --recovery RAW \\\n\
+    --backup EEPROM --version VERSION --confirm-target TARGET \\\n\
+    --confirm-image-crc32 CRC32 --confirm-recovery-rehearsed PHRASE\n\
   afik-flasher --help\n\
   afik-flasher --version\n\
 \n\
 The default device selector is auto. It accepts exactly one USB serial\n\
 candidate, then classifies the bootloader protocol: K5 V1 2.* or the pinned\n\
 K1 7.03.* family. Zero or multiple candidates fail closed.\n\
-Only recovery images are exposed here; AFIK application flashing remains\n\
-behind the K5-specific, separately confirmed workflow.\n\
+Recovery flashing remains separately gated. The K1 AFIK application command\n\
+also requires a distinct recovery image, a known EEPROM backup, the exact AFIK\n\
+target phrase, and confirmation that recovery was rehearsed on this unit.\n\
 The read-only probe-normal command sends one normal-mode hello and is the\n\
 serial witness command for an AFIK application.\n\
 Serial is fixed at 38400 8-N-1.\n";
@@ -79,6 +83,7 @@ enum Command {
     ProbeNormal,
     Backup { output: PathBuf, force: bool },
     Flash(FlashArguments),
+    FlashAfikK1(K1AfikFlashArguments),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -88,6 +93,17 @@ struct FlashArguments {
     version: Option<String>,
     target_confirmation: String,
     image_crc32_confirmation: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct K1AfikFlashArguments {
+    image: PathBuf,
+    recovery: PathBuf,
+    backup: PathBuf,
+    version: String,
+    target_confirmation: String,
+    image_crc32_confirmation: String,
+    recovery_rehearsed_confirmation: String,
 }
 
 struct FlashContext<'a> {
@@ -126,7 +142,8 @@ fn parse(arguments: &[String]) -> Result<Parsed, String> {
         (DeviceSelector::Auto, 0)
     };
     let command = arguments.get(command_index).ok_or_else(|| {
-        "a command is required: identify, probe-normal, backup-eeprom, or flash-recovery".to_owned()
+        "a command is required: identify, probe-normal, backup-eeprom, flash-recovery, or flash-afik-k1"
+            .to_owned()
     })?;
     let tail = &arguments[command_index + 1..];
     let command = match command.as_str() {
@@ -144,6 +161,7 @@ fn parse(arguments: &[String]) -> Result<Parsed, String> {
         }
         "backup-eeprom" => parse_backup(tail)?,
         "flash-recovery" => Command::Flash(parse_flash(tail)?),
+        "flash-afik-k1" => Command::FlashAfikK1(parse_flash_afik_k1(tail)?),
         other => return Err(format!("unknown command: {other}")),
     };
     Ok(Parsed::Hardware { device, command })
@@ -203,6 +221,54 @@ fn parse_flash(arguments: &[String]) -> Result<FlashArguments, String> {
     })
 }
 
+fn parse_flash_afik_k1(arguments: &[String]) -> Result<K1AfikFlashArguments, String> {
+    let image = arguments
+        .first()
+        .filter(|argument| !argument.starts_with("--"))
+        .ok_or_else(|| "flash-afik-k1 requires IMAGE".to_owned())?;
+    let mut recovery = None;
+    let mut backup = None;
+    let mut version = None;
+    let mut target_confirmation = None;
+    let mut image_crc32_confirmation = None;
+    let mut recovery_rehearsed_confirmation = None;
+    let mut offset = 1;
+    while offset < arguments.len() {
+        let option = &arguments[offset];
+        let value = arguments
+            .get(offset + 1)
+            .filter(|value| !value.starts_with("--"))
+            .ok_or_else(|| format!("{option} requires a value"))?;
+        match option.as_str() {
+            "--recovery" => set_once(&mut recovery, PathBuf::from(value), option)?,
+            "--backup" => set_once(&mut backup, PathBuf::from(value), option)?,
+            "--version" => set_once(&mut version, value.clone(), option)?,
+            "--confirm-target" => set_once(&mut target_confirmation, value.clone(), option)?,
+            "--confirm-image-crc32" => {
+                set_once(&mut image_crc32_confirmation, value.clone(), option)?;
+            }
+            "--confirm-recovery-rehearsed" => {
+                set_once(&mut recovery_rehearsed_confirmation, value.clone(), option)?;
+            }
+            _ => return Err(format!("unknown flash-afik-k1 option: {option}")),
+        }
+        offset += 2;
+    }
+    Ok(K1AfikFlashArguments {
+        image: PathBuf::from(image),
+        recovery: recovery.ok_or_else(|| "flash-afik-k1 requires --recovery RAW".to_owned())?,
+        backup: backup.ok_or_else(|| "flash-afik-k1 requires --backup EEPROM".to_owned())?,
+        version: version.ok_or_else(|| "flash-afik-k1 requires --version VERSION".to_owned())?,
+        target_confirmation: target_confirmation
+            .ok_or_else(|| "flash-afik-k1 requires --confirm-target TARGET".to_owned())?,
+        image_crc32_confirmation: image_crc32_confirmation
+            .ok_or_else(|| "flash-afik-k1 requires --confirm-image-crc32 CRC32".to_owned())?,
+        recovery_rehearsed_confirmation: recovery_rehearsed_confirmation.ok_or_else(|| {
+            "flash-afik-k1 requires --confirm-recovery-rehearsed PHRASE".to_owned()
+        })?,
+    })
+}
+
 fn set_once<T>(slot: &mut Option<T>, value: T, option: &str) -> Result<(), String> {
     if slot.replace(value).is_some() {
         Err(format!("{option} was provided more than once"))
@@ -221,6 +287,7 @@ fn execute<W: Write>(parsed: Parsed, stdout: &mut W) -> Result<(), CliError> {
         Command::ProbeNormal => probe_normal(&device, stdout),
         Command::Backup { output, force } => backup(&device, &output, force, stdout),
         Command::Flash(arguments) => flash(&device, &arguments, stdout),
+        Command::FlashAfikK1(arguments) => flash_afik_k1(&device, &arguments, stdout),
     }
 }
 
@@ -323,6 +390,87 @@ fn flash<W: Write>(
             flash_k5(&mut serial, &context, arguments.version.as_deref(), stdout)
         }
     }
+}
+
+fn flash_afik_k1<W: Write>(
+    device: &Path,
+    arguments: &K1AfikFlashArguments,
+    stdout: &mut W,
+) -> Result<(), CliError> {
+    let image_raw = read_bounded(&arguments.image, K1_MAX_IMAGE_BYTES, "AFIK K1 image")?;
+    let recovery_raw = read_bounded(&arguments.recovery, K1_MAX_IMAGE_BYTES, "K1 recovery image")?;
+    let image = K1RecoveryImage::from_raw(&image_raw).map_err(CliError::operation)?;
+    let recovery = K1RecoveryImage::from_raw(&recovery_raw).map_err(CliError::operation)?;
+    let backup_raw = read_bounded(
+        &arguments.backup,
+        radio_flasher::EEPROM_BYTES,
+        "EEPROM backup",
+    )?;
+    let backup = EepromBackup::from_raw(&backup_raw).map_err(CliError::operation)?;
+    let supplied_crc = parse_crc32(&arguments.image_crc32_confirmation)?;
+    let expected_crc = crc32(image.bytes());
+    if supplied_crc != expected_crc {
+        return Err(CliError::Operation(format!(
+            "image CRC-32 confirmation mismatch: expected {expected_crc:08x}, supplied {supplied_crc:08x}"
+        )));
+    }
+    let transaction_id = fresh_transaction_id()?;
+    let mut serial = open_serial(device)?;
+    let family = detect_bootloader(&mut serial).map_err(CliError::operation)?;
+    let info = match &family {
+        radio_flasher::BootloaderFamily::K1(info) => info,
+        radio_flasher::BootloaderFamily::K5V1(info) => {
+            return Err(CliError::Operation(format!(
+                "flash-afik-k1 requires K1 bootloader 7.03.*, detected K5 V1 {}",
+                info.version()
+            )));
+        }
+    };
+    if arguments.version != info.version() {
+        return Err(CliError::Operation(format!(
+            "K1 bootloader version confirmation mismatch: detected {}, supplied {}",
+            info.version(),
+            arguments.version
+        )));
+    }
+
+    writeln!(stdout, "device={}", device.display()).map_err(CliError::operation)?;
+    writeln!(stdout, "baud={K5_BAUD}").map_err(CliError::operation)?;
+    writeln!(stdout, "protocol_family={}", family.label()).map_err(CliError::operation)?;
+    writeln!(stdout, "bootloader={}", info.version()).map_err(CliError::operation)?;
+    writeln!(stdout, "image={}", arguments.image.display()).map_err(CliError::operation)?;
+    writeln!(stdout, "recovery_image={}", arguments.recovery.display())
+        .map_err(CliError::operation)?;
+    writeln!(stdout, "backup_crc32={:08x}", backup.crc32()).map_err(CliError::operation)?;
+    writeln!(stdout, "transaction_id={transaction_id:08x}").map_err(CliError::operation)?;
+    stdout.flush().map_err(CliError::operation)?;
+
+    let report = radio_flasher::k1::flash_application(
+        &mut serial,
+        &image,
+        &recovery,
+        info.version(),
+        radio_flasher::k1::K1ApplicationConfirmations {
+            target: &arguments.target_confirmation,
+            recovery_rehearsed: &arguments.recovery_rehearsed_confirmation,
+        },
+        transaction_id,
+        |page| {
+            let complete = page + 1;
+            if complete % 16 == 0 || complete == image.page_count() {
+                let _ = writeln!(
+                    stdout,
+                    "acknowledged_pages={complete}/{}",
+                    image.page_count()
+                );
+                let _ = stdout.flush();
+            }
+        },
+    )
+    .map_err(CliError::operation)?;
+    writeln!(stdout, "pages_acknowledged={}", report.pages_acknowledged)
+        .map_err(CliError::operation)?;
+    writeln!(stdout, "status=acknowledged_not_read_back").map_err(CliError::operation)
 }
 
 fn flash_k1<W: Write>(
@@ -451,6 +599,34 @@ mod tests {
             parse(&arguments).unwrap(),
             Parsed::Hardware {
                 command: Command::Flash(_),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn k1_afik_parser_requires_recovery_and_rehearsal_guards() {
+        assert!(parse(&strings(&["flash-afik-k1", "image.raw"])).is_err());
+        let arguments = strings(&[
+            "flash-afik-k1",
+            "image.raw",
+            "--recovery",
+            "recovery.raw",
+            "--backup",
+            "eeprom.raw",
+            "--version",
+            "7.03.01",
+            "--confirm-target",
+            "UV-K1-AFIK-7.03.01",
+            "--confirm-image-crc32",
+            "12345678",
+            "--confirm-recovery-rehearsed",
+            "K1-RECOVERY-REHEARSED-ON-THIS-UNIT",
+        ]);
+        assert!(matches!(
+            parse(&arguments).unwrap(),
+            Parsed::Hardware {
+                command: Command::FlashAfikK1(_),
                 ..
             }
         ));

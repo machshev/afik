@@ -211,9 +211,9 @@ identity reported by the exact unit.
 
 This is a source- and vector-valid recovery candidate. The same-unit recovery
 rehearsal is complete and the bounded K1 target/image contract now exists in
-`K1BOOT-016`; physical AFIK flashing remains blocked until a separate harmless
-boot witness exists. The two matching local copies remain accepted for the
-current evidence package.
+`K1BOOT-016`; the guarded AFIK writer requires this retained recovery image and
+backup before any physical witness-image write. The two matching local copies
+remain accepted for the current evidence package.
 
 ## K1BOOT-016 reset image
 
@@ -238,8 +238,9 @@ implemented in `tool/build-k1.sh`, `tool/verify-k1-image.sh`,
 `tool/verify-k1-raw-image.sh`, `tool/package-k1-image.sh`, and
 `tool/test-k1-image.sh`. The RAM value is not a physical boot witness: no
 clock, USB, display, keypad, GPIO, external flash, BK4819, audio, RF, TX, or
-reset behavior is implemented. Do not flash this image until a harmless
-visible or USB witness is independently evidenced on the exact unit.
+reset behavior is implemented. This reset-only milestone was superseded by the
+serial witness image described below; the first physical AFIK image must use
+the external CH340/UART path and have no RF side effect.
 
 ## K1WIT-017 physical witness status
 
@@ -315,11 +316,13 @@ been flashed; a physical response is therefore not yet claimed.
    in matching local copies; validate the recovery procedure before writing.
 4. Enter and leave DFU without writing; record descriptors and the procedure.
 5. The unchanged known-good Armel recovery rehearsal and the first AFIK-hosted
-   recovery write are complete; the next destructive action remains blocked
-   until a harmless physical K1 boot witness exists.
-6. `K1BOOT-016` builds the minimal AFIK target. Its first physical image must
-   provide a harmless visible or USB boot witness, contain no RF operation,
-   and be followed immediately by proven Armel recovery.
+   recovery write are complete. The guarded `flash-afik-k1` command is now
+   locally verified; its next physical action is the bounded serial witness
+   image, followed by a user power-cycle and `probe-normal`.
+6. `K1WIT-017` uses the external CH340/UART path, not native USB. The first
+   physical image must provide the exact `AFIK-K1-0.1` response, contain no RF
+   operation, and be followed immediately by proven Armel recovery if the
+   response is absent or wrong.
 
 The serial device was visible for the normal-mode verification above. Passive
 bootloader observation, repeatable read-only backup, and same-unit recovery

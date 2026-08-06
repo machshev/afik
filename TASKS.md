@@ -809,17 +809,19 @@
   establish the intended CH340/UART path; source register facts are used only
   for an independent AFIK implementation; and a witness must not require RF,
   TX, EEPROM writes, or bootloader replacement.
-- **Exclusions:** flashing before the serial witness image and guarded write
-  path are verified, guessing peripheral registers, importing Armel driver
-  code, native-USB identity claims, RF operation, and any general radio
-  application implementation.
+- **Exclusions:** any physical write before the exact target, image, backup,
+  version, CRC, and recovery-rehearsal confirmations are supplied, guessing
+  peripheral registers, importing Armel driver code, native-USB identity
+  claims, RF operation, and any general radio application implementation.
 - **Tests required:** sourced register/pin facts, deterministic host-side
-  witness framing or rendering checks, exact-unit observation, immediate stock
-  recovery, and complete workspace/build hygiene.
+  witness framing or rendering checks, guarded writer and CLI parser tests,
+  exact-unit observation, immediate stock recovery, and complete
+  workspace/build hygiene.
 - **Acceptance criteria:** the serial witness is independently observable on
   the exact K1 through the CH340 path, has no TX or calibration side effect,
-  and is followed by a documented recovery check. The guarded K1 AFIK
-  application-flash workflow may begin only after this task is complete.
-- **Current gate:** source-backed serial witness image and host probe are
-  implemented and locally verified; the image remains unflashed and the
-  exact-unit response is not yet observed.
+  and is followed by a documented recovery check. The local writer must refuse
+  a missing rehearsal, mismatched target, invalid backup, bad CRC, or identical
+  recovery image before touching the serial transport.
+- **Current gate:** source-backed serial witness image, host probe, and guarded
+  writer are implemented and locally verified; the image remains unflashed and
+  the exact-unit response is not yet observed.

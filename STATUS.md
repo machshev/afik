@@ -13,7 +13,7 @@ incrementally translate its application or driver implementation.
 
 `FLASH-012` is deferred with its software milestone intact and physical gates
 incomplete. It can resume unchanged when the exact K5 V1 hardware is available.
-K1 physical AFIK flashing remains blocked until the bounded serial witness is
+K1 physical AFIK flashing remains pending until the bounded serial witness is
 physically observed through the intended CH340 path.
 
 ## State
@@ -39,8 +39,9 @@ physically observed through the intended CH340 path.
 - Work Package 16 K1 reset-only application image and static/raw-image gates:
   complete; no physical K1 write or boot claim.
 - Work Package 17 K1 physical boot witness: active; the intended CH340/UART
-  path and source-backed USART1 contract are now implemented locally, but no
-  AFIK image has been flashed or physically observed.
+  path, source-backed USART1 contract, serial witness image, and separately
+  guarded K1 AFIK writer are implemented and locally verified. No AFIK image
+  has been flashed or physically observed.
 - `UI-005` logical key edges, bounded semantic views, exact boot-only entry,
   release gate, draft editor, and checked persistence action: complete.
 - `UI-005` separate persisted/active policy simulation, deterministic timed
@@ -235,11 +236,12 @@ K1BOOT-016 verification on 2026-08-06:
 - The pinned board source records USART1 on PA9/PA10 AF1 at 38,400 baud and a
   bootloader-provided 48 MHz clock. This is recorded as `EVID-K1-024`; AFIK's
   implementation is independent and uses no copied driver source.
-- No image, page, reset, EEPROM, or RF command was sent. The CH340 path is the
-  intended serial witness transport, but no AFIK physical boot response has
-  yet been observed.
-- Current gate: build and verify the serial-witness image and guarded K1
-  application write path before any user-confirmed physical write.
+- No image, page, reset, EEPROM, or RF command was sent in this milestone. The
+  CH340 path is the intended serial witness transport, but no AFIK physical
+  boot response has yet been observed.
+- Current gate: user-confirm the bounded witness-image write, power-cycle the
+  radio, run `probe-normal`, and then immediately restore and verify the
+  retained stock recovery image if the witness response is not exact.
 
 Serial witness implementation on 2026-08-06:
 
@@ -247,6 +249,14 @@ Serial witness implementation on 2026-08-06:
   radio-flasher` — passed; pure K1 framing and host hello-probe tests passed.
 - `nix develop path:. -c tool/build-k1.sh` — passed; target image rebuilt with
   independent USART1 MMIO and bounded hello responder.
+- `nix develop path:. -c tool/verify-k1-image.sh` — passed; application origin,
+  vector range, SRAM sentinel, and image end were checked.
+- `nix develop path:. -c tool/package-k1-image.sh --force` and
+  `nix develop path:. -c tool/test-k1-image.sh` — passed; the 44,008-byte raw
+  image was packaged and negative fixtures passed. SHA-256:
+  `74be18d266e919c24faf1c7b022461c085990f33a6ad34475be3d9ae7424862f`.
+- `nix develop path:. -c cargo test --package radio-flasher --package
+  radio-flasher-cli` — passed; K1 writer guards and CLI parser tests passed.
 
 Verification on 2026-08-06:
 

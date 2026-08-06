@@ -100,7 +100,7 @@ if (( 16#$reset_vector < 16#08002808 || 16#$reset_vector >= 16#08020000 )); then
   exit 1
 fi
 
-echo "verified K1 reset image: $image_path"
+echo "verified K1 application image: $image_path"
 echo "  application origin: 0x$application_origin"
 echo "  initial SP: 0x$initial_stack"
 echo "  Reset vector: 0x$reset_vector"
