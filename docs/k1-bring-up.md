@@ -119,11 +119,12 @@ was invoked in dump-all mode at 38,400 baud through the same CH340 adapter. Its
 only transmitted operation before a response is the documented normal-mode
 hello; the later path contains read requests only.
 
-Three bounded attempts were made on 2026-08-06: initially, after a radio power
-cycle, and after unplugging/replugging both ends of the cable. Each reached
-`Examining device info` and received no response before the 30-second host
-timeout. No backup file was created. No EEPROM write, restore, reboot,
-bootloader handshake, firmware page, or reset command was sent.
+Three initial bounded attempts were made on 2026-08-06 with the V2
+timestamp-session tool: initially, after a radio power cycle, and after
+unplugging/replugging both ends of the cable. Each reached `Examining device
+info` and received no response before the 30-second host timeout. No backup
+file was created. No EEPROM write, restore, reboot, bootloader handshake,
+firmware page, or reset command was sent.
 
 The user reported repeated successful CHIRP use with the same cable. Inspection
 of Armel's K1-capable CHIRP driver then established the protocol mismatch:
@@ -157,15 +158,24 @@ mode-`0700` `.private/k1/` directory and re-hashed successfully:
 
 Git reports the complete `.private/` tree ignored. Both copies in each pair are
 on the same filesystem; they protect against accidental single-file loss but
-not filesystem or disk failure. Before a destructive experiment, copy at least
-one of each to independent storage and verify the same hashes there.
+not filesystem or disk failure. The user accepts this shared-filesystem risk
+for the current evidence package; it is not an active gate.
 
 The user additionally requested a private home recovery directory. It was
 created mode `0700` outside the repository with one mode-`0600` backup and
 recovery image, both re-hashed successfully. Its absolute path is deliberately
 omitted from tracked content. The home directory and repository report the
 same filesystem device; this is an extra out-of-Git copy but does not satisfy
-the independent-storage gate against filesystem or disk failure.
+the shared-filesystem durability risk against filesystem or disk failure.
+
+The user then power-cycled the unit into normal mode. A repeat fixed-session
+hello returned `0x0515` and `F4HWN v5.5.0`, followed by a complete 8 KiB
+read-back in bounded blocks. The new mode-`0600` output matched the prior
+temporary read and `.private/k1/unit-backup.primary.raw` byte-for-byte. The
+new temporary file was on filesystem device `43`, while the repository and
+private copies were on device `56`; this is useful cross-filesystem evidence
+but is not durable user-controlled storage. No write, reset, bootloader entry,
+or RF operation was performed.
 
 ## Candidate v5.5.0 recovery image
 
@@ -184,8 +194,8 @@ identity reported by the exact unit.
   flash end `0x08020000`.
 
 This is a source- and vector-valid recovery candidate, not yet a physically
-rehearsed recovery image. Retain two persistent byte-identical copies before
-any write. The first later write experiment must reflash this unchanged image,
+rehearsed recovery image. The two matching local copies are accepted for the
+current evidence package. The first later write experiment must reflash this unchanged image,
 prove normal `v5.5.0` boot, confirm the calibration/configuration backup, and
 prove that bootloader `7.03.01` remains available.
 
@@ -206,10 +216,10 @@ prove that bootloader `7.03.01` remains available.
 1. Record the physical model, PCB, MCU, RF, display, and external-flash
    markings, plus normal and DFU USB identities.
 2. The complete read-only configuration/calibration backup is already retained
-   in two local copies and one additional home copy; verify one copy on a
-   different filesystem before a destructive experiment. Do not commit it.
+   in two local copies and one additional home copy; the user accepts these
+   copies for the current evidence package. Do not commit them.
 3. The known-good Armel recovery candidate is statically validated and retained
-   in matching local copies; independently verify one copy before writing.
+   in matching local copies; validate the recovery procedure before writing.
 4. Enter and leave DFU without writing; record descriptors and the procedure.
 5. Reflash the same known-good Armel image only after those gates, confirm normal boot, and confirm
    that recovery remains available.
@@ -217,7 +227,6 @@ prove that bootloader `7.03.01` remains available.
    image must provide a harmless visible or USB boot witness, contain no RF
    operation, and be followed immediately by proven Armel recovery.
 
-The serial device is not visible in the current agent environment. Passive
-bootloader observation and read-only backup are complete; physical markings,
-normal/DFU USB identities, independent storage, and physical recovery remain
-pending.
+The serial device was visible for the normal-mode verification above. Passive
+bootloader observation and repeatable read-only backup are complete; physical
+markings, normal/DFU USB identities, and physical recovery remain pending.

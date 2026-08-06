@@ -50,12 +50,13 @@ order are maintained in `docs/k1-bring-up.md`.
   validate the complete read-only configuration/calibration backup, then
   validate a known-good recovery image before any bootloader handshake.
 
-### EVID-K1-017 — CH340 normal-mode read path did not answer
+### EVID-K1-017 — Initial timestamp-session normal-mode read path did not answer
 
 - **Observation:** three 30-second dump-all attempts through the exact CH340
-  adapter, with the unit visibly in normal Fusion `v5.5`, received no response
-  to the normal-mode hello. Reconnecting and power-cycling did not change the
-  result; no backup file was created.
+  adapter, with the unit visibly in normal Fusion `v5.5`, used the V2 tool's
+  timestamp session word and received no response to the normal-mode hello.
+  Reconnecting and power-cycling did not change that result; no backup file was
+  created.
 - **Safety boundary:** the selected workflow contains hello and reads only. No
   write, restore, reboot, bootloader handshake, firmware page, or reset was
   sent.
@@ -65,7 +66,7 @@ order are maintained in `docs/k1-bring-up.md`.
   session word `0x6457396A`; the unsuccessful V2 tool used a timestamp instead.
 - **Confidence:** high that this was a request-shape mismatch rather than
   evidence of cable failure. AFIK's fixed-session read succeeded as recorded
-  by `EVID-K1-018`.
+  by `EVID-K1-018` and `EVID-K1-021`.
 
 ### EVID-K1-018 — Fixed-session complete backup succeeded
 
@@ -81,9 +82,31 @@ order are maintained in `docs/k1-bring-up.md`.
   persistent-copy validation.
 - **Confidence:** high for complete logical read-back on this exact unit and
   connection. This is not yet proof of restoration or firmware recovery.
-- **Required next step:** retain two persistent copies with matching SHA-256,
-  then identify and validate the exact known-good v5.5 recovery image before
-  any firmware write.
+- **Required next step:** identify and validate the exact known-good v5.5
+  recovery image and procedure before any firmware write. Two verified local
+  copies are accepted for the current evidence package; shared-filesystem
+  durability remains a documented risk.
+
+### EVID-K1-021 — Repeat fixed-session backup matches retained copy
+
+- **Observation:** after a user power-cycle into normal Fusion mode, a raw
+  `0x0515` response identified the exact unit as `F4HWN v5.5.0`. The bounded
+  fixed-session read then received and validated all 8,192 configuration/
+  calibration bytes through `/dev/ttyUSB0` and the same CH340/CH341 `1a86:7523`
+  adapter.
+- **Comparison:** the fresh mode-`0600` output matched the prior temporary read
+  and `.private/k1/unit-backup.primary.raw` byte-for-byte. The fresh file was
+  on filesystem device `43`; the repository and private copy were on device
+  `56`. Its unit-specific hash is intentionally not recorded here.
+- **Safety boundary:** only normal-mode hello `0x0514` and read `0x051B`
+  requests were sent. No write, restore, reset, bootloader entry, firmware
+  operation, or RF operation occurred.
+- **Confidence:** high for repeatable normal-mode identity and complete logical
+  read-back on this exact unit and connection; this remains neither recovery
+  proof nor protection against shared-filesystem loss.
+- **Required next step:** record the exact physical markings and USB identities,
+  then validate the recovery procedure. Two verified local copies are accepted
+  for the current evidence package.
 
 ### EVID-K1-019 — Pinned v5.5.0 recovery candidate is statically valid
 

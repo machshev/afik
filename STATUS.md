@@ -88,11 +88,10 @@ incomplete. It can resume unchanged when the exact K5 V1 hardware is available.
 - `FLASH-012` exact-unit inspection, physical backup, recovery rehearsal,
   page-acknowledged AFIK write, and independent application-boot observation:
   pending; no serial device is visible here.
-- Current smallest actionable task: with the radio absent from this execution
-  environment, obtain the exact unit's model/PCB/MCU/RF/display markings and
-  normal/DFU USB identities, then verify one backup and one recovery copy on a
-  different filesystem. The pinned source CPU/memory/image contract is now
-  recorded; no physical recovery or AFIK write is authorized.
+- Current smallest actionable task: obtain the exact unit's model/PCB/MCU/
+  RF/display markings and normal/DFU USB identities. The two verified local
+  copies are accepted for now; the pinned source CPU/memory/image contract is
+  recorded, and no physical recovery or AFIK write is authorized.
 
 Work-package activation verification on 2026-08-06:
 
@@ -166,21 +165,17 @@ Passive-beacon verification on 2026-08-06:
   `0x0518` frame, decoded length 36, data length 32, and version `7.03.01`;
   UID output was suppressed.
 
-## Work Package 13 normal-mode backup experiment
+## Work Package 13 initial normal-mode backup experiment
 
-- Three bounded read-only dump attempts were made through the CH340 adapter:
-  initially, after a radio power cycle, and after both cable ends were
-  reconnected. Each reached the normal-mode device-info hello and timed out
-  after 30 seconds without a response.
+- Three initial bounded dump attempts used the V2 timestamp-session tool through
+  the CH340 adapter: initially, after a radio power cycle, and after both cable
+  ends were reconnected. Each reached the normal-mode device-info hello and
+  timed out after 30 seconds without a response.
 - No backup file was created and no write, restore, reboot, bootloader
   handshake, firmware page, or reset command was sent.
-- The bootloader beacon established only the radio-to-host path in bootloader
-  mode. Host-to-radio continuity, plug behavior, Fusion `v5.5` normal protocol,
-  and direct USB-C behavior remain unresolved.
-- Current smallest actionable task: connect the radio's direct USB-C data port
-  in normal mode, record its enumeration, and create the read-only calibration
-  backup using the pinned Armel/UV Studio workflow. Do not repeat the unchanged
-  CH340 attempt.
+- These failures were later explained by the pinned Armel CHIRP evidence: the
+  V2 tool used a timestamp where this unit expects fixed session word
+  `0x6457396A`. The corrected fixed-session result is recorded below.
 
 ## Work Package 13 corrected backup milestone
 
@@ -196,9 +191,47 @@ Passive-beacon verification on 2026-08-06:
 - The unit-specific CRC-32 and SHA-256 were reported to the user but are not
   committed. No EEPROM write, reset, bootloader handshake, firmware page, or
   RF operation occurred.
-- Current smallest actionable task: copy the temporary backup to two durable
-  user-controlled locations and confirm both SHA-256 values, then validate the
-  exact known-good Armel v5.5 recovery image before any firmware write.
+- The existing private primary and secondary copies match this read. One fresh
+  mode-`0600` copy on `/tmp` was also byte-identical; its different filesystem
+  device supplied a cross-filesystem check, but `/tmp` is not durable storage.
+- Current smallest actionable task: record the exact physical markings and
+  normal/DFU USB identities, then validate the recovery procedure before any
+  firmware write.
+
+## Work Package 13 repeat normal-mode verification
+
+- After the user power-cycled the unit into normal Fusion mode, read-only
+  inspection again found `/dev/ttyUSB0` as the CH340/CH341 `1a86:7523`
+  interface.
+- A raw hello response was `0x0515` and identified `F4HWN v5.5.0`. The
+  corrected fixed-session reader then received all 8,192 bytes in 128-byte
+  blocks and validated every response offset and length.
+- The fresh mode-`0600` backup matched both `/tmp/afik-k1-unit-backup.raw` and
+  `.private/k1/unit-backup.primary.raw` byte-for-byte. It was on filesystem
+  device `43`; the repository and private copy are on device `56`.
+- Only the normal hello and read requests were sent. No write, restore, reset,
+  bootloader entry, firmware operation, or RF operation occurred.
+- Exact physical markings/USB identity observations and physical recovery
+  remain open. The two verified local copies are accepted for this package;
+  their shared filesystem remains a documented durability risk, not a current
+  blocker.
+
+K1 evidence-policy and documentation verification on 2026-08-06:
+
+- `udevadm info --query=property --name=/dev/ttyUSB0` — passed; the CH340/CH341
+  `1a86:7523` interface was present.
+- `python3 /tmp/afik-k1-readonly-backup.py /tmp/afik-k1-unit-backup-20260806-normal-final.raw`
+  — passed; normal identity `F4HWN v5.5.0`, 8,192 bytes, every read offset and
+  length validated.
+- `cmp -s` against the prior temporary and `.private/k1/unit-backup.primary.raw`
+  — passed; both comparisons were byte-identical. Unit-specific hashes remain
+  outside tracked documentation.
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
+  — passed.
+- `nix develop path:. -c cargo test --workspace` — passed; all workspace unit,
+  integration, and doc tests passed.
+- `git diff --check` — passed.
 
 ## Work Package 13 recovery-candidate milestone
 
@@ -212,8 +245,9 @@ Passive-beacon verification on 2026-08-06:
   file because it already has valid raw-image vectors; no derived file was
   created.
 - This is only a source- and vector-valid recovery candidate. Physical recovery
-  is not proven and no firmware write is authorized until both the private
-  backup and recovery candidate have two persistent verified copies.
+  is not proven and no firmware write is authorized until the exact unit and
+  recovery procedure are validated. Two verified local copies are accepted for
+  the current evidence package.
 
 - The user selected a gitignored directory inside this repository for local
   artifacts. `.private/` is reserved for that purpose; its contents must remain
@@ -230,8 +264,8 @@ Passive-beacon verification on 2026-08-06:
 - `git status --short --ignored` reported only `!! .private/`; no private file
   is tracked or staged.
 - These pairs share one filesystem and are not independent disaster-recovery
-  copies. A destructive experiment remains gated on moving at least one backup
-  and one recovery image to independent storage and verifying their hashes.
+  copies. The user accepts that durability risk for the current evidence
+  package; it remains recorded but is not an active gate.
 
 ## Work Package 13 home recovery-copy milestone
 
@@ -246,8 +280,8 @@ Passive-beacon verification on 2026-08-06:
 - `stat` reports filesystem device `56` for both the repository and home-copy
   directory. The new location is outside Git and reduces accidental-deletion
   risk, but it is not independent storage against filesystem or disk failure.
-- The destructive recovery rehearsal remains gated on one verified copy on a
-  different filesystem/device.
+- The user accepts the shared-filesystem risk for now; recovery remains gated
+  by exact-unit identification and a validated non-destructive procedure.
 
 ## Work Package 13 CPU/memory/image contract milestone
 

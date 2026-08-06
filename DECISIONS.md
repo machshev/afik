@@ -299,3 +299,17 @@ meaning.
   binding and recovery path.
 - `FLASH-012` is deferred, not completed or superseded. Its K5-specific image,
   bootloader, backup, and recovery assumptions do not apply to K1.
+
+## ADR-022 — K1 evidence package accepts two verified local copies for now
+
+- **Date:** 2026-08-06
+- **Status:** accepted for `K1EVID-013`
+- The exact unit's complete read-only backup and the pinned v5.5.0 recovery
+  candidate each have two verified local copies under ignored `.private/k1/`.
+- For the current evidence package, those two local copies are sufficient; an
+  independent-storage requirement is deliberately deferred at the user's
+  request. The shared-filesystem durability risk remains documented.
+- This decision does not prove physical recovery and does not authorize an
+  AFIK image write, a firmware restore, or RF transmission. Exact-unit physical
+  markings, USB identities, and a non-destructive recovery procedure remain
+  required before those actions.
