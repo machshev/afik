@@ -3,7 +3,12 @@
 #![forbid(unsafe_code)]
 
 use core::{cmp, convert::Infallible};
+use radio_bk4819::{
+    Bk4819, DriverError as RfDriverError, DriverState as RfDriverState, ReceiveStatus,
+    RegisterAddress, RegisterBus,
+};
 use radio_channel_plan::PlanEncoding;
+use radio_domain::{ActiveChannel, Frequency, TxClass};
 use radio_programmer::ProtocolTransport;
 use radio_protocol::{
     decode_list_objects_request, encode_frame, Command, DeviceCapabilities, DeviceErrorCode, Frame,
@@ -15,9 +20,13 @@ use radio_storage::{
     validate_object, ObjectKey, ObjectKind, StorageError, StorageObject, TransactionalStore,
     MAX_OBJECT_DATA, STORAGE_FORMAT_VERSION,
 };
-use radio_tx_policy::{LoadStatus, TxPolicy, PERMISSION_RECORD_LEN};
+use radio_tx_policy::{LoadStatus, TxAuthorisation, TxPolicy, PERMISSION_RECORD_LEN};
 use radio_ui::{BootUi, KeyEvent, KeySet, UiAction, UiView};
-use std::collections::VecDeque;
+use std::{
+    cell::{Cell, RefCell},
+    collections::VecDeque,
+    rc::Rc,
+};
 
 /// Maximum configuration objects in the first simulated device profile.
 pub const SIM_MAX_OBJECTS: usize = 8;
@@ -184,6 +193,262 @@ impl UiSimulator {
             at_ms: self.clock.now_ms(),
             kind,
         });
+    }
+}
+
+/// One deterministic BK4819 simulator observation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RfTraceEvent {
+    /// Explicit virtual timestamp.
+    pub at_ms: u64,
+    /// Observable command or logical register operation.
+    pub kind: RfTraceKind,
+}
+
+/// Observable post-initialization RF command events.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RfTraceKind {
+    /// A logical register write completed.
+    RegisterWritten {
+        /// Validated seven-bit register address.
+        address: RegisterAddress,
+        /// Complete 16-bit register value.
+        value: u16,
+    },
+    /// A logical register read completed.
+    RegisterRead {
+        /// Validated seven-bit register address.
+        address: RegisterAddress,
+        /// Complete 16-bit register value.
+        value: u16,
+    },
+    /// One logical operation was deliberately failed before completion.
+    RegisterOperationFailed(RfBusOperation),
+    /// A one-shot failure was armed after this many successful operations.
+    FailureArmed {
+        /// Successful operations permitted before the injected failure.
+        successful_operations: usize,
+    },
+    /// Neutral mode was successfully established.
+    StandbyRecovered,
+    /// The receive command plan completed.
+    ReceiveStarted {
+        /// Requested receive frequency.
+        frequency: Frequency,
+    },
+    /// One receive status sample completed.
+    ReceiveStatusSampled(ReceiveStatus),
+    /// The token-gated transmit command plan completed.
+    TransmitStarted {
+        /// Requested transmit frequency.
+        frequency: Frequency,
+        /// Policy class carried by the matching capability token.
+        class: TxClass,
+    },
+    /// A known transmit session returned to neutral mode.
+    TransmitStopped,
+}
+
+/// Logical bus operation selected for deterministic failure injection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RfBusOperation {
+    /// Register write that did not complete.
+    Write {
+        /// Validated seven-bit register address.
+        address: RegisterAddress,
+        /// Requested complete 16-bit register value.
+        value: u16,
+    },
+    /// Register read that did not complete.
+    Read {
+        /// Validated seven-bit register address.
+        address: RegisterAddress,
+    },
+}
+
+/// Deliberate deterministic failure from the simulated logical register bus.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RfSimBusError;
+
+impl core::fmt::Display for RfSimBusError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("injected simulated BK4819 bus failure")
+    }
+}
+
+struct RfShared {
+    now_ms: Cell<u64>,
+    registers: RefCell<[u16; 128]>,
+    trace: RefCell<Vec<RfTraceEvent>>,
+    failure_after: Cell<Option<usize>>,
+}
+
+impl RfShared {
+    fn record(&self, kind: RfTraceKind) {
+        self.trace.borrow_mut().push(RfTraceEvent {
+            at_ms: self.now_ms.get(),
+            kind,
+        });
+    }
+
+    fn operation_fails(&self) -> bool {
+        match self.failure_after.get() {
+            None => false,
+            Some(0) => {
+                self.failure_after.set(None);
+                true
+            }
+            Some(remaining) => {
+                self.failure_after.set(Some(remaining - 1));
+                false
+            }
+        }
+    }
+}
+
+struct RfSimBus {
+    shared: Rc<RfShared>,
+}
+
+impl RegisterBus for RfSimBus {
+    type Error = RfSimBusError;
+
+    fn write(&mut self, address: RegisterAddress, value: u16) -> Result<(), Self::Error> {
+        if self.shared.operation_fails() {
+            self.shared.record(RfTraceKind::RegisterOperationFailed(
+                RfBusOperation::Write { address, value },
+            ));
+            return Err(RfSimBusError);
+        }
+        self.shared.registers.borrow_mut()[usize::from(address.get())] = value;
+        self.shared
+            .record(RfTraceKind::RegisterWritten { address, value });
+        Ok(())
+    }
+
+    fn read(&mut self, address: RegisterAddress) -> Result<u16, Self::Error> {
+        if self.shared.operation_fails() {
+            self.shared
+                .record(RfTraceKind::RegisterOperationFailed(RfBusOperation::Read {
+                    address,
+                }));
+            return Err(RfSimBusError);
+        }
+        let value = self.shared.registers.borrow()[usize::from(address.get())];
+        self.shared
+            .record(RfTraceKind::RegisterRead { address, value });
+        Ok(value)
+    }
+}
+
+/// Deterministic virtual-time harness around the evidence-bounded RF driver.
+///
+/// It models logical register completion and injected failures only. It does
+/// not model a physical bus, chip initialization, board switching, or RF.
+pub struct RfSimulator {
+    clock: SimClock,
+    driver: Bk4819<RfSimBus>,
+    shared: Rc<RfShared>,
+}
+
+impl Default for RfSimulator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RfSimulator {
+    /// Constructs an uninitialized logical driver at virtual time zero.
+    pub fn new() -> Self {
+        let shared = Rc::new(RfShared {
+            now_ms: Cell::new(0),
+            registers: RefCell::new([0; 128]),
+            trace: RefCell::new(Vec::new()),
+            failure_after: Cell::new(None),
+        });
+        Self {
+            clock: SimClock::new(),
+            driver: Bk4819::new(RfSimBus {
+                shared: Rc::clone(&shared),
+            }),
+            shared,
+        }
+    }
+
+    /// Returns current virtual milliseconds.
+    pub const fn now_ms(&self) -> u64 {
+        self.clock.now_ms()
+    }
+
+    /// Returns the driver's last fully established state.
+    pub const fn state(&self) -> RfDriverState {
+        self.driver.state()
+    }
+
+    /// Returns a stable snapshot of the ordered RF trace.
+    pub fn trace(&self) -> Vec<RfTraceEvent> {
+        self.shared.trace.borrow().clone()
+    }
+
+    /// Advances virtual time by an exact duration.
+    pub fn advance_ms(&mut self, duration_ms: u64) {
+        self.clock.advance_ms(duration_ms);
+        self.shared.now_ms.set(self.clock.now_ms());
+    }
+
+    /// Fails one later operation after exactly `successful_operations` succeed.
+    pub fn inject_failure_after(&self, successful_operations: usize) {
+        self.shared.failure_after.set(Some(successful_operations));
+        self.shared.record(RfTraceKind::FailureArmed {
+            successful_operations,
+        });
+    }
+
+    /// Establishes neutral mode, including from unknown or faulted state.
+    pub fn recover_to_standby(&mut self) -> Result<(), RfDriverError<RfSimBusError>> {
+        self.driver.recover_to_standby()?;
+        self.shared.record(RfTraceKind::StandbyRecovered);
+        Ok(())
+    }
+
+    /// Runs the bounded receive command plan.
+    pub fn start_receive(
+        &mut self,
+        frequency: Frequency,
+    ) -> Result<(), RfDriverError<RfSimBusError>> {
+        self.driver.start_receive(frequency)?;
+        self.shared
+            .record(RfTraceKind::ReceiveStarted { frequency });
+        Ok(())
+    }
+
+    /// Samples receive status through the logical register model.
+    pub fn receive_status(&mut self) -> Result<ReceiveStatus, RfDriverError<RfSimBusError>> {
+        let status = self.driver.receive_status()?;
+        self.shared
+            .record(RfTraceKind::ReceiveStatusSampled(status));
+        Ok(status)
+    }
+
+    /// Runs the transmit plan only through a matching central-policy token.
+    pub fn start_transmit(
+        &mut self,
+        channel: ActiveChannel,
+        authorisation: &TxAuthorisation,
+    ) -> Result<(), RfDriverError<RfSimBusError>> {
+        self.driver.start_transmit(channel, authorisation)?;
+        self.shared.record(RfTraceKind::TransmitStarted {
+            frequency: channel.transmit,
+            class: channel.tx_class,
+        });
+        Ok(())
+    }
+
+    /// Stops a known transmit session and returns to neutral mode.
+    pub fn stop_transmit(&mut self) -> Result<(), RfDriverError<RfSimBusError>> {
+        self.driver.stop_transmit()?;
+        self.shared.record(RfTraceKind::TransmitStopped);
+        Ok(())
     }
 }
 
@@ -730,9 +995,12 @@ const fn map_storage_error(error: StorageError) -> DeviceErrorCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{map_storage_error, SimDevice, SimTransport, TraceKind, UiSimulator, UiTraceKind};
+    use super::{
+        map_storage_error, RfBusOperation, RfSimulator, RfTraceEvent, RfTraceKind, SimDevice,
+        SimTransport, TraceKind, UiSimulator, UiTraceKind,
+    };
     use radio_channel_plan::{BankName, GeneratedBank, PlanEncoding};
-    use radio_domain::{BankId, Frequency, FrequencyStep, TxClass};
+    use radio_domain::{ActiveChannel, BankId, Frequency, FrequencyStep, TxClass};
     use radio_programmer::{ListedObject, Programmer, RadioProject};
     use radio_protocol::{
         decode_packet, encode_frame, Command, DeviceErrorCode, Frame, PayloadWriter, ProtocolError,
@@ -759,6 +1027,103 @@ mod tests {
 
     fn expected_bank() -> GeneratedBank {
         bank(6, "PMR446")
+    }
+
+    fn rf_channel(class: TxClass) -> ActiveChannel {
+        ActiveChannel {
+            receive: Frequency::from_hz(145_500_000).unwrap(),
+            transmit: Frequency::from_hz(145_500_000).unwrap(),
+            tx_class: class,
+        }
+    }
+
+    fn run_rf_script() -> (Vec<RfTraceEvent>, super::RfDriverState) {
+        let permissions = PermissionSet::none()
+            .with(TxClass::Amateur, true)
+            .with(TxClass::Business, true);
+        let policy = TxPolicy::load(&StoredPermissions::new(permissions, 1).encode()).0;
+        let amateur = policy.authorise(TxClass::Amateur).unwrap();
+        let business = policy.authorise(TxClass::Business).unwrap();
+        let channel = rf_channel(TxClass::Amateur);
+        let mut simulator = RfSimulator::new();
+
+        simulator.recover_to_standby().unwrap();
+        simulator.advance_ms(5);
+        simulator
+            .start_receive(Frequency::from_hz(409_750_000).unwrap())
+            .unwrap();
+        simulator.advance_ms(2);
+        assert_eq!(
+            simulator.receive_status().unwrap(),
+            radio_bk4819::ReceiveStatus {
+                rssi_dbm_x2: -320,
+                squelch_open: false,
+            }
+        );
+        simulator.advance_ms(3);
+        assert!(simulator.start_transmit(channel, &business).is_err());
+
+        simulator.advance_ms(2);
+        simulator.inject_failure_after(3);
+        assert!(simulator.start_transmit(channel, &amateur).is_err());
+        assert_eq!(simulator.state(), super::RfDriverState::Faulted);
+
+        simulator.advance_ms(3);
+        simulator.recover_to_standby().unwrap();
+        simulator.advance_ms(5);
+        simulator.start_transmit(channel, &amateur).unwrap();
+        simulator.advance_ms(1);
+        simulator.stop_transmit().unwrap();
+
+        (simulator.trace(), simulator.state())
+    }
+
+    #[test]
+    fn identical_timed_rf_scripts_have_identical_failure_and_recovery_traces() {
+        let first = run_rf_script();
+        let second = run_rf_script();
+        assert_eq!(first, second);
+        assert_eq!(first.1, super::RfDriverState::Standby);
+
+        assert!(first.0.iter().any(|event| {
+            event.at_ms == 12
+                && matches!(
+                    event.kind,
+                    RfTraceKind::RegisterOperationFailed(RfBusOperation::Write {
+                        address,
+                        value: 0x80FE,
+                    }) if address.get() == 0x30
+                )
+        }));
+        let transmit_events: Vec<_> = first
+            .0
+            .iter()
+            .filter(|event| matches!(event.kind, RfTraceKind::TransmitStarted { .. }))
+            .collect();
+        assert_eq!(transmit_events.len(), 1);
+        assert_eq!(transmit_events[0].at_ms, 20);
+    }
+
+    #[test]
+    fn rf_simulator_emits_no_tx_event_or_write_for_a_mismatched_token() {
+        let permissions = PermissionSet::none()
+            .with(TxClass::Amateur, true)
+            .with(TxClass::Business, true);
+        let policy = TxPolicy::load(&StoredPermissions::new(permissions, 1).encode()).0;
+        let business = policy.authorise(TxClass::Business).unwrap();
+        let mut simulator = RfSimulator::new();
+        simulator.recover_to_standby().unwrap();
+        let before = simulator.trace();
+
+        assert!(simulator
+            .start_transmit(rf_channel(TxClass::Amateur), &business)
+            .is_err());
+        assert_eq!(simulator.trace(), before);
+        assert!(!simulator.trace().iter().any(|event| matches!(
+            event.kind,
+            RfTraceKind::TransmitStarted { .. }
+                | RfTraceKind::RegisterWritten { value: 0x80FE, .. }
+        )));
     }
 
     fn run_permission_script() -> UiSimulator {

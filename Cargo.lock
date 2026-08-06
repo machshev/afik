@@ -43,6 +43,7 @@ version = "0.1.0"
 name = "radio-sim"
 version = "0.1.0"
 dependencies = [
+ "radio-bk4819",
  "radio-channel-plan",
  "radio-domain",
  "radio-programmer",

@@ -8,15 +8,14 @@ repository.workspace = true
 description = "Deterministic host functional simulation for the radio platform"
 
 [dependencies]
+radio-bk4819 = { path = "../radio-bk4819" }
 radio-channel-plan = { path = "../radio-channel-plan" }
+radio-domain = { path = "../radio-domain" }
 radio-programmer = { path = "../radio-programmer" }
 radio-protocol = { path = "../radio-protocol" }
 radio-storage = { path = "../radio-storage" }
 radio-tx-policy = { path = "../radio-tx-policy" }
 radio-ui = { path = "../radio-ui" }
-
-[dev-dependencies]
-radio-domain = { path = "../radio-domain" }
 
 [lints]
 workspace = true
