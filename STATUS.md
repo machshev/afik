@@ -117,9 +117,9 @@ features remain outside this bounded slice.
 - Work Package 22 keypad/UI witness definition: complete; the pinned matrix,
   electrical idle/scan levels, one-key decode, explicit-time debounce, and
   display-only result were bounded before implementation.
-- Current smallest actionable task: implement the bounded `K1ASYNC-023`
-  clock-handoff step in `TASKS.md`: validate and adopt the inherited 48 MHz
-  clock without reconfiguring RCC, while keeping the runnable image unchanged.
+- Current smallest actionable task: expose and run one bounded read-only
+  exact-unit RCC observation for the `K1ASYNC-023` handoff contract; do not
+  publish HAL clocks or change the runnable async path until it passes.
 
 ## Work Package 23 dependency and executor milestone
 
@@ -313,6 +313,32 @@ features remain outside this bounded slice.
 - `git diff --check` — passed.
 - No firmware entry point, linker contract, physical image, interrupt delivery,
   DMA operation, peripheral behavior, keypad behavior, or flash path changed.
+
+## Work Package 23 clock-handoff diagnostic milestone
+
+- Re-read the pinned K1 application source. It records only the resulting
+  48 MHz `SystemCoreClock` value and does not expose the bootloader's inherited
+  RCC oscillator, PLL, or prescaler fields.
+- Added a hardware-independent fail-closed clock snapshot contract. It accepts
+  only ready 24 MHz HSI, ready fixed x2 HSI PLL, requested and active PLL
+  SYSCLK, and undivided AHB/APB; every mismatch denies the handoff.
+- Added optional `py32f071-clock-handoff`, which reads only CR, ICSCR, CFGR, and
+  PLLCFGR through the generated PAC. It neither writes RCC nor publishes HAL
+  clocks and remains absent from the firmware entry point.
+- Focused host tests passed: 25 tests, including exact acceptance and rejection
+  coverage for every clock-contract field.
+- `nix develop path:. -c tool/check-py32f071-clock-handoff.sh` — passed; strict
+  warning-denied target Clippy compiled the snapshot with the owned runtime
+  bundle and build-std/core.
+- `nix flake check path:. --no-build` — passed.
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
+  — passed.
+- `nix develop path:. -c cargo test --workspace` — passed; all 162 workspace
+  unit, integration, and doc-test binaries passed.
+- `git diff --check` — passed.
+- No physical image, clock state, peripheral token, interrupt, DMA, TIM15,
+  USART1, SPI1, keypad, display, or flash behavior changed.
 
 ## Work Package 22 pure keypad milestone
 

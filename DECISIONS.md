@@ -589,3 +589,19 @@ meaning.
   runnable entry point, or include A0/CS and keypad GPIO in this step. Static
   tasks and physical migration follow only after clock, interrupt, and DMA
   behavior have their own guarded contract.
+
+## ADR-041 — K1 inherited clocks must be observed before HAL adoption
+
+- **Date:** 2026-08-06
+- **Status:** accepted for `K1ASYNC-023`
+- The pinned application source assigns `SystemCoreClock = 48_000_000` but does
+  not establish the bootloader's oscillator, PLL, or prescaler register state.
+  AFIK therefore treats 48 MHz as a required handoff contract, not sufficient
+  evidence to publish HAL clocks.
+- A read-only snapshot must show enabled/ready 24 MHz HSI, the fixed x2 PLL
+  sourced from HSI, PLL selected and active as SYSCLK, and undivided AHB/APB.
+  Every mismatch denies adoption. Reading and validating these fields neither
+  changes RCC nor initializes the HAL.
+- Publishing the validated frequencies, taking peripheral tokens, enabling
+  interrupts/DMA/TIM15, and changing the runnable image require a later guarded
+  step after the exact-unit snapshot is observed.

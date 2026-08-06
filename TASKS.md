@@ -1178,3 +1178,10 @@
   rejected field; target Clippy must compile the handoff with the owned runtime
   bundle. Physical clock, interrupt, DMA, TIM15, UART, SPI, keypad, display, and
   flash behavior remain separate gates.
+- **Clock-handoff diagnostic result:** pinned-source review found only a 48 MHz
+  software assignment and no inherited RCC field values, so adoption remains
+  blocked rather than guessed. AFIK now has a pure fail-closed contract plus an
+  optional read-only F071 PAC snapshot; exact acceptance and each rejected field
+  are host-tested, and the snapshot compiles with the owned runtime bundle. No
+  HAL clock is published and the firmware image is unchanged. The next step is
+  one bounded, read-only exact-unit RCC observation before defining HAL adoption.

@@ -6,6 +6,7 @@
 extern crate std;
 
 pub mod backlight;
+pub mod clock_handoff;
 #[cfg(test)]
 mod cooperative_progress;
 pub mod display;
@@ -13,6 +14,8 @@ pub mod display;
 pub mod embassy_runtime;
 pub mod keypad;
 pub mod protocol;
+#[cfg(feature = "py32f071-clock-handoff")]
+pub mod py32f071_clock_handoff;
 #[cfg(feature = "py32f071-hal-inventory")]
 pub mod py32f071_hal_inventory;
 #[cfg(feature = "py32f071-runtime-composition")]

@@ -400,3 +400,8 @@
   This closes only Rust ownership/API composition. The bundle is not called;
   bootloader-clock handoff, interrupt and DMA execution, physical serial/SPI
   behavior, and recovery under peripheral faults remain open.
+- **Clock-handoff update:** the pinned application records only the resulting
+  48 MHz software value, not the bootloader's RCC fields. AFIK now has a
+  read-only, fail-closed snapshot decoder and target compile proof, but it does
+  not publish HAL clocks. Exact-unit observation remains required before HAL
+  adoption or any runnable async migration.

@@ -15,6 +15,7 @@ path = "src/lib.rs"
 firmware = []
 embassy-runtime = ["dep:embassy-executor"]
 py32f071-hal-inventory = ["dep:py32-hal"]
+py32f071-clock-handoff = ["py32f071-hal-inventory"]
 py32f071-time-driver = [
     "py32f071-hal-inventory",
     "py32-hal/rt",

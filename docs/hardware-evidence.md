@@ -1306,3 +1306,20 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   image. It does not initialize the HAL or clocks, use TIM15, define static
   tasks, own display A0/CS or keypad pins, run interrupts/DMA, or prove physical
   USART/SPI behavior.
+
+### EVID-K1-045 — Read-only inherited-clock contract
+
+- **Pinned-source limit:** `Core/Src/main.c:46-72` at the recorded Armel commit
+  calls only `LL_SetSystemCoreClock(48000000)` and says the bootloader configured
+  the clock. It does not record the inherited RCC oscillator, PLL, or prescaler
+  fields.
+- **Fail-closed decoder:** AFIK accepts only ready 24 MHz HSI, ready fixed x2
+  PLL sourced from HSI, requested and active PLL SYSCLK, and undivided AHB/APB.
+  That exact state yields 48 MHz for SYSCLK, HCLK1, PCLK1, and PCLK1_TIM; every
+  individually varied field is rejected by host tests.
+- **Target surface:** optional `py32f071-clock-handoff` compiles a read-only PAC
+  snapshot of RCC CR, ICSCR, CFGR, and PLLCFGR together with the existing owned
+  async runtime bundle. It performs no RCC write and publishes no HAL clock.
+- **Boundary:** compilation and source review do not establish the exact-unit
+  register values. A read-only physical observation is required before AFIK can
+  adopt the handoff or start TIM15, DMA, async USART1, or SPI1.
