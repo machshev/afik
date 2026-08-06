@@ -21,9 +21,12 @@ model; it does not increase confidence in the underlying silicon fact.
   Puya documentation and board bindings against the exact unit.
 - **Prohibited use:** copying, linking, porting, or incrementally translating
   its application or driver implementation into AFIK production source.
-- **Pending:** record the version displayed by the available unit, confirm that
-  it corresponds to the selected source line, hash the relevant pinned files,
-  and map each accepted fact to a physical observation and confidence.
+- **Observed identity:** the corrected fixed-session normal-mode read identified
+  the exact unit as `F4HWN v5.5.0`; the user reports the displayed product line
+  as Fusion `v5.5`. This does not prove that the unit runs the pinned `v5.8.0`
+  checkout.
+- **Remaining:** record physical markings and USB identities, and map each
+  accepted source fact to an exact-unit observation and confidence.
 
 The initial hashes, source-to-fact matrix, unit record, and safe experiment
 order are maintained in `docs/k1-bring-up.md`.
@@ -95,6 +98,24 @@ order are maintained in `docs/k1-bring-up.md`.
 - **Boundary:** static validation is not physical recovery proof. Do not use it
   for an AFIK attempt until two persistent copies exist and an unchanged-image
   recovery rehearsal returns this exact unit to normal v5.5.0 operation.
+
+### EVID-K1-020 — Pinned CPU, memory, and raw-image contract
+
+- **Source:** Armel commit `fe9c4e9432694b50aea651084a043aae0b58673d`,
+  `Core/startup_py32f071xx.s:39-42,68-115,140-146`,
+  `Core/py32f071xb.ld:9-10,52-66`, and `Core/Src/main.c:46-72`.
+- **Facts:** the selected source targets Cortex-M0+ Thumb code, links an
+  application at `0x08002800` with 118 KiB of flash and 16 KiB of SRAM, uses a
+  vector-table Reset entry, and assumes a bootloader-provided 48 MHz clock.
+- **Image relationship:** the pinned raw v5.5.0 candidate has initial SP
+  `0x20004000`, Thumb Reset `0x08002d49`, and exclusive end `0x08019e5c`, all
+  within that source-declared application contract.
+- **Confidence:** high for the pinned source and static candidate; medium for
+  the physical unit until its MCU marking, reset handoff, and recovery behavior
+  are observed. No K1 bootloader reservation or write protocol is inferred.
+- **Permitted use:** define the evidence boundary for a later independent Rust
+  reset-and-boot-witness package. It does not authorize an AFIK image write or
+  TX.
 
 ### Puya PY32F071-E product documentation
 

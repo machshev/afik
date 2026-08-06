@@ -31,25 +31,51 @@ reproduction and review; no source file is copied into AFIK.
 
 ## Initial evidence matrix
 
-| Surface | Puya primary fact | Pinned Armel board observation | Confidence and next check |
+The Armel locations below are relative to the read-only checkout at the pinned
+commit. They are evidence references, not AFIK source dependencies.
+
+| Surface | Puya primary fact | Pinned Armel location and observation | Confidence and next check |
 | --- | --- | --- | --- |
-| CPU | PY32F071-E is Arm Cortex-M0+, up to 72 MHz | Repository and startup target PY32F071 | High for project; read exact package marking on unit |
-| Main flash | Up to 128 KiB | Application origin `0x08002800`, length 118 KiB | High for selected source; establish what owns first 10 KiB before writing |
-| SRAM | Up to 16 KiB | RAM origin `0x20000000`, length 16 KiB | High; exact MCU suffix must select the 16 KiB variant |
-| Reset/startup | Cortex vector/reset support and boot modes exist | Vector table is linked at application origin and startup initializes data/BSS | High for project; independent AFIK vector contract still required |
-| USB | One USB 2.0 full-speed interface exists | Fusion enables USB and documents USB-C serial/flashing | Medium-high; capture enumerated IDs and normal/DFU behavior on unit |
-| LCD | MCU includes a segment-LCD controller | Board uses a separate ST7565 path; A0 PA6 and chip-select PB2 are declared | High for project mapping; controller marking, clock/data/reset wiring remain to verify |
-| Keypad/PTT | GPIO capability | Rows PB12..PB15, columns PB3..PB6, PTT PB10 | High for project mapping; verify levels and matrix without transmitting |
-| BK4819 control | GPIO/SPI-class capability only | Clock PB8, data PB9, chip-select PF9 | High for project mapping; measure idle levels and transactions receive-only |
-| Audio/backlight | GPIO/analog capability only | Audio PA enable PA8; backlight PF8 | Medium-high; verify polarity, voltage, and safe sequencing |
-| External storage | Not an MCU fact | PY25Q16 initialization and flash chip-select PA3 | Medium-high; identify fitted chip and preserve calibration/configuration first |
-| Recovery | MCU documents SWD and system boot modes | Project documents Web Serial DFU and calibration dump/restore | Medium-high; record exact unit behavior and prove known-good recovery before AFIK |
-| TX controls | Not established by MCU documentation | Existing project contains BK4819 and board-control behavior | Insufficient for AFIK TX; PA, RF switch, filter, calibration and fault experiments remain required |
+| CPU | PY32F071-E is Arm Cortex-M0+, up to 72 MHz | `Core/startup_py32f071xx.s:39-42` selects Cortex-M0+ and Thumb | High for the selected source; read the exact package marking on the unit |
+| Main flash | Up to 128 KiB | `Core/py32f071xb.ld:9-10,52-66` declares `0x08002800` and 118 KiB | High for this source; establish what owns the first 10 KiB before writing |
+| SRAM | Up to 16 KiB | `Core/py32f071xb.ld:61-66` declares `0x20000000` and 16 KiB | High for this source; the exact MCU suffix must select the 16 KiB variant |
+| Reset/startup | Cortex vector/reset support and boot modes exist | `Core/startup_py32f071xx.s:68-115,140-192` resets, initializes data/BSS, calls `main`, and declares vectors | High for the source; an independent AFIK vector contract is still required |
+| Clock | The MCU supports the documented clock envelope | `Core/Src/main.c:46-72` assumes the bootloader left the clock at 48 MHz | Medium for board startup; do not encode it in AFIK until boot handoff is independently evidenced |
+| USB | One USB 2.0 full-speed interface exists | `App/driver/vcp.c:28-43` enables USB CDC; `App/usb/usbd_cdc_if.c:6-24` declares VID/PID and CDC descriptors | Medium-high for source behavior; capture normal/DFU identities on the unit |
+| LCD | MCU includes a segment-LCD controller | `App/board.c:93-112` and `App/driver/st7565.c:29-73` use an external ST7565 path, A0 PA6, CS PB2, SCK PA5, SDA PA7 | High for source mapping; controller marking and reset wiring remain to verify |
+| Keypad/PTT | GPIO capability | `App/board.c:82-100` and `App/driver/gpio.h:29-35` identify rows PB12..PB15, columns PB3..PB6, and PTT PB10 | High for source mapping; verify levels and matrix without transmitting |
+| BK4819 control | GPIO/SPI-class capability only | `App/board.c:108-112,126-129` identifies clock PB8, data PB9, and CS PF9 | High for source mapping; measure idle levels and transactions receive-only |
+| Audio/backlight | GPIO/analog capability only | `App/driver/gpio.h:29-35` identifies audio PA8 and backlight PF8 | Medium-high; verify polarity, voltage, and safe sequencing |
+| External storage | Not an MCU fact | `App/driver/py25q16.c:32-38,56-101,222-226` identifies PY25Q16 over SPI2 with CS PA3 | Medium-high; identify the fitted chip and preserve calibration/configuration first |
+| Recovery | MCU documents SWD and system boot modes | `App/driver/vcp.c:28-43` documents the USB CDC path; the physical DFU path remains unobserved | Medium for source capability; record exact unit behavior before any write |
+| TX controls | Not established by MCU documentation | Source board/RF control exists, but no exact-unit RF or safety observation is recorded | Insufficient for AFIK TX; PA, RF switch, filter, calibration, and fault experiments remain required |
 
 The official Puya PY32F071-E product page and datasheet v1.4 are the primary
 MCU sources. They establish the architectural envelope, not the K1 board
 binding. The pinned Armel source supplies the trusted board observations, and
 the exact unit supplies the final binding.
+
+## CPU, memory, and image contract
+
+This is the first bounded AFIK target contract. It is sufficient to define a
+later reset-and-boot-witness package, but it does not authorize target code or
+a physical write.
+
+| Contract item | Pinned value | Evidence and boundary |
+| --- | --- | --- |
+| CPU ISA | Arm Cortex-M0+, Thumb | `Core/startup_py32f071xx.s:39-42`; Puya datasheet v1.4 remains the primary MCU source |
+| Application origin | `0x08002800` | `Core/py32f071xb.ld:52-66`; ownership of `0x08000000..0x080027ff` is not inferred |
+| Application capacity | `118 KiB` (`0x1d800`) | `Core/py32f071xb.ld:64-66`; exclusive declared end is `0x08020000` |
+| SRAM | `0x20000000..0x20003fff` | `Core/py32f071xb.ld:61-66`; exact suffix and physical read-back remain pending |
+| Reset entry | Vector word 0 is `_estack`; word 1 is `Reset_Handler` | `Core/startup_py32f071xx.s:140-146`; startup then assumes a 48 MHz bootloader handoff at `Core/Src/main.c:68-72` |
+| Recovery image format | Raw application bytes loaded at `0x08002800` | Pinned `archive/f4hwn.fusion.v5.5.0.bin`; 95,836 bytes, SHA-256 `7b6b277c319e6924bd878f4e4208490875dc3f15beb205c366d20130c02a4463` |
+| Recovery image vectors | Initial SP `0x20004000`; Thumb Reset `0x08002d49` | Static validation of the pinned raw image; this is not physical recovery proof |
+| Recovery image end | `0x08019e5c` exclusive | `0x08002800 + 95,836`; below the declared `0x08020000` end |
+
+The recovery image is source- and vector-valid, not a demonstrated recovery
+image. AFIK must preserve the bootloader boundary and must not infer a K1
+write protocol from K5 evidence. A later target package must independently
+define its linker/vector contract in Rust and begin with a harmless witness.
 
 ## Exact-unit record still required
 
@@ -177,17 +203,21 @@ prove that bootloader `7.03.01` remains available.
 
 ## Safe experiment order
 
-1. Observe and record the running version and normal USB descriptors.
-2. Create and retain the calibration/configuration backup using the currently
-   trusted firmware workflow. Do not commit its contents.
-3. Validate and retain the known-good Armel recovery image.
+1. Record the physical model, PCB, MCU, RF, display, and external-flash
+   markings, plus normal and DFU USB identities.
+2. The complete read-only configuration/calibration backup is already retained
+   in two local copies and one additional home copy; verify one copy on a
+   different filesystem before a destructive experiment. Do not commit it.
+3. The known-good Armel recovery candidate is statically validated and retained
+   in matching local copies; independently verify one copy before writing.
 4. Enter and leave DFU without writing; record descriptors and the procedure.
-5. Reflash the same known-good Armel image, confirm normal boot, and confirm
+5. Reflash the same known-good Armel image only after those gates, confirm normal boot, and confirm
    that recovery remains available.
 6. Only a later work package may build a minimal AFIK target. Its first physical
    image must provide a harmless visible or USB boot witness, contain no RF
    operation, and be followed immediately by proven Armel recovery.
 
-The serial device is visible only through elevated device access in the current
-agent environment. Passive bootloader observation is complete; normal-mode
-backup and physical markings remain pending.
+The serial device is not visible in the current agent environment. Passive
+bootloader observation and read-only backup are complete; physical markings,
+normal/DFU USB identities, independent storage, and physical recovery remain
+pending.

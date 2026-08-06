@@ -88,12 +88,11 @@ incomplete. It can resume unchanged when the exact K5 V1 hardware is available.
 - `FLASH-012` exact-unit inspection, physical backup, recovery rehearsal,
   page-acknowledged AFIK write, and independent application-boot observation:
   pending; no serial device is visible here.
-- Current smallest actionable task: record the exact Armel firmware version
-  running on the available UV-K1, its model/PCB/MCU markings, and the recovery
-  and backup artifacts already available; then inspect pinned upstream `main`
-  commit `fe9c4e9432694b50aea651084a043aae0b58673d` and construct the first
-  CPU/memory/image evidence table. Armel's repository has no `master` branch;
-  its default branch is `main`.
+- Current smallest actionable task: with the radio absent from this execution
+  environment, obtain the exact unit's model/PCB/MCU/RF/display markings and
+  normal/DFU USB identities, then verify one backup and one recovery copy on a
+  different filesystem. The pinned source CPU/memory/image contract is now
+  recorded; no physical recovery or AFIK write is authorized.
 
 Work-package activation verification on 2026-08-06:
 
@@ -249,6 +248,38 @@ Passive-beacon verification on 2026-08-06:
   risk, but it is not independent storage against filesystem or disk failure.
 - The destructive recovery rehearsal remains gated on one verified copy on a
   different filesystem/device.
+
+## Work Package 13 CPU/memory/image contract milestone
+
+- Added exact relative source locations for the Cortex-M0+ target, reset/vector
+  startup, application flash origin and size, SRAM range, assumed 48 MHz clock,
+  USB CDC, board GPIO, ST7565, BK4819, and PY25Q16 bindings.
+- Recorded the first bounded target contract: application origin `0x08002800`,
+  118 KiB capacity ending at `0x08020000`, 16 KiB SRAM at `0x20000000`, and a
+  raw v5.5.0 recovery candidate whose vectors and exclusive end are inside that
+  source-declared range.
+- Kept the 48 MHz clock as a bootloader-handoff assumption, not a physical
+  MCU fact, and kept all board bindings as source evidence pending exact-unit
+  inspection. No production source was copied from Armel and no TX behavior was
+  added.
+
+Contract-milestone verification on 2026-08-06:
+
+- `git -C /tmp/afik-armel-k1-evidence status --short --branch` — passed; the
+  detached checkout is at pinned commit `fe9c4e9432694b50aea651084a043aae0b58673d`.
+- `(cd /tmp/afik-armel-k1-evidence && sha256sum App/board.c App/driver/gpio.h
+  App/driver/vcp.c App/usb/usbd_cdc_if.c CMakeLists.txt CMakePresets.json
+  App/version.c archive/f4hwn.fusion.v5.5.0.bin)` — passed; all files were
+  read from that pinned checkout.
+- `find /dev -maxdepth 1 -type c \( -name 'ttyUSB*' -o -name 'ttyACM*' \)
+  -print` — passed with no matches; no physical radio was available for
+  markings, USB, DFU, or recovery observations.
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
+  — passed.
+- `nix develop path:. -c cargo test --workspace` — passed: 123 unit/integration
+  tests and all doc tests, 0 failures.
+- `git diff --check` — passed before the status record.
 
 ## Work Package 12 software milestone and verification
 

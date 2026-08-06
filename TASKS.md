@@ -653,3 +653,10 @@
   recovery is demonstrated before any AFIK image attempt; TX remains denied;
   and the next task is the smallest independently implemented target reset and
   boot-witness package rather than a general hardware port.
+- **Progress notes:** the exact source CPU/memory/image contract is now recorded
+  with relative file and line references in `docs/k1-bring-up.md` and
+  `docs/hardware-evidence.md`. The normal-mode read identified the unit as
+  `F4HWN v5.5.0`, and the complete read-only backup plus static v5.5.0 recovery
+  candidate are retained in private copies. Physical model/MCU markings, USB
+  identities, independent storage, and same-unit recovery remain open; no AFIK
+  image write or TX operation is permitted.
