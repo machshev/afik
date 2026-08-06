@@ -38,6 +38,9 @@ read -r initial_stack reset_vector < <(od -An -v -tx4 -N8 "$vectors")
 
 symbols="$(llvm-nm --defined-only "$image_path")"
 symbol_address() { awk -v name="$1" '$3 == name { print $1 }' <<<"$symbols"; }
+[[ -n "$(symbol_address k1_relocate_vectors)" ]] || {
+  echo "missing source-backed K1 VTOR relocation boundary" >&2; exit 1;
+}
 for mapping in "9:DMA1_CHANNEL1" "10:DMA1_CHANNEL2_3" "11:DMA1_CHANNEL4_5_6_7" "20:TIM15" "27:USART1"; do
   irq="${mapping%%:*}"; symbol="${mapping#*:}"
   address="$(symbol_address "$symbol")"
@@ -52,3 +55,4 @@ echo "  vector bytes: 192"
 echo "  initial SP: 0x$initial_stack"
 echo "  Reset vector: 0x$reset_vector"
 echo "  required IRQ handlers: DMA1 ch1/ch2-3/ch4-7, TIM15, USART1"
+echo "  VTOR relocation boundary: k1_relocate_vectors"

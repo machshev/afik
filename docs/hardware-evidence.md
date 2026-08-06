@@ -1424,3 +1424,14 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   power-cycle plus normal hello, visible boot screen, and main-key label are
   required before claiming Reset, TIM15, DMA, async USART1, display, or keypad
   behavior.
+- **First runtime result:** after power-cycle the display remained blank and two
+  normal-mode hello probes timed out. The image had not relocated VTOR from the
+  bootloader table before enabling TIM15/DMA/USART1 interrupts.
+- **Pinned correction:** `Core/Src/system_py32f071.c:53-55,147-151` sets the
+  application vector base to `FLASH_BASE | 0x2800`, and the PY32F071 device
+  header declares VTOR present. The corrected AFIK entry writes only that exact
+  source-backed address before inherited HAL initialization.
+- **Corrected artifact:** the 25,784-byte raw image has SHA-256
+  `3f39e7c2a9ffa282685da321e2da01006a880d747344cd23222e7480bc30adb2`.
+  Static verification additionally requires the retained
+  `k1_relocate_vectors` boundary before accepting the package.

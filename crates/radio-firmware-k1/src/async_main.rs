@@ -25,9 +25,11 @@ use radio_firmware_k1::py32f071_runtime::{compose, K1RuntimePeripherals};
 use radio_firmware_k1::py32f071_runtime_init::init;
 
 const _: [(); 8] = [(); PAGES];
+const K1_VECTOR_TABLE_ORIGIN: u32 = 0x0800_2800;
 
 #[entry]
 fn main() -> ! {
+    relocate_vectors();
     let Ok(runtime_init) = init() else {
         fail_closed();
     };
@@ -82,6 +84,21 @@ fn main() -> ! {
         spawner.spawn(serial);
         spawner.spawn(ui);
     });
+}
+
+#[allow(unsafe_code)]
+#[unsafe(export_name = "k1_relocate_vectors")]
+#[inline(never)]
+fn relocate_vectors() {
+    let Some(core) = cortex_m::Peripherals::take() else {
+        fail_closed();
+    };
+    // SAFETY: the PY32F071 device header declares VTOR present, the pinned K1
+    // startup writes FLASH_BASE + 0x2800, and the static image gate validates a
+    // complete vector table at that exact aligned application origin.
+    unsafe {
+        core.SCB.vtor.write(K1_VECTOR_TABLE_ORIGIN);
+    }
 }
 
 struct DisplayPins {

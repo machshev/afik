@@ -646,6 +646,7 @@ version = "0.1.0"
 name = "radio-firmware-k1"
 version = "0.1.0"
 dependencies = [
+ "cortex-m",
  "cortex-m-rt",
  "embassy-executor",
  "embassy-time",

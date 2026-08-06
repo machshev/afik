@@ -526,6 +526,16 @@ features remain outside this bounded slice.
 - Current smallest actionable task: manually power-cycle into application mode,
   run `probe-normal`, observe the boot screen, then press and release MENU and
   observe whether its label renders while serial remains responsive.
+- **First runtime result:** after power-cycle the screen remained blank and two
+  hello probes timed out. Review found the full table at `0x08002800` but no
+  VTOR relocation before TIM15/DMA/USART1 interrupts were enabled.
+- The pinned K1 startup explicitly writes VTOR to `FLASH_BASE | 0x2800`, and the
+  PY32F071 device header declares VTOR present. The correction adds only this
+  exact source-backed relocation before guarded inherited initialization.
+- Warning-denied target Clippy, release build, full-vector/VTOR verification,
+  raw packaging, negative fixtures, 30 focused tests, and `git diff --check`
+  passed for the corrected 25,784-byte image. SHA-256 is
+  `3f39e7c2a9ffa282685da321e2da01006a880d747344cd23222e7480bc30adb2`.
 
 ## Work Package 22 pure keypad milestone
 

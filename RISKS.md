@@ -452,3 +452,7 @@
   rate, DMA completion, UART responsiveness, keypad input, or visible display.
   The first guarded write must retain the known-good recovery path and be
   followed by independent serial and visible keypad/display observations.
+- **First runtime result:** blank display and two serial timeouts exposed a
+  missing VTOR handoff, not a proven TIM15/DMA fault. The pinned K1 startup and
+  PY32F071 header explicitly require/support VTOR at `0x08002800`; the next
+  image adds that exact write before any interrupt-enabled initialization.

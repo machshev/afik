@@ -1191,6 +1191,10 @@
 - **Physical write result:** K1 bootloader `7.03.01` acknowledged all 101 pages
   under transaction `9bca3352` without retry. This is not read-back or boot
   proof; power-cycle, hello, display, and MENU observations remain pending.
+- **First runtime/correction result:** blank display and two hello timeouts
+  exposed the missing source-required VTOR relocation. The corrected entry sets
+  VTOR to `0x08002800` before interrupt-enabled initialization; strict target,
+  vector, package, negative-fixture, and focused test gates pass.
   type-checks one owned bundle containing the heap-free thread executor,
   USART1/PA9/PA10 with DMA1 channels 1/2, and SPI1/PA5/PA7. Construction takes
   explicit HAL tokens and remains absent from the firmware binary. No HAL init,
