@@ -2,13 +2,13 @@
 
 ## Current work package
 
-**Work Package 8 — complete programmer CLI for the supported protocol
-(`CLI-008`) is active.**
+**No work package is active. Work Package 8 — complete programmer CLI for the
+supported protocol (`CLI-008`) is complete.**
 
-The package is limited to a thin CLI over existing library operations, an
-explicit host serial path or deterministic simulator, safe canonical-image file
-handling, stable output, and process exit behavior. It does not add serial
-discovery, target UART behavior, firmware updates, GUI, or raw writes.
+The next smallest actionable package is the programmer GUI as a thin front end
+over the same library and validated project/image operations. It must be
+activated in `TASKS.md` before implementation and must not fork compiler,
+protocol, transaction, or backup logic.
 
 ## State
 
@@ -19,7 +19,7 @@ discovery, target UART behavior, firmware updates, GUI, or raw writes.
 - Work Package 5 simulator-first boot UI and hidden TX permissions: complete.
 - Work Package 6 BK4819 receive path and token-gated TX boundary: complete.
 - Work Package 7 channel activation and deterministic scanning: complete.
-- Work Package 8 programmer CLI: active.
+- Work Package 8 programmer CLI: complete.
 - `UI-005` logical key edges, bounded semantic views, exact boot-only entry,
   release gate, draft editor, and checked persistence action: complete.
 - `UI-005` separate persisted/active policy simulation, deterministic timed
@@ -55,8 +55,42 @@ discovery, target UART behavior, firmware updates, GUI, or raw writes.
 - `SCAN-007` checked activation/navigation, explicit timer-token dwell/hold
   state, stale expiry safety, scan-time TX denial, selected-state policy bundle,
   and repeatable integrated control/RF traces: complete.
-- Next smallest task: add programmer-owned stable snapshot image encoding and
-  capacity reporting, with exact tests, before implementing CLI file commands.
+- `CLI-008` snapshot backup encoding, strict simulator/serial command front end,
+  bounded safe files, stable output/status, transactional write/restore with
+  read-back, and binary tests: complete.
+- Next smallest task: define and activate the programmer GUI as a thin,
+  deterministic view/update layer over `radio-programmer` operations.
+
+## Completed Work Package 8 exit criteria
+
+- `ConfigurationSnapshot` validates canonical order and supported objects,
+  reports exact capacity, and emits the shared canonical image without front-end
+  reimplementation.
+- `afik-programmer` supports info, list, compile, write, backup, and restore over
+  an explicitly selected fresh simulator or serial device path plus baud.
+- CLI parsing validates backend exclusivity, supported baud, bounded bank
+  fields, class names, command arity, and force semantics. Usage and operation
+  errors have distinct stable exit codes.
+- Input streaming is capped at 8 MiB. Compile/backup refuse existing outputs by
+  default and replace only under explicit `--force`.
+- Write and restore compile/decode in `radio-programmer`, use object-level
+  transactions, then require exact generation and object read-back.
+- The serial adapter adds no unsafe code, raw command, discovery/default, target
+  UART assumption, or physical interoperability claim; `RISK-009` remains open.
+
+## Work Package 8 verification
+
+Verified 2026-08-06:
+
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
+  — passed for all host crates and targets.
+- `nix develop path:. -c cargo test --workspace` — passed: 68 unit/integration
+  tests and all doc tests, 0 failures.
+- `nix develop path:. -c cargo run --quiet --package radio-programmer-cli --bin afik-programmer -- --sim info`
+  — passed with the exact six negotiated simulator capability fields.
+- `env RUSTC=/nix/store/2mm3p5wcy1ifrcx5vp3bwsw7a76r77jc-rustc-1.86.0/bin/rustc RUSTDOC=/nix/store/2mm3p5wcy1ifrcx5vp3bwsw7a76r77jc-rustc-1.86.0/bin/rustdoc CARGO_TARGET_DIR=/tmp/afik-cli-008-rust-1-86-target /nix/store/npqlgsia03kfhv8m9mav6hfnbawpg0yg-cargo-1.86.0/bin/cargo test --workspace`
+  — passed: 68 unit/integration tests and all doc tests on Rust/Cargo 1.86.0.
 
 ## Completed Work Package 7 exit criteria
 

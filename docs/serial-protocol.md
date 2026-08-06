@@ -81,3 +81,10 @@ Unknown service or command wire values, invalid CRCs, malformed COBS packets,
 and packets exceeding the fixed stream buffer are discarded at their delimiter
 without a response. The decoder then accepts the next valid frame, including
 when it arrives one byte at a time.
+
+Work Package 8 adds a host CLI adapter for an explicitly supplied Linux device
+path and baud. It configures that path through `stty` as raw, no-echo, `min 0`,
+`time 1`, then opens one ordered read/write file and implements the existing
+`ProtocolTransport`. This introduces no new wire command, raw storage access,
+target UART assumption, default device, or default baud. Physical
+interoperability remains open in `RISK-009`.

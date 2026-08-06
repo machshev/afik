@@ -12,6 +12,8 @@ radio-domain ──→ radio-channel-plan ──→ radio-storage
       └────────→ radio-bk4819
 
 radio-protocol ──→ radio-programmer ──→ radio-sim
+                         │                 │
+                         └─────────────────┴→ radio-programmer-cli
 radio-ui ─────────────────────────────→ radio-sim
 radio-bk4819 ─────────────────────────→ radio-sim
 radio-channel-control ────────────────→ radio-sim
@@ -67,3 +69,10 @@ manual navigation, explicit dwell/hold state, opaque logical timer tokens, and
 selected-state policy authorization. It owns neither a clock nor an RF driver.
 `radio-sim` is the host composition root that applies activation outputs to the
 logical BK4819 driver and schedules tokens on explicit virtual time.
+
+Work Package 8 adds `radio-programmer-cli` as a host-only front-end leaf. It
+depends on `radio-programmer` for compilation, image, protocol, transaction,
+listing, backup, restore, and verification logic, and on `radio-sim` only to
+offer the same commands against a deterministic backend. Its binary owns
+argument parsing, files, rendering, process status, and explicit transport
+selection; no programming logic moves out of the library.

@@ -180,3 +180,20 @@ meaning.
   with a capability minted by `TxPolicy`; the BK4819 boundary independently
   checks that class. Host simulation composes these layers and never substitutes
   simulated success for physical timing or RF evidence.
+
+## ADR-016 — The CLI is a thin, capability-negotiated front end
+
+- **Date:** 2026-08-06
+- **Status:** accepted for `CLI-008`
+- `radio-programmer-cli` owns strict argument parsing, bounded file I/O, stable
+  text rendering, exit codes, and transport selection. Compilation, canonical
+  images, object transactions, backup snapshots, restore, and read-back
+  verification remain library operations in `radio-programmer`.
+- Every operational command explicitly selects a fresh simulator or a Linux
+  serial device path plus supported baud. The serial adapter uses `stty` and a
+  file byte stream without unsafe code; it is not target-UART evidence and has
+  no implicit physical default.
+- Compile and backup refuse to replace an existing output unless `--force` is
+  present. Restore validates a bounded canonical image before transaction
+  mutation. No command exposes raw memory, raw object writes, or firmware
+  flashing.

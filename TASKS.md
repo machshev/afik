@@ -304,7 +304,7 @@
 
 ## CLI-008 — Complete programmer CLI for the supported protocol
 
-- **Status:** active
+- **Status:** complete (2026-08-06)
 - **Objective:** provide a complete thin command-line front end for every
   programmer operation currently implemented by `radio-programmer`, over both
   the deterministic simulator and an explicit host serial-device path.
@@ -344,3 +344,14 @@
   restore use validated object-level transactions; simulator paths are
   deterministic; serial configuration uses an explicit path/baud and fails
   clearly; no target UART or successful hardware programming claim is added.
+- **Completion notes:** added programmer-owned snapshot validation, capacity
+  reporting, and canonical backup encoding. Added the host-only
+  `radio-programmer-cli` library and `afik-programmer` binary with strict
+  backend/command/bank parsing; stable help, version, output, and exit codes;
+  info, list, compile, transactional write, backup, and restore; bounded
+  streaming image input; create-new output plus explicit force replacement;
+  simulator and explicit `stty`/file serial transports; and exact post-write or
+  restore read-back verification. Simulator, file-safety, parse/error, serial
+  setup-failure, deterministic image, and process-level tests pass. All pinned
+  workspace and Rust 1.86 gates are recorded in `STATUS.md`; physical serial
+  interoperability remains open in `RISK-009`.

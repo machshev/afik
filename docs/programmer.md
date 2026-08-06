@@ -23,6 +23,11 @@ objects through begin/write/validate/commit, and reads active objects back.
 Receive handling supports frames fragmented down to one byte per call and
 discards malformed packets until the next COBS delimiter.
 
+`ConfigurationSnapshot` validates strict key order and every supported object,
+reports exact object/payload/channel capacity, and encodes directly to the same
+canonical image format as compiled configuration. Backup callers therefore do
+not need to reconstruct compiler internals or duplicate image logic.
+
 `list_objects` reconstructs bounded `LIST_OBJECTS` pages into one complete
 generation-tagged listing. It rejects a changed generation or total, an
 unexpected offset, an object count beyond negotiated capacity, an object
@@ -35,6 +40,7 @@ repeats the listing afterward, rejecting the result if the active generation or
 object descriptors changed during the read.
 
 The compiler still supports only generated banks. Project-file metadata,
-explicit groups, regional plans, named backup management, CSV, firmware
-updates, serial discovery, CLI, and GUI remain later tasks. The canonical image
-is an offline logical-object container, not a physical flash layout.
+explicit groups, regional plans, named backup catalogs, CSV, firmware updates,
+serial discovery, and GUI remain later tasks. Work Package 8 supplies a complete
+CLI for the operations the library currently supports; the canonical image
+remains a logical-object container, not a physical flash layout.
