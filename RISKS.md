@@ -467,13 +467,18 @@
 
 ## RISK-026 — K1 side-key mapping and electrical behavior are unverified
 
-- **State:** open
-- **Impact:** the pinned source identifies a special side-key path but does not
-  provide AFIK with an independently recorded exact GPIO mapping, polarity,
-  settling, debounce, or interaction behavior. Guessing from the main matrix
-  could misread controls or interfere with the board.
-- **Mitigation:** `K1SIDE-024` remains evidence-first and receive-only. PTT
-  PB10 stays a separate source fact; side-key pins remain unknown until the
-  exact mapping and a bounded experiment are recorded. Raw samples, if later
-  exposed, must be bounded, provenance-tagged, fail-closed, and unable to
-  create semantic UI state or RF/TX authority.
+- **State:** open; the mapping half is now resolved and the physical half is not
+- **Impact:** guessing side-key pins from the main matrix could misread controls
+  or interfere with the board.
+- **Mapping resolved:** `EVID-K1-052` records the exact source mapping from the
+  pinned `App/driver/keyboard.c`. The side keys have no dedicated GPIO: SIDE1 is
+  PB15 and SIDE2 is PB14, active low, read during the unselected pass where all
+  four columns PB6..PB3 remain high. PB13 and PB12 are explicitly invalid in
+  that state. PTT PB10 remains a separate source fact.
+- **Remaining exposure:** no side key has been physically observed on the exact
+  unit, so this board's polarity, stability, and settling behavior are still
+  unconfirmed against the source's intent.
+- **Mitigation:** `K1SIDE-025` carries the bounded receive-only experiment. Raw
+  samples stay bounded, provenance-tagged, and fail-closed, and cannot create
+  semantic UI state or RF/TX authority. The undefined PB13/PB12 unselected case
+  must never be decoded as a key.

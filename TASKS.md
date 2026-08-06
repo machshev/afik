@@ -1309,3 +1309,30 @@
   PLLCFGR `00000006` therefore completes the observed 48 MHz contract. The pure
   decoder now checks all those fields and an exact-unit regression vector;
   publishing clocks and starting Embassy remain separate guarded steps.
+
+## K1SIDE-025 — Receive-only unselected-column side-key observation
+
+- **Status:** ready (2026-08-06)
+- **Objective:** physically observe SIDE1 and SIDE2 on the exact unit as raw
+  active-low row bits read while no keypad column is selected, without creating
+  any semantic side-key action.
+- **Mapping evidence:** `EVID-K1-052` resolves the side keys from the pinned
+  `App/driver/keyboard.c`. They are not separate pins: `KEY_SIDE1` is PB15 and
+  `KEY_SIDE2` is PB14, read during the unselected pass where all four columns
+  PB6..PB3 stay high. PB13 and PB12 are `KEY_INVALID` in that state.
+- **Scope:** add one unselected-column row sample to the existing pure scan
+  contract; extend the read-only `probe-keypad` response with that mask; report
+  released, SIDE1-held, and SIDE2-held observations on the exact unit.
+- **Dependencies:** completed `K1SIDE-024` and `K1ASYNC-023`; the existing
+  guarded writer, recovery image, and retained EEPROM backup.
+- **Exclusions:** semantic side-key events, display mutation, persistence,
+  menus, PTT actuation, audio, BK4819, RF, TX, and any ported firmware logic.
+  PB13/PB12 in the unselected state must stay an explicitly undefined
+  observation rather than a decoded key.
+- **Acceptance criteria:** the unselected sample is a bounded four-bit
+  active-low mask with its own validity flag; an unstable or out-of-range
+  sample fails closed; the mask cannot mint a `Key`, UI state, or transmit
+  authority; released observation reads zero; and each held side key is
+  reported as a distinct raw bit before any interpretation is proposed.
+- **First step:** extend the pure scan/decode contract and its host tests for
+  the unselected pass, keeping the existing four selected columns unchanged.

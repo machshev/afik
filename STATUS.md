@@ -120,10 +120,13 @@ features remain outside this bounded slice.
 - Work Package 22 keypad/UI witness definition: complete; the pinned matrix,
   electrical idle/scan levels, one-key decode, explicit-time debounce, and
   display-only result were bounded before implementation.
-- Current smallest actionable task: define a new stable task ID for any future
-  side-key experiment only after an independently sourced GPIO mapping and
-  receive-only observation procedure are available. Do not infer side-key
-  pins from the main matrix or from unverified firmware behavior.
+- Side-key mapping source review: complete. `EVID-K1-052` resolves SIDE1 as
+  PB15 and SIDE2 as PB14, read in the unselected pass with all columns high;
+  the side keys have no dedicated GPIO. `K1SIDE-025` is open for the bounded
+  receive-only experiment.
+- Current smallest actionable task: extend the pure scan/decode contract and its
+  host tests with the unselected-column row sample, keeping the four existing
+  selected columns unchanged and leaving PB13/PB12 undefined in that state.
 
 ## Work Package 24 handoff
 

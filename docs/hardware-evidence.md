@@ -1471,3 +1471,43 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
 - **Required experiment:** independently source the exact side-key mapping,
   then define a separately guarded receive-only observation that preserves the
   known-good recovery path. Do not infer side-key pins from the main matrix.
+
+### EVID-K1-052 — Exact side-key mapping resolved as the unselected matrix column
+
+- **Source:** `App/driver/keyboard.c` at the pinned Armel commit
+  `fe9c4e9432694b50aea651084a043aae0b58673d`. `keyboard[5][4]` at lines 149-183
+  and `KEYBOARD_Poll` at lines 185-281.
+- **Mapping:** the side keys are not separate GPIO pins. They occupy index `0`
+  of the same PB15..PB12 row inputs used by the main matrix, read during the
+  pass the source labels the "Zero col", where **no** column is driven low.
+  `keyboard[0][0]` is `KEY_SIDE1` on PB15 and `keyboard[0][1]` is `KEY_SIDE2`
+  on PB14. `keyboard[0][2]` and `keyboard[0][3]` are explicitly `KEY_INVALID`,
+  so PB13 or PB12 low with all columns high is an undefined observation.
+- **Electrical reading:** the scan loop runs `j = 0..4`. It drives all four
+  columns PB6..PB3 high on every iteration and only calls
+  `GPIO_ResetOutputPin(PIN_COL(j - 1))` when `j > 0`. With every column high no
+  main-matrix button can pull a row low, so a row read low in that state must
+  be a side key wired directly to the row. The source comment records this as
+  the "special case of nothing pulled down".
+- **Polarity and settling:** rows are active low and read through
+  `LL_GPIO_ReadInputPort(GPIOB)` masked to PB15..PB12. Each column pass, the
+  zero column included, uses up to eight reads separated by
+  `SYSTICK_DelayUs(10)` and requires three consecutive identical samples
+  (`match_count >= 2`); an unstable column is skipped without a key.
+- **PTT remains separate:** `KEYBOARD_GetKey` consults `GPIO_IsPttPressed()`
+  only when the matrix scan returned `KEY_INVALID`. `App/driver/gpio.h:31`
+  fixes PTT at GPIOB pin 10, active low. `gpio.h` defines no side-key pin,
+  which corroborates that side keys have no dedicated GPIO.
+- **AFIK gap:** `radio-firmware-k1::keypad::scan` drives all columns high but
+  never samples in that state; it immediately selects column 0. AFIK therefore
+  cannot currently observe a side key at all. The bounded change is one
+  additional unselected-state read, not a new pin binding.
+- **Confidence:** high for the pinned source's intended mapping and scan order.
+  No exact-unit physical observation of a side key has been made, so polarity
+  and stability on this specific board remain unconfirmed.
+- **Permitted use:** cite as the independently sourced mapping that `RISK-026`
+  required. AFIK must implement its own receive-only scan; the pinned loop must
+  not be ported or translated.
+- **Required experiment:** extend the read-only `probe-keypad` surface with the
+  unselected-column row mask, then observe released, SIDE1-held, and SIDE2-held
+  states on the exact unit before any semantic side-key action exists.
