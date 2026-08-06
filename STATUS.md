@@ -1916,3 +1916,36 @@ Verified 2026-08-05:
   `0x20000000`, and flash image end `0x00000220`.
 - Hardware-in-loop tests — not run; flashing and physical-silicon claims were
   outside `DP32-003`, and recovery/package evidence remains open in `RISKS.md`.
+
+## Work Package 25 side-key masking correction on 2026-08-06
+
+- **Physical result of the first image:** PTT rendered its label correctly, but
+  neither side key produced any display change. The serial path stayed alive.
+- **Cause:** a side key grounds its row directly, so it holds that row low
+  during every selected-column pass as well as the unselected pass. One held
+  side key therefore presented as five simultaneous keys and AFIK's stricter
+  fail-closed rule rejected it as ambiguous. The pinned source never meets this
+  because it breaks early on the first match. PTT was unaffected because it is a
+  separate pin that touches no row.
+- **Correction:** `decode` removes the unselected-pass rows from every column
+  mask before matrix decoding. A held side key now decodes as itself, and a
+  main key on an ungrounded row still decodes normally.
+- Replaced a physically impossible test, which had asserted a side key active in
+  the unselected pass but absent from the column passes, with the exact shape the
+  unit produces plus the simultaneous main-key case.
+- A side key and a main key sharing the same row remain genuinely
+  indistinguishable while the side key is held; this is recorded as a real
+  limitation rather than masked.
+- Focused K1 tests passed: 40 unit tests plus doc tests. Workspace tests,
+  warning-denied Clippy, embedded target check, target build/package with
+  negative fixtures, flake evaluation, formatting, and `git diff --check`
+  passed.
+- The corrected raw image is 26,120 bytes, SHA-256
+  `2a98187969d16def356c726c1f29c51d979a122eec63be167babd1dbe8807d3e`,
+  and CRC-32 `74663584`.
+- K1 `7.03.01` acknowledged all `103/103` pages and reported
+  `acknowledged_not_read_back`. No retry or reset command was sent. The
+  transaction identifier was not captured because the invocation's output was
+  truncated before that line; it is deliberately left unrecorded rather than
+  reconstructed.
+- Power-cycle observation of both side-key labels remains pending.

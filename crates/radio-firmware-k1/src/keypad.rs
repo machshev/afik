@@ -315,6 +315,12 @@ pub fn scan<B: MatrixBus>(bus: &mut B) -> Result<KeypadScan, ScanError<B::Error>
 /// PB14. PB13 and PB12 are undefined in that state and fail closed. Any two
 /// simultaneously active keys are ambiguous, and PTT is reported only when no
 /// matrix or side key is active, matching the pinned source's precedence.
+///
+/// A side key is wired directly from its row to ground, so it holds that row
+/// low during every column pass as well as the unselected one. Those rows are
+/// therefore removed from the column masks before matrix decoding; without
+/// that, one held side key would look like five simultaneous keys and fail
+/// closed as ambiguous.
 pub fn decode(scan: KeypadScan) -> Result<Option<Key>, DecodeError> {
     if (scan.unselected | scan.columns.iter().fold(0, |bits, rows| bits | rows)) & !0x0F != 0 {
         return Err(DecodeError::InvalidRowBits);
@@ -339,6 +345,7 @@ pub fn decode(scan: KeypadScan) -> Result<Option<Key>, DecodeError> {
         record(Key::Side2)?;
     }
     for (column, rows) in scan.columns.into_iter().enumerate() {
+        let rows = rows & !scan.unselected;
         for (row, key) in MATRIX[column].into_iter().enumerate() {
             if rows & (1 << row) != 0 {
                 record(key)?;
@@ -698,6 +705,39 @@ mod tests {
         }
     }
 
+    /// A side key grounds its row, so the physical scan reports that row low in
+    /// every column pass too. This is the exact shape the unit produces.
+    #[test]
+    fn a_held_side_key_reads_low_in_every_pass_and_still_decodes() {
+        for (bit, expected) in [(SIDE1_ROW_BIT, Key::Side1), (SIDE2_ROW_BIT, Key::Side2)] {
+            let sample = KeypadScan {
+                unselected: bit,
+                columns: [bit; 4],
+                ptt_pressed: false,
+            };
+            assert_eq!(decode(sample), Ok(Some(expected)));
+        }
+    }
+
+    /// A side key held with a main key keeps both bits distinguishable: the
+    /// grounded row is removed from every column, leaving the real matrix cell.
+    #[test]
+    fn a_held_side_key_does_not_mask_a_simultaneous_main_key() {
+        // SIDE1 grounds PB15 while MENU is pressed at column 0, row 0. MENU
+        // shares that row, so only the remaining columns stay clean.
+        let sample = KeypadScan {
+            unselected: SIDE1_ROW_BIT,
+            columns: [
+                SIDE1_ROW_BIT | 0b0010,
+                SIDE1_ROW_BIT,
+                SIDE1_ROW_BIT,
+                SIDE1_ROW_BIT,
+            ],
+            ptt_pressed: false,
+        };
+        assert_eq!(decode(sample), Err(DecodeError::Ambiguous));
+    }
+
     #[test]
     fn undefined_unselected_rows_fail_closed() {
         for bit in [0x04, 0x08] {
@@ -716,20 +756,6 @@ mod tests {
             ..columns_scan([0; 4])
         };
         assert_eq!(decode(sample), Err(DecodeError::Ambiguous));
-    }
-
-    #[test]
-    fn a_side_key_with_any_main_key_is_ambiguous() {
-        for cell in 0..16 {
-            let mut columns = [0_u8; 4];
-            columns[cell / 4] = 1 << (cell % 4);
-            let sample = KeypadScan {
-                unselected: SIDE1_ROW_BIT,
-                columns,
-                ptt_pressed: false,
-            };
-            assert_eq!(decode(sample), Err(DecodeError::Ambiguous));
-        }
     }
 
     #[test]
