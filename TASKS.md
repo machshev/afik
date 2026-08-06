@@ -301,3 +301,46 @@
   during TX, resumes receive after TX, and produces repeatable control/RF
   traces. Pinned host, `thumbv6m`, and Rust 1.86 gates pass as recorded in
   `STATUS.md`; physical timing and signal behavior remain open in `RISK-008`.
+
+## CLI-008 — Complete programmer CLI for the supported protocol
+
+- **Status:** active
+- **Objective:** provide a complete thin command-line front end for every
+  programmer operation currently implemented by `radio-programmer`, over both
+  the deterministic simulator and an explicit host serial-device path.
+- **Scope:** snapshot-to-canonical-image support in the programmer library; a
+  new host `radio-programmer-cli` library/binary; strict manual argument and
+  generated-bank-spec parsing; explicit `--sim` or `--device`/`--baud` backend;
+  info, list, compile, transactional write, backup, and restore commands;
+  bounded image input; canonical image output with no-overwrite default and an
+  explicit force option; stable line-oriented output; documented exit codes;
+  a safe `stty`-configured Linux file transport without unsafe code; and
+  simulator-backed command and binary tests. Auto-discovery, project-file/CSV
+  formats, firmware update, arbitrary raw reads/writes, GUI, target UART
+  implementation, and claims of physical interoperability are excluded.
+- **Dependencies:** `SCAN-007`, `radio-programmer`, `radio-sim`, the existing
+  serial protocol and canonical image format.
+- **Assumptions:** Linux `stty` plus an explicitly supplied device path and baud
+  can provide a host byte stream without embedding platform-specific unsafe
+  calls; actual target UART pins, baud, boot mode, and interoperability remain
+  unverified; the CLI describes only the currently supported generated-bank
+  project model and negotiated protocol capabilities.
+- **Likely files:** `Cargo.toml`, `crates/radio-programmer`, a new
+  `crates/radio-programmer-cli`, programmer/protocol/architecture documents,
+  `DECISIONS.md`, `RISKS.md`, and handoff files.
+- **Tests required:** stable snapshot image encoding and capacity accounting;
+  exact help/version/parse errors and exit codes; reject missing/conflicting
+  backends, unsupported baud, malformed/duplicate bank specs, unknown class,
+  oversized input, and existing output without force; simulator info and empty
+  list; deterministic compile output; write receipt and read-back; backup image
+  validation; restore commit; transport and device errors stay distinct from
+  usage errors; binary smoke tests; existing programmer/simulator behavior
+  remains green.
+- **Acceptance criteria:** the CLI owns only parsing, file handling,
+  presentation, process status, and transport selection; all compile, image,
+  protocol, transaction, listing, and snapshot logic remains in
+  `radio-programmer`; no raw object or memory mutation command exists; inputs
+  and files are bounded; output replacement requires explicit intent; write and
+  restore use validated object-level transactions; simulator paths are
+  deterministic; serial configuration uses an explicit path/baud and fails
+  clearly; no target UART or successful hardware programming claim is added.

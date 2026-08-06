@@ -82,3 +82,16 @@
   inputs. Do not encode target timer rates, polling cadence, receiver settle
   time, RSSI thresholds, tone detection, or physical scan claims until the
   relevant chip/board behavior is sourced and measured safely.
+
+## RISK-009 — Host serial interoperability is unverified
+
+- **State:** open
+- **Impact:** a host CLI transport that opens an explicitly configured serial
+  path does not prove the target exposes this protocol, uses the selected baud,
+  enters a safe programming mode, or preserves exchanges under real timing and
+  disconnect conditions.
+- **Mitigation:** `CLI-008` keeps serial path and baud explicit, uses the same
+  bounded `ProtocolTransport` contract as simulation, exposes no raw writes, and
+  makes no hardware-success claim. Establish target UART/boot behavior,
+  recovery, timeout/retry requirements, and hardware-in-loop fixtures before
+  documenting any device/baud default or physical programming workflow.

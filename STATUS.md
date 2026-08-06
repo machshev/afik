@@ -2,13 +2,13 @@
 
 ## Current work package
 
-**No work package is active. Work Package 7 — channel activation and
-deterministic scanning (`SCAN-007`) is complete.**
+**Work Package 8 — complete programmer CLI for the supported protocol
+(`CLI-008`) is active.**
 
-The next smallest actionable package is the complete programmer CLI over the
-existing `radio-programmer` library. It must be activated in `TASKS.md` before
-implementation; parsing, presentation, and process exit behavior belong in the
-front end while programming logic remains in the library.
+The package is limited to a thin CLI over existing library operations, an
+explicit host serial path or deterministic simulator, safe canonical-image file
+handling, stable output, and process exit behavior. It does not add serial
+discovery, target UART behavior, firmware updates, GUI, or raw writes.
 
 ## State
 
@@ -19,6 +19,7 @@ front end while programming logic remains in the library.
 - Work Package 5 simulator-first boot UI and hidden TX permissions: complete.
 - Work Package 6 BK4819 receive path and token-gated TX boundary: complete.
 - Work Package 7 channel activation and deterministic scanning: complete.
+- Work Package 8 programmer CLI: active.
 - `UI-005` logical key edges, bounded semantic views, exact boot-only entry,
   release gate, draft editor, and checked persistence action: complete.
 - `UI-005` separate persisted/active policy simulation, deterministic timed
@@ -54,8 +55,8 @@ front end while programming logic remains in the library.
 - `SCAN-007` checked activation/navigation, explicit timer-token dwell/hold
   state, stale expiry safety, scan-time TX denial, selected-state policy bundle,
   and repeatable integrated control/RF traces: complete.
-- Next smallest task: define and activate the complete programmer CLI as a thin
-  front end over `radio-programmer` without duplicating compiler/protocol logic.
+- Next smallest task: add programmer-owned stable snapshot image encoding and
+  capacity reporting, with exact tests, before implementing CLI file commands.
 
 ## Completed Work Package 7 exit criteria
 
