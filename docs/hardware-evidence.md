@@ -371,6 +371,19 @@ order are maintained in `docs/k1-bring-up.md`.
   the key label and must leave pages 6–7 empty. This corrects an observation-
   coverage gap without changing GPIO scanning or inferring its success.
 
+### EVID-K1-034 — Verified-line correction was page-acknowledged
+
+- **Precondition:** the corrected 56,856-byte image had SHA-256
+  `417663dab22de56fbfe167049c3b1b5831e588c04db4eec9ac7ec16b5cf9130a`
+  and CRC-32 `f4a9c1d6`; fresh identification returned K1 bootloader `7.03.01`
+  and all recovery/backup gates passed.
+- **Write observation:** all 223 pages were acknowledged in transaction
+  `fe6396d0`, without retry or reset. This remains page-acceptance evidence,
+  not a label or keypad success claim.
+- **Required observation:** after normal power-cycle, `MENU` should replace
+  `K1 0.2` on the already verified second text line; only after that should the
+  remaining 15 main keys and serial fallback be checked.
+
 ## Sources used by DP32-003
 
 ### DP32G030 reference manual v1.23

@@ -1026,3 +1026,6 @@
   SHA-256
   `417663dab22de56fbfe167049c3b1b5831e588c04db4eec9ac7ec16b5cf9130a`
   and CRC-32 `f4a9c1d6`.
+- **Correction write:** K1 `7.03.01` acknowledged all 223 pages in transaction
+  `fe6396d0` without retry. A normal power-cycle and physical label observation
+  remain pending.

@@ -232,6 +232,18 @@ Verified-line correction milestone on 2026-08-06:
   `417663dab22de56fbfe167049c3b1b5831e588c04db4eec9ac7ec16b5cf9130a`,
   and CRC-32 `f4a9c1d6`. No corrected image write has yet been sent.
 
+Corrected keypad write on 2026-08-06:
+
+- A fresh read-only identify again reported K1 bootloader `7.03.01` on the
+  external CH340 path.
+- The guarded writer revalidated the corrected image, recovery image, EEPROM
+  backup (`backup_crc32=99765400`), exact target/rehearsal phrases, and CRC-32
+  `f4a9c1d6` before sending any page.
+- K1 `7.03.01` acknowledged all `223/223` pages in transaction `fe6396d0` and
+  reported `acknowledged_not_read_back`. No retry or reset command was sent.
+- Physical completion remains pending a normal power-cycle and key-label
+  observation, beginning with `MENU` replacing `K1 0.2` on the verified line.
+
 ## Work Package 14 implementation milestone
 
 - `radio-k5-flasher` was renamed to `radio-flasher`; the library now owns both
