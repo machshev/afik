@@ -3,6 +3,14 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+mod banked;
+
+pub use banked::{
+    BankedReceiveController, ChannelActivation as BankedChannelActivation, ChannelMemory,
+    ChannelReceiveSetup, ChannelSelection, ChannelSource, MemoryFull, ReceiveError, ReceiveMode,
+    ReceiveObservation, ReceiveState, ReceiveUpdate, ScanPhase as BankedScanPhase,
+};
+
 use core::fmt;
 use radio_channel_plan::{GeneratedBank, PlanError};
 use radio_domain::{ActiveChannel, SignalMeasurement};
@@ -54,6 +62,10 @@ impl TimerToken {
     /// Returns the bounded token value for traces and adapters.
     pub const fn get(self) -> u32 {
         self.0
+    }
+
+    pub(crate) const fn new(value: u32) -> Self {
+        Self(value)
     }
 }
 
