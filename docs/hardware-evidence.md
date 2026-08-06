@@ -353,6 +353,24 @@ order are maintained in `docs/k1-bring-up.md`.
   pending a manual power-cycle, all 16 individual main-key observations, and
   the independent normal-mode serial probe.
 
+### EVID-K1-033 — First K1 main-key display observation failed
+
+- **Physical observation:** after power-cycle, the user reported that the key
+  labels did not display. AFIK therefore claims no successful physical matrix
+  scan, key mapping, debounce, or key-triggered display update.
+- **Independent fallback:** the immediate read-only normal-mode probe returned
+  `protocol=normal-firmware-hello`, `firmware=AFIK-K1-0.2` over the external
+  CH340 path.
+- **Conclusion:** the serial fallback proves the application loop remained
+  reachable, but it does not distinguish GPIO configuration, selected-column
+  drive, row sampling, debounce, or redraw failure. Inspect those boundaries
+  with a focused host-visible witness before authorizing another image.
+- **Bounded correction:** the first implementation rendered labels at `y=50`
+  on pages 6–7, whereas the prior physical display witness directly observed
+  the fixed line at `y=36`. The next image may replace that verified line with
+  the key label and must leave pages 6–7 empty. This corrects an observation-
+  coverage gap without changing GPIO scanning or inferring its success.
+
 ## Sources used by DP32-003
 
 ### DP32G030 reference manual v1.23

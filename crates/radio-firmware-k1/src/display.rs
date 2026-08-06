@@ -83,10 +83,11 @@ pub fn render_witness(frame: &mut [u8; FRAME_BYTES]) {
 
 /// Produces the fixed witness plus one centered debounced main-key label.
 pub fn render_key_witness(frame: &mut [u8; FRAME_BYTES], key: Key) {
-    render_witness(frame);
+    frame.fill(0);
+    draw_text(frame, 51, 20, b"AFIK");
     let label = key.label();
     let width = label.len() * 6 - 1;
-    draw_text(frame, (WIDTH - width) / 2, 50, label);
+    draw_text(frame, (WIDTH - width) / 2, 36, label);
 }
 
 fn draw_text(frame: &mut [u8; FRAME_BYTES], mut x: usize, y: usize, text: &[u8]) {
@@ -278,7 +279,8 @@ mod tests {
         let mut frames = [[0_u8; FRAME_BYTES]; 16];
         for (frame, key) in frames.iter_mut().zip(keys) {
             render_key_witness(frame, key);
-            assert!(frame[6 * WIDTH..7 * WIDTH].iter().any(|byte| *byte != 0));
+            assert!(frame[4 * WIDTH..6 * WIDTH].iter().any(|byte| *byte != 0));
+            assert!(frame[6 * WIDTH..].iter().all(|byte| *byte == 0));
         }
         for first in 0..frames.len() {
             for second in first + 1..frames.len() {

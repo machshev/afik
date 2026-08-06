@@ -319,3 +319,7 @@
   general menus remain unreachable. Host tests and static image gates precede
   one guarded receive-only hardware experiment with the serial recovery witness
   retained.
+- **Observed result:** the first physical image booted and retained its serial
+  fallback, but key labels did not display. No GPIO scan or key mapping is
+  physically established; diagnose with a bounded observable witness before
+  another write.

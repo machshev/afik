@@ -2,9 +2,8 @@
 
 ## Current work package
 
-**Work Package 22 (`K1KEY-022`) is active: define an evidence-backed,
-receive-only K1 keypad matrix and fail-closed display-witness contract before
-any target implementation.**
+**Work Package 22 (`K1KEY-022`) is active: the image boots and retains its
+serial fallback, but pressing the main keys produced no displayed labels.**
 
 K1 has priority because an exact unit running Armel firmware is available for
 inspection. `K1EVID-013` supplies the K1 evidence baseline and same-unit
@@ -52,6 +51,8 @@ features remain outside this bounded slice.
   and static/physical verification passed.
 - Work Package 21 fixed K1 contrast: complete; exact one-byte command change,
   clearer physical text, backlight, and serial verification passed.
+- Work Package 22 receive-only K1 keypad/UI witness: active; static gates and
+  serial fallback pass, but the first physical keypad-label observation failed.
 - `UI-005` logical key edges, bounded semantic views, exact boot-only entry,
   release gate, draft editor, and checked persistence action: complete.
 - `UI-005` separate persisted/active policy simulation, deterministic timed
@@ -109,12 +110,12 @@ features remain outside this bounded slice.
   pending; no serial device is visible here.
 - Work Package 18 selected and bounded the next application slice: a fixed
   display-only AFIK boot witness with the serial responder retained.
-- Work Package 22 keypad/UI witness definition: active; the pinned matrix,
+- Work Package 22 keypad/UI witness definition: complete; the pinned matrix,
   electrical idle/scan levels, one-key decode, explicit-time debounce, and
-  display-only result are bounded before implementation.
-- Current smallest actionable task: after a user power-cycle, observe all 16
-  main-key labels individually, the backlight and fixed display, then run the
-  read-only normal-mode serial probe.
+  display-only result were bounded before implementation.
+- Current smallest actionable task: diagnose why no debounced key label reached
+  the display while `AFIK-K1-0.2` remained responsive; do not flash again until
+  a focused failing-path test identifies and verifies a bounded correction.
 
 ## Work Package 22 pure keypad milestone
 
@@ -198,6 +199,38 @@ Physical keypad write on 2026-08-06:
 - Physical completion remains pending a user power-cycle, individual
   observation of all 16 main-key labels, retained display/backlight behavior,
   and the read-only `AFIK-K1-0.2` serial probe.
+
+Physical keypad observation after power-cycle on 2026-08-06:
+
+- The user reported that the requested labels did not display. No main-key
+  mapping, GPIO scan, physical debounce, or key-triggered redraw is therefore
+  claimed from this image.
+- `nix develop path:. -c cargo run --quiet --package radio-flasher-cli --bin
+  afik-flasher -- --device auto probe-normal` — passed; device
+  `/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0`, 38,400 baud,
+  `protocol=normal-firmware-hello`, `firmware=AFIK-K1-0.2`.
+- The passing serial probe proves the application remained alive; it does not
+  localize the failure between GPIO configuration, scan sampling, debounce, or
+  redraw. `K1KEY-022` remains active and no retry has been sent.
+- Code review found that the first image placed dynamic labels at `y=50` on
+  controller pages 6–7, outside the fixed text line physically verified by the
+  prior witness. The next correction replaces `K1 0.2` at the already observed
+  `y=36` line and adds a regression that pages 6–7 remain unused. GPIO and
+  debounce behavior are unchanged; another write requires all gates first.
+
+Verified-line correction milestone on 2026-08-06:
+
+- Key labels now replace `K1 0.2` at the physically observed `y=36` line;
+  `AFIK` remains at `y=20`, and controller pages 6–7 remain empty. The GPIO
+  scan, decoder, debounce, backlight, and serial implementation are unchanged.
+- Focused K1 tests passed: 20 unit tests plus doc tests, including distinct
+  frames for all 16 labels and the verified-page regression. Workspace Clippy
+  with `-D warnings` passed.
+- Embedded warning-denied Clippy, target build, ELF verification, packaging,
+  positive/negative raw-image tests, and `git diff --check` passed.
+- The corrected raw image is 56,856 bytes, SHA-256
+  `417663dab22de56fbfe167049c3b1b5831e588c04db4eec9ac7ec16b5cf9130a`,
+  and CRC-32 `f4a9c1d6`. No corrected image write has yet been sent.
 
 ## Work Package 14 implementation milestone
 

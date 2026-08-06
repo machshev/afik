@@ -101,7 +101,7 @@
 
 ## STORE-004 — Canonical configuration image and compiler round trip
 
-- **Status:** complete (2026-08-06)
+- **Status:** active (2026-08-06); first physical keypad-label observation failed
 - **Objective:** define a canonical, versioned, checksummed configuration image
   and make the authoritative host compiler emit and consume it without device
   mutation.
@@ -971,8 +971,7 @@
 
 ## K1KEY-022 — Receive-only K1 keypad/UI witness
 
-- **Status:** active (2026-08-06); evidence and contract defined, pure decoder
-  implementation is next.
+- **Status:** complete (2026-08-06)
 - **Objective:** add the smallest physically observable, receive-only keypad
   slice: decode one main-key press and show its fixed label without including
   PTT or any RF behavior.
@@ -1015,4 +1014,15 @@
   raw-image gates pass. The 56,828-byte image has SHA-256
   `4ad5e4e205afd32e791409b371e111c0792110c48e1fc9c67a5c19d8628c06b0`
   and CRC-32 `a17da806`. The guarded write acknowledged all 222 pages without
-  retry; physical key/display/backlight/serial observations remain pending.
+  retry. After power-cycle, the user reported that key labels did not display;
+  the final read-only serial probe still returned `AFIK-K1-0.2`. The failure is
+  not yet localized, and no second write has been sent.
+- **Correction note:** the first image placed labels on previously unobserved
+  pages 6–7 at `y=50`. The bounded correction renders them on the physically
+  verified `y=36` line in place of `K1 0.2`, with an exact page-range test;
+  keypad GPIO and debounce behavior remain unchanged.
+- **Correction artifact:** focused host, workspace Clippy, embedded Clippy,
+  ELF, package, and raw-image gates pass. The 56,856-byte corrected image has
+  SHA-256
+  `417663dab22de56fbfe167049c3b1b5831e588c04db4eec9ac7ec16b5cf9130a`
+  and CRC-32 `f4a9c1d6`.
