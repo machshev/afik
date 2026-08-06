@@ -1,4 +1,4 @@
-# uv-radio-rs
+# AFIK
 
 A ground-up modular Rust radio firmware and programming platform, initially
 targeting the DP32G030-based Quansheng UV-K5 family.
