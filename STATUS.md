@@ -1948,4 +1948,15 @@ Verified 2026-08-05:
   transaction identifier was not captured because the invocation's output was
   truncated before that line; it is deliberately left unrecorded rather than
   reconstructed.
-- Power-cycle observation of both side-key labels remains pending.
+- **Physical result:** the user reported that the corrected image worked. Both
+  side keys now render their labels, alongside the already working PTT label.
+  The masking correction is therefore confirmed on the exact unit.
+- The `AFIK-K1-0.3` hello has not been confirmed by AFIK. The unit was in
+  bootloader mode when the probe was attempted, so `probe-normal` decoded the
+  `7.03.01` bootloader beacon and reported a CRC trailer mismatch rather than an
+  application response. This is an outstanding confirmation, not a failure.
+- `EVID-K1-052`'s side-key mapping is now corroborated by physical observation:
+  SIDE1 and SIDE2 are read on the unselected pass and are wired directly to
+  their rows, exactly as the pinned source implied.
+- A side key and a main key sharing the same row remain indistinguishable while
+  the side key is held. No semantic side-key action, RF, or TX behavior exists.
