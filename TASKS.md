@@ -1174,6 +1174,13 @@
   taking singleton tokens and initializing GPIO, DMA, and the reserved TIM15
   time driver without running the HAL RCC configurator. Strict target Clippy
   passes. The boundary is not yet an entry point or flashable image.
+- **Runnable migration step:** add a separate full-vector Cortex-M image which
+  calls the guarded inherited initializer, runs static Embassy tasks, retains
+  the exact normal-mode hello, scans only the evidenced 4-by-4 matrix with
+  explicit Embassy time, and renders key labels through cooperative SPI1.
+  Prove interrupt symbols, image bounds, deterministic scheduling, UART
+  responsiveness during rendering, and all existing recovery gates before any
+  physical write. Side keys, persistence, general UI, RF, and TX stay excluded.
   type-checks one owned bundle containing the heap-free thread executor,
   USART1/PA9/PA10 with DMA1 channels 1/2, and SPI1/PA5/PA7. Construction takes
   explicit HAL tokens and remains absent from the firmware binary. No HAL init,

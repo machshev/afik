@@ -117,9 +117,11 @@ features remain outside this bounded slice.
 - Work Package 22 keypad/UI witness definition: complete; the pinned matrix,
   electrical idle/scan levels, one-key decode, explicit-time debounce, and
   display-only result were bounded before implementation.
-- Current smallest actionable task: define a separate guarded inherited-clock
-  publication boundary using the now-validated 48 MHz tuple; do not yet start
-  TIM15, interrupts, DMA, USART1, SPI1, keypad, or display tasks.
+- Current smallest actionable task: build a separate flashable Embassy witness
+  with a full Cortex-M interrupt/startup contract, guarded inherited-clock
+  initialization, TIM15, async USART1/DMA, cooperative SPI1 display rendering,
+  and the evidenced main keypad. Retain the polling image as recovery evidence;
+  exclude side keys, persistence, RF, and TX.
 
 ## Work Package 23 dependency and executor milestone
 
