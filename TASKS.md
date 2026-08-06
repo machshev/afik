@@ -830,7 +830,7 @@
 
 ## K1APP-018 — Define the next evidence-backed K1 application slice
 
-- **Status:** pending (2026-08-06)
+- **Status:** complete (2026-08-06)
 - **Objective:** choose and bound the smallest useful K1 application feature
   beyond the proven serial witness without inventing board behavior.
 - **Scope:** use the exact-unit serial witness, retained recovery route, and
@@ -844,3 +844,48 @@
 - **Acceptance criteria:** one stable task contract and tests exist before
   implementation begins; the existing serial witness remains buildable and
   physically recoverable.
+- **Completion notes:** selected a display-only boot witness as the next slice.
+  `K1DISP-019` keeps the proven serial hello, adds an independently implemented
+  heap-free ST7565 command/rendering layer, and renders one fixed AFIK identity
+  screen. Key scanning, storage, RF, TX, audio, backlight control, and general
+  application behavior remain excluded. Physical flashing is a separate,
+  confirmation-gated experiment after static and host verification.
+
+## K1DISP-019 — K1 display-only boot witness
+
+- **Status:** active (2026-08-06)
+- **Objective:** extend the proven K1 serial-witness firmware with one bounded,
+  independently implemented display witness while retaining serial recovery
+  observability and every TX denial boundary.
+- **Scope:** record the exact ST7565-compatible command, 128-by-64 page layout,
+  SPI1 mode/rate, and PA5/PA6/PA7/PB2 board facts; add a hardware-independent,
+  `no_std`, heap-free display command/rendering module; bind only the evidenced
+  K1 GPIO/SPI1 registers in the target leaf; render a fixed `AFIK`/version boot
+  screen; and continue answering the existing serial hello.
+- **Dependencies:** `K1APP-018`, `K1WIT-017`, the retained stock recovery image
+  and complete backup, the pinned Puya register definitions, and the pinned
+  exact-board display observations.
+- **Assumptions:** the exact unit follows the pinned board mapping for SPI1 SCK
+  PA5 AF0, serial display data PA7 AF0, A0 PA6, active-low CS PB2, 128 columns,
+  eight pages, SPI mode 3, MSB-first, and a 48 MHz bootloader clock. These are
+  application-source observations until the display witness is seen on the
+  exact unit; no unobserved reset pin is used.
+- **Exclusions:** copied or translated Armel driver/application code; keypad or
+  PTT scanning; backlight or audio control; external storage; BK4819 access;
+  RF receive or transmit; EEPROM writes; interrupts, DMA, USB, fonts beyond the
+  fixed bounded witness glyphs, menus, and a general radio application.
+- **Likely files:** `crates/radio-firmware-k1`, `tool/`, `docs/k1-bring-up.md`,
+  `docs/hardware-evidence.md`, `docs/architecture.md`, `DECISIONS.md`,
+  `RISKS.md`, and `STATUS.md`.
+- **Tests required:** exact display init/clear/page-write command traces;
+  deterministic fixed-screen bytes and bounds; injected bus-failure behavior;
+  serial framing regression; target build, ELF/raw-image gates, target Clippy,
+  full workspace format/Clippy/tests, and diff hygiene. A physical write needs
+  a separate explicit confirmation and must be followed by display observation
+  plus the existing serial `probe-normal`; stock recovery remains available.
+- **Acceptance criteria:** the display layer is allocation-free and independent
+  of PY32F071 MMIO; the target binding touches only sourced RCC/GPIO/SPI1 and
+  existing USART1 registers; a display failure cannot enable any other device
+  or TX path; serial hello remains responsive; and static verification passes
+  before any physical write is proposed. Physical success is claimed only if
+  the fixed AFIK screen and serial identity are independently observed.

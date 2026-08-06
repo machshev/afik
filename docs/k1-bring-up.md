@@ -330,3 +330,22 @@ bootloader observation, repeatable read-only backup, same-unit recovery through
 AFIK, and the bounded AFIK serial application boot witness are complete.
 Physical markings, normal/DFU USB identities, and full radio-application
 behavior remain pending.
+
+## K1DISP-019 display-only witness boundary
+
+The next AFIK slice is one fixed display identity screen while the proven
+USART1 hello remains available. The pinned board observations identify a
+128-by-64, eight-page ST7565-compatible serial display path using SPI1 clock on
+PA5 AF0, data on PA7 AF0, A0 on PA6, and active-low chip select on PB2. They
+also record SPI mode 3, MSB-first transfers, and a divide-by-64 rate from the
+bootloader-provided 48 MHz clock. AFIK will independently implement this
+bounded contract and will not copy the source driver.
+
+The first implementation may initialise the controller, clear its eight pages,
+and draw only fixed bounded `AFIK` and version glyphs. It will not use an
+unobserved hardware reset pin or touch the keypad/PTT matrix, backlight, audio,
+external flash, BK4819, RF, TX, USB, EEPROM, interrupts, or DMA. Exact command
+and framebuffer traces must pass on the host before a physical image is
+proposed. A physical write requires explicit confirmation and is successful
+only after both the screen and the existing serial hello are observed; the
+retained stock image remains the rollback route.

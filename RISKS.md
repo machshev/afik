@@ -256,3 +256,18 @@
   would produce a false USB claim.
 - **Mitigation:** `K1WIT-017` uses the independently evidenced USART1/CH340
   path instead. AFIK adds no USB implementation or native-USB identity claim.
+
+## RISK-021 — Exact K1 display binding is not yet physically observed by AFIK
+
+- **State:** open
+- **Impact:** the pinned board source can identify a likely ST7565-compatible
+  128-by-64 path, pins, and SPI mode without proving the exact controller
+  marking, reset wiring, panel orientation, contrast, or behavior of AFIK's
+  independent implementation on this unit. A wrong sequence may leave the
+  display blank or visually corrupted.
+- **Mitigation:** `K1DISP-019` uses only the source-observed SPI1 SCK/data, A0,
+  and active-low CS path; it does not drive an unobserved reset pin, backlight,
+  keypad, audio, storage, BK4819, RF, or TX. Exact command traces and rendered
+  bytes are host-tested before a separately confirmed physical write. The
+  existing USART1 hello and retained stock recovery image remain independent
+  observations and rollback paths.

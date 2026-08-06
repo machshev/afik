@@ -229,6 +229,29 @@ order are maintained in `docs/k1-bring-up.md`.
   flash read-back or automatic reset was used. The retained stock recovery
   image and complete backup remain the rollback path.
 
+### EVID-K1-026 — K1 display serial path selected for bounded experiment
+
+- **Source:** pinned `armel/uv-k1-k5v3-firmware-custom` commit
+  `fe9c4e9432694b50aea651084a043aae0b58673d`.
+- **Source locations:** `App/driver/st7565.h` declares 128 columns, 64 rows,
+  and eight page buffers; `App/driver/st7565.c` configures SPI1 as master,
+  eight-bit, mode 3, MSB-first, divide-by-64, with SCK PA5 AF0 and serial data
+  PA7 AF0; `App/board.c` and the display source bind A0 to PA6 and active-low
+  CS to PB2. The pinned PY32F071 device header supplies the corresponding RCC,
+  GPIO, and SPI1 register definitions.
+- **AFIK use:** `K1DISP-019` may independently generate the bounded controller
+  init, clear, page-address, and fixed-screen byte stream and bind that stream
+  to only the sourced K1 registers. The trusted source is evidence, not copied,
+  linked, or incrementally translated production code.
+- **Confidence:** high for the pinned source's intended board mapping and
+  transfer configuration; unverified on the exact unit for controller marking,
+  reset wiring, contrast, orientation, and AFIK-driven pixels.
+- **Required experiment:** first pass exact command/framebuffer host tests and
+  target/static gates. Then, only after explicit confirmation, write once,
+  power-cycle, observe the fixed screen, and run the existing serial hello
+  probe. Do not drive an unobserved reset pin, backlight, keypad/PTT, audio,
+  storage, BK4819, RF, or TX.
+
 ## Sources used by DP32-003
 
 ### DP32G030 reference manual v1.23

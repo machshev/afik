@@ -2,8 +2,8 @@
 
 ## Current work package
 
-**Work Package 17 (`K1WIT-017`) is complete: an independently observed K1
-physical boot witness is established.**
+**Work Package 19 (`K1DISP-019`) is active: implement a bounded K1 display-only
+boot witness while retaining the independently observed serial witness.**
 
 K1 has priority because an exact unit running Armel firmware is available for
 inspection. `K1EVID-013` supplies the K1 evidence baseline and same-unit
@@ -98,9 +98,11 @@ features remain outside this bounded slice.
 - `FLASH-012` exact-unit inspection, physical backup, recovery rehearsal,
   page-acknowledged AFIK write, and independent application-boot observation:
   pending; no serial device is visible here.
-- Current smallest actionable task: verify the serial-witness image and guarded
-  K1 application write path, then perform one user-confirmed physical write and
-  run `probe-normal` through the same CH340 path. No write has yet been sent.
+- Work Package 18 selected and bounded the next application slice: a fixed
+  display-only AFIK boot witness with the serial responder retained.
+- Current smallest actionable task: implement and host-test the allocation-free
+  display command/rendering layer for `K1DISP-019`. No new physical write is
+  authorized by this activation milestone.
 
 ## Work Package 14 implementation milestone
 
@@ -285,8 +287,11 @@ Work-package activation verification on 2026-08-06:
 - `nix develop path:. -c cargo fmt --all --check` — passed; the activation
   milestone changes documentation only.
 - `git diff --check` — passed before the final status record.
-- Next task: `K1APP-018` — define the next smallest evidence-backed K1
-  application slice beyond the verified serial witness.
+- `K1APP-018` completion: selected `K1DISP-019`, a display-only boot witness.
+  It deliberately excludes keypad, storage, RF/TX, audio, backlight, USB, and a
+  general application. The existing serial witness and stock recovery route
+  remain required. Activation was verified with `cargo fmt --all --check` and
+  `git diff --check` in the pinned environment before implementation.
 
 ## Work Package 13 first evidence milestone
 

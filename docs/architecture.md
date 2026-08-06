@@ -57,6 +57,14 @@ program segments cannot masquerade as bytes below the application origin. The
 raw package is a bounded application payload, not a physical flashing
 permission.
 
+`K1DISP-019` keeps the K1 target as the board composition leaf. Its display
+command generation and fixed-screen rendering remain hardware-independent,
+`no_std`, heap-free, and exact-trace tested inside `radio-firmware-k1`; only the
+target binary may bind those outputs to sourced PY32F071 GPIO/SPI1 registers.
+The existing serial hello remains live as an independent observation. This
+slice adds no keypad, storage, BK4819, RF/TX, audio, backlight, USB, interrupt,
+or DMA behavior.
+
 Work Package 4 keeps the canonical configuration-image codec in the embedded
 `radio-storage` crate. It reads borrowed bytes, writes caller-provided buffers,
 and allocates no heap. `radio-programmer` owns host-side canonical ordering,

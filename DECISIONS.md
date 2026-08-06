@@ -399,3 +399,19 @@ meaning.
 - Every page acknowledgement is checked for transaction, page, and zero
   result. There is no K1 flash read-back or automatic reset; the operator must
   power-cycle and run `probe-normal`, then retain the known-good recovery path.
+
+## ADR-028 — The next K1 application slice is display-only
+
+- **Date:** 2026-08-06
+- **Status:** accepted for `K1APP-018` and `K1DISP-019`
+- The first step beyond the serial witness is one fixed AFIK identity screen on
+  the 128-by-64 ST7565-compatible display path observed in the pinned board
+  source. It retains the existing USART1 hello as an independent boot and
+  rollback observation.
+- Display command generation and fixed-screen rendering are hardware-independent,
+  `no_std`, heap-free, bounded, and tested by exact traces. PY32F071 RCC, GPIO,
+  and SPI1 MMIO remain in the K1 target leaf.
+- This choice does not authorize keypad/PTT scanning, backlight or audio,
+  storage, BK4819 access, RF receive, TX, USB, or a general application. A
+  physical image write remains separately confirmation-gated after static
+  verification and must be followed by both visible-screen and serial probes.
