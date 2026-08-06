@@ -1078,3 +1078,21 @@
   while PB5/PB4/PB3 were unchanged. GPIOB bit 15 therefore goes low only for
   selected PB6, physically establishing MENU and the raw scan path. Remaining
   diagnosis is press-path render/SPI latency and visible update.
+
+## K1ASYNC-023 — Embassy/PY32 runtime foundation
+
+- **Status:** active (2026-08-06)
+- **Objective:** establish the smallest heap-free Embassy execution foundation
+  for the K1 before migrating UART, keypad, display, or timing behavior.
+- **Scope:** pin a Rust-1.86-compatible dependency set; prove PY32F071 chip
+  generation; compile a thread-mode executor proof; then independently verify
+  time, USART1, and SPI1 support against AFIK's already observed behavior.
+- **Exclusions:** changing recovery or application origin; adopting unverified
+  clock/interrupt/DMA behavior; RF/TX; migrating all drivers at once; and
+  claiming cooperative async preempts CPU-bound code without an await.
+- **Acceptance criteria:** versions and provenance are recorded; every feature
+  builds in pinned Nix/Rust; tasks remain static and bounded; Renode proves
+  scheduler progress; physical migrations are separately guarded; UART remains
+  responsive during chunked rendering before visible-key acceptance.
+- **First step:** resolve MSRV and exact PY32F071 feature coverage without
+  changing the flashed image.

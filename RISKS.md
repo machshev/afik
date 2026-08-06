@@ -342,3 +342,15 @@
   selection, establishing MENU on this exact unit. Mapping uncertainty for that
   cell is closed; timing, other keys, debounce, and visible display update remain
   unverified.
+
+## RISK-025 — Embassy/PY32 release and evidence compatibility
+
+- **State:** open
+- **Impact:** current Embassy releases guarantee latest-stable Rust rather than
+  AFIK's pinned Rust 1.86, and community `py32-hal` must be checked for exact
+  PY32F071 timer/USART1/SPI1 coverage. A compiling executor does not prove
+  peripheral correctness.
+- **Mitigation:** pin versions before migration; compile each feature in locked
+  Nix; retain linker/image/recovery contracts; add Renode and physical tests one
+  boundary at a time; do not enable interrupt/DMA behavior merely because a HAL
+  exposes an API.

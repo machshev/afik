@@ -2,8 +2,9 @@
 
 ## Current work package
 
-**Work Package 22 (`K1KEY-022`) is active: the image boots and retains its
-serial fallback, but pressing the main keys produced no displayed labels.**
+**Work Package 23 (`K1ASYNC-023`) is active: establish a pinned Embassy/PY32
+runtime foundation before migrating the proven K1 keypad, UART, and display
+paths.**
 
 K1 has priority because an exact unit running Armel firmware is available for
 inspection. `K1EVID-013` supplies the K1 evidence baseline and same-unit
@@ -53,6 +54,9 @@ features remain outside this bounded slice.
   clearer physical text, backlight, and serial verification passed.
 - Work Package 22 receive-only K1 keypad/UI witness: active; static gates and
   serial fallback pass, but the first physical keypad-label observation failed.
+- Work Package 23 Embassy/PY32 runtime foundation: active; dependency, chip,
+  MSRV, executor, time-driver, UART, and SPI feasibility must be proven before
+  replacing the current boot path.
 - `UI-005` logical key edges, bounded semantic views, exact boot-only entry,
   release gate, draft editor, and checked persistence action: complete.
 - `UI-005` separate persisted/active policy simulation, deterministic timed
@@ -113,9 +117,9 @@ features remain outside this bounded slice.
 - Work Package 22 keypad/UI witness definition: complete; the pinned matrix,
   electrical idle/scan levels, one-key decode, explicit-time debounce, and
   display-only result were bounded before implementation.
-- Current smallest actionable task: flash the verified read-only raw-matrix
-  diagnostic with key-triggered SPI transfer suppressed, then compare released
-  and held-MENU reports over the retained serial path.
+- Current smallest actionable task: determine a Rust-1.86-compatible pinned
+  `embassy-executor`/`py32-hal` dependency set and compile a no-peripheral
+  Cortex-M executor proof without changing the physical image.
 
 ## Work Package 22 pure keypad milestone
 

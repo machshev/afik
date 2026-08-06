@@ -1143,3 +1143,20 @@ each requested page. It cannot identify the MCU, read back internal flash,
 prove power-loss recovery, or prove that Reset reaches AFIK code. Until the
 physical checklist in `docs/k5-flashing.md` is complete, all tests are host,
 static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
+# Embassy/PY32 software evidence
+
+### EVID-K1-037 — Embassy and community PY32 HAL feasibility
+
+- **Embassy executor:** current official documentation describes a heap-free,
+  statically allocated executor and a generic single-core Cortex-M thread
+  platform using WFE/SEV. Tasks remain cooperative and require await points for
+  interleaving: <https://docs.embassy.dev/embassy-executor/git/cortex-m/index.html>.
+- **PY32 HAL:** Embassy's official project documentation lists the external
+  `py32-hal` as Embassy-compatible. Published `py32-hal` documentation advertises
+  PY32 family Embassy support but labels the project experimental:
+  <https://github.com/embassy-rs/embassy> and
+  <https://docs.rs/crate/py32-hal/latest>.
+- **Confidence boundary:** these sources justify dependency/build feasibility
+  work only. They do not prove the exact PY32F071 feature, AFIK's Rust 1.86
+  compatibility, board clocks, interrupts, timers, USART1, SPI1, DMA, or
+  physical behavior.

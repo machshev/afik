@@ -1,5 +1,14 @@
 # Architecture
 
+## Embassy migration boundary
+
+`K1ASYNC-023` introduces Embassy incrementally. The first accepted layer is a
+heap-free static Cortex-M executor whose version and MSRV build in AFIK's pinned
+environment. Time, UART, SPI, GPIO interrupts, and DMA remain separate adapters
+until exact PY32F071 implementation and physical behavior are verified.
+CPU-bound rendering must contain explicit await boundaries; cooperative
+scheduling does not make an uninterrupted renderer non-blocking.
+
 The current hardware-independent crates have this dependency direction:
 
 ```text

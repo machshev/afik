@@ -489,3 +489,17 @@ meaning.
   of GPIOB IDR for each selected column. A released baseline excludes only the
   known scanner-owned PB3..PB6 changes; any other changed bits are observations,
   not authorization to adopt an alternate mapping.
+
+## ADR-034 — K1 async migration is incremental and evidence-gated
+
+- **Date:** 2026-08-06
+- **Status:** accepted for `K1ASYNC-023`
+- Embassy is the intended concurrency direction. Cooperative tasks do not
+  preempt CPU-bound work, so rendering must still be chunked or explicitly
+  yield; async syntax alone is not an acceptance criterion.
+- Prefer the safe Cortex-M thread executor first. Interrupt executors, time,
+  UART, SPI, and DMA require separate PY32F071 evidence and tests. The current
+  raw-MMIO image and guarded recovery path remain available until each migrated
+  boundary is independently proven.
+- AFIK retains `no_std`, heap-free static tasks, integer units, bounded queues,
+  fail-closed TX policy, and no invented register behavior.
