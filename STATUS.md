@@ -2,14 +2,13 @@
 
 ## Current work package
 
-**Work Package 6 — BK4819 receive path and token-gated TX boundary (`RF-006`)
-is active.**
+**No work package is active. Work Package 6 — BK4819 receive path and
+token-gated TX boundary (`RF-006`) is complete.**
 
-The package is limited to a source-backed post-initialization register-command
-model, receive status, central-policy TX gating, fault handling, and
-deterministic host simulation. It does not define physical SPI/GPIO, full chip
-initialization, board RF switching, calibration, external PA behavior, or
-physical RF performance.
+The next smallest actionable package is a hardware-independent channel
+activation and scanning state machine built over the completed channel-plan,
+TX-policy, BK4819-command, and virtual-time boundaries. It must be activated in
+`TASKS.md` before implementation and must not add physical timing or RF facts.
 
 ## State
 
@@ -18,7 +17,7 @@ physical RF performance.
 - Work Package 3 minimal target boot proof: complete.
 - Work Package 4 canonical image/compiler round trip: complete.
 - Work Package 5 simulator-first boot UI and hidden TX permissions: complete.
-- Work Package 6 BK4819 receive path and token-gated TX boundary: active.
+- Work Package 6 BK4819 receive path and token-gated TX boundary: complete.
 - `UI-005` logical key edges, bounded semantic views, exact boot-only entry,
   release gate, draft editor, and checked persistence action: complete.
 - `UI-005` separate persisted/active policy simulation, deterministic timed
@@ -48,8 +47,44 @@ physical RF performance.
 - `RF-006` official product/datasheet provenance, mirrored-application-note
   boundary, interface/frequency/status/mode facts, low-confidence command-plan
   inference, published-band contradiction, and required experiments: complete.
-- Next smallest task: bind `TxAuthorisation` to its approved class, then add the
-  heap-free `radio-bk4819` driver with exact command and failure-path tests.
+- `RF-006` heap-free driver, exact command ordering/status decoding,
+  class-bound capability token, fail-closed state recovery, deterministic RF
+  simulation, and mismatch/failure trace proofs: complete.
+- Next smallest task: define and activate a bounded channel activation and
+  scanning work package without inventing physical scan timing or RF behavior.
+
+## Completed Work Package 6 exit criteria
+
+- `radio-bk4819` is hardware-adapter-independent, `no_std`, heap-free, uses
+  checked integer units, and passes a `thumbv6m-none-eabi` warning-denied lint.
+- Register addresses, fields, formulas, combined-mode inferences, provenance,
+  confidence, contradictory bands, and required physical experiments are
+  recorded before and alongside the implementation.
+- Exact frequency packing, standby-first receive/TX ordering, status decoding,
+  state rejection, stop/recovery, and failure at every logical read/write step
+  are tested.
+- `TxAuthorisation` carries its approved class. The driver's only TX-mode path
+  borrows a token, checks an exact channel-class match before any write, and
+  cannot complete after a fault without explicit neutral-mode recovery.
+- Identical virtual-time RF scripts produce identical traces. Mismatched
+  authority emits no register operation or TX event, and a failed final
+  TX-mode write emits no completed TX event.
+- No physical bus, initialization sequence, board RF control, external PA,
+  physical receive result, flashing, or on-air transmission was added.
+
+## Work Package 6 verification
+
+Verified 2026-08-06:
+
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
+  — passed for all host crates and targets.
+- `nix develop path:. -c cargo test --workspace` — passed: 50 unit tests and
+  all doc tests, 0 failures.
+- `nix develop path:. -c bash -c 'export RUSTC_BOOTSTRAP=1; export __CARGO_TESTS_ONLY_SRC_ROOT="$RUST_SRC_PATH"; cargo clippy -Z build-std=core --package radio-bk4819 --target thumbv6m-none-eabi -- -D warnings'`
+  — passed for `radio-bk4819` and its embedded dependencies.
+- `env RUSTC=/nix/store/2mm3p5wcy1ifrcx5vp3bwsw7a76r77jc-rustc-1.86.0/bin/rustc RUSTDOC=/nix/store/2mm3p5wcy1ifrcx5vp3bwsw7a76r77jc-rustc-1.86.0/bin/rustdoc CARGO_TARGET_DIR=/tmp/afik-rf-006-rust-1-86-target /nix/store/npqlgsia03kfhv8m9mav6hfnbawpg0yg-cargo-1.86.0/bin/cargo test --workspace`
+  — passed: 50 unit tests and all doc tests on Rust/Cargo 1.86.0.
 
 ## Completed Work Package 5 exit criteria
 

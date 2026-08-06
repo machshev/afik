@@ -4,11 +4,13 @@ The current hardware-independent crates have this dependency direction:
 
 ```text
 radio-domain ──→ radio-channel-plan ──→ radio-storage
-      │
-      └────────→ radio-tx-policy ─────→ radio-ui
+      ├────────→ radio-tx-policy ─────→ radio-ui
+      │                 │
+      └─────────────────┴─────────────→ radio-bk4819
 
 radio-protocol ──→ radio-programmer ──→ radio-sim
 radio-ui ─────────────────────────────→ radio-sim
+radio-bk4819 ─────────────────────────→ radio-sim
 ```
 
 `radio-domain` owns checked integer radio types and classifications.
@@ -46,3 +48,11 @@ bounded semantic display views, and boot-scoped draft permission state. It does
 not own key scanning, display drawing, persistence I/O, or live transmit policy.
 `radio-sim` provides the host-only virtual-time adapter and keeps persisted
 permission bytes separate from the active policy loaded at the last boot.
+
+Work Package 6 adds `radio-bk4819` as an embedded, hardware-independent command
+driver over a fallible logical register-bus trait. It owns exact frequency-word
+packing, receive status decoding, state/fault latching, and the only modeled TX
+mode transition. That transition requires a borrowed, class-matching capability
+from `radio-tx-policy`. It does not depend on a PAC, HAL, board crate, allocator,
+or host crate. `radio-sim` supplies a host-only logical bus with explicit virtual
+time and deterministic one-shot failures; it is not a silicon or RF model.

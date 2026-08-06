@@ -192,7 +192,7 @@
 
 ## RF-006 — BK4819 receive path and token-gated TX boundary
 
-- **Status:** active
+- **Status:** complete (2026-08-06)
 - **Objective:** implement the smallest evidence-backed, post-initialization
   BK4819 receive command path and prove that every modeled transition into
   transmit mode requires a matching central-policy authorization token.
@@ -236,3 +236,14 @@
   the TX-enable write and latches a recoverable fault; no target peripheral,
   board behavior, external PA operation, physical receive claim, or on-air
   transmission is added.
+- **Completion notes:** recorded official product/datasheet provenance and a
+  narrowly bounded mirrored-application-note contract, including contradictory
+  published bands, exact field sources, local command-plan inferences,
+  confidence, and required experiments. Added the `no_std`, heap-free
+  `radio-bk4819` driver with exact 10-Hz packing, receive/status commands,
+  class-bound token-gated TX, neutral stop/recovery, and fault latching at every
+  logical bus failure. Added deterministic virtual-time logical-bus simulation
+  with repeatable receive/failure/recovery/TX traces and proof that mismatched
+  authority emits no write or TX event. Pinned host, `thumbv6m`, and Rust 1.86
+  gates all pass as recorded in `STATUS.md`. No physical adapter or RF claim
+  was added; `RISK-007` remains open.

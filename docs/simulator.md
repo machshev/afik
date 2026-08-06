@@ -26,8 +26,9 @@ overflow, and a valid request delivered one byte at a time. Only the valid
 request produces a response, and discarded packet errors appear in exact input
 order in the trace.
 
-GPIO, physical display/keypad behavior, BK4819, audio, power, and scenario-YAML
-models belong to later work packages; no behavior for them is invented here.
+GPIO, physical display/keypad behavior, physical RF, audio, power, and
+scenario-YAML models belong to later work packages; no behavior for them is
+invented here.
 
 ## Boot UI and TX permissions
 
@@ -45,6 +46,25 @@ persistence event and preserves the original bytes.
 This proves logical state-machine behavior, not non-volatile durability,
 physical keypad scanning, display rendering, debounce timing, or security of a
 particular key chord.
+
+## BK4819 command simulation
+
+Work Package 6 adds a separate `RfSimulator` around the hardware-independent
+post-initialization driver. Its logical register bus records completed reads and
+writes at explicit virtual timestamps and can fail exactly one operation after a
+chosen number of successful operations. Completed receive, status, standby, TX,
+and TX-stop commands are semantic trace events. A failed register operation is
+recorded, faults the driver, and cannot produce a completed TX event.
+
+Identical timed scripts must produce identical traces. A class-mismatched
+`TxAuthorisation` produces neither a register operation nor a TX event; a bus
+failure on the final TX-mode write records only that failed write. Recovery
+requires an explicit successful neutral-mode write before another command.
+
+The register values and command order are the bounded, low-confidence contract
+in `docs/hardware-evidence.md`. The harness does not model physical 3-wire
+timing, reset or initialization, calibration timing, board RF switches, filters,
+audio, external PA control, propagation, signal strength, or emitted RF.
 
 ## Minimal DP32G030 target model
 

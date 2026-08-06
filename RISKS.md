@@ -64,8 +64,9 @@
   integration could emit unintended RF or damage hardware.
 - **Mitigation:** `RF-006` records official high-level facts separately from a
   mirrored machine-translated BK4819(V3) application note and restricts its
-  register fields to an unbound post-initialization simulator contract. Do not
-  add physical bus, board switching, external PA control, flashing, or on-air
-  tests until chip/board identity, original register documentation, safe dummy
-  load/test equipment, calibration backup, and recovery procedures are
-  established.
+  register fields to an unbound post-initialization command and simulator
+  contract. The implemented fault latch and class-bound capability check reduce
+  software authority risk but do not validate hardware behavior. Do not add a
+  physical bus, board switching, external PA control, flashing, or on-air tests
+  until chip/board identity, original register documentation, safe dummy-load
+  test equipment, calibration backup, and recovery procedures are established.

@@ -147,3 +147,20 @@ meaning.
 - Saving never mutates the active policy. The simulator and future target
   adapters must keep persistence separate from the `TxPolicy` loaded at boot;
   saved permissions take effect only after subsequent validated loading.
+
+## ADR-014 — BK4819 commands are evidence-bounded and fail closed
+
+- **Date:** 2026-08-06
+- **Status:** accepted for `RF-006`, physical integration prohibited
+- `radio-bk4819` is a `no_std`, heap-free command layer over a fallible logical
+  7-bit-address/16-bit-value bus. It assumes a separately initialized chip and
+  encodes only the frequency, mode, RSSI, and squelch fields recorded in
+  `docs/hardware-evidence.md`.
+- Receive and transmit plans first write neutral mode, then the low and high
+  10-Hz frequency words, and write the inferred final mode last. Any failed bus
+  operation latches an unknown physical state; only a subsequent successful
+  neutral-mode write recovers it.
+- `TxAuthorisation` carries its approved class. The driver's sole transition to
+  the inferred TX mode requires a borrowed token whose class matches the active
+  channel before any bus operation. This proves a software authority boundary,
+  not safe physical transmission or correct silicon/board behavior.
