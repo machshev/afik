@@ -183,6 +183,24 @@ Passive-beacon verification on 2026-08-06:
   backup using the pinned Armel/UV Studio workflow. Do not repeat the unchanged
   CH340 attempt.
 
+## Work Package 13 corrected backup milestone
+
+- The user reported that the exact CH340 cable has repeatedly worked with
+  CHIRP on this radio, superseding cable failure as the leading explanation.
+- Armel's K1-capable CHIRP driver was pinned at commit
+  `a0e9314570cd4f5440aca8322ca1722163bad217`. Its normal hello/read requests
+  use fixed session word `0x6457396A`; the failed V2 tool used a timestamp.
+- AFIK's existing tested `backup-eeprom` command uses the fixed CHIRP session
+  word and exposes reads only. It succeeded through `/dev/ttyUSB0`, identified
+  `F4HWN v5.5.0`, validated all 8,192 bytes, and created a private mode-`0600`
+  temporary backup outside the repository.
+- The unit-specific CRC-32 and SHA-256 were reported to the user but are not
+  committed. No EEPROM write, reset, bootloader handshake, firmware page, or
+  RF operation occurred.
+- Current smallest actionable task: copy the temporary backup to two durable
+  user-controlled locations and confirm both SHA-256 values, then validate the
+  exact known-good Armel v5.5 recovery image before any firmware write.
+
 ## Work Package 12 software milestone and verification
 
 - Sources and confidence boundaries are recorded in

@@ -56,12 +56,31 @@ order are maintained in `docs/k1-bring-up.md`.
 - **Safety boundary:** the selected workflow contains hello and reads only. No
   write, restore, reboot, bootloader handshake, firmware page, or reset was
   sent.
-- **Confidence:** high that this exact connection did not answer; insufficient
-  to identify whether the cause is the cable TX path, contact/plug behavior,
-  Fusion `v5.5` protocol behavior, or interface selection.
-- **Required next experiment:** enumerate the radio's direct USB-C interface in
-  normal mode and use the pinned Armel calibration-dump workflow. Do not repeat
-  the unchanged CH340 experiment or enter a write workflow.
+- **Resolution:** the user reported repeated successful CHIRP use with this
+  exact cable. Pinned Armel CHIRP driver commit
+  `a0e9314570cd4f5440aca8322ca1722163bad217` showed that CHIRP uses fixed
+  session word `0x6457396A`; the unsuccessful V2 tool used a timestamp instead.
+- **Confidence:** high that this was a request-shape mismatch rather than
+  evidence of cable failure. AFIK's fixed-session read succeeded as recorded
+  by `EVID-K1-018`.
+
+### EVID-K1-018 — Fixed-session complete backup succeeded
+
+- **Observation:** AFIK's read-only fixed-session workflow received normal
+  firmware identity `F4HWN v5.5.0` and all 8,192 configuration/calibration
+  bytes through the same CH340 cable. Every response offset and length was
+  checked before a mode-`0600` output was created outside the repository.
+- **Safety boundary:** only `0x0514` hello and `0x051B` read requests were sent.
+  The selected command exposes no EEPROM write, reset, bootloader, or firmware
+  operation.
+- **Privacy boundary:** calibration/configuration contents and their
+  unit-specific hashes are not committed. The user receives the hashes for
+  persistent-copy validation.
+- **Confidence:** high for complete logical read-back on this exact unit and
+  connection. This is not yet proof of restoration or firmware recovery.
+- **Required next step:** retain two persistent copies with matching SHA-256,
+  then identify and validate the exact known-good v5.5 recovery image before
+  any firmware write.
 
 ### Puya PY32F071-E product documentation
 

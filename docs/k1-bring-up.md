@@ -99,13 +99,36 @@ cycle, and after unplugging/replugging both ends of the cable. Each reached
 timeout. No backup file was created. No EEPROM write, restore, reboot,
 bootloader handshake, firmware page, or reset command was sent.
 
-The earlier passive bootloader beacon proves only the radio-to-host receive
-path in bootloader mode. The result does not distinguish among an unconnected
-or incompatible host-to-radio conductor, plug/contact behavior, normal-mode
-protocol differences in Fusion `v5.5`, or a requirement to use the direct
-USB-C interface. Identical retries are stopped. The next safe experiment is a
-direct USB-C normal-mode enumeration and read-only calibration dump, or the
-same dump through the pinned Armel UV Studio workflow.
+The user reported repeated successful CHIRP use with the same cable. Inspection
+of Armel's K1-capable CHIRP driver then established the protocol mismatch:
+CHIRP sends fixed session word `0x6457396A`, while the unsuccessful V2 serial
+tool substituted the current timestamp in both hello and later reads.
+
+AFIK's existing tested `backup-eeprom` path uses CHIRP's fixed word, permits no
+EEPROM write, validates every response offset/length, and writes the output
+only after all 8 KiB arrive. That corrected read-only workflow succeeded:
+
+- Normal firmware identified itself as `F4HWN v5.5.0`.
+- Exactly 8,192 bytes were received and validated.
+- The output was created mode `0600` outside the repository.
+- Its CRC-32 and SHA-256 were reported to the user but are deliberately not
+  committed because they identify a unit-specific calibration/configuration
+  artifact.
+
+The temporary backup is not a durable second copy. It must be copied to two
+user-controlled persistent locations and re-hashed before any firmware write.
+
+## Pinned CHIRP protocol evidence
+
+- Repository: `armel/uv-k5-chirp-driver`
+- Upstream default branch: `main`
+- Commit: `a0e9314570cd4f5440aca8322ca1722163bad217`
+- Commit date: 2025-12-02 23:48:02 +01:00
+- Relevant file: `uvk5_egzumer_f4hwn_ver_4_3_0.py`
+- File SHA-256:
+  `024ff9d263d7aeb8be03414754c99dd696ee20cf322e6e20c6a72f0287cf42a1`
+- Fact used: normal-mode hello `0x0514` and read `0x051B` carry fixed session
+  word `0x6457396A`; the download reads the complete 8 KiB in bounded blocks.
 
 ## Safe experiment order
 
