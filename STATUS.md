@@ -113,6 +113,30 @@ incomplete. It can resume unchanged when the exact K5 V1 hardware is available.
   without retry. The K1 device-side trailer convention is now a separate
   compatibility gate under `K1HIL-015`; K1 AFIK flashing remains unavailable.
 
+## Work Package 15 hardware attempt
+
+- The two private recovery-image copies remained mode `0600`, byte-identical,
+  95,836 bytes, and matched the pinned SHA-256
+  `7b6b277c319e6924bd878f4e4208490875dc3f15beb205c366d20130c02a4463`.
+  The two private 8 KiB backup copies remained byte-identical. AFIK image
+  CRC-32 confirmation was `fecee2ca`; vectors were `0x20004000` and Thumb
+  `0x08002d49`.
+- `nix develop path:. -c cargo run --quiet --package radio-flasher-cli
+  --bin afik-flasher -- --device auto identify` — passed immediately before
+  the write; `/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0`, K1,
+  bootloader `7.03.01`.
+- The guarded command was invoked once with the unchanged stock recovery image,
+  backup, exact target phrase `UV-K1-F4HWN-7.03.01`, and CRC `fecee2ca`.
+  It generated transaction `e8fb6b28` and stopped with `serial response
+  timed out` before printing any page acknowledgement. Because the timeout
+  does not prove whether a final page request reached the device, this run is
+  recorded as ambiguous and will not be retried blindly.
+- A subsequent read-only AFIK identify, a three-second passive capture, and a
+  host-side DTR/RTS assertion plus passive read all received no beacon. No
+  reset, EEPROM, or RF command was sent by AFIK. The next action is a user
+  power-cycle into normal Fusion mode and a complete read-only backup/identity
+  check before any further flash command.
+
 Verification on 2026-08-06:
 
 - `nix develop path:. -c cargo fmt --all --check` — passed.
