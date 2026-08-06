@@ -236,13 +236,14 @@ accepted for the current evidence package.
 3. The known-good Armel recovery candidate is statically validated and retained
    in matching local copies; validate the recovery procedure before writing.
 4. Enter and leave DFU without writing; record descriptors and the procedure.
-5. The unchanged known-good Armel recovery rehearsal is complete; the next
-   destructive action remains blocked until a separate target/image contract
-   exists.
+5. The unchanged known-good Armel recovery rehearsal and the first AFIK-hosted
+   recovery write are complete; the next destructive action remains blocked
+   until a separate K1 AFIK target/image contract exists.
 6. Only a later work package may build a minimal AFIK target. Its first physical
    image must provide a harmless visible or USB boot witness, contain no RF
    operation, and be followed immediately by proven Armel recovery.
 
 The serial device was visible for the normal-mode verification above. Passive
-bootloader observation and repeatable read-only backup are complete; physical
-markings, normal/DFU USB identities, and physical recovery remain pending.
+bootloader observation, repeatable read-only backup, and same-unit recovery
+through AFIK are complete; physical markings, normal/DFU USB identities, and
+an AFIK application boot witness remain pending.

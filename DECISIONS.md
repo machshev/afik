@@ -313,6 +313,10 @@ meaning.
   AFIK image write, a firmware restore, or RF transmission. Exact-unit physical
   markings, USB identities, and a non-destructive recovery procedure remain
   required before those actions.
+- `K1HIL-015` subsequently authorized only the unchanged, independently
+  validated stock recovery image; its 375 page acknowledgements and matching
+  post-flash backup are now recorded in `EVID-K1-023`. This does not authorize
+  a K1 AFIK application image or RF operation.
 
 ## ADR-023 — K1/K5 automatic detection is protocol classification only
 

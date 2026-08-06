@@ -157,6 +157,26 @@ order are maintained in `docs/k1-bring-up.md`.
   EEPROM or RF operation was performed. The write path was an independent host
   experiment based on pinned protocol evidence, not imported firmware code.
 
+### EVID-K1-023 — AFIK K1 recovery write and post-flash backup
+
+- **Observation:** after the AFIK K1 device-trailer and bounded serial-read
+  fixes were committed, the generic `afik-flasher` recovery command classified
+  the exact live beacon as K1 `7.03.01` and acknowledged all 375 sequential
+  256-byte pages of the unchanged pinned `F4HWN v5.5.0` image in transaction
+  `074b2081`.
+- **Postcondition:** after a user power-cycle, AFIK's read-only normal-mode
+  workflow identified `F4HWN v5.5.0`, received all 8,192 bytes, and its
+  mode-`0600` output matched both retained pre-flash configuration/calibration
+  backups byte-for-byte.
+- **Confidence:** high for the independently implemented AFIK host recovery
+  protocol, the exact unit's observed beacon, sequential page acknowledgements,
+  normal-mode identity, and logical backup preservation. This does not prove a
+  K1 AFIK application image, AFIK reset execution, or RF behavior.
+- **Safety boundary:** no page was retried, AFIK sent no reset or EEPROM write,
+  and no RF operation occurred. The image was the known-good stock recovery
+  candidate; its unit-specific backup bytes and hashes remain outside tracked
+  repository content.
+
 ### Puya PY32F071-E product documentation
 
 - **Publisher:** Puya Semiconductor (Shanghai) Co., Ltd.

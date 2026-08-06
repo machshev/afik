@@ -2,7 +2,7 @@
 
 ## Current work package
 
-**Work Package 15 (`K1HIL-015`) is active: first AFIK K1 recovery-flasher
+**Work Package 15 (`K1HIL-015`) is complete: first AFIK K1 recovery-flasher
 hardware run.**
 
 K1 has priority because an exact unit running Armel firmware is available for
@@ -32,8 +32,8 @@ incomplete. It can resume unchanged when the exact K5 V1 hardware is available.
 - Work Package 13 UV-K1/PY32F071 hardware evidence and target contract: evidence
   baseline complete; board/MCU and AFIK boot-witness follow-up remains open.
 - Work Package 14 K1/K5 auto-detected recovery flasher: complete.
-- Work Package 15 first AFIK K1 recovery-flasher hardware run: active; this is
-  a stock recovery-image exercise, not an AFIK application flash.
+- Work Package 15 first AFIK K1 recovery-flasher hardware run: complete; this
+  was a stock recovery-image exercise, not an AFIK application flash.
 - `UI-005` logical key edges, bounded semantic views, exact boot-only entry,
   release gate, draft editor, and checked persistence action: complete.
 - `UI-005` separate persisted/active policy simulation, deterministic timed
@@ -89,11 +89,9 @@ incomplete. It can resume unchanged when the exact K5 V1 hardware is available.
 - `FLASH-012` exact-unit inspection, physical backup, recovery rehearsal,
   page-acknowledged AFIK write, and independent application-boot observation:
   pending; no serial device is visible here.
-- Current smallest actionable task: complete `K1HIL-015` with one AFIK-hosted
-  stock recovery write and post-flash backup comparison, then return to the
-  independently implemented AFIK reset/boot-witness package under
-  `K1EVID-013`; K1 AFIK application flashing remains out of scope until that
-  contract exists.
+- Current smallest actionable task: define and implement the independently
+  implemented K1 reset/boot-witness package under `K1EVID-013`; K1 AFIK
+  application flashing remains out of scope until that contract exists.
 
 ## Work Package 14 implementation milestone
 
@@ -155,6 +153,27 @@ incomplete. It can resume unchanged when the exact K5 V1 hardware is available.
   `status=acknowledged_not_read_back`; no retry or reset command was sent. The
   next action is a user power-cycle into normal Fusion mode followed by a
   complete read-only identity and 8 KiB backup comparison.
+- After that power-cycle, AFIK's read-only backup workflow identified
+  `F4HWN v5.5.0`, received 8,192 bytes, and produced a mode-`0600` output that
+  matched both retained pre-flash backups byte-for-byte. This closes
+  `K1HIL-015` for the host recovery path. It does not establish a K1 AFIK
+  application image or boot witness.
+
+K1HIL-015 completion verification on 2026-08-06:
+
+- `nix develop path:. -c cargo run --quiet --package radio-flasher-cli --bin
+  afik-flasher -- --device auto backup-eeprom
+  /tmp/afik-k1-post-afik-recovery.raw` — passed; normal identity `F4HWN
+  v5.5.0`, 8,192 bytes.
+- `cmp -s /tmp/afik-k1-post-afik-recovery.raw
+  .private/k1/unit-backup.primary.raw` and the equivalent comparison with
+  `unit-backup.secondary.raw` — passed; both were byte-identical.
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
+  — passed.
+- `nix develop path:. -c cargo test --workspace` — passed; all workspace unit,
+  integration, and doc tests passed.
+- `git diff --check` — passed.
 
 Verification on 2026-08-06:
 

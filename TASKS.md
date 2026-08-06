@@ -609,7 +609,7 @@
 
 ## K1EVID-013 — UV-K1/PY32F071 hardware evidence and target contract
 
-- **Status:** active (2026-08-06)
+- **Status:** complete (2026-08-06)
 - **Objective:** establish the smallest reproducible, independently implemented
   AFIK target contract for one exact Quansheng UV-K1/PY32F071 unit currently
   available for inspection and recovery testing.
@@ -739,3 +739,9 @@
   read-only normal-mode backup matches the pre-write backup byte-for-byte.
   The next task remains the independently implemented K1 reset/boot-witness
   package under `K1EVID-013`.
+- **Completion notes:** after two bounded pre-fix timeouts and one bounded
+  serial-read-window fix, AFIK's generic command acknowledged all 375 pages in
+  transaction `074b2081`. The post-power-cycle normal-mode identity was
+  `F4HWN v5.5.0`; the complete 8 KiB read matched both retained pre-flash
+  backups byte-for-byte. No reset, EEPROM, or RF command was sent, and this
+  remains a stock recovery write rather than a K1 AFIK application flash.
