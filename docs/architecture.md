@@ -107,3 +107,17 @@ supplies complete frames and virtual receive times without composing discovery
 with channel or RF control. Physical RF/audio demodulation, NRZI/HDLC recovery,
 target peripherals, persistence, and automatic tuning remain outside the
 architecture until their evidence gates are satisfied.
+
+Work Package 12 adds a separate host-only K5 deployment boundary. A new
+flashing library owns the legacy packet codec, read-only EEPROM backup,
+bootloader-v2 probe, raw-image validation, recovery gates, and page sequence.
+Its CLI is a thin explicit-path adapter over the shared Linux serial port. This
+protocol is the stock UV-K5 deployment protocol and does not enter
+`radio-protocol`, which remains AFIK's object-level runtime configuration
+protocol.
+
+The DP32G030 target linker and package tools own the V1 application-region
+contract. They emit a full `0x0000..0xEFFF` raw image and never include the
+stock `0xF000..0xFFFF` bootloader region. Hardware-independent radio crates do
+not gain target, serial, or legacy-protocol dependencies. Acknowledged pages do
+not establish target boot or peripheral support.

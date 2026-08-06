@@ -15,8 +15,11 @@
 
 - **State:** open
 - **Impact:** hardware flashing could brick a test radio or destroy calibration.
-- **Mitigation:** do not flash hardware until a tested backup and recovery
-  procedure exists.
+- **Mitigation:** `FLASH-012` may implement and simulate only the bounded
+  recovery-gated path. Do not flash an AFIK image until the exact unit is
+  identified, its complete read-only EEPROM backup is retained and validated,
+  a known-good raw recovery image is recorded, and rewriting/rebooting that
+  recovery image has succeeded on the same unit.
 
 ## RISK-003 — Protocol wire format may change during bring-up
 
@@ -41,9 +44,12 @@
 - **State:** open
 - **Impact:** an ELF that boots from address zero in the minimal Renode model is
   not evidence that a packaged image will boot safely on a UV-K5-family radio.
-- **Mitigation:** Work Package 3 does not package or flash images. Establish the
-  bootloader mask/remap, application region, image format, board revision, and
-  non-destructive recovery procedure before any hardware deployment task.
+- **Mitigation:** Work Package 3 does not package or flash images. `FLASH-012`
+  treats the separately observed `0xF000` boundary as a qualified-V1 deployment
+  assumption, emits no bytes above it, and retains static/Renode proof. A page
+  acknowledgement is not a boot claim; physical completion still requires
+  exact board identification, recovery proof, and an independent observation
+  that Reset reached the AFIK application.
 
 ## RISK-006 — Physical display and keypad interfaces are unverified
 
@@ -161,3 +167,30 @@
   construct `ActiveChannel`, trusted plan membership, or `TxAuthorisation`, and
   never mutate configuration automatically. Any future reviewed save must be a
   separate transaction constrained to `TxClass::Never`.
+
+## RISK-014 — K5 revision and bootloader identity can be misleading
+
+- **State:** open
+- **Impact:** visually similar UV-K5-family radios now use incompatible MCUs and
+  bootloaders. Treating a beacon or model name as silicon identity could write a
+  DP32G030 image to an incompatible device and leave it unable to boot.
+- **Mitigation:** support only an opened/photographed V1 unit whose MCU marking
+  is DP32G030, then additionally require an exact version-2 beacon. Reject v5,
+  V2/V3 markings, unknown beacon lengths/versions, clones, and wildcard version
+  negotiation. Preserve unit-specific inspection evidence with the physical
+  experiment record; do not infer support for the product family.
+
+## RISK-015 — The stock bootloader has no established read-back transaction
+
+- **State:** open
+- **Impact:** an acknowledgement may mean only that a page command was accepted.
+  A cable fault, power loss, bootloader defect, or flash failure can leave a
+  partial image, and blindly retrying an ambiguous page may have undocumented
+  effects.
+- **Mitigation:** validate every prerequisite before the first write; write only
+  one complete 240-page image in ascending order; require an exact page/result
+  acknowledgement; stop without retry on the first missing or mismatched
+  acknowledgement; keep the bootloader region outside all artifacts; maintain
+  power and cable stability; and prove stock recovery before AFIK. Report
+  completion as acknowledged writes until separate read-back and boot evidence
+  exists.

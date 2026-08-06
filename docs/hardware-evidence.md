@@ -547,3 +547,142 @@ above are re-used with unchanged provenance and confidence.
 `APRS-011` may implement only the complete-frame and APRS discovery boundary.
 Physical demodulation and automatic channel mutation remain prohibited by
 `RISK-012` and `RISK-013`.
+
+## Sources used by FLASH-012
+
+No manufacturer bootloader protocol or board-revision matrix has been located.
+The following sources are pinned reverse-engineering evidence. Their code is
+GPL-3.0 and is not copied, linked, translated, or used as AFIK production
+source. Exact wire observations are recorded as facts; interpretations remain
+explicitly bounded.
+
+### sq5bpf/k5prog
+
+- **Repository:** `sq5bpf/k5prog`, commit
+  `241ab18b61f6d8933fecf60643fe94322fbf4198`, dated 2023-12-29.
+- **Retrieved:** 2026-08-06 from <https://github.com/sq5bpf/k5prog>.
+- **Files inspected:** `README` and `k5prog.c`; `k5prog.c` SHA-256
+  `cc8a1f42208515c73bb6869233b9afa0f9cb151212d5ef9c78ef5f2d8ea5f6eb`.
+- **Method stated upstream:** protocol reverse-engineering from traffic between
+  the radio and original programming software, plus physical use by the author.
+- **Scope:** packet envelope, normal-firmware EEPROM reads, bootloader-v2
+  beacon/version/page messages, 38,400-baud observation, 256-byte pages, and
+  the asserted bootloader reservation at `0xF000`.
+
+### qrp73/K5TOOL
+
+- **Repository:** `qrp73/K5TOOL`, commit
+  `03cb33aef88fc17f9e6b71d9e6c4f0ac9b0dc436`, dated 2025-12-18.
+- **Retrieved:** 2026-08-06 from <https://github.com/qrp73/K5TOOL>.
+- **Files inspected:** `README.md`, `Packets/Envelope.cs`, and the V2 beacon,
+  version, page-write, and acknowledgement packet types. Their respective
+  SHA-256 values are
+  `5d8ac90426ba0dc53f8612e1b908141330ecbe18f6225acd9b162a080c40f1cb`,
+  `e7ea15effc47dbc8bf48771a2efa198de45fa1c182c17e3195d3c6ab0d097ec2`,
+  `eada6c03a5162642e6e1fee00fe2de7e35c9a601aac5fa9cbe7b1d72b137a0b6`,
+  `e37430167b9d435ecc87c2ac3979f60a60f0e5aa2efb75ecab6ac7e16c752ee7`,
+  `168592c44f6c4a61ae7bd7aaf710600b35ab7b92d5a1d4839efc9bc1f279314d`,
+  and `b62a843cff89640a9efdca868ddef18dda7825b788bfa1042dbd4d6afb04f026`.
+- **Relationship:** K5TOOL is a separate implementation but cites k5prog for
+  bootloader command semantics, so it is useful cross-check evidence rather
+  than a fully independent observation.
+- **Scope:** V1/V2/V3 incompatibility warning, V1/DP32G030 claim, `0xF000`
+  maximum, bootloader-v2/v5 distinction, packet layout, page indexing, result
+  handling, and a software bootloader simulator.
+
+### Quansheng product and FCC exhibits
+
+- **Product page:** Quansheng's current UV-K5 page, retrieved 2026-08-06 from
+  <https://en.qsfj.com/products/3002>.
+- **FCC filing:** FCC ID `XBPUV-K5`, including internal photographs, document
+  `6401563`, filed 2023-03-09; the PDF SHA-256 reported by the exhibit service
+  is `6e97aeeec6fb3870edf70895627fed2f0d6275e8fa9a49328ff9abd63fe17f15`.
+- **Scope:** product/family and physical-inspection context only. These sources
+  do not publish the bootloader wire protocol or establish that a particular
+  user unit is the same MCU/board revision.
+
+## Accepted FLASH-012 observations and bounded inferences
+
+### EVID-K5-008 — Hardware revision must be established physically
+
+- **Observation:** K5TOOL warns that its old V1 units use DP32G030, while later
+  V2 and V3 markings can identify incompatible processor revisions. It provides
+  distinct recovery images and workflows for those revisions.
+- **Confidence:** medium-low. This is a maintained implementation report, not a
+  Quansheng board matrix, and compatible-looking models/clones may differ.
+- **Permitted use:** require the operator to record the exact model, under-
+  battery revision marking, PCB revision, and readable MCU marking before a
+  destructive command. A bootloader beacon alone cannot satisfy this gate.
+- **Required experiment:** photograph the exact test unit and its fitted MCU;
+  reject anything other than an explicitly confirmed V1/DP32G030 unit.
+
+### EVID-K5-009 — The stock application boundary is below `0xF000`
+
+- **Observation:** k5prog caps flash writes at `0xF000` because it reports a
+  bootloader in `0xF000..=0xFFFF`. K5TOOL separately enforces a maximum end of
+  `0xF000` and reports successful images approaching that boundary.
+- **Inference:** AFIK will treat `0x0000..=0xEFFF` as the complete application
+  region and the final 4 KiB as immutable stock-bootloader space. A packaged
+  image is exactly 60 KiB, with unused application bytes set to `0xFF`, so no
+  stale prior application content is intentionally retained.
+- **Confidence:** medium for a qualified old V1 unit and low for the family in
+  general. The placement has no located vendor specification and has not been
+  observed on an AFIK-owned physical unit.
+- **Permitted use:** reduce the linker FLASH length, statically reject ELF
+  allocations reaching `0xF000`, and emit only an exact 60 KiB raw image.
+  Nothing may address, erase, package, or write the final 4 KiB.
+- **Required experiment:** after recovery is proven, compare the application
+  boundary against a non-destructive read/debug observation on the exact unit.
+
+### EVID-K5-010 — Legacy packet envelope and EEPROM read observations
+
+- **Observation:** both implementations use 38,400 baud, 8 data bits, no
+  parity, and one stop bit. A packet has `AB CD`, a little-endian payload
+  length, payload plus little-endian CRC-16/XMODEM, and `DC BA`. Payload and CRC
+  bytes are XORed with the repeating 16-byte sequence
+  `16 6C 14 E6 2E 91 0D 40 21 35 D5 40 13 03 E9 80`. Observed radio responses
+  decode to a `0xFFFF` CRC field rather than a calculated CRC.
+- **Observation:** normal firmware accepts `0x0514` hello with the fixed
+  `0x6457396A` session word and `0x051B` reads containing a 16-bit offset,
+  at-most-128-byte length, zero padding, and that word. `0x0515` and `0x051C`
+  responses carry a bounded firmware version and offset/length-tagged data.
+- **Confidence:** medium for the exact old firmware samples represented by the
+  two tools; low for other firmware, password/custom-key modes, or clones.
+- **Permitted use:** a read-only, exact 8 KiB EEPROM backup workflow that
+  rejects any response mismatch. No EEPROM write command is permitted.
+- **Required experiment:** capture and compare every hello/read response from
+  the exact stock test unit, then hash and retain its complete backup before
+  entering bootloader mode.
+
+### EVID-K5-011 — Version-2 bootloader page-write observations
+
+- **Observation:** the version-2 beacon is command `0x0518`; the recorded
+  36-byte sample contains printable version `2.00.06`. A `0x0530` request sends
+  a zero-padded, at-most-16-byte ASCII firmware-family version. The wildcard
+  accepted by third-party tools bypasses the observed version check.
+- **Observation:** a `0x0519` request carries header-size `0x010C`, transaction
+  word `0x1D9F8D8A`, little-endian 256-byte page index and total page count,
+  actual length, zero padding, and one 256-byte data area. `0x051A` returns the
+  transaction word, page index, and a zero success result. Bootloader beacons
+  may continue before the first page acknowledgement.
+- **Inference:** AFIK will accept only a 36-byte `2.*` beacon, prohibit version
+  wildcards, write all 240 full pages in ascending order, accept only exact
+  matching zero-result acknowledgements, and stop on the first deviation. It
+  will not retry an unacknowledged page because whether the prior write took
+  effect is not observable.
+- **Confidence:** medium for bootloader 2.00.06 on a qualified old V1 unit; low
+  for other bootloaders. Page acknowledgement is not flash read-back.
+- **Permitted use:** implement one fail-closed bootloader-v2 host workflow and
+  a deterministic fake device. Command `0x057A`/bootloader v5 and all other
+  beacons are rejected before the version request or any page write.
+- **Required experiment:** probe the exact unit, retain the complete raw
+  transcript, flash a known-good recovery image first, power-cycle, and prove
+  stock boot. Only then may an AFIK application image be attempted.
+
+## FLASH-012 physical evidence boundary
+
+The serial protocol can prove only that a qualified bootloader acknowledged
+each requested page. It cannot identify the MCU, read back internal flash,
+prove power-loss recovery, or prove that Reset reaches AFIK code. Until the
+physical checklist in `docs/k5-flashing.md` is complete, all tests are host,
+static-image, or simulation results and `RISK-002`/`RISK-005` remain open.

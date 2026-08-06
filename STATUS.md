@@ -6,7 +6,8 @@
 flashing.**
 
 This package is limited to an explicitly identified UV-K5 V1 fitted with a
-DP32G030 and the independently observed version-2 serial bootloader. It will
+DP32G030 and the separately pinned reverse-engineered version-2 serial
+bootloader. It will
 reserve the bootloader region, produce and validate a complete AFIK application
 image, preserve a read-only EEPROM/calibration backup, and add a fail-closed
 host flashing workflow. Bootloader v5, later V2/V3 boards, SWD, peripheral

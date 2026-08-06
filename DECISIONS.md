@@ -255,3 +255,26 @@ meaning.
   freshness until explicit expiry, preventing an out-of-order older live report
   from resurrecting a removed entry. This is a conservative local safety rule,
   not APRS authentication or network ownership semantics.
+
+## ADR-020 — K5 deployment preserves the stock bootloader and requires recovery
+
+- **Date:** 2026-08-06
+- **Status:** accepted for `FLASH-012`; physical completion pending
+- AFIK supports only an operator-confirmed UV-K5 V1 fitted with DP32G030 and an
+  exact version-2 bootloader beacon. A beacon does not identify the board. V2,
+  V3, bootloader v5, clones, and unknown variants fail closed.
+- The target owns only `0x0000..=0xEFFF`. Packaging emits exactly 60 KiB and
+  fills unused application bytes with `0xFF`; neither linker nor flasher can
+  address the stock bootloader at `0xF000..=0xFFFF`. The flasher exposes no
+  address, length, partial-write, EEPROM-write, or wildcard-version option.
+- The host library, not its CLI, owns legacy framing, full read-only EEPROM
+  backup, image/recovery validation, sequential page writes, and exact response
+  checking. The legacy bootloader protocol remains separate from AFIK's
+  object-level runtime configuration protocol.
+- A destructive run requires the qualified-target phrase, exact application
+  image CRC-32, a validated 8 KiB EEPROM backup, and a vector-valid known-good
+  raw recovery image. CRC-32 is an accidental-selection guard, not a security
+  signature. Files use create-new behavior unless force is explicit.
+- Page acknowledgement proves only bootloader acceptance. No retry follows an
+  ambiguous write, and no success claim follows without physical recovery and
+  independent boot observations on the exact unit.

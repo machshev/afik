@@ -546,7 +546,8 @@
 - **Objective:** add the smallest host and image path that can safely attempt a
   real firmware update on one explicitly identified UV-K5 V1/DP32G030 radio
   while preserving the stock serial bootloader and unit calibration.
-- **Scope:** pin and record independent observations of the UV-K5 version-2
+- **Scope:** pin and record separately implemented observations of the UV-K5
+  version-2
   serial bootloader; reserve `0xF000..=0xFFFF` from the target application;
   package and statically validate one complete raw application image; implement
   bounded packet framing, read-only normal-firmware EEPROM backup, bootloader
