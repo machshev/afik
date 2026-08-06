@@ -169,10 +169,13 @@ and board experiments under `RISK-006` before implementation.
 
 ### EVID-BK4819-005 — Frequency word and receive-status fields
 
-- **Fact:** the mirrored application note assigns the 32-bit frequency word to
-  `REG_38` high and `REG_39` low with a 10 Hz unit. It labels `REG_67<8:0>`
-  read-only RSSI with `RSSI dBm ~= raw/2 - 160`, and `REG_0C<1>` as a read-only
-  squelch result where one is link/open and zero is loss/closed.
+- **Fact:** the mirrored application note assigns a 32-bit frequency word with
+  a 10 Hz unit across `REG_38` and `REG_39`. Its 409.75 MHz example produces
+  `0x0271_3A98`; the adjacent table shows `REG_38 = 0x3A98` and
+  `REG_39 = 0x0271`, establishing low and high words respectively. It labels
+  `REG_67<8:0>` read-only RSSI with `RSSI dBm ~= raw/2 - 160`, and
+  `REG_0C<1>` as a read-only squelch result where one is link/open and zero is
+  loss/closed.
 - **Method:** copied from the note's Squelch/RSSI and Frequency Setting sections,
   labeled pages 13–14.
 - **Confidence:** medium-low for a BK4819(V3) simulation contract because the
@@ -182,8 +185,8 @@ and board experiments under `RISK-006` before implementation.
   the two words and decode RSSI into signed half-dBm integer units plus one
   squelch boolean in a fake register-bus model.
 - **Required experiment:** obtain the original application note/register table;
-  confirm word order and status fields by read-only observation on identified
-  hardware before binding a target adapter.
+  confirm register order, write/latch ordering, and status fields by read-only
+  observation on identified hardware before binding a target adapter.
 
 ### EVID-BK4819-006 — Mode-control fields and AFIK command-plan inference
 
@@ -194,9 +197,9 @@ and board experiments under `RISK-006` before implementation.
 - **Inference:** for deterministic simulation, AFIK composes `0xBEF1` as
   receive (calibration, all link blocks, AF DAC, all PLL/VCO blocks, RX DSP),
   `0x80FE` as transmit (calibration, all PLL/VCO blocks, PA gain, MIC ADC, TX
-  DSP), and `0x0000` as neutral standby. AFIK writes standby before frequency
-  words and writes the selected mode last so a partially completed command plan
-  cannot intentionally reach transmit enable.
+  DSP), and `0x0000` as neutral standby. AFIK writes standby, `REG_38` low,
+  `REG_39` high, and the selected mode last so a partially completed command
+  plan cannot intentionally reach transmit enable.
 - **Method:** bit positions are copied from application-note labeled page 12;
   exact combined values and ordering are local fail-closed design inferences,
   not copied vendor sequences.
