@@ -44,3 +44,13 @@
 - **Mitigation:** Work Package 3 does not package or flash images. Establish the
   bootloader mask/remap, application region, image format, board revision, and
   non-destructive recovery procedure before any hardware deployment task.
+
+## RISK-006 — Physical display and keypad interfaces are unverified
+
+- **State:** open
+- **Impact:** logical UI behavior cannot yet drive or be validated against a
+  UV-K5-family display, keypad matrix, side keys, timing, or electrical limits.
+- **Mitigation:** `UI-005` uses only product-level logical keys and bounded
+  semantic views. Do not add a target adapter, pin mapping, scan timing, display
+  geometry, or peripheral model until board-specific evidence and required
+  experiments are recorded in `docs/hardware-evidence.md`.

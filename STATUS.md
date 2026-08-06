@@ -2,11 +2,13 @@
 
 ## Current work package
 
-**No work package is active.**
+**Work Package 5 — Simulator-first boot UI and hidden TX permissions
+(`UI-005`) is active.**
 
-Work Package 4 — Canonical configuration image and compiler round trip
-(`STORE-004`) was completed on 2026-08-06. A stable task must be defined and
-activated before Work Package 5 implementation begins.
+The package is limited to hardware-independent logical key input, bounded
+semantic display views, the boot-only TX-permission editor, and deterministic
+host simulation. It does not define physical keypad/display behavior, target
+registers, non-volatile writes, or a transmit driver.
 
 ## State
 
@@ -14,6 +16,7 @@ activated before Work Package 5 implementation begins.
 - Work Package 2 programmer and simulator protocol loop: complete.
 - Work Package 3 minimal target boot proof: complete.
 - Work Package 4 canonical image/compiler round trip: complete.
+- Work Package 5 simulator-first boot UI and hidden TX permissions: active.
 - `STORE-004` allocation-free image codec, exact version/length/CRC contract,
   complete pre-iteration validation, and maximum-count bound: complete.
 - `STORE-004` canonical compiler ordering, image round trip, capacity report,
@@ -36,9 +39,9 @@ activated before Work Package 5 implementation begins.
   complete.
 - Bounded duplicate-sequence replay and conflict rejection: complete.
 - Fragmented and malformed stream recovery: complete.
-- Next smallest task: define and activate the smallest bounded Work Package 5
-  simulator-first display/keypad and hidden TX-permission-menu task with a
-  stable ID, without inventing target peripheral behaviour.
+- Next smallest task: add the hardware-independent `radio-ui` crate and prove
+  the exact boot gesture, release gate, bounded views, edit/cancel/save paths,
+  generation handling, and fail-closed persisted-state loading in unit tests.
 
 ## Completed Work Package 4 exit criteria
 

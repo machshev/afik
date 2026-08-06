@@ -138,3 +138,42 @@
   rejection, simulator compatibility, pinned workspace gates, and Rust 1.86
   tests all pass as recorded in `STATUS.md`. Physical persistence remains open
   in `RISK-004`.
+
+## UI-005 — Simulator-first boot UI and hidden TX permissions
+
+- **Status:** active
+- **Objective:** establish a bounded hardware-independent display/keypad state
+  machine and prove that TX permissions can be inspected and deliberately
+  changed only through a hidden boot-time physical-presence workflow.
+- **Scope:** a new `no_std`, heap-free `radio-ui` crate; logical key sets and
+  edge events; bounded display view models; exact boot-only hidden-menu entry;
+  TX-class navigation, toggle, cancel, save, and generation handling; and a
+  deterministic virtual-time simulator path. Documentation and host tests are
+  included. Physical key scanning, display geometry/fonts, GPIO/registers,
+  backlight, target integration, non-volatile writes, serial permission
+  mutation, and a TX driver are excluded.
+- **Dependencies:** `STORE-004`, `radio-domain`, and `radio-tx-policy`.
+- **Assumptions:** logical keys are product-level actions whose physical mapping
+  will be evidenced later; the hidden gesture prevents ordinary navigation and
+  demonstrates physical presence but is not an authentication mechanism; an
+  in-memory simulator persistence write proves logical behavior only. Saved
+  permissions become active only after a subsequent validated boot load.
+- **Likely files:** `Cargo.toml`, a new `crates/radio-ui`, `crates/radio-sim`, UI,
+  simulator, architecture, and TX-policy documents, `DECISIONS.md`, `RISKS.md`,
+  and handoff files.
+- **Tests required:** ordinary boot and post-boot keys cannot reveal the menu;
+  only the exact boot gesture enters and all held keys must be released before
+  editing; extra or incomplete boot keys reject entry; selectable class order
+  excludes `Never`; navigation/toggle views are bounded; cancel emits no
+  record; save emits one valid next-generation record; generation exhaustion
+  emits none; corrupt persisted bytes load denied; saved bytes authorize only
+  selected classes after a validated simulated reboot; and identical timed
+  input scripts produce identical traces and bytes.
+- **Acceptance criteria:** the UI crate remains hardware-independent, `no_std`,
+  heap-free, and allocation-free; display output is a bounded semantic view and
+  keypad input is logical edge state; the hidden menu has no runtime entry
+  path; no menu action constructs `TxAuthorisation` or mutates live policy;
+  only a deliberate save yields a versioned redundant CRC-protected permission
+  record; invalid state and persistence data deny TX; deterministic simulation
+  covers save, cancel, corruption, reboot, and trace repeatability; no hardware
+  behavior or serial permission object is invented.
