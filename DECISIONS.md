@@ -551,3 +551,17 @@ meaning.
 - A successful compile proves API and generated-metadata compatibility only. It
   does not prove that HAL clock ownership preserves the bootloader-provided
   clock or that USART1 remains responsive while display work yields.
+
+## ADR-038 — First K1 async SPI surface is transmit-only and cooperative
+
+- **Date:** 2026-08-06
+- **Status:** accepted for `K1ASYNC-023`
+- Extend the pinned local HAL only with the display's evidenced SPI1, PA5 SCK
+  AF0, PA7 MOSI AF0, mode-3, MSB-first, divide-by-64 surface. MISO, hardware
+  NSS, other pins/instances, DMA, and receive behavior remain excluded.
+- The first async write may poll each short hardware byte transfer, but it must
+  yield after a fixed bounded byte chunk so executor tasks can progress during
+  a display frame. Async syntax without those yield points is insufficient.
+- Compile this interface without selecting it from the physical image. Runtime
+  scheduler progress, UART responsiveness, and visible display behavior remain
+  later Renode and separately guarded physical gates.

@@ -1134,3 +1134,9 @@
   Embassy-compatible SPI constructor to compile. The next step must define a
   bounded AFIK display-bus driver contract or a separately reviewed local HAL
   extension before changing startup; PAC inventory alone is not driver proof.
+- **SPI1 implementation step:** add a bounded local `py32-hal` transmit-only
+  SPI driver for the evidenced F071 display surface. It must own SPI1, PA5 SCK,
+  and PA7 MOSI; configure mode 3, MSB first, and divide-by-64; expose an async
+  write which yields between bounded chunks; report peripheral faults; and
+  compile without entry-point adoption. MISO, hardware NSS, DMA, RX, other SPI
+  instances/pins, and physical migration remain excluded.

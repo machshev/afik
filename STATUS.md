@@ -117,10 +117,9 @@ features remain outside this bounded slice.
 - Work Package 22 keypad/UI witness definition: complete; the pinned matrix,
   electrical idle/scan levels, one-key decode, explicit-time debounce, and
   display-only result were bounded before implementation.
-- Current smallest actionable task: define the smallest bounded AFIK SPI1
-  display-bus driver contract for PA5 SCK / PA7 MOSI, mode 3, MSB first, and the
-  evidenced divide-by-64 rate, or explicitly bound a local HAL extension,
-  before changing startup.
+- Current smallest actionable task: implement the bounded local `py32-hal`
+  transmit-only SPI1 interface for PA5 SCK / PA7 MOSI, mode 3, MSB first, and
+  divide-by-64, with cooperative bounded-chunk yields and no startup change.
 
 ## Work Package 23 dependency and executor milestone
 
