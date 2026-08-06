@@ -1204,3 +1204,25 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   and F071 ADC HAL bindings are deliberately disabled pending independent
   constants. Time, USART1, SPI1, DMA, interrupts, clocks, and physical behavior
   remain unproven.
+
+### EVID-K1-039 — Compile-only TIM15 Embassy time boundary
+
+- **Generated inventory:** TIM15 is at `0x40014000`, uses `PCLK1_TIM`, has
+  `APBENR2.TIM15EN` and `APBRSTR2.TIM15RST`, exposes CH1 and CH2, and maps its
+  break/update/trigger/commutation/capture-compare signals to the dedicated
+  TIM15 interrupt.
+- **Driver review:** vendored `py32-hal 0.4.1` selects TIM15 explicitly, uses
+  CC1 plus overflow for extended timekeeping, and CC2 for one alarm. It obtains
+  the timer frequency from the generated RCC binding and computes
+  `frequency / TICK_HZ - 1`; Embassy time-driver 0.2.2 defaults to a 1 MHz tick
+  when no tick-rate feature is selected. An evidenced 48 MHz timer clock would
+  therefore produce prescaler 47.
+- **Compile result:** `tool/check-py32f071-time-driver.sh` passes offline,
+  warning-denied Clippy with build-std/core on Rust 1.86 for
+  `thumbv6m-none-eabi`, including the F071R1B PAC, TIM15 RCC binding, runtime
+  interrupt vector, and Embassy driver.
+- **Boundary:** this is a static software result. The feature is not selected
+  by the firmware entry point; HAL init is not called; and AFIK does not claim
+  clock ownership, interrupt delivery, tick accuracy, or physical timing.
+  Runtime migration requires an evidenced handoff from the bootloader-provided
+  clock followed by target and physical verification.

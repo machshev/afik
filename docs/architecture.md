@@ -14,6 +14,10 @@ pinned generated PAC and `vendor/py32-hal` is a bounded compatibility patch;
 root Cargo patches select both without requiring upstream control. The optional
 K1 inventory feature type-checks required peripheral names only. It is not used
 by the firmware entry point and does not initialize clocks or peripherals.
+The optional TIM15 time-driver feature extends that static boundary through the
+HAL's interrupt-enabled Embassy driver. TIM15 is reserved as the candidate, but
+the feature remains absent from the physical firmware path: RCC ownership,
+clock handoff, and timer behavior require separate evidence before migration.
 
 The current hardware-independent crates have this dependency direction:
 

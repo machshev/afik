@@ -367,3 +367,9 @@
   This closes the released-artifact inventory blocker but not the risk: exact
   package identity, time, USART1, SPI1, DMA, interrupt, clock, and physical HAL
   behavior still require separate evidence. F071 ADC HAL bindings remain off.
+- **Time-driver update:** the interrupt-enabled TIM15 Embassy driver now passes
+  strict F071 target compilation. Its metadata and channel capacity are
+  sufficient for this static boundary, but runtime time remains unproven: HAL
+  initialization would take ownership of RCC state, while the current image
+  inherits a 48 MHz clock from the bootloader. Do not migrate startup until
+  that handoff and physical TIM15 interrupt/tick behavior are separately proven.

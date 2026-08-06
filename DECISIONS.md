@@ -520,3 +520,18 @@ meaning.
   Driver behavior, clocks, interrupts, time, UART, SPI, DMA, and physical
   operation remain separately evidenced boundaries. Unsupported ADC bindings
   stay disabled rather than inheriting unevidenced constants merely to compile.
+
+## ADR-036 — TIM15 is the bounded K1 Embassy time candidate
+
+- **Date:** 2026-08-06
+- **Status:** accepted for `K1ASYNC-023`
+- Reserve TIM15 for the prospective Embassy timebase because the pinned F071
+  inventory supplies its RCC control, `PCLK1_TIM`, dedicated interrupt, and two
+  compare channels, while the vendored driver needs CC1 for rollover accounting
+  and CC2 for one alarm.
+- Compile the complete interrupt-enabled driver behind a K1-only optional
+  feature, but do not select it from the firmware image or call HAL init. The
+  existing raw-MMIO startup continues to inherit the observed bootloader clock.
+- Runtime adoption requires an explicit, evidenced clock handoff and separate
+  timing/interrupt verification. A successful target compile is not a claim
+  that the physical timer runs or that the HAL may reconfigure the board clock.

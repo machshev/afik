@@ -1112,3 +1112,10 @@
   the evidenced RCC, USART1, SPI1, timer, and GPIO pin surfaces. No HAL init or
   physical-image path changed. The next independent boundary is time-driver
   evidence and compilation; USART1 and SPI1 behavior remain later milestones.
+- **Time-driver result:** TIM15 is the bounded compile-only candidate: pinned
+  metadata supplies `PCLK1_TIM`, RCC enable/reset, a dedicated interrupt, and
+  the two compare channels required by the HAL's one-alarm Embassy driver.
+  Optional `py32f071-time-driver` passes strict target Clippy without calling
+  HAL initialization or changing the image. Runtime adoption remains blocked
+  on explicit clock handoff and physical interrupt/timing proof. The next
+  independent boundary is the evidenced USART1 path.

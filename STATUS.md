@@ -117,9 +117,9 @@ features remain outside this bounded slice.
 - Work Package 22 keypad/UI witness definition: complete; the pinned matrix,
   electrical idle/scan levels, one-key decode, explicit-time debounce, and
   display-only result were bounded before implementation.
-- Current smallest actionable task: review the vendored F071 timer/RCC metadata
-  and `py32-hal` time-driver implementation against the pinned PY32F071 and K1
-  clock evidence, then compile a no-entry-point time proof.
+- Current smallest actionable task: review the vendored F071 USART1 RCC,
+  interrupt, and PA9/PA10 metadata against the evidenced 38,400-baud K1 path,
+  then compile a no-entry-point USART1 proof without changing startup.
 
 ## Work Package 23 dependency and executor milestone
 
@@ -184,6 +184,32 @@ features remain outside this bounded slice.
   unit, integration, and doc-test binaries passed.
 - No physical image, linker contract, startup path, MMIO behavior, or flash
   operation changed.
+
+## Work Package 23 TIM15 time-driver milestone
+
+- Selected TIM15 as the compile-only Embassy time candidate. The pinned F071
+  metadata gives it `PCLK1_TIM`, RCC enable/reset fields, a dedicated TIM15
+  interrupt, and CH1/CH2 compare surfaces; the vendored HAL driver reserves
+  CC1 for rollover accounting and uses CC2 for its single alarm.
+- Added optional `py32f071-time-driver`, enabling only the existing F071
+  inventory, HAL runtime interrupt vectors, and `time-driver-tim15`. It is not
+  selected by the firmware feature or entry point.
+- Embassy time defaults to 1 MHz when no tick-rate feature is selected. If a
+  later evidenced HAL startup reports the observed bootloader-provided 48 MHz
+  `PCLK1_TIM`, the driver computes prescaler 47 exactly. This milestone neither
+  initializes nor adopts that clock.
+- `nix develop path:. -c tool/check-py32f071-time-driver.sh` — passed; strict
+  warning-denied target Clippy compiled the F071R1B TIM15 driver, interrupt
+  binding, and build-std/core offline for `thumbv6m-none-eabi`.
+- `nix flake check path:. --no-build` — passed.
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
+  — passed.
+- `nix develop path:. -c cargo test --workspace` — passed; all 159 workspace
+  unit, integration, and doc-test binaries passed.
+- `git diff --check` — passed.
+- No HAL initialization, target entry point, physical image, timing behavior,
+  or flash operation changed.
 
 ## Work Package 22 pure keypad milestone
 
