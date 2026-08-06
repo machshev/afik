@@ -7,6 +7,13 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+mod receive;
+
+pub use receive::{
+    cdcss_code_word, ctcss_control_word, AfOutput, ReceiveMetrics, ReceiveSetup, SquelchError,
+    SquelchThresholds, ToneStatus, RECEIVE_FILTER_PATH_BOUNDARY_HZ,
+};
+
 use core::fmt;
 use radio_domain::{ActiveChannel, Frequency, TxClass};
 use radio_tx_policy::TxAuthorisation;
@@ -220,6 +227,12 @@ impl<B: RegisterBus> Bk4819<B> {
         &self.bus
     }
 
+    /// Returns a mutable reference to the underlying adapter for test fixtures.
+    #[cfg(test)]
+    pub(crate) const fn bus_mut(&mut self) -> &mut B {
+        &mut self.bus
+    }
+
     /// Writes the neutral mode from any state, including unknown or faulted.
     pub fn recover_to_standby(&mut self) -> Result<(), DriverError<B::Error>> {
         self.write(REG_MODE_CONTROL, MODE_STANDBY)?;
@@ -325,27 +338,20 @@ impl<B: RegisterBus> Bk4819<B> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests_support {
     extern crate std;
 
-    use super::{
-        Bk4819, DriverError, DriverState, FrequencyError, FrequencyWord, ReceiveStatus,
-        RegisterAddress, RegisterBus, MODE_RECEIVE, MODE_STANDBY, MODE_TRANSMIT,
-        REG_FREQUENCY_HIGH, REG_FREQUENCY_LOW, REG_MODE_CONTROL, REG_RSSI, REG_SQUELCH_STATUS,
-        SQUELCH_OPEN,
-    };
-    use radio_domain::{ActiveChannel, Frequency, TxClass};
-    use radio_tx_policy::{PermissionSet, StoredPermissions, TxPolicy};
-    use std::{vec, vec::Vec};
+    use super::{RegisterAddress, RegisterBus};
+    use std::vec::Vec;
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-    enum Operation {
+    pub(crate) enum Operation {
         Write(RegisterAddress, u16),
         Read(RegisterAddress),
     }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-    struct FakeBusError;
+    pub(crate) struct FakeBusError;
 
     impl core::fmt::Display for FakeBusError {
         fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -353,15 +359,15 @@ mod tests {
         }
     }
 
-    struct FakeBus {
+    pub(crate) struct FakeBus {
         registers: [u16; 128],
-        operations: Vec<Operation>,
+        pub(crate) operations: Vec<Operation>,
         fail_on_call: Option<usize>,
         calls: usize,
     }
 
     impl FakeBus {
-        fn new(fail_on_call: Option<usize>) -> Self {
+        pub(crate) fn new(fail_on_call: Option<usize>) -> Self {
             Self {
                 registers: [0; 128],
                 operations: Vec::new(),
@@ -370,9 +376,13 @@ mod tests {
             }
         }
 
-        fn with_register(mut self, address: RegisterAddress, value: u16) -> Self {
+        pub(crate) fn with_register(mut self, address: RegisterAddress, value: u16) -> Self {
             self.registers[usize::from(address.get())] = value;
             self
+        }
+
+        pub(crate) fn set_register(&mut self, address: RegisterAddress, value: u16) {
+            self.registers[usize::from(address.get())] = value;
         }
 
         fn before_operation(&mut self) -> Result<(), FakeBusError> {
@@ -402,6 +412,21 @@ mod tests {
             Ok(self.registers[usize::from(address.get())])
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use super::tests_support::{FakeBus, FakeBusError, Operation};
+    use super::{
+        Bk4819, DriverError, DriverState, FrequencyError, FrequencyWord, ReceiveStatus,
+        RegisterAddress, MODE_RECEIVE, MODE_STANDBY, MODE_TRANSMIT, REG_FREQUENCY_HIGH,
+        REG_FREQUENCY_LOW, REG_MODE_CONTROL, REG_RSSI, REG_SQUELCH_STATUS, SQUELCH_OPEN,
+    };
+    use radio_domain::{ActiveChannel, Frequency, TxClass};
+    use radio_tx_policy::{PermissionSet, StoredPermissions, TxPolicy};
+    use std::vec;
 
     fn frequency(hertz: u32) -> Frequency {
         Frequency::from_hz(hertz).unwrap()
