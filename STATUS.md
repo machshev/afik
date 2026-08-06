@@ -43,6 +43,11 @@ features remain outside this bounded slice.
   path, source-backed USART1 contract, serial witness image, and separately
   guarded K1 AFIK writer are implemented and locally verified. The witness
   image returned `AFIK-K1-0.1` after power-cycle.
+- Work Package 18 next K1 application slice: complete; selected the bounded
+  display-only witness tracked by `K1DISP-019`.
+- Work Package 19 K1 display-only witness: implementation and static verification
+  complete; physical display and `AFIK-K1-0.2` observations pending explicit
+  confirmation and a user power-cycle.
 - `UI-005` logical key edges, bounded semantic views, exact boot-only entry,
   release gate, draft editor, and checked persistence action: complete.
 - `UI-005` separate persisted/active policy simulation, deterministic timed
@@ -100,9 +105,10 @@ features remain outside this bounded slice.
   pending; no serial device is visible here.
 - Work Package 18 selected and bounded the next application slice: a fixed
   display-only AFIK boot witness with the serial responder retained.
-- Current smallest actionable task: implement and host-test the allocation-free
-  display command/rendering layer for `K1DISP-019`. No new physical write is
-  authorized by this activation milestone.
+- Current smallest actionable task: after explicit user confirmation, perform
+  one guarded write of the verified 48,436-byte display-witness image, ask for
+  a power-cycle, observe the fixed screen, and run `probe-normal` for
+  `AFIK-K1-0.2`. No physical write has been sent for Work Package 19.
 
 ## Work Package 14 implementation milestone
 
@@ -292,6 +298,46 @@ Work-package activation verification on 2026-08-06:
   general application. The existing serial witness and stock recovery route
   remain required. Activation was verified with `cargo fmt --all --check` and
   `git diff --check` in the pinned environment before implementation.
+
+## Work Package 19 display implementation milestone
+
+- Added an allocation-free display command/rendering module in the standalone
+  K1 firmware crate. It owns the exact bounded initialization/power sequence,
+  eight visible page writes with the four-column panel offset, fixed 5-by-7
+  `AFIK` and `K1 0.2` glyphs, and a fallible board-transport trait.
+- Exact host traces cover initialization delays and commands, all page/data
+  writes, deterministic bounded framebuffer output, and fail-stop behavior at
+  an injected transfer error.
+- The K1 target leaf independently binds only the pinned RCC, GPIOA/GPIOB, and
+  SPI1 registers. It uses PA5/PA7 AF0 for clock/data, PA6 for A0, PB2 for
+  active-low CS, SPI mode 3, MSB-first, and divide-by-64. All status polls are
+  bounded; timeout de-selects the display and leaves the existing serial hello
+  loop reachable.
+- The serial identity is now `AFIK-K1-0.2`. No keypad/PTT, backlight, audio,
+  storage, USB, BK4819, RF, TX, EEPROM, interrupt, or DMA behavior was added.
+- The raw image is 48,436 bytes, SHA-256
+  `94ac835a473a8a910b740eb792c3a3567254ea297b1d23c31e2c7e52d0ec327b`,
+  with initial SP `0x20004000`, Reset `0x08002919`, and ELF image end
+  `0x0800e534`, below the `0x08020000` application end.
+
+Static verification on 2026-08-06:
+
+- `nix flake check path:. --no-build` — passed on `x86_64-linux`; incompatible
+  `aarch64-linux` output was evaluation-skipped by Nix.
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
+  — passed.
+- `nix develop path:. -c cargo test --workspace` — passed: 132 unit/integration
+  tests and all doc tests.
+- Warning-denied `thumbv6m-none-eabi` Clippy with pinned build-std/core and LLD
+  — passed for `radio-firmware-k1`.
+- `nix develop path:. -c tool/build-k1.sh` and
+  `nix develop path:. -c tool/verify-k1-image.sh` — passed.
+- `nix develop path:. -c tool/package-k1-image.sh --force` — passed and emitted
+  the bounded image/hash above.
+- `nix develop path:. -c tool/test-k1-image.sh` — passed positive comparison
+  plus truncated, oversized, and non-Thumb negative fixtures.
+- `git diff --check` — passed. No physical write or display claim was made.
 
 ## Work Package 13 first evidence milestone
 

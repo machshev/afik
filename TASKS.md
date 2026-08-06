@@ -889,3 +889,10 @@
   or TX path; serial hello remains responsive; and static verification passes
   before any physical write is proposed. Physical success is claimed only if
   the fixed AFIK screen and serial identity are independently observed.
+- **Implementation notes:** the pure command/rendering module, exact trace and
+  failure tests, bounded PY32F071 SPI1/GPIO binding, fixed screen, and
+  `AFIK-K1-0.2` serial regression are implemented and pass all static gates.
+  The generated raw image is 48,436 bytes with SHA-256
+  `94ac835a473a8a910b740eb792c3a3567254ea297b1d23c31e2c7e52d0ec327b`.
+  The task remains active until a separately confirmed physical write is
+  followed by visible-screen and serial observations.

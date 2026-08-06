@@ -349,3 +349,11 @@ and framebuffer traces must pass on the host before a physical image is
 proposed. A physical write requires explicit confirmation and is successful
 only after both the screen and the existing serial hello are observed; the
 retained stock image remains the rollback route.
+
+The static implementation is complete. It renders fixed `AFIK` and `K1 0.2`
+text, retains a bounded `AFIK-K1-0.2` serial response, and de-selects the panel
+after a bounded SPI timeout so display failure cannot trap the serial loop. The
+48,436-byte raw image has SHA-256
+`94ac835a473a8a910b740eb792c3a3567254ea297b1d23c31e2c7e52d0ec327b`.
+This is not yet a physical display observation; the next write remains
+explicitly confirmation-gated.
