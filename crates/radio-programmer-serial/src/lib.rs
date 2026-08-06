@@ -112,7 +112,7 @@ pub struct LinuxSerialTransport {
 }
 
 impl LinuxSerialTransport {
-    /// Configures one explicit path as raw/no-echo with a 0.1-second read timer.
+    /// Configures one explicit path as raw/no-echo with a 0.2-second read timer.
     pub fn open(path: &Path, baud: u32) -> Result<Self, SerialOpenError> {
         if !is_supported_baud(baud) {
             return Err(SerialOpenError::UnsupportedBaud(baud));
@@ -121,7 +121,7 @@ impl LinuxSerialTransport {
         let configured = Command::new("stty")
             .arg("-F")
             .arg(path)
-            .args(["raw", "-echo", "min", "0", "time", "1"])
+            .args(["raw", "-echo", "min", "0", "time", "2"])
             .arg(&baud_text)
             .output()
             .map_err(SerialOpenError::Stty)?;
