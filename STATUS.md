@@ -201,6 +201,21 @@ Passive-beacon verification on 2026-08-06:
   user-controlled locations and confirm both SHA-256 values, then validate the
   exact known-good Armel v5.5 recovery image before any firmware write.
 
+## Work Package 13 recovery-candidate milestone
+
+- Pinned Armel `main` contains `archive/f4hwn.fusion.v5.5.0.bin`, matching the
+  exact unit's normal firmware identity. It is a 95,836-byte raw image with
+  SHA-256
+  `7b6b277c319e6924bd878f4e4208490875dc3f15beb205c366d20130c02a4463`.
+- Static validation passed: initial SP `0x20004000`, Thumb Reset vector
+  `0x08002D49`, and exclusive end `0x08019E5C` inside the evidenced main flash.
+  An initial attempt to apply the packed-image decoder correctly rejected the
+  file because it already has valid raw-image vectors; no derived file was
+  created.
+- This is only a source- and vector-valid recovery candidate. Physical recovery
+  is not proven and no firmware write is authorized until both the private
+  backup and recovery candidate have two persistent verified copies.
+
 ## Work Package 12 software milestone and verification
 
 - Sources and confidence boundaries are recorded in

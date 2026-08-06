@@ -82,6 +82,20 @@ order are maintained in `docs/k1-bring-up.md`.
   then identify and validate the exact known-good v5.5 recovery image before
   any firmware write.
 
+### EVID-K1-019 — Pinned v5.5.0 recovery candidate is statically valid
+
+- **Observation:** pinned Armel `main` contains raw image
+  `archive/f4hwn.fusion.v5.5.0.bin`, SHA-256
+  `7b6b277c319e6924bd878f4e4208490875dc3f15beb205c366d20130c02a4463`,
+  length 95,836 bytes. Its initial SP is `0x20004000`, Reset is Thumb address
+  `0x08002D49`, and its exclusive end from application origin `0x08002800` is
+  `0x08019E5C`, within main flash.
+- **Confidence:** high for source identity, raw shape, vectors, and range; high
+  that its version name matches the exact unit's reported `F4HWN v5.5.0`.
+- **Boundary:** static validation is not physical recovery proof. Do not use it
+  for an AFIK attempt until two persistent copies exist and an unchanged-image
+  recovery rehearsal returns this exact unit to normal v5.5.0 operation.
+
 ### Puya PY32F071-E product documentation
 
 - **Publisher:** Puya Semiconductor (Shanghai) Co., Ltd.

@@ -118,6 +118,28 @@ only after all 8 KiB arrive. That corrected read-only workflow succeeded:
 The temporary backup is not a durable second copy. It must be copied to two
 user-controlled persistent locations and re-hashed before any firmware write.
 
+## Candidate v5.5.0 recovery image
+
+Pinned Armel commit `fe9c4e9432694b50aea651084a043aae0b58673d`
+contains `archive/f4hwn.fusion.v5.5.0.bin`, matching the normal firmware
+identity reported by the exact unit.
+
+- Source bytes: 95,836
+- SHA-256:
+  `7b6b277c319e6924bd878f4e4208490875dc3f15beb205c366d20130c02a4463`
+- Format: raw Cortex-M application image; it already satisfies the pinned
+  codec's raw-image test and must not be passed through packed-image decoding.
+- Initial stack pointer: `0x20004000`, the top of the evidenced 16 KiB SRAM.
+- Reset vector: `0x08002D49`, Thumb and inside the application range.
+- File end when loaded at `0x08002800`: `0x08019E5C`, below the 128 KiB main
+  flash end `0x08020000`.
+
+This is a source- and vector-valid recovery candidate, not yet a physically
+rehearsed recovery image. Retain two persistent byte-identical copies before
+any write. The first later write experiment must reflash this unchanged image,
+prove normal `v5.5.0` boot, confirm the calibration/configuration backup, and
+prove that bootloader `7.03.01` remains available.
+
 ## Pinned CHIRP protocol evidence
 
 - Repository: `armel/uv-k5-chirp-driver`
