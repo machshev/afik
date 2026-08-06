@@ -2,8 +2,8 @@
 
 ## Current work package
 
-**Work Package 20 (`K1BL-020`) is active: add constant active-high PF8
-illumination to the physically verified K1 display witness.**
+**Work Package 21 (`K1CON-021`) is active: calibrate the fixed K1 boot-witness
+contrast after successful display, backlight, and serial observations.**
 
 K1 has priority because an exact unit running Armel firmware is available for
 inspection. `K1EVID-013` supplies the K1 evidence baseline and same-unit
@@ -47,8 +47,10 @@ features remain outside this bounded slice.
   display-only witness tracked by `K1DISP-019`.
 - Work Package 19 K1 display-only witness: complete; the fixed words were
   physically visible under bright external light and `AFIK-K1-0.2` responded.
-- Work Package 20 constant K1 backlight: active; bounded PF8 implementation and
-  static verification complete; physical illumination confirmation pending.
+- Work Package 20 constant K1 backlight: complete; bounded PF8 implementation
+  and static/physical verification passed.
+- Work Package 21 fixed K1 contrast: active; exact one-byte command change and
+  static verification pending.
 - `UI-005` logical key edges, bounded semantic views, exact boot-only entry,
   release gate, draft editor, and checked persistence action: complete.
 - `UI-005` separate persisted/active policy simulation, deterministic timed
@@ -106,9 +108,9 @@ features remain outside this bounded slice.
   pending; no serial device is visible here.
 - Work Package 18 selected and bounded the next application slice: a fixed
   display-only AFIK boot witness with the serial responder retained.
-- Current smallest actionable task: after explicit confirmation for the exact
-  verified 48,580-byte image, perform one guarded write, power-cycle, observe
-  backlight plus fixed words, and probe `AFIK-K1-0.2` over serial.
+- Current smallest actionable task: change and test only the fixed electronic
+  volume from 21 to the pinned startup value 31 for `K1CON-021`. No further
+  physical write is authorized by this activation milestone.
 
 ## Work Package 14 implementation milestone
 
@@ -389,6 +391,20 @@ Static verification on 2026-08-06:
   `tool/package-k1-image.sh --force`, and `tool/test-k1-image.sh` through
   `nix develop path:. -c` — passed, including negative raw-image fixtures.
 - `git diff --check` — passed. No revised image write was sent.
+
+Physical backlight verification on 2026-08-06:
+
+- After explicit authorization and revalidation of all guards, K1 `7.03.01`
+  acknowledged all `190/190` pages of the 48,580-byte image in transaction
+  `7e094920`; status was `acknowledged_not_read_back`. No retry or reset was
+  sent.
+- After power-cycle, the user observed the backlight and the fixed words. This
+  completes the constant active-high PF8 witness.
+- The words were faint. The current electronic-volume value is AFIK's initial
+  conservative `0x15`; the pinned board source uses fixed startup value `0x1f`.
+  A one-byte contrast calibration is activated separately as `K1CON-021`.
+- The final read-only normal-mode probe passed with
+  `protocol=normal-firmware-hello`, `firmware=AFIK-K1-0.2`.
 
 ## Work Package 13 first evidence milestone
 

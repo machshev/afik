@@ -894,12 +894,11 @@
   `AFIK-K1-0.2` serial regression are implemented and pass all static gates.
   The generated raw image is 48,436 bytes with SHA-256
   `94ac835a473a8a910b740eb792c3a3567254ea297b1d23c31e2c7e52d0ec327b`.
-  The task remains active until a separately confirmed physical write is
-  followed by visible-screen and serial observations.
+  Physical completion is recorded below.
 - **Physical attempt:** one explicitly authorized write acknowledged all 190
   pages, but the screen was blank after power-cycle. The serial fallback still
-  returned `AFIK-K1-0.2`, so the task remains active and no second write is
-  authorized. The next observation must distinguish the separately controlled
+  returned `AFIK-K1-0.2`, so no second write was authorized at that point. The
+  next observation distinguished the separately controlled
   active-high PF8 backlight from LCD pixel generation.
 - **Completion notes:** under bright external light, the user observed the fixed
   AFIK words on the panel. This establishes LCD initialization, page addressing,
@@ -909,7 +908,7 @@
 
 ## K1BL-020 — Constant K1 boot-witness backlight
 
-- **Status:** active (2026-08-06)
+- **Status:** complete (2026-08-06)
 - **Objective:** make the physically verified fixed K1 display witness readable
   without external illumination using the smallest evidenced backlight action.
 - **Scope:** record PF8 as the pinned active-high backlight output; configure
@@ -932,5 +931,31 @@
   binding are implemented and pass host, workspace, target Clippy, ELF, and raw
   image gates. The 48,580-byte image has SHA-256
   `249bccb1cf66ce3269cc64d80f8171fbafdb6835ab7f31a2df3fc152c9b93489`
-  and CRC-32 `a327eba0`. The task remains active pending one separately
-  confirmed physical write and illumination/serial observations.
+  and CRC-32 `a327eba0`. Physical completion is recorded below.
+- **Completion notes:** the guarded 190-page write completed without retry.
+  After power-cycle, the user observed both the backlight and the fixed words;
+  the final read-only probe returned `AFIK-K1-0.2`. The words were faint, which
+  is isolated as contrast calibration under `K1CON-021` rather than a PF8 or
+  display-transport failure.
+
+## K1CON-021 — Fixed K1 boot-witness contrast calibration
+
+- **Status:** active (2026-08-06)
+- **Objective:** make the physically verified fixed words clearly readable by
+  replacing AFIK's conservative electronic-volume value with the pinned board
+  source's fixed startup value.
+- **Scope:** change only the ST7565-compatible electronic-volume byte from 21
+  (`0x15`) to 31 (`0x1f`); retain the exact display bytes, PF8 constant output,
+  serial responder, controller power sequence, pins, SPI setup, and bounds.
+- **Dependencies:** completed `K1DISP-019` and `K1BL-020`, the exact-unit faint
+  text observation, retained recovery/backup artifacts, and the pinned fixed
+  startup contrast value in `App/driver/st7565.c`.
+- **Exclusions:** runtime contrast settings, keypad input, persistence, PWM,
+  timers, DMA, automatic calibration, display inversion, RF/TX, audio, storage,
+  USB, and a general UI.
+- **Tests required:** update the exact init trace; prove no framebuffer or other
+  command changes; run target/image/workspace gates; and require a separately
+  confirmed physical write followed by readability and serial observations.
+- **Acceptance criteria:** the only controller-stream change is electronic
+  volume `0x15` to `0x1f`; existing display/backlight/serial observations remain
+  intact; and no production brightness/contrast policy is claimed.

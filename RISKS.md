@@ -289,3 +289,14 @@
   active-high PF8 mapping and deliberately excludes TIM7, DMA, settings, and
   persistence. A later UI/power package must define bounded brightness and
   shutdown behavior before treating the backlight as a production driver.
+
+## RISK-023 — Fixed K1 contrast is not a production calibration policy
+
+- **State:** open
+- **Impact:** one fixed electronic-volume value may vary across panels,
+  temperature, supply voltage, and viewing angle, and it provides no user
+  adjustment or persistence.
+- **Mitigation:** `K1CON-021` tests only the pinned startup value 31 after the
+  exact unit showed faint pixels at 21. Treat success as a boot-witness
+  readability result. A future UI/persistence package must bound adjustment,
+  valid ranges, defaults, and recovery before exposing contrast as a setting.

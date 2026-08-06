@@ -428,3 +428,13 @@ meaning.
   their own timing, power, UI, and durability contracts.
 - The constant output adds illumination only. It cannot access keypad/PTT,
   audio, storage, BK4819, RF/TX, USB, interrupts, or EEPROM.
+
+## ADR-030 — First K1 contrast correction is one fixed evidenced byte
+
+- **Date:** 2026-08-06
+- **Status:** accepted for `K1CON-021`
+- The physically visible but faint AFIK words use electronic volume 21. The
+  pinned board startup uses 31, so the next calibration changes only `0x15` to
+  `0x1f` in the exact init trace.
+- This does not create a contrast menu, keypad dependency, EEPROM setting,
+  automatic calibration, or final UI policy. Those require later bounded tasks.

@@ -285,6 +285,20 @@ order are maintained in `docs/k1-bring-up.md`.
   push-pull output, and hold it high. PWM, timer, DMA, fades, settings, storage,
   RF, and TX remain excluded.
 
+### EVID-K1-029 — PF8 illumination passed and fixed contrast is faint
+
+- **Write observation:** K1 `7.03.01` acknowledged all 190 pages of the exact
+  PF8 image in transaction `7e094920`, with no retry or reset.
+- **Physical observation:** after power-cycle, the user saw the active backlight
+  and fixed words. The words were faint. The immediate read-only serial probe
+  returned `AFIK-K1-0.2`.
+- **Conclusion:** high confidence for the constant active-high PF8 binding and
+  retained display/USART paths. Faint pixels are now isolated to contrast
+  calibration, not missing illumination or display transport.
+- **Pinned candidate:** `App/driver/st7565.c` uses electronic-volume value 31
+  during fixed startup, while AFIK used 21. `K1CON-021` may change only that
+  command byte and must not infer a runtime setting or final panel policy.
+
 ## Sources used by DP32-003
 
 ### DP32G030 reference manual v1.23
