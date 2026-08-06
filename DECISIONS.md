@@ -131,3 +131,19 @@ meaning.
 - The image format is not a DP32G030 flash layout, transactional journal,
   project-file syntax, or proof of power-loss durability. Those concerns
   require separate evidence and decisions.
+
+## ADR-013 — TX-permission editing is boot-only and activates on reboot
+
+- **Date:** 2026-08-06
+- **Status:** accepted for `UI-005`
+- The hardware-independent UI enters its hidden editor only when the initial
+  logical key set is exactly `Menu+Back`, then waits for all held keys to be
+  released. Incomplete, additional, or post-boot keys cannot enter it. The
+  logical gesture is a deliberate-presence workflow, not authentication or a
+  claim about physical key wiring.
+- Editing changes only a bounded draft. Cancel emits no record; save increments
+  the generation and emits the existing redundant CRC-protected permission
+  record, or refuses at generation exhaustion. `Never` is not selectable.
+- Saving never mutates the active policy. The simulator and future target
+  adapters must keep persistence separate from the `TxPolicy` loaded at boot;
+  saved permissions take effect only after subsequent validated loading.

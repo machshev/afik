@@ -95,3 +95,15 @@ DP32G030 registers or claims about hardware behaviour.
 - The exact UV-K5-family board revision and fitted DP32G030 silicon have not
   been inspected.
 - Hardware flashing remains blocked by `RISK-002`.
+
+## Work Package 5 UI evidence boundary
+
+`UI-005` introduces no hardware facts. `Menu`, `Back`, `Up`, `Down`, and
+`Confirm` are product-level logical actions, and its display output is a
+semantic enum rather than pixels or bus traffic. The `Menu+Back` boot gesture
+is an AFIK workflow decision, not a claim about an existing radio key matrix.
+
+The physical key matrix, side-key wiring, scan polarity and timing, display
+controller, dimensions, bus, reset sequence, backlight, and board pins remain
+unknown. A target UI adapter or peripheral simulator requires new sourced facts
+and board experiments under `RISK-006` before implementation.

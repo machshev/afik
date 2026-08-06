@@ -141,7 +141,7 @@
 
 ## UI-005 — Simulator-first boot UI and hidden TX permissions
 
-- **Status:** active
+- **Status:** complete (2026-08-06)
 - **Objective:** establish a bounded hardware-independent display/keypad state
   machine and prove that TX permissions can be inspected and deliberately
   changed only through a hidden boot-time physical-presence workflow.
@@ -177,3 +177,15 @@
   record; invalid state and persistence data deny TX; deterministic simulation
   covers save, cancel, corruption, reboot, and trace repeatability; no hardware
   behavior or serial permission object is invented.
+- **Completion notes:** added `radio-ui` with bounded logical key sets/edges,
+  semantic views, exact `Menu+Back` boot-only entry, held-key release gating,
+  fixed authorisable-class navigation, draft toggle/cancel/save behavior, and
+  checked generation advancement. Invalid records initialize deny-all; save
+  emits the existing redundant CRC-protected record without touching live
+  policy; a validated reboot is required to activate it. `UiSimulator` keeps
+  persisted bytes and boot-loaded policy separate and records deterministic
+  virtual-time boot, input, view, action, persistence, and reboot events.
+  Exact entry rejection, edge de-duplication, cancel, corruption, generation
+  exhaustion, selected-class authorization, reboot-only activation, and trace
+  repeatability pass in tests. Pinned host, embedded `thumbv6m`, and Rust 1.86
+  checks are recorded in `STATUS.md`; physical UI remains open in `RISK-006`.

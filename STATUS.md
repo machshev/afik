@@ -2,13 +2,11 @@
 
 ## Current work package
 
-**Work Package 5 — Simulator-first boot UI and hidden TX permissions
-(`UI-005`) is active.**
+**No work package is active.**
 
-The package is limited to hardware-independent logical key input, bounded
-semantic display views, the boot-only TX-permission editor, and deterministic
-host simulation. It does not define physical keypad/display behavior, target
-registers, non-volatile writes, or a transmit driver.
+Work Package 5 — Simulator-first boot UI and hidden TX permissions (`UI-005`)
+was completed on 2026-08-06. A stable evidence-first task must be defined and
+activated before Work Package 6 implementation begins.
 
 ## State
 
@@ -16,7 +14,11 @@ registers, non-volatile writes, or a transmit driver.
 - Work Package 2 programmer and simulator protocol loop: complete.
 - Work Package 3 minimal target boot proof: complete.
 - Work Package 4 canonical image/compiler round trip: complete.
-- Work Package 5 simulator-first boot UI and hidden TX permissions: active.
+- Work Package 5 simulator-first boot UI and hidden TX permissions: complete.
+- `UI-005` logical key edges, bounded semantic views, exact boot-only entry,
+  release gate, draft editor, and checked persistence action: complete.
+- `UI-005` separate persisted/active policy simulation, deterministic timed
+  trace, corrupt-state denial, and reboot-only activation proof: complete.
 - `STORE-004` allocation-free image codec, exact version/length/CRC contract,
   complete pre-iteration validation, and maximum-count bound: complete.
 - `STORE-004` canonical compiler ordering, image round trip, capacity report,
@@ -39,9 +41,42 @@ registers, non-volatile writes, or a transmit driver.
   complete.
 - Bounded duplicate-sequence replay and conflict rejection: complete.
 - Fragmented and malformed stream recovery: complete.
-- Next smallest task: add the hardware-independent `radio-ui` crate and prove
-  the exact boot gesture, release gate, bounded views, edit/cancel/save paths,
-  generation handling, and fail-closed persisted-state loading in unit tests.
+- Next smallest task: define and activate the smallest bounded Work Package 6
+  evidence-first BK4819 receive-path and safe-TX-boundary task with a stable ID;
+  record sourced facts and unknowns before adding any peripheral behavior.
+
+## Completed Work Package 5 exit criteria
+
+- `radio-ui` is `no_std`, heap-free, allocation-free, hardware-independent, and
+  passes a `thumbv6m-none-eabi` lint build.
+- Only the exact initial logical `Menu+Back` set enters the hidden editor;
+  incomplete, additional, and post-boot keys cannot enter, and all held keys
+  must be released before editing.
+- The fixed selectable order contains all six authorisable classes and excludes
+  `Never`; bounded views expose selection, enabled/changed state, save errors,
+  and saved generation without physical display assumptions.
+- Cancel emits no record. Deliberate save emits one next-generation redundant
+  CRC-protected record, while generation exhaustion emits none.
+- The UI never owns live policy or constructs authorization. Simulator save
+  changes only persisted bytes; only a validated reboot changes active policy.
+- Corrupt persistence defaults both editor draft and active policy to deny-all;
+  identical timed scripts produce identical traces and bytes.
+- No physical key/display behavior, non-volatile write, serial permission
+  object, hardware register access, or TX driver was added.
+
+## Last verification
+
+Verified 2026-08-06:
+
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
+  — passed for all host crates and targets.
+- `nix develop path:. -c cargo test --workspace` — passed: 42 unit tests and
+  all doc tests, 0 failures.
+- `nix develop path:. -c bash -c 'export RUSTC_BOOTSTRAP=1; export __CARGO_TESTS_ONLY_SRC_ROOT="$RUST_SRC_PATH"; cargo clippy -Z build-std=core --package radio-ui --target thumbv6m-none-eabi -- -D warnings'`
+  — passed for `radio-ui` and its embedded dependencies.
+- `env RUSTC=/nix/store/2mm3p5wcy1ifrcx5vp3bwsw7a76r77jc-rustc-1.86.0/bin/rustc RUSTDOC=/nix/store/2mm3p5wcy1ifrcx5vp3bwsw7a76r77jc-rustc-1.86.0/bin/rustdoc CARGO_TARGET_DIR=/tmp/afik-ui-005-rust-1-86-target /nix/store/npqlgsia03kfhv8m9mav6hfnbawpg0yg-cargo-1.86.0/bin/cargo test --workspace`
+  — passed: 42 unit tests and all doc tests on Rust/Cargo 1.86.0.
 
 ## Completed Work Package 4 exit criteria
 
@@ -60,7 +95,7 @@ registers, non-volatile writes, or a transmit driver.
 - Existing protocol and simulator behaviour remains green. The image remains
   offline and logical; physical layout and durability stay open in `RISK-004`.
 
-## Last verification
+## Work Package 4 verification
 
 Verified 2026-08-06:
 

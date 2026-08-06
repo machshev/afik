@@ -26,8 +26,25 @@ overflow, and a valid request delivered one byte at a time. Only the valid
 request produces a response, and discarded packet errors appear in exact input
 order in the trace.
 
-GPIO, display, keypad, BK4819, audio, power, and scenario-YAML models belong to
-later work packages; no behaviour for them is invented here.
+GPIO, physical display/keypad behavior, BK4819, audio, power, and scenario-YAML
+models belong to later work packages; no behavior for them is invented here.
+
+## Boot UI and TX permissions
+
+Work Package 5 adds a separate `UiSimulator` using the same explicit virtual
+time principle. It records boot/load status, logical key edges, semantic views,
+UI actions, and in-memory permission persistence in exact order. Identical
+timed scripts must produce identical traces and bytes.
+
+The simulator holds persisted permission bytes separately from the active
+`TxPolicy`. A save action replaces only the simulated bytes. The currently
+active policy remains unchanged until an explicit simulated reboot validates
+the record; corrupt bytes default that reboot to deny-all. Cancel emits no
+persistence event and preserves the original bytes.
+
+This proves logical state-machine behavior, not non-volatile durability,
+physical keypad scanning, display rendering, debounce timing, or security of a
+particular key chord.
 
 ## Minimal DP32G030 target model
 

@@ -1,19 +1,14 @@
 # Architecture
 
-The first milestone has this dependency direction:
+The current hardware-independent crates have this dependency direction:
 
 ```text
-radio-domain
-     ↓
-radio-channel-plan
-     ↓
-radio-storage
+radio-domain ──→ radio-channel-plan ──→ radio-storage
+      │
+      └────────→ radio-tx-policy ─────→ radio-ui
 
-radio-tx-policy       radio-protocol
-                              ↓
-                       radio-programmer
-                              ↓
-                         radio-sim
+radio-protocol ──→ radio-programmer ──→ radio-sim
+radio-ui ─────────────────────────────→ radio-sim
 ```
 
 `radio-domain` owns checked integer radio types and classifications.
@@ -44,3 +39,10 @@ and allocates no heap. `radio-programmer` owns host-side canonical ordering,
 image import/export, negotiated-capability checks, and allocated project data.
 The image is independent of transport and target hardware; no physical flash
 layout or durability semantics cross into the hardware-independent crate.
+
+Work Package 5 adds `radio-ui` as another embedded, hardware-independent leaf
+over `radio-domain` and `radio-tx-policy`. It owns only logical key edges,
+bounded semantic display views, and boot-scoped draft permission state. It does
+not own key scanning, display drawing, persistence I/O, or live transmit policy.
+`radio-sim` provides the host-only virtual-time adapter and keeps persisted
+permission bytes separate from the active policy loaded at the last boot.
