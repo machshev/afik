@@ -454,3 +454,17 @@ meaning.
   copied polling loop or assumed target tick rate. Its only application effect
   is replacing a fixed display label after a debounced press. It cannot invoke
   general menus, persistence, radio control, or TX authority.
+
+## ADR-032 — K1 keypad diagnosis uses a simulation-only execution hook
+
+- **Date:** 2026-08-06
+- **Status:** accepted for `K1KEY-022`
+- A K1 Renode harness may supply bounded register storage and one synthetic
+  active-low main-key cell, then hook the existing ELF symbol
+  `render_key_witness`. Reaching that symbol proves the compiled scan/debounce
+  control flow accepted the injected cell; it does not prove electrical levels,
+  timing, controller behavior, or visible pixels.
+- The harness must use explicit test-only conventions rather than presenting
+  them as PY32 registers. No production firmware diagnostic sentinel, copied
+  peripheral implementation, RF/TX behavior, or physical-success claim is
+  added.

@@ -1029,3 +1029,7 @@
 - **Correction write:** K1 `7.03.01` acknowledged all 223 pages in transaction
   `fe6396d0` without retry. A normal power-cycle and physical label observation
   remain pending.
+- **Diagnostic step:** add a simulation-only K1 Renode platform with bounded
+  register storage, synthetic one-cell GPIO injection, and an ELF-symbol hook
+  proving whether MENU reaches `render_key_witness`. This is execution evidence
+  only and must not be reported as physical keypad/display validation.

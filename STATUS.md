@@ -114,8 +114,8 @@ features remain outside this bounded slice.
   electrical idle/scan levels, one-key decode, explicit-time debounce, and
   display-only result were bounded before implementation.
 - Current smallest actionable task: diagnose why no debounced key label reached
-  the display while `AFIK-K1-0.2` remained responsive; do not flash again until
-  a focused failing-path test identifies and verifies a bounded correction.
+  the display while `AFIK-K1-0.2` remained responsive by adding a K1 Renode
+  execution harness with synthetic GPIO input and a render-function hook.
 
 ## Work Package 22 pure keypad milestone
 
@@ -243,6 +243,19 @@ Corrected keypad write on 2026-08-06:
   reported `acknowledged_not_read_back`. No retry or reset command was sent.
 - Physical completion remains pending a normal power-cycle and key-label
   observation, beginning with `MENU` replacing `K1 0.2` on the verified line.
+
+## Work Package 22 Renode diagnostic activation
+
+- The existing Renode platform is DP32-only and cannot execute the K1 image or
+  its peripheral loop.
+- The bounded K1 diagnostic will model only Cortex-M0+-compatible execution,
+  evidenced flash/RAM ranges, and test-only RCC/GPIO/SPI/USART register storage.
+  A synthetic MENU cell will be visible only while PB6 is selected low, and a
+  CPU hook on the ELF's `render_key_witness` symbol will prove whether the
+  production scan/debounce path reaches redraw.
+- This harness may measure simulated instruction progress and MMIO traces. It
+  cannot prove PY32 timing, GPIO electrical behavior, LCD behavior, or physical
+  key operation, and it will not be used as authority for RF/TX.
 
 ## Work Package 14 implementation milestone
 
