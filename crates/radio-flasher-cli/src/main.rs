@@ -8,6 +8,6 @@ fn main() -> ExitCode {
     let arguments = env::args().skip(1).collect::<Vec<_>>();
     let mut stdout = io::stdout().lock();
     let mut stderr = io::stderr().lock();
-    let status = radio_k5_flasher_cli::run_to(&arguments, &mut stdout, &mut stderr);
+    let status = radio_flasher_cli::run_to(&arguments, &mut stdout, &mut stderr);
     u8::try_from(status).map_or(ExitCode::FAILURE, ExitCode::from)
 }

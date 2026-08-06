@@ -2,18 +2,14 @@
 
 ## Current work package
 
-**Work Package 14 (`K1FLASH-014`) is active: auto-detected K1/K5 recovery
+**Work Package 14 (`K1FLASH-014`) is complete: auto-detected K1/K5 recovery
 flasher.**
 
-K1 now has priority because an exact unit running Armel firmware is available
-for inspection while no K5 hardware is available. This evidence package will
-pin that demonstrated firmware revision, record its manufacturer-supported
-provenance, corroborate the PY32F071 contract against Puya documentation, and
-turn board behavior into a source-and-experiment matrix before AFIK target code
-is written. Trusted existing firmware remains evidence, not production source:
-AFIK will not port, link, or incrementally translate its application or driver
-implementation. `K1EVID-013` supplies the K1 evidence baseline and same-unit
-recovery proof for this bounded host-tool task.
+K1 has priority because an exact unit running Armel firmware is available for
+inspection. `K1EVID-013` supplies the K1 evidence baseline and same-unit
+recovery proof for this bounded host-tool task. Trusted existing firmware
+remains evidence, not production source: AFIK will not port, link, or
+incrementally translate its application or driver implementation.
 
 `FLASH-012` is deferred with its software milestone intact and physical gates
 incomplete. It can resume unchanged when the exact K5 V1 hardware is available.
@@ -33,8 +29,9 @@ incomplete. It can resume unchanged when the exact K5 V1 hardware is available.
 - Work Package 11 APRS receive feasibility and repeater discovery: complete.
 - Work Package 12 recovery-gated UV-K5 V1 firmware flashing: deferred; software
   complete and physical hardware unavailable.
-- Work Package 13 UV-K1/PY32F071 hardware evidence and target contract: active.
-- Work Package 14 K1/K5 auto-detected recovery flasher: active.
+- Work Package 13 UV-K1/PY32F071 hardware evidence and target contract: evidence
+  baseline complete; board/MCU and AFIK boot-witness follow-up remains open.
+- Work Package 14 K1/K5 auto-detected recovery flasher: complete.
 - `UI-005` logical key edges, bounded semantic views, exact boot-only entry,
   release gate, draft editor, and checked persistence action: complete.
 - `UI-005` separate persisted/active policy simulation, deterministic timed
@@ -90,10 +87,36 @@ incomplete. It can resume unchanged when the exact K5 V1 hardware is available.
 - `FLASH-012` exact-unit inspection, physical backup, recovery rehearsal,
   page-acknowledged AFIK write, and independent application-boot observation:
   pending; no serial device is visible here.
-- Current smallest actionable task: implement and test the generic K1/K5
-  recovery flasher and fail-closed USB/device/protocol classifier. K1 AFIK
-  image flashing remains out of scope until an independently evidenced AFIK K1
-  image contract exists.
+- Current smallest actionable task: record the exact K1 board/MCU and define the
+  smallest independently implemented AFIK reset/boot-witness package under
+  `K1EVID-013`; K1 AFIK image flashing remains out of scope until that contract
+  exists.
+
+## Work Package 14 implementation milestone
+
+- `radio-k5-flasher` was renamed to `radio-flasher`; the library now owns both
+  the existing K5 V1 path and the independently implemented K1 recovery path.
+  `afik-k5` remains as the explicit-device compatibility binary, while
+  `afik-flasher` provides generic K1/K5 identification, backup, and recovery
+  flashing.
+- Auto mode prefers `/dev/serial/by-id/usb-*`, falls back to numeric
+  `/dev/ttyUSB*` and `/dev/ttyACM*` candidates, rejects zero or multiple
+  candidates, and never treats USB metadata as hardware identity. Protocol
+  selection is fail-closed from validated `2.*` K5 or pinned `7.03.*` K1
+  beacons.
+- K1 recovery validates vectors and the bounded application range, performs the
+  observed `0x0530` handshakes, sends 256-byte `0x0519` pages with final-page
+  zero padding, and requires exact transaction/page/result acknowledgements
+  without retry. K1 AFIK flashing remains unavailable.
+
+Verification on 2026-08-06:
+
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
+  — passed.
+- `nix develop path:. -c cargo test --workspace` — passed: 128 unit/integration
+  tests and all doc tests.
+- `git diff --check` — passed after the implementation and rename.
 
 Work-package activation verification on 2026-08-06:
 
@@ -345,7 +368,7 @@ Contract-milestone verification on 2026-08-06:
   emits exactly `0xF000` bytes padded with `0xFF`, and independently rejects
   truncation, corruption, or any overlap with the preserved
   `0xF000..=0xFFFF` stock bootloader.
-- `radio-k5-flasher` owns bounded legacy framing, CRC/XOR handling, strict
+- `radio-flasher` owns bounded legacy framing, CRC/XOR handling, strict
   version negotiation, complete read-only EEPROM backup, image validation,
   prerequisite checks before I/O, and exactly 240 sequential acknowledged
   256-byte writes without ambiguous retry. `afik-k5` keeps the serial front end
@@ -389,7 +412,7 @@ Verification on 2026-08-06:
   Rust 1.86 compiler failed before code generation because that output does not
   contain the `thumbv6m-none-eabi` core library; the target-complete pinned
   Rustup toolchain above is the applicable minimum-target gate.
-- `nix develop path:. -c cargo run --quiet --package radio-k5-flasher-cli --bin afik-k5 -- inspect target/thumbv6m-none-eabi/debug/radio-firmware-dp32g030-k5-v1.raw`
+- `nix develop path:. -c cargo run --quiet --package radio-flasher-cli --bin afik-k5 -- inspect target/thumbv6m-none-eabi/debug/radio-firmware-dp32g030-k5-v1.raw`
   — passed and reported the package size, vectors, and CRC-32 above.
 - `find /dev -maxdepth 1 -type c \\( -name 'ttyUSB*' -o -name 'ttyACM*' \\) -print`
   — passed with no matches, confirming that a physical serial exercise was not

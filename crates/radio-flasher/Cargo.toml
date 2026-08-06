@@ -1,11 +1,11 @@
 [package]
-name = "radio-k5-flasher"
+name = "radio-flasher"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Recovery-gated host flashing library for qualified UV-K5 V1 radios"
+description = "Recovery-gated host flashing library for qualified UV-K5 V1 and UV-K1 radios"
 
 [lints]
 workspace = true

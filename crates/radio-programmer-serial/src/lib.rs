@@ -1,13 +1,14 @@
-//! Shared explicit-path Linux serial transport for programmer front ends.
+//! Shared Linux serial transport and USB candidate discovery for front ends.
 
 #![forbid(unsafe_code)]
 
 use radio_programmer::ProtocolTransport;
 use std::{
+    ffi::OsStr,
     fmt,
-    fs::{File, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::{self, Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
     process::Command,
 };
 
@@ -20,6 +21,54 @@ pub const fn is_supported_baud(baud: u32) -> bool {
         baud,
         1_200 | 2_400 | 4_800 | 9_600 | 19_200 | 38_400 | 57_600 | 115_200
     )
+}
+
+/// Finds USB serial device paths suitable for protocol-level identification.
+///
+/// Stable `/dev/serial/by-id` USB symlinks are preferred. If that directory is
+/// unavailable, Linux `ttyUSB*` and `ttyACM*` device nodes are returned. The
+/// returned paths are only transport candidates; the radio protocol must still
+/// classify the bootloader before any operation is selected.
+pub fn discover_usb_serial_devices() -> io::Result<Vec<PathBuf>> {
+    let by_id = Path::new("/dev/serial/by-id");
+    match fs::read_dir(by_id) {
+        Ok(entries) => {
+            let mut devices = Vec::new();
+            for entry in entries {
+                let entry = entry?;
+                if entry.file_name().to_string_lossy().starts_with("usb-") {
+                    devices.push(entry.path());
+                }
+            }
+            devices.sort();
+            if !devices.is_empty() {
+                return Ok(devices);
+            }
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+
+    let mut devices = Vec::new();
+    for entry in fs::read_dir("/dev")? {
+        let entry = entry?;
+        if is_usb_serial_name(&entry.file_name()) {
+            devices.push(entry.path());
+        }
+    }
+    devices.sort();
+    Ok(devices)
+}
+
+fn is_usb_serial_name(name: &OsStr) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    ["ttyUSB", "ttyACM"].into_iter().any(|prefix| {
+        name.strip_prefix(prefix).is_some_and(|suffix| {
+            !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit())
+        })
+    })
 }
 
 /// Explicit Linux serial setup failure before protocol negotiation.
@@ -125,8 +174,11 @@ impl ProtocolTransport for LinuxSerialTransport {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_supported_baud, LinuxSerialTransport, SerialOpenError, SUPPORTED_BAUDS};
-    use std::path::Path;
+    use super::{
+        is_supported_baud, is_usb_serial_name, LinuxSerialTransport, SerialOpenError,
+        SUPPORTED_BAUDS,
+    };
+    use std::{ffi::OsStr, path::Path};
 
     #[test]
     fn supported_baud_contract_is_exact_and_open_rechecks_it() {
@@ -144,5 +196,14 @@ mod tests {
     #[test]
     fn missing_explicit_path_fails_before_protocol_use() {
         assert!(LinuxSerialTransport::open(Path::new("/definitely/missing"), 9_600).is_err());
+    }
+
+    #[test]
+    fn usb_candidate_names_are_narrow_and_numeric() {
+        assert!(is_usb_serial_name(OsStr::new("ttyUSB0")));
+        assert!(is_usb_serial_name(OsStr::new("ttyACM12")));
+        assert!(!is_usb_serial_name(OsStr::new("ttyUSB")));
+        assert!(!is_usb_serial_name(OsStr::new("ttyUSBx")));
+        assert!(!is_usb_serial_name(OsStr::new("ttyS0")));
     }
 }

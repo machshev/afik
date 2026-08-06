@@ -239,6 +239,32 @@ impl BootloaderInfo {
     }
 }
 
+/// Protocol family classified from a validated bootloader beacon.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BootloaderFamily {
+    /// Qualified UV-K5 V1/version-2 protocol (`2.*` beacon).
+    K5V1(BootloaderInfo),
+    /// Pinned UV-K1 protocol (`7.03.*` beacon).
+    K1(BootloaderInfo),
+}
+
+impl BootloaderFamily {
+    /// Returns the validated bootloader information.
+    pub fn info(&self) -> &BootloaderInfo {
+        match self {
+            Self::K5V1(info) | Self::K1(info) => info,
+        }
+    }
+
+    /// Returns the stable protocol-family label.
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::K5V1(_) => "K5-V1",
+            Self::K1(_) => "K1",
+        }
+    }
+}
+
 /// Whether the selected image is the recovery rehearsal or an AFIK attempt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FlashPurpose<'a> {
@@ -313,6 +339,11 @@ pub fn backup_eeprom<T: Read + Write>(
 /// Waits for one exact, printable version-2 bootloader beacon.
 pub fn probe_bootloader_v2<T: Read>(transport: &mut T) -> Result<BootloaderInfo, FlashError> {
     parse_bootloader_beacon(&receive_packet(transport)?)
+}
+
+/// Reads one beacon and classifies only the pinned K1 or qualified K5 protocol.
+pub fn detect_bootloader<T: Read>(transport: &mut T) -> Result<BootloaderFamily, FlashError> {
+    parse_bootloader_family(&receive_packet(transport)?)
 }
 
 /// Writes all 240 application pages after validating every prerequisite.
@@ -479,6 +510,31 @@ fn parse_bootloader_beacon(packet: &Packet) -> Result<BootloaderInfo, FlashError
     Ok(BootloaderInfo { version })
 }
 
+fn parse_bootloader_family(packet: &Packet) -> Result<BootloaderFamily, FlashError> {
+    let payload = packet.as_slice();
+    let command = packet_command(payload);
+    if command == Some(COMMAND_V5_BEACON) {
+        return Err(FlashError::UnsupportedBootloader(COMMAND_V5_BEACON));
+    }
+    require_packet(payload, COMMAND_V2_BEACON, 32, 36, "bootloader beacon")?;
+    let version = parse_text(&payload[20..36], "bootloader version")?;
+    if version.starts_with("2.")
+        && version
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == b'.')
+    {
+        return Ok(BootloaderFamily::K5V1(BootloaderInfo { version }));
+    }
+    if version.starts_with("7.03.")
+        && version
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == b'.')
+    {
+        return Ok(BootloaderFamily::K1(BootloaderInfo { version }));
+    }
+    Err(FlashError::InvalidText("supported bootloader version"))
+}
+
 fn version_request(version: &FirmwareVersion) -> [u8; 20] {
     let mut payload = [0_u8; 20];
     payload[0..2].copy_from_slice(&COMMAND_V2_VERSION_REQUEST.to_le_bytes());
@@ -595,9 +651,9 @@ mod tests {
     };
 
     use super::{
-        backup_eeprom, flash_application, probe_bootloader_v2, FirmwareVersion, FlashError,
-        FlashPrerequisites, FlashPurpose, QUALIFIED_TARGET_CONFIRMATION,
-        RECOVERY_REHEARSED_CONFIRMATION,
+        backup_eeprom, detect_bootloader, flash_application, probe_bootloader_v2, BootloaderFamily,
+        FirmwareVersion, FlashError, FlashPrerequisites, FlashPurpose,
+        QUALIFIED_TARGET_CONFIRMATION, RECOVERY_REHEARSED_CONFIRMATION,
     };
 
     const TEST_TRANSACTION_ID: u32 = 0xA55A_1234;
@@ -821,6 +877,32 @@ mod tests {
         assert!(matches!(
             probe_bootloader_v2(&mut transport),
             Err(FlashError::UnsupportedBootloader(0x057A))
+        ));
+    }
+
+    #[test]
+    fn detector_classifies_only_the_pinned_k1_and_k5_families() {
+        let mut k5 = ScriptedTransport::new(beacon(), 1);
+        assert!(matches!(
+            detect_bootloader(&mut k5).unwrap(),
+            BootloaderFamily::K5V1(ref info) if info.version() == "2.00.06"
+        ));
+
+        let mut k1_payload = vec![0_u8; 36];
+        k1_payload[0..4].copy_from_slice(&[0x18, 0x05, 0x20, 0x00]);
+        k1_payload[20..27].copy_from_slice(b"7.03.01");
+        let mut k1 = ScriptedTransport::new(encode_response(&k1_payload), 1);
+        assert!(matches!(
+            detect_bootloader(&mut k1).unwrap(),
+            BootloaderFamily::K1(ref info) if info.version() == "7.03.01"
+        ));
+
+        let mut unknown_payload = k1_payload;
+        unknown_payload[20..27].copy_from_slice(b"7.04.01");
+        let mut unknown = ScriptedTransport::new(encode_response(&unknown_payload), 1);
+        assert!(matches!(
+            detect_bootloader(&mut unknown),
+            Err(FlashError::InvalidText("supported bootloader version"))
         ));
     }
 

@@ -1,11 +1,12 @@
-//! Thin explicit-device CLI for recovery-gated UV-K5 V1 deployment.
+//! Thin K5-compatible and generic K1/K5 recovery-flasher front ends.
 
 #![forbid(unsafe_code)]
 
+mod auto;
 mod parse;
 
 use parse::{parse, Command, FlashArguments, Parsed, Purpose};
-use radio_k5_flasher::{
+use radio_flasher::{
     backup_eeprom, flash_application, probe_bootloader_v2, ApplicationImage, EepromBackup,
     FirmwareVersion, FlashPrerequisites, FlashPurpose, APPLICATION_BYTES, EEPROM_BYTES,
 };
@@ -27,6 +28,9 @@ pub const EXIT_USAGE: i32 = 2;
 /// Exact serial speed observed for the supported legacy protocol.
 pub const K5_BAUD: u32 = 38_400;
 
+/// Runs the generic auto-detecting K1/K5 CLI.
+pub use auto::{run_to as run_auto_to, HELP as AUTO_HELP};
+
 /// Stable command help text.
 pub const HELP: &str = "AFIK UV-K5 V1 recovery-gated flasher\n\
 \n\
@@ -34,8 +38,8 @@ Usage:\n\
   afik-k5 inspect IMAGE\n\
   afik-k5 --device PATH probe\n\
   afik-k5 --device PATH backup-eeprom OUTPUT [--force]\n\
-  afik-k5 --device PATH flash-recovery IMAGE --backup EEPROM --version VERSION \\\n+    --confirm-target UV-K5-V1-DP32G030 --confirm-image-crc32 CRC32\n\
-  afik-k5 --device PATH flash-afik IMAGE --recovery RAW --backup EEPROM \\\n+    --version VERSION --confirm-target UV-K5-V1-DP32G030 \\\n+    --confirm-image-crc32 CRC32 \\\n+    --confirm-recovery-rehearsed RECOVERY-REHEARSED-ON-THIS-UNIT\n\
+  afik-k5 --device PATH flash-recovery IMAGE --backup EEPROM --version VERSION \\\n    --confirm-target UV-K5-V1-DP32G030 --confirm-image-crc32 CRC32\n\
+  afik-k5 --device PATH flash-afik IMAGE --recovery RAW --backup EEPROM \\\n    --version VERSION --confirm-target UV-K5-V1-DP32G030 \\\n    --confirm-image-crc32 CRC32 \\\n    --confirm-recovery-rehearsed RECOVERY-REHEARSED-ON-THIS-UNIT\n\
   afik-k5 --help\n\
   afik-k5 --version\n\
 \n\

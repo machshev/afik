@@ -53,13 +53,25 @@ remotely or treated as a shared service. See `docs/programmer-gui.md`.
 
 ## UV-K5 V1 recovery and firmware flashing
 
-`afik-k5` is separate from the AFIK runtime configuration programmer. It
-supports only an inspected UV-K5 V1 fitted with DP32G030 and the stock
-version-2 bootloader:
+`afik-flasher` is separate from the AFIK runtime configuration programmer. It
+auto-selects exactly one USB serial candidate, classifies the bootloader from
+its validated beacon, and currently supports K5 V1 recovery plus the pinned K1
+recovery protocol:
 
 ```sh
-cargo run --package radio-k5-flasher-cli --bin afik-k5 -- --help
-cargo run --package radio-k5-flasher-cli --bin afik-k5 -- \
+cargo run --package radio-flasher-cli --bin afik-flasher -- identify
+cargo run --package radio-flasher-cli --bin afik-flasher -- \
+  --device /dev/ttyUSB0 identify
+```
+
+Zero or multiple USB candidates fail closed; a beacon proves only the protocol
+family, not the physical board or MCU. `afik-k5` remains as the explicit-device
+K5 compatibility workflow and supports an inspected UV-K5 V1 fitted with
+DP32G030 and the stock version-2 bootloader:
+
+```sh
+cargo run --package radio-flasher-cli --bin afik-k5 -- --help
+cargo run --package radio-flasher-cli --bin afik-k5 -- \
   inspect target/thumbv6m-none-eabi/debug/radio-firmware-dp32g030-k5-v1.raw
 ```
 

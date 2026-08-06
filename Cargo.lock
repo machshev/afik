@@ -42,14 +42,14 @@ name = "radio-firmware-dp32g030"
 version = "0.1.0"
 
 [[package]]
-name = "radio-k5-flasher"
+name = "radio-flasher"
 version = "0.1.0"
 
 [[package]]
-name = "radio-k5-flasher-cli"
+name = "radio-flasher-cli"
 version = "0.1.0"
 dependencies = [
- "radio-k5-flasher",
+ "radio-flasher",
  "radio-programmer-serial",
 ]
 

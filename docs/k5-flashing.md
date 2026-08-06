@@ -60,7 +60,7 @@ With the radio running its normal stock firmware, create the EEPROM backup
 first. The output is create-new and mode `0600` unless `--force` is deliberate:
 
 ```sh
-nix develop path:. -c cargo run --package radio-k5-flasher-cli --bin afik-k5 -- \
+nix develop path:. -c cargo run --package radio-flasher-cli --bin afik-k5 -- \
   --device /dev/ttyUSB0 backup-eeprom unit-eeprom.raw
 ```
 
@@ -68,14 +68,14 @@ After recording the backup hash and validating a raw recovery application, use
 offline inspection to obtain the CRC-32 selection guard:
 
 ```sh
-nix develop path:. -c cargo run --package radio-k5-flasher-cli --bin afik-k5 -- \
+nix develop path:. -c cargo run --package radio-flasher-cli --bin afik-k5 -- \
   inspect recovery.raw
 ```
 
 Enter the verified stock programming mode, then probe before any write:
 
 ```sh
-nix develop path:. -c cargo run --package radio-k5-flasher-cli --bin afik-k5 -- \
+nix develop path:. -c cargo run --package radio-flasher-cli --bin afik-k5 -- \
   --device /dev/ttyUSB0 probe
 ```
 
@@ -84,7 +84,7 @@ checks are complete, run the recovery rehearsal with the exact CRC printed by
 `inspect`:
 
 ```sh
-nix develop path:. -c cargo run --package radio-k5-flasher-cli --bin afik-k5 -- \
+nix develop path:. -c cargo run --package radio-flasher-cli --bin afik-k5 -- \
   --device /dev/ttyUSB0 flash-recovery recovery.raw \
   --backup unit-eeprom.raw --version 2.01.23 \
   --confirm-target UV-K5-V1-DP32G030 \
@@ -115,7 +115,7 @@ The AFIK attempt additionally requires the exact same-unit recovery phrase and
 the separately validated recovery file:
 
 ```sh
-nix develop path:. -c cargo run --package radio-k5-flasher-cli --bin afik-k5 -- \
+nix develop path:. -c cargo run --package radio-flasher-cli --bin afik-k5 -- \
   --device /dev/ttyUSB0 flash-afik afik-k5-v1.raw \
   --recovery recovery.raw --backup unit-eeprom.raw --version 2.01.23 \
   --confirm-target UV-K5-V1-DP32G030 \

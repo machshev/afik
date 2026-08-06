@@ -664,7 +664,7 @@
 
 ## K1FLASH-014 — Auto-detected K1/K5 recovery flasher
 
-- **Status:** active (2026-08-06)
+- **Status:** complete (2026-08-06)
 - **Objective:** extend the host flasher with an independently implemented,
   fail-closed K1 recovery path and automatic K1/K5 protocol classification.
 - **Scope:** reuse the bounded legacy frame envelope; enumerate USB serial
@@ -685,7 +685,7 @@
   K1 AFIK image generation or flashing, K1 bootloader replacement, EEPROM
   writes, RF operation, retries after ambiguous page results, and importing
   existing firmware or driver source.
-- **Likely files:** `crates/radio-k5-flasher`, a K1 flasher module/crate, the
+- **Likely files:** `crates/radio-flasher`, a K1 flasher module/crate, the
   generic CLI, workspace manifests, programmer documentation, `DECISIONS.md`,
   `RISKS.md`, and `STATUS.md`.
 - **Tests required:** exact K1/K5 beacon classification, USB candidate
@@ -697,3 +697,10 @@
   beacon evidence; unsupported/unknown versions fail closed; K1 recovery writes
   are bounded and acknowledgement-checked; the existing K5 path remains green;
   and no K1 AFIK flashing capability is claimed.
+- **Progress notes:** `radio-k5-flasher` and its CLI package are now named
+  `radio-flasher` and `radio-flasher-cli`; `afik-k5` remains compatible and
+  `afik-flasher` is the generic entry point. The shared serial crate discovers
+  USB-by-id or numeric USB serial candidates, while protocol detection remains
+  the source of K1/K5 family selection. K1/K5 beacon, image, page, ambiguity,
+  acknowledgement, and CLI routing tests pass. The next task is the physical
+  K1 board/MCU and AFIK reset/boot-witness work retained under `K1EVID-013`.

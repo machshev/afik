@@ -7,7 +7,7 @@ fn binary_help_version_and_missing_device_smoke() {
     let binary = env!("CARGO_BIN_EXE_afik-k5");
     let help = Command::new(binary).arg("--help").output().unwrap();
     assert!(help.status.success());
-    assert_eq!(help.stdout, radio_k5_flasher_cli::HELP.as_bytes());
+    assert_eq!(help.stdout, radio_flasher_cli::HELP.as_bytes());
     assert!(help.stderr.is_empty());
 
     let version = Command::new(binary).arg("--version").output().unwrap();
@@ -19,4 +19,18 @@ fn binary_help_version_and_missing_device_smoke() {
     assert_eq!(probe.status.code(), Some(2));
     assert!(probe.stdout.is_empty());
     assert!(probe.stderr.starts_with(b"error: "));
+}
+
+#[test]
+fn generic_binary_exposes_auto_detection_help_and_version() {
+    let binary = env!("CARGO_BIN_EXE_afik-flasher");
+    let help = Command::new(binary).arg("--help").output().unwrap();
+    assert!(help.status.success());
+    assert_eq!(help.stdout, radio_flasher_cli::AUTO_HELP.as_bytes());
+    assert!(help.stderr.is_empty());
+
+    let version = Command::new(binary).arg("--version").output().unwrap();
+    assert!(version.status.success());
+    assert_eq!(version.stdout, b"afik-flasher 0.1.0\n");
+    assert!(version.stderr.is_empty());
 }

@@ -11,8 +11,9 @@ const XOR_KEY: [u8; 16] = [
     0x16, 0x6C, 0x14, 0xE6, 0x2E, 0x91, 0x0D, 0x40, 0x21, 0x35, 0xD5, 0x40, 0x13, 0x03, 0xE9, 0x80,
 ];
 
+/// A decoded legacy serial payload with bounded storage.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Packet {
+pub struct Packet {
     bytes: [u8; MAX_PACKET_BYTES],
     len: usize,
 }
@@ -30,12 +31,19 @@ impl Packet {
         Ok(packet)
     }
 
-    pub(crate) fn as_slice(&self) -> &[u8] {
+    /// Returns the decoded payload bytes.
+    pub fn as_slice(&self) -> &[u8] {
         &self.bytes[..self.len]
     }
 }
 
-pub(crate) fn send_packet<T: Write>(transport: &mut T, payload: &[u8]) -> Result<(), FlashError> {
+/// Encodes and writes one legacy packet with the observed CRC/XOR envelope.
+///
+/// # Panics
+///
+/// This cannot panic for a payload accepted by the bounded packet-size check;
+/// the conversion is guarded by the same fixed maximum.
+pub fn send_packet<T: Write>(transport: &mut T, payload: &[u8]) -> Result<(), FlashError> {
     if payload.len() > MAX_PACKET_BYTES {
         return Err(FlashError::PacketTooLarge(payload.len()));
     }
@@ -53,7 +61,8 @@ pub(crate) fn send_packet<T: Write>(transport: &mut T, payload: &[u8]) -> Result
     Ok(())
 }
 
-pub(crate) fn receive_packet<T: Read>(transport: &mut T) -> Result<Packet, FlashError> {
+/// Reads and decodes one complete legacy packet with bounded resynchronisation.
+pub fn receive_packet<T: Read>(transport: &mut T) -> Result<Packet, FlashError> {
     find_header(transport)?;
     let length_low = read_byte(transport)?;
     let length_high = read_byte(transport)?;
