@@ -18,7 +18,7 @@ const SETUP_COMMANDS: [u8; 8] = [
     0xA4, // normal RAM display
     0x24, // regulator ratio 5.0
     0x81, // electronic volume follows
-    0x15, // bounded initial contrast
+    0x1F, // pinned fixed startup contrast
 ];
 
 /// Whether bytes are controller commands or display RAM data.
@@ -166,7 +166,7 @@ mod tests {
         assert_eq!(bus.transfers[0].bytes, [0xE2]);
         assert_eq!(
             bus.transfers[1].bytes,
-            [0xA2, 0xC0, 0xA1, 0xA6, 0xA4, 0x24, 0x81, 0x15]
+            [0xA2, 0xC0, 0xA1, 0xA6, 0xA4, 0x24, 0x81, 0x1F]
         );
         assert_eq!(bus.transfers[2].bytes, [0x2B]);
         assert_eq!(bus.transfers[3].bytes, [0x2E]);
