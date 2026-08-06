@@ -394,3 +394,156 @@ observations below. Their confidence and provenance limitations are unchanged.
 
 Production scan commands, physical target integration, and automatic channel
 creation remain prohibited by `RISK-011`.
+
+## Sources used by APRS-011
+
+### AX.25 Link Access Protocol Version 2.2
+
+- **Document:** *AX.25 Link Access Protocol for Amateur Packet Radio*, version
+  2.2, fourth edition, 1996.
+- **Publishers shown in document:** American Radio Relay League and Tucson
+  Amateur Packet Radio Corporation.
+- **Retrieved:** 2026-08-06 from TAPR's file archive at
+  <https://files.tapr.org/tech_docs/AX25/AX25.2.2.pdf>.
+- **SHA-256:**
+  `af2070954468ef6498143ababf9beaf5d72b683ef82491dd7eb8e3670b29475c`.
+- **Scope:** HDLC flag/bit-stuff/FCS envelope, shifted AX.25 addresses,
+  extension and repeated bits, UI control field, and PID placement. Physical
+  APRS modulation is not specified here.
+
+### APRS Protocol Reference Version 1.0.1
+
+- **Document:** *APRS Protocol Reference — APRS Protocol Version 1.0*, document
+  version 1.0.1, 2000-08-29.
+- **Publisher:** APRS Working Group material hosted by APRS.org.
+- **Retrieved:** 2026-08-06 from
+  <https://www.aprs.org/doc/APRS101.PDF>.
+- **SHA-256:**
+  `78a72618c788b8b7f8369004884018f9b02f990069ff67915bb1e30738b1da01`.
+- **Scope:** APRS use of AX.25 UI frames, APRS address/path limits, information
+  type identifiers, time/position/ambiguity fields, and Object/Item lifecycle
+  and syntax.
+
+### APRS addendum and frequency specification
+
+- **Documents:** APRS Specification Addendum 1.1, approved by the APRS Working
+  Group in 2004; and *APRS Freq Spec — AFRS (Automatic Frequency Reporting
+  System)*, revision 2019-09-30.
+- **Retrieved:** 2026-08-06 from <https://www.aprs.org/aprs11.html> and
+  <https://www.aprs.org/info/freqspec.txt>.
+- **Frequency-spec SHA-256:**
+  `d49be65c62a4c9907fdfb5c168813a5135b98cbfc7a2c6de144016307798972b`.
+- **Scope:** the current voice-frequency comment/object conventions, exact
+  frequency/tone/offset/range text fields, recommended local voice-repeater
+  objects, permanent `111111z` timestamp behavior, and compatibility limits.
+  The frequency specification is operational APRS Working Group guidance, not
+  proof that an advertised value is current or authorized.
+
+The Beken product page, mirrored Rev.1.0 datasheet, mirrored machine-translated
+BK4819(V3) application note, and DP32G030 source limitations already recorded
+above are re-used with unchanged provenance and confidence.
+
+## APRS receive and discovery evidence
+
+### EVID-APRS-012 — APRS is carried in bounded AX.25 UI frames
+
+- **Fact:** APRS Protocol Reference chapter 3 specifies destination and source
+  addresses, zero through eight digipeater addresses, control `0x03`, PID
+  `0xF0`, an information field of 1 through 256 octets, and a 16-bit FCS. The
+  first information octet is the APRS Data Type Identifier.
+- **Fact:** AX.25 sections 3.1–3.12 define `0x7E` flags, removal of a zero after
+  five consecutive one bits, a sixteen-bit ISO 3309 FCS, shifted six-character
+  upper-case alphanumeric callsigns, four-bit SSIDs, seven-octet address
+  subfields, and a final-address extension bit. UI frames contain PID and
+  information without link flow control.
+- **Conflict:** AX.25 version 2.2 limits its Layer-2 repeater chain to two,
+  whereas APRS 1.0.1 explicitly permits zero through eight APRS digipeater
+  addresses. An APRS receive parser follows the upper-layer APRS bound of eight
+  while remaining receive-only; it does not implement AX.25 repeating.
+- **Confidence:** high for a hardware-independent parser of a complete,
+  already de-stuffed, octet-aligned frame including FCS.
+- **Permitted use:** validate the complete frame, addresses, control/PID,
+  information bounds, and FCS before exposing APRS information. Flags, NRZI,
+  clock recovery, and bit unstuffing remain lower-layer inputs and are excluded.
+
+### EVID-APRS-013 — Objects and Items carry explicit identity and lifecycle
+
+- **Fact:** APRS Protocol Reference chapter 11 defines a case-sensitive
+  nine-character printable Object name after `;`, followed by `*` for live or
+  `_` for killed and a required seven-character timestamp. An Item begins with
+  `)`, has a case-sensitive printable name of three through nine characters,
+  and uses `!` for live or `_` for killed without a timestamp. Both can carry
+  uncompressed or compressed position plus comment.
+- **Fact:** a new report with the same Object/Item name replaces the earlier
+  report, even if another station originated it; the sender callsign should be
+  retained for display. The frequency specification gives permanent frequency
+  Objects the pseudo timestamp `111111z` and says a different origin must not
+  replace them.
+- **Inference:** AFIK keys discovery entries by report kind, case-sensitive
+  name, and originating AX.25 source. This deliberately preserves conflicting
+  origins as separate untrusted observations and permits only the same source
+  to update or kill its entry. Explicit local receive time resolves freshness;
+  equal-time conflicting data is rejected rather than ordered implicitly.
+- **Confidence:** high for syntax; high that the AFIK key is a conservative
+  local safety choice, not APRS network ownership semantics.
+
+### EVID-APRS-014 — Voice-repeater fields are advertisements, not authority
+
+- **Fact:** the APRS frequency specification defines two main encodings: a
+  leading ten-octet `FFF.FFFMHz` or `FFF.FF MHz` comment field, or a
+  nine-character frequency Object name beginning `FFF.FFF` or `FFF.FF`. It
+  defines optional `Tnnn`/`Cnnn` CTCSS, `Dnnn` DCS, signed three-digit offsets
+  in 10 kHz units, and `Rxxm`/`Rxxk` nominal range. Lower-case tone prefixes
+  advertise narrow bandwidth. The recommended voice-repeater Object examples
+  use symbol code `r` and the permanent `111111z` timestamp.
+- **Fact:** where both a frequency Object name and a comment frequency exist,
+  the specification treats the Object name as the repeater transmit/output
+  frequency and the comment value as a cross-band or non-standard receive/input
+  frequency.
+- **Inference:** AFIK labels the name frequency as the advertised repeater
+  output—the frequency a listener would receive—and preserves offset, tone,
+  range, alternate input, source, position, and age as untrusted fields. It does
+  not calculate a transmit channel, map truncated tones into trusted
+  `radio_domain::Tone`, infer regional standard offsets, or auto-tune/save.
+- **Confidence:** high for field syntax; none for truth, freshness, origin
+  authenticity, regulatory class, service availability, or physical reach.
+
+### EVID-APRS-015 — BK4819 APRS demodulation is not established
+
+- **Fact:** Beken's official product page and mirrored datasheet advertise an
+  on-chip FSK data modem; the datasheet block diagram includes FSK modulation
+  and demodulation.
+- **Low-confidence description:** the machine-translated revision-unverified V3
+  note describes receive modes called FSK 1.2/2.4K, FFSK 1200/1800, and FFSK
+  1200/2400, with bounded preamble, two/four-byte sync, configured length,
+  optional proprietary CRC, FIFO, and interrupts.
+- **Comparison:** common 1200-baud APRS engineering practice uses Bell-202-style
+  1200/2200 Hz AFSK followed by NRZI, HDLC flags, bit stuffing, and AX.25 FCS.
+  None of the named V3 modem modes says 1200/2200, and its described fixed
+  preamble/sync/length framing does not establish transparent AX.25 bit access.
+- **Confidence:** high only that a generic FSK modem exists; low for the named
+  register modes and no confidence that they can receive APRS correctly on the
+  fitted silicon/board.
+- **Permitted use:** support the feasibility experiment plan. No BK4819 APRS
+  command, register fake, timing, interrupt, or FIFO behavior may be encoded.
+
+## Unknowns deliberately retained by APRS-011
+
+- Physical APRS frequency/band plan and permission for a specific jurisdiction;
+  AFIK encodes no hard-coded national channel or transmission behavior.
+- Fitted chip and board revision, BK4819 modem applicability, reference crystal,
+  initialization state, modem tone/baud meaning, raw-bit availability, FIFO and
+  interrupt semantics, and safe stop/cleanup.
+- Whether suitable discriminator/unfiltered audio is exposed to the DP32G030,
+  its voltage/bias/bandwidth/noise, board routing, ADC channel/sample rate,
+  timer/interrupt/DMA wiring, CPU budget, buffer sizes, and power cost.
+- NRZI polarity, clock recovery, carrier acquisition, de-emphasis effects,
+  bit-stuff/flag/abort recovery, false-frame rate, FCS error behavior, and packet
+  loss under weak, distorted, collided, over-deviated, or adjacent signals.
+- Advertisement authenticity, freshness, correctness, coverage, regulatory
+  classification, actual repeater availability, and whether optional offset or
+  tone conventions are locally applicable.
+
+`APRS-011` may implement only the complete-frame and APRS discovery boundary.
+Physical demodulation and automatic channel mutation remain prohibited by
+`RISK-012` and `RISK-013`.
