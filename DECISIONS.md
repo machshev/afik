@@ -577,3 +577,15 @@ meaning.
   chunk constants. This host proof establishes only that the await placement
   permits interleaving; it does not prove Cortex-M executor startup, interrupt
   delivery, DMA, peripheral timing, or physical UART/display coexistence.
+
+## ADR-040 — First async runtime composition is compile-only ownership
+
+- **Date:** 2026-08-06
+- **Status:** accepted for `K1ASYNC-023`
+- Compose the thread executor, USART1/PA9/PA10 with two bounded DMA channels,
+  and SPI1/PA5/PA7 into one optional K1-owned bundle. Construction requires
+  explicit caller-supplied HAL tokens so ownership conflicts are type-checked.
+- Do not call HAL initialization, adopt a clock tree, bind TIM15, create a
+  runnable entry point, or include A0/CS and keypad GPIO in this step. Static
+  tasks and physical migration follow only after clock, interrupt, and DMA
+  behavior have their own guarded contract.

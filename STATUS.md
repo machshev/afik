@@ -117,9 +117,9 @@ features remain outside this bounded slice.
 - Work Package 22 keypad/UI witness definition: complete; the pinned matrix,
   electrical idle/scan levels, one-key decode, explicit-time debounce, and
   display-only result were bounded before implementation.
-- Current smallest actionable task: define the separately guarded runtime
-  composition of the proven thread executor, USART1, and SPI1 surfaces while
-  retaining the polling recovery image and excluding keypad acceptance.
+- Current smallest actionable task: compile one optional ownership bundle for
+  the proven thread executor, USART1, and SPI1 surfaces while retaining the
+  polling recovery image and excluding HAL initialization, tasks, and keypad.
 
 ## Work Package 23 dependency and executor milestone
 

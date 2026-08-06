@@ -1155,3 +1155,10 @@
   executor startup, physical SPI, or async USART behavior. The next step is a
   separately guarded runtime composition of the proven executor, USART1, and
   SPI1 surfaces without removing the polling recovery image.
+- **Runtime-composition step:** add one optional compile-only K1 bundle which
+  owns the thread executor, async USART1 with its two DMA channels, and
+  cooperative SPI1 with PA5/PA7. It may construct only from caller-supplied HAL
+  peripheral tokens and must not initialize the HAL, clocks, TIM15, A0/CS,
+  keypad GPIO, static tasks, the firmware entry point, or a physical image.
+  The polling recovery image remains the only runnable K1 application until a
+  separate clock/interrupt/DMA adoption package is defined and guarded.
