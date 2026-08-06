@@ -149,6 +149,12 @@ incomplete. It can resume unchanged when the exact K5 V1 hardware is available.
   (4 s across the existing empty-read budget) in commit `72ba9f7`, matching the
   observed 3 s K1 beacon wait used by the recovery evidence procedure. A fresh
   bootloader session is required before testing that fix.
+- In the next fresh bootloader session, the same guarded AFIK recovery command
+  generated transaction `074b2081` and acknowledged all 375/375 sequential
+  pages for the unchanged private `F4HWN v5.5.0` image. The reported result was
+  `status=acknowledged_not_read_back`; no retry or reset command was sent. The
+  next action is a user power-cycle into normal Fusion mode followed by a
+  complete read-only identity and 8 KiB backup comparison.
 
 Verification on 2026-08-06:
 
