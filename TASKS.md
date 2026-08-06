@@ -1212,7 +1212,7 @@
 
 ## K1SIDE-024 — Receive-only side-key and PTT evidence boundary
 
-- **Status:** active (2026-08-06)
+- **Status:** complete (2026-08-06)
 - **Objective:** establish the smallest evidence-backed contract for observing
   K1 side keys and PTT without interpreting them as UI actions or reaching RF.
 - **Scope:** review the pinned source and exact-unit evidence; identify PTT and
@@ -1234,8 +1234,14 @@
 - **Raw-observation result:** `radio-firmware-k1::aux_inputs` now accepts only
   stable, strictly newer, nonzero-sequence samples, retains GPIOB IDR and
   provenance, and exposes PB10 only as an uninterpreted raw bit. Focused and
-  workspace host gates pass; the embedded target gate is pending an available
-  filesystem. Side-key mapping and any physical observation remain unverified.
+  workspace host gates pass, and the embedded warning-denied
+  `thumbv6m-none-eabi` target gate passed once filesystem space was available.
+  Side-key mapping and any physical observation remain unverified.
+- **Completion notes:** the source/evidence boundary and bounded host contract
+  satisfy the package acceptance criteria. No side-key GPIO or polarity is
+  inferred, no target binding or physical image changed, and the open mapping
+  risk remains recorded in `RISKS.md` as `RISK-026`. Any future side-key work
+  requires a new stable task ID and independently sourced mapping/experiment.
 - **Clock-handoff step:** define a bounded local HAL entry which adopts only an
   explicitly validated inherited 48 MHz `SYSCLK`/`HCLK1`/`PCLK1`/`PCLK1_TIM`
   state. It must fail before publishing clocks when the observed RCC state does

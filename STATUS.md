@@ -2,7 +2,7 @@
 
 ## Current work package
 
-**Work Package 24 (`K1SIDE-024`) is active: establish an evidence-backed,
+**Work Package 24 (`K1SIDE-024`) is complete: establish an evidence-backed,
 receive-only K1 side-key/PTT observation boundary before any semantic UI or RF
 behavior.**
 
@@ -57,7 +57,7 @@ features remain outside this bounded slice.
 - Work Package 23 Embassy/PY32 runtime foundation: complete; the corrected
   runnable async image passed power-cycle, boot-screen, UART hello, and full
   main-key label observations.
-- Work Package 24 side-key/PTT evidence boundary: active; the pinned source
+- Work Package 24 side-key/PTT evidence boundary: complete; the pinned source
   identifies PTT PB10 and special side-key handling but does not establish an
   exact side-key GPIO mapping or safe physical observation contract.
 - `UI-005` logical key edges, bounded semantic views, exact boot-only entry,
@@ -120,9 +120,10 @@ features remain outside this bounded slice.
 - Work Package 22 keypad/UI witness definition: complete; the pinned matrix,
   electrical idle/scan levels, one-key decode, explicit-time debounce, and
   display-only result were bounded before implementation.
-- Current smallest actionable task: complete the source/evidence review and
-  bounded host contract for `K1SIDE-024`; do not infer side-key pins from the
-  main matrix or from unverified firmware behavior.
+- Current smallest actionable task: define a new stable task ID for any future
+  side-key experiment only after an independently sourced GPIO mapping and
+  receive-only observation procedure are available. Do not infer side-key
+  pins from the main matrix or from unverified firmware behavior.
 
 ## Work Package 24 handoff
 
@@ -154,6 +155,33 @@ features remain outside this bounded slice.
   Nix evaluation failed before compilation because the host filesystem had
   only 66 MiB free (`No space left on device`). No source error was reported.
 - `git diff --check` — passed.
+
+## Work Package 24 completion
+
+- `K1SIDE-024` is complete. The pinned source identifies PTT PB10, while the
+  special side-key mapping, polarity, settling, debounce, and electrical
+  behavior remain explicitly unknown.
+- `radio-firmware-k1::aux_inputs` accepts only bounded stable observations with
+  nonzero monotonic sequence, retained GPIOB IDR, and explicit provenance. It
+  exposes PB10 only as a raw bit and cannot produce semantic UI, persistence,
+  RF, or TX state.
+- `RISK-026` remains open for the missing side-key mapping and required
+  receive-only physical experiment. No target binding, image, or hardware
+  state changed in this package.
+- The pinned Nix gates initially could not start because the Nix
+  daemon/filesystem reported `No space left on device`. Host filesystem space
+  was subsequently available (188 GiB free) and every gate was re-run and
+  passed: `nix flake check path:. --no-build`,
+  `nix develop path:. -c cargo fmt --all --check`,
+  `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`,
+  `nix develop path:. -c cargo test --workspace` (all workspace unit,
+  integration, and doc-test binaries passed with zero failures),
+  `nix develop path:. -c tool/check-py32f071-clock-handoff.sh` (warning-denied
+  `thumbv6m-none-eabi` target check with build-std/core), and
+  `git diff --check`.
+- No image was produced by this package, so no flash was performed. The exact
+  unit continues to run the Work Package 23 corrected async image, SHA-256
+  `3f39e7c2a9ffa282685da321e2da01006a880d747344cd23222e7480bc30adb2`.
 
 ## Work Package 23 handoff correction
 

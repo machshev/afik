@@ -1453,3 +1453,21 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   rendering all functioned together on this unit. This is bounded bring-up
   evidence only; no RF, TX, side-key, persistence, or flash read-back claim is
   made.
+
+### EVID-K1-051 — Receive-only auxiliary observation contract
+
+- **Source boundary:** the pinned K1 source identifies PTT on PB10 and refers
+  to a separate special side-key path. It does not provide AFIK with an
+  independently verified exact side-key GPIO mapping, polarity, settling, or
+  electrical behavior.
+- **Host contract:** `radio-firmware-k1::aux_inputs` retains a bounded GPIOB
+  input-data-register sample with explicit target/test provenance and a
+  nonzero, strictly newer adapter sequence. Unstable, stale, or invalid samples
+  are rejected before becoming observations.
+- **Interpretation boundary:** PB10 is exposed only as an uninterpreted raw
+  bit. The contract creates no semantic key edge and cannot mutate display,
+  persistence, channel state, RF, or TX authority. No target GPIOB binding or
+  physical side-key observation was added.
+- **Required experiment:** independently source the exact side-key mapping,
+  then define a separately guarded receive-only observation that preserves the
+  known-good recovery path. Do not infer side-key pins from the main matrix.
