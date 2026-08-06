@@ -15,6 +15,8 @@ use radio_storage::{
     validate_object, ObjectKey, ObjectKind, StorageError, StorageObject, TransactionalStore,
     MAX_OBJECT_DATA, STORAGE_FORMAT_VERSION,
 };
+use radio_tx_policy::{LoadStatus, TxPolicy, PERMISSION_RECORD_LEN};
+use radio_ui::{BootUi, KeyEvent, KeySet, UiAction, UiView};
 use std::collections::VecDeque;
 
 /// Maximum configuration objects in the first simulated device profile.
@@ -40,6 +42,148 @@ impl SimClock {
     /// Advances virtual time by an exact duration.
     pub fn advance_ms(&mut self, duration_ms: u64) {
         self.now_ms = self.now_ms.saturating_add(duration_ms);
+    }
+}
+
+/// One deterministic boot-UI simulator observation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UiTraceEvent {
+    /// Explicit virtual timestamp.
+    pub at_ms: u64,
+    /// Observable boot-UI event details.
+    pub kind: UiTraceKind,
+}
+
+/// Observable boot-UI, persistence, and reboot events.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UiTraceKind {
+    /// A controller boot loaded persisted state and selected an initial view.
+    Booted {
+        /// Logical keys held at the instant of boot.
+        initial_keys: KeySet,
+        /// Whether persisted permissions were valid or defaulted denied.
+        load_status: LoadStatus,
+        /// First semantic display view.
+        view: UiView,
+    },
+    /// One logical key edge was handled.
+    KeyHandled {
+        /// Input edge delivered to the UI controller.
+        event: KeyEvent,
+        /// External side effect requested by the controller.
+        action: UiAction,
+        /// Semantic display view after handling the edge.
+        view: UiView,
+    },
+    /// A complete permission record replaced simulated persisted bytes.
+    PermissionsPersisted {
+        /// Monotonic generation contained in the new record.
+        generation: u32,
+    },
+}
+
+/// Deterministic virtual-time harness for the boot-only permission UI.
+///
+/// Persisting a record does not alter `active_policy`. Only [`Self::reboot`]
+/// validates the current persisted bytes and replaces the active policy.
+pub struct UiSimulator {
+    clock: SimClock,
+    controller: BootUi,
+    persisted_permissions: [u8; PERMISSION_RECORD_LEN],
+    active_policy: TxPolicy,
+    trace: Vec<UiTraceEvent>,
+}
+
+impl UiSimulator {
+    /// Boots a simulator from one exact persisted permission record buffer.
+    pub fn boot(persisted_permissions: [u8; PERMISSION_RECORD_LEN], initial_keys: KeySet) -> Self {
+        let (active_policy, policy_status) = TxPolicy::load(&persisted_permissions);
+        let (controller, ui_status) = BootUi::boot(&persisted_permissions, initial_keys);
+        debug_assert_eq!(policy_status, ui_status);
+        let first_event = UiTraceEvent {
+            at_ms: 0,
+            kind: UiTraceKind::Booted {
+                initial_keys,
+                load_status: ui_status,
+                view: controller.view(),
+            },
+        };
+        Self {
+            clock: SimClock::new(),
+            controller,
+            persisted_permissions,
+            active_policy,
+            trace: vec![first_event],
+        }
+    }
+
+    /// Returns current virtual milliseconds.
+    pub const fn now_ms(&self) -> u64 {
+        self.clock.now_ms()
+    }
+
+    /// Advances virtual time by an exact duration.
+    pub fn advance_ms(&mut self, duration_ms: u64) {
+        self.clock.advance_ms(duration_ms);
+    }
+
+    /// Returns the current bounded semantic display view.
+    pub fn view(&self) -> UiView {
+        self.controller.view()
+    }
+
+    /// Returns the active policy loaded at the most recent simulated boot.
+    pub const fn active_policy(&self) -> TxPolicy {
+        self.active_policy
+    }
+
+    /// Returns the current simulated persisted permission bytes.
+    pub const fn persisted_permissions(&self) -> &[u8; PERMISSION_RECORD_LEN] {
+        &self.persisted_permissions
+    }
+
+    /// Returns the ordered deterministic boot-UI trace.
+    pub fn trace(&self) -> &[UiTraceEvent] {
+        &self.trace
+    }
+
+    /// Handles one logical key edge at the current virtual time.
+    pub fn handle(&mut self, event: KeyEvent) -> UiAction {
+        let action = self.controller.handle(event);
+        self.record(UiTraceKind::KeyHandled {
+            event,
+            action,
+            view: self.controller.view(),
+        });
+        if let UiAction::PersistPermissions(record) = action {
+            self.persisted_permissions = record;
+            let generation = u32::from_le_bytes([record[3], record[4], record[5], record[6]]);
+            self.record(UiTraceKind::PermissionsPersisted { generation });
+        }
+        action
+    }
+
+    /// Reboots from current persisted bytes and replaces the active policy only
+    /// after its redundant record validation succeeds or defaults denied.
+    pub fn reboot(&mut self, initial_keys: KeySet) -> LoadStatus {
+        let (active_policy, policy_status) = TxPolicy::load(&self.persisted_permissions);
+        let (controller, ui_status) = BootUi::boot(&self.persisted_permissions, initial_keys);
+        debug_assert_eq!(policy_status, ui_status);
+        self.active_policy = active_policy;
+        self.controller = controller;
+        self.record(UiTraceKind::Booted {
+            initial_keys,
+            load_status: ui_status,
+            view: self.controller.view(),
+        });
+        ui_status
+    }
+
+    fn record(&mut self, kind: UiTraceKind) {
+        self.trace.push(UiTraceEvent {
+            at_ms: self.clock.now_ms(),
+            kind,
+        });
     }
 }
 
@@ -586,7 +730,7 @@ const fn map_storage_error(error: StorageError) -> DeviceErrorCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{map_storage_error, SimDevice, SimTransport, TraceKind};
+    use super::{map_storage_error, SimDevice, SimTransport, TraceKind, UiSimulator, UiTraceKind};
     use radio_channel_plan::{BankName, GeneratedBank, PlanEncoding};
     use radio_domain::{BankId, Frequency, FrequencyStep, TxClass};
     use radio_programmer::{ListedObject, Programmer, RadioProject};
@@ -598,7 +742,8 @@ mod tests {
         decode_generated_bank, encode_generated_bank, ObjectKey, ObjectKind, StorageError,
         StorageObject, GENERATED_BANK_ENCODED_LEN,
     };
-    use radio_tx_policy::TxPolicy;
+    use radio_tx_policy::{LoadStatus, PermissionSet, StoredPermissions, TxPolicy};
+    use radio_ui::{Key, KeyEvent, KeySet, UiAction, UiView};
 
     fn bank(id: u16, name: &str) -> GeneratedBank {
         GeneratedBank::linear_simplex(
@@ -614,6 +759,109 @@ mod tests {
 
     fn expected_bank() -> GeneratedBank {
         bank(6, "PMR446")
+    }
+
+    fn run_permission_script() -> UiSimulator {
+        let persisted = StoredPermissions::new(PermissionSet::none(), 10).encode();
+        let mut simulator = UiSimulator::boot(persisted, KeySet::permission_menu_gesture());
+        simulator.advance_ms(10);
+        assert_eq!(
+            simulator.handle(KeyEvent::released(Key::Menu)),
+            UiAction::None
+        );
+        simulator.advance_ms(5);
+        assert_eq!(
+            simulator.handle(KeyEvent::released(Key::Back)),
+            UiAction::None
+        );
+        simulator.advance_ms(5);
+        assert_eq!(
+            simulator.handle(KeyEvent::pressed(Key::Confirm)),
+            UiAction::None
+        );
+        simulator.advance_ms(1);
+        assert_eq!(
+            simulator.handle(KeyEvent::released(Key::Confirm)),
+            UiAction::None
+        );
+        simulator.advance_ms(9);
+        assert!(matches!(
+            simulator.handle(KeyEvent::pressed(Key::Menu)),
+            UiAction::PersistPermissions(_)
+        ));
+        simulator
+    }
+
+    #[test]
+    fn timed_permission_save_is_repeatable_and_activates_only_after_reboot() {
+        let mut first = run_permission_script();
+        let second = run_permission_script();
+        assert_eq!(first.trace(), second.trace());
+        assert_eq!(
+            first.persisted_permissions(),
+            second.persisted_permissions()
+        );
+        assert_eq!(first.now_ms(), 30);
+        assert_eq!(first.view(), UiView::PermissionsSaved { generation: 11 });
+        assert!(first
+            .active_policy()
+            .authorise(TxClass::LicenceFreePlan)
+            .is_err());
+        assert!(matches!(
+            first.trace().last().map(|event| event.kind),
+            Some(UiTraceKind::PermissionsPersisted { generation: 11 })
+        ));
+
+        first.advance_ms(10);
+        assert_eq!(first.reboot(KeySet::none()), LoadStatus::Valid);
+        assert_eq!(first.view(), UiView::Normal);
+        assert!(first
+            .active_policy()
+            .authorise(TxClass::LicenceFreePlan)
+            .is_ok());
+        assert!(first.active_policy().authorise(TxClass::Amateur).is_err());
+        assert_eq!(first.trace().last().unwrap().at_ms, 40);
+    }
+
+    #[test]
+    fn simulated_cancel_preserves_bytes_and_corruption_fails_closed() {
+        let permissions = PermissionSet::none().with(TxClass::Amateur, true);
+        let mut corrupt = StoredPermissions::new(permissions, 6).encode();
+        corrupt[2] ^= 1;
+        let original = corrupt;
+        let mut simulator = UiSimulator::boot(corrupt, KeySet::permission_menu_gesture());
+        assert!(matches!(
+            simulator.trace()[0].kind,
+            UiTraceKind::Booted {
+                load_status: LoadStatus::DefaultedDenied(_),
+                ..
+            }
+        ));
+        assert!(simulator
+            .active_policy()
+            .authorise(TxClass::Amateur)
+            .is_err());
+        simulator.handle(KeyEvent::released(Key::Menu));
+        simulator.handle(KeyEvent::released(Key::Back));
+        simulator.handle(KeyEvent::pressed(Key::Confirm));
+        simulator.handle(KeyEvent::released(Key::Confirm));
+        assert_eq!(
+            simulator.handle(KeyEvent::pressed(Key::Back)),
+            UiAction::MenuCancelled
+        );
+        assert_eq!(simulator.persisted_permissions(), &original);
+        assert!(!simulator
+            .trace()
+            .iter()
+            .any(|event| matches!(event.kind, UiTraceKind::PermissionsPersisted { .. })));
+        assert!(matches!(
+            simulator.reboot(KeySet::none()),
+            LoadStatus::DefaultedDenied(_)
+        ));
+        assert!(simulator
+            .active_policy()
+            .authorise(TxClass::Amateur)
+            .is_err());
     }
 
     #[test]

@@ -12,10 +12,11 @@ radio-channel-plan = { path = "../radio-channel-plan" }
 radio-programmer = { path = "../radio-programmer" }
 radio-protocol = { path = "../radio-protocol" }
 radio-storage = { path = "../radio-storage" }
+radio-tx-policy = { path = "../radio-tx-policy" }
+radio-ui = { path = "../radio-ui" }
 
 [dev-dependencies]
 radio-domain = { path = "../radio-domain" }
-radio-tx-policy = { path = "../radio-tx-policy" }
 
 [lints]
 workspace = true
