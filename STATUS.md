@@ -2,13 +2,20 @@
 
 ## Current work package
 
-**No work package is active. Work Packages 1 through 11 are complete.**
+**Work Package 12 (`FLASH-012`) is active: recovery-gated UV-K5 V1 firmware
+flashing.**
 
-Work Package 11 established the evidence-backed physical receive-chain defer
-verdict and implemented only the hardware-independent, bounded
-complete-frame/APRS discovery layers supported by primary specifications.
-RF/audio/bit recovery remains outside the code boundary. Discovered repeater
-data is untrusted receive-only information and cannot create TX authority.
+This package is limited to an explicitly identified UV-K5 V1 fitted with a
+DP32G030 and the independently observed version-2 serial bootloader. It will
+reserve the bootloader region, produce and validate a complete AFIK application
+image, preserve a read-only EEPROM/calibration backup, and add a fail-closed
+host flashing workflow. Bootloader v5, later V2/V3 boards, SWD, peripheral
+bring-up, and on-air operation are excluded.
+
+No serial device is visible in the current execution environment, so no
+physical read or write has been attempted. Physical acceptance remains gated
+on board/chip identification, a validated EEPROM backup, a known-good recovery
+image, and a successful recovery rehearsal on the exact test unit.
 
 ## State
 
@@ -23,6 +30,7 @@ data is untrusted receive-only information and cannot create TX authority.
 - Work Package 9 programmer GUI: complete.
 - Work Package 10 Frequency Copy research: complete.
 - Work Package 11 APRS receive feasibility and repeater discovery: complete.
+- Work Package 12 recovery-gated UV-K5 V1 firmware flashing: active.
 - `UI-005` logical key edges, bounded semantic views, exact boot-only entry,
   release gate, draft editor, and checked persistence action: complete.
 - `UI-005` separate persisted/active policy simulation, deterministic timed
@@ -72,9 +80,9 @@ data is untrusted receive-only information and cannot create TX authority.
   verdict, complete-frame parser, Object/Item voice-repeater advertisements,
   fixed-capacity explicit-time table, and isolated deterministic simulator:
   complete.
-- Next smallest actionable task: execute the first receive-only `RISK-012`
-  experiment by identifying the exact board and fitted chips and tracing the
-  RF/audio/baseband path before proposing any physical APRS decoder package.
+- Current smallest actionable task: record the exact reverse-engineered
+  bootloader-v2 evidence and define the application-image, backup, recovery,
+  and destructive-confirmation contracts for `FLASH-012`.
 
 ## Completed Work Package 11 exit criteria
 

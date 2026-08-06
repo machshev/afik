@@ -539,3 +539,59 @@
   or RF-control connection. No modem/register command, raw-audio decoder,
   target integration, storage mutation, automatic tune, TX authority,
   transmission, or physical-success claim was added.
+
+## FLASH-012 — Recovery-gated UV-K5 V1 firmware flashing
+
+- **Status:** active (2026-08-06)
+- **Objective:** add the smallest host and image path that can safely attempt a
+  real firmware update on one explicitly identified UV-K5 V1/DP32G030 radio
+  while preserving the stock serial bootloader and unit calibration.
+- **Scope:** pin and record independent observations of the UV-K5 version-2
+  serial bootloader; reserve `0xF000..=0xFFFF` from the target application;
+  package and statically validate one complete raw application image; implement
+  bounded packet framing, read-only normal-firmware EEPROM backup, bootloader
+  probe/version negotiation, sequential 256-byte application-page writes, and
+  exact acknowledgement checks; expose those workflows through one explicit
+  Linux serial CLI at 38,400 baud; require board, backup, recovery-image, image
+  identity, and destructive-action confirmations; and use a deterministic fake
+  radio for malformed, timeout, ordering, rejection, and success tests.
+- **Dependencies:** `DP32-003`, `CLI-008`, `RISK-001`, `RISK-002`, `RISK-005`,
+  the DP32G030 v1.23 memory map, an exact physical test-radio inspection, and
+  separately pinned reverse-engineered bootloader observations. Existing UV-K5
+  firmware and programmer implementations are evidence only and must not be
+  ported, linked, or translated into AFIK production source.
+- **Assumptions:** only a physically inspected V1 board fitted with DP32G030 is
+  eligible; a version-2 beacon is necessary but not sufficient board identity;
+  the stock bootloader occupies the final 4 KiB and accepts 256-byte indexed
+  application writes below `0xF000`; firmware flashing does not intentionally
+  write the external EEPROM; and page acknowledgements prove only bootloader
+  acceptance, not flash read-back or application boot.
+- **Exclusions:** bootloader v5/AES, UV-K5 V2 or V3 and compatible-looking
+  radios, bootloader replacement, SWD writes, arbitrary address/partial writes,
+  EEPROM writes, vendor packed-image decryption, automatic reset, display,
+  keypad, UART target code, RF/audio integration, transmission, and any claim
+  that an AFIK image runs on silicon before a separately observable boot proof.
+- **Likely files:** `Cargo.toml`, `crates/radio-firmware-dp32g030`, a new host
+  flashing library and thin CLI, `crates/radio-programmer-serial`, `tool/`,
+  `.github/workflows/ci.yml`, `docs/hardware-evidence.md`, a deployment guide,
+  `docs/architecture.md`, `DECISIONS.md`, `RISKS.md`, and `STATUS.md`.
+- **Tests required:** exact framing/XOR/CRC vectors; partial, corrupt, oversized,
+  and resynchronised input; exact v2 beacon and rejection of v5/unknown beacons;
+  strict firmware-version and raw-image vector/range checks; complete 8 KiB
+  read-only EEPROM backup with offset/length validation; page count, padding,
+  ordering, final-length, sequence, and acknowledgement/error behavior; no
+  write before all recovery gates and exact image confirmation pass; stop on
+  first missing/mismatched/error acknowledgement; deterministic success and
+  failure transcripts; full host, Rust 1.86, target-image, package, and Renode
+  gates remain green.
+- **Acceptance criteria:** every physical/protocol assumption has source,
+  commit, confidence, and experiment boundaries; the packaged application is
+  exactly bounded below `0xF000` and cannot overwrite the preserved bootloader;
+  backup and flash files are bounded, validated, and never replaced without
+  explicit force; the library owns protocol and flashing logic while the CLI
+  remains thin; only the full application range can be flashed; bootloader v5
+  and unqualified hardware fail closed; tests prove that malformed or stale
+  responses cannot advance writes; and physical completion additionally
+  requires the exact test unit to be identified, its EEPROM backup validated,
+  a known-good raw recovery image recorded, recovery rehearsed, the AFIK image
+  acknowledged page-by-page, and an independent application-boot observation.
