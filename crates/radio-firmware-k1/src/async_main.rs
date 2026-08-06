@@ -17,7 +17,7 @@ use py32_hal::usart::Uart;
 use radio_firmware_k1::display::{
     render_key_witness, render_witness, COLUMN_OFFSET, FRAME_BYTES, PAGES, SETUP_COMMANDS, WIDTH,
 };
-use radio_firmware_k1::keypad::{decode, Debouncer, Edge, Sample};
+use radio_firmware_k1::keypad::{decode, Debouncer, Edge, KeypadScan, Sample};
 use radio_firmware_k1::protocol::{
     decode_request, encode_hello_response, Request, REQUEST_BODY_BYTES, RESPONSE_FRAME_BYTES,
 };
@@ -68,6 +68,9 @@ fn main() -> ! {
             Input::new(p.PB13, Pull::Up),
             Input::new(p.PB12, Pull::Up),
         ],
+        // Active-low PTT, read as an input only. AFIK implements no transmit
+        // path, so this pin cannot key the radio.
+        ptt: Input::new(p.PB10, Pull::Up),
     };
 
     // SAFETY: `main` never returns, so this stack allocation lives for the
@@ -164,25 +167,48 @@ impl DisplayPins {
 struct KeypadPins {
     columns: [Output<'static>; 4],
     rows: [Input<'static>; 4],
+    ptt: Input<'static>,
 }
 
 impl KeypadPins {
-    async fn scan(&mut self) -> [u8; 4] {
-        let mut result = [0_u8; 4];
+    fn read_rows(&self) -> u8 {
+        let mut mask = 0_u8;
+        for (row, input) in self.rows.iter().enumerate() {
+            if input.is_low() {
+                mask |= 1 << row;
+            }
+        }
+        mask
+    }
+
+    async fn scan(&mut self) -> KeypadScan {
         for column in &mut self.columns {
             column.set_high();
         }
+
+        // Unselected pass first, matching the pinned source's scan order. With
+        // every column high no matrix button can pull a row low, so a low row
+        // is a side key wired directly to it.
+        Timer::after_micros(10).await;
+        let unselected = self.read_rows();
+
+        let mut columns = [0_u8; 4];
         for (index, column) in self.columns.iter_mut().enumerate() {
             column.set_low();
             Timer::after_micros(10).await;
             for (row, input) in self.rows.iter().enumerate() {
                 if input.is_low() {
-                    result[index] |= 1 << row;
+                    columns[index] |= 1 << row;
                 }
             }
             column.set_high();
         }
-        result
+
+        KeypadScan {
+            unselected,
+            columns,
+            ptt_pressed: self.ptt.is_low(),
+        }
     }
 }
 

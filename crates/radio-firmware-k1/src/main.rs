@@ -321,6 +321,12 @@ impl MatrixBus for K1MatrixBus {
         self.read_index += 1;
         Ok(active_rows_from_gpio_idr(idr))
     }
+
+    fn read_ptt_pressed(&mut self) -> Result<bool, Self::Error> {
+        // PB10 is active low. This is an input observation only; this image
+        // exposes no transmit path.
+        Ok(read_register(GPIOB_IDR) & (1 << 10) == 0)
+    }
 }
 
 #[cfg(any())]

@@ -1336,3 +1336,16 @@
   reported as a distinct raw bit before any interpretation is proposed.
 - **First step:** extend the pure scan/decode contract and its host tests for
   the unselected pass, keeping the existing four selected columns unchanged.
+- **Implementation result:** `keypad::scan` reads the unselected pass first and
+  returns `KeypadScan`; `Key` gained `Side1`, `Side2`, and `Ptt`; `MatrixBus`
+  gained `read_ptt_pressed`. `decode` fails closed on the undefined PB13/PB12
+  unselected rows, treats side-plus-main as ambiguous, and reports PTT only when
+  no other key is active. The async image binds PB10 pull-up, samples the
+  unselected pass with the same 10 us settling, and renders SIDE1/SIDE2/PTT on
+  the verified `y=36` line. The hello identity moved to `AFIK-K1-0.3`.
+- **Software status:** complete. 39 focused K1 tests, 41 workspace test
+  binaries, target build/package/negative fixtures, embedded warning-denied
+  target check, flake evaluation, formatting, Clippy, and `git diff --check`
+  passed. Raw image 26,072 bytes, CRC-32 `85387ce8`.
+- **Remaining:** the guarded physical write and the power-cycle observation of
+  each side key, PTT, and an `AFIK-K1-0.3` hello.

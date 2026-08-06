@@ -124,9 +124,11 @@ features remain outside this bounded slice.
   PB15 and SIDE2 as PB14, read in the unselected pass with all columns high;
   the side keys have no dedicated GPIO. `K1SIDE-025` is open for the bounded
   receive-only experiment.
-- Current smallest actionable task: extend the pure scan/decode contract and its
-  host tests with the unselected-column row sample, keeping the four existing
-  selected columns unchanged and leaving PB13/PB12 undefined in that state.
+- Work Package 25 side-key/PTT implementation: complete in software; the
+  unselected pass, SIDE1/SIDE2, and PTT are implemented, tested, and packaged.
+- Current smallest actionable task: perform the authorized guarded write of the
+  `AFIK-K1-0.3` image, then power-cycle and observe the boot screen, an
+  `AFIK-K1-0.3` hello, each side key's label, and the PTT label.
 
 ## Work Package 24 handoff
 
@@ -158,6 +160,42 @@ features remain outside this bounded slice.
   Nix evaluation failed before compilation because the host filesystem had
   only 66 MiB free (`No space left on device`). No source error was reported.
 - `git diff --check` — passed.
+
+## Work Package 25 side-key and PTT implementation milestone
+
+- `keypad::scan` now reads the unselected pass first, then the four selected
+  columns, then PTT, matching the pinned source's scan order. It returns the
+  bounded `KeypadScan` struct instead of a bare column array.
+- `Key` gained `Side1` (PB15 unselected), `Side2` (PB14 unselected), and `Ptt`
+  (PB10, separately wired and active low). `MatrixBus` gained
+  `read_ptt_pressed`.
+- `decode` fails closed on PB13/PB12 low during the unselected pass via the new
+  `UndefinedUnselectedRow` error, treats any two simultaneous keys as ambiguous
+  including side-plus-main, and reports PTT only when no other key is active.
+- The async image binds `PB10` as a pull-up input and samples the unselected
+  pass with the same 10 us settling used per column. SIDE1, SIDE2, and PTT
+  render as labels on the physically verified `y=36` line; pages 6-7 stay empty.
+- AFIK implements no transmit path, so PTT is an input observation only and
+  cannot key the radio.
+- The hello identity moved to `AFIK-K1-0.3` so a power-cycle can distinguish
+  this image from the `AFIK-K1-0.2` build already on the unit.
+- Focused K1 tests passed: 39 unit tests plus doc tests, including the exact
+  15-step scan trace, every operation/cleanup failure position, side-key
+  decoding, undefined-row fail-closed, side-plus-main ambiguity, PTT precedence,
+  and distinct renderable labels for all 19 keys.
+- `nix develop path:. -c cargo test --workspace` — passed; 41 test binaries,
+  zero failures.
+- `nix develop path:. -c tool/build-k1-async.sh --release`,
+  `tool/package-k1-async-image.sh --force`, and `tool/test-k1-async-image.sh`
+  — passed, including truncated and oversized negative raw fixtures.
+- `nix develop path:. -c tool/check-py32f071-clock-handoff.sh` — passed.
+- `nix flake check path:. --no-build`, `cargo fmt --all --check`,
+  warning-denied workspace Clippy, and `git diff --check` — passed.
+- The raw image is 26,072 bytes, SHA-256
+  `d11bc33a869feca035b8a04ea5c2c16b56e08e875f89c134dc36802b0cce7422`,
+  CRC-32 `85387ce8`, and Reset `0x080028c1`.
+- No RF, TX, persistence, EEPROM, or menu behavior was added. No physical write
+  has been sent at this checkpoint.
 
 ## Work Package 24 completion
 

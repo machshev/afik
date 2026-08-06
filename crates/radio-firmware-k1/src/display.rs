@@ -263,6 +263,9 @@ mod tests {
     #[test]
     fn all_key_labels_render_distinct_visible_frames() {
         let keys = [
+            Key::Side1,
+            Key::Side2,
+            Key::Ptt,
             Key::Menu,
             Key::Up,
             Key::Down,
@@ -280,11 +283,13 @@ mod tests {
             Key::Star,
             Key::Function,
         ];
-        let mut frames = [[0_u8; FRAME_BYTES]; 16];
-        for (frame, key) in frames.iter_mut().zip(keys) {
-            render_key_witness(frame, key);
+        let mut frames: Vec<[u8; FRAME_BYTES]> = Vec::new();
+        for key in keys {
+            let mut frame = [0_u8; FRAME_BYTES];
+            render_key_witness(&mut frame, key);
             assert!(frame[4 * WIDTH..6 * WIDTH].iter().any(|byte| *byte != 0));
             assert!(frame[6 * WIDTH..].iter().all(|byte| *byte == 0));
+            frames.push(frame);
         }
         for first in 0..frames.len() {
             for second in first + 1..frames.len() {
