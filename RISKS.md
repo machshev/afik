@@ -95,3 +95,16 @@
   makes no hardware-success claim. Establish target UART/boot behavior,
   recovery, timeout/retry requirements, and hardware-in-loop fixtures before
   documenting any device/baud default or physical programming workflow.
+
+## RISK-010 — Local web GUI is not an authenticated service
+
+- **State:** open
+- **Impact:** another process or malicious browser context on the same host may
+  attempt to reach a loopback programmer GUI. Treating it as a remote or
+  multi-user service could expose configuration mutation without an appropriate
+  authentication, authorization, origin, and deployment model.
+- **Mitigation:** `GUI-009` binds only loopback, serves one local session, bounds
+  headers and bodies, exposes no arbitrary server file paths, and requires a
+  per-process token for mutation endpoints plus explicit confirmation in the
+  delivered UI. Do not add non-loopback bind, claim authentication, or deploy
+  it as a shared service without a separate threat model and security package.

@@ -2,13 +2,12 @@
 
 ## Current work package
 
-**No work package is active. Work Package 8 — complete programmer CLI for the
-supported protocol (`CLI-008`) is complete.**
+**Work Package 9 — local programmer web GUI (`GUI-009`) is active.**
 
-The next smallest actionable package is the programmer GUI as a thin front end
-over the same library and validated project/image operations. It must be
-activated in `TASKS.md` before implementation and must not fork compiler,
-protocol, transaction, or backup logic.
+The package is limited to shared programmer workflows/serial transport and a
+single-user, loopback-only graphical web front end over a persistent simulator
+or explicit serial session. It does not add remote service, target behavior,
+raw writes, unsupported project formats, or security/physical success claims.
 
 ## State
 
@@ -20,6 +19,7 @@ protocol, transaction, or backup logic.
 - Work Package 6 BK4819 receive path and token-gated TX boundary: complete.
 - Work Package 7 channel activation and deterministic scanning: complete.
 - Work Package 8 programmer CLI: complete.
+- Work Package 9 programmer GUI: active.
 - `UI-005` logical key edges, bounded semantic views, exact boot-only entry,
   release gate, draft editor, and checked persistence action: complete.
 - `UI-005` separate persisted/active policy simulation, deterministic timed
@@ -58,8 +58,8 @@ protocol, transaction, or backup logic.
 - `CLI-008` snapshot backup encoding, strict simulator/serial command front end,
   bounded safe files, stable output/status, transactional write/restore with
   read-back, and binary tests: complete.
-- Next smallest task: define and activate the programmer GUI as a thin,
-  deterministic view/update layer over `radio-programmer` operations.
+- Next smallest task: move verified write/backup/restore orchestration into
+  `radio-programmer`, prove it over simulation, then refactor the CLI to use it.
 
 ## Completed Work Package 8 exit criteria
 

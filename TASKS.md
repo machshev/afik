@@ -355,3 +355,52 @@
   setup-failure, deterministic image, and process-level tests pass. All pinned
   workspace and Rust 1.86 gates are recorded in `STATUS.md`; physical serial
   interoperability remains open in `RISK-009`.
+
+## GUI-009 — Local programmer web GUI
+
+- **Status:** active
+- **Objective:** provide a real, readable local graphical front end for the
+  complete supported programmer workflow without duplicating programming logic
+  or broadening hardware claims.
+- **Scope:** programmer-owned verified write/backup/restore workflows shared by
+  front ends; a reusable host Linux serial transport; refactoring the CLI to
+  those shared layers without behavior changes; a new host-only
+  `radio-programmer-gui` library/binary; persistent simulator or explicit
+  serial session; loopback-only bounded HTTP; embedded responsive HTML/CSS/JS;
+  capability and object views; generated-bank editing; canonical image compile
+  download; confirmed transactional write; backup download; validated restore
+  upload; stable status/error presentation; per-session mutation token; and
+  model, endpoint, asset, binary, CLI-regression, and workspace tests. Remote
+  bind, multi-user service, authentication claims, server-side arbitrary paths,
+  auto-discovery, firmware update, raw writes, unsupported project models, and
+  physical interoperability claims are excluded.
+- **Dependencies:** `CLI-008`, `radio-programmer`, `radio-sim`, canonical images,
+  and the explicit host serial adapter contract.
+- **Assumptions:** a single-user loopback web application is a practical
+  dependency-free GUI on supported Linux hosts; browser assets can use standard
+  fetch/file APIs; a session token and same-origin delivery reduce accidental
+  mutation but are not user authentication; persistent simulator state is
+  deterministic within one server process.
+- **Likely files:** `Cargo.toml`, `crates/radio-programmer`, a new shared host
+  serial crate, `crates/radio-programmer-cli`, a new
+  `crates/radio-programmer-gui` with embedded assets, programmer/GUI/
+  architecture documents, `DECISIONS.md`, `RISKS.md`, and handoff files.
+- **Tests required:** shared verified write, backup, and restore return exact
+  receipts/images and reject read-back mismatch; CLI behavior remains exact
+  after shared-workflow/serial refactoring; GUI state persists in the simulator;
+  generated-bank form parsing and duplicate/capacity failures are explicit;
+  compile and backup downloads decode canonically; confirmed write/restore
+  mutate and refresh generation; missing/wrong mutation token cannot mutate;
+  non-loopback bind and oversized/malformed HTTP are rejected; HTML contains
+  all required controls and responsive/accessibility landmarks; binary
+  help/version smoke; serial setup failure remains distinct; deterministic
+  endpoint scripts return identical results.
+- **Acceptance criteria:** the GUI is a thin host leaf over programmer-owned
+  compilation/image/transaction/verification workflows; the programmer library
+  is UI-agnostic; one process retains one selected backend session; all network
+  listening is loopback-only and request/header/body sizes are bounded;
+  mutation requires the session token plus an explicit GUI confirmation path;
+  backup/compile use downloads and restore uses bounded upload, never arbitrary
+  server file paths; status is readable and deterministic; existing CLI output
+  and exit contracts remain green; no target, remote-service, security, or
+  physical-programming capability is claimed.
