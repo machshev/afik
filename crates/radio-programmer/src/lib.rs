@@ -53,6 +53,8 @@ pub enum ProgrammerError<E> {
     IncompatibleDevice,
     /// Configuration object encoding or decoding failed.
     Storage(StorageError),
+    /// Post-commit generation or object read-back did not match the request.
+    VerificationMismatch,
 }
 
 impl<E: fmt::Display> fmt::Display for ProgrammerError<E> {
@@ -67,6 +69,9 @@ impl<E: fmt::Display> fmt::Display for ProgrammerError<E> {
             Self::UnexpectedResponse => formatter.write_str("unexpected protocol response"),
             Self::IncompatibleDevice => formatter.write_str("incompatible device capabilities"),
             Self::Storage(error) => write!(formatter, "configuration storage error: {error}"),
+            Self::VerificationMismatch => {
+                formatter.write_str("configuration read-back verification failed")
+            }
         }
     }
 }
@@ -320,6 +325,44 @@ pub struct ConfigurationSnapshot {
     pub objects: Vec<StorageObject>,
 }
 
+/// Verified configuration mutation receipt shared by host front ends.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VerifiedConfigurationReceipt {
+    /// New active generation confirmed by complete read-back.
+    pub generation: u32,
+    /// Exact capacity of the committed configuration.
+    pub report: CapacityReport,
+}
+
+/// Complete validated snapshot plus its canonical backup image.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConfigurationBackup {
+    /// Stable active generation read before and after every object.
+    pub generation: u32,
+    /// Exact validated snapshot capacity.
+    pub report: CapacityReport,
+    /// Canonical configuration image bytes.
+    pub image: Vec<u8>,
+}
+
+/// Restore workflow failure before or during device mutation.
+#[derive(Debug)]
+pub enum RestoreError<E> {
+    /// Canonical image or negotiated target compilation failed before mutation.
+    Compile(CompileError),
+    /// Programmer transport, protocol, device, storage, or verification failed.
+    Programmer(ProgrammerError<E>),
+}
+
+impl<E: fmt::Display> fmt::Display for RestoreError<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Compile(error) => write!(formatter, "restore image rejected: {error}"),
+            Self::Programmer(error) => write!(formatter, "restore failed: {error}"),
+        }
+    }
+}
+
 impl ConfigurationSnapshot {
     /// Validates the snapshot and reports exact object and channel capacity.
     pub fn report(&self) -> Result<CapacityReport, StorageError> {
@@ -451,6 +494,51 @@ impl<T: ProtocolTransport> Programmer<T> {
             generation,
             report: configuration.report(),
         })
+    }
+
+    /// Writes a configuration and requires exact generation/object read-back.
+    pub fn write_configuration_verified(
+        &mut self,
+        configuration: &CompiledConfiguration,
+    ) -> Result<VerifiedConfigurationReceipt, ProgrammerError<T::Error>> {
+        let receipt = self.write_configuration(configuration)?;
+        let snapshot = self.read_configuration()?;
+        if snapshot.generation != receipt.generation || snapshot.objects != configuration.objects {
+            return Err(ProgrammerError::VerificationMismatch);
+        }
+        Ok(VerifiedConfigurationReceipt {
+            generation: receipt.generation,
+            report: receipt.report,
+        })
+    }
+
+    /// Reads, validates, reports, and canonically encodes one stable backup.
+    pub fn backup_configuration(
+        &mut self,
+    ) -> Result<ConfigurationBackup, ProgrammerError<T::Error>> {
+        let snapshot = self.read_configuration()?;
+        let report = snapshot.report()?;
+        let mut image = vec![0; snapshot.image_len()?];
+        snapshot.encode_image(&mut image)?;
+        Ok(ConfigurationBackup {
+            generation: snapshot.generation,
+            report,
+            image,
+        })
+    }
+
+    /// Validates a canonical image against negotiated limits, writes it, and
+    /// requires exact generation/object read-back.
+    pub fn restore_configuration_image(
+        &mut self,
+        image: &[u8],
+    ) -> Result<VerifiedConfigurationReceipt, RestoreError<T::Error>> {
+        let configuration = self
+            .compiler()
+            .decode_image(image)
+            .map_err(RestoreError::Compile)?;
+        self.write_configuration_verified(&configuration)
+            .map_err(RestoreError::Programmer)
     }
 
     /// Lists every active object in deterministic stable-key order.

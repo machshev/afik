@@ -472,20 +472,15 @@ fn execute_backup(
     output: &Path,
     force: bool,
 ) -> Result<String, CliError> {
-    let snapshot = programmer
-        .read_configuration()
+    let backup = programmer
+        .backup_configuration()
         .map_err(CliError::operation)?;
-    let report = snapshot.report().map_err(CliError::operation)?;
-    let mut image = vec![0; snapshot.image_len().map_err(CliError::operation)?];
-    let image_bytes = snapshot
-        .encode_image(&mut image)
-        .map_err(CliError::operation)?;
-    write_output(output, &image, force)?;
-    let mut rendered = format!("generation={}\n", snapshot.generation);
+    write_output(output, &backup.image, force)?;
+    let mut rendered = format!("generation={}\n", backup.generation);
     rendered.push_str(&render_capacity(
         "backed_up",
-        report,
-        Some(image_bytes),
+        backup.report,
+        Some(backup.image.len()),
         Some(output),
     ));
     Ok(rendered)
@@ -496,11 +491,10 @@ fn execute_restore(
     input: &Path,
 ) -> Result<String, CliError> {
     let image = read_bounded(input)?;
-    let configuration = programmer
-        .compiler()
-        .decode_image(&image)
+    let receipt = programmer
+        .restore_configuration_image(&image)
         .map_err(CliError::operation)?;
-    write_and_verify(programmer, &configuration, "restored")
+    Ok(render_verified_receipt(receipt, "restored"))
 }
 
 fn write_and_verify(
@@ -509,19 +503,18 @@ fn write_and_verify(
     action: &str,
 ) -> Result<String, CliError> {
     let receipt = programmer
-        .write_configuration(configuration)
+        .write_configuration_verified(configuration)
         .map_err(CliError::operation)?;
-    let snapshot = programmer
-        .read_configuration()
-        .map_err(CliError::operation)?;
-    if snapshot.generation != receipt.generation || snapshot.objects != configuration.objects() {
-        return Err(CliError::Operation(format!(
-            "configuration read-back did not match {action} objects"
-        )));
-    }
+    Ok(render_verified_receipt(receipt, action))
+}
+
+fn render_verified_receipt(
+    receipt: radio_programmer::VerifiedConfigurationReceipt,
+    action: &str,
+) -> String {
     let mut output = format!("generation={}\nverified=true\n", receipt.generation);
     output.push_str(&render_capacity(action, receipt.report, None, None));
-    Ok(output)
+    output
 }
 
 fn render_info(capabilities: radio_programmer::DeviceCapabilities) -> String {

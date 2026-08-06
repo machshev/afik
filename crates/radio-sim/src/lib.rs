@@ -1314,14 +1314,16 @@ mod tests {
     use radio_channel_control::{ChannelTxError, ControlState, ScanConfig};
     use radio_channel_plan::{BankName, GeneratedBank, PlanEncoding};
     use radio_domain::{ActiveChannel, BankId, Frequency, FrequencyStep, TxClass};
-    use radio_programmer::{ListedObject, Programmer, RadioProject};
+    use radio_programmer::{
+        ListedObject, Programmer, ProgrammerError, ProtocolTransport, RadioProject,
+    };
     use radio_protocol::{
         decode_packet, encode_frame, Command, DeviceErrorCode, Frame, PayloadWriter, ProtocolError,
         Service, FLAG_ERROR, FLAG_RESPONSE, MAX_ENCODED_FRAME, MAX_PAYLOAD,
     };
     use radio_storage::{
-        decode_generated_bank, encode_generated_bank, ObjectKey, ObjectKind, StorageError,
-        StorageObject, GENERATED_BANK_ENCODED_LEN,
+        decode_configuration_image, decode_generated_bank, encode_generated_bank, ObjectKey,
+        ObjectKind, StorageError, StorageObject, GENERATED_BANK_ENCODED_LEN,
     };
     use radio_tx_policy::{LoadStatus, PermissionSet, StoredPermissions, TxPolicy};
     use radio_ui::{Key, KeyEvent, KeySet, UiAction, UiView};
@@ -1340,6 +1342,58 @@ mod tests {
 
     fn expected_bank() -> GeneratedBank {
         bank(6, "PMR446")
+    }
+
+    struct TamperReadTransport {
+        inner: SimTransport,
+        response: std::collections::VecDeque<u8>,
+    }
+
+    impl TamperReadTransport {
+        fn new(device: SimDevice) -> Self {
+            Self {
+                inner: SimTransport::new(device),
+                response: std::collections::VecDeque::new(),
+            }
+        }
+    }
+
+    impl ProtocolTransport for TamperReadTransport {
+        type Error = core::convert::Infallible;
+
+        fn send(&mut self, frame: &[u8]) -> Result<(), Self::Error> {
+            let request = decode_packet(&frame[..frame.len() - 1]).unwrap();
+            self.inner.send(frame)?;
+            if request.command() == Command::ReadObject {
+                let mut encoded = [0_u8; MAX_ENCODED_FRAME];
+                let length = self.inner.receive(&mut encoded)?;
+                let response = decode_packet(&encoded[..length - 1]).unwrap();
+                let mut payload = response.payload().to_vec();
+                *payload.last_mut().unwrap() ^= 1;
+                let altered = Frame::new(
+                    response.service(),
+                    response.flags(),
+                    response.sequence(),
+                    response.command(),
+                    &payload,
+                )
+                .unwrap();
+                let altered_length = encode_frame(&altered, &mut encoded).unwrap();
+                self.response.extend(&encoded[..altered_length]);
+            }
+            Ok(())
+        }
+
+        fn receive(&mut self, buffer: &mut [u8]) -> Result<usize, Self::Error> {
+            if self.response.is_empty() {
+                return self.inner.receive(buffer);
+            }
+            let count = buffer.len().min(self.response.len());
+            for destination in &mut buffer[..count] {
+                *destination = self.response.pop_front().unwrap();
+            }
+            Ok(count)
+        }
     }
 
     fn rf_channel(class: TxClass) -> ActiveChannel {
@@ -1951,6 +2005,54 @@ mod tests {
                 }
             )
         }));
+    }
+
+    #[test]
+    fn shared_verified_write_backup_and_restore_workflows_round_trip() {
+        let mut project = RadioProject::new();
+        project.add_generated_bank(bank(2, "two"));
+        project.add_generated_bank(bank(1, "one"));
+
+        let device = SimDevice::new();
+        let compiled = radio_programmer::ConfigurationCompiler::new(device.capabilities())
+            .compile(&project)
+            .unwrap();
+        let mut programmer = Programmer::connect(SimTransport::new(device)).unwrap();
+        let receipt = programmer.write_configuration_verified(&compiled).unwrap();
+        assert_eq!(receipt.generation, 1);
+        assert_eq!(receipt.report, compiled.report());
+
+        let backup = programmer.backup_configuration().unwrap();
+        assert_eq!(backup.generation, 1);
+        assert_eq!(backup.report, compiled.report());
+        assert_eq!(
+            decode_configuration_image(&backup.image)
+                .unwrap()
+                .objects()
+                .collect::<Vec<_>>(),
+            compiled.objects()
+        );
+
+        let mut restored = Programmer::connect(SimTransport::new(SimDevice::new())).unwrap();
+        let restore_receipt = restored.restore_configuration_image(&backup.image).unwrap();
+        assert_eq!(restore_receipt.generation, 1);
+        assert_eq!(restore_receipt.report, compiled.report());
+        assert_eq!(restored.backup_configuration().unwrap().image, backup.image);
+    }
+
+    #[test]
+    fn verified_write_rejects_tampered_read_back() {
+        let mut project = RadioProject::new();
+        project.add_generated_bank(bank(1, "one"));
+        let device = SimDevice::new();
+        let compiled = radio_programmer::ConfigurationCompiler::new(device.capabilities())
+            .compile(&project)
+            .unwrap();
+        let mut programmer = Programmer::connect(TamperReadTransport::new(device)).unwrap();
+        assert!(matches!(
+            programmer.write_configuration_verified(&compiled),
+            Err(ProgrammerError::VerificationMismatch)
+        ));
     }
 
     #[test]
