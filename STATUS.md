@@ -142,6 +142,13 @@ incomplete. It can resume unchanged when the exact K5 V1 hardware is available.
   present, but the radio is currently reachable in neither observed mode.
   Recovery is paused until the exact physical bootloader-entry procedure is
   repeated and the `7.03.01` beacon returns; no further write is authorized.
+- After the user re-entered bootloader mode, the recovery command was invoked
+  once more with transaction `4cf88e71`; it again stopped with `serial response
+  timed out` before any page acknowledgement. No retry was made. The bounded
+  Linux serial read timer was then increased from 0.1 s to 0.2 s per read
+  (4 s across the existing empty-read budget) in commit `72ba9f7`, matching the
+  observed 3 s K1 beacon wait used by the recovery evidence procedure. A fresh
+  bootloader session is required before testing that fix.
 
 Verification on 2026-08-06:
 
