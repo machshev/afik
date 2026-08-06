@@ -354,3 +354,6 @@
   Nix; retain linker/image/recovery contracts; add Renode and physical tests one
   boundary at a time; do not enable interrupt/DMA behavior merely because a HAL
   exposes an API.
+- **Observed:** Embassy executor 0.10.0 builds on pinned Rust 1.86. Exact F071
+  metadata exists in `py32-metapac 0.5.0`, but `py32-hal 0.4.1` does not expose
+  it, so HAL peripheral support is blocked pending a reviewed extension.

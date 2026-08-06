@@ -117,9 +117,25 @@ features remain outside this bounded slice.
 - Work Package 22 keypad/UI witness definition: complete; the pinned matrix,
   electrical idle/scan levels, one-key decode, explicit-time debounce, and
   display-only result were bounded before implementation.
-- Current smallest actionable task: determine a Rust-1.86-compatible pinned
-  `embassy-executor`/`py32-hal` dependency set and compile a no-peripheral
-  Cortex-M executor proof without changing the physical image.
+- Current smallest actionable task: expose the exact PY32F071 package through
+  a reviewed `py32-hal` extension or upstream change, then compile its
+  peripheral inventory without changing the physical image.
+
+## Work Package 23 dependency and executor milestone
+
+- Pinned `embassy-executor = 0.10.0` behind the K1-only `embassy-runtime`
+  feature with only `platform-cortex-m` and `executor-thread` enabled.
+- Added a HAL-independent constructor for the heap-free thread executor. It
+  touches no clock, interrupt, timer, UART, SPI, GPIO, linker, or image state.
+- Rust 1.86 target check and warning-denied Clippy with build-std/core passed for
+  `thumbv6m-none-eabi`; focused firmware tests, Nix flake evaluation, workspace
+  formatting, warning-denied Clippy, all workspace tests, and `git diff --check`
+  passed.
+- `py32-metapac 0.5.0` contains `py32f071c1b`, `py32f071k18`, `py32f071k1b`,
+  and `py32f071r1b`. `py32-hal` 0.3.0, 0.4.0, and 0.4.1 expose no F071 feature;
+  0.4.1 exposes only F002B, selected F030s, and F072C1B. Selecting F072 for
+  this unit is prohibited.
+- No target entry point or physical image changed and no flash was sent.
 
 ## Work Package 22 pure keypad milestone
 

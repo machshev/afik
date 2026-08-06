@@ -13,6 +13,10 @@ path = "src/lib.rs"
 
 [features]
 firmware = []
+embassy-runtime = ["dep:embassy-executor"]
+
+[dependencies]
+embassy-executor = { version = "=0.10.0", default-features = false, features = ["executor-thread", "platform-cortex-m"], optional = true }
 
 [[bin]]
 name = "radio-firmware-k1"

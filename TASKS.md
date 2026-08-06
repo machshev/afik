@@ -1096,3 +1096,7 @@
   responsive during chunked rendering before visible-key acceptance.
 - **First step:** resolve MSRV and exact PY32F071 feature coverage without
   changing the flashed image.
+- **Dependency result:** pinned `embassy-executor 0.10.0` compiles with strict
+  target Clippy on Rust 1.86. `py32-metapac 0.5.0` contains four F071 packages,
+  but released `py32-hal` through 0.4.1 exposes none. The next step is a bounded
+  reviewed HAL chip-surface extension; F072 substitution is not allowed.

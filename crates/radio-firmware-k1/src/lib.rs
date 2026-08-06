@@ -7,5 +7,7 @@ extern crate std;
 
 pub mod backlight;
 pub mod display;
+#[cfg(feature = "embassy-runtime")]
+pub mod embassy_runtime;
 pub mod keypad;
 pub mod protocol;

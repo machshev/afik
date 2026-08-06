@@ -1160,3 +1160,8 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   work only. They do not prove the exact PY32F071 feature, AFIK's Rust 1.86
   compatibility, board clocks, interrupts, timers, USART1, SPI1, DMA, or
   physical behavior.
+- **Local dependency observation:** in the locked Rust 1.86 shell,
+  `embassy-executor 0.10.0` compiles for `thumbv6m-none-eabi` with its Cortex-M
+  thread platform. `py32-metapac 0.5.0` contains four F071 chip features, while
+  `py32-hal` releases 0.3.0, 0.4.0, and 0.4.1 expose no F071 feature. This is a
+  software-support gap, not permission to use F072 metadata.
