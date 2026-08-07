@@ -2,6 +2,7 @@
 
 use std::{convert::Infallible, fmt, io, path::Path};
 
+use radio_channel_plan::PlanEncoding;
 use radio_programmer::{
     CompileError, ConfigurationBackup, DeviceCapabilities, ObjectListing, Programmer,
     ProgrammerError, ProtocolTransport, RadioProject, RestoreError, VerifiedConfigurationReceipt,
@@ -107,6 +108,14 @@ impl DeviceSession {
     /// Returns the negotiated device capabilities.
     pub fn capabilities(&self) -> DeviceCapabilities {
         self.programmer.capabilities()
+    }
+
+    /// Reports whether the target accepts the compact generated-plan encoding.
+    ///
+    /// A target which expands no plan advertises no encoding bit, so the editor
+    /// can say why a generated bank cannot be written before it tries.
+    pub fn supports_generated_plans(&self) -> bool {
+        self.capabilities().plan_encodings & PlanEncoding::LinearSimplex.capability_bit() != 0
     }
 
     /// Reads the current generation-tagged object listing.

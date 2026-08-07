@@ -8,7 +8,7 @@ use std::fmt;
 
 use radio_channel_plan::{
     BankFlags, BankMask, BankName, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
-    ChannelRecord, PlanEncoding, MAX_BANKS,
+    ChannelRecord, GeneratedBank, PlanEncoding, MAX_BANKS,
 };
 use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, RadioConfig,
@@ -16,8 +16,8 @@ use radio_domain::{
 };
 use radio_programmer::{CompileError, ConfigurationCompiler, DeviceCapabilities, RadioProject};
 use radio_storage::{
-    decode_channel, decode_channel_bank, decode_configuration_image, decode_radio_config,
-    ObjectKind, MAX_OBJECT_DATA, STORAGE_FORMAT_VERSION,
+    decode_channel, decode_channel_bank, decode_configuration_image, decode_generated_bank,
+    decode_radio_config, ObjectKind, MAX_OBJECT_DATA, STORAGE_FORMAT_VERSION,
 };
 
 /// Maximum objects an offline host project may hold.
@@ -316,6 +316,51 @@ impl ChannelDraft {
     }
 }
 
+/// Which kind of bank one editable row defines.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum BankKind {
+    /// A named bank explicit channel rows join by membership.
+    #[default]
+    Named,
+    /// A compact arithmetic simplex plan the radio expands for itself.
+    Generated,
+}
+
+impl BankKind {
+    /// Returns the editor label.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Named => "Named channels",
+            Self::Generated => "Generated plan",
+        }
+    }
+
+    /// Returns a one-line explanation of what the kind stores.
+    pub const fn detail(self) -> &'static str {
+        match self {
+            Self::Named => "Groups the explicit channel rows which claim membership of this bank.",
+            Self::Generated => {
+                "Stores one arithmetic simplex plan the radio expands itself, so no \
+                 channel row is needed. The target must advertise the plan encoding."
+            }
+        }
+    }
+
+    /// Returns every selectable kind in display order.
+    pub const fn all() -> [Self; 2] {
+        [Self::Named, Self::Generated]
+    }
+}
+
+/// One validated bank, which is either named or a compact generated plan.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ValidatedBank {
+    /// A named bank addressed by channel membership.
+    Named(ChannelBank),
+    /// A compact arithmetic simplex plan.
+    Generated(GeneratedBank),
+}
+
 /// One editable bank row.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BankDraft {
@@ -323,8 +368,18 @@ pub struct BankDraft {
     pub id: u16,
     /// Display name.
     pub name: String,
-    /// Whether the bank participates in scanning.
+    /// Which kind of bank this row defines.
+    pub kind: BankKind,
+    /// Whether a named bank participates in scanning.
     pub scan_enabled: bool,
+    /// First generated receive frequency in megahertz.
+    pub base_mhz: String,
+    /// Generated channel spacing in hertz.
+    pub spacing_hz: u32,
+    /// Number of generated channels.
+    pub channel_count: u16,
+    /// Trusted transmit classification of every generated channel.
+    pub tx_class: TxClass,
 }
 
 impl Default for BankDraft {
@@ -332,32 +387,104 @@ impl Default for BankDraft {
         Self {
             id: 0,
             name: "Bank".to_owned(),
+            kind: BankKind::default(),
             scan_enabled: true,
+            base_mhz: "446.006250".to_owned(),
+            spacing_hz: 12_500,
+            channel_count: 16,
+            tx_class: TxClass::Never,
         }
     }
 }
 
 impl BankDraft {
-    /// Builds a draft from a validated bank.
+    /// Builds a draft from a validated named bank.
     pub fn from_record(bank: ChannelBank) -> Self {
         Self {
             id: bank.id().get(),
             name: bank.name().as_str().to_owned(),
+            kind: BankKind::Named,
             scan_enabled: bank.is_scan_enabled(),
+            ..Self::default()
         }
     }
 
-    /// Validates every field into one bank record.
-    pub fn validate(&self, row: usize) -> Result<ChannelBank, ModelError> {
+    /// Builds a draft from a validated generated plan.
+    pub fn from_generated(bank: GeneratedBank) -> Self {
+        Self {
+            id: bank.id().get(),
+            name: bank.name().as_str().to_owned(),
+            kind: BankKind::Generated,
+            base_mhz: format_mhz(bank.base().as_hz()),
+            spacing_hz: bank.spacing().as_hz(),
+            channel_count: bank.channel_count(),
+            tx_class: bank.tx_class(),
+            ..Self::default()
+        }
+    }
+
+    /// Validates every field of this row into one bank.
+    pub fn validate(&self, row: usize) -> Result<ValidatedBank, ModelError> {
         let scope = ModelScope::Bank(row);
         let name = BankName::new(self.name.trim())
             .map_err(|_| error(scope, "name", "must be 1 to 16 printable characters"))?;
-        ChannelBank::new(
-            BankId::new(self.id),
-            name,
-            BankFlags::default().with(BankFlags::SCAN_ENABLED, self.scan_enabled),
-        )
-        .map_err(|_| error(scope, "id", "must be 0 to 15"))
+        if self.id >= MAX_BANKS {
+            return Err(error(
+                scope,
+                "id",
+                format!("must be 0 to {}", MAX_BANKS - 1),
+            ));
+        }
+        match self.kind {
+            BankKind::Named => ChannelBank::new(
+                BankId::new(self.id),
+                name,
+                BankFlags::default().with(BankFlags::SCAN_ENABLED, self.scan_enabled),
+            )
+            .map(ValidatedBank::Named)
+            .map_err(|_| error(scope, "id", format!("must be 0 to {}", MAX_BANKS - 1))),
+            BankKind::Generated => {
+                let base = parse_frequency(&self.base_mhz)
+                    .ok_or_else(|| error(scope, "base", "is not a frequency in megahertz"))?;
+                let spacing = FrequencyStep::from_hz(self.spacing_hz)
+                    .map_err(|_| error(scope, "spacing", "must be a non-zero number of hertz"))?;
+                if self.channel_count == 0 {
+                    return Err(error(scope, "channels", "must be at least one channel"));
+                }
+                GeneratedBank::linear_simplex(
+                    BankId::new(self.id),
+                    name,
+                    base,
+                    spacing,
+                    self.channel_count,
+                    self.tx_class,
+                )
+                .map(ValidatedBank::Generated)
+                .map_err(|_| {
+                    error(
+                        scope,
+                        "channels",
+                        "span past the highest representable frequency",
+                    )
+                })
+            }
+        }
+    }
+
+    /// Returns the first and last generated frequency when the plan is valid.
+    ///
+    /// The editor shows the span a compact plan covers, which is otherwise only
+    /// visible after the plan has been written to a radio.
+    pub fn generated_span(&self) -> Option<(String, String)> {
+        if !matches!(self.kind, BankKind::Generated) || self.channel_count == 0 {
+            return None;
+        }
+        let base = parse_frequency(&self.base_mhz)?;
+        let spacing = FrequencyStep::from_hz(self.spacing_hz).ok()?;
+        let last = base
+            .checked_add_steps(spacing, self.channel_count - 1)
+            .ok()?;
+        Some((format_mhz(base.as_hz()), format_mhz(last.as_hz())))
     }
 }
 
@@ -493,16 +620,66 @@ impl ProjectModel {
         self.channels.push(draft);
     }
 
-    /// Appends one bank row using the lowest free identifier.
+    /// Appends one channel row copied from an existing row.
+    ///
+    /// Copying is how an operator enters a repeater pair or a group of similar
+    /// channels without retyping every field, so only the identity changes.
+    pub fn duplicate_channel(&mut self, row: usize) {
+        let Some(source) = self.channels.get(row) else {
+            return;
+        };
+        let id = self
+            .channels
+            .iter()
+            .map(|channel| channel.id)
+            .max()
+            .map_or(1, |highest| highest.saturating_add(1));
+        let mut draft = source.clone();
+        draft.id = id;
+        self.channels.insert(row + 1, draft);
+    }
+
+    /// Appends one named bank row using the lowest free identifier.
     pub fn add_bank(&mut self) {
+        self.push_bank(BankKind::Named);
+    }
+
+    /// Appends one generated-plan bank row using the lowest free identifier.
+    pub fn add_generated_bank(&mut self) {
+        self.push_bank(BankKind::Generated);
+    }
+
+    /// Appends one bank row of the requested kind.
+    ///
+    /// Identifiers are taken from the whole bank list rather than one kind, so
+    /// the number an operator reads always names exactly one row.
+    fn push_bank(&mut self, kind: BankKind) {
         let id = (0..MAX_BANKS)
             .find(|candidate| !self.banks.iter().any(|bank| bank.id == *candidate))
             .unwrap_or(0);
         self.banks.push(BankDraft {
             id,
             name: format!("Bank {id}"),
-            scan_enabled: true,
+            kind,
+            ..BankDraft::default()
         });
+    }
+
+    /// Returns the name of the named bank holding each addressable identifier.
+    ///
+    /// Channel membership only resolves against named banks, so a generated
+    /// plan never claims an entry here.
+    pub fn bank_names(&self) -> Vec<Option<String>> {
+        let mut names = vec![None; MAX_BANKS as usize];
+        for bank in &self.banks {
+            if !matches!(bank.kind, BankKind::Named) {
+                continue;
+            }
+            if let Some(slot) = names.get_mut(usize::from(bank.id)) {
+                *slot = Some(bank.name.trim().to_owned());
+            }
+        }
+        names
     }
 
     /// Validates every row and builds one compilable project.
@@ -512,7 +689,8 @@ impl ProjectModel {
 
         for (row, draft) in self.banks.iter().enumerate() {
             match draft.validate(row) {
-                Ok(bank) => project.add_bank(bank),
+                Ok(ValidatedBank::Named(bank)) => project.add_bank(bank),
+                Ok(ValidatedBank::Generated(bank)) => project.add_generated_bank(bank),
                 Err(failure) => errors.push(failure),
             }
         }
@@ -542,11 +720,13 @@ impl ProjectModel {
                 ));
             }
         }
+        // A named bank and a generated plan are separate stored objects, so only
+        // two rows of the same kind can collide.
         for (row, draft) in self.banks.iter().enumerate() {
             if self
                 .banks
                 .iter()
-                .filter(|other| other.id == draft.id)
+                .filter(|other| other.id == draft.id && other.kind == draft.kind)
                 .count()
                 > 1
             {
@@ -621,7 +801,12 @@ impl ProjectModel {
                     })?;
                     model.config = ConfigDraft::from_config(config);
                 }
-                ObjectKind::GeneratedBank => {}
+                ObjectKind::GeneratedBank => {
+                    let bank = decode_generated_bank(&object).map_err(|failure| {
+                        error(ModelScope::Project, "generated bank", failure.to_string())
+                    })?;
+                    model.banks.push(BankDraft::from_generated(bank));
+                }
             }
         }
         Ok(model)
@@ -696,8 +881,8 @@ fn format_tenths(tenths_hz: u16) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_mhz, parse_frequency, BankDraft, ChannelDraft, ConfigDraft, ModelScope,
-        ProjectModel, ToneDraft, ToneKind,
+        format_mhz, parse_frequency, BankDraft, BankKind, ChannelDraft, ConfigDraft, ModelScope,
+        ProjectModel, ToneDraft, ToneKind, ValidatedBank,
     };
     use radio_domain::{ScanResume, Tone, TxClass};
 
@@ -854,12 +1039,108 @@ mod tests {
 
     #[test]
     fn bank_identifiers_are_bounded() {
-        let draft = BankDraft {
-            id: 16,
-            name: "Too high".to_owned(),
-            scan_enabled: true,
+        for kind in BankKind::all() {
+            let draft = BankDraft {
+                id: 16,
+                name: "Too high".to_owned(),
+                kind,
+                ..BankDraft::default()
+            };
+            assert_eq!(draft.validate(0).unwrap_err().field, "id");
+        }
+    }
+
+    #[test]
+    fn generated_plans_validate_their_span_and_report_it() {
+        let mut draft = BankDraft {
+            id: 3,
+            name: "PMR446".to_owned(),
+            kind: BankKind::Generated,
+            base_mhz: "446.00625".to_owned(),
+            spacing_hz: 12_500,
+            channel_count: 16,
+            tx_class: TxClass::LicenceFreePlan,
+            ..BankDraft::default()
         };
-        assert!(draft.validate(0).is_err());
+        let ValidatedBank::Generated(bank) = draft.validate(0).unwrap() else {
+            panic!("a generated row must validate into a generated plan");
+        };
+        assert_eq!(bank.channel_count(), 16);
+        assert_eq!(bank.channel(15).unwrap().receive.as_hz(), 446_193_750);
+        assert_eq!(
+            draft.generated_span(),
+            Some(("446.006250".to_owned(), "446.193750".to_owned()))
+        );
+
+        draft.channel_count = 0;
+        assert_eq!(draft.validate(0).unwrap_err().field, "channels");
+        assert!(draft.generated_span().is_none());
+
+        draft.channel_count = 16;
+        draft.spacing_hz = 0;
+        assert_eq!(draft.validate(0).unwrap_err().field, "spacing");
+        assert!(draft.generated_span().is_none());
+
+        draft.spacing_hz = 12_500;
+        draft.base_mhz = "not a frequency".to_owned();
+        assert_eq!(draft.validate(0).unwrap_err().field, "base");
+
+        // A plan which runs off the end of the frequency representation is
+        // rejected before it can reach an image.
+        draft.base_mhz = "4294.967".to_owned();
+        draft.channel_count = u16::MAX;
+        assert_eq!(draft.validate(0).unwrap_err().field, "channels");
+        assert!(draft.generated_span().is_none());
+    }
+
+    #[test]
+    fn generated_plans_round_trip_through_a_canonical_image() {
+        let mut model = ProjectModel::new();
+        model.add_generated_bank();
+        model.banks[0].name = "PMR446".to_owned();
+        model.banks[0].base_mhz = "446.00625".to_owned();
+        model.banks[0].tx_class = TxClass::LicenceFreePlan;
+        let image = model.to_image().unwrap();
+
+        let loaded = ProjectModel::from_image(&image).unwrap();
+        assert_eq!(loaded.banks.len(), 1);
+        assert_eq!(loaded.banks[0].kind, BankKind::Generated);
+        assert_eq!(loaded.banks[0].name, "PMR446");
+        assert_eq!(loaded.banks[0].base_mhz, "446.006250");
+        assert_eq!(loaded.banks[0].spacing_hz, 12_500);
+        assert_eq!(loaded.banks[0].channel_count, 16);
+        assert_eq!(loaded.banks[0].tx_class, TxClass::LicenceFreePlan);
+        assert!(loaded.channels.is_empty());
+        assert_eq!(loaded.to_image().unwrap(), image);
+    }
+
+    #[test]
+    fn a_named_bank_and_a_generated_plan_may_share_one_identifier() {
+        let mut model = ProjectModel::new();
+        model.add_bank();
+        model.add_generated_bank();
+        model.banks[1].id = model.banks[0].id;
+        model
+            .validate()
+            .expect("separate object kinds do not collide");
+
+        model.add_generated_bank();
+        model.banks[2].id = model.banks[1].id;
+        let errors = model.validate().unwrap_err();
+        assert_eq!(errors.iter().filter(|e| e.field == "id").count(), 2);
+    }
+
+    #[test]
+    fn duplicating_a_channel_keeps_every_field_but_the_identifier() {
+        let mut model = project();
+        model.duplicate_channel(0);
+        assert_eq!(model.channels.len(), 2);
+        assert_eq!(model.channels[1].id, 2);
+        assert_eq!(model.channels[1].name, model.channels[0].name);
+        assert_eq!(model.channels[1].receive_mhz, model.channels[0].receive_mhz);
+        assert_eq!(model.channels[1].banks, model.channels[0].banks);
+        model.duplicate_channel(9);
+        assert_eq!(model.channels.len(), 2);
     }
 
     #[test]

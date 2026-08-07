@@ -11,12 +11,17 @@ use radio_programmer::CapacityReport;
 
 use crate::{
     flash::{self, FlashJob, FlashOperation, FlashProgress, FlashRequest},
-    model::{ChannelDraft, ModelError, ProjectModel, ToneDraft, ToneKind, MAX_PROJECT_IMAGE_BYTES},
+    model::{
+        BankDraft, BankKind, ChannelDraft, ModelError, ProjectModel, ToneDraft, ToneKind,
+        MAX_PROJECT_IMAGE_BYTES,
+    },
     session::DeviceSession,
     Options,
 };
 
-const BANK_COUNT: usize = 16;
+const BANK_COUNT: u16 = 16;
+/// Colour used for advisory text which is not a validation failure.
+const WARNING_COLOUR: egui::Color32 = egui::Color32::from_rgb(0xB7, 0x6E, 0x00);
 
 /// Which editor tab is visible.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -341,82 +346,64 @@ impl StudioApp {
         });
         ui.separator();
 
-        let mut remove = None;
+        // Membership only means something for a named bank, so each checkbox
+        // says which bank it joins and whether that bank exists yet.
+        let bank_names = self.project.bank_names();
+        let mut action = None;
         ScrollArea::both().show(ui, |ui| {
             for (row, channel) in self.project.channels.iter_mut().enumerate() {
                 ui.push_id(row, |ui| {
-                    Grid::new("channel").num_columns(4).show(ui, |ui| {
-                        ui.label("Id");
-                        ui.add(egui::DragValue::new(&mut channel.id));
-                        ui.label("Name");
-                        ui.add(TextEdit::singleline(&mut channel.name).desired_width(120.0));
-                        ui.end_row();
-
-                        ui.label("Receive MHz");
-                        ui.add(TextEdit::singleline(&mut channel.receive_mhz).desired_width(120.0));
-                        ui.label("Transmit MHz");
-                        ui.add(
-                            TextEdit::singleline(&mut channel.transmit_mhz).desired_width(120.0),
-                        );
-                        ui.end_row();
-
-                        ui.label("RX tone");
-                        tone_editor(ui, "rx", &mut channel.rx_tone);
-                        ui.label("TX tone");
-                        tone_editor(ui, "tx", &mut channel.tx_tone);
-                        ui.end_row();
-
-                        ui.label("Modulation");
-                        modulation_editor(ui, &mut channel.modulation);
-                        ui.label("Bandwidth");
-                        bandwidth_editor(ui, &mut channel.bandwidth);
-                        ui.end_row();
-
-                        ui.label("Power");
-                        power_editor(ui, &mut channel.power);
-                        ui.label("Step Hz");
-                        ui.add(egui::DragValue::new(&mut channel.step_hz).speed(125.0));
-                        ui.end_row();
-
-                        ui.label("Squelch");
-                        ui.add(
-                            egui::DragValue::new(&mut channel.squelch).range(0..=MAX_SQUELCH_LEVEL),
-                        );
-                        ui.label("TX class");
-                        tx_class_editor(ui, &mut channel.tx_class);
-                        ui.end_row();
-
-                        ui.label("Flags");
-                        ui.horizontal_wrapped(|ui| {
-                            ui.checkbox(&mut channel.scan_skip, "Scan skip");
-                            ui.checkbox(&mut channel.busy_lockout, "Busy lockout");
-                            ui.checkbox(&mut channel.reverse, "Reverse");
-                            ui.checkbox(&mut channel.compander, "Compander");
-                        });
-                        ui.label("Banks");
-                        ui.horizontal_wrapped(|ui| {
-                            for bank in 0..BANK_COUNT {
-                                ui.checkbox(&mut channel.banks[bank], format!("{bank}"));
+                    egui::CollapsingHeader::new(channel_row_label(row, channel))
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            if let Some(requested) = channel_row_editor(ui, channel, &bank_names) {
+                                action = Some((requested, row));
                             }
                         });
-                        ui.end_row();
-                    });
-                    if ui.button("Remove channel").clicked() {
-                        remove = Some(row);
-                    }
                     ui.separator();
                 });
             }
         });
-        if let Some(row) = remove {
-            self.project.channels.remove(row);
+        match action {
+            Some((RowAction::Duplicate, row)) => self.project.duplicate_channel(row),
+            Some((RowAction::Remove, row)) => {
+                self.project.channels.remove(row);
+            }
+            None => {}
         }
     }
 
     fn banks_tab(&mut self, ui: &mut egui::Ui) {
         self.project_bar(ui);
-        if ui.button("Add bank").clicked() {
-            self.project.add_bank();
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Add named bank").clicked() {
+                self.project.add_bank();
+            }
+            if ui.button("Add generated plan").clicked() {
+                self.project.add_generated_bank();
+            }
+            ui.label(format!("{} banks", self.project.banks.len()));
+        });
+        // A compact plan is only storable on a target which advertises the
+        // encoding, so say so before the operator writes one.
+        if self
+            .project
+            .banks
+            .iter()
+            .any(|bank| matches!(bank.kind, BankKind::Generated))
+        {
+            if let Some(session) = self.session.as_ref() {
+                if !session.supports_generated_plans() {
+                    ui.colored_label(
+                        WARNING_COLOUR,
+                        format!(
+                            "{} does not advertise compact plan encodings; \
+                             generated plans can be saved but not written to it.",
+                            session.description()
+                        ),
+                    );
+                }
+            }
         }
         ui.separator();
 
@@ -424,16 +411,13 @@ impl StudioApp {
         ScrollArea::vertical().show(ui, |ui| {
             for (row, bank) in self.project.banks.iter_mut().enumerate() {
                 ui.push_id(row, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label("Id");
-                        ui.add(egui::DragValue::new(&mut bank.id).range(0..=15));
-                        ui.label("Name");
-                        ui.add(TextEdit::singleline(&mut bank.name).desired_width(160.0));
-                        ui.checkbox(&mut bank.scan_enabled, "Scan enabled");
-                        if ui.button("Remove").clicked() {
-                            remove = Some(row);
-                        }
-                    });
+                    egui::CollapsingHeader::new(bank_row_label(row, bank))
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            if bank_row_editor(ui, bank) {
+                                remove = Some(row);
+                            }
+                        });
                 });
             }
         });
@@ -738,6 +722,155 @@ fn tone_editor(ui: &mut egui::Ui, id: &str, tone: &mut ToneDraft) {
     });
 }
 
+/// What one row asked the editor to do with itself.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RowAction {
+    /// Append a copy of this row after it.
+    Duplicate,
+    /// Delete this row.
+    Remove,
+}
+
+/// Draws one channel row, returning the action its buttons requested.
+fn channel_row_editor(
+    ui: &mut egui::Ui,
+    channel: &mut ChannelDraft,
+    bank_names: &[Option<String>],
+) -> Option<RowAction> {
+    Grid::new("channel").num_columns(4).show(ui, |ui| {
+        ui.label("Id");
+        ui.add(egui::DragValue::new(&mut channel.id));
+        ui.label("Name");
+        ui.add(TextEdit::singleline(&mut channel.name).desired_width(120.0));
+        ui.end_row();
+
+        ui.label("Receive MHz");
+        ui.add(TextEdit::singleline(&mut channel.receive_mhz).desired_width(120.0));
+        ui.label("Transmit MHz");
+        ui.add(TextEdit::singleline(&mut channel.transmit_mhz).desired_width(120.0));
+        ui.end_row();
+
+        ui.label("RX tone");
+        tone_editor(ui, "rx", &mut channel.rx_tone);
+        ui.label("TX tone");
+        tone_editor(ui, "tx", &mut channel.tx_tone);
+        ui.end_row();
+
+        ui.label("Modulation");
+        modulation_editor(ui, &mut channel.modulation);
+        ui.label("Bandwidth");
+        bandwidth_editor(ui, &mut channel.bandwidth);
+        ui.end_row();
+
+        ui.label("Power");
+        power_editor(ui, &mut channel.power);
+        ui.label("Step Hz");
+        ui.add(egui::DragValue::new(&mut channel.step_hz).speed(125.0));
+        ui.end_row();
+
+        ui.label("Squelch");
+        ui.add(egui::DragValue::new(&mut channel.squelch).range(0..=MAX_SQUELCH_LEVEL));
+        ui.label("TX class");
+        tx_class_editor(ui, &mut channel.tx_class);
+        ui.end_row();
+
+        ui.label("Flags");
+        ui.horizontal_wrapped(|ui| {
+            ui.checkbox(&mut channel.scan_skip, "Scan skip");
+            ui.checkbox(&mut channel.busy_lockout, "Busy lockout");
+            ui.checkbox(&mut channel.reverse, "Reverse");
+            ui.checkbox(&mut channel.compander, "Compander");
+        });
+        ui.label("Banks");
+        ui.horizontal_wrapped(|ui| {
+            for bank in 0..BANK_COUNT {
+                let index = usize::from(bank);
+                let response = ui.checkbox(&mut channel.banks[index], format!("{bank}"));
+                match bank_names.get(index).and_then(Option::as_ref) {
+                    Some(name) => response.on_hover_text(name.clone()),
+                    None => response.on_hover_text("no named bank defines this identifier"),
+                };
+            }
+        });
+        ui.end_row();
+    });
+    let mut action = None;
+    ui.horizontal_wrapped(|ui| {
+        if ui.button("Duplicate channel").clicked() {
+            action = Some(RowAction::Duplicate);
+        }
+        if ui.button("Remove channel").clicked() {
+            action = Some(RowAction::Remove);
+        }
+    });
+    action
+}
+
+/// Draws one bank row, reporting whether its removal was requested.
+fn bank_row_editor(ui: &mut egui::Ui, bank: &mut BankDraft) -> bool {
+    Grid::new("bank").num_columns(4).show(ui, |ui| {
+        ui.label("Id");
+        ui.add(egui::DragValue::new(&mut bank.id).range(0..=BANK_COUNT - 1));
+        ui.label("Name");
+        ui.add(TextEdit::singleline(&mut bank.name).desired_width(160.0));
+        ui.end_row();
+
+        ui.label("Kind");
+        bank_kind_editor(ui, &mut bank.kind);
+        ui.label(bank.kind.detail());
+        ui.end_row();
+
+        match bank.kind {
+            BankKind::Named => {
+                ui.label("Scanning");
+                ui.checkbox(&mut bank.scan_enabled, "Scan enabled");
+                ui.end_row();
+            }
+            BankKind::Generated => {
+                ui.label("Base MHz");
+                ui.add(TextEdit::singleline(&mut bank.base_mhz).desired_width(120.0));
+                ui.label("Spacing Hz");
+                ui.add(
+                    egui::DragValue::new(&mut bank.spacing_hz)
+                        .speed(125.0)
+                        .range(1..=1_000_000),
+                );
+                ui.end_row();
+
+                ui.label("Channels");
+                ui.add(egui::DragValue::new(&mut bank.channel_count).range(1..=u16::MAX));
+                ui.label("TX class");
+                tx_class_editor(ui, &mut bank.tx_class);
+                ui.end_row();
+
+                ui.label("Span");
+                match bank.generated_span() {
+                    Some((first, last)) => ui.label(format!(
+                        "{first} to {last} MHz, {} channels",
+                        bank.channel_count
+                    )),
+                    None => {
+                        ui.colored_label(WARNING_COLOUR, "the plan is incomplete or out of range")
+                    }
+                };
+                ui.end_row();
+            }
+        }
+    });
+    ui.button("Remove bank").clicked()
+}
+
+fn bank_kind_editor(ui: &mut egui::Ui, kind: &mut BankKind) {
+    ComboBox::from_id_salt("bank-kind")
+        .selected_text(kind.label())
+        .width(160.0)
+        .show_ui(ui, |ui| {
+            for candidate in BankKind::all() {
+                ui.selectable_value(kind, candidate, candidate.label());
+            }
+        });
+}
+
 fn modulation_editor(ui: &mut egui::Ui, modulation: &mut Modulation) {
     ComboBox::from_id_salt("modulation")
         .selected_text(match modulation {
@@ -821,10 +954,24 @@ pub fn channel_row_label(row: usize, channel: &ChannelDraft) -> String {
     format!("{}: {} ({})", row + 1, channel.name, channel.receive_mhz)
 }
 
+/// Returns the editor label for one bank row, used by tests and headers.
+pub fn bank_row_label(row: usize, bank: &BankDraft) -> String {
+    let detail = match bank.kind {
+        BankKind::Named => "named channels".to_owned(),
+        BankKind::Generated => match bank.generated_span() {
+            Some((first, last)) => format!("{first} to {last} MHz"),
+            None => "generated plan".to_owned(),
+        },
+    };
+    format!("{}: {} [{}] ({detail})", row + 1, bank.name, bank.id)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{channel_row_label, scan_resume_label, tx_class_label, StudioApp, Tab};
-    use crate::Options;
+    use super::{
+        bank_row_label, channel_row_label, scan_resume_label, tx_class_label, StudioApp, Tab,
+    };
+    use crate::{model::BankKind, Options};
     use radio_domain::{ScanResume, TxClass};
 
     #[test]
@@ -869,6 +1016,47 @@ mod tests {
         app.read_project();
         assert_eq!(app.project.channels.len(), 1);
         assert_eq!(app.project.banks.len(), 1);
+    }
+
+    #[test]
+    fn a_generated_plan_writes_and_reads_back_through_the_simulator() {
+        let mut app = StudioApp::new(&Options {
+            simulator: true,
+            ..Options::default()
+        });
+        assert!(app.session.as_ref().unwrap().supports_generated_plans());
+        app.project.add_generated_bank();
+        app.project.banks[0].name = "PMR446".to_owned();
+        app.project.banks[0].base_mhz = "446.00625".to_owned();
+        app.write_project();
+        assert!(app.errors.is_empty(), "{:?}", app.errors);
+        let report = app.last_receipt.unwrap();
+        assert_eq!(report.generated_channels, 16);
+        assert_eq!(report.explicit_channels, 0);
+
+        app.project = crate::model::ProjectModel::new();
+        app.read_project();
+        assert_eq!(app.project.banks.len(), 1);
+        assert_eq!(app.project.banks[0].kind, BankKind::Generated);
+        assert_eq!(app.project.banks[0].channel_count, 16);
+    }
+
+    #[test]
+    fn bank_row_labels_name_the_kind_and_the_generated_span() {
+        let mut project = crate::model::ProjectModel::new();
+        project.add_bank();
+        assert_eq!(
+            bank_row_label(0, &project.banks[0]),
+            "1: Bank 0 [0] (named channels)"
+        );
+        project.add_generated_bank();
+        project.banks[1].base_mhz = "446.00625".to_owned();
+        assert_eq!(
+            bank_row_label(1, &project.banks[1]),
+            "2: Bank 1 [1] (446.006250 to 446.193750 MHz)"
+        );
+        project.banks[1].base_mhz = "nope".to_owned();
+        assert!(bank_row_label(1, &project.banks[1]).contains("generated plan"));
     }
 
     #[test]
