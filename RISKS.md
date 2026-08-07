@@ -522,3 +522,31 @@
   verification, and firmware writes keep the flasher library's exact
   confirmation phrases, recovery image, and EEPROM backup requirements. The
   editor opens no network socket.
+
+## RISK-030 — Receive is proven only as raw metering on one unit
+
+- **State:** open
+- **Impact:** `EVID-K1-057` shows the bus, power-on table, tuning, and metering
+  working on the exact unit, but nothing downstream. Demodulated audio, real
+  sensitivity, tone decoding, and squelch behaviour are all unverified, so a
+  reader could mistake "RSSI moves" for "the radio receives properly".
+- **Mitigation:** the image reports raw fields only, keeps audio muted, and
+  runs with the squelch-off threshold set rather than a calibrated one. No
+  channel, UI, or persistence path consumes these samples.
+- **Required experiments:** compare RSSI against a known-level source, enable
+  the audio path and confirm demodulated audio, then read the unit's squelch
+  calibration before claiming a working receiver.
+
+## RISK-031 — The K1 squelch calibration lives in external SPI flash
+
+- **State:** open
+- **Impact:** the pinned source reads per-band, per-level squelch thresholds
+  from the external PY25Q16 flash at `0x010000` and `0x010060`, not from the
+  8 KiB EEPROM AFIK backs up. Until AFIK reads that device, no calibrated
+  squelch is possible on this board.
+- **Mitigation:** the driver takes thresholds as validated inputs and the K1
+  image uses the source's documented squelch-off set, so no invented
+  calibration can reach the chip. `RISK-028` records the same gap at the
+  driver boundary.
+- **Required experiment:** define a read-only PY25Q16 access path under its own
+  evidence entry before mapping squelch levels to thresholds.

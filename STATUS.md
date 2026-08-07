@@ -2018,3 +2018,37 @@ Verified 2026-08-05:
 - **Next smallest actionable task:** the authorized guarded `AFIK-K1-0.3` write
   and its power-cycle observation, then a separately guarded receive-only
   BK4819 bring-up which reads back a known register before writing any.
+
+## Work Package 29 handoff
+
+- **Scope:** drive the radio chip from the K1 application over the pinned
+  three-wire bus and observe raw receive metering on the exact unit. No
+  transmit, audio, calibration, channel selection, or persistence is included.
+- **Implementation:** `radio-firmware-k1::py32f071_bk4819` binds CSN PF9, SCL
+  PB8, and the shared SDA PB9 with a busy-wait delay; `bk4819_bus` sequences
+  the transfers; the serial task owns the receiver and performs the complete
+  bring-up and sample inside each `probe-rf` request. `radio-bk4819` gained the
+  pinned power-on table, a bounded read-back accessor, the source's squelch-off
+  threshold set, and explicit BK4819/BK4829 chip profiles.
+- **Physical result:** `AFIK-K1-0.8` (30,424 bytes, CRC-32 `be1f7f4a`) was
+  written through bootloader `7.03.01` with all 119 pages acknowledged, booted,
+  and answered both `hello` and `probe-rf`. Register `0x43` read back `0x4048`
+  and successive samples reported RSSI raw 52 to 58, glitch 29 to 41, and noise
+  51 to 83 with the squelch link opening. `EVID-K1-057` holds the detail.
+- **Three corrections were needed and are recorded:** serial starvation from
+  concurrent bit-banging (`EVID-K1-058`, `ADR-054`), mode-word ordering and the
+  10 Hz filter-path unit error (`EVID-BK4819-056`), and the BK4829 chip variant
+  (`EVID-BK4829-055`, `ADR-053`).
+- **Verification:** `cargo fmt --all --check` — passed.
+  `cargo clippy --workspace --all-targets -- -D warnings` — passed.
+  `cargo test --workspace` — passed; 237 tests.
+  `tool/build-k1-async.sh --release`, `tool/verify-k1-async-image.sh`,
+  `tool/package-k1-async-image.sh`, and `tool/test-k1-async-image.sh` — passed.
+  `git diff --check` — passed. `tool/test-k1-renode.sh` still fails on the
+  serial-only polling image, which has had no keypad or render symbols since
+  the clock diagnostic package; that gate predates this work package.
+- **Open gates:** `RISK-030` receive is proven only as raw metering on one
+  unit; `RISK-031` the squelch calibration lives in external SPI flash;
+  `K1SIDE-025` still needs its physical side-key observation.
+- **Next smallest actionable task:** enable the audio path so demodulated audio
+  can be confirmed against the metering, with transmit still unreachable.

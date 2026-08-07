@@ -752,3 +752,33 @@ meaning.
   gate; it only collects input and reports progress.
 - The editor is a local tool for a directly connected radio. It is not a
   service, exposes no network surface, and holds no authentication.
+
+## ADR-053 — Chip variants are explicit profiles, not conditional code
+
+- **Date:** 2026-08-07
+- **Status:** accepted for `RFK1-029`
+- The BK4819 and BK4829 share a bus and register map but differ in roughly a
+  dozen values. AFIK models each variant as one `ChipProfile` constant holding
+  exactly the differing values, recorded in `EVID-BK4829-055`.
+- The driver logic stays single-path: ordering, state, and the transmit
+  authority boundary are identical for both variants, so a variant can never
+  introduce a different safety story.
+- The K1 target selects the BK4829 profile because the pinned K1 build compiles
+  that driver. A board must choose its profile explicitly; there is no default
+  guess and no runtime chip detection.
+
+## ADR-054 — Radio transfers run inside a serial request, not beside one
+
+- **Date:** 2026-08-07
+- **Status:** accepted for `RFK1-029`
+- The three-wire bus is bit-banged and blocks the executor for milliseconds.
+  The serial responder reads one byte at a time, so concurrent bit-banging
+  drops inbound bytes and the application stops answering, as recorded in
+  `EVID-K1-058`.
+- The K1 image therefore owns the receiver inside the serial task and performs
+  bring-up and sampling between a decoded request and its response. This is a
+  deliberate constraint of the current witness image, not a general design rule
+  for a radio with interrupt-driven or buffered serial input.
+- A future image which needs free-running reception must first give the serial
+  path a continuous receive buffer, or move the bus to a peripheral which does
+  not hold the CPU.

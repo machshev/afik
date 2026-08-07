@@ -1422,7 +1422,7 @@
 
 ## RFK1-029 — K1 receive bring-up on the exact unit
 
-- **Status:** in progress (2026-08-07)
+- **Status:** complete (2026-08-07)
 - **Objective:** drive the BK4819 from the K1 application over the pinned
   three-wire bus, establish a receive configuration, and observe raw receive
   metrics on the exact unit without any transmit capability.
@@ -1441,7 +1441,25 @@
   directions; the sample counter advances; a bus or state failure is reported as
   a faulted stage rather than a plausible-looking sample; the transmit mode word
   is never written; the known-good recovery path stays available.
-- **Write result:** the image was built at 31,112 bytes with CRC-32 `724c3ca7`
-  and written through bootloader `7.03.01`. All 122 pages were acknowledged
-  under transaction `4cba7f6b` with no retry. This is not read-back or boot
-  proof.
+- **Write result:** the first image was written through bootloader `7.03.01`
+  with every page acknowledged and no retry, but it did not receive. Three
+  physical iterations found the causes, each recorded as evidence.
+- **Correction 1 — serial starvation (`EVID-K1-058`):** a free-running receive
+  task busy-waits for milliseconds while the serial responder reads one byte at
+  a time, so the application answered nothing. The receiver now runs inside a
+  serial request. `ADR-054` records the constraint.
+- **Correction 2 — ordering and units (`EVID-BK4819-056`):** the receive mode
+  word carries the VCO calibration request and must follow the frequency, and
+  the source's filter-path split is 280 MHz because its frequencies are in
+  10 Hz units.
+- **Correction 3 — chip variant (`EVID-BK4829-055`):** the pinned K1 build
+  compiles the BK4829 driver, whose power blocks, receive mode, audio bits,
+  bandwidth, gain tables, and sub-audio values all differ. `ADR-053` records
+  the explicit profile model.
+- **Result:** complete. `AFIK-K1-0.8` (30,424 bytes, CRC-32 `be1f7f4a`) was
+  written with all 119 pages acknowledged, booted, and answered `probe-rf`.
+  The configured register `0x43` read back as `0x4048`, proving the bit-banged
+  bus in both directions, and successive samples reported moving RSSI, glitch,
+  and noise with the carrier squelch link opening. `EVID-K1-057` records the
+  exact values. Audio, sensitivity, calibration, and tone decoding remain out
+  of scope and are tracked by `RISK-030` and `RISK-031`.

@@ -1586,3 +1586,72 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
 - **Confidence:** high for the pinout and ordering, which come directly from
   the working reference implementation. No AFIK transfer has been performed on
   hardware, so the electrical timing on this unit is unverified.
+
+### EVID-BK4829-055 — The pinned K1 build compiles the BK4829 driver
+
+- **Source:** `App/CMakeLists.txt:10` at the pinned Armel commit lists
+  `driver/bk4829.c`, not `driver/bk4819.c`. Both drivers share the same
+  three-wire bus, pinout, and register addresses, but write different values.
+- **Differences that matter for reception:** initialisation power blocks
+  `REG_37` `0x9D1F` (BK4819: `0x1D0F`); receive turn-on `REG_37` `0x9F1F`
+  (`0x1F0F`) and mode `REG_30` `0xBFF1` (`0xBEF1`); audio output fixed bits
+  `REG_47` `0x6042` (`0x6040`); filter bandwidth `REG_43` wide `0x3028` and
+  narrow `0x4048` (`0x3628`/`0x3648`); sub-audio `REG_51` CTCSS `0x9040` and
+  CDCSS `0xA033` (`0x904A`/`0x8033`); microphone gain `REG_7D` `0xE920`
+  (`0xE940`); audio level `REG_48` `0x33A8` (`0xB3A8`); one fixed gain table
+  `REG_10` `0x0318`, `REG_11` `0x033A`, `REG_12` `0x03DB`, `REG_13` `0x03DF`,
+  `REG_14` `0x0210`, `REG_49` `0x2AB2`, `REG_7B` `0x73DC` with no
+  modulation-dependent split and no automatic-mode switch; and a longer
+  initialisation tail (`0x40`, `0x1C`, `0x1D`, `0x1E`, `0x1F`, `0x3E`, `0x73`,
+  `0x77`, `0x19`, `0x28`, `0x29`, `0x2A`, `0x2C`, `0x2F`, `0x53`, `0x7E`,
+  `0x46`, `0x4A`, `0x07`).
+- **Physical confirmation:** with BK4819 values the exact unit reported RSSI
+  raw `0`, glitch `255`, and noise `127` on every sample. With BK4829 values
+  the same image reported moving RSSI, glitch, and noise. See `EVID-K1-057`.
+- **Confidence:** high. AFIK models both variants explicitly and the K1 target
+  selects the BK4829 profile.
+
+### EVID-BK4819-056 — Two corrections to the recorded receive contract
+
+- **Filter path split is 280 MHz, not 28 MHz.** The pinned source compares
+  `Frequency < 28000000` where the frequency is held in 10 Hz units, the same
+  units `REG_38`/`REG_39` take. AFIK holds hertz, so the boundary is
+  `280_000_000`. The earlier value selected the UHF low-noise amplifier for
+  every 2 m channel.
+- **The receive mode word must be written after the frequency.** `REG_30`
+  carries the VCO calibration request, and the pinned `RADIO_SetupRegisters`
+  calls `BK4819_SetFrequency` before `BK4819_RX_TurnOn`. Writing the mode word
+  first calibrates the synthesiser against the previous frequency.
+- **Confidence:** high; both were found by comparing AFIK's behaviour on the
+  exact unit against the pinned source and are now covered by ordering tests.
+
+### EVID-K1-057 — Physical AFIK receive bring-up on the exact unit
+
+- **Image:** `AFIK-K1-0.8`, 30,424 bytes, CRC-32 `be1f7f4a`, written through
+  bootloader `7.03.01` with all 119 pages acknowledged and no retry.
+- **Bus proof:** `probe-rf` returned the configured filter-bandwidth register
+  `0x43` as `0x4048`, the exact non-trivial BK4829 narrow value the image
+  wrote. Reads and writes therefore both work over the bit-banged three-wire
+  bus with the shared data line.
+- **Receive proof:** tuned to 145.500000 MHz, narrow FM, squelch-off
+  thresholds. Successive samples reported RSSI raw 52, 56, 58, 57, 56, 56, 55
+  (about -134 to -131 dBm), glitch 41, 29, 34, 39, 31, 35, and noise 83, 56,
+  55, 56, 51, 56, with the carrier squelch link opening. The indicators move
+  together and settle, which the earlier all-zero/all-ones readings did not.
+- **Bounds:** this proves the bus, the power-on table, tuning, and metering on
+  one unit. It does not prove demodulated audio, sensitivity, calibration, tone
+  decoding, or any transmit behaviour, none of which the image implements.
+
+### EVID-K1-058 — Bit-banging must not run beside an inbound serial frame
+
+- **Observation:** an earlier image ran the receive bring-up in its own task.
+  The display and keypad kept working, but the application answered no serial
+  request. The bring-up busy-waits for several milliseconds while the serial
+  task reads one byte at a time, so inbound bytes were lost and the framing
+  window never completed.
+- **Resolution:** the receiver is owned by the serial task and every transfer
+  runs between a decoded request and its response, when the host is waiting and
+  not transmitting. The serial task also yields after a read error so a
+  persistent receiver fault cannot starve the display task.
+- **Confidence:** high; the symptom reproduced on two units and disappeared
+  once the work moved inside the request.
