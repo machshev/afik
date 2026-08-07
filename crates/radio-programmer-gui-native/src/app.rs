@@ -9,14 +9,17 @@ use radio_domain::{
 };
 use radio_programmer::CapacityReport;
 
+use radio_programmer_serial::SUPPORTED_BAUDS;
+
 use crate::{
+    device::{self, DeviceCandidate, DeviceChoice, DeviceChooser},
     flash::{self, FlashJob, FlashOperation, FlashProgress, FlashRequest},
     model::{
         BankDraft, BankKind, ChannelDraft, ModelError, ProjectModel, ToneDraft, ToneKind,
         MAX_PROJECT_IMAGE_BYTES,
     },
     session::DeviceSession,
-    Options,
+    DeviceSelector, Options,
 };
 
 const BANK_COUNT: u16 = 16;
@@ -42,8 +45,7 @@ pub struct StudioApp {
     status: String,
     errors: Vec<ModelError>,
     session: Option<DeviceSession>,
-    device_path: String,
-    device_baud: String,
+    chooser: DeviceChooser,
     last_receipt: Option<CapacityReport>,
     listing: Vec<(String, u16, u16)>,
     flash_operation: FlashOperation,
@@ -53,7 +55,7 @@ pub struct StudioApp {
     flash_job: Option<FlashJob>,
     flash_progress: Option<(u16, u16)>,
     flash_status: String,
-    flash_devices: Vec<PathBuf>,
+    flash_devices: Vec<DeviceCandidate>,
 }
 
 impl Default for StudioApp {
@@ -65,8 +67,7 @@ impl Default for StudioApp {
             status: "Ready.".to_owned(),
             errors: Vec::new(),
             session: None,
-            device_path: String::new(),
-            device_baud: "38400".to_owned(),
+            chooser: DeviceChooser::new(),
             last_receipt: None,
             listing: Vec::new(),
             flash_operation: FlashOperation::BackupEeprom,
@@ -85,16 +86,28 @@ impl StudioApp {
     /// Builds the editor from start-up options, connecting when requested.
     pub fn new(options: &Options) -> Self {
         let mut app = Self::default();
+        if let Some(baud) = options.baud {
+            app.chooser.baud = baud;
+        }
         if let Some(path) = &options.project {
             app.project_path = path.display().to_string();
             app.load_project();
         }
         if options.simulator {
             app.connect_simulator();
-        } else if let (Some(device), Some(baud)) = (&options.device, options.baud) {
-            app.device_path = device.display().to_string();
-            app.device_baud = baud.to_string();
-            app.connect_serial();
+            return app;
+        }
+        // Detection runs at start-up so the Device tab already knows what is
+        // plugged in, but only an explicit request connects without a click.
+        let detection = app.chooser.detect();
+        match &options.device {
+            Some(DeviceSelector::Auto) => app.connect_serial(),
+            Some(DeviceSelector::Explicit(path)) => {
+                app.chooser.choice = DeviceChoice::Manual;
+                app.chooser.manual_path = path.display().to_string();
+                app.connect_serial();
+            }
+            None => app.status = detection,
         }
         app
     }
@@ -111,21 +124,27 @@ impl StudioApp {
     }
 
     fn connect_serial(&mut self) {
-        let Ok(baud) = self.device_baud.trim().parse::<u32>() else {
-            "Baud rate must be a number.".clone_into(&mut self.status);
-            return;
+        let (path, baud) = match self.chooser.resolve() {
+            Ok(resolved) => resolved,
+            Err(reason) => {
+                self.status = reason;
+                return;
+            }
         };
-        if self.device_path.trim().is_empty() {
-            "Enter a serial device path.".clone_into(&mut self.status);
-            return;
-        }
-        match DeviceSession::connect_serial(&PathBuf::from(self.device_path.trim()), baud) {
+        match DeviceSession::connect_serial(&path, baud) {
             Ok(session) => {
                 self.status = format!("Connected to {}.", session.description());
                 self.session = Some(session);
                 self.refresh_listing();
             }
             Err(error) => self.status = error.to_string(),
+        }
+    }
+
+    fn disconnect(&mut self) {
+        if let Some(session) = self.session.take() {
+            self.status = format!("Disconnected from {}.", session.description());
+            self.listing.clear();
         }
     }
 
@@ -482,18 +501,7 @@ impl StudioApp {
     }
 
     fn device_tab(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
-            if ui.button("Connect simulator").clicked() {
-                self.connect_simulator();
-            }
-            ui.label("Device:");
-            ui.add(TextEdit::singleline(&mut self.device_path).desired_width(220.0));
-            ui.label("Baud:");
-            ui.add(TextEdit::singleline(&mut self.device_baud).desired_width(80.0));
-            if ui.button("Connect serial").clicked() {
-                self.connect_serial();
-            }
-        });
+        self.device_picker(ui);
         ui.separator();
 
         if let Some(session) = self.session.as_ref() {
@@ -506,6 +514,11 @@ impl StudioApp {
                 capabilities.max_objects,
                 capabilities.max_object_size
             ));
+            ui.label(if session.supports_generated_plans() {
+                "The target expands compact generated plans."
+            } else {
+                "The target stores explicit channels only, not compact plans."
+            });
         } else {
             ui.label("No device is connected.");
         }
@@ -568,6 +581,67 @@ impl StudioApp {
         self.flash_controls(ui);
     }
 
+    /// Draws detection, selection, and the connection controls.
+    fn device_picker(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Detect devices").clicked() {
+                self.status = self.chooser.detect();
+            }
+            if ui.button("Connect").clicked() {
+                self.connect_serial();
+            }
+            ui.add_enabled_ui(self.session.is_some(), |ui| {
+                if ui.button("Disconnect").clicked() {
+                    self.disconnect();
+                }
+            });
+            ui.separator();
+            if ui.button("Connect simulator").clicked() {
+                self.connect_simulator();
+            }
+        });
+
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Baud:");
+            ComboBox::from_id_salt("device-baud")
+                .selected_text(self.chooser.baud.to_string())
+                .width(90.0)
+                .show_ui(ui, |ui| {
+                    for baud in SUPPORTED_BAUDS {
+                        ui.selectable_value(&mut self.chooser.baud, baud, baud.to_string());
+                    }
+                });
+        });
+
+        if !self.chooser.detected {
+            ui.label("Serial devices have not been scanned for yet.");
+        } else if self.chooser.candidates.is_empty() {
+            ui.label("No USB serial device was detected.");
+        }
+        for (index, candidate) in self.chooser.candidates.iter().enumerate() {
+            ui.radio_value(
+                &mut self.chooser.choice,
+                DeviceChoice::Detected(index),
+                candidate.label(),
+            )
+            .on_hover_text(candidate.path.display().to_string());
+        }
+        // A manual path is always available: an unusual port must stay reachable.
+        ui.horizontal_wrapped(|ui| {
+            ui.radio_value(&mut self.chooser.choice, DeviceChoice::Manual, "Path:");
+            if ui
+                .add(
+                    TextEdit::singleline(&mut self.chooser.manual_path)
+                        .hint_text("/dev/ttyUSB0")
+                        .desired_width(260.0),
+                )
+                .changed()
+            {
+                self.chooser.choice = DeviceChoice::Manual;
+            }
+        });
+    }
+
     fn flash_device_picker(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             ui.label("Serial device:");
@@ -578,14 +652,20 @@ impl StudioApp {
             {
                 self.flash_request.device = PathBuf::from(device.trim());
             }
-            if ui.button("Discover").clicked() {
-                self.flash_devices = flash::discover_serial_devices();
-                self.flash_status = format!("Found {} candidates.", self.flash_devices.len());
+            if ui.button("Detect devices").clicked() {
+                self.flash_devices = device::discover_candidates();
+                self.flash_status = match self.flash_devices.as_slice() {
+                    [] => "No USB serial device was detected.".to_owned(),
+                    [only] => format!("Detected {}.", only.label()),
+                    candidates => format!("Detected {} devices; choose one.", candidates.len()),
+                };
             }
         });
+        // A flashing target is never selected automatically, however few
+        // candidates there are: the operator clicks the exact unit.
         for candidate in self.flash_devices.clone() {
-            if ui.button(candidate.display().to_string()).clicked() {
-                self.flash_request.device = candidate;
+            if ui.button(candidate.label()).clicked() {
+                self.flash_request.device = candidate.path;
             }
         }
     }
@@ -971,7 +1051,7 @@ mod tests {
     use super::{
         bank_row_label, channel_row_label, scan_resume_label, tx_class_label, StudioApp, Tab,
     };
-    use crate::{model::BankKind, Options};
+    use crate::{model::BankKind, DeviceSelector, Options};
     use radio_domain::{ScanResume, TxClass};
 
     #[test]
@@ -1039,6 +1119,20 @@ mod tests {
         assert_eq!(app.project.banks.len(), 1);
         assert_eq!(app.project.banks[0].kind, BankKind::Generated);
         assert_eq!(app.project.banks[0].channel_count, 16);
+    }
+
+    #[test]
+    fn an_unopenable_start_up_device_is_reported_without_a_session() {
+        let app = StudioApp::new(&Options {
+            device: Some(DeviceSelector::Explicit(std::path::PathBuf::from(
+                "/definitely/missing",
+            ))),
+            ..Options::default()
+        });
+        assert!(app.session.is_none());
+        assert!(app.status.contains("serial setup failed"), "{}", app.status);
+        assert_eq!(app.chooser.manual_path, "/definitely/missing");
+        assert_eq!(app.chooser.baud, crate::device::DEFAULT_BAUD);
     }
 
     #[test]

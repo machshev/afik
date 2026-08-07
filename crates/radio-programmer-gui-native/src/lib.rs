@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod app;
+pub mod device;
 pub mod flash;
 pub mod model;
 pub mod session;
@@ -15,27 +16,41 @@ pub mod session;
 pub const HELP: &str = "AFIK Studio: native channel, configuration, and flashing editor\n\
 \n\
 Usage:\n\
-  afik-studio [--sim | --device PATH --baud BAUD] [--project FILE]\n\
+  afik-studio [--sim | --device PATH|auto] [--baud BAUD] [--project FILE]\n\
   afik-studio --help\n\
 \n\
 Options:\n\
   --sim              Connect the deterministic simulator at start-up.\n\
   --device PATH      Serial device used for the configuration protocol.\n\
-  --baud BAUD        Serial baud rate; required with --device.\n\
+  --device auto      Detect one USB serial device and connect it.\n\
+  --baud BAUD        Serial baud rate; defaults to 38400.\n\
   --project FILE     Load a canonical AFIK configuration image at start-up.\n\
   --help             Print this message.\n\
 \n\
-Connecting at start-up is optional: the Device tab connects on demand.\n\
+Supported BAUD: 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200\n\
+\n\
+Connecting at start-up is optional: the Device tab detects USB serial\n\
+devices, offers a single candidate as the selection, leaves an ambiguous\n\
+choice to the operator, and always accepts a manually entered path.\n\
 Firmware and EEPROM operations live in the Flash tab and keep every\n\
 recovery-gated confirmation required by the flasher library.\n";
+
+/// Which serial device the command line asked for.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DeviceSelector {
+    /// Detect exactly one USB serial device.
+    Auto,
+    /// Use this explicit path.
+    Explicit(std::path::PathBuf),
+}
 
 /// Start-up options parsed from the command line.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Options {
     /// Connect the simulator at start-up.
     pub simulator: bool,
-    /// Serial device path for the configuration protocol.
-    pub device: Option<std::path::PathBuf>,
+    /// Serial device selection for the configuration protocol.
+    pub device: Option<DeviceSelector>,
     /// Serial baud rate for the configuration protocol.
     pub baud: Option<u32>,
     /// Canonical configuration image to load at start-up.
@@ -55,12 +70,20 @@ pub fn parse_options(arguments: &[String]) -> Result<Options, String> {
             "--device" => {
                 index += 1;
                 let value = arguments.get(index).ok_or("--device requires a path")?;
-                options.device = Some(std::path::PathBuf::from(value));
+                options.device = Some(if value == "auto" {
+                    DeviceSelector::Auto
+                } else {
+                    DeviceSelector::Explicit(std::path::PathBuf::from(value))
+                });
             }
             "--baud" => {
                 index += 1;
                 let value = arguments.get(index).ok_or("--baud requires a value")?;
-                options.baud = Some(value.parse().map_err(|_| "--baud must be a number")?);
+                let baud = value.parse().map_err(|_| "--baud must be a number")?;
+                if !radio_programmer_serial::is_supported_baud(baud) {
+                    return Err(format!("--baud {baud} is not a supported rate"));
+                }
+                options.baud = Some(baud);
             }
             "--project" => {
                 index += 1;
@@ -74,15 +97,12 @@ pub fn parse_options(arguments: &[String]) -> Result<Options, String> {
     if options.simulator && options.device.is_some() {
         return Err("--sim and --device are mutually exclusive".to_owned());
     }
-    if options.device.is_some() != options.baud.is_some() {
-        return Err("--device and --baud must be used together".to_owned());
-    }
     Ok(options)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_options, Options};
+    use super::{parse_options, DeviceSelector, Options};
 
     fn arguments(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
@@ -97,17 +117,30 @@ mod tests {
             parse_options(&arguments(&["--device", "/dev/ttyUSB0", "--baud", "38400"])).unwrap();
         assert_eq!(serial.baud, Some(38_400));
         assert_eq!(
-            parse_options(&arguments(&[
-                "--sim",
-                "--device",
-                "/dev/ttyUSB0",
-                "--baud",
-                "1"
-            ])),
+            serial.device,
+            Some(DeviceSelector::Explicit(std::path::PathBuf::from(
+                "/dev/ttyUSB0"
+            )))
+        );
+        assert_eq!(
+            parse_options(&arguments(&["--sim", "--device", "/dev/ttyUSB0"])),
             Err("--sim and --device are mutually exclusive".to_owned())
         );
-        assert!(parse_options(&arguments(&["--device", "/dev/ttyUSB0"])).is_err());
+        // The baud is optional and detection replaces an explicit path.
+        assert_eq!(
+            parse_options(&arguments(&["--device", "auto"]))
+                .unwrap()
+                .device,
+            Some(DeviceSelector::Auto)
+        );
+        assert_eq!(
+            parse_options(&arguments(&["--device", "/dev/ttyUSB0"]))
+                .unwrap()
+                .baud,
+            None
+        );
         assert!(parse_options(&arguments(&["--baud"])).is_err());
+        assert!(parse_options(&arguments(&["--baud", "123"])).is_err());
         assert!(parse_options(&arguments(&["--nope"])).is_err());
         assert_eq!(
             parse_options(&arguments(&["--project", "plan.afik"]))

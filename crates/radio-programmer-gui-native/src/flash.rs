@@ -394,31 +394,6 @@ fn write_new_file(path: &Path, bytes: &[u8]) -> Result<(), FlashRequestError> {
         .map_err(|error| FlashRequestError::new(format!("could not write backup: {error}")))
 }
 
-/// Lists plausible serial device paths without opening any of them.
-pub fn discover_serial_devices() -> Vec<PathBuf> {
-    let mut devices = Vec::new();
-    for directory in ["/dev/serial/by-id", "/dev"] {
-        let Ok(entries) = fs::read_dir(directory) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-                continue;
-            };
-            let plausible = directory == "/dev/serial/by-id"
-                || name.starts_with("ttyUSB")
-                || name.starts_with("ttyACM");
-            if plausible {
-                devices.push(path);
-            }
-        }
-    }
-    devices.sort();
-    devices.dedup();
-    devices
-}
-
 #[cfg(test)]
 mod tests {
     use super::{validate_request, FlashOperation, FlashRequest};
