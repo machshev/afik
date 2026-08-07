@@ -550,3 +550,34 @@
   driver boundary.
 - **Required experiment:** define a read-only PY25Q16 access path under its own
   evidence entry before mapping squelch levels to thresholds.
+
+## RISK-032 — No AFIK flash write has been observed on this MCU
+
+- **State:** open
+- **Impact:** retaining a configuration is the first time AFIK programs the
+  PY32F071's own flash from running code. The erase and program timing comes
+  from the device's factory `CONFIGBYTES` parameter block through the vendored
+  HAL, which is device-supplied rather than AFIK-observed, and no retained
+  configuration has yet survived a power cycle on hardware.
+- **Mitigation:** every access is bounded to the reserved sector, which holds no
+  code and no calibration, so a failed write can lose only the retained
+  configuration. A sector which does not decode is reported as "built-in set" on
+  the information screen instead of being partly trusted, and the application
+  region is kept out of the sector by the linker map and both image gates.
+- **Required experiment:** program a configuration from the studio editor,
+  power-cycle the unit, and confirm the information screen reports the same
+  generation and channel count and that the channels are still selectable.
+
+## RISK-033 — Target stack headroom is bounded by inspection, not by a gate
+
+- **State:** open
+- **Impact:** statics and task futures now occupy about 10.7 KiB of the
+  evidenced 16 KiB of SRAM, leaving roughly 5.6 KiB of stack. Nothing in the
+  build fails if a future change pushes peak stack use past that, and an
+  overflow would silently corrupt the top of `.bss`.
+- **Mitigation:** the object bounds which dominate RAM are explicit constants
+  with a comment saying why, and `llvm-size` is recorded with each image in
+  `STATUS.md`, so growth is visible in review.
+- **Required experiment:** add a stack-headroom gate, for example a linker
+  assertion on `.bss` end against a reserved stack region, or a painted-stack
+  high-water measurement on the exact unit.

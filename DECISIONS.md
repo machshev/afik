@@ -800,3 +800,66 @@ meaning.
   out.
 - Audio remains receive-only in every path: AFIK constructs no transmit
   authority, so neither the keypad nor the serial link can key the radio.
+
+## ADR-056 — One device-side protocol implementation, shared by target and simulator
+
+- **Date:** 2026-08-07
+- **Status:** accepted for `RFK1-031`
+- The device half of the AFIK protocol lived only in the deterministic
+  simulator. Giving the K1 its own copy would have created two answers to every
+  transaction, listing, replay, and error question, with only one of them
+  covered by the existing tests.
+- `radio-device` now holds that implementation: the stream decoder, the bounded
+  transactional store, the single-exchange replay cache, the per-kind activation
+  limits, and the stable storage-error mapping. It is `no_std`, allocation-free,
+  and bounded by const generics, so the target runs the same code the simulator
+  does.
+- Observable steps are reported through a caller-supplied observer instead of
+  being recorded inside the service. The simulator keeps its timed trace and the
+  firmware passes an observer which does nothing, so neither pays for the
+  other's needs and the service knows nothing about time.
+- The simulator was refactored onto it rather than left in place: its complete
+  existing protocol test suite passed unchanged, which is the evidence that the
+  shared implementation preserved every observable behaviour.
+
+## ADR-057 — A radio retains its configuration in a reserved flash sector
+
+- **Date:** 2026-08-07
+- **Status:** accepted for `RFK1-031`
+- A radio which forgets its channels at power-off is not programmable in any
+  useful sense, so a committed configuration must survive a power cycle. The
+  K1's external SPI flash holds the vendor's calibration and is not yet read by
+  AFIK, so internal flash is the only region AFIK can claim honestly.
+- The last 8 KiB erase sector, `0x0801E000` to `0x08020000`, is reserved. The
+  application region ends there in the linker memory map, in the raw-image size
+  gate, and in the ELF LOAD gate, so an application image cannot overwrite a
+  retained configuration and an over-large image fails packaging instead.
+- The retained bytes are the existing canonical configuration image, not a new
+  on-flash format. The container header supplies the exact length, so the
+  reserved region needs no separate record, and the complete checksum, ordering,
+  and object validation still run before anything is activated. Anything else
+  found there, including an erased sector, means "nothing retained".
+- Retaining happens before the commit response is sent. The host is waiting for
+  that response, so the interrupt masking required by the flash controller
+  cannot drop an inbound byte. A failed retain is reported to the operator on
+  the information screen as a built-in configuration; it never invents a state.
+- The canonical image encoder gained an incremental writer so a device can emit
+  its objects one at a time from a fixed table, without a second object-sized
+  buffer. The slice encoder is implemented on it, so both paths produce
+  identical bytes by construction.
+
+## ADR-058 — The operator shell is a pure state machine
+
+- **Date:** 2026-08-07
+- **Status:** accepted for `RFK1-031`
+- Channel selection now has real behaviour: screens, a list cursor, timed
+  numeric entry, and a bank filter. Written inline in the target task loop, none
+  of it could be tested without a display, a keypad, and a radio.
+- `shell` therefore consumes debounced key presses plus explicit milliseconds
+  and returns an intent for the caller to apply. Every transition is covered by
+  host tests, and the intent set contains selection, bank filtering, monitoring,
+  and receive-audio routing only, so no key press can produce a transmit
+  request even by mistake.
+- View positions belong to the receive controller beside the bank filter it
+  already owns, not to the shell. The numbers the operator types are the
+  positions the screen shows, resolved by the same code that filters the view.

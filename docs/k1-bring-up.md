@@ -412,3 +412,62 @@ The image carries five receive-only built-in channels because AFIK does not yet
 read channels from the radio. Every one is classified `TxClass::Never` and the
 image constructs no transmit authority, so nothing in this path can key the
 radio.
+
+## The programmable receive image, `AFIK-K1-2.0`
+
+The application is now programmed by the ordinary host tooling. USART1 carries
+the AFIK configuration protocol, answered by the same `radio-device` service the
+simulator uses, so `afik-studio`, `afik-programmer`, and the simulator all drive
+one device implementation. Channels, named banks, and the global receive
+configuration are written as a validated transaction and read back.
+
+### Retained configuration
+
+A committed configuration is written to the last 8 KiB erase sector of the
+device, `0x0801E000` to `0x08020000`, as one canonical configuration image. The
+application region stops at `0x0801E000`: the linker memory map, the raw-image
+size gate, and the ELF LOAD gate all end there, so an application image can
+never overwrite a retained configuration. A larger image is refused by
+`tool/verify-k1-raw-image.sh` rather than truncated.
+
+The image is retained *before* the commit response is sent. The host is waiting
+for that response, so masking interrupts for the erase and page writes cannot
+drop an inbound byte. An erased, foreign, truncated, or corrupt sector is
+treated as "nothing retained": the built-in channels stay in charge and the
+information screen says so.
+
+Bounds are set by the evidenced 16 KiB of SRAM: twelve channels, sixteen named
+banks, one radio configuration, and a 1,280-byte retained image. The device
+advertises its object capacity and refuses a larger channel set with the stable
+`ValidationFailed` code at validation time, before it could become active.
+
+### Operator controls
+
+| Control | Action |
+| --- | --- |
+| Up / Down | Previous or next channel, or move the list cursor |
+| Menu | Open the channel list, or select the row under the cursor |
+| Exit | Leave a screen, or clear a partly typed channel number |
+| Digits | Type a channel number; two digits or a short pause selects it |
+| Star | Cycle the bank filter through populated banks and back to all |
+| Function | Show or hide the information screen |
+| Side key 1 | Route or mute receive audio |
+| Side key 2 | Hold the squelch open |
+
+Typed numbers are the positions the operating screen shows, so what the operator
+reads is what the operator can type. An out-of-range number selects nothing
+rather than being clamped onto a channel nobody asked for.
+
+The bit-banged radio bus only runs when the serial link has been quiet for
+250 ms. Retuning is deferred, never dropped, so programming a radio while it is
+tuned cannot corrupt either side.
+
+### Serial witness
+
+The earlier fixed-frame witness protocol is gone, so `afik-flasher probe-normal`
+and `probe-rf` no longer apply to this image. The serial witness is now
+`afik-programmer --device PATH --baud 38400 info`, which prints the negotiated
+capabilities, and `list`, which prints the generation-tagged object listing. The
+display witness is the information screen: image identity, active configuration
+generation, channel count, and whether the configuration came from the radio's
+own retained storage.

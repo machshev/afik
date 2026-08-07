@@ -1488,3 +1488,33 @@
 - **Remaining:** flash `AFIK-K1-1.2` and confirm that Up and Down retune the
   receiver across the five built-in channels with the display and the serial
   observation agreeing.
+
+## RFK1-031 — Host-programmable channels, retained configuration, and the operator shell
+
+- **Status:** software complete, physical confirmation pending (2026-08-07)
+- **Objective:** make the receive-only K1 image a programmable radio: the studio
+  editor writes channels to it, the radio keeps them across a power cycle, and
+  the operator selects them from the keypad.
+- **Scope:** the shared `radio-device` configuration service on USART1; the
+  reserved retained-configuration flash sector; the bounded programmed
+  configuration the receive path and interface consume; the pure operator shell
+  with its operating, channel-list, and information screens; the incremental
+  canonical-image encoder; and view positions on the banked receive controller.
+- **Exclusions:** transmit of any kind, generated-plan expansion on the target,
+  squelch calibration from external flash, tone decoding, scanning, and menus
+  for the global configuration.
+- **Acceptance criteria:** the host programmer writes and reads back a full
+  configuration through the device's own byte stream; an over-large candidate is
+  refused with `ValidationFailed` before activation; a retained image restores
+  to the same state after a restart; every shell intent is receive-only; and the
+  application image cannot reach the retained sector.
+- **Host result:** complete. 279 workspace tests pass, including the end-to-end
+  programming integration test against this exact device configuration, the
+  retained round trip, and the refusal cases.
+- **Image:** `AFIK-K1-2.0`, 72,480 bytes, SHA-256
+  `80c1c6c0bbaf82bf9d4d44db82d13e14d9edb5d9c40173b1d66f615a562f5455`, CRC-32
+  `50770197`, Reset `0x080028c1`, `text=71536 data=936 bss=9824`.
+- **Remaining:** write the image, then on the exact unit confirm the boot
+  information screen, `afik-programmer info`/`list` over serial, a configuration
+  written from `afik-studio`, channel selection and the channel list on the
+  keypad, and that the configuration survives a power cycle.

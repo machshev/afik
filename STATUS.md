@@ -2,15 +2,20 @@
 
 ## Current work package
 
-**Work Packages 26 to 28 (`STORE-026`, `RX-027`, `NGUI-028`) are complete in
-software: banked explicit-channel storage, the complete receive path and its
-banked receive control, and the native cross-platform editor which programs a
-radio and drives the guarded firmware and EEPROM operations.**
+**Work Package 31 (`RFK1-031`) is complete in software: the receive-only K1
+image is programmed by the host tooling over the shared configuration protocol,
+retains its configuration in a reserved flash sector, and gives the operator a
+complete channel-selection interface. The image `AFIK-K1-2.0` is built, gated,
+and packaged; the physical write and its confirmations are the remaining work.**
+
+Work Packages 26 to 30 are complete: banked explicit-channel storage, the
+receive path and its banked control, the native cross-platform editor, the
+side-key and PTT inputs, and audible demodulated receive audio confirmed on the
+exact unit.
 
 The operator designated the pinned Armel K1 firmware authoritative for register
 values and pinout wherever primary documentation is silent. `EVID-BK4819-053`
-and `EVID-K1-054` record exactly which values that covers. No AFIK receive
-register has been written on hardware; `RISK-027` carries that gate.
+and `EVID-K1-054` record exactly which values that covers.
 
 `K1SIDE-025` remains open for its physical side-key observation.
 
@@ -138,11 +143,16 @@ features remain outside this bounded slice.
 - Work Package 27 complete receive path and banked receive control: complete in
   software; physical bring-up is deliberately out of scope.
 - Work Package 28 native cross-platform editor: complete.
-- Current smallest actionable task: perform the authorized guarded write of the
-  `AFIK-K1-0.3` image, then power-cycle and observe the boot screen, an
-  `AFIK-K1-0.3` hello, each side key's label, and the PTT label. The next
-  receive step after that is a separately guarded, receive-only BK4819 bring-up
-  on the exact unit which reads back a known register before writing any.
+- Work Package 29 audible receive audio: complete; confirmed on the exact unit.
+- Work Package 30 keypad-operated channel selection: complete in software.
+- Work Package 31 host-programmable channels, retained configuration, and the
+  operator shell: complete in software; `AFIK-K1-2.0` is built, gated, and
+  packaged.
+- Current smallest actionable task: write `AFIK-K1-2.0` to the exact unit, then
+  power-cycle and confirm the boot information screen, `afik-programmer info`
+  and `list` over serial at 38,400 baud, a configuration written from
+  `afik-studio`, keypad channel selection and the channel list, and that the
+  configuration survives a further power cycle.
 
 ## Work Package 24 handoff
 
@@ -2081,3 +2091,65 @@ Verified 2026-08-05:
 - **Open gates:** `RISK-030` receive is proven only as raw metering plus
   audible noise; `RISK-031` the squelch calibration lives in external SPI
   flash; `K1SIDE-025` still needs its physical side-key observation.
+
+## Work Package 31 host-programmable receive image
+
+- **Shared device implementation:** the device half of the AFIK protocol moved
+  into the new `no_std` `radio-device` crate: stream decoder, bounded
+  transactional store, single-exchange replay cache, per-kind activation limits,
+  and the stable storage-error mapping. `radio-sim` was refactored onto it and
+  its complete existing protocol suite passed unchanged, which is the evidence
+  that no observable behaviour changed. `ADR-056` records the boundary.
+- **Programmable K1:** the image answers the configuration protocol on USART1 at
+  38,400 baud, so `afik-studio` and `afik-programmer` program this radio with
+  the same validated transactions and read-back they use on the simulator.
+  Bounds are twelve channels, sixteen named banks, one radio configuration, and
+  a 1,280-byte retained image; a larger channel set is refused with
+  `ValidationFailed` at validation time rather than after activation.
+- **Retained configuration:** a committed configuration is written to the
+  reserved last erase sector, `0x0801E000` to `0x08020000`, as the existing
+  canonical configuration image, and restored at start-up before the host or the
+  operator can see the radio. The application region now ends at `0x0801E000` in
+  the linker memory map, `tool/verify-k1-raw-image.sh`, and
+  `tool/verify-k1-async-image.sh`, so an application image cannot overwrite it.
+  Retaining happens before the commit response, so masking interrupts for the
+  flash write cannot drop an inbound byte. `ADR-057` and `RISK-032` record the
+  design and the open hardware gate.
+- **Operator shell:** a pure state machine drives an operating screen (position,
+  name, frequency, raw RSSI, squelch, audio, bank, typed number), a scrollable
+  channel list, and an information screen (image identity, active generation,
+  channel count, retained or built-in). Up/Down select, Menu opens and confirms,
+  Exit cancels, digits type a channel number, Star cycles the bank filter,
+  Function shows the information screen, side key one routes audio, and side key
+  two holds the squelch open. `ADR-058` records why it is pure.
+- **Bus discipline:** the bit-banged radio bus only runs after the serial link
+  has been quiet for 250 ms; retuning is deferred, never dropped.
+- **No transmit path:** the shell's intent set is receive-only, built-in channels
+  are `TxClass::Never`, and the image constructs no transmit authority.
+- **Verification:** `nix develop path:. -c cargo fmt --all --check`,
+  `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`,
+  `nix develop path:. -c cargo test --workspace` (279 tests, zero failures,
+  including the new end-to-end programming test which drives the host programmer
+  library against this exact device configuration over its own byte stream),
+  `nix develop path:. -c tool/build-k1-async.sh --release`,
+  `tool/package-k1-async-image.sh --force`, `tool/test-k1-async-image.sh`,
+  `nix develop path:. -c tool/check-py32f071-clock-handoff.sh`,
+  `nix flake check path:. --no-build`, and `git diff --check` all passed.
+- **Image:** `AFIK-K1-2.0`, 72,480 bytes, SHA-256
+  `80c1c6c0bbaf82bf9d4d44db82d13e14d9edb5d9c40173b1d66f615a562f5455`, CRC-32
+  `50770197`, Reset `0x080028c1`, `text=71536 data=936 bss=9824`, leaving about
+  5.6 KiB of the evidenced 16 KiB SRAM for stack (`RISK-033`).
+- **Serial witness change:** the fixed-frame witness protocol is gone, so
+  `afik-flasher probe-normal` and `probe-rf` no longer apply to this image. The
+  serial witness is `afik-programmer --device PATH --baud 38400 info` and
+  `list`; the display witness is the information screen.
+- **Remaining physical steps:** write `AFIK-K1-2.0`, power-cycle, then confirm
+  the boot information screen, the negotiated capabilities and object listing
+  over serial, a configuration written from `afik-studio`, channel selection and
+  the channel list on the keypad, and that the configuration survives a power
+  cycle.
+- **Open gates:** `RISK-030` receive remains raw metering plus audible noise;
+  `RISK-031` the squelch calibration lives in external SPI flash; `RISK-032` no
+  AFIK flash write has been observed on this MCU; `RISK-033` stack headroom is
+  bounded by inspection; `K1SIDE-025` still needs its physical side-key
+  observation.
