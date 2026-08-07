@@ -55,7 +55,7 @@ const _: [(); 8] = [(); PAGES];
 const K1_VECTOR_TABLE_ORIGIN: u32 = 0x0800_2800;
 
 /// Identity this image reports on the information screen.
-const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-2.0";
+const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-2.1";
 
 /// Interval between receive samples while audio is routed.
 const RF_SAMPLE_MILLISECONDS: u64 = 500;
@@ -525,6 +525,7 @@ async fn ui_task(
 
     let mut receiver = Receiver::new(radio_pins, speaker_pin);
     let mut pending = update.activation.map(|activation| activation.setup);
+    let mut pending_audio = None;
     let mut debounce = Debouncer::new();
     let mut next_sample = Instant::now();
     let mut redraw = true;
@@ -570,9 +571,9 @@ async fn ui_task(
             Intent::Idle => {}
             Intent::Redraw => redraw = true,
             Intent::ToggleAudio => {
-                if bus_available() {
-                    receiver.set_audio(!receiver.audio_routed);
-                }
+                // Deferred like a retune rather than dropped, so a press during
+                // a host exchange still takes effect.
+                pending_audio = Some(!pending_audio.unwrap_or(receiver.audio_routed));
                 redraw = true;
             }
             Intent::ToggleMonitor => {
@@ -601,13 +602,15 @@ async fn ui_task(
         }
 
         // The bit-banged radio bus blocks the executor, so it only runs while
-        // the serial link is quiet. Retuning is deferred, never dropped.
-        if let Some(setup) = pending {
-            if bus_available() {
-                receiver.tune(setup);
-                pending = None;
-                redraw = true;
-            }
+        // the serial link is quiet. Bus work is deferred, never dropped.
+        if let Some(setup) = pending.filter(|_| bus_available()) {
+            receiver.tune(setup);
+            pending = None;
+            redraw = true;
+        } else if let Some(routed) = pending_audio.filter(|_| bus_available()) {
+            receiver.set_audio(routed);
+            pending_audio = None;
+            redraw = true;
         } else if receiver.audio_routed && Instant::now() >= next_sample && bus_available() {
             if let Some(observation) = receiver.observe() {
                 controller.observe(observation).ok();
