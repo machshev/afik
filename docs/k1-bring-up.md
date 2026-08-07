@@ -445,11 +445,11 @@ advertises its object capacity and refuses a larger channel set with the stable
 
 | Control | Action |
 | --- | --- |
-| Up / Down | Previous or next channel, or move the list cursor |
-| Menu | Open the channel list, or select the row under the cursor |
+| Up / Down | Previous or next channel, tune the VFO, or move a cursor |
+| Menu | Open the channel list, or the VFO step list, or select the row |
 | Exit | Leave a screen, or clear a partly typed channel number |
-| Digits | Type a channel number; two digits or a short pause selects it |
-| Star | Open or close the bank list |
+| Digits | Type a channel number, or a VFO frequency in megahertz |
+| Star | Open or close the source list: the VFO, every channel, each bank |
 | Function | Show or hide the information screen |
 | Side key 1 | Route or mute receive audio |
 | Side key 2 | Hold the squelch open |
@@ -458,12 +458,33 @@ Typed numbers are the positions the operating screen shows, so what the operator
 reads is what the operator can type. An out-of-range number selects nothing
 rather than being clamped onto a channel nobody asked for.
 
-The bank list offers every bank at least one programmed channel belongs to, by
-the name the host gave it, plus an explicit "all channels" row. It opens on the
-filter in force, Up and Down move the cursor, and Menu applies the row. Exit and
-a second Star leave the filter alone. The operating screen shows the active
-bank's name, falling back to `BANK nn` for a bank the host never named and `ALL`
-when nothing is filtered.
+The source list offers the VFO, every programmed channel, and each bank at least
+one programmed channel belongs to, by the name the host gave it. It opens on the
+source in force, Up and Down move the cursor, and Menu applies the row. Exit and
+a second Star leave the source alone. In memory mode the operating screen shows
+the active bank's name, falling back to `BANK nn` for a bank the host never named
+and `ALL` when nothing is filtered.
+
+### The VFO
+
+The image carries no channel set of its own, so a radio nobody has programmed
+starts in the VFO and there is no separate unprogrammed mode. A host write moves
+the radio onto its channels; the source list moves it back.
+
+The VFO is an ordinary receive-only channel record driving the same banked
+controller as a programmed channel, so tuning, monitoring, audio routing, and
+metering behave identically and the image gains no second receive path. Its
+class is `TxClass::Never` like everything else here.
+
+Digits fill from the megahertz side: `145` and a short pause is 145.000 MHz, and
+`433500` is 433.500 MHz. Up and Down tune by the selected step, and Menu opens
+the step list: 6.25, 12.5, 25, 50, and 100 kHz, and 1 MHz. The 6.25 kHz step
+reaches the PMR446 raster from a whole megahertz.
+
+The VFO accepts 1 MHz to 999.999 MHz. Those are representation limits, not a
+supported-band claim: the published BK4819 ranges conflict and this board's
+filters are unknown, so tuning inside that range is no promise the radio can hear
+anything there. See `EVID-BK4819-007`.
 
 The bit-banged radio bus only runs when the serial link has been quiet for
 250 ms. Retuning is deferred, never dropped, so programming a radio while it is

@@ -2194,3 +2194,78 @@ Software complete; the physical confirmation of the new radio image is pending.
 - **Next smallest task:** write `AFIK-K1-2.3` to the exact unit through the
   guarded K1 application path and confirm the bank list against a configuration
   written from `afik-studio`.
+
+## Work Package 33 (`K1VFO-033`): VFO receive mode and studio default sets
+
+Complete, with the physical confirmations below observed on the exact unit.
+
+- **VFO instead of a built-in set:** the image carried five built-in channels so
+  an unprogrammed radio had something to tune. They cost flash and RAM, appeared
+  on the display as though the operator had chosen them, and made a studio read
+  look broken because the radio showed channels while holding no objects. The
+  VFO replaces them: it is an ordinary receive-only channel record driving the
+  same banked controller, so tuning, monitoring, and metering are unchanged and
+  there is no second receive path. Digits type a frequency from the megahertz
+  side, Up and Down tune by the selected step, and Menu opens the step list.
+  Removing the built-in set and its screen while adding the VFO left the image
+  smaller: `text` 74012 to 72984, `bss` 9824 to 9328.
+- **One source list:** Star opens a list holding the VFO, every channel, and each
+  named bank, so an unprogrammed radio needs no separate mode and clearing a
+  bank filter stays an explicit choice.
+- **VFO bounds:** 1 MHz to 999.999 MHz are representation limits which six
+  kilohertz digits can name, not a supported-band claim. `EVID-BK4819-007`
+  forbids deriving a software limit from the conflicting published ranges.
+- **Studio default sets:** one UK and EU simplex set of PMR446 plus 2 m and
+  70 cm amateur FM simplex, twelve channels in three named banks, which is
+  exactly the K1's capacity; and one compact PMR446 generated plan. Applying a
+  set replaces the project and says so. `tool/example-pmr-amateur-plan.sh`
+  builds the same plan from the CLI.
+- **Studio flash gates:** the K1 path now classifies the bootloader before any
+  page, refuses a K5 or a mismatched version, requires the retained EEPROM
+  backup and an image CRC-32 confirmation, and generates a fresh transaction
+  identifier per run instead of accepting a typed one. Firmware backup is not
+  offered because no bootloader protocol here can read flash back.
+
+### Physical results on the exact unit, 2026-08-07
+
+- After explicit operator authorisation, read-only `afik-flasher --device auto
+  identify` reported K1 bootloader `7.03.01`.
+- `flash-afik-k1` wrote `AFIK-K1-2.3`: `293/293` pages acknowledged in
+  transaction `b8a6e2d2`, `status=acknowledged_not_read_back`. After a
+  power-cycle the radio answered `afik-programmer info` and `list`, reporting
+  `generation=0` and `object_count=0`: it held no configuration at all.
+- `flash-afik-k1` then wrote `AFIK-K1-2.4`: `289/289` pages acknowledged,
+  `status=acknowledged_not_read_back`. The per-run transaction identifier was
+  generated and was not retained in this log.
+- After a power-cycle the operator observed the radio in **VFO mode**, which is
+  the intended state for a radio holding no configuration.
+- The example plan was written over serial: `generation=1`, `verified=true`,
+  `object_count=15`, twelve channels in three named banks. `list` reported the
+  same fifteen objects.
+- `backup` read the configuration back and the image was **byte-identical** to
+  the offline compiled image, so a complete host-to-radio-to-host round trip is
+  confirmed on hardware.
+- **Observation:** the first configuration exchange after a power-cycle is lost
+  and the next one succeeds. This is consistent with the boot-time receive tune
+  holding the bit-banged bus while the host's first frame arrives. It is
+  recorded rather than worked around; the host retry is the operator's current
+  remedy.
+- **Observation:** the release build is not path-reproducible. Rebuilding the
+  identical `AFIK-K1-2.3` commit from a different directory produced 75,024
+  bytes and SHA-256 `905f709ce0a0767b9ba109261aaed501239b94f790332e6cfd8e3b88c14cfd09`
+  rather than 74,952 and `b419aa48...`, because panic locations embed absolute
+  source paths. Image hashes recorded here therefore identify one checkout's
+  build, not the commit.
+- **Verification:** `nix develop path:. -c cargo fmt --all --check`,
+  `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`,
+  `nix develop path:. -c cargo test --workspace` (zero failures),
+  `nix develop path:. -c tool/build-k1-async.sh --release`,
+  `nix develop path:. -c tool/package-k1-async-image.sh --force`,
+  `nix develop path:. -c tool/test-k1-async-image.sh`, and `git diff --check`
+  all passed.
+- **Remaining observations:** the bank list contents and names on the radio's own
+  screen, the switch onto memory channels after a host write, and VFO tuning
+  from the keypad.
+- **Next smallest task:** observe those three on the unit, then decide whether
+  the dropped first exchange after boot deserves a fix in the image rather than
+  a host retry.

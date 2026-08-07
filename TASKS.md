@@ -1548,3 +1548,31 @@
   opens the bank list, that the names the studio wrote appear in it and on the
   operating screen, and that Menu applies the filter and "all channels" clears
   it.
+
+## K1VFO-033 — VFO receive mode and studio default sets
+
+- **Status:** complete (2026-08-07)
+- **Objective:** give the radio something to tune when nothing is programmed, and
+  give the editor a starting plan so a first configuration is not typed by hand.
+- **Scope:** a VFO source in the operator shell with keypad frequency entry,
+  step tuning, and a step list; one source list holding the VFO, every channel,
+  and each named bank; removal of the built-in channel set and the separate
+  unprogrammed screen; region default sets in the studio; the K1 flash path in
+  the studio brought up to the flasher CLI's gates.
+- **Exclusions:** transmit of any kind, scanning, dual watch, a supported-band
+  claim of any sort, and firmware read-back, which no bootloader protocol here
+  offers.
+- **Acceptance criteria:** an unprogrammed radio is usable through the VFO with
+  no special mode; a host write moves it onto its channels; the VFO reuses the
+  shared banked controller rather than a second receive path; the VFO's bounds
+  are representation limits and are documented as such against
+  `EVID-BK4819-007`; a K1 write refuses a mismatched bootloader, a missing
+  retained backup, or a wrong image CRC-32.
+- **Result:** complete, and confirmed on the exact unit. Removing the built-in
+  set while adding the VFO left the image smaller: `text` 74012 to 72984 and
+  `bss` 9824 to 9328.
+- **Image:** `AFIK-K1-2.4`, 73,920 bytes, SHA-256
+  `a5cfa7cc11903f8ff393e54e5c92dcfcebe22ab7b3f1cc102ac59f30f1537682`, CRC-32
+  `5d732fcd`, Reset `0x080028c1`, `text=72984 data=936 bss=9328`.
+- **Remaining:** confirm the bank list contents, the switch onto memory after a
+  host write, and VFO tuning from the keypad by observation on the unit.

@@ -36,6 +36,19 @@ reachable. Detection opens nothing; connecting is a separate operator action,
 and no write ever picks a device for itself. The flash tab detects the same way
 but never preselects a flashing target, however few candidates there are.
 
+## Default sets
+
+The editor carries default channel sets so a first plan is not typed by hand: one
+UK and EU simplex set of PMR446 plus 2 m and 70 cm amateur FM simplex, twelve
+channels in three named banks, which is exactly what the K1 receive image holds;
+and one compact PMR446 generated plan for a target which expands plans.
+
+A set is a starting point, not an authority. Applying one replaces every channel
+and bank row, says how many rows it replaced, and asks the operator to confirm
+every frequency against their own national band plan.
+`tool/example-pmr-amateur-plan.sh` builds the same plan from the CLI, either to a
+file or straight to a radio.
+
 ## Model boundary
 
 Everything the editor decides lives in the library: `model` holds the editable
@@ -84,6 +97,22 @@ Firmware and EEPROM operations reuse the recovery-gated `radio-flasher`
 workflows unchanged. The editor collects input, validates the request before
 opening the serial device, runs the operation on a worker thread, and reports
 page acknowledgements as they arrive. It adds no shortcut and weakens no gate.
+
+There is no firmware backup, and there cannot be one: the bootloader protocols
+this crate drives carry no flash-read command, so a page acknowledgement is the
+only evidence a write produced. What protects a unit is the retained known-good
+recovery image and the retained EEPROM backup. Every write path requires them and
+reports each file's size and CRC-32 before starting, because that digest is the
+only evidence available that the files on disk are the pair kept for that unit.
+
+**Identify radio** classifies the bootloader read-only and fills in the version
+the write then checks against the radio, so a mistyped version or a K5 in
+bootloader mode stops the run before any page is written. A K1 application write
+additionally requires the retained EEPROM backup and an image CRC-32
+confirmation, exactly as the flasher CLI's `flash-afik-k1` does. The per-run
+transaction identifier is generated rather than typed: the bootloader ties every
+acknowledgement to it, so reuse would make one run's acknowledgements
+indistinguishable from another's.
 
 The EEPROM backup is read-only and refuses to overwrite an existing file. Every
 firmware write still requires its exact confirmation phrases, a non-zero
