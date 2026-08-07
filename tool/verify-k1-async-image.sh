@@ -19,8 +19,8 @@ grep -Eq '^[[:space:]]*(INTERP|DYNAMIC)[[:space:]]' <<<"$segments" && {
 while read -r virtual_address physical_address memory_size; do
   virtual_start=$((virtual_address)); virtual_end=$((virtual_address + memory_size))
   physical_start=$((physical_address)); physical_end=$((physical_address + memory_size))
-  if (( virtual_start >= 0x08002800 && virtual_end <= 0x08020000 )); then continue; fi
-  if (( virtual_start >= 0x20000000 && virtual_end <= 0x20004000 && physical_start >= 0x08002800 && physical_end <= 0x08020000 )); then continue; fi
+  if (( virtual_start >= 0x08002800 && virtual_end <= 0x0801e000 )); then continue; fi
+  if (( virtual_start >= 0x20000000 && virtual_end <= 0x20004000 && physical_start >= 0x08002800 && physical_end <= 0x0801e000 )); then continue; fi
   if (( virtual_start >= 0x20000000 && virtual_end <= 0x20004000 && physical_start >= 0x20000000 && physical_end <= 0x20004000 )); then continue; fi
   echo "K1 async LOAD is outside evidenced flash/RAM: $virtual_address/$physical_address" >&2; exit 1
 done < <(awk '$1 == "LOAD" { print $3, $4, $6 }' <<<"$segments")
@@ -34,7 +34,7 @@ llvm-objcopy --dump-section ".vector_table=$vectors" "$image_path"
 read -r initial_stack reset_vector < <(od -An -v -tx4 -N8 "$vectors")
 [[ "$initial_stack" == "20004000" ]] || { echo "unexpected async initial SP: $initial_stack" >&2; exit 1; }
 (( (16#$reset_vector & 1) == 1 )) || { echo "async Reset is not Thumb: $reset_vector" >&2; exit 1; }
-(( 16#$reset_vector >= 16#080028c0 && 16#$reset_vector < 16#08020000 )) || { echo "async Reset is out of range: $reset_vector" >&2; exit 1; }
+(( 16#$reset_vector >= 16#080028c0 && 16#$reset_vector < 16#0801e000 )) || { echo "async Reset is out of range: $reset_vector" >&2; exit 1; }
 
 symbols="$(llvm-nm --defined-only "$image_path")"
 symbol_address() { awk -v name="$1" '$3 == name { print $1 }' <<<"$symbols"; }

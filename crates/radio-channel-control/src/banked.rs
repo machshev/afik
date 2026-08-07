@@ -385,6 +385,61 @@ impl<C: ChannelSource> BankedReceiveController<C> {
         })
     }
 
+    /// Returns the number of channels eligible under the active bank filter.
+    ///
+    /// A user interface numbers channels as the operator sees them, which is
+    /// the filtered view rather than the storage table, so these positions are
+    /// defined here beside the filter itself.
+    pub fn visible_channels(&self) -> u16 {
+        (0..self.source.len())
+            .filter(|index| {
+                self.source
+                    .get(*index)
+                    .is_some_and(|channel| is_member(&channel, self.bank))
+            })
+            .count()
+            .try_into()
+            .unwrap_or(u16::MAX)
+    }
+
+    /// Returns the zero-based position of the selection in the filtered view.
+    pub fn visible_position(&self) -> u16 {
+        (0..self.index)
+            .filter(|index| {
+                self.source
+                    .get(*index)
+                    .is_some_and(|channel| is_member(&channel, self.bank))
+            })
+            .count()
+            .try_into()
+            .unwrap_or(u16::MAX)
+    }
+
+    /// Returns the channel at one zero-based position in the filtered view.
+    pub fn visible_channel(&self, position: u16) -> Option<ChannelRecord> {
+        self.visible_index(position)
+            .and_then(|index| self.source.get(index))
+    }
+
+    /// Returns the storage index of one zero-based position in the view.
+    pub fn visible_index(&self, position: u16) -> Option<u16> {
+        (0..self.source.len())
+            .filter(|index| {
+                self.source
+                    .get(*index)
+                    .is_some_and(|channel| is_member(&channel, self.bank))
+            })
+            .nth(usize::from(position))
+    }
+
+    /// Selects one zero-based position within the filtered view.
+    pub fn select_visible(&mut self, position: u16) -> Result<ReceiveUpdate, ReceiveError> {
+        let index = self
+            .visible_index(position)
+            .ok_or(ReceiveError::IndexOutOfRange)?;
+        self.select(index)
+    }
+
     /// Selects the next eligible channel, wrapping around the bank.
     pub fn select_next(&mut self) -> Result<ReceiveUpdate, ReceiveError> {
         let index = self.neighbour(self.index, true, false)?;
@@ -1066,5 +1121,35 @@ mod tests {
     fn dual_watch_requires_the_configured_option() {
         let mut controller = controller(RadioConfig::conservative(), None);
         assert!(controller.set_dual_watch(Some(1)).is_err());
+    }
+
+    #[test]
+    fn view_positions_follow_the_bank_filter_and_select_what_they_name() {
+        let mut controller = controller(RadioConfig::conservative(), None);
+        assert_eq!(controller.visible_channels(), 3);
+        assert_eq!(controller.visible_position(), 0);
+        assert_eq!(
+            controller.visible_channel(2).unwrap().id(),
+            ChannelId::new(3)
+        );
+        assert_eq!(
+            controller
+                .select_visible(2)
+                .unwrap()
+                .activation
+                .unwrap()
+                .setup
+                .frequency
+                .as_hz(),
+            145_300_000
+        );
+        assert_eq!(controller.visible_position(), 2);
+
+        // Bank 1 holds only channel 1, so the view collapses to one position.
+        controller.set_bank(Some(BankId::new(0))).unwrap();
+        assert_eq!(controller.visible_channels(), 1);
+        assert_eq!(controller.visible_position(), 0);
+        assert!(controller.select_visible(1).is_err());
+        assert_eq!(controller.visible_channel(1), None);
     }
 }

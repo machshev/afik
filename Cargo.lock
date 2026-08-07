@@ -2432,12 +2432,17 @@ dependencies = [
  "cortex-m",
  "cortex-m-rt",
  "embassy-executor",
+ "embassy-sync",
  "embassy-time",
  "py32-hal",
  "radio-bk4819",
  "radio-channel-control",
  "radio-channel-plan",
+ "radio-device",
  "radio-domain",
+ "radio-programmer",
+ "radio-protocol",
+ "radio-storage",
 ]
 
 [[package]]

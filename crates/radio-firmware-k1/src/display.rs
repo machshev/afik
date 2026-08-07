@@ -189,6 +189,232 @@ pub fn render_receive_witness(
     );
 }
 
+/// Longest channel name one list row shows.
+pub const LIST_NAME_BYTES: usize = 14;
+
+/// Channel list rows one screen shows.
+pub const LIST_ROWS: usize = 5;
+
+/// Everything the operating screen displays.
+///
+/// The caller passes exactly what it read from the controller and the receiver,
+/// so the screen cannot compute a value the serial observation disagrees with.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OperatingView<'a> {
+    /// One-based position of the active channel in the active view.
+    pub position: u16,
+    /// Channels selectable in the active view.
+    pub total: u16,
+    /// Active channel name.
+    pub name: &'a [u8],
+    /// Active receive frequency in hertz.
+    pub frequency_hz: u32,
+    /// The chip's own raw RSSI count.
+    pub rssi_raw: u16,
+    /// Whether the carrier squelch link is open.
+    pub squelch_open: bool,
+    /// Whether demodulated audio is routed to the speaker.
+    pub audio_routed: bool,
+    /// Whether the squelch override is held open.
+    pub monitoring: bool,
+    /// Active bank filter, if any.
+    pub bank: Option<u16>,
+    /// Channel number being typed, if any.
+    pub entry: Option<u16>,
+}
+
+/// One channel list row.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ListRow {
+    /// One-based position in the active view.
+    pub position: u16,
+    /// Channel name bytes.
+    pub name: [u8; LIST_NAME_BYTES],
+    /// Used name bytes.
+    pub name_len: u8,
+    /// Whether this row is the channel the receiver is tuned to.
+    pub active: bool,
+}
+
+impl ListRow {
+    /// Builds a row, truncating a longer name to the visible width.
+    #[must_use]
+    pub fn new(position: u16, name: &[u8], active: bool) -> Self {
+        let mut row = Self {
+            position,
+            name: [0; LIST_NAME_BYTES],
+            name_len: 0,
+            active,
+        };
+        let length = name.len().min(LIST_NAME_BYTES);
+        row.name[..length].copy_from_slice(&name[..length]);
+        row.name_len = u8::try_from(length).unwrap_or(0);
+        row
+    }
+
+    fn name(&self) -> &[u8] {
+        &self.name[..usize::from(self.name_len)]
+    }
+}
+
+/// Produces the operating screen for one programmed or built-in channel.
+pub fn render_operating_screen(frame: &mut [u8; FRAME_BYTES], view: &OperatingView<'_>) {
+    frame.fill(0);
+
+    let mut position = *b"00/00";
+    write_two_digits(&mut position[..2], view.position);
+    write_two_digits(&mut position[3..], view.total);
+    draw_text(frame, 0, 0, &position);
+
+    if let Some(entry) = view.entry {
+        let mut typed = *b"CH --";
+        write_two_digits(&mut typed[3..], entry);
+        draw_text(frame, WIDTH - 5 * 6, 0, &typed);
+    } else if let Some(bank) = view.bank {
+        let mut label = *b"BK 00";
+        write_two_digits(&mut label[3..], bank);
+        draw_text(frame, WIDTH - 5 * 6, 0, &label);
+    } else {
+        draw_text(frame, WIDTH - 5 * 6, 0, b"ALL  ");
+    }
+
+    let width = view.name.len() * 6;
+    draw_text(frame, WIDTH.saturating_sub(width) / 2, 12, view.name);
+    draw_text(frame, 4, 26, &megahertz(view.frequency_hz));
+
+    draw_text(frame, 0, 42, &rssi_label(view.rssi_raw));
+    draw_text(
+        frame,
+        WIDTH - 7 * 6,
+        42,
+        if view.squelch_open {
+            b"SQ OPEN"
+        } else {
+            b"SQ SHUT"
+        },
+    );
+    draw_text(
+        frame,
+        0,
+        55,
+        if view.audio_routed {
+            b"AUDIO ON "
+        } else {
+            b"AUDIO OFF"
+        },
+    );
+    if view.monitoring {
+        draw_text(frame, WIDTH - 3 * 6, 55, b"MON");
+    }
+}
+
+/// Produces the scrollable channel list.
+///
+/// `cursor_row` selects which of the supplied rows is marked. A view with no
+/// channels renders an explicit empty message rather than a blank screen.
+pub fn render_channel_list(
+    frame: &mut [u8; FRAME_BYTES],
+    rows: &[ListRow],
+    cursor_row: usize,
+    total: u16,
+) {
+    frame.fill(0);
+    if rows.is_empty() {
+        draw_text(frame, 4, 0, b"CHANNELS");
+        draw_text(frame, 4, 24, b"NONE PROGRAMMED");
+        draw_text(frame, 4, 40, b"USE AFIK STUDIO");
+        return;
+    }
+    let mut header = *b"CHANNELS 00";
+    write_two_digits(&mut header[9..], total);
+    draw_text(frame, 0, 0, &header);
+    for (index, row) in rows.iter().take(LIST_ROWS).enumerate() {
+        let y = 12 + index * 11;
+        if index == cursor_row {
+            draw_text(frame, 0, y, b">");
+        }
+        let mut number = *b"00 ";
+        write_two_digits(&mut number[..2], row.position);
+        draw_text(frame, 6, y, &number);
+        draw_text(frame, 6 + 3 * 6, y, row.name());
+        if row.active {
+            draw_text(frame, WIDTH - 6, y, b"*");
+        }
+    }
+}
+
+/// Produces the image and storage information screen.
+///
+/// This is the display-side witness for a flashed image: the identity string,
+/// the active configuration generation the host programmed, and whether that
+/// configuration was restored from the radio's own retained storage.
+pub fn render_info_screen(
+    frame: &mut [u8; FRAME_BYTES],
+    identity: &[u8],
+    generation: u32,
+    channels: u16,
+    retained: bool,
+) {
+    frame.fill(0);
+    let width = identity.len() * 6;
+    draw_text(frame, WIDTH.saturating_sub(width) / 2, 0, identity);
+
+    let mut generation_label = *b"GEN 0000000000";
+    let mut value = generation;
+    for index in (4..14).rev() {
+        generation_label[index] = b'0' + u8::try_from(value % 10).unwrap_or(0);
+        value /= 10;
+    }
+    draw_text(frame, 0, 18, &generation_label);
+
+    let mut channel_label = *b"CHANNELS 00";
+    write_two_digits(&mut channel_label[9..], channels);
+    draw_text(frame, 0, 32, &channel_label);
+
+    draw_text(
+        frame,
+        0,
+        46,
+        if retained {
+            b"STORED IN RADIO"
+        } else {
+            b"BUILT-IN SET   "
+        },
+    );
+}
+
+fn write_two_digits(destination: &mut [u8], value: u16) {
+    if destination.len() < 2 {
+        return;
+    }
+    let bounded = value.min(99);
+    destination[0] = b'0' + u8::try_from(bounded / 10).unwrap_or(0);
+    destination[1] = b'0' + u8::try_from(bounded % 10).unwrap_or(0);
+}
+
+fn megahertz(frequency_hz: u32) -> [u8; 10] {
+    let mut text = *b"0000.00000";
+    let whole = frequency_hz / 1_000_000;
+    let fraction = frequency_hz % 1_000_000 / 10;
+    for (index, divisor) in [1000, 100, 10, 1].into_iter().enumerate() {
+        text[index] = b'0' + u8::try_from(whole / divisor % 10).unwrap_or(0);
+    }
+    for (index, divisor) in [10_000, 1_000, 100, 10, 1].into_iter().enumerate() {
+        text[5 + index] = b'0' + u8::try_from(fraction / divisor % 10).unwrap_or(0);
+    }
+    text[4] = b'.';
+    text
+}
+
+fn rssi_label(rssi_raw: u16) -> [u8; 8] {
+    let mut label = *b"RSSI ---";
+    let value = rssi_raw.min(999);
+    label[5] = b'0' + u8::try_from(value / 100).unwrap_or(0);
+    label[6] = b'0' + u8::try_from(value / 10 % 10).unwrap_or(0);
+    label[7] = b'0' + u8::try_from(value % 10).unwrap_or(0);
+    label
+}
+
 fn draw_text(frame: &mut [u8; FRAME_BYTES], mut x: usize, y: usize, text: &[u8]) {
     for byte in text {
         let glyph = glyph(*byte);
@@ -214,7 +440,9 @@ fn draw_column(frame: &mut [u8; FRAME_BYTES], x: usize, y: usize, bits: u8) {
 }
 
 fn glyph(byte: u8) -> [u8; 5] {
-    match byte {
+    // Programmed names are printable ASCII including lowercase, and this
+    // panel's fixed five-column font has one case only.
+    match byte.to_ascii_uppercase() {
         b'.' => [0x00, 0x60, 0x60, 0x00, 0x00],
         b'B' => [0x7F, 0x49, 0x49, 0x49, 0x36],
         b'C' => [0x3E, 0x41, 0x41, 0x41, 0x22],
@@ -249,6 +477,20 @@ fn glyph(byte: u8) -> [u8; 5] {
         b'U' => [0x3F, 0x40, 0x40, 0x40, 0x3F],
         b'W' => [0x3F, 0x40, 0x38, 0x40, 0x3F],
         b'X' => [0x63, 0x14, 0x08, 0x14, 0x63],
+        b'J' => [0x20, 0x40, 0x41, 0x3F, 0x01],
+        b'Y' => [0x07, 0x08, 0x70, 0x08, 0x07],
+        b'Z' => [0x61, 0x51, 0x49, 0x45, 0x43],
+        b'-' => [0x08, 0x08, 0x08, 0x08, 0x08],
+        b'/' => [0x20, 0x10, 0x08, 0x04, 0x02],
+        b'>' => [0x41, 0x22, 0x14, 0x08, 0x00],
+        b'<' => [0x08, 0x14, 0x22, 0x41, 0x00],
+        b'*' => [0x14, 0x08, 0x3E, 0x08, 0x14],
+        b'+' => [0x08, 0x08, 0x3E, 0x08, 0x08],
+        b':' => [0x00, 0x36, 0x36, 0x00, 0x00],
+        b'#' => [0x14, 0x7F, 0x14, 0x7F, 0x14],
+        b'(' => [0x00, 0x1C, 0x22, 0x41, 0x00],
+        b')' => [0x00, 0x41, 0x22, 0x1C, 0x00],
+        b'_' => [0x40, 0x40, 0x40, 0x40, 0x40],
         _ => [0x00, 0x00, 0x00, 0x00, 0x00],
     }
 }
@@ -454,5 +696,130 @@ mod tests {
                 assert_ne!(frames[first], frames[second]);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod operating_screen_tests {
+    use super::{
+        render_channel_list, render_info_screen, render_operating_screen, ListRow, OperatingView,
+        FRAME_BYTES, LIST_NAME_BYTES,
+    };
+
+    fn view() -> OperatingView<'static> {
+        OperatingView {
+            position: 3,
+            total: 16,
+            name: b"2M CALL",
+            frequency_hz: 145_500_000,
+            rssi_raw: 148,
+            squelch_open: false,
+            audio_routed: false,
+            monitoring: false,
+            bank: None,
+            entry: None,
+        }
+    }
+
+    fn render(view: &OperatingView<'_>) -> [u8; FRAME_BYTES] {
+        let mut frame = [0xFF_u8; FRAME_BYTES];
+        render_operating_screen(&mut frame, view);
+        frame
+    }
+
+    #[test]
+    fn the_operating_screen_is_deterministic_and_reflects_every_state() {
+        let base = render(&view());
+        assert_eq!(base, render(&view()));
+        assert!(base.iter().any(|byte| *byte != 0));
+
+        for changed in [
+            OperatingView {
+                position: 4,
+                ..view()
+            },
+            OperatingView {
+                squelch_open: true,
+                ..view()
+            },
+            OperatingView {
+                audio_routed: true,
+                ..view()
+            },
+            OperatingView {
+                monitoring: true,
+                ..view()
+            },
+            OperatingView {
+                bank: Some(2),
+                ..view()
+            },
+            OperatingView {
+                entry: Some(7),
+                ..view()
+            },
+            OperatingView {
+                rssi_raw: 200,
+                ..view()
+            },
+            OperatingView {
+                frequency_hz: 433_500_000,
+                ..view()
+            },
+        ] {
+            assert_ne!(base, render(&changed), "state must be visible on screen");
+        }
+    }
+
+    #[test]
+    fn a_typed_channel_number_replaces_the_bank_indicator() {
+        let typed = render(&OperatingView {
+            bank: Some(2),
+            entry: Some(7),
+            ..view()
+        });
+        let bank = render(&OperatingView {
+            bank: Some(2),
+            ..view()
+        });
+        assert_ne!(typed, bank);
+    }
+
+    #[test]
+    fn the_channel_list_marks_the_cursor_and_the_active_channel() {
+        let rows = [
+            ListRow::new(1, b"2M CALL", false),
+            ListRow::new(2, b"2M FM", true),
+            ListRow::new(3, b"70CM", false),
+        ];
+        let mut cursor_first = [0_u8; FRAME_BYTES];
+        render_channel_list(&mut cursor_first, &rows, 0, 3);
+        let mut cursor_second = [0_u8; FRAME_BYTES];
+        render_channel_list(&mut cursor_second, &rows, 1, 3);
+        assert_ne!(cursor_first, cursor_second);
+        assert!(cursor_first.iter().any(|byte| *byte != 0));
+    }
+
+    #[test]
+    fn an_empty_channel_list_says_so_instead_of_going_blank() {
+        let mut frame = [0_u8; FRAME_BYTES];
+        render_channel_list(&mut frame, &[], 0, 0);
+        assert!(frame.iter().any(|byte| *byte != 0));
+    }
+
+    #[test]
+    fn a_long_channel_name_is_truncated_to_the_visible_width() {
+        let row = ListRow::new(1, b"A VERY LONG CHANNEL NAME", false);
+        assert_eq!(usize::from(row.name_len), LIST_NAME_BYTES);
+    }
+
+    #[test]
+    fn the_info_screen_separates_retained_and_built_in_configurations() {
+        let mut retained = [0_u8; FRAME_BYTES];
+        render_info_screen(&mut retained, b"AFIK-K1-2.0", 7, 16, true);
+        let mut built_in = [0_u8; FRAME_BYTES];
+        render_info_screen(&mut built_in, b"AFIK-K1-2.0", 0, 5, false);
+        assert_ne!(retained, built_in);
+        assert!(retained.iter().any(|byte| *byte != 0));
     }
 }

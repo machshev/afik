@@ -10,6 +10,7 @@ pub mod backlight;
 pub mod bk4819_bus;
 pub mod channels;
 pub mod clock_handoff;
+pub mod configuration;
 #[cfg(test)]
 mod cooperative_progress;
 pub mod display;
@@ -25,6 +26,8 @@ pub mod py32f071_clock_handoff;
 pub mod py32f071_clock_publication;
 #[cfg(feature = "py32f071-hal-inventory")]
 pub mod py32f071_hal_inventory;
+#[cfg(feature = "py32f071-retained")]
+pub mod py32f071_retained;
 #[cfg(feature = "py32f071-runtime-composition")]
 pub mod py32f071_runtime;
 #[cfg(feature = "py32f071-runtime-init")]
@@ -33,3 +36,4 @@ pub mod py32f071_runtime_init;
 pub mod py32f071_spi1;
 #[cfg(feature = "py32f071-usart1")]
 pub mod py32f071_usart1;
+pub mod shell;

@@ -9,8 +9,8 @@ if [[ ! -f "$image_path" ]]; then
 fi
 
 image_bytes="$(stat -c %s "$image_path")"
-if (( image_bytes < 8 || image_bytes > 0x1d800 )); then
-  echo "K1 raw image size is outside 8..0x1d800 bytes: $image_bytes" >&2
+if (( image_bytes < 8 || image_bytes > 0x1b800 )); then
+  echo "K1 raw image size is outside 8..0x1b800 bytes: $image_bytes" >&2
   exit 1
 fi
 
@@ -23,7 +23,7 @@ if (( (16#$reset_vector & 1) == 0 )); then
   echo "K1 raw Reset vector does not select Thumb code: $reset_vector" >&2
   exit 1
 fi
-if (( 16#$reset_vector < 16#08002808 || 16#$reset_vector >= 16#08020000 )); then
+if (( 16#$reset_vector < 16#08002808 || 16#$reset_vector >= 16#0801e000 )); then
   echo "K1 raw Reset vector is outside the qualified application: $reset_vector" >&2
   exit 1
 fi

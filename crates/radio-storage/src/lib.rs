@@ -698,37 +698,130 @@ pub fn encode_configuration_image(
     output: &mut [u8],
 ) -> Result<usize, StorageError> {
     validate_canonical_objects(objects)?;
-    let image_len = configuration_image_len(objects)?;
-    if output.len() < image_len {
+    if output.len() < configuration_image_len(objects)? {
         return Err(StorageError::ImageBufferTooSmall);
     }
-    let object_count = u16::try_from(objects.len()).map_err(|_| StorageError::ImageTooLarge)?;
-    let payload_len = image_len - CONFIGURATION_IMAGE_HEADER_LEN;
-    let encoded_payload_len =
-        u32::try_from(payload_len).map_err(|_| StorageError::ImageTooLarge)?;
-
-    output[..4].copy_from_slice(&CONFIGURATION_IMAGE_MAGIC);
-    output[4] = CONFIGURATION_IMAGE_VERSION;
-    output[5] = STORAGE_FORMAT_VERSION;
-    output[6..8].copy_from_slice(&object_count.to_le_bytes());
-    output[8..12].copy_from_slice(&encoded_payload_len.to_le_bytes());
-    output[12..16].fill(0);
-
-    let mut offset = CONFIGURATION_IMAGE_HEADER_LEN;
+    let mut writer = ConfigurationImageWriter::new(
+        output,
+        u16::try_from(objects.len()).map_err(|_| StorageError::ImageTooLarge)?,
+    )?;
     for object in objects {
-        output[offset] = object.key.kind as u8;
-        output[offset + 1..offset + 3].copy_from_slice(&object.key.id.to_le_bytes());
-        let object_len = u16::try_from(object.len()).map_err(|_| StorageError::ObjectTooLarge)?;
-        output[offset + 3..offset + 5].copy_from_slice(&object_len.to_le_bytes());
-        offset += CONFIGURATION_IMAGE_OBJECT_HEADER_LEN;
-        let data_end = offset + object.len();
-        output[offset..data_end].copy_from_slice(object.data());
-        offset = data_end;
+        writer.push(object)?;
+    }
+    writer.finish()
+}
+
+/// Incremental canonical configuration image encoder.
+///
+/// A device holds its objects in a fixed table rather than a contiguous ordered
+/// slice, so this writer accepts them one at a time and needs no second copy of
+/// the object set. It enforces the same strict `(kind, id)` order, exact object
+/// count, and buffer bound as the slice encoder, and produces identical bytes.
+pub struct ConfigurationImageWriter<'a> {
+    output: &'a mut [u8],
+    object_count: u16,
+    written: u16,
+    offset: usize,
+    previous_key: Option<ObjectKey>,
+}
+
+impl<'a> ConfigurationImageWriter<'a> {
+    /// Starts an image which must receive exactly `object_count` objects.
+    pub fn new(output: &'a mut [u8], object_count: u16) -> Result<Self, StorageError> {
+        if output.len() < CONFIGURATION_IMAGE_HEADER_LEN {
+            return Err(StorageError::ImageBufferTooSmall);
+        }
+        Ok(Self {
+            output,
+            object_count,
+            written: 0,
+            offset: CONFIGURATION_IMAGE_HEADER_LEN,
+            previous_key: None,
+        })
     }
 
-    let checksum = configuration_image_crc(&output[..12], &output[16..image_len]);
-    output[12..16].copy_from_slice(&checksum.to_le_bytes());
-    Ok(image_len)
+    /// Appends the next object in strict canonical key order.
+    pub fn push(&mut self, object: &StorageObject) -> Result<(), StorageError> {
+        if self.written == self.object_count {
+            return Err(StorageError::ImageTooLarge);
+        }
+        if self
+            .previous_key
+            .is_some_and(|previous| previous >= object.key())
+        {
+            return Err(StorageError::NonCanonicalImage);
+        }
+        if !validate_object(object) {
+            return Err(StorageError::MalformedObject);
+        }
+        let object_len = u16::try_from(object.len()).map_err(|_| StorageError::ObjectTooLarge)?;
+        let header_end = self
+            .offset
+            .checked_add(CONFIGURATION_IMAGE_OBJECT_HEADER_LEN)
+            .ok_or(StorageError::ImageTooLarge)?;
+        let data_end = header_end
+            .checked_add(object.len())
+            .ok_or(StorageError::ImageTooLarge)?;
+        if data_end > self.output.len() {
+            return Err(StorageError::ImageBufferTooSmall);
+        }
+        self.output[self.offset] = object.key().kind as u8;
+        self.output[self.offset + 1..self.offset + 3]
+            .copy_from_slice(&object.key().id.to_le_bytes());
+        self.output[self.offset + 3..header_end].copy_from_slice(&object_len.to_le_bytes());
+        self.output[header_end..data_end].copy_from_slice(object.data());
+        self.offset = data_end;
+        self.written += 1;
+        self.previous_key = Some(object.key());
+        Ok(())
+    }
+
+    /// Writes the header and checksum, returning the exact image length.
+    ///
+    /// Fewer objects than the declared count is an error: a truncated image
+    /// would otherwise claim to be a complete configuration.
+    pub fn finish(self) -> Result<usize, StorageError> {
+        if self.written != self.object_count {
+            return Err(StorageError::MalformedImage);
+        }
+        let image_len = self.offset;
+        let payload_len = image_len - CONFIGURATION_IMAGE_HEADER_LEN;
+        let encoded_payload_len =
+            u32::try_from(payload_len).map_err(|_| StorageError::ImageTooLarge)?;
+
+        self.output[..4].copy_from_slice(&CONFIGURATION_IMAGE_MAGIC);
+        self.output[4] = CONFIGURATION_IMAGE_VERSION;
+        self.output[5] = STORAGE_FORMAT_VERSION;
+        self.output[6..8].copy_from_slice(&self.object_count.to_le_bytes());
+        self.output[8..12].copy_from_slice(&encoded_payload_len.to_le_bytes());
+        self.output[12..16].fill(0);
+
+        let checksum = configuration_image_crc(&self.output[..12], &self.output[16..image_len]);
+        self.output[12..16].copy_from_slice(&checksum.to_le_bytes());
+        Ok(image_len)
+    }
+}
+
+/// Reads the exact image length from a canonical configuration image header.
+///
+/// A device which retains an image in a fixed region needs its length before it
+/// can hand exactly those bytes to the decoder. This checks the magic and both
+/// versions and nothing else: the checksum, object order, and every object are
+/// still validated by [`decode_configuration_image`].
+pub fn configuration_image_len_from_header(bytes: &[u8]) -> Result<usize, StorageError> {
+    if bytes.len() < CONFIGURATION_IMAGE_HEADER_LEN || bytes[..4] != CONFIGURATION_IMAGE_MAGIC {
+        return Err(StorageError::MalformedImage);
+    }
+    if bytes[4] != CONFIGURATION_IMAGE_VERSION || bytes[5] != STORAGE_FORMAT_VERSION {
+        return Err(StorageError::UnsupportedImageVersion);
+    }
+    let payload_len = usize::try_from(u32::from_le_bytes([
+        bytes[8], bytes[9], bytes[10], bytes[11],
+    ]))
+    .map_err(|_| StorageError::ImageTooLarge)?;
+    CONFIGURATION_IMAGE_HEADER_LEN
+        .checked_add(payload_len)
+        .ok_or(StorageError::ImageTooLarge)
 }
 
 /// Validates and borrows one exact canonical configuration image.
@@ -736,22 +829,11 @@ pub fn encode_configuration_image(
 /// The complete checksum, structure, object order, and every object payload are
 /// validated before the returned image exposes its object iterator.
 pub fn decode_configuration_image(bytes: &[u8]) -> Result<ConfigurationImage<'_>, StorageError> {
-    if bytes.len() < CONFIGURATION_IMAGE_HEADER_LEN || bytes[..4] != CONFIGURATION_IMAGE_MAGIC {
-        return Err(StorageError::MalformedImage);
-    }
-    if bytes[4] != CONFIGURATION_IMAGE_VERSION || bytes[5] != STORAGE_FORMAT_VERSION {
-        return Err(StorageError::UnsupportedImageVersion);
-    }
-    let object_count = u16::from_le_bytes([bytes[6], bytes[7]]);
-    let encoded_payload_len = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
-    let payload_len =
-        usize::try_from(encoded_payload_len).map_err(|_| StorageError::ImageTooLarge)?;
-    let expected_len = CONFIGURATION_IMAGE_HEADER_LEN
-        .checked_add(payload_len)
-        .ok_or(StorageError::ImageTooLarge)?;
+    let expected_len = configuration_image_len_from_header(bytes)?;
     if bytes.len() != expected_len {
         return Err(StorageError::MalformedImage);
     }
+    let object_count = u16::from_le_bytes([bytes[6], bytes[7]]);
     let expected_checksum = u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]);
     if configuration_image_crc(&bytes[..12], &bytes[16..]) != expected_checksum {
         return Err(StorageError::ImageIntegrity);
@@ -1276,6 +1358,107 @@ mod tests {
         assert_eq!(
             decode_configuration_image(&raw_image(&[&truncated_entry])),
             Err(StorageError::MalformedImage)
+        );
+    }
+}
+
+#[cfg(test)]
+mod image_writer_tests {
+    use super::{
+        configuration_image_len_from_header, decode_configuration_image, encode_channel,
+        encode_configuration_image, encode_radio_config, ConfigurationImageWriter, StorageError,
+        CONFIGURATION_IMAGE_HEADER_LEN,
+    };
+    use radio_channel_plan::{
+        BankMask, ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord,
+    };
+    use radio_domain::{
+        Bandwidth, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, RadioConfig,
+        SquelchLevel, Tone, TxClass,
+    };
+
+    fn channel(id: u16) -> ChannelRecord {
+        let receive = Frequency::from_hz(145_000_000 + u32::from(id) * 12_500).expect("frequency");
+        ChannelRecord::new(ChannelDefinition {
+            id: ChannelId::new(id),
+            name: ChannelName::new("CH").expect("name"),
+            receive,
+            transmit: receive,
+            rx_tone: Tone::None,
+            tx_tone: Tone::None,
+            modulation: Modulation::Fm,
+            bandwidth: Bandwidth::Narrow,
+            power: PowerLevel::Low,
+            step: FrequencyStep::from_hz(12_500).expect("step"),
+            squelch: SquelchLevel::new(3).expect("squelch"),
+            flags: ChannelFlags::default(),
+            banks: BankMask::default(),
+            tx_class: TxClass::Never,
+        })
+        .expect("channel")
+    }
+
+    #[test]
+    fn the_incremental_writer_produces_the_slice_encoding_byte_for_byte() {
+        let objects = [
+            encode_channel(channel(1)).expect("channel"),
+            encode_channel(channel(2)).expect("channel"),
+            encode_radio_config(RadioConfig::conservative()).expect("config"),
+        ];
+        let mut expected = [0_u8; 256];
+        let expected_len = encode_configuration_image(&objects, &mut expected).expect("encode");
+
+        let mut streamed = [0_u8; 256];
+        let mut writer = ConfigurationImageWriter::new(&mut streamed, 3).expect("writer");
+        for object in &objects {
+            writer.push(object).expect("push");
+        }
+        assert_eq!(writer.finish(), Ok(expected_len));
+        assert_eq!(streamed[..expected_len], expected[..expected_len]);
+        assert!(decode_configuration_image(&streamed[..expected_len]).is_ok());
+    }
+
+    #[test]
+    fn the_writer_refuses_unordered_extra_and_missing_objects() {
+        let first = encode_channel(channel(1)).expect("channel");
+        let second = encode_channel(channel(2)).expect("channel");
+
+        let mut buffer = [0_u8; 256];
+        let mut writer = ConfigurationImageWriter::new(&mut buffer, 2).expect("writer");
+        writer.push(&second).expect("push");
+        assert_eq!(writer.push(&first), Err(StorageError::NonCanonicalImage));
+        assert_eq!(writer.finish(), Err(StorageError::MalformedImage));
+
+        let mut buffer = [0_u8; 256];
+        let mut writer = ConfigurationImageWriter::new(&mut buffer, 1).expect("writer");
+        writer.push(&first).expect("push");
+        assert_eq!(writer.push(&second), Err(StorageError::ImageTooLarge));
+
+        let mut small = [0_u8; CONFIGURATION_IMAGE_HEADER_LEN + 4];
+        let mut writer = ConfigurationImageWriter::new(&mut small, 1).expect("writer");
+        assert_eq!(writer.push(&first), Err(StorageError::ImageBufferTooSmall));
+        assert_eq!(
+            ConfigurationImageWriter::new(&mut [0_u8; 4], 1).err(),
+            Some(StorageError::ImageBufferTooSmall)
+        );
+    }
+
+    #[test]
+    fn a_header_reports_its_exact_length_and_rejects_erased_bytes() {
+        let objects = [encode_channel(channel(1)).expect("channel")];
+        let mut image = [0_u8; 256];
+        let length = encode_configuration_image(&objects, &mut image).expect("encode");
+        assert_eq!(configuration_image_len_from_header(&image), Ok(length));
+
+        assert_eq!(
+            configuration_image_len_from_header(&[0xFF_u8; 32]),
+            Err(StorageError::MalformedImage)
+        );
+        let mut wrong_version = image;
+        wrong_version[4] = 9;
+        assert_eq!(
+            configuration_image_len_from_header(&wrong_version),
+            Err(StorageError::UnsupportedImageVersion)
         );
     }
 }

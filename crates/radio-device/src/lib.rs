@@ -23,8 +23,9 @@ use radio_protocol::{
     MAX_PAYLOAD, PROTOCOL_VERSION,
 };
 use radio_storage::{
-    validate_object, ObjectKey, ObjectKind, StorageError, StorageObject, StorageUsage,
-    TransactionalStore, MAX_OBJECT_DATA, STORAGE_FORMAT_VERSION,
+    decode_configuration_image, validate_object, ConfigurationImageWriter, ObjectKey, ObjectKind,
+    StorageError, StorageObject, StorageUsage, TransactionalStore, MAX_OBJECT_DATA,
+    STORAGE_FORMAT_VERSION,
 };
 
 const EMPTY_DESCRIPTOR: ObjectDescriptor = ObjectDescriptor {
@@ -111,12 +112,51 @@ pub enum DeviceEvent {
     },
 }
 
+/// How many objects of each kind a device will activate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct KindLimits {
+    /// Compact generated banks.
+    pub generated_banks: u16,
+    /// Explicit channel records.
+    pub channels: u16,
+    /// Named channel banks.
+    pub channel_banks: u16,
+    /// Global radio configurations.
+    pub radio_configs: u16,
+}
+
+impl KindLimits {
+    /// Limits which only the store capacity bounds.
+    #[must_use]
+    pub fn unbounded<const OBJECTS: usize>() -> Self {
+        // A store larger than the wire representation is bounded to it, which
+        // is the same bound the advertised capability reports.
+        let capacity = u16::try_from(OBJECTS).unwrap_or(u16::MAX);
+        Self {
+            generated_banks: capacity,
+            channels: capacity,
+            channel_banks: capacity,
+            radio_configs: capacity,
+        }
+    }
+
+    const fn limit(self, kind: ObjectKind) -> u16 {
+        match kind {
+            ObjectKind::GeneratedBank => self.generated_banks,
+            ObjectKind::Channel => self.channels,
+            ObjectKind::ChannelBank => self.channel_banks,
+            ObjectKind::RadioConfig => self.radio_configs,
+        }
+    }
+}
+
 /// Bounded device-side configuration service over one byte stream.
 pub struct DeviceService<const OBJECTS: usize> {
     decoder: StreamDecoder,
     store: TransactionalStore<OBJECTS>,
     active_transaction: Option<u32>,
     last_exchange: Option<(Frame, Frame)>,
+    limits: KindLimits,
     capabilities: DeviceCapabilities,
 }
 
@@ -138,11 +178,24 @@ impl<const OBJECTS: usize> DeviceService<OBJECTS> {
 
     /// Constructs a service which additionally advertises plan encodings.
     pub fn with_plan_encodings(plan_encodings: u16) -> Self {
+        Self::with_limits(plan_encodings, KindLimits::unbounded::<OBJECTS>())
+    }
+
+    /// Constructs a service which also bounds how many objects of each kind it
+    /// will activate.
+    ///
+    /// A device whose application can use fewer objects of one kind than its
+    /// store can hold must say so at a defined point. These limits are enforced
+    /// when the host validates a candidate, so an over-large configuration is
+    /// rejected with the stable `ValidationFailed` code before it can become
+    /// active, and the previous configuration keeps running.
+    pub fn with_limits(plan_encodings: u16, limits: KindLimits) -> Self {
         Self {
             decoder: StreamDecoder::new(),
             store: TransactionalStore::new(),
             active_transaction: None,
             last_exchange: None,
+            limits,
             capabilities: DeviceCapabilities {
                 protocol_version: PROTOCOL_VERSION,
                 storage_version: STORAGE_FORMAT_VERSION,
@@ -185,22 +238,80 @@ impl<const OBJECTS: usize> DeviceService<OBJECTS> {
     /// start-up. Every object is validated and staged through the ordinary
     /// transactional path, so a rejected restore leaves the store empty rather
     /// than partly filled, and no candidate is left open.
-    pub fn load(&mut self, objects: &[StorageObject]) -> Result<u32, StorageError> {
+    pub fn load<I: IntoIterator<Item = StorageObject>>(
+        &mut self,
+        objects: I,
+    ) -> Result<u32, StorageError> {
         if self.active_transaction.is_some() {
             return Err(StorageError::TransactionAlreadyOpen);
         }
         self.store.begin()?;
         for object in objects {
-            if let Err(error) = self.store.write(*object) {
+            if let Err(error) = self.store.write(object) {
                 let _ = self.store.abort();
                 return Err(error);
             }
         }
-        if let Err(error) = self.store.validate(validate_object) {
+        if let Err(error) = self.validate_candidate() {
             let _ = self.store.abort();
             return Err(error);
         }
         self.store.commit()
+    }
+
+    /// Validates the open candidate against object formats and kind limits.
+    fn validate_candidate(&mut self) -> Result<(), StorageError> {
+        let limits = self.limits;
+        let mut counts = [0_u16; 4];
+        self.store.validate(|object| {
+            if !validate_object(object) {
+                return false;
+            }
+            let kind = object.key().kind;
+            let slot = &mut counts[kind as usize - 1];
+            *slot = slot.saturating_add(1);
+            *slot <= limits.limit(kind)
+        })
+    }
+
+    /// Restores one complete canonical configuration image.
+    ///
+    /// The image is fully validated before any object is staged, so retained
+    /// bytes which are absent, erased, truncated, or corrupt leave the active
+    /// snapshot untouched.
+    pub fn load_image(&mut self, bytes: &[u8]) -> Result<u32, StorageError> {
+        let image = decode_configuration_image(bytes)?;
+        if usize::from(image.object_count()) > OBJECTS {
+            return Err(StorageError::StoreFull);
+        }
+        self.load(image.objects())
+    }
+
+    /// Encodes the active snapshot as a canonical configuration image.
+    ///
+    /// Objects are emitted in strict `(kind, id)` order without copying the
+    /// object table: only a bounded key index is sorted, so a device can retain
+    /// its configuration without a second object-sized buffer.
+    pub fn encode_active_image(&self, output: &mut [u8]) -> Result<usize, StorageError> {
+        let mut keys = [ObjectKey {
+            kind: ObjectKind::GeneratedBank,
+            id: 0,
+        }; OBJECTS];
+        let mut count = 0_usize;
+        for object in self.store.active_objects() {
+            *keys.get_mut(count).ok_or(StorageError::StoreFull)? = object.key();
+            count += 1;
+        }
+        let keys = &mut keys[..count];
+        sort_bounded(keys, |key| *key);
+        let mut writer = ConfigurationImageWriter::new(
+            output,
+            u16::try_from(count).map_err(|_| StorageError::ImageTooLarge)?,
+        )?;
+        for key in keys {
+            writer.push(self.store.read(*key)?)?;
+        }
+        writer.finish()
     }
 
     /// Consumes one stream byte and encodes at most one response frame.
@@ -348,7 +459,7 @@ impl<const OBJECTS: usize> DeviceService<OBJECTS> {
             count += 1;
         }
         let descriptors = &mut descriptors[..count];
-        descriptors.sort_unstable_by_key(|descriptor| (descriptor.kind, descriptor.id));
+        sort_bounded(descriptors, |descriptor| (descriptor.kind, descriptor.id));
         let total_objects = u16::try_from(count).map_err(|_| ProtocolError::PayloadTooLarge)?;
         if offset > total_objects {
             return error_response(request, DeviceErrorCode::MalformedPayload);
@@ -456,7 +567,7 @@ impl<const OBJECTS: usize> DeviceService<OBJECTS> {
             Ok(transaction) => transaction,
             Err(code) => return error_response(request, code),
         };
-        if let Err(error) = self.store.validate(validate_object) {
+        if let Err(error) = self.validate_candidate() {
             return error_response(request, map_storage_error(error));
         }
         observer(DeviceEvent::TransactionValidated { transaction });
@@ -508,6 +619,21 @@ impl<const OBJECTS: usize> DeviceService<OBJECTS> {
             return Err(DeviceErrorCode::NoTransaction);
         }
         Ok(transaction)
+    }
+}
+
+/// Orders a small bounded slice in place by a copyable key.
+///
+/// Insertion sort is used deliberately. These slices hold at most one object
+/// per store slot, and the general-purpose sort in `core` costs tens of
+/// kilobytes of target flash for the same canonical ordering.
+fn sort_bounded<T: Copy, K: Ord, F: Fn(&T) -> K>(items: &mut [T], key: F) {
+    for position in 1..items.len() {
+        let mut index = position;
+        while index > 0 && key(&items[index - 1]) > key(&items[index]) {
+            items.swap(index - 1, index);
+            index -= 1;
+        }
     }
 }
 
@@ -585,7 +711,7 @@ pub const fn map_storage_error(error: StorageError) -> DeviceErrorCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{DeviceEvent, DeviceService};
+    use super::{DeviceEvent, DeviceService, KindLimits};
     use radio_protocol::{
         decode_packet, encode_frame, Command, DeviceCapabilities, DeviceErrorCode, Frame,
         PayloadWriter, Service, FLAG_ERROR, FLAG_RESPONSE, MAX_ENCODED_FRAME,
@@ -774,8 +900,114 @@ mod tests {
             encode_channel(channel(1, 145_500_000)).expect("object"),
             encode_channel(channel(2, 433_500_000)).expect("object"),
         ];
-        assert_eq!(service.load(&objects), Ok(1));
+        assert_eq!(service.load(objects), Ok(1));
         assert_eq!(service.active_objects().count(), 2);
+        assert_eq!(service.open_transaction(), None);
+    }
+
+    #[test]
+    fn a_candidate_beyond_a_kind_limit_fails_validation_and_stays_inactive() {
+        let mut harness = Harness {
+            service: DeviceService::with_limits(
+                0,
+                KindLimits {
+                    channels: 1,
+                    ..KindLimits::unbounded::<OBJECTS>()
+                },
+            ),
+            events: std::vec::Vec::new(),
+        };
+        harness.configuration(1, Command::BeginTransaction, &4_u32.to_le_bytes());
+        for (sequence, id) in [(2_u16, 1_u16), (3, 2)] {
+            let object = encode_channel(channel(id, 145_500_000)).expect("object");
+            let response =
+                harness.configuration(sequence, Command::WriteObject, &write_payload(4, &object));
+            assert_eq!(response.flags(), FLAG_RESPONSE, "both writes are staged");
+        }
+        let response = harness.configuration(4, Command::ValidateTransaction, &4_u32.to_le_bytes());
+        assert_eq!(
+            response.payload(),
+            [
+                Command::ValidateTransaction as u8,
+                DeviceErrorCode::ValidationFailed as u8
+            ]
+        );
+        let commit = harness.configuration(5, Command::CommitTransaction, &4_u32.to_le_bytes());
+        assert_eq!(
+            commit.payload(),
+            [
+                Command::CommitTransaction as u8,
+                DeviceErrorCode::NotValidated as u8
+            ],
+            "an unvalidated candidate cannot be activated"
+        );
+        assert_eq!(harness.service.generation(), 0);
+        assert_eq!(harness.service.active_objects().count(), 0);
+    }
+
+    #[test]
+    fn a_retained_image_beyond_a_kind_limit_is_not_restored() {
+        let mut service = DeviceService::<OBJECTS>::with_limits(
+            0,
+            KindLimits {
+                channels: 1,
+                ..KindLimits::unbounded::<OBJECTS>()
+            },
+        );
+        assert!(service
+            .load([
+                encode_channel(channel(1, 145_500_000)).expect("object"),
+                encode_channel(channel(2, 433_500_000)).expect("object"),
+            ])
+            .is_err());
+        assert_eq!(service.generation(), 0);
+        assert_eq!(service.active_objects().count(), 0);
+    }
+
+    #[test]
+    fn a_retained_image_round_trips_through_the_active_snapshot() {
+        let mut service = DeviceService::<OBJECTS>::new();
+        service
+            .load([
+                encode_channel(channel(2, 433_500_000)).expect("object"),
+                encode_channel(channel(1, 145_500_000)).expect("object"),
+            ])
+            .expect("load");
+        let mut image = [0_u8; 512];
+        let length = service.encode_active_image(&mut image).expect("encode");
+
+        let mut restored = DeviceService::<OBJECTS>::new();
+        assert_eq!(restored.load_image(&image[..length]), Ok(1));
+        let mut keys: std::vec::Vec<_> = restored
+            .active_objects()
+            .map(|object| object.key())
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(keys.len(), 2);
+        assert_eq!(keys[0].id, 1);
+        assert_eq!(
+            restored.encode_active_image(&mut [0_u8; 512]),
+            Ok(length),
+            "the retained encoding is stable across a restore"
+        );
+    }
+
+    #[test]
+    fn erased_and_corrupt_retained_bytes_leave_the_snapshot_empty() {
+        let mut service = DeviceService::<OBJECTS>::new();
+        assert!(service.load_image(&[0xFF_u8; 256]).is_err());
+
+        let mut source = DeviceService::<OBJECTS>::new();
+        source
+            .load([encode_channel(channel(1, 145_500_000)).expect("object")])
+            .expect("load");
+        let mut image = [0_u8; 512];
+        let length = source.encode_active_image(&mut image).expect("encode");
+        image[length - 1] ^= 0xFF;
+        assert!(service.load_image(&image[..length]).is_err());
+        assert!(service.load_image(&image[..length - 1]).is_err());
+        assert_eq!(service.generation(), 0);
+        assert_eq!(service.active_objects().count(), 0);
         assert_eq!(service.open_transaction(), None);
     }
 
@@ -790,7 +1022,7 @@ mod tests {
             &[0_u8; 4],
         )
         .expect("object");
-        assert!(service.load(&[malformed]).is_err());
+        assert!(service.load([malformed]).is_err());
         assert_eq!(service.generation(), 0);
         assert_eq!(service.active_objects().count(), 0);
         assert_eq!(service.open_transaction(), None);

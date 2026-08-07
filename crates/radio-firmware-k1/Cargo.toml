@@ -27,6 +27,7 @@ py32f071-usart1 = [
     "py32-hal/rt",
 ]
 py32f071-spi1 = ["py32f071-hal-inventory"]
+py32f071-retained = ["py32f071-hal-inventory"]
 py32f071-bk4819 = ["py32f071-hal-inventory", "dep:cortex-m"]
 py32f071-runtime-composition = [
     "embassy-runtime",
@@ -41,7 +42,9 @@ py32f071-runtime-init = [
 async-firmware = [
     "py32f071-runtime-init",
     "py32f071-bk4819",
+    "py32f071-retained",
     "dep:embassy-time",
+    "dep:embassy-sync",
     "dep:cortex-m-rt",
     "dep:cortex-m",
     "py32-hal/memory-x",
@@ -51,12 +54,19 @@ async-firmware = [
 radio-bk4819 = { path = "../radio-bk4819" }
 radio-channel-control = { path = "../radio-channel-control" }
 radio-channel-plan = { path = "../radio-channel-plan" }
+radio-device = { path = "../radio-device" }
+radio-protocol = { path = "../radio-protocol" }
+radio-storage = { path = "../radio-storage" }
 radio-domain = { path = "../radio-domain" }
 embassy-executor = { version = "=0.10.0", default-features = false, features = ["executor-thread", "platform-cortex-m"], optional = true }
 py32-hal = { version = "=0.4.1", default-features = false, features = ["py32f071r1b"], optional = true }
 embassy-time = { version = "=0.5.1", default-features = false, optional = true }
+embassy-sync = { version = "=0.7.2", default-features = false, optional = true }
 cortex-m-rt = { version = "=0.7.6", optional = true }
 cortex-m = { version = "=0.7.8", optional = true }
+
+[dev-dependencies]
+radio-programmer = { path = "../radio-programmer" }
 
 [[bin]]
 name = "radio-firmware-k1"

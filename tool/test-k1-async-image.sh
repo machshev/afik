@@ -18,7 +18,7 @@ if tool/verify-k1-raw-image.sh "$truncated" >/dev/null 2>&1; then
   echo "truncated async vector image unexpectedly passed" >&2; exit 1
 fi
 oversized="$temporary_directory/oversized.raw"
-truncate -s $((0x1d801)) "$oversized"
+truncate -s $((0x1b801)) "$oversized"
 if tool/verify-k1-raw-image.sh "$oversized" >/dev/null 2>&1; then
   echo "oversized async image unexpectedly passed" >&2; exit 1
 fi
