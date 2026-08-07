@@ -2117,11 +2117,11 @@ Verified 2026-08-05:
   design and the open hardware gate.
 - **Operator shell:** a pure state machine drives an operating screen (position,
   name, frequency, raw RSSI, squelch, audio, bank, typed number), a scrollable
-  channel list, and an information screen (image identity, active generation,
-  channel count, retained or built-in). Up/Down select, Menu opens and confirms,
-  Exit cancels, digits type a channel number, Star cycles the bank filter,
-  Function shows the information screen, side key one routes audio, and side key
-  two holds the squelch open. `ADR-058` records why it is pure.
+  channel list, a named bank list, and an information screen (image identity,
+  active generation, channel count, retained or built-in). Up/Down select, Menu
+  opens and confirms, Exit cancels, digits type a channel number, Star opens the
+  bank list, Function shows the information screen, side key one routes audio,
+  and side key two holds the squelch open. `ADR-058` records why it is pure.
 - **Bus discipline:** the bit-banged radio bus only runs after the serial link
   has been quiet for 250 ms; retuning is deferred, never dropped.
 - **No transmit path:** the shell's intent set is receive-only, built-in channels
@@ -2153,3 +2153,44 @@ Verified 2026-08-05:
   AFIK flash write has been observed on this MCU; `RISK-033` stack headroom is
   bounded by inspection; `K1SIDE-025` still needs its physical side-key
   observation.
+
+## Work Package 32 (`NGUI-032`): studio usability and named bank operation
+
+Software complete; the physical confirmation of the new radio image is pending.
+
+- **Device detection:** the studio detects USB serial devices at start-up and on
+  demand through the same `radio-programmer-serial` discovery the flasher CLI
+  uses, and fails closed the same way: one candidate becomes the selection,
+  several are listed for the operator to resolve, and none leaves a manually
+  entered path in charge, which always overrides detection. The baud is a list
+  of the supported rates. Detection opens no port; connecting stays an operator
+  action, and `--device auto` is the only start-up path which connects by
+  itself. The flash tab shares the discovery but still preselects nothing.
+- **Bank editing:** a bank row carries its kind. A named row keeps the scan flag;
+  a generated row takes a base frequency, spacing, channel count, and transmit
+  class, and reports the span it covers. Identifiers collide only within one
+  kind because the two are separate stored objects. `ProjectModel::from_image`
+  previously discarded every generated-bank object, so reading a radio holding a
+  compact plan and writing the project back deleted it; it now round trips.
+- **Radio bank list:** Star opens a list of the banks at least one programmed
+  channel belongs to, by the name the host gave them, plus an explicit "all
+  channels" row. It opens on the filter in force, Menu applies the row, and Exit
+  or a second Star changes nothing. The operating screen shows the bank name and
+  falls back to `BANK nn` only for a bank the host never named.
+- **Verification:** `nix develop path:. -c cargo fmt --all --check`,
+  `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`,
+  `nix develop path:. -c cargo test --workspace` (300 tests, zero failures),
+  `nix develop path:. -c tool/build-k1-async.sh --release`,
+  `nix develop path:. -c tool/package-k1-async-image.sh --force`,
+  `nix develop path:. -c tool/test-k1-async-image.sh`, and `git diff --check`
+  all passed.
+- **Image:** `AFIK-K1-2.3`, 74,952 bytes, SHA-256
+  `b419aa485def159c92de8ba9ad4d2e17db3f705ec712d96445832e378f39f987`, CRC-32
+  `e6893970`, Reset `0x080028c1`, `text=74012 data=936 bss=9824`.
+- **Remaining physical steps:** write `AFIK-K1-2.3`, power-cycle, then confirm
+  the bank list opens on Star, that the names written from `afik-studio` appear
+  in the list and on the operating screen, that Menu applies a filter, and that
+  the "all channels" row clears it.
+- **Next smallest task:** write `AFIK-K1-2.3` to the exact unit through the
+  guarded K1 application path and confirm the bank list against a configuration
+  written from `afik-studio`.

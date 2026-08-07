@@ -449,7 +449,7 @@ advertises its object capacity and refuses a larger channel set with the stable
 | Menu | Open the channel list, or select the row under the cursor |
 | Exit | Leave a screen, or clear a partly typed channel number |
 | Digits | Type a channel number; two digits or a short pause selects it |
-| Star | Cycle the bank filter through populated banks and back to all |
+| Star | Open or close the bank list |
 | Function | Show or hide the information screen |
 | Side key 1 | Route or mute receive audio |
 | Side key 2 | Hold the squelch open |
@@ -457,6 +457,13 @@ advertises its object capacity and refuses a larger channel set with the stable
 Typed numbers are the positions the operating screen shows, so what the operator
 reads is what the operator can type. An out-of-range number selects nothing
 rather than being clamped onto a channel nobody asked for.
+
+The bank list offers every bank at least one programmed channel belongs to, by
+the name the host gave it, plus an explicit "all channels" row. It opens on the
+filter in force, Up and Down move the cursor, and Menu applies the row. Exit and
+a second Star leave the filter alone. The operating screen shows the active
+bank's name, falling back to `BANK nn` for a bank the host never named and `ALL`
+when nothing is filtered.
 
 The bit-banged radio bus only runs when the serial link has been quiet for
 250 ms. Retuning is deferred, never dropped, so programming a radio while it is

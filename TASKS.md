@@ -1518,3 +1518,33 @@
   information screen, `afik-programmer info`/`list` over serial, a configuration
   written from `afik-studio`, channel selection and the channel list on the
   keypad, and that the configuration survives a power cycle.
+
+## NGUI-032 — Studio usability and named bank operation
+
+- **Status:** software complete, physical confirmation pending (2026-08-07)
+- **Objective:** make the editor usable without knowing device paths or the
+  storage format, and make the radio's own bank filter readable.
+- **Scope:** USB serial detection and selection in the studio with a manual
+  override and a bounded baud list; `--device auto`; bank rows which carry their
+  kind, so a compact generated plan can be entered with its base frequency,
+  spacing, channel count, and transmit class; generated banks preserved through
+  a canonical image load; collapsible channel rows, channel duplication, and
+  named bank membership; a named bank list on the radio replacing the blind star
+  cycle, with the programmed bank name on the operating screen.
+- **Exclusions:** automatic connection without an operator action except for an
+  explicit `--device auto`, automatic selection of a flashing target, generated
+  plan expansion on the K1, and any relaxation of the flasher's gates.
+- **Acceptance criteria:** detection never opens a port and never resolves an
+  ambiguous choice; an unsupported baud cannot be entered; a generated plan
+  survives an image round trip unchanged; the radio names the bank in force and
+  clearing a filter is an explicit row rather than a side effect of cycling.
+- **Result:** the selection logic, the bank drafts, and the shell are host
+  tested; `NGUI-028`'s exclusion of automatic device selection is narrowed to
+  automatic *writes*, which still require an operator action.
+- **Image:** `AFIK-K1-2.3`, 74,952 bytes, SHA-256
+  `b419aa485def159c92de8ba9ad4d2e17db3f705ec712d96445832e378f39f987`, CRC-32
+  `e6893970`, Reset `0x080028c1`, `text=74012 data=936 bss=9824`.
+- **Remaining:** write `AFIK-K1-2.3` and confirm on the exact unit that Star
+  opens the bank list, that the names the studio wrote appear in it and on the
+  operating screen, and that Menu applies the filter and "all channels" clears
+  it.

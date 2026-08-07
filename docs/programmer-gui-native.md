@@ -14,14 +14,27 @@ with a `winit EventLoopError` before drawing anything.
 nix develop path:. -c \
   cargo run --package radio-programmer-gui-native --bin afik-studio -- --help
 cargo run --package radio-programmer-gui-native --bin afik-studio -- --sim
+cargo run --package radio-programmer-gui-native --bin afik-studio -- --device auto
 cargo run --package radio-programmer-gui-native --bin afik-studio -- \
   --project plan.afik
 ```
 
 Start-up connection is optional. `--sim` connects the deterministic simulator,
-`--device PATH --baud BAUD` connects an explicit serial port, and `--project
-FILE` loads a canonical AFIK configuration image. `--device` and `--baud` must
-be used together and cannot be combined with `--sim`.
+`--device auto` connects the one detected USB serial device, `--device PATH`
+connects an explicit port, and `--project FILE` loads a canonical AFIK
+configuration image. `--baud` defaults to 38400 and accepts only the supported
+rates. `--device` cannot be combined with `--sim`.
+
+## Device detection
+
+The editor detects USB serial devices at start-up and whenever Detect is
+pressed, using the same discovery the flasher CLI uses, and applies the same
+fail-closed rule: one candidate becomes the selection, several are listed for
+the operator to choose from, and none leaves the manually entered path in
+charge. A manual path always overrides detection, so an unusual port stays
+reachable. Detection opens nothing; connecting is a separate operator action,
+and no write ever picks a device for itself. The flash tab detects the same way
+but never preselects a flashing target, however few candidates there are.
 
 ## Model boundary
 
@@ -41,11 +54,21 @@ floating point.
 
 - **Channels:** identifier, name, receive and transmit frequency, receive and
   transmit tone, modulation, bandwidth, power, step, squelch, per-channel flags,
-  bank membership, and transmit class.
-- **Banks:** the sixteen addressable banks with names and scan participation.
+  bank membership, and transmit class. Rows collapse, can be duplicated, and
+  name the bank each membership checkbox joins.
+- **Banks:** the sixteen addressable bank identifiers. A row is either a named
+  bank, which groups the channel rows claiming membership of it and carries the
+  scan flag, or a compact generated plan, which stores a base frequency,
+  channel spacing, channel count, and transmit class the radio expands for
+  itself. A generated row reports the span it covers. The two kinds are separate
+  stored objects, so one identifier can hold one of each. A target which
+  advertises no compact plan encoding is named as such before a write is
+  attempted; the K1 receive image is one, so plans can be saved to a file but
+  not written to it.
 - **Radio:** squelch, backlight, scan resume mode and timings, dual watch,
   battery save, and the global behaviour flags.
-- **Device:** connect the simulator or a serial port, refresh the object
+- **Device:** detect and select a serial device, choose the baud, connect or
+  disconnect it, connect the simulator, refresh the object
   listing, read the project back from the radio, and write it. Writing compiles
   against the negotiated target capabilities and uses the programmer library's
   transactional write with read-back verification.
