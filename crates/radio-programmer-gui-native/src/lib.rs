@@ -10,6 +10,7 @@ pub mod app;
 pub mod device;
 pub mod flash;
 pub mod model;
+pub mod presets;
 pub mod session;
 
 /// Command-line help for the native editor binary.

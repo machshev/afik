@@ -21,6 +21,7 @@ use crate::{
         BankDraft, BankKind, ChannelDraft, ModelError, ProjectModel, ToneDraft, ToneKind,
         MAX_PROJECT_IMAGE_BYTES,
     },
+    presets::PRESETS,
     session::DeviceSession,
     DeviceSelector, Options,
 };
@@ -58,6 +59,7 @@ pub struct StudioApp {
     flash_progress: Option<(u16, u16)>,
     flash_status: String,
     flash_devices: Vec<DeviceCandidate>,
+    preset: usize,
 }
 
 impl Default for StudioApp {
@@ -79,6 +81,7 @@ impl Default for StudioApp {
             flash_progress: None,
             flash_status: String::new(),
             flash_devices: Vec::new(),
+            preset: 0,
         }
     }
 }
@@ -310,6 +313,25 @@ impl StudioApp {
         }
     }
 
+    /// Replaces the project with one preset default set.
+    ///
+    /// This discards the edited project, so the count it replaces is reported:
+    /// a preset is a starting point, not a merge.
+    fn apply_preset(&mut self) {
+        let Some(preset) = PRESETS.get(self.preset) else {
+            return;
+        };
+        let replaced = self.project.channels.len() + self.project.banks.len();
+        self.project = preset.build();
+        self.errors.clear();
+        let (channels, banks) = preset.size();
+        self.status = format!(
+            "Applied {}: {channels} channels in {banks} banks, replacing {replaced} rows. \
+             Confirm every frequency against your own band plan before use.",
+            preset.name()
+        );
+    }
+
     /// Classifies the radio on the selected port without writing to it.
     fn identify_radio(&mut self) {
         match flash::identify(&self.flash_request.device) {
@@ -404,6 +426,32 @@ impl StudioApp {
             }
             if ui.button("Save").clicked() {
                 self.save_project();
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Default set:");
+            let selected = PRESETS
+                .get(self.preset)
+                .map_or("none", |preset| preset.name());
+            ComboBox::from_id_salt("preset")
+                .selected_text(selected)
+                .width(220.0)
+                .show_ui(ui, |ui| {
+                    for (index, preset) in PRESETS.iter().enumerate() {
+                        ui.selectable_value(&mut self.preset, index, preset.name())
+                            .on_hover_text(preset.detail());
+                    }
+                });
+            // Applying replaces the project, so it is never automatic.
+            if ui
+                .button("Apply")
+                .on_hover_text("Replaces every channel and bank row")
+                .clicked()
+            {
+                self.apply_preset();
+            }
+            if let Some(preset) = PRESETS.get(self.preset) {
+                ui.label(preset.detail());
             }
         });
         ui.separator();
