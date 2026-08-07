@@ -10,8 +10,8 @@
 mod receive;
 
 pub use receive::{
-    cdcss_code_word, ctcss_control_word, AfOutput, ReceiveMetrics, ReceiveSetup, SquelchError,
-    SquelchThresholds, ToneStatus, RECEIVE_FILTER_PATH_BOUNDARY_HZ,
+    cdcss_code_word, ctcss_control_word, AfOutput, ReadbackRegister, ReceiveMetrics, ReceiveSetup,
+    SquelchError, SquelchThresholds, ToneStatus, RECEIVE_FILTER_PATH_BOUNDARY_HZ,
 };
 
 use core::fmt;

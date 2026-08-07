@@ -136,6 +136,24 @@ impl fmt::Display for SquelchError {
 }
 
 impl SquelchThresholds {
+    /// Returns the pinned source's exact squelch-off threshold set.
+    ///
+    /// `RADIO_ConfigureSquelchAndOutputPower` writes RSSI zero, noise 127, and
+    /// glitch 255 for both edges when the operator squelch level is zero. That
+    /// set deliberately has no hysteresis, so it cannot be built through
+    /// [`SquelchThresholds::new`]. Carrier squelch then always reads open and
+    /// audio gating must come from elsewhere.
+    pub const fn squelch_off() -> Self {
+        Self {
+            open_rssi: 0,
+            close_rssi: 0,
+            open_noise: 0x7F,
+            close_noise: 0x7F,
+            open_glitch: 0xFF,
+            close_glitch: 0xFF,
+        }
+    }
+
     /// Validates one complete calibration-supplied threshold set.
     ///
     /// RSSI thresholds rise with signal strength, so opening requires the
@@ -218,6 +236,43 @@ impl ReceiveMetrics {
     }
 }
 
+/// One register the driver may read back to verify a receive configuration.
+///
+/// Read-back exists so a bring-up can prove the bus carries a non-trivial
+/// value it wrote. It exposes no arbitrary address and performs no write.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReadbackRegister {
+    /// Filter bandwidth, `REG_43`.
+    FilterBandwidth,
+    /// Squelch noise thresholds, `REG_4F`.
+    SquelchNoise,
+    /// Squelch RSSI thresholds, `REG_78`.
+    SquelchRssi,
+    /// Audio output routing, `REG_47`.
+    AudioOutput,
+}
+
+impl ReadbackRegister {
+    /// Returns the seven-bit register address.
+    pub const fn address(self) -> u8 {
+        match self {
+            Self::FilterBandwidth => 0x43,
+            Self::SquelchNoise => 0x4F,
+            Self::SquelchRssi => 0x78,
+            Self::AudioOutput => 0x47,
+        }
+    }
+
+    const fn register(self) -> RegisterAddress {
+        match self {
+            Self::FilterBandwidth => REG_FILTER_BANDWIDTH,
+            Self::SquelchNoise => REG_SQUELCH_NOISE,
+            Self::SquelchRssi => REG_SQUELCH_RSSI,
+            Self::AudioOutput => REG_AF_OUTPUT,
+        }
+    }
+}
+
 /// Latched tone-squelch state decoded from the interrupt-status register.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ToneStatus {
@@ -286,6 +341,14 @@ impl<B: RegisterBus> Bk4819<B> {
             return Err(DriverError::InvalidState(self.state));
         }
         self.write_af_output(modulation, af)
+    }
+
+    /// Reads back one configured receive register while receiving.
+    pub fn read_back(&mut self, register: ReadbackRegister) -> Result<u16, DriverError<B::Error>> {
+        if !matches!(self.state, DriverState::Receiving { .. }) {
+            return Err(DriverError::InvalidState(self.state));
+        }
+        self.read(register.register())
     }
 
     /// Samples RSSI, glitch, noise, carrier squelch, and tone status.
@@ -522,6 +585,54 @@ mod tests {
             squelch: thresholds(),
             af: AfOutput::Demodulated,
         }
+    }
+
+    #[test]
+    fn the_squelch_off_set_matches_the_pinned_source() {
+        let mut radio = Bk4819::new(FakeBus::new(None));
+        radio.recover_to_standby().unwrap();
+        let mut setup = setup(Modulation::Fm, Tone::None, 145_500_000);
+        setup.squelch = SquelchThresholds::squelch_off();
+        radio.configure_receive(&setup).unwrap();
+        let operations = &radio.bus().operations;
+        assert!(operations.contains(&Operation::Write(REG_SQUELCH_RSSI, 0x0000)));
+        assert!(operations.contains(&Operation::Write(super::REG_SQUELCH_NOISE, 0x7F7F)));
+        assert!(operations.contains(&Operation::Write(super::REG_SQUELCH_CLOSE_GLITCH, 0xA0FF)));
+    }
+
+    #[test]
+    fn read_back_returns_configured_values_and_is_state_gated() {
+        use super::ReadbackRegister;
+
+        let mut radio = Bk4819::new(FakeBus::new(None));
+        assert_eq!(
+            radio.read_back(ReadbackRegister::FilterBandwidth),
+            Err(DriverError::InvalidState(DriverState::Unknown))
+        );
+        radio.recover_to_standby().unwrap();
+        radio
+            .configure_receive(&setup(Modulation::Fm, Tone::None, 145_500_000))
+            .unwrap();
+        assert_eq!(
+            radio.read_back(ReadbackRegister::FilterBandwidth).unwrap(),
+            0x3648
+        );
+        assert_eq!(
+            radio.read_back(ReadbackRegister::SquelchNoise).unwrap(),
+            0x2F2E
+        );
+        assert_eq!(
+            radio.read_back(ReadbackRegister::SquelchRssi).unwrap(),
+            0x4846
+        );
+        assert_eq!(
+            radio.read_back(ReadbackRegister::AudioOutput).unwrap(),
+            0x6140
+        );
+        assert_eq!(ReadbackRegister::FilterBandwidth.address(), 0x43);
+        assert_eq!(ReadbackRegister::SquelchNoise.address(), 0x4F);
+        assert_eq!(ReadbackRegister::SquelchRssi.address(), 0x78);
+        assert_eq!(ReadbackRegister::AudioOutput.address(), 0x47);
     }
 
     #[test]

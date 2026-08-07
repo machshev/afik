@@ -5,27 +5,96 @@
 #![deny(unsafe_code)]
 
 use core::panic::PanicInfo;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use cortex_m_rt::entry;
 use embassy_executor::Executor;
 use embassy_time::{Duration, Instant, Timer};
-use py32_hal::gpio::{Input, Level, Output, Pull, Speed};
+use py32_hal::gpio::{Flex, Input, Level, Output, Pull, Speed};
 use py32_hal::mode::Async;
 use py32_hal::peripherals::SPI1;
 use py32_hal::spi::SpiTx;
 use py32_hal::usart::Uart;
+use radio_bk4819::{AfOutput, Bk4819, ReadbackRegister, ReceiveSetup, SquelchThresholds};
+use radio_domain::{Bandwidth, Frequency, Modulation, Tone};
+use radio_firmware_k1::bk4819_bus::ThreeWireBus;
 use radio_firmware_k1::display::{
     render_key_witness, render_witness, COLUMN_OFFSET, FRAME_BYTES, PAGES, SETUP_COMMANDS, WIDTH,
 };
 use radio_firmware_k1::keypad::{decode, Debouncer, Edge, KeypadScan, Sample};
 use radio_firmware_k1::protocol::{
-    decode_request, encode_hello_response, Request, REQUEST_BODY_BYTES, RESPONSE_FRAME_BYTES,
+    decode_request, encode_hello_response, encode_rf_response, Request, RfObservation,
+    REQUEST_BODY_BYTES, RESPONSE_FRAME_BYTES, RF_RESPONSE_FRAME_BYTES, RF_STAGE_FAULTED,
+    RF_STAGE_READ_BACK, RF_STAGE_RECEIVING, RF_STAGE_STANDBY, RF_STAGE_UNSTARTED,
 };
+use radio_firmware_k1::py32f071_bk4819::Bk4819Pins;
 use radio_firmware_k1::py32f071_runtime::{compose, K1RuntimePeripherals};
 use radio_firmware_k1::py32f071_runtime_init::init;
 
 const _: [(); 8] = [(); PAGES];
 const K1_VECTOR_TABLE_ORIGIN: u32 = 0x0800_2800;
+
+/// Fixed receive frequency for this bounded bring-up witness.
+const WITNESS_RECEIVE_HZ: u32 = 145_500_000;
+/// Interval between receive metric samples.
+const RF_SAMPLE_MILLISECONDS: u64 = 250;
+
+/// Published receive observation, packed so tasks share it without a lock.
+///
+/// `identity` holds the read-back value and its address, `progress` holds the
+/// bring-up stage and sample counter, and `metrics` holds the last sample.
+static RF_IDENTITY: AtomicU32 = AtomicU32::new(0);
+static RF_PROGRESS: AtomicU32 = AtomicU32::new(0);
+static RF_METRICS: AtomicU32 = AtomicU32::new(0);
+
+fn publish_identity(address: u8, value: u16) {
+    RF_IDENTITY.store(
+        u32::from(address) << 16 | u32::from(value),
+        Ordering::Relaxed,
+    );
+}
+
+fn publish_stage(stage: u8, samples: u16) {
+    RF_PROGRESS.store(
+        u32::from(stage) << 16 | u32::from(samples),
+        Ordering::Relaxed,
+    );
+}
+
+fn publish_metrics(rssi_dbm_x2: i16, glitch: u8, noise: u8, squelch_open: bool) {
+    let rssi = u32::from(u16::from_le_bytes(rssi_dbm_x2.to_le_bytes()));
+    let flags = u32::from(u8::from(squelch_open));
+    RF_METRICS.store(
+        rssi << 16 | u32::from(glitch) << 8 | u32::from(noise) | flags << 24,
+        Ordering::Relaxed,
+    );
+}
+
+fn observation() -> RfObservation {
+    let identity = RF_IDENTITY.load(Ordering::Relaxed);
+    let progress = RF_PROGRESS.load(Ordering::Relaxed);
+    let metrics = RF_METRICS.load(Ordering::Relaxed);
+    let stage = u8::try_from(progress >> 16 & 0xFF).unwrap_or(RF_STAGE_UNSTARTED);
+    RfObservation {
+        identity_register: u16::try_from(identity & 0xFFFF).unwrap_or(0),
+        identity_address: u8::try_from(identity >> 16 & 0xFF).unwrap_or(0),
+        stage,
+        frequency_hz: if stage >= RF_STAGE_RECEIVING && stage != RF_STAGE_FAULTED {
+            WITNESS_RECEIVE_HZ
+        } else {
+            0
+        },
+        rssi_dbm_x2: i16::from_le_bytes(
+            u16::try_from(metrics >> 16 & 0xFFFF)
+                .unwrap_or(0)
+                .to_le_bytes(),
+        ),
+        glitch: u8::try_from(metrics >> 8 & 0xFF).unwrap_or(0),
+        noise: u8::try_from(metrics & 0xFF).unwrap_or(0),
+        squelch_open: metrics >> 24 & 1 == 1,
+        samples: u16::try_from(progress & 0xFFFF).unwrap_or(0),
+    }
+}
 
 #[entry]
 fn main() -> ! {
@@ -73,6 +142,14 @@ fn main() -> ! {
         ptt: Input::new(p.PB10, Pull::Up),
     };
 
+    // Receive-only BK4819 three-wire pins from the pinned K1 pinout. AFIK
+    // constructs no transmit authority, so this bus cannot key the radio.
+    let radio_pins = Bk4819Pins::new(
+        Output::new(p.PF9, Level::High, Speed::High),
+        Output::new(p.PB8, Level::High, Speed::High),
+        Flex::new(p.PB9),
+    );
+
     // SAFETY: `main` never returns, so this stack allocation lives for the
     // executor's complete lifetime and no other mutable reference is retained.
     #[allow(unsafe_code)]
@@ -84,8 +161,12 @@ fn main() -> ! {
         let Ok(ui) = ui_task(display, keypad) else {
             fail_closed();
         };
+        let Ok(radio) = rf_task(radio_pins) else {
+            fail_closed();
+        };
         spawner.spawn(serial);
         spawner.spawn(ui);
+        spawner.spawn(radio);
     });
 }
 
@@ -231,13 +312,84 @@ async fn serial_task(mut uart: Uart<'static, Async>) {
         if window[2..4] == 8_u16.to_le_bytes() && window[14..16] == [0xDC, 0xBA] {
             let mut body = [0_u8; REQUEST_BODY_BYTES];
             body.copy_from_slice(&window[4..14]);
-            if decode_request(&mut body) == Some(Request::Hello) {
-                let mut response = [0_u8; RESPONSE_FRAME_BYTES];
-                encode_hello_response(&mut response);
-                let _ = uart.write(&response).await;
+            match decode_request(&mut body) {
+                Some(Request::Hello) => {
+                    let mut response = [0_u8; RESPONSE_FRAME_BYTES];
+                    encode_hello_response(&mut response);
+                    let _ = uart.write(&response).await;
+                }
+                Some(Request::RfProbe) => {
+                    let mut response = [0_u8; RF_RESPONSE_FRAME_BYTES];
+                    encode_rf_response(&mut response, observation());
+                    let _ = uart.write(&response).await;
+                }
+                _ => {}
             }
         }
         used = 0;
+    }
+}
+
+/// Brings up the receiver and publishes bounded read-only observations.
+///
+/// The task writes only the documented receive path. It never constructs a
+/// transmit authorisation, so the transmit mode word is unreachable from here.
+#[embassy_executor::task]
+async fn rf_task(pins: Bk4819Pins) {
+    let mut radio = Bk4819::new(ThreeWireBus::new(pins));
+    if radio.recover_to_standby().is_err() {
+        publish_stage(RF_STAGE_FAULTED, 0);
+        return;
+    }
+    publish_stage(RF_STAGE_STANDBY, 0);
+
+    let Ok(frequency) = Frequency::from_hz(WITNESS_RECEIVE_HZ) else {
+        publish_stage(RF_STAGE_FAULTED, 0);
+        return;
+    };
+    let setup = ReceiveSetup {
+        frequency,
+        modulation: Modulation::Fm,
+        bandwidth: Bandwidth::Narrow,
+        tone: Tone::None,
+        // The K1 keeps its squelch calibration in external flash which AFIK
+        // does not yet read, so this witness runs with the pinned source's
+        // squelch-off set and reports raw metrics instead of gating audio.
+        squelch: SquelchThresholds::squelch_off(),
+        af: AfOutput::Mute,
+    };
+    if radio.configure_receive(&setup).is_err() {
+        publish_stage(RF_STAGE_FAULTED, 0);
+        return;
+    }
+    publish_stage(RF_STAGE_RECEIVING, 0);
+
+    match radio.read_back(ReadbackRegister::FilterBandwidth) {
+        Ok(value) => {
+            publish_identity(ReadbackRegister::FilterBandwidth.address(), value);
+            publish_stage(RF_STAGE_READ_BACK.max(RF_STAGE_RECEIVING), 0);
+        }
+        Err(_) => {
+            publish_stage(RF_STAGE_FAULTED, 0);
+            return;
+        }
+    }
+
+    let mut samples = 0_u16;
+    loop {
+        Timer::after_millis(RF_SAMPLE_MILLISECONDS).await;
+        let Ok(metrics) = radio.receive_metrics(Tone::None) else {
+            publish_stage(RF_STAGE_FAULTED, samples);
+            return;
+        };
+        samples = samples.saturating_add(1);
+        publish_metrics(
+            metrics.rssi_dbm_x2,
+            metrics.glitch,
+            metrics.noise,
+            metrics.squelch_open,
+        );
+        publish_stage(RF_STAGE_RECEIVING, samples);
     }
 }
 

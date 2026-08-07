@@ -116,7 +116,9 @@ extern "C" fn reset() -> ! {
                 encode_clock_control_response(&mut response);
                 uart_send(&response);
             }
-            Some(Request::KeypadMatrix) | None => {}
+            // The serial-only diagnostic image binds no BK4819 bus and no
+            // keypad, so it answers neither request.
+            Some(Request::KeypadMatrix | Request::RfProbe) | None => {}
         }
     }
 }

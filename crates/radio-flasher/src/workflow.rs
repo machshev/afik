@@ -16,6 +16,8 @@ const COMMAND_CLOCK_REGISTER_REQUESTS: [u16; 4] = [0x7F14, 0x7F16, 0x7F18, 0x7F1
 const COMMAND_CLOCK_REGISTER_RESPONSES: [u16; 4] = [0x7F15, 0x7F17, 0x7F19, 0x7F1B];
 const COMMAND_CLOCK_CONTROL_REQUEST: u16 = 0x7F1C;
 const COMMAND_CLOCK_CONTROL_RESPONSE: u16 = 0x7F1D;
+const COMMAND_RF_REQUEST: u16 = 0x7F1E;
+const COMMAND_RF_RESPONSE: u16 = 0x7F1F;
 const CLOCK_CONTROL_MARKER: u32 = 0x4B31_434C;
 const COMMAND_READ_EEPROM_REQUEST: u16 = 0x051B;
 const COMMAND_READ_EEPROM_RESPONSE: u16 = 0x051C;
@@ -254,6 +256,67 @@ impl KeypadMatrixReport {
     }
 }
 
+/// Raw read-only K1 receive observation returned by the AFIK application.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RfReport {
+    identity_register: u16,
+    identity_address: u8,
+    stage: u8,
+    frequency_hz: u32,
+    rssi_dbm_x2: i16,
+    glitch: u8,
+    noise: u8,
+    squelch_open: bool,
+    samples: u16,
+}
+
+impl RfReport {
+    /// Returns the value read back from the receiver after configuration.
+    pub const fn identity_register(&self) -> u16 {
+        self.identity_register
+    }
+
+    /// Returns the register address the read-back value came from.
+    pub const fn identity_address(&self) -> u8 {
+        self.identity_address
+    }
+
+    /// Returns the bring-up stage the target reached.
+    pub const fn stage(&self) -> u8 {
+        self.stage
+    }
+
+    /// Returns the tuned receive frequency in hertz, or zero before tuning.
+    pub const fn frequency_hz(&self) -> u32 {
+        self.frequency_hz
+    }
+
+    /// Returns approximate RSSI multiplied by two, in half-dBm steps.
+    pub const fn rssi_dbm_x2(&self) -> i16 {
+        self.rssi_dbm_x2
+    }
+
+    /// Returns the raw glitch indicator.
+    pub const fn glitch(&self) -> u8 {
+        self.glitch
+    }
+
+    /// Returns the raw excess-noise indicator.
+    pub const fn noise(&self) -> u8 {
+        self.noise
+    }
+
+    /// Returns whether the carrier squelch link reads open.
+    pub const fn squelch_open(&self) -> bool {
+        self.squelch_open
+    }
+
+    /// Returns how many metric samples the target has completed.
+    pub const fn samples(&self) -> u16 {
+        self.samples
+    }
+}
+
 /// Raw read-only K1 inherited-clock observation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ClockSnapshotReport {
@@ -409,6 +472,12 @@ pub fn probe_keypad_matrix<T: Read + Write>(
 ) -> Result<KeypadMatrixReport, FlashError> {
     send_packet(transport, &session_request(COMMAND_KEYPAD_REQUEST))?;
     parse_keypad_response(&receive_packet(transport)?)
+}
+
+/// Requests one raw, read-only BK4819 receive observation.
+pub fn probe_rf<T: Read + Write>(transport: &mut T) -> Result<RfReport, FlashError> {
+    send_packet(transport, &session_request(COMMAND_RF_REQUEST))?;
+    parse_rf_response(&receive_packet(transport)?)
 }
 
 /// Requests one raw, read-only inherited RCC clock observation.
@@ -581,6 +650,35 @@ fn session_request(command: u16) -> [u8; 8] {
     payload[2..4].copy_from_slice(&4_u16.to_le_bytes());
     payload[4..8].copy_from_slice(&SESSION_WORD.to_le_bytes());
     payload
+}
+
+fn parse_rf_response(packet: &Packet) -> Result<RfReport, FlashError> {
+    let payload = packet.as_slice();
+    require_packet(
+        payload,
+        COMMAND_RF_RESPONSE,
+        16,
+        20,
+        "AFIK K1 raw receive observation",
+    )?;
+    if payload[16] > 1 || payload[17] != 0 {
+        return Err(FlashError::UnexpectedPacket {
+            expected: "bounded AFIK K1 raw receive fields",
+            command: Some(COMMAND_RF_RESPONSE),
+            length: payload.len(),
+        });
+    }
+    Ok(RfReport {
+        identity_register: u16::from_le_bytes([payload[4], payload[5]]),
+        identity_address: payload[6],
+        stage: payload[7],
+        frequency_hz: u32::from_le_bytes([payload[8], payload[9], payload[10], payload[11]]),
+        rssi_dbm_x2: i16::from_le_bytes([payload[12], payload[13]]),
+        glitch: payload[14],
+        noise: payload[15],
+        squelch_open: payload[16] == 1,
+        samples: u16::from_le_bytes([payload[18], payload[19]]),
+    })
 }
 
 fn parse_keypad_response(packet: &Packet) -> Result<KeypadMatrixReport, FlashError> {

@@ -20,7 +20,7 @@ pub use image::{
 pub use workflow::{
     backup_eeprom, detect_bootloader, flash_application, probe_bootloader_v2, probe_clock_control,
     probe_clock_register, probe_clock_registers, probe_clock_snapshot, probe_keypad_matrix,
-    probe_normal_firmware, BootloaderFamily, BootloaderInfo, ClockSnapshotReport, FirmwareVersion,
-    FlashError, FlashPrerequisites, FlashPurpose, FlashReport, KeypadMatrixReport,
-    NormalFirmwareInfo, QUALIFIED_TARGET_CONFIRMATION, RECOVERY_REHEARSED_CONFIRMATION,
+    probe_normal_firmware, probe_rf, BootloaderFamily, BootloaderInfo, ClockSnapshotReport,
+    FirmwareVersion, FlashError, FlashPrerequisites, FlashPurpose, FlashReport, KeypadMatrixReport,
+    NormalFirmwareInfo, RfReport, QUALIFIED_TARGET_CONFIRMATION, RECOVERY_REHEARSED_CONFIRMATION,
 };

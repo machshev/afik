@@ -8,7 +8,7 @@ use std::{
 use radio_flasher::{
     backup_eeprom, crc32, detect_bootloader, flash_application, probe_clock_control,
     probe_clock_register, probe_clock_snapshot, probe_keypad_matrix, probe_normal_firmware,
-    ApplicationImage, EepromBackup, FlashPrerequisites, FlashPurpose,
+    probe_rf, ApplicationImage, EepromBackup, FlashPrerequisites, FlashPurpose,
 };
 use radio_programmer_serial::{discover_usb_serial_devices, LinuxSerialTransport};
 
@@ -29,6 +29,7 @@ Usage:\n\
   afik-flasher [--device PATH|auto] identify\n\
   afik-flasher [--device PATH|auto] probe-normal\n\
   afik-flasher [--device PATH|auto] probe-keypad\n\
+  afik-flasher [--device PATH|auto] probe-rf\n\
   afik-flasher [--device PATH|auto] probe-clock\n\
   afik-flasher [--device PATH|auto] probe-clock-register CR|ICSCR|CFGR|PLLCFGR\n\
   afik-flasher [--device PATH|auto] probe-clock-control\n\
@@ -49,6 +50,9 @@ target phrase, and confirmation that recovery was rehearsed on this unit.\n\
 The read-only probe-normal command sends one normal-mode hello and is the\n\
 serial witness command for an AFIK application. The read-only probe-keypad\n\
 command prints four raw active-low row masks without interpreting them as keys.\n\
+The read-only probe-rf command prints the raw receive observation: the\n\
+read-back register, the bring-up stage, and the latest RSSI, glitch, noise,\n\
+and squelch sample. It cannot request a transmission.\n\
 The read-only probe-clock command prints the inherited RCC clock registers and\n\
 the target's fail-closed contract result without changing the clock tree.\n\
 The diagnostic probe-clock-register command reads exactly one named register.\n\
@@ -92,6 +96,7 @@ enum Command {
     Identify,
     ProbeNormal,
     ProbeKeypad,
+    ProbeRf,
     ProbeClock,
     ProbeClockRegister(usize),
     ProbeClockControl,
@@ -156,7 +161,7 @@ fn parse(arguments: &[String]) -> Result<Parsed, String> {
         (DeviceSelector::Auto, 0)
     };
     let command = arguments.get(command_index).ok_or_else(|| {
-        "a command is required: identify, probe-normal, probe-keypad, probe-clock, probe-clock-register, probe-clock-control, backup-eeprom, flash-recovery, or flash-afik-k1"
+        "a command is required: identify, probe-normal, probe-keypad, probe-rf, probe-clock, probe-clock-register, probe-clock-control, backup-eeprom, flash-recovery, or flash-afik-k1"
             .to_owned()
     })?;
     let tail = &arguments[command_index + 1..];
@@ -172,6 +177,12 @@ fn parse(arguments: &[String]) -> Result<Parsed, String> {
                 return Err("probe-normal does not accept arguments".into());
             }
             Command::ProbeNormal
+        }
+        "probe-rf" => {
+            if !tail.is_empty() {
+                return Err("probe-rf does not accept arguments".into());
+            }
+            Command::ProbeRf
         }
         "probe-keypad" => {
             if !tail.is_empty() {
@@ -328,6 +339,7 @@ fn execute<W: Write>(parsed: Parsed, stdout: &mut W) -> Result<(), CliError> {
         Command::Identify => identify(&device, stdout),
         Command::ProbeNormal => probe_normal(&device, stdout),
         Command::ProbeKeypad => probe_keypad(&device, stdout),
+        Command::ProbeRf => probe_rf_observation(&device, stdout),
         Command::ProbeClock => probe_clock(&device, stdout),
         Command::ProbeClockRegister(index) => probe_clock_register_named(&device, index, stdout),
         Command::ProbeClockControl => probe_clock_control_marker(&device, stdout),
@@ -381,6 +393,28 @@ fn probe_normal<W: Write>(device: &Path, stdout: &mut W) -> Result<(), CliError>
     writeln!(stdout, "baud={K5_BAUD}").map_err(CliError::operation)?;
     writeln!(stdout, "protocol=normal-firmware-hello").map_err(CliError::operation)?;
     writeln!(stdout, "firmware={}", info.version()).map_err(CliError::operation)
+}
+
+fn probe_rf_observation<W: Write>(device: &Path, stdout: &mut W) -> Result<(), CliError> {
+    let mut serial = open_serial(device)?;
+    let report = probe_rf(&mut serial).map_err(CliError::operation)?;
+    writeln!(stdout, "device={}", device.display()).map_err(CliError::operation)?;
+    writeln!(stdout, "baud={K5_BAUD}").map_err(CliError::operation)?;
+    writeln!(stdout, "protocol=afik-k1-receive-raw").map_err(CliError::operation)?;
+    writeln!(stdout, "stage={}", report.stage()).map_err(CliError::operation)?;
+    writeln!(
+        stdout,
+        "readback_register={:02x}={:04x}",
+        report.identity_address(),
+        report.identity_register()
+    )
+    .map_err(CliError::operation)?;
+    writeln!(stdout, "frequency_hz={}", report.frequency_hz()).map_err(CliError::operation)?;
+    writeln!(stdout, "samples={}", report.samples()).map_err(CliError::operation)?;
+    writeln!(stdout, "rssi_dbm_x2={}", report.rssi_dbm_x2()).map_err(CliError::operation)?;
+    writeln!(stdout, "glitch={}", report.glitch()).map_err(CliError::operation)?;
+    writeln!(stdout, "noise={}", report.noise()).map_err(CliError::operation)?;
+    writeln!(stdout, "squelch_open={}", report.squelch_open()).map_err(CliError::operation)
 }
 
 fn probe_keypad<W: Write>(device: &Path, stdout: &mut W) -> Result<(), CliError> {

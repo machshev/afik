@@ -12,6 +12,8 @@ pub const KEYPAD_RESPONSE_FRAME_BYTES: usize = 24;
 pub const CLOCK_RESPONSE_FRAME_BYTES: usize = 32;
 /// Complete encoded response size for one 12-byte RCC register payload.
 pub const CLOCK_REGISTER_RESPONSE_FRAME_BYTES: usize = 20;
+/// Complete encoded response size for the 20-byte receive diagnostic payload.
+pub const RF_RESPONSE_FRAME_BYTES: usize = 28;
 
 const COMMAND_HELLO_REQUEST: u16 = 0x0514;
 const COMMAND_HELLO_RESPONSE: u16 = 0x0515;
@@ -23,6 +25,8 @@ const COMMAND_CLOCK_REGISTER_REQUESTS: [u16; 4] = [0x7F14, 0x7F16, 0x7F18, 0x7F1
 const COMMAND_CLOCK_REGISTER_RESPONSES: [u16; 4] = [0x7F15, 0x7F17, 0x7F19, 0x7F1B];
 const COMMAND_CLOCK_CONTROL_REQUEST: u16 = 0x7F1C;
 const COMMAND_CLOCK_CONTROL_RESPONSE: u16 = 0x7F1D;
+const COMMAND_RF_REQUEST: u16 = 0x7F1E;
+const COMMAND_RF_RESPONSE: u16 = 0x7F1F;
 /// Fixed no-MMIO marker returned by the clock-path control request.
 pub const CLOCK_CONTROL_MARKER: u32 = 0x4B31_434C;
 const SESSION_WORD: u32 = 0x6457_396A;
@@ -34,7 +38,7 @@ const XOR_KEY: [u8; 16] = [
 ];
 
 /// Printable identity returned by the first AFIK K1 application.
-pub const APPLICATION_VERSION: &[u8] = b"AFIK-K1-0.3";
+pub const APPLICATION_VERSION: &[u8] = b"AFIK-K1-0.4";
 
 /// One accepted read-only normal-mode request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -49,7 +53,46 @@ pub enum Request {
     ClockRegister(u8),
     /// No-MMIO control for the clock diagnostic command/response path.
     ClockControl,
+    /// Read-only BK4819 receive observation.
+    RfProbe,
 }
+
+/// Bounded read-only receive observation returned by [`Request::RfProbe`].
+///
+/// Every field is raw. The image never reports a value it did not read back,
+/// and no field can request or imply a transmit operation.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RfObservation {
+    /// Register value read back from the chip after standby was established.
+    pub identity_register: u16,
+    /// Register address the identity value was read from.
+    pub identity_address: u8,
+    /// Bring-up stage reached, from [`RF_STAGE_UNSTARTED`] upwards.
+    pub stage: u8,
+    /// Frequency the receiver was tuned to, in hertz; zero before tuning.
+    pub frequency_hz: u32,
+    /// Approximate RSSI multiplied by two, preserving the 0.5 dB step.
+    pub rssi_dbm_x2: i16,
+    /// Raw glitch indicator.
+    pub glitch: u8,
+    /// Raw excess-noise indicator.
+    pub noise: u8,
+    /// Whether the carrier squelch link reads open.
+    pub squelch_open: bool,
+    /// Number of completed metric samples since boot.
+    pub samples: u16,
+}
+
+/// No BK4819 operation has been attempted yet.
+pub const RF_STAGE_UNSTARTED: u8 = 0;
+/// The neutralising standby write completed.
+pub const RF_STAGE_STANDBY: u8 = 1;
+/// A register read-back completed after standby.
+pub const RF_STAGE_READ_BACK: u8 = 2;
+/// The complete receive configuration completed.
+pub const RF_STAGE_RECEIVING: u8 = 3;
+/// A bus or state error was latched; the observation is not trustworthy.
+pub const RF_STAGE_FAULTED: u8 = 0xFF;
 
 /// Decodes one bounded normal-mode request body.
 pub fn decode_request(encoded_body: &mut [u8; REQUEST_BODY_BYTES]) -> Option<Request> {
@@ -71,6 +114,7 @@ pub fn decode_request(encoded_body: &mut [u8; REQUEST_BODY_BYTES]) -> Option<Req
         command if command == COMMAND_CLOCK_REGISTER_REQUESTS[2] => Some(Request::ClockRegister(2)),
         command if command == COMMAND_CLOCK_REGISTER_REQUESTS[3] => Some(Request::ClockRegister(3)),
         COMMAND_CLOCK_CONTROL_REQUEST => Some(Request::ClockControl),
+        COMMAND_RF_REQUEST => Some(Request::RfProbe),
         _ => None,
     }
 }
@@ -132,6 +176,28 @@ pub fn encode_clock_response(
     frame[28..30].copy_from_slice(&RESPONSE_TRAILER.to_le_bytes());
     xor(&mut frame[4..30]);
     frame[30..32].copy_from_slice(&[0xDC, 0xBA]);
+}
+
+/// Encodes one raw, read-only BK4819 receive observation.
+pub fn encode_rf_response(frame: &mut [u8; RF_RESPONSE_FRAME_BYTES], observation: RfObservation) {
+    frame.fill(0);
+    frame[0..2].copy_from_slice(&[0xAB, 0xCD]);
+    frame[2..4].copy_from_slice(&20_u16.to_le_bytes());
+    let payload = &mut frame[4..24];
+    payload[0..2].copy_from_slice(&COMMAND_RF_RESPONSE.to_le_bytes());
+    payload[2..4].copy_from_slice(&16_u16.to_le_bytes());
+    payload[4..6].copy_from_slice(&observation.identity_register.to_le_bytes());
+    payload[6] = observation.identity_address;
+    payload[7] = observation.stage;
+    payload[8..12].copy_from_slice(&observation.frequency_hz.to_le_bytes());
+    payload[12..14].copy_from_slice(&observation.rssi_dbm_x2.to_le_bytes());
+    payload[14] = observation.glitch;
+    payload[15] = observation.noise;
+    payload[16] = u8::from(observation.squelch_open);
+    payload[18..20].copy_from_slice(&observation.samples.to_le_bytes());
+    frame[24..26].copy_from_slice(&RESPONSE_TRAILER.to_le_bytes());
+    xor(&mut frame[4..26]);
+    frame[26..28].copy_from_slice(&[0xDC, 0xBA]);
 }
 
 /// Decodes and validates one bounded normal-mode hello request body.
@@ -208,9 +274,86 @@ fn xor(bytes: &mut [u8]) {
 mod tests {
     use super::{
         decode_request, encode_clock_control_response, encode_clock_register_response,
-        encode_clock_response, encode_hello_response, encode_keypad_response,
-        is_valid_hello_request, Request, APPLICATION_VERSION, CLOCK_CONTROL_MARKER,
+        encode_clock_response, encode_hello_response, encode_keypad_response, encode_rf_response,
+        is_valid_hello_request, Request, RfObservation, APPLICATION_VERSION, CLOCK_CONTROL_MARKER,
+        RF_RESPONSE_FRAME_BYTES, RF_STAGE_RECEIVING,
     };
+
+    fn request_body(command: u16) -> [u8; 10] {
+        let mut payload = [0_u8; 8];
+        payload[0..2].copy_from_slice(&command.to_le_bytes());
+        payload[2..4].copy_from_slice(&4_u16.to_le_bytes());
+        payload[4..8].copy_from_slice(&0x6457_396A_u32.to_le_bytes());
+        let mut crc = 0_u16;
+        for byte in payload {
+            crc ^= u16::from(byte) << 8;
+            for _ in 0..8 {
+                crc = if crc & 0x8000 == 0 {
+                    crc << 1
+                } else {
+                    (crc << 1) ^ 0x1021
+                };
+            }
+        }
+        let key = [
+            0x16, 0x6C, 0x14, 0xE6, 0x2E, 0x91, 0x0D, 0x40, 0x21, 0x35, 0xD5, 0x40, 0x13, 0x03,
+            0xE9, 0x80,
+        ];
+        let mut encoded = [0_u8; 10];
+        encoded[..8].copy_from_slice(&payload);
+        encoded[8..].copy_from_slice(&crc.to_le_bytes());
+        for (index, byte) in encoded.iter_mut().enumerate() {
+            *byte ^= key[index];
+        }
+        encoded
+    }
+
+    #[test]
+    fn the_receive_request_is_recognised_and_its_response_is_wire_exact() {
+        assert_eq!(
+            decode_request(&mut request_body(0x7F1E)),
+            Some(Request::RfProbe)
+        );
+        assert_eq!(decode_request(&mut request_body(0x7F20)), None);
+
+        let mut frame = [0_u8; RF_RESPONSE_FRAME_BYTES];
+        encode_rf_response(
+            &mut frame,
+            RfObservation {
+                identity_register: 0xBEEF,
+                identity_address: 0x67,
+                stage: RF_STAGE_RECEIVING,
+                frequency_hz: 145_500_000,
+                rssi_dbm_x2: -220,
+                glitch: 0x12,
+                noise: 0x34,
+                squelch_open: true,
+                samples: 7,
+            },
+        );
+        assert_eq!(&frame[..2], &[0xAB, 0xCD]);
+        assert_eq!(&frame[2..4], &[20, 0]);
+        assert_eq!(&frame[26..], &[0xDC, 0xBA]);
+
+        let key = [
+            0x16, 0x6C, 0x14, 0xE6, 0x2E, 0x91, 0x0D, 0x40, 0x21, 0x35, 0xD5, 0x40, 0x13, 0x03,
+            0xE9, 0x80,
+        ];
+        for (index, byte) in frame[4..26].iter_mut().enumerate() {
+            *byte ^= key[index % key.len()];
+        }
+        assert_eq!(&frame[4..6], &[0x1F, 0x7F]);
+        assert_eq!(&frame[6..8], &[16, 0]);
+        assert_eq!(&frame[8..10], &0xBEEF_u16.to_le_bytes());
+        assert_eq!(frame[10], 0x67);
+        assert_eq!(frame[11], RF_STAGE_RECEIVING);
+        assert_eq!(&frame[12..16], &145_500_000_u32.to_le_bytes());
+        assert_eq!(&frame[16..18], &(-220_i16).to_le_bytes());
+        assert_eq!(frame[18], 0x12);
+        assert_eq!(frame[19], 0x34);
+        assert_eq!(frame[20], 1);
+        assert_eq!(&frame[22..24], &7_u16.to_le_bytes());
+    }
 
     #[test]
     fn hello_request_validation_accepts_only_the_fixed_session() {

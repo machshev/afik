@@ -16,6 +16,8 @@ pub mod display;
 pub mod embassy_runtime;
 pub mod keypad;
 pub mod protocol;
+#[cfg(feature = "py32f071-bk4819")]
+pub mod py32f071_bk4819;
 #[cfg(feature = "py32f071-clock-handoff")]
 pub mod py32f071_clock_handoff;
 #[cfg(feature = "py32f071-clock-publication")]
