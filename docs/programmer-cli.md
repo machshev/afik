@@ -12,9 +12,9 @@ The commands are:
 
 - `info` negotiates and prints every device capability.
 - `list` prints the stable generation-tagged object listing.
-- `compile OUTPUT [--force] --bank SPEC...` negotiates capabilities, compiles
+- `compile OUTPUT [--force] PROJECT...` negotiates capabilities, compiles
   without device mutation, and writes one canonical image.
-- `write --bank SPEC...` compiles, transactionally writes, reads the complete
+- `write PROJECT...` compiles, transactionally writes, reads the complete
   configuration back, and requires an exact generation/object match.
 - `backup OUTPUT [--force]` reads one stable snapshot, validates and reports it
   in the programmer library, and writes its canonical image.
@@ -22,10 +22,20 @@ The commands are:
   negotiated capabilities, transactionally writes it, and requires exact
   read-back.
 
-A generated-bank specification is
-`ID:NAME:BASE_HZ:SPACING_HZ:COUNT:TX_CLASS`. All integer and domain constructors
-are checked. Duplicate IDs remain a compiler error, so the CLI does not
-reimplement stable-object identity rules.
+Project objects are supplied as specifications:
+
+- `--bank ID:NAME:BASE_HZ:SPACING_HZ:COUNT:TX_CLASS` is a compact generated bank.
+- `--channel ID:NAME:RECEIVE_HZ:BANK:TX_CLASS` is one explicit receive channel.
+  `BANK` is a bank identifier, or `-` for a channel in no bank. The transmit
+  frequency mirrors receive; modulation, bandwidth, power, step, squelch, and
+  flags take the conservative defaults the compiler validates. A target which
+  activates explicit channel records rather than a compact plan is therefore
+  programmable without the editor.
+- `--channel-bank ID:NAME:scan|noscan` names a bank. A channel which references
+  an undefined bank remains a compiler error.
+
+All integer and domain constructors are checked. Duplicate IDs remain a compiler
+error, so the CLI does not reimplement stable-object identity rules.
 
 ## Files and process behavior
 

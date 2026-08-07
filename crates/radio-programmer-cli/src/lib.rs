@@ -2,8 +2,14 @@
 
 #![forbid(unsafe_code)]
 
-use radio_channel_plan::{BankName, GeneratedBank};
-use radio_domain::{BankId, Frequency, FrequencyStep, TxClass};
+use radio_channel_plan::{
+    BankFlags, BankMask, BankName, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
+    ChannelRecord, GeneratedBank,
+};
+use radio_domain::{
+    Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, SquelchLevel,
+    Tone, TxClass,
+};
 use radio_programmer::{Programmer, ProtocolTransport, RadioProject};
 use radio_programmer_serial::{is_supported_baud, LinuxSerialTransport};
 use radio_sim::{SimDevice, SimTransport};
@@ -31,14 +37,17 @@ pub const HELP: &str = "AFIK programmer CLI\n\
 Usage:\n\
   afik-programmer (--sim | --device PATH --baud BAUD) info\n\
   afik-programmer (--sim | --device PATH --baud BAUD) list\n\
-  afik-programmer (--sim | --device PATH --baud BAUD) compile OUTPUT [--force] --bank SPEC...\n\
-  afik-programmer (--sim | --device PATH --baud BAUD) write --bank SPEC...\n\
+  afik-programmer (--sim | --device PATH --baud BAUD) compile OUTPUT [--force] PROJECT...\n\
+  afik-programmer (--sim | --device PATH --baud BAUD) write PROJECT...\n\
   afik-programmer (--sim | --device PATH --baud BAUD) backup OUTPUT [--force]\n\
   afik-programmer (--sim | --device PATH --baud BAUD) restore INPUT\n\
   afik-programmer --help\n\
   afik-programmer --version\n\
 \n\
+PROJECT is one or more of --bank SPEC and --channel SPEC.\n\
 Bank SPEC: ID:NAME:BASE_HZ:SPACING_HZ:COUNT:TX_CLASS\n\
+Channel SPEC: ID:NAME:RECEIVE_HZ:BANK:TX_CLASS, where BANK is - for none\n\
+Channel bank SPEC: ID:NAME:scan|noscan\n\
 TX_CLASS: never, licence-free, amateur, marine, aeronautical, business, experimental\n\
 Supported BAUD: 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200\n\
 \n\
@@ -315,7 +324,7 @@ fn parse_force_and_banks(
 ) -> Result<(bool, RadioProject), CliError> {
     let mut force = false;
     let mut project = RadioProject::new();
-    let mut bank_count = 0_usize;
+    let mut object_count = 0_usize;
     let mut offset = 0;
     while offset < arguments.len() {
         match arguments[offset].as_str() {
@@ -326,7 +335,19 @@ fn parse_force_and_banks(
             "--bank" => {
                 let spec = require_value(arguments, offset, "--bank")?;
                 project.add_generated_bank(parse_bank(spec)?);
-                bank_count += 1;
+                object_count += 1;
+                offset += 2;
+            }
+            "--channel" => {
+                let spec = require_value(arguments, offset, "--channel")?;
+                project.add_channel(parse_channel(spec)?);
+                object_count += 1;
+                offset += 2;
+            }
+            "--channel-bank" => {
+                let spec = require_value(arguments, offset, "--channel-bank")?;
+                project.add_bank(parse_channel_bank(spec)?);
+                object_count += 1;
                 offset += 2;
             }
             argument => {
@@ -336,12 +357,67 @@ fn parse_force_and_banks(
             }
         }
     }
-    if bank_count == 0 {
+    if object_count == 0 {
         return Err(CliError::Usage(
-            "compile and write require at least one --bank SPEC".into(),
+            "compile and write require at least one --bank or --channel SPEC".into(),
         ));
     }
     Ok((force, project))
+}
+
+/// Parses one explicit receive channel.
+///
+/// A target which activates explicit channel records rather than a compact plan
+/// needs a way to be programmed without the editor. Only the fields a
+/// receive-only channel needs are exposed; everything else takes the same
+/// conservative default the compiler already validates.
+fn parse_channel(spec: &str) -> Result<ChannelRecord, CliError> {
+    let fields = spec.split(':').collect::<Vec<_>>();
+    if fields.len() != 5 {
+        return Err(CliError::Usage(format!(
+            "channel spec requires five colon-separated fields: {spec}"
+        )));
+    }
+    let id = parse_integer::<u16>(fields[0], "channel ID")?;
+    if id == 0 {
+        return Err(CliError::Usage("channel ID must be non-zero".into()));
+    }
+    let name = ChannelName::new(fields[1])
+        .map_err(|error| CliError::Usage(format!("invalid channel name: {error}")))?;
+    let receive = Frequency::from_hz(parse_integer::<u32>(fields[2], "receive frequency")?)
+        .map_err(|error| CliError::Usage(format!("invalid receive frequency: {error}")))?;
+    // A single dash means the channel belongs to no bank, which needs no bank
+    // object to be defined alongside it.
+    let banks = if fields[3] == "-" {
+        BankMask::default()
+    } else {
+        let bank = parse_integer::<u16>(fields[3], "bank")?;
+        BankMask::default()
+            .with(BankId::new(bank), true)
+            .map_err(|error| CliError::Usage(format!("invalid bank: {error}")))?
+    };
+    let class = parse_class(fields[4])?;
+    ChannelRecord::new(ChannelDefinition {
+        id: ChannelId::new(id),
+        name,
+        // Receive-only: the transmit frequency mirrors receive and the class
+        // decides whether transmission is permitted at all.
+        receive,
+        transmit: receive,
+        rx_tone: Tone::None,
+        tx_tone: Tone::None,
+        modulation: Modulation::Fm,
+        bandwidth: Bandwidth::Narrow,
+        power: PowerLevel::Low,
+        step: FrequencyStep::from_hz(12_500)
+            .map_err(|error| CliError::Usage(format!("invalid step: {error}")))?,
+        squelch: SquelchLevel::new(3)
+            .map_err(|error| CliError::Usage(format!("invalid squelch: {error}")))?,
+        flags: ChannelFlags::default(),
+        banks,
+        tx_class: class,
+    })
+    .map_err(|error| CliError::Usage(format!("invalid channel: {error}")))
 }
 
 fn parse_bank(spec: &str) -> Result<GeneratedBank, CliError> {
@@ -362,6 +438,30 @@ fn parse_bank(spec: &str) -> Result<GeneratedBank, CliError> {
     let class = parse_class(fields[5])?;
     GeneratedBank::linear_simplex(BankId::new(id), name, base, spacing, count, class)
         .map_err(|error| CliError::Usage(format!("invalid generated bank: {error}")))
+}
+
+/// Parses one named channel bank.
+fn parse_channel_bank(spec: &str) -> Result<ChannelBank, CliError> {
+    let fields = spec.split(':').collect::<Vec<_>>();
+    if fields.len() != 3 {
+        return Err(CliError::Usage(format!(
+            "channel-bank spec requires three colon-separated fields: {spec}"
+        )));
+    }
+    let id = parse_integer::<u16>(fields[0], "bank ID")?;
+    let name = BankName::new(fields[1])
+        .map_err(|error| CliError::Usage(format!("invalid bank name: {error}")))?;
+    let flags = match fields[2] {
+        "scan" => BankFlags::default().with(BankFlags::SCAN_ENABLED, true),
+        "noscan" => BankFlags::default(),
+        other => {
+            return Err(CliError::Usage(format!(
+                "bank scan field must be scan or noscan: {other}"
+            )));
+        }
+    };
+    ChannelBank::new(BankId::new(id), name, flags)
+        .map_err(|error| CliError::Usage(format!("invalid channel bank: {error}")))
 }
 
 fn parse_integer<T>(value: &str, label: &str) -> Result<T, CliError>
@@ -686,6 +786,49 @@ mod tests {
             let outcome = invoke(values);
             assert_eq!(outcome.exit_code, EXIT_USAGE, "{values:?}");
             assert!(outcome.stdout.is_empty());
+            assert!(outcome.stderr.starts_with("error: "));
+        }
+    }
+
+    #[test]
+    fn explicit_channels_compile_write_and_list_beside_generated_banks() {
+        let output = temp_file("channels");
+        let output_text = output.to_string_lossy().into_owned();
+        let first = "1:2M CALL:145500000:0:amateur".to_owned();
+        let second = "2:PMR 1:446006250:1:licence-free".to_owned();
+        let compiled = run(&arguments(&[
+            "--sim",
+            "compile",
+            &output_text,
+            "--channel",
+            &second,
+            "--channel",
+            &first,
+            "--channel-bank",
+            "0:VHF:noscan",
+            "--channel-bank",
+            "1:PMR:scan",
+        ]));
+        assert_eq!(compiled.exit_code, EXIT_SUCCESS, "{compiled:?}");
+        assert!(compiled.stdout.contains("object_count=4"));
+        let image = fs::read(&output).expect("compiled image");
+        let decoded = decode_configuration_image(&image).expect("canonical image");
+        assert_eq!(decoded.object_count(), 4);
+        fs::remove_file(&output).ok();
+
+        // The written configuration reads back through the ordinary listing.
+        let unbanked = "3:NO BANK:145700000:-:amateur".to_owned();
+        let written = run(&arguments(&["--sim", "write", "--channel", &unbanked]));
+        assert_eq!(written.exit_code, EXIT_SUCCESS, "{written:?}");
+        assert!(written.stdout.contains("generation=1"), "{written:?}");
+
+        for spec in [
+            "1:x:abc:-:amateur",
+            "0:NAME:145500000:-:amateur",
+            "1:NAME:145500000:-",
+        ] {
+            let outcome = invoke(&["--sim", "write", "--channel", spec]);
+            assert_eq!(outcome.exit_code, EXIT_USAGE, "{spec}");
             assert!(outcome.stderr.starts_with("error: "));
         }
     }
