@@ -5,7 +5,6 @@
 #![deny(unsafe_code)]
 
 use core::panic::PanicInfo;
-use core::sync::atomic::{AtomicU32, Ordering};
 
 use cortex_m_rt::entry;
 use embassy_executor::Executor;
@@ -15,7 +14,9 @@ use py32_hal::mode::Async;
 use py32_hal::peripherals::SPI1;
 use py32_hal::spi::SpiTx;
 use py32_hal::usart::Uart;
-use radio_bk4819::{AfOutput, Bk4819, ReadbackRegister, ReceiveSetup, SquelchThresholds};
+use radio_bk4819::{
+    AfOutput, Bk4819, ReadbackRegister, ReceiveSetup, SquelchThresholds, BK4829_PROFILE,
+};
 use radio_domain::{Bandwidth, Frequency, Modulation, Tone};
 use radio_firmware_k1::bk4819_bus::ThreeWireBus;
 use radio_firmware_k1::display::{
@@ -25,7 +26,7 @@ use radio_firmware_k1::keypad::{decode, Debouncer, Edge, KeypadScan, Sample};
 use radio_firmware_k1::protocol::{
     decode_request, encode_hello_response, encode_rf_response, Request, RfObservation,
     REQUEST_BODY_BYTES, RESPONSE_FRAME_BYTES, RF_RESPONSE_FRAME_BYTES, RF_STAGE_FAULTED,
-    RF_STAGE_READ_BACK, RF_STAGE_RECEIVING, RF_STAGE_STANDBY, RF_STAGE_UNSTARTED,
+    RF_STAGE_INITIALISED, RF_STAGE_RECEIVING, RF_STAGE_STANDBY, RF_STAGE_UNSTARTED,
 };
 use radio_firmware_k1::py32f071_bk4819::Bk4819Pins;
 use radio_firmware_k1::py32f071_runtime::{compose, K1RuntimePeripherals};
@@ -36,65 +37,6 @@ const K1_VECTOR_TABLE_ORIGIN: u32 = 0x0800_2800;
 
 /// Fixed receive frequency for this bounded bring-up witness.
 const WITNESS_RECEIVE_HZ: u32 = 145_500_000;
-/// Interval between receive metric samples.
-const RF_SAMPLE_MILLISECONDS: u64 = 250;
-
-/// Published receive observation, packed so tasks share it without a lock.
-///
-/// `identity` holds the read-back value and its address, `progress` holds the
-/// bring-up stage and sample counter, and `metrics` holds the last sample.
-static RF_IDENTITY: AtomicU32 = AtomicU32::new(0);
-static RF_PROGRESS: AtomicU32 = AtomicU32::new(0);
-static RF_METRICS: AtomicU32 = AtomicU32::new(0);
-
-fn publish_identity(address: u8, value: u16) {
-    RF_IDENTITY.store(
-        u32::from(address) << 16 | u32::from(value),
-        Ordering::Relaxed,
-    );
-}
-
-fn publish_stage(stage: u8, samples: u16) {
-    RF_PROGRESS.store(
-        u32::from(stage) << 16 | u32::from(samples),
-        Ordering::Relaxed,
-    );
-}
-
-fn publish_metrics(rssi_dbm_x2: i16, glitch: u8, noise: u8, squelch_open: bool) {
-    let rssi = u32::from(u16::from_le_bytes(rssi_dbm_x2.to_le_bytes()));
-    let flags = u32::from(u8::from(squelch_open));
-    RF_METRICS.store(
-        rssi << 16 | u32::from(glitch) << 8 | u32::from(noise) | flags << 24,
-        Ordering::Relaxed,
-    );
-}
-
-fn observation() -> RfObservation {
-    let identity = RF_IDENTITY.load(Ordering::Relaxed);
-    let progress = RF_PROGRESS.load(Ordering::Relaxed);
-    let metrics = RF_METRICS.load(Ordering::Relaxed);
-    let stage = u8::try_from(progress >> 16 & 0xFF).unwrap_or(RF_STAGE_UNSTARTED);
-    RfObservation {
-        identity_register: u16::try_from(identity & 0xFFFF).unwrap_or(0),
-        identity_address: u8::try_from(identity >> 16 & 0xFF).unwrap_or(0),
-        stage,
-        frequency_hz: if stage >= RF_STAGE_RECEIVING && stage != RF_STAGE_FAULTED {
-            WITNESS_RECEIVE_HZ
-        } else {
-            0
-        },
-        rssi_dbm_x2: i16::from_le_bytes(
-            u16::try_from(metrics >> 16 & 0xFFFF)
-                .unwrap_or(0)
-                .to_le_bytes(),
-        ),
-        glitch: u8::try_from(metrics >> 8 & 0xFF).unwrap_or(0),
-        noise: u8::try_from(metrics & 0xFF).unwrap_or(0),
-        squelch_open: metrics >> 24 & 1 == 1,
-        samples: u16::try_from(progress & 0xFFFF).unwrap_or(0),
-    }
-}
 
 #[entry]
 fn main() -> ! {
@@ -155,18 +97,14 @@ fn main() -> ! {
     #[allow(unsafe_code)]
     let executor: &'static mut Executor = unsafe { core::mem::transmute(&mut executor) };
     executor.run(|spawner| {
-        let Ok(serial) = serial_task(serial) else {
+        let Ok(serial) = serial_task(serial, radio_pins) else {
             fail_closed();
         };
         let Ok(ui) = ui_task(display, keypad) else {
             fail_closed();
         };
-        let Ok(radio) = rf_task(radio_pins) else {
-            fail_closed();
-        };
         spawner.spawn(serial);
         spawner.spawn(ui);
-        spawner.spawn(radio);
     });
 }
 
@@ -293,12 +231,122 @@ impl KeypadPins {
     }
 }
 
+/// Receiver bring-up state owned by the serial task.
+///
+/// Every BK4819 transfer runs inside a request, never concurrently with one.
+/// The bus is bit-banged and blocks the executor for a few milliseconds, so
+/// doing it while the host is mid-request would drop received bytes.
+struct Receiver {
+    radio: Bk4819<ThreeWireBus<Bk4819Pins>>,
+    stage: u8,
+    identity_address: u8,
+    identity_register: u16,
+    samples: u16,
+}
+
+impl Receiver {
+    fn new(pins: Bk4819Pins) -> Self {
+        Self {
+            // The pinned K1 build compiles the BK4829 driver, so this board
+            // needs that variant's register values.
+            radio: Bk4819::with_profile(ThreeWireBus::new(pins), BK4829_PROFILE),
+            stage: RF_STAGE_UNSTARTED,
+            identity_address: 0,
+            identity_register: 0,
+            samples: 0,
+        }
+    }
+
+    /// Brings the receiver up once, then samples metrics on every request.
+    fn observe(&mut self) -> RfObservation {
+        if self.stage < RF_STAGE_RECEIVING {
+            self.bring_up();
+        }
+        if self.stage == RF_STAGE_RECEIVING {
+            match self.radio.receive_metrics(Tone::None) {
+                Ok(metrics) => {
+                    self.samples = self.samples.saturating_add(1);
+                    return RfObservation {
+                        identity_register: self.identity_register,
+                        identity_address: self.identity_address,
+                        stage: self.stage,
+                        frequency_hz: WITNESS_RECEIVE_HZ,
+                        rssi_dbm_x2: metrics.rssi_dbm_x2,
+                        glitch: metrics.glitch,
+                        noise: metrics.noise,
+                        squelch_open: metrics.squelch_open,
+                        samples: self.samples,
+                    };
+                }
+                Err(_) => self.stage = RF_STAGE_FAULTED,
+            }
+        }
+        RfObservation {
+            identity_register: self.identity_register,
+            identity_address: self.identity_address,
+            stage: self.stage,
+            frequency_hz: 0,
+            samples: self.samples,
+            ..RfObservation::default()
+        }
+    }
+
+    fn bring_up(&mut self) {
+        if self.radio.recover_to_standby().is_err() {
+            self.stage = RF_STAGE_FAULTED;
+            return;
+        }
+        self.stage = RF_STAGE_STANDBY;
+
+        // The pinned power-on register table must run before any receive
+        // configuration can produce meaningful metrics.
+        if self.radio.initialise().is_err() {
+            self.stage = RF_STAGE_FAULTED;
+            return;
+        }
+        self.stage = RF_STAGE_INITIALISED;
+
+        let Ok(frequency) = Frequency::from_hz(WITNESS_RECEIVE_HZ) else {
+            self.stage = RF_STAGE_FAULTED;
+            return;
+        };
+        let setup = ReceiveSetup {
+            frequency,
+            modulation: Modulation::Fm,
+            bandwidth: Bandwidth::Narrow,
+            tone: Tone::None,
+            // The K1 keeps its squelch calibration in external flash which
+            // AFIK does not yet read, so this witness runs with the pinned
+            // source's squelch-off set and reports raw metrics only.
+            squelch: SquelchThresholds::squelch_off(),
+            af: AfOutput::Mute,
+        };
+        if self.radio.configure_receive(&setup).is_err() {
+            self.stage = RF_STAGE_FAULTED;
+            return;
+        }
+        self.stage = RF_STAGE_RECEIVING;
+
+        match self.radio.read_back(ReadbackRegister::FilterBandwidth) {
+            Ok(value) => {
+                self.identity_address = ReadbackRegister::FilterBandwidth.address();
+                self.identity_register = value;
+            }
+            Err(_) => self.stage = RF_STAGE_FAULTED,
+        }
+    }
+}
+
 #[embassy_executor::task]
-async fn serial_task(mut uart: Uart<'static, Async>) {
+async fn serial_task(mut uart: Uart<'static, Async>, radio_pins: Bk4819Pins) {
+    let mut receiver = Receiver::new(radio_pins);
     let mut window = [0_u8; 16];
     let mut used = 0_usize;
     loop {
         if uart.read(&mut window[used..=used]).await.is_err() {
+            // Yield before retrying so a persistent receiver error can never
+            // starve the display task.
+            Timer::after_millis(1).await;
             continue;
         }
         used += 1;
@@ -319,77 +367,17 @@ async fn serial_task(mut uart: Uart<'static, Async>) {
                     let _ = uart.write(&response).await;
                 }
                 Some(Request::RfProbe) => {
+                    // The complete bring-up and sample happen here, between a
+                    // received request and its response, never beside one.
+                    let observation = receiver.observe();
                     let mut response = [0_u8; RF_RESPONSE_FRAME_BYTES];
-                    encode_rf_response(&mut response, observation());
+                    encode_rf_response(&mut response, observation);
                     let _ = uart.write(&response).await;
                 }
                 _ => {}
             }
         }
         used = 0;
-    }
-}
-
-/// Brings up the receiver and publishes bounded read-only observations.
-///
-/// The task writes only the documented receive path. It never constructs a
-/// transmit authorisation, so the transmit mode word is unreachable from here.
-#[embassy_executor::task]
-async fn rf_task(pins: Bk4819Pins) {
-    let mut radio = Bk4819::new(ThreeWireBus::new(pins));
-    if radio.recover_to_standby().is_err() {
-        publish_stage(RF_STAGE_FAULTED, 0);
-        return;
-    }
-    publish_stage(RF_STAGE_STANDBY, 0);
-
-    let Ok(frequency) = Frequency::from_hz(WITNESS_RECEIVE_HZ) else {
-        publish_stage(RF_STAGE_FAULTED, 0);
-        return;
-    };
-    let setup = ReceiveSetup {
-        frequency,
-        modulation: Modulation::Fm,
-        bandwidth: Bandwidth::Narrow,
-        tone: Tone::None,
-        // The K1 keeps its squelch calibration in external flash which AFIK
-        // does not yet read, so this witness runs with the pinned source's
-        // squelch-off set and reports raw metrics instead of gating audio.
-        squelch: SquelchThresholds::squelch_off(),
-        af: AfOutput::Mute,
-    };
-    if radio.configure_receive(&setup).is_err() {
-        publish_stage(RF_STAGE_FAULTED, 0);
-        return;
-    }
-    publish_stage(RF_STAGE_RECEIVING, 0);
-
-    match radio.read_back(ReadbackRegister::FilterBandwidth) {
-        Ok(value) => {
-            publish_identity(ReadbackRegister::FilterBandwidth.address(), value);
-            publish_stage(RF_STAGE_READ_BACK.max(RF_STAGE_RECEIVING), 0);
-        }
-        Err(_) => {
-            publish_stage(RF_STAGE_FAULTED, 0);
-            return;
-        }
-    }
-
-    let mut samples = 0_u16;
-    loop {
-        Timer::after_millis(RF_SAMPLE_MILLISECONDS).await;
-        let Ok(metrics) = radio.receive_metrics(Tone::None) else {
-            publish_stage(RF_STAGE_FAULTED, samples);
-            return;
-        };
-        samples = samples.saturating_add(1);
-        publish_metrics(
-            metrics.rssi_dbm_x2,
-            metrics.glitch,
-            metrics.noise,
-            metrics.squelch_open,
-        );
-        publish_stage(RF_STAGE_RECEIVING, samples);
     }
 }
 

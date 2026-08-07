@@ -1419,3 +1419,29 @@
 - **Result:** complete. `radio-programmer-gui-native` provides `afik-studio`,
   documented in `docs/programmer-gui-native.md`, with its boundary recorded in
   `ADR-052` and its accepted local-tool exposure in `RISK-029`.
+
+## RFK1-029 — K1 receive bring-up on the exact unit
+
+- **Status:** in progress (2026-08-07)
+- **Objective:** drive the BK4819 from the K1 application over the pinned
+  three-wire bus, establish a receive configuration, and observe raw receive
+  metrics on the exact unit without any transmit capability.
+- **Scope:** a PY32F071 pin adapter for CSN PF9, SCL PB8, and shared SDA PB9; a
+  receive-only firmware task which reaches standby, configures the receiver at
+  a fixed frequency, reads back a configured register, and samples metrics; a
+  bounded read-only serial observation and its `probe-rf` host command; the
+  guarded write and the post-power-cycle observation.
+- **Dependencies:** completed `RX-027`, the pinned recovery image, and the
+  retained EEPROM backup.
+- **Exclusions:** transmit of any kind, audio amplifier and speaker control,
+  squelch calibration from external flash, channel selection or UI, persistence,
+  and any on-air activity.
+- **Acceptance criteria:** the read-back register returns the exact non-trivial
+  value the image configured, proving the bus carries real data in both
+  directions; the sample counter advances; a bus or state failure is reported as
+  a faulted stage rather than a plausible-looking sample; the transmit mode word
+  is never written; the known-good recovery path stays available.
+- **Write result:** the image was built at 31,112 bytes with CRC-32 `724c3ca7`
+  and written through bootloader `7.03.01`. All 122 pages were acknowledged
+  under transaction `4cba7f6b` with no retry. This is not read-back or boot
+  proof.

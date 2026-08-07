@@ -38,7 +38,7 @@ const XOR_KEY: [u8; 16] = [
 ];
 
 /// Printable identity returned by the first AFIK K1 application.
-pub const APPLICATION_VERSION: &[u8] = b"AFIK-K1-0.4";
+pub const APPLICATION_VERSION: &[u8] = b"AFIK-K1-0.8";
 
 /// One accepted read-only normal-mode request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -87,6 +87,8 @@ pub struct RfObservation {
 pub const RF_STAGE_UNSTARTED: u8 = 0;
 /// The neutralising standby write completed.
 pub const RF_STAGE_STANDBY: u8 = 1;
+/// The pinned power-on register table completed.
+pub const RF_STAGE_INITIALISED: u8 = 4;
 /// A register read-back completed after standby.
 pub const RF_STAGE_READ_BACK: u8 = 2;
 /// The complete receive configuration completed.

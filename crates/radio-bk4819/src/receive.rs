@@ -10,18 +10,18 @@ use core::fmt;
 use radio_domain::{Bandwidth, Frequency, Modulation, Tone};
 
 use crate::{
-    Bk4819, DriverError, DriverState, FrequencyWord, RegisterAddress, RegisterBus, MODE_RECEIVE,
-    MODE_STANDBY, REG_FREQUENCY_HIGH, REG_FREQUENCY_LOW, REG_MODE_CONTROL,
+    Bk4819, DriverError, DriverState, FrequencyWord, RegisterAddress, RegisterBus, MODE_STANDBY,
+    REG_FREQUENCY_HIGH, REG_FREQUENCY_LOW, REG_MODE_CONTROL,
 };
 
+const REG_SOFT_RESET: RegisterAddress = RegisterAddress::known(0x00);
 const REG_INTERRUPT_FLAGS: RegisterAddress = RegisterAddress::known(0x02);
+const REG_DTMF_COEFFICIENT: RegisterAddress = RegisterAddress::known(0x09);
+const REG_CRYSTAL: RegisterAddress = RegisterAddress::known(0x36);
+const REG_MIC_GAIN: RegisterAddress = RegisterAddress::known(0x7D);
+const REG_AGC_CONTROL: RegisterAddress = RegisterAddress::known(0x7E);
 const REG_SUB_AUDIO_FREQUENCY: RegisterAddress = RegisterAddress::known(0x07);
 const REG_CDCSS_CODE: RegisterAddress = RegisterAddress::known(0x08);
-const REG_AGC_GAIN_0: RegisterAddress = RegisterAddress::known(0x10);
-const REG_AGC_GAIN_1: RegisterAddress = RegisterAddress::known(0x11);
-const REG_AGC_GAIN_2: RegisterAddress = RegisterAddress::known(0x12);
-const REG_AGC_GAIN_3: RegisterAddress = RegisterAddress::known(0x13);
-const REG_AGC_GAIN_MINUS_1: RegisterAddress = RegisterAddress::known(0x14);
 const REG_DEMODULATOR_2A: RegisterAddress = RegisterAddress::known(0x2A);
 const REG_DEMODULATOR_2B: RegisterAddress = RegisterAddress::known(0x2B);
 const REG_DEMODULATOR_2F: RegisterAddress = RegisterAddress::known(0x2F);
@@ -34,7 +34,6 @@ const REG_DEMODULATOR_42: RegisterAddress = RegisterAddress::known(0x42);
 const REG_FILTER_BANDWIDTH: RegisterAddress = RegisterAddress::known(0x43);
 const REG_AF_OUTPUT: RegisterAddress = RegisterAddress::known(0x47);
 const REG_AF_DAC_GAIN: RegisterAddress = RegisterAddress::known(0x48);
-const REG_AGC_THRESHOLD: RegisterAddress = RegisterAddress::known(0x49);
 const REG_SQUELCH_CLOSE_GLITCH: RegisterAddress = RegisterAddress::known(0x4D);
 const REG_SQUELCH_OPEN_GLITCH: RegisterAddress = RegisterAddress::known(0x4E);
 const REG_SQUELCH_NOISE: RegisterAddress = RegisterAddress::known(0x4F);
@@ -45,21 +44,24 @@ const REG_GLITCH: RegisterAddress = RegisterAddress::known(0x63);
 const REG_NOISE: RegisterAddress = RegisterAddress::known(0x65);
 const REG_AFC: RegisterAddress = RegisterAddress::known(0x73);
 const REG_SQUELCH_RSSI: RegisterAddress = RegisterAddress::known(0x78);
-const REG_AGC_MODE: RegisterAddress = RegisterAddress::known(0x7B);
 
-const POWER_BLOCKS_RECEIVE: u16 = 0x1F0F;
+const SOFT_RESET_ASSERT: u16 = 0x8000;
+const SOFT_RESET_RELEASE: u16 = 0x0000;
+const CRYSTAL_INIT: u16 = 0x0022;
+const AGC_FIX_INDEX: u16 = 3 << 12;
+const AGC_AUTO_MODE_BIT: u16 = 1 << 15;
+const AGC_INDEX_MASK: u16 = 0b111 << 12;
+/// Default `REG_33` output word the pinned source establishes at power on.
+pub const GPIO_OUT_DEFAULT: u16 = 0x9000;
+/// Receive-side DTMF detection coefficients written to `REG_09` at power on.
+const DTMF_COEFFICIENTS: [u8; 16] = [
+    111, 107, 103, 98, 80, 71, 58, 44, 65, 55, 37, 23, 228, 203, 181, 159,
+];
 
 const AF_MUTE: u16 = 0;
 const AF_FM: u16 = 1;
 const AF_BASEBAND2: u16 = 5;
-const AF_OUTPUT_FIXED_BITS: u16 = (6 << 12) | (1 << 6);
 
-const BANDWIDTH_WIDE: u16 = 0x3628;
-const BANDWIDTH_NARROW: u16 = 0x3648;
-
-const SUB_AUDIO_DISABLED: u16 = 0x904A;
-const SUB_AUDIO_CTCSS: u16 = 0x904A;
-const SUB_AUDIO_CDCSS: u16 = 0x8033;
 const SUB_AUDIO_MODE_CTC1: u16 = 0;
 const CDCSS_BAUD_CONTROL_WORD: u16 = 2775;
 const CDCSS_HIGH_HALF: u16 = 1 << 15;
@@ -85,7 +87,139 @@ const INTERRUPT_CDCSS_LOST: u16 = 1 << 8;
 const GPIO_UHF_LNA: u16 = 0x40 >> 3;
 const GPIO_VHF_LNA: u16 = 0x40 >> 4;
 /// Boundary between the VHF and UHF receive filter paths in hertz.
-pub const RECEIVE_FILTER_PATH_BOUNDARY_HZ: u32 = 28_000_000;
+///
+/// The pinned source compares `28000000` against a frequency held in 10 Hz
+/// units, so the split is 280 MHz, not 28 MHz.
+pub const RECEIVE_FILTER_PATH_BOUNDARY_HZ: u32 = 280_000_000;
+
+/// One chip variant's differing receive-path register values.
+///
+/// The pinned K1 tree ships two drivers with the same three-wire bus and the
+/// same register map, but materially different values. `EVID-BK4829-055`
+/// records which values differ; nothing here is inferred.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ChipProfile {
+    /// `REG_37` written during power-on initialisation.
+    pub init_power_blocks: u16,
+    /// `REG_37` written as part of the receive turn-on.
+    pub receive_power_blocks: u16,
+    /// `REG_30` receive mode block.
+    pub receive_mode: u16,
+    /// Fixed `REG_47` bits the audio type is combined with.
+    pub af_fixed_bits: u16,
+    /// `REG_48` audio level written during initialisation.
+    pub af_level: u16,
+    /// `REG_7D` microphone gain written during initialisation.
+    pub mic_gain: u16,
+    /// `REG_43` wide filter value.
+    pub bandwidth_wide: u16,
+    /// `REG_43` narrow filter value.
+    pub bandwidth_narrow: u16,
+    /// `REG_51` value enabling CTCSS decoding.
+    pub sub_audio_ctcss: u16,
+    /// `REG_51` value enabling CDCSS decoding.
+    pub sub_audio_cdcss: u16,
+    /// Gain table written for frequency-modulated reception.
+    pub agc_fm: &'static [(u8, u16)],
+    /// Gain table written for amplitude-modulated reception.
+    pub agc_am: &'static [(u8, u16)],
+    /// Whether initialisation switches the gain control to automatic mode.
+    pub agc_auto_after_init: bool,
+    /// Remaining initialisation writes in their source order.
+    pub extra_init: &'static [(u8, u16)],
+}
+
+const BK4819_AGC_FM: [(u8, u16); 8] = [
+    (0x13, 0x03BE),
+    (0x12, 0x037B),
+    (0x11, 0x027B),
+    (0x10, 0x007A),
+    (0x14, 0x0019),
+    (0x49, 0x2A38),
+    (0x7B, 0x8420),
+    (0x7E, 0x0000),
+];
+
+const BK4819_AGC_AM: [(u8, u16); 8] = [
+    (0x13, 0x03BE),
+    (0x12, 0x037B),
+    (0x11, 0x027B),
+    (0x10, 0x007A),
+    (0x14, 0x0000),
+    (0x49, 0x1920),
+    (0x7B, 0x8420),
+    (0x7E, 0x0000),
+];
+
+const BK4819_EXTRA_INIT: [(u8, u16); 3] = [(0x19, 0x1041), (0x1F, 0x5454), (0x3E, 0xA037)];
+
+const BK4829_AGC: [(u8, u16); 7] = [
+    (0x10, 0x0318),
+    (0x11, 0x033A),
+    (0x12, 0x03DB),
+    (0x13, 0x03DF),
+    (0x14, 0x0210),
+    (0x49, 0x2AB2),
+    (0x7B, 0x73DC),
+];
+
+const BK4829_EXTRA_INIT: [(u8, u16); 19] = [
+    (0x40, 0x3516),
+    (0x1C, 0x07C0),
+    (0x1D, 0xE555),
+    (0x1E, 0x4C58),
+    (0x1F, 0xC65A),
+    (0x3E, 0x94C6),
+    (0x73, 0x4691),
+    (0x77, 0x88EF),
+    (0x19, 0x1041),
+    (0x28, 0x0B40),
+    (0x29, 0xAA00),
+    (0x2A, 0x6600),
+    (0x2C, 0x1822),
+    (0x2F, 0x9890),
+    (0x53, 0x2028),
+    (0x7E, 0x303E),
+    (0x46, 0x600A),
+    (0x4A, 0x5430),
+    (0x07, 0x61CE),
+];
+
+/// Values recorded for the BK4819 driver in the pinned tree.
+pub const BK4819_PROFILE: ChipProfile = ChipProfile {
+    init_power_blocks: 0x1D0F,
+    receive_power_blocks: 0x1F0F,
+    receive_mode: 0xBEF1,
+    af_fixed_bits: (6 << 12) | (1 << 6),
+    af_level: 0xB3A8,
+    mic_gain: 0xE940,
+    bandwidth_wide: 0x3628,
+    bandwidth_narrow: 0x3648,
+    sub_audio_ctcss: 0x904A,
+    sub_audio_cdcss: 0x8033,
+    agc_fm: &BK4819_AGC_FM,
+    agc_am: &BK4819_AGC_AM,
+    agc_auto_after_init: true,
+    extra_init: &BK4819_EXTRA_INIT,
+};
+
+/// Values recorded for the BK4829 driver the pinned K1 build actually compiles.
+pub const BK4829_PROFILE: ChipProfile = ChipProfile {
+    init_power_blocks: 0x9D1F,
+    receive_power_blocks: 0x9F1F,
+    receive_mode: 0xBFF1,
+    af_fixed_bits: 0x6042,
+    af_level: 0x33A8,
+    mic_gain: 0xE920,
+    bandwidth_wide: 0x3028,
+    bandwidth_narrow: 0x4048,
+    sub_audio_ctcss: 0x9040,
+    sub_audio_cdcss: 0xA033,
+    agc_fm: &BK4829_AGC,
+    agc_am: &BK4829_AGC,
+    agc_auto_after_init: false,
+    extra_init: &BK4829_EXTRA_INIT,
+};
 
 /// Requested audio-frequency output routing.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -285,6 +419,52 @@ pub enum ToneStatus {
 }
 
 impl<B: RegisterBus> Bk4819<B> {
+    /// Performs the pinned source's exact power-on initialisation.
+    ///
+    /// This is the register table `BK4819_Init` writes before any receive
+    /// configuration: soft reset, power blocks, crystal, AGC tables and
+    /// automatic mode, microphone and audio levels, receive-side DTMF
+    /// coefficients, and the default output word. It writes no mode-control
+    /// word, so it cannot start a transmission, and it leaves the chip in
+    /// standby exactly like [`Bk4819::recover_to_standby`].
+    pub fn initialise(&mut self) -> Result<(), DriverError<B::Error>> {
+        self.write(REG_SOFT_RESET, SOFT_RESET_ASSERT)?;
+        self.write(REG_SOFT_RESET, SOFT_RESET_RELEASE)?;
+        self.write(REG_POWER_BLOCKS, self.profile.init_power_blocks)?;
+        self.write(REG_CRYSTAL, CRYSTAL_INIT)?;
+
+        self.configure_agc(Modulation::Fm)?;
+        if self.profile.agc_auto_after_init {
+            let agc = self.read(REG_AGC_CONTROL)?;
+            self.write(
+                REG_AGC_CONTROL,
+                (agc & !AGC_AUTO_MODE_BIT & !AGC_INDEX_MASK) | AGC_FIX_INDEX,
+            )?;
+        }
+
+        self.write(REG_MIC_GAIN, self.profile.mic_gain)?;
+        self.write(REG_AF_DAC_GAIN, self.profile.af_level)?;
+
+        for (index, coefficient) in DTMF_COEFFICIENTS.into_iter().enumerate() {
+            let selector = u16::try_from(index).unwrap_or(0) << 12;
+            self.write(REG_DTMF_COEFFICIENT, selector | u16::from(coefficient))?;
+        }
+
+        for (address, value) in self.profile.extra_init {
+            let register = RegisterAddress::new(*address)
+                .map_err(|_| DriverError::InvalidState(self.state))?;
+            self.write(register, *value)?;
+        }
+
+        self.gpio_out = GPIO_OUT_DEFAULT;
+        self.write(REG_GPIO_OUT, GPIO_OUT_DEFAULT)?;
+        self.write(REG_INTERRUPT_MASK, 0)?;
+
+        self.write(REG_MODE_CONTROL, MODE_STANDBY)?;
+        self.state = DriverState::Standby;
+        Ok(())
+    }
+
     /// Applies one complete receive configuration from standby or receive.
     ///
     /// The sequence follows the pinned reference firmware: power blocks and
@@ -300,29 +480,33 @@ impl<B: RegisterBus> Bk4819<B> {
         }
         let word = FrequencyWord::from_frequency(setup.frequency)?;
 
+        // The pinned source's order matters: the receive mode word carries the
+        // VCO calibration request, so it must be written after the frequency.
         self.write(REG_MODE_CONTROL, MODE_STANDBY)?;
-        self.write(REG_POWER_BLOCKS, POWER_BLOCKS_RECEIVE)?;
-        self.write(REG_MODE_CONTROL, MODE_STANDBY)?;
-        self.write(REG_MODE_CONTROL, MODE_RECEIVE)?;
-
-        self.configure_demodulator(setup.modulation)?;
         self.write(
             REG_FILTER_BANDWIDTH,
             match setup.bandwidth {
-                Bandwidth::Wide => BANDWIDTH_WIDE,
-                Bandwidth::Narrow => BANDWIDTH_NARROW,
+                Bandwidth::Wide => self.profile.bandwidth_wide,
+                Bandwidth::Narrow => self.profile.bandwidth_narrow,
             },
         )?;
-        self.configure_agc(setup.modulation)?;
-
         self.write(REG_FREQUENCY_LOW, word.low())?;
         self.write(REG_FREQUENCY_HIGH, word.high())?;
-
+        self.configure_demodulator(setup.modulation)?;
+        self.configure_agc(setup.modulation)?;
         self.configure_squelch(setup.squelch)?;
+
+        // Audio is muted across the turn-on, exactly as the source does.
+        self.write_af_output(setup.modulation, AfOutput::Mute)?;
+        self.write(REG_POWER_BLOCKS, self.profile.receive_power_blocks)?;
+        self.write(REG_MODE_CONTROL, MODE_STANDBY)?;
+        let receive_mode = self.profile.receive_mode;
+        self.write(REG_MODE_CONTROL, receive_mode)?;
+
+        self.select_filter_path(setup.frequency)?;
         self.configure_sub_audio(setup.tone)?;
         self.write(REG_INTERRUPT_MASK, interrupt_mask(setup.tone))?;
         self.write(REG_INTERRUPT_FLAGS, 0)?;
-        self.select_filter_path(setup.frequency)?;
         self.write_af_output(setup.modulation, setup.af)?;
 
         self.state = DriverState::Receiving {
@@ -424,18 +608,22 @@ impl<B: RegisterBus> Bk4819<B> {
     }
 
     fn configure_agc(&mut self, modulation: Modulation) -> Result<(), DriverError<B::Error>> {
-        self.write(REG_AGC_GAIN_3, 0x03BE)?;
-        self.write(REG_AGC_GAIN_2, 0x037B)?;
-        self.write(REG_AGC_GAIN_1, 0x027B)?;
-        self.write(REG_AGC_GAIN_0, 0x007A)?;
-        if matches!(modulation, Modulation::Am) {
-            self.write(REG_AGC_GAIN_MINUS_1, 0x0000)?;
-            self.write(REG_AGC_THRESHOLD, (50 << 7) | 0x20)?;
+        let table = if matches!(modulation, Modulation::Am) {
+            self.profile.agc_am
         } else {
-            self.write(REG_AGC_GAIN_MINUS_1, 0x0019)?;
-            self.write(REG_AGC_THRESHOLD, (84 << 7) | 0x38)?;
+            self.profile.agc_fm
+        };
+        for (address, value) in table {
+            if *address == 0x7E && *value == 0 {
+                // The BK4819 profile leaves automatic gain mode to the
+                // separate read-modify-write during initialisation.
+                continue;
+            }
+            let register = RegisterAddress::new(*address)
+                .map_err(|_| DriverError::InvalidState(self.state))?;
+            self.write(register, *value)?;
         }
-        self.write(REG_AGC_MODE, 0x8420)
+        Ok(())
     }
 
     fn configure_squelch(
@@ -462,9 +650,13 @@ impl<B: RegisterBus> Bk4819<B> {
 
     fn configure_sub_audio(&mut self, tone: Tone) -> Result<(), DriverError<B::Error>> {
         match tone {
-            Tone::None => self.write(REG_SUB_AUDIO_CONTROL, SUB_AUDIO_DISABLED),
+            Tone::None => {
+                let disabled = self.profile.sub_audio_ctcss;
+                self.write(REG_SUB_AUDIO_CONTROL, disabled)
+            }
             Tone::Ctcss(tenths_hz) => {
-                self.write(REG_SUB_AUDIO_CONTROL, SUB_AUDIO_CTCSS)?;
+                let ctcss = self.profile.sub_audio_ctcss;
+                self.write(REG_SUB_AUDIO_CONTROL, ctcss)?;
                 self.write(
                     REG_SUB_AUDIO_FREQUENCY,
                     SUB_AUDIO_MODE_CTC1 | ctcss_control_word(tenths_hz),
@@ -472,7 +664,8 @@ impl<B: RegisterBus> Bk4819<B> {
             }
             Tone::Dcs { code, inverted } => {
                 let word = cdcss_code_word(code, inverted);
-                self.write(REG_SUB_AUDIO_CONTROL, SUB_AUDIO_CDCSS)?;
+                let cdcss = self.profile.sub_audio_cdcss;
+                self.write(REG_SUB_AUDIO_CONTROL, cdcss)?;
                 self.write(
                     REG_SUB_AUDIO_FREQUENCY,
                     SUB_AUDIO_MODE_CTC1 | CDCSS_BAUD_CONTROL_WORD,
@@ -490,11 +683,15 @@ impl<B: RegisterBus> Bk4819<B> {
     }
 
     fn select_filter_path(&mut self, frequency: Frequency) -> Result<(), DriverError<B::Error>> {
-        let gpio = if frequency.as_hz() < RECEIVE_FILTER_PATH_BOUNDARY_HZ {
+        // The pinned source keeps one output word and toggles single bits, so
+        // the power-on defaults must survive a filter-path change.
+        let selected = if frequency.as_hz() < RECEIVE_FILTER_PATH_BOUNDARY_HZ {
             GPIO_VHF_LNA
         } else {
             GPIO_UHF_LNA
         };
+        let gpio = (self.gpio_out & !(GPIO_VHF_LNA | GPIO_UHF_LNA)) | selected;
+        self.gpio_out = gpio;
         self.write(REG_GPIO_OUT, gpio)
     }
 
@@ -510,7 +707,8 @@ impl<B: RegisterBus> Bk4819<B> {
                 Modulation::Usb => AF_BASEBAND2,
             },
         };
-        self.write(REG_AF_OUTPUT, AF_OUTPUT_FIXED_BITS | (af_type << 8))
+        let fixed = self.profile.af_fixed_bits;
+        self.write(REG_AF_OUTPUT, fixed | (af_type << 8))
     }
 }
 
@@ -569,7 +767,9 @@ mod tests {
         REG_INTERRUPT_FLAGS, REG_SQUELCH_RSSI, REG_SUB_AUDIO_CONTROL, REG_SUB_AUDIO_FREQUENCY,
     };
     use crate::tests_support::{FakeBus, Operation};
-    use crate::{Bk4819, DriverError, DriverState};
+    use crate::{
+        Bk4819, DriverError, DriverState, MODE_RECEIVE, REG_FREQUENCY_HIGH, REG_MODE_CONTROL,
+    };
     use radio_domain::{Bandwidth, Frequency, Modulation, Tone};
 
     fn thresholds() -> SquelchThresholds {
@@ -598,6 +798,67 @@ mod tests {
         assert!(operations.contains(&Operation::Write(REG_SQUELCH_RSSI, 0x0000)));
         assert!(operations.contains(&Operation::Write(super::REG_SQUELCH_NOISE, 0x7F7F)));
         assert!(operations.contains(&Operation::Write(super::REG_SQUELCH_CLOSE_GLITCH, 0xA0FF)));
+    }
+
+    #[test]
+    fn initialisation_writes_the_pinned_power_on_table_and_ends_in_standby() {
+        use super::{
+            BK4819_PROFILE, BK4829_PROFILE, CRYSTAL_INIT, DTMF_COEFFICIENTS, GPIO_OUT_DEFAULT,
+            REG_AF_DAC_GAIN, REG_CRYSTAL, REG_DTMF_COEFFICIENT, REG_MIC_GAIN, REG_POWER_BLOCKS,
+            REG_SOFT_RESET,
+        };
+        use crate::{RegisterAddress, MODE_STANDBY, REG_MODE_CONTROL};
+
+        for profile in [BK4819_PROFILE, BK4829_PROFILE] {
+            let mut radio = Bk4819::with_profile(FakeBus::new(None), profile);
+            radio.initialise().unwrap();
+            assert_eq!(radio.state(), DriverState::Standby);
+
+            let operations = &radio.bus().operations;
+            assert_eq!(operations[0], Operation::Write(REG_SOFT_RESET, 0x8000));
+            assert_eq!(operations[1], Operation::Write(REG_SOFT_RESET, 0x0000));
+            assert!(operations.contains(&Operation::Write(
+                REG_POWER_BLOCKS,
+                profile.init_power_blocks
+            )));
+            assert!(operations.contains(&Operation::Write(REG_CRYSTAL, CRYSTAL_INIT)));
+            assert!(operations.contains(&Operation::Write(REG_MIC_GAIN, profile.mic_gain)));
+            assert!(operations.contains(&Operation::Write(REG_AF_DAC_GAIN, profile.af_level)));
+            assert!(operations.contains(&Operation::Write(REG_GPIO_OUT, GPIO_OUT_DEFAULT)));
+            for (index, coefficient) in DTMF_COEFFICIENTS.into_iter().enumerate() {
+                let expected = u16::try_from(index).unwrap() << 12 | u16::from(coefficient);
+                assert!(operations.contains(&Operation::Write(REG_DTMF_COEFFICIENT, expected)));
+            }
+            for (address, value) in profile.extra_init {
+                let register = RegisterAddress::new(*address).unwrap();
+                assert!(
+                    operations.contains(&Operation::Write(register, *value)),
+                    "missing init write {address:02x}={value:04x}"
+                );
+            }
+            assert_eq!(
+                operations.last(),
+                Some(&Operation::Write(REG_MODE_CONTROL, MODE_STANDBY))
+            );
+            assert!(!operations.iter().any(
+                |operation| matches!(operation, Operation::Write(_, value) if *value == 0x80FE)
+            ));
+        }
+    }
+
+    #[test]
+    fn the_two_chip_profiles_differ_where_the_pinned_drivers_differ() {
+        use super::{BK4819_PROFILE, BK4829_PROFILE};
+
+        assert_eq!(BK4819_PROFILE.receive_mode, 0xBEF1);
+        assert_eq!(BK4829_PROFILE.receive_mode, 0xBFF1);
+        assert_eq!(BK4819_PROFILE.receive_power_blocks, 0x1F0F);
+        assert_eq!(BK4829_PROFILE.receive_power_blocks, 0x9F1F);
+        assert_eq!(BK4819_PROFILE.bandwidth_narrow, 0x3648);
+        assert_eq!(BK4829_PROFILE.bandwidth_narrow, 0x4048);
+        assert_eq!(BK4819_PROFILE.af_fixed_bits, 0x6040);
+        assert_eq!(BK4829_PROFILE.af_fixed_bits, 0x6042);
+        assert_eq!(BK4829_PROFILE.sub_audio_cdcss, 0xA033);
     }
 
     #[test]
@@ -680,12 +941,24 @@ mod tests {
         );
 
         let operations = &radio.bus().operations;
+        let receive_mode = operations
+            .iter()
+            .position(|operation| *operation == Operation::Write(REG_MODE_CONTROL, MODE_RECEIVE))
+            .expect("the receive mode word is written");
+        let frequency_high = operations
+            .iter()
+            .position(|operation| matches!(operation, Operation::Write(address, _) if *address == REG_FREQUENCY_HIGH))
+            .expect("the frequency is written");
+        assert!(
+            frequency_high < receive_mode,
+            "the mode word carries VCO calibration and must follow the frequency"
+        );
         assert!(operations.contains(&Operation::Write(REG_FILTER_BANDWIDTH, 0x3648)));
         assert!(operations.contains(&Operation::Write(REG_SQUELCH_RSSI, 0x4846)));
         assert!(operations.contains(&Operation::Write(REG_SUB_AUDIO_CONTROL, 0x904A)));
         assert!(operations.contains(&Operation::Write(REG_SUB_AUDIO_FREQUENCY, 2065)));
         assert!(operations.contains(&Operation::Write(REG_AF_OUTPUT, 0x6140)));
-        assert!(operations.contains(&Operation::Write(REG_GPIO_OUT, 0x08)));
+        assert!(operations.contains(&Operation::Write(REG_GPIO_OUT, 0x9004)));
         assert!(!operations
             .iter()
             .any(|operation| matches!(operation, Operation::Write(_, value) if *value == 0x80FE)));
@@ -717,15 +990,25 @@ mod tests {
 
     #[test]
     fn vhf_and_uhf_paths_use_distinct_low_noise_amplifier_bits() {
-        let mut radio = Bk4819::new(FakeBus::new(None));
-        radio.recover_to_standby().unwrap();
-        radio
-            .configure_receive(&setup(Modulation::Fm, Tone::None, 27_000_000))
+        // The split is 280 MHz: a 2 m channel takes the VHF path and a 70 cm
+        // channel takes the UHF path.
+        let mut vhf = Bk4819::new(FakeBus::new(None));
+        vhf.recover_to_standby().unwrap();
+        vhf.configure_receive(&setup(Modulation::Fm, Tone::None, 145_500_000))
             .unwrap();
-        assert!(radio
+        assert!(vhf
             .bus()
             .operations
-            .contains(&Operation::Write(REG_GPIO_OUT, 0x04)));
+            .contains(&Operation::Write(REG_GPIO_OUT, 0x9004)));
+
+        let mut uhf = Bk4819::new(FakeBus::new(None));
+        uhf.recover_to_standby().unwrap();
+        uhf.configure_receive(&setup(Modulation::Fm, Tone::None, 433_500_000))
+            .unwrap();
+        assert!(uhf
+            .bus()
+            .operations
+            .contains(&Operation::Write(REG_GPIO_OUT, 0x9008)));
     }
 
     #[test]

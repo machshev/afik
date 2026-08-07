@@ -10,8 +10,9 @@
 mod receive;
 
 pub use receive::{
-    cdcss_code_word, ctcss_control_word, AfOutput, ReadbackRegister, ReceiveMetrics, ReceiveSetup,
-    SquelchError, SquelchThresholds, ToneStatus, RECEIVE_FILTER_PATH_BOUNDARY_HZ,
+    cdcss_code_word, ctcss_control_word, AfOutput, ChipProfile, ReadbackRegister, ReceiveMetrics,
+    ReceiveSetup, SquelchError, SquelchThresholds, ToneStatus, BK4819_PROFILE, BK4829_PROFILE,
+    GPIO_OUT_DEFAULT, RECEIVE_FILTER_PATH_BOUNDARY_HZ,
 };
 
 use core::fmt;
@@ -206,6 +207,10 @@ impl<E> From<FrequencyError> for DriverError<E> {
 pub struct Bk4819<B: RegisterBus> {
     bus: B,
     state: DriverState,
+    /// Last written `REG_33` output word, seeded with the source's default.
+    pub(crate) gpio_out: u16,
+    /// Chip variant values this driver writes.
+    pub(crate) profile: ChipProfile,
 }
 
 impl<B: RegisterBus> Bk4819<B> {
@@ -214,6 +219,18 @@ impl<B: RegisterBus> Bk4819<B> {
         Self {
             bus,
             state: DriverState::Unknown,
+            gpio_out: receive::GPIO_OUT_DEFAULT,
+            profile: receive::BK4819_PROFILE,
+        }
+    }
+
+    /// Wraps a bus for one explicit chip variant; no hardware operation runs.
+    pub const fn with_profile(bus: B, profile: ChipProfile) -> Self {
+        Self {
+            bus,
+            state: DriverState::Unknown,
+            gpio_out: receive::GPIO_OUT_DEFAULT,
+            profile,
         }
     }
 
