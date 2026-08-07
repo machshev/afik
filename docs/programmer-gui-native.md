@@ -5,8 +5,14 @@ radio configuration, and guarded firmware and EEPROM operations. It is built on
 `eframe`/`egui` and runs as a local desktop application; it opens no network
 socket and is not a service.
 
+Run it from the pinned environment. `winit` and `glutin` load the window-system
+and GL libraries at run time, so the development shell puts Wayland, X11,
+`libxkbcommon`, and `libGL` on `LD_LIBRARY_PATH`; outside it the editor exits
+with a `winit EventLoopError` before drawing anything.
+
 ```sh
-cargo run --package radio-programmer-gui-native --bin afik-studio -- --help
+nix develop path:. -c \
+  cargo run --package radio-programmer-gui-native --bin afik-studio -- --help
 cargo run --package radio-programmer-gui-native --bin afik-studio -- --sim
 cargo run --package radio-programmer-gui-native --bin afik-studio -- \
   --project plan.afik
