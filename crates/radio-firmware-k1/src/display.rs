@@ -94,6 +94,59 @@ pub fn render_key_witness(frame: &mut [u8; FRAME_BYTES], key: Key) {
     draw_text(frame, (WIDTH - width) / 2, 36, label);
 }
 
+/// Produces the operating screen: channel name, frequency, and receive state.
+///
+/// `frequency_hz` is rendered as megahertz with five decimals, and `rssi_raw`
+/// is the chip's own 0.5 dB step value, so the screen and the serial
+/// observation cannot disagree.
+pub fn render_channel_screen(
+    frame: &mut [u8; FRAME_BYTES],
+    name: &[u8],
+    frequency_hz: u32,
+    rssi_raw: u16,
+    squelch_open: bool,
+    audio_routed: bool,
+) {
+    frame.fill(0);
+    let width = name.len() * 6 - 1;
+    draw_text(frame, WIDTH.saturating_sub(width) / 2, 2, name);
+
+    let mut megahertz = *b"0000.00000";
+    let whole = frequency_hz / 1_000_000;
+    let fraction = frequency_hz % 1_000_000 / 10;
+    for (index, divisor) in [1000, 100, 10, 1].into_iter().enumerate() {
+        megahertz[index] = b'0' + u8::try_from(whole / divisor % 10).unwrap_or(0);
+    }
+    for (index, divisor) in [10_000, 1_000, 100, 10, 1].into_iter().enumerate() {
+        megahertz[5 + index] = b'0' + u8::try_from(fraction / divisor % 10).unwrap_or(0);
+    }
+    megahertz[4] = b'.';
+    draw_text(frame, 4, 20, &megahertz);
+
+    let mut meter = *b"RSSI ---";
+    let value = rssi_raw.min(999);
+    meter[5] = b'0' + u8::try_from(value / 100).unwrap_or(0);
+    meter[6] = b'0' + u8::try_from(value / 10 % 10).unwrap_or(0);
+    meter[7] = b'0' + u8::try_from(value % 10).unwrap_or(0);
+    draw_text(frame, 4, 38, &meter);
+    draw_text(
+        frame,
+        66,
+        38,
+        if squelch_open { b"SQ OPEN" } else { b"SQ SHUT" },
+    );
+    draw_text(
+        frame,
+        4,
+        52,
+        if audio_routed {
+            b"AUDIO ON "
+        } else {
+            b"AUDIO OFF"
+        },
+    );
+}
+
 /// Produces the receive witness: audio state, RSSI, and the squelch link.
 ///
 /// `rssi_raw` is the chip's own 0.5 dB step value, rendered without conversion
@@ -163,6 +216,12 @@ fn draw_column(frame: &mut [u8; FRAME_BYTES], x: usize, y: usize, bits: u8) {
 fn glyph(byte: u8) -> [u8; 5] {
     match byte {
         b'.' => [0x00, 0x60, 0x60, 0x00, 0x00],
+        b'B' => [0x7F, 0x49, 0x49, 0x49, 0x36],
+        b'C' => [0x3E, 0x41, 0x41, 0x41, 0x22],
+        b'G' => [0x3E, 0x41, 0x49, 0x49, 0x7A],
+        b'H' => [0x7F, 0x08, 0x08, 0x08, 0x7F],
+        b'L' => [0x7F, 0x40, 0x40, 0x40, 0x40],
+        b'V' => [0x1F, 0x20, 0x40, 0x20, 0x1F],
         b'0' => [0x3E, 0x51, 0x49, 0x45, 0x3E],
         b'1' => [0x00, 0x42, 0x7F, 0x40, 0x00],
         b'2' => [0x42, 0x61, 0x51, 0x49, 0x46],
@@ -196,7 +255,32 @@ fn glyph(byte: u8) -> [u8; 5] {
 
 #[cfg(test)]
 mod receive_witness_tests {
-    use super::{render_receive_witness, FRAME_BYTES};
+    use super::{render_channel_screen, render_receive_witness, FRAME_BYTES};
+
+    #[test]
+    fn the_channel_screen_shows_name_frequency_and_receive_state() {
+        let mut first = [0_u8; FRAME_BYTES];
+        render_channel_screen(&mut first, b"PMR 1", 446_006_250, 52, false, false);
+        let mut second = [0_u8; FRAME_BYTES];
+        render_channel_screen(&mut second, b"PMR 1", 446_018_750, 52, false, false);
+        assert_ne!(first, second, "the frequency must be visible");
+
+        let mut renamed = [0_u8; FRAME_BYTES];
+        render_channel_screen(&mut renamed, b"CALL", 446_006_250, 52, false, false);
+        assert_ne!(first, renamed, "the channel name must be visible");
+
+        let mut metered = [0_u8; FRAME_BYTES];
+        render_channel_screen(&mut metered, b"PMR 1", 446_006_250, 148, false, false);
+        assert_ne!(first, metered, "RSSI must be visible");
+
+        let mut open = [0_u8; FRAME_BYTES];
+        render_channel_screen(&mut open, b"PMR 1", 446_006_250, 52, true, false);
+        assert_ne!(first, open, "the squelch link must be visible");
+
+        let mut routed = [0_u8; FRAME_BYTES];
+        render_channel_screen(&mut routed, b"PMR 1", 446_006_250, 52, false, true);
+        assert_ne!(first, routed, "the audio state must be visible");
+    }
 
     #[test]
     fn the_receive_witness_renders_distinct_states() {

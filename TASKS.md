@@ -1463,3 +1463,28 @@
   and noise with the carrier squelch link opening. `EVID-K1-057` records the
   exact values. Audio, sensitivity, calibration, and tone decoding remain out
   of scope and are tracked by `RISK-030` and `RISK-031`.
+
+## RFK1-030 — Audible receive and keypad-operated channel selection
+
+- **Status:** in progress (2026-08-07)
+- **Objective:** make the K1 application usable as a receiver: audible
+  demodulated audio, operator channel selection, and a display which reports
+  what the receiver is doing.
+- **Scope:** the `PA8` audio amplifier under keypad control; the operating
+  screen with channel name, frequency, raw RSSI, squelch, and audio state; the
+  shared banked receive controller and channel records driving tuning on the
+  target; a published snapshot the serial responder reads without touching the
+  bus.
+- **Exclusions:** transmit of any kind, channel storage on the radio, squelch
+  calibration from external flash, tone decoding, scanning, and menus.
+- **Acceptance criteria:** audio is audible with the cable unplugged and
+  toggled from the radio itself; channel selection retunes the receiver and the
+  display agrees with the serial observation; no serial request touches the
+  register bus; every built-in channel is `TxClass::Never`.
+- **Audio result:** confirmed. `AFIK-K1-1.1` produced audible receiver noise on
+  145.500 MHz when side key one was pressed with the cable unplugged; see
+  `EVID-K1-060`. The shared-jack constraint is recorded as `EVID-K1-059` and
+  `ADR-055`.
+- **Remaining:** flash `AFIK-K1-1.2` and confirm that Up and Down retune the
+  receiver across the five built-in channels with the display and the serial
+  observation agreeing.

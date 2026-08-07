@@ -377,3 +377,38 @@ after a bounded SPI timeout so display failure cannot trap the serial loop. The
 `94ac835a473a8a910b740eb792c3a3567254ea297b1d23c31e2c7e52d0ec327b`.
 This is not yet a physical display observation; the next write remains
 explicitly confirmation-gated.
+
+## Receive bring-up and the operating image
+
+The K1 application now drives the radio chip directly. `EVID-K1-054` fixes the
+three-wire pinout, `EVID-BK4829-055` fixes the chip variant, `EVID-K1-057`
+records the first working reception, and `EVID-K1-060` records audible
+demodulated audio.
+
+Two board facts shape the image:
+
+- **The chip is a BK4829.** The pinned K1 build compiles `driver/bk4829.c`, so
+  the power blocks, receive mode word, audio output bits, filter bandwidth,
+  gain tables, and sub-audio values all differ from the BK4819's. AFIK selects
+  `BK4829_PROFILE` on this target.
+- **The programming cable occupies the speaker jack.** Driving the audio path
+  pin `PA8` removes the serial link, and the internal speaker is disconnected
+  while the cable is inserted, so audio can be neither commanded nor heard over
+  serial. `EVID-K1-059` records the evidence and `ADR-055` the consequence.
+
+The operating image therefore puts the operator controls on the radio:
+
+| Control | Action |
+| --- | --- |
+| Up / Down | Select the next or previous built-in channel |
+| Side key 1 | Route or mute receive audio |
+
+The display shows the channel name, the frequency in megahertz, the chip's raw
+RSSI count, the squelch link, and the audio state. The serial link answers
+`hello` and `probe-rf`, reading a published snapshot rather than touching the
+bus, so a request can never bit-bang beside an inbound frame.
+
+The image carries five receive-only built-in channels because AFIK does not yet
+read channels from the radio. Every one is classified `TxClass::Never` and the
+image constructs no transmit authority, so nothing in this path can key the
+radio.

@@ -18,11 +18,14 @@ use py32_hal::usart::Uart;
 use radio_bk4819::{
     AfOutput, Bk4819, ReadbackRegister, ReceiveSetup, SquelchThresholds, BK4829_PROFILE,
 };
-use radio_domain::{Bandwidth, Frequency, Modulation, Tone};
+use radio_channel_control::{
+    BankedReceiveController, ChannelMemory, ChannelReceiveSetup, ReceiveObservation,
+};
+use radio_domain::{Modulation, RadioConfig, Tone};
 use radio_firmware_k1::bk4819_bus::ThreeWireBus;
+use radio_firmware_k1::channels::{built_in, BUILT_IN_CHANNELS};
 use radio_firmware_k1::display::{
-    render_key_witness, render_receive_witness, render_witness, COLUMN_OFFSET, FRAME_BYTES, PAGES,
-    SETUP_COMMANDS, WIDTH,
+    render_channel_screen, render_witness, COLUMN_OFFSET, FRAME_BYTES, PAGES, SETUP_COMMANDS, WIDTH,
 };
 use radio_firmware_k1::keypad::{decode, Debouncer, Edge, Key, KeypadScan, Sample};
 use radio_firmware_k1::protocol::{
@@ -46,6 +49,7 @@ const RF_SAMPLE_MILLISECONDS: u64 = 500;
 /// answering a request never bit-bangs a transfer beside an inbound frame.
 static RF_SNAPSHOT: AtomicU32 = AtomicU32::new(0);
 static RF_IDENTITY: AtomicU32 = AtomicU32::new(0);
+static RF_FREQUENCY: AtomicU32 = AtomicU32::new(0);
 
 fn publish(observation: RfObservation) {
     RF_IDENTITY.store(
@@ -64,6 +68,7 @@ fn publish(observation: RfObservation) {
         u32::from(observation.noise) << 16 | u32::from(observation.samples),
         Ordering::Relaxed,
     );
+    RF_FREQUENCY.store(observation.frequency_hz, Ordering::Relaxed);
 }
 
 static RF_NOISE_SAMPLES: AtomicU32 = AtomicU32::new(0);
@@ -77,11 +82,7 @@ fn published() -> RfObservation {
         identity_register: u16::try_from(identity & 0xFFFF).unwrap_or(0),
         identity_address: u8::try_from(identity >> 16 & 0xFF).unwrap_or(0),
         stage,
-        frequency_hz: if stage == RF_STAGE_RECEIVING {
-            WITNESS_RECEIVE_HZ
-        } else {
-            0
-        },
+        frequency_hz: RF_FREQUENCY.load(Ordering::Relaxed),
         rssi_dbm_x2: i16::from_le_bytes(
             u16::try_from(snapshot >> 8 & 0xFFFF)
                 .unwrap_or(0)
@@ -94,9 +95,6 @@ fn published() -> RfObservation {
         samples: u16::try_from(noise_samples & 0xFFFF).unwrap_or(0),
     }
 }
-
-/// Fixed receive frequency for this bounded bring-up witness.
-const WITNESS_RECEIVE_HZ: u32 = 145_500_000;
 
 #[entry]
 fn main() -> ! {
@@ -309,6 +307,7 @@ struct Receiver {
     identity_register: u16,
     samples: u16,
     audio_routed: bool,
+    frequency_hz: u32,
 }
 
 impl Receiver {
@@ -324,6 +323,7 @@ impl Receiver {
             identity_register: 0,
             samples: 0,
             audio_routed: false,
+            frequency_hz: 0,
         }
     }
 
@@ -332,9 +332,6 @@ impl Receiver {
     /// This drives the receive audio chain only: the chip's audio output and
     /// the speaker amplifier. It cannot key the radio.
     fn set_audio(&mut self, routed: bool) {
-        if self.stage < RF_STAGE_RECEIVING {
-            self.bring_up();
-        }
         if self.stage != RF_STAGE_RECEIVING {
             return;
         }
@@ -362,11 +359,43 @@ impl Receiver {
         self.audio_routed = routed;
     }
 
-    /// Brings the receiver up once, then samples metrics on every request.
-    fn observe(&mut self) -> RfObservation {
-        if self.stage < RF_STAGE_RECEIVING {
+    /// Applies one controller-selected channel to the receiver.
+    fn tune(&mut self, setup: ChannelReceiveSetup) {
+        if self.stage < RF_STAGE_INITIALISED {
             self.bring_up();
         }
+        if self.stage == RF_STAGE_FAULTED {
+            return;
+        }
+        let request = ReceiveSetup {
+            frequency: setup.frequency,
+            modulation: setup.modulation,
+            bandwidth: setup.bandwidth,
+            tone: setup.tone,
+            // The K1 keeps its squelch calibration in external flash which
+            // AFIK does not yet read, so this witness reports raw metrics
+            // with the pinned source's squelch-off set.
+            squelch: SquelchThresholds::squelch_off(),
+            af: if self.audio_routed {
+                AfOutput::Demodulated
+            } else {
+                AfOutput::Mute
+            },
+        };
+        if self.radio.configure_receive(&request).is_err() {
+            self.stage = RF_STAGE_FAULTED;
+            return;
+        }
+        self.frequency_hz = setup.frequency.as_hz();
+        self.stage = RF_STAGE_RECEIVING;
+        if let Ok(value) = self.radio.read_back(ReadbackRegister::FilterBandwidth) {
+            self.identity_address = ReadbackRegister::FilterBandwidth.address();
+            self.identity_register = value;
+        }
+    }
+
+    /// Samples metrics from the tuned receiver.
+    fn observe(&mut self) -> RfObservation {
         if self.stage == RF_STAGE_RECEIVING {
             match self.radio.receive_metrics(Tone::None) {
                 Ok(metrics) => {
@@ -375,7 +404,7 @@ impl Receiver {
                         identity_register: self.identity_register,
                         identity_address: self.identity_address,
                         stage: self.stage,
-                        frequency_hz: WITNESS_RECEIVE_HZ,
+                        frequency_hz: self.frequency_hz,
                         rssi_dbm_x2: metrics.rssi_dbm_x2,
                         glitch: metrics.glitch,
                         noise: metrics.noise,
@@ -412,35 +441,6 @@ impl Receiver {
             return;
         }
         self.stage = RF_STAGE_INITIALISED;
-
-        let Ok(frequency) = Frequency::from_hz(WITNESS_RECEIVE_HZ) else {
-            self.stage = RF_STAGE_FAULTED;
-            return;
-        };
-        let setup = ReceiveSetup {
-            frequency,
-            modulation: Modulation::Fm,
-            bandwidth: Bandwidth::Narrow,
-            tone: Tone::None,
-            // The K1 keeps its squelch calibration in external flash which
-            // AFIK does not yet read, so this witness runs with the pinned
-            // source's squelch-off set and reports raw metrics only.
-            squelch: SquelchThresholds::squelch_off(),
-            af: AfOutput::Mute,
-        };
-        if self.radio.configure_receive(&setup).is_err() {
-            self.stage = RF_STAGE_FAULTED;
-            return;
-        }
-        self.stage = RF_STAGE_RECEIVING;
-
-        match self.radio.read_back(ReadbackRegister::FilterBandwidth) {
-            Ok(value) => {
-                self.identity_address = ReadbackRegister::FilterBandwidth.address();
-                self.identity_register = value;
-            }
-            Err(_) => self.stage = RF_STAGE_FAULTED,
-        }
     }
 }
 
@@ -500,24 +500,34 @@ async fn ui_task(
         fail_closed();
     }
 
+    let mut memory = ChannelMemory::<BUILT_IN_CHANNELS>::new();
+    for index in 0..BUILT_IN_CHANNELS {
+        let Ok(channel) = built_in(index) else {
+            fail_closed();
+        };
+        if memory.insert(channel).is_err() {
+            fail_closed();
+        }
+    }
+    let Ok((mut controller, update)) =
+        BankedReceiveController::activate(memory, RadioConfig::conservative(), None)
+    else {
+        fail_closed();
+    };
+
     // This task owns the radio because the audio toggle belongs on the keypad:
     // the programming cable shares the speaker jack, so audio cannot be heard
     // or safely switched over the serial link.
     let mut receiver = Receiver::new(radio_pins, speaker_pin);
+    if let Some(activation) = update.activation {
+        receiver.tune(activation.setup);
+    }
     let mut observation = receiver.observe();
     publish(observation);
-    render_receive_witness(
-        &mut frame,
-        observation.audio_routed,
-        rssi_raw(observation),
-        observation.squelch_open,
-    );
-    if !display.frame(&frame).await {
-        fail_closed();
-    }
 
     let mut debounce = Debouncer::new();
     let mut next_sample = Instant::now();
+    let mut redraw = true;
     loop {
         let sample = match decode(keypad.scan().await) {
             Ok(Some(key)) => Sample::Key(key),
@@ -525,22 +535,25 @@ async fn ui_task(
             Err(_) => Sample::Invalid,
         };
         let now = u32::try_from(Instant::now().as_millis()).unwrap_or(u32::MAX);
-        let mut redraw = false;
 
         if let Edge::Pressed(key) = debounce.update(now, sample) {
-            if matches!(key, Key::Side1) {
+            let selection = match key {
                 // Side key one toggles receive audio. AFIK implements no
                 // transmit path, so this can only route received audio.
-                receiver.set_audio(!observation.audio_routed);
-                observation = receiver.observe();
-                publish(observation);
-                redraw = true;
-            } else {
-                render_key_witness(&mut frame, key);
-                if !display.frame(&frame).await {
-                    fail_closed();
+                Key::Side1 => {
+                    receiver.set_audio(!observation.audio_routed);
+                    None
                 }
+                Key::Up => controller.select_next().ok(),
+                Key::Down => controller.select_previous().ok(),
+                _ => None,
+            };
+            if let Some(activation) = selection.and_then(|update| update.activation) {
+                receiver.tune(activation.setup);
             }
+            observation = receiver.observe();
+            publish(observation);
+            redraw = true;
         }
 
         // Metering runs only while audio is routed, which is also when the
@@ -548,21 +561,30 @@ async fn ui_task(
         // idle so the serial link is never disturbed.
         if observation.audio_routed && Instant::now() >= next_sample {
             observation = receiver.observe();
+            controller
+                .observe(ReceiveObservation {
+                    squelch_open: observation.squelch_open,
+                    tone_matched: None,
+                })
+                .ok();
             publish(observation);
             next_sample = Instant::now() + Duration::from_millis(RF_SAMPLE_MILLISECONDS);
             redraw = true;
         }
 
         if redraw {
-            render_receive_witness(
+            render_channel_screen(
                 &mut frame,
-                observation.audio_routed,
+                controller.channel().name().as_str().as_bytes(),
+                observation.frequency_hz,
                 rssi_raw(observation),
                 observation.squelch_open,
+                observation.audio_routed,
             );
             if !display.frame(&frame).await {
                 fail_closed();
             }
+            redraw = false;
         }
 
         Timer::after(Duration::from_millis(5)).await;

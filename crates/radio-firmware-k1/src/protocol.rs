@@ -40,7 +40,7 @@ const XOR_KEY: [u8; 16] = [
 ];
 
 /// Printable identity returned by the first AFIK K1 application.
-pub const APPLICATION_VERSION: &[u8] = b"AFIK-K1-1.1";
+pub const APPLICATION_VERSION: &[u8] = b"AFIK-K1-1.2";
 
 /// One accepted read-only normal-mode request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

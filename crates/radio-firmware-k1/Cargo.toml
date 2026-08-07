@@ -49,6 +49,8 @@ async-firmware = [
 
 [dependencies]
 radio-bk4819 = { path = "../radio-bk4819" }
+radio-channel-control = { path = "../radio-channel-control" }
+radio-channel-plan = { path = "../radio-channel-plan" }
 radio-domain = { path = "../radio-domain" }
 embassy-executor = { version = "=0.10.0", default-features = false, features = ["executor-thread", "platform-cortex-m"], optional = true }
 py32-hal = { version = "=0.4.1", default-features = false, features = ["py32f071r1b"], optional = true }
