@@ -27,6 +27,8 @@ const COMMAND_CLOCK_CONTROL_REQUEST: u16 = 0x7F1C;
 const COMMAND_CLOCK_CONTROL_RESPONSE: u16 = 0x7F1D;
 const COMMAND_RF_REQUEST: u16 = 0x7F1E;
 const COMMAND_RF_RESPONSE: u16 = 0x7F1F;
+const COMMAND_RF_AUDIO_ON_REQUEST: u16 = 0x7F20;
+const COMMAND_RF_AUDIO_OFF_REQUEST: u16 = 0x7F22;
 /// Fixed no-MMIO marker returned by the clock-path control request.
 pub const CLOCK_CONTROL_MARKER: u32 = 0x4B31_434C;
 const SESSION_WORD: u32 = 0x6457_396A;
@@ -38,7 +40,7 @@ const XOR_KEY: [u8; 16] = [
 ];
 
 /// Printable identity returned by the first AFIK K1 application.
-pub const APPLICATION_VERSION: &[u8] = b"AFIK-K1-0.8";
+pub const APPLICATION_VERSION: &[u8] = b"AFIK-K1-1.1";
 
 /// One accepted read-only normal-mode request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -55,6 +57,9 @@ pub enum Request {
     ClockControl,
     /// Read-only BK4819 receive observation.
     RfProbe,
+    /// Route or mute demodulated receive audio. This carries no transmit
+    /// capability: it enables the receive audio amplifier only.
+    RfAudio(bool),
 }
 
 /// Bounded read-only receive observation returned by [`Request::RfProbe`].
@@ -81,6 +86,8 @@ pub struct RfObservation {
     pub squelch_open: bool,
     /// Number of completed metric samples since boot.
     pub samples: u16,
+    /// Whether demodulated audio is currently routed to the speaker.
+    pub audio_routed: bool,
 }
 
 /// No BK4819 operation has been attempted yet.
@@ -117,6 +124,8 @@ pub fn decode_request(encoded_body: &mut [u8; REQUEST_BODY_BYTES]) -> Option<Req
         command if command == COMMAND_CLOCK_REGISTER_REQUESTS[3] => Some(Request::ClockRegister(3)),
         COMMAND_CLOCK_CONTROL_REQUEST => Some(Request::ClockControl),
         COMMAND_RF_REQUEST => Some(Request::RfProbe),
+        COMMAND_RF_AUDIO_ON_REQUEST => Some(Request::RfAudio(true)),
+        COMMAND_RF_AUDIO_OFF_REQUEST => Some(Request::RfAudio(false)),
         _ => None,
     }
 }
@@ -196,6 +205,7 @@ pub fn encode_rf_response(frame: &mut [u8; RF_RESPONSE_FRAME_BYTES], observation
     payload[14] = observation.glitch;
     payload[15] = observation.noise;
     payload[16] = u8::from(observation.squelch_open);
+    payload[17] = u8::from(observation.audio_routed);
     payload[18..20].copy_from_slice(&observation.samples.to_le_bytes());
     frame[24..26].copy_from_slice(&RESPONSE_TRAILER.to_le_bytes());
     xor(&mut frame[4..26]);
@@ -316,7 +326,15 @@ mod tests {
             decode_request(&mut request_body(0x7F1E)),
             Some(Request::RfProbe)
         );
-        assert_eq!(decode_request(&mut request_body(0x7F20)), None);
+        assert_eq!(
+            decode_request(&mut request_body(0x7F20)),
+            Some(Request::RfAudio(true))
+        );
+        assert_eq!(
+            decode_request(&mut request_body(0x7F22)),
+            Some(Request::RfAudio(false))
+        );
+        assert_eq!(decode_request(&mut request_body(0x7F24)), None);
 
         let mut frame = [0_u8; RF_RESPONSE_FRAME_BYTES];
         encode_rf_response(
@@ -331,6 +349,7 @@ mod tests {
                 noise: 0x34,
                 squelch_open: true,
                 samples: 7,
+                audio_routed: true,
             },
         );
         assert_eq!(&frame[..2], &[0xAB, 0xCD]);
@@ -354,6 +373,7 @@ mod tests {
         assert_eq!(frame[18], 0x12);
         assert_eq!(frame[19], 0x34);
         assert_eq!(frame[20], 1);
+        assert_eq!(frame[21], 1);
         assert_eq!(&frame[22..24], &7_u16.to_le_bytes());
     }
 

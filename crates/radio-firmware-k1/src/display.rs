@@ -94,6 +94,48 @@ pub fn render_key_witness(frame: &mut [u8; FRAME_BYTES], key: Key) {
     draw_text(frame, (WIDTH - width) / 2, 36, label);
 }
 
+/// Produces the receive witness: audio state, RSSI, and the squelch link.
+///
+/// `rssi_raw` is the chip's own 0.5 dB step value, rendered without conversion
+/// so the screen and the serial observation cannot disagree.
+pub fn render_receive_witness(
+    frame: &mut [u8; FRAME_BYTES],
+    audio_routed: bool,
+    rssi_raw: u16,
+    squelch_open: bool,
+) {
+    frame.fill(0);
+    draw_text(frame, 51, 4, b"AFIK");
+    draw_text(
+        frame,
+        30,
+        20,
+        if audio_routed {
+            b"AUDIO ON "
+        } else {
+            b"AUDIO OFF"
+        },
+    );
+
+    let mut label = *b"RSSI ---";
+    let value = rssi_raw.min(999);
+    label[5] = b'0' + u8::try_from(value / 100).unwrap_or(0);
+    label[6] = b'0' + u8::try_from(value / 10 % 10).unwrap_or(0);
+    label[7] = b'0' + u8::try_from(value % 10).unwrap_or(0);
+    draw_text(frame, 36, 36, &label);
+
+    draw_text(
+        frame,
+        36,
+        52,
+        if squelch_open {
+            b"SQ OPEN "
+        } else {
+            b"SQ SHUT "
+        },
+    );
+}
+
 fn draw_text(frame: &mut [u8; FRAME_BYTES], mut x: usize, y: usize, text: &[u8]) {
     for byte in text {
         let glyph = glyph(*byte);
@@ -141,6 +183,7 @@ fn glyph(byte: u8) -> [u8; 5] {
         b'N' => [0x7F, 0x04, 0x08, 0x10, 0x7F],
         b'O' => [0x3E, 0x41, 0x41, 0x41, 0x3E],
         b'P' => [0x7F, 0x09, 0x09, 0x09, 0x06],
+        b'Q' => [0x3E, 0x41, 0x51, 0x21, 0x5E],
         b'R' => [0x7F, 0x09, 0x19, 0x29, 0x46],
         b'S' => [0x46, 0x49, 0x49, 0x49, 0x31],
         b'T' => [0x01, 0x01, 0x7F, 0x01, 0x01],
@@ -148,6 +191,37 @@ fn glyph(byte: u8) -> [u8; 5] {
         b'W' => [0x3F, 0x40, 0x38, 0x40, 0x3F],
         b'X' => [0x63, 0x14, 0x08, 0x14, 0x63],
         _ => [0x00, 0x00, 0x00, 0x00, 0x00],
+    }
+}
+
+#[cfg(test)]
+mod receive_witness_tests {
+    use super::{render_receive_witness, FRAME_BYTES};
+
+    #[test]
+    fn the_receive_witness_renders_distinct_states() {
+        let mut muted = [0_u8; FRAME_BYTES];
+        render_receive_witness(&mut muted, false, 0, false);
+        let mut routed = [0_u8; FRAME_BYTES];
+        render_receive_witness(&mut routed, true, 0, false);
+        assert_ne!(muted, routed, "audio state must be visible");
+
+        let mut quiet = [0_u8; FRAME_BYTES];
+        render_receive_witness(&mut quiet, true, 52, false);
+        let mut loud = [0_u8; FRAME_BYTES];
+        render_receive_witness(&mut loud, true, 148, false);
+        assert_ne!(quiet, loud, "RSSI must be visible");
+
+        let mut open = [0_u8; FRAME_BYTES];
+        render_receive_witness(&mut open, true, 52, true);
+        assert_ne!(quiet, open, "squelch state must be visible");
+
+        // Values above the three-digit field are clamped, never wrapped.
+        let mut clamped = [0_u8; FRAME_BYTES];
+        render_receive_witness(&mut clamped, true, 999, false);
+        let mut over = [0_u8; FRAME_BYTES];
+        render_receive_witness(&mut over, true, 1_500, false);
+        assert_eq!(clamped, over);
     }
 }
 

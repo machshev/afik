@@ -18,6 +18,8 @@ const COMMAND_CLOCK_CONTROL_REQUEST: u16 = 0x7F1C;
 const COMMAND_CLOCK_CONTROL_RESPONSE: u16 = 0x7F1D;
 const COMMAND_RF_REQUEST: u16 = 0x7F1E;
 const COMMAND_RF_RESPONSE: u16 = 0x7F1F;
+const COMMAND_RF_AUDIO_ON_REQUEST: u16 = 0x7F20;
+const COMMAND_RF_AUDIO_OFF_REQUEST: u16 = 0x7F22;
 const CLOCK_CONTROL_MARKER: u32 = 0x4B31_434C;
 const COMMAND_READ_EEPROM_REQUEST: u16 = 0x051B;
 const COMMAND_READ_EEPROM_RESPONSE: u16 = 0x051C;
@@ -268,9 +270,15 @@ pub struct RfReport {
     noise: u8,
     squelch_open: bool,
     samples: u16,
+    audio_routed: bool,
 }
 
 impl RfReport {
+    /// Returns whether demodulated audio is routed to the speaker.
+    pub const fn audio_routed(&self) -> bool {
+        self.audio_routed
+    }
+
     /// Returns the value read back from the receiver after configuration.
     pub const fn identity_register(&self) -> u16 {
         self.identity_register
@@ -480,6 +488,22 @@ pub fn probe_rf<T: Read + Write>(transport: &mut T) -> Result<RfReport, FlashErr
     parse_rf_response(&receive_packet(transport)?)
 }
 
+/// Routes or mutes demodulated receive audio and returns a fresh observation.
+///
+/// This drives the receive audio chain only and carries no transmit capability.
+pub fn set_rf_audio<T: Read + Write>(
+    transport: &mut T,
+    routed: bool,
+) -> Result<RfReport, FlashError> {
+    let command = if routed {
+        COMMAND_RF_AUDIO_ON_REQUEST
+    } else {
+        COMMAND_RF_AUDIO_OFF_REQUEST
+    };
+    send_packet(transport, &session_request(command))?;
+    parse_rf_response(&receive_packet(transport)?)
+}
+
 /// Requests one raw, read-only inherited RCC clock observation.
 pub fn probe_clock_snapshot<T: Read + Write>(
     transport: &mut T,
@@ -661,7 +685,7 @@ fn parse_rf_response(packet: &Packet) -> Result<RfReport, FlashError> {
         20,
         "AFIK K1 raw receive observation",
     )?;
-    if payload[16] > 1 || payload[17] != 0 {
+    if payload[16] > 1 || payload[17] > 1 {
         return Err(FlashError::UnexpectedPacket {
             expected: "bounded AFIK K1 raw receive fields",
             command: Some(COMMAND_RF_RESPONSE),
@@ -678,6 +702,7 @@ fn parse_rf_response(packet: &Packet) -> Result<RfReport, FlashError> {
         noise: payload[15],
         squelch_open: payload[16] == 1,
         samples: u16::from_le_bytes([payload[18], payload[19]]),
+        audio_routed: payload[17] == 1,
     })
 }
 

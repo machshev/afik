@@ -782,3 +782,21 @@ meaning.
 - A future image which needs free-running reception must first give the serial
   path a continuous receive buffer, or move the bus to a peripheral which does
   not hold the CPU.
+
+## ADR-055 — Audio is an operator control on the keypad, not a serial command
+
+- **Date:** 2026-08-07
+- **Status:** accepted for `RFK1-029`
+- The programming cable occupies the speaker jack, so routing audio removes the
+  serial link and the internal speaker cannot be heard while the cable is in.
+  `EVID-K1-059` records the evidence.
+- Audio is therefore toggled by side key one and its state, the raw RSSI, and
+  the squelch link are shown on the display. The operator unplugs the cable,
+  listens, and reads the screen; no host is involved.
+- The task which owns the radio also owns the audio pin and publishes a
+  snapshot the serial responder reads. Serial never touches the bus, so
+  answering a request cannot bit-bang beside an inbound frame, and metering
+  runs only while audio is routed, which is when the cable is expected to be
+  out.
+- Audio remains receive-only in every path: AFIK constructs no transmit
+  authority, so neither the keypad nor the serial link can key the radio.

@@ -5,13 +5,14 @@
 #![deny(unsafe_code)]
 
 use core::panic::PanicInfo;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use cortex_m_rt::entry;
 use embassy_executor::Executor;
 use embassy_time::{Duration, Instant, Timer};
 use py32_hal::gpio::{Flex, Input, Level, Output, Pull, Speed};
 use py32_hal::mode::Async;
-use py32_hal::peripherals::SPI1;
+use py32_hal::peripherals::{PA8, SPI1};
 use py32_hal::spi::SpiTx;
 use py32_hal::usart::Uart;
 use radio_bk4819::{
@@ -20,9 +21,10 @@ use radio_bk4819::{
 use radio_domain::{Bandwidth, Frequency, Modulation, Tone};
 use radio_firmware_k1::bk4819_bus::ThreeWireBus;
 use radio_firmware_k1::display::{
-    render_key_witness, render_witness, COLUMN_OFFSET, FRAME_BYTES, PAGES, SETUP_COMMANDS, WIDTH,
+    render_key_witness, render_receive_witness, render_witness, COLUMN_OFFSET, FRAME_BYTES, PAGES,
+    SETUP_COMMANDS, WIDTH,
 };
-use radio_firmware_k1::keypad::{decode, Debouncer, Edge, KeypadScan, Sample};
+use radio_firmware_k1::keypad::{decode, Debouncer, Edge, Key, KeypadScan, Sample};
 use radio_firmware_k1::protocol::{
     decode_request, encode_hello_response, encode_rf_response, Request, RfObservation,
     REQUEST_BODY_BYTES, RESPONSE_FRAME_BYTES, RF_RESPONSE_FRAME_BYTES, RF_STAGE_FAULTED,
@@ -34,6 +36,64 @@ use radio_firmware_k1::py32f071_runtime_init::init;
 
 const _: [(); 8] = [(); PAGES];
 const K1_VECTOR_TABLE_ORIGIN: u32 = 0x0800_2800;
+
+/// Interval between receive samples while audio is routed.
+const RF_SAMPLE_MILLISECONDS: u64 = 500;
+
+/// Latest receive snapshot published by the task which owns the radio.
+///
+/// Only that task touches the bus. The serial responder reads these words, so
+/// answering a request never bit-bangs a transfer beside an inbound frame.
+static RF_SNAPSHOT: AtomicU32 = AtomicU32::new(0);
+static RF_IDENTITY: AtomicU32 = AtomicU32::new(0);
+
+fn publish(observation: RfObservation) {
+    RF_IDENTITY.store(
+        u32::from(observation.identity_address) << 16 | u32::from(observation.identity_register),
+        Ordering::Relaxed,
+    );
+    let rssi = u32::from(u16::from_le_bytes(observation.rssi_dbm_x2.to_le_bytes()));
+    let flags = u32::from(observation.stage & 0x0F) << 28
+        | u32::from(u8::from(observation.squelch_open)) << 27
+        | u32::from(u8::from(observation.audio_routed)) << 26;
+    RF_SNAPSHOT.store(
+        flags | (rssi & 0xFFFF) << 8 | u32::from(observation.glitch),
+        Ordering::Relaxed,
+    );
+    RF_NOISE_SAMPLES.store(
+        u32::from(observation.noise) << 16 | u32::from(observation.samples),
+        Ordering::Relaxed,
+    );
+}
+
+static RF_NOISE_SAMPLES: AtomicU32 = AtomicU32::new(0);
+
+fn published() -> RfObservation {
+    let identity = RF_IDENTITY.load(Ordering::Relaxed);
+    let snapshot = RF_SNAPSHOT.load(Ordering::Relaxed);
+    let noise_samples = RF_NOISE_SAMPLES.load(Ordering::Relaxed);
+    let stage = u8::try_from(snapshot >> 28 & 0x0F).unwrap_or(RF_STAGE_UNSTARTED);
+    RfObservation {
+        identity_register: u16::try_from(identity & 0xFFFF).unwrap_or(0),
+        identity_address: u8::try_from(identity >> 16 & 0xFF).unwrap_or(0),
+        stage,
+        frequency_hz: if stage == RF_STAGE_RECEIVING {
+            WITNESS_RECEIVE_HZ
+        } else {
+            0
+        },
+        rssi_dbm_x2: i16::from_le_bytes(
+            u16::try_from(snapshot >> 8 & 0xFFFF)
+                .unwrap_or(0)
+                .to_le_bytes(),
+        ),
+        glitch: u8::try_from(snapshot & 0xFF).unwrap_or(0),
+        noise: u8::try_from(noise_samples >> 16 & 0xFF).unwrap_or(0),
+        squelch_open: snapshot >> 27 & 1 == 1,
+        audio_routed: snapshot >> 26 & 1 == 1,
+        samples: u16::try_from(noise_samples & 0xFFFF).unwrap_or(0),
+    }
+}
 
 /// Fixed receive frequency for this bounded bring-up witness.
 const WITNESS_RECEIVE_HZ: u32 = 145_500_000;
@@ -97,10 +157,10 @@ fn main() -> ! {
     #[allow(unsafe_code)]
     let executor: &'static mut Executor = unsafe { core::mem::transmute(&mut executor) };
     executor.run(|spawner| {
-        let Ok(serial) = serial_task(serial, radio_pins) else {
+        let Ok(serial) = serial_task(serial) else {
             fail_closed();
         };
-        let Ok(ui) = ui_task(display, keypad) else {
+        let Ok(ui) = ui_task(display, keypad, radio_pins, p.PA8) else {
             fail_closed();
         };
         spawner.spawn(serial);
@@ -238,23 +298,68 @@ impl KeypadPins {
 /// doing it while the host is mid-request would drop received bytes.
 struct Receiver {
     radio: Bk4819<ThreeWireBus<Bk4819Pins>>,
+    /// Active-high receive audio amplifier enable on `PA8`.
+    ///
+    /// The K1 programming cable shares the speaker and microphone jack, so the
+    /// pin is left untouched until the operator explicitly asks for audio.
+    speaker: Option<Output<'static>>,
+    speaker_pin: Option<PA8>,
     stage: u8,
     identity_address: u8,
     identity_register: u16,
     samples: u16,
+    audio_routed: bool,
 }
 
 impl Receiver {
-    fn new(pins: Bk4819Pins) -> Self {
+    fn new(pins: Bk4819Pins, speaker_pin: PA8) -> Self {
         Self {
             // The pinned K1 build compiles the BK4829 driver, so this board
             // needs that variant's register values.
             radio: Bk4819::with_profile(ThreeWireBus::new(pins), BK4829_PROFILE),
+            speaker: None,
+            speaker_pin: Some(speaker_pin),
             stage: RF_STAGE_UNSTARTED,
             identity_address: 0,
             identity_register: 0,
             samples: 0,
+            audio_routed: false,
         }
+    }
+
+    /// Routes or mutes demodulated receive audio.
+    ///
+    /// This drives the receive audio chain only: the chip's audio output and
+    /// the speaker amplifier. It cannot key the radio.
+    fn set_audio(&mut self, routed: bool) {
+        if self.stage < RF_STAGE_RECEIVING {
+            self.bring_up();
+        }
+        if self.stage != RF_STAGE_RECEIVING {
+            return;
+        }
+        let output = if routed {
+            AfOutput::Demodulated
+        } else {
+            AfOutput::Mute
+        };
+        if self.radio.set_af_output(Modulation::Fm, output).is_err() {
+            self.stage = RF_STAGE_FAULTED;
+            return;
+        }
+        if self.speaker.is_none() {
+            if let Some(pin) = self.speaker_pin.take() {
+                self.speaker = Some(Output::new(pin, Level::Low, Speed::Low));
+            }
+        }
+        if let Some(speaker) = self.speaker.as_mut() {
+            if routed {
+                speaker.set_high();
+            } else {
+                speaker.set_low();
+            }
+        }
+        self.audio_routed = routed;
     }
 
     /// Brings the receiver up once, then samples metrics on every request.
@@ -276,6 +381,7 @@ impl Receiver {
                         noise: metrics.noise,
                         squelch_open: metrics.squelch_open,
                         samples: self.samples,
+                        audio_routed: self.audio_routed,
                     };
                 }
                 Err(_) => self.stage = RF_STAGE_FAULTED,
@@ -287,6 +393,7 @@ impl Receiver {
             stage: self.stage,
             frequency_hz: 0,
             samples: self.samples,
+            audio_routed: self.audio_routed,
             ..RfObservation::default()
         }
     }
@@ -338,8 +445,7 @@ impl Receiver {
 }
 
 #[embassy_executor::task]
-async fn serial_task(mut uart: Uart<'static, Async>, radio_pins: Bk4819Pins) {
-    let mut receiver = Receiver::new(radio_pins);
+async fn serial_task(mut uart: Uart<'static, Async>) {
     let mut window = [0_u8; 16];
     let mut used = 0_usize;
     loop {
@@ -366,12 +472,12 @@ async fn serial_task(mut uart: Uart<'static, Async>, radio_pins: Bk4819Pins) {
                     encode_hello_response(&mut response);
                     let _ = uart.write(&response).await;
                 }
-                Some(Request::RfProbe) => {
-                    // The complete bring-up and sample happen here, between a
-                    // received request and its response, never beside one.
-                    let observation = receiver.observe();
+                // Serial only reads the published snapshot. The programming
+                // cable shares the speaker jack, so audio is operator
+                // controlled from the keypad, never from this link.
+                Some(Request::RfProbe | Request::RfAudio(_)) => {
                     let mut response = [0_u8; RF_RESPONSE_FRAME_BYTES];
-                    encode_rf_response(&mut response, observation);
+                    encode_rf_response(&mut response, published());
                     let _ = uart.write(&response).await;
                 }
                 _ => {}
@@ -382,13 +488,36 @@ async fn serial_task(mut uart: Uart<'static, Async>, radio_pins: Bk4819Pins) {
 }
 
 #[embassy_executor::task]
-async fn ui_task(mut display: DisplayPins, mut keypad: KeypadPins) {
+async fn ui_task(
+    mut display: DisplayPins,
+    mut keypad: KeypadPins,
+    radio_pins: Bk4819Pins,
+    speaker_pin: PA8,
+) {
     let mut frame = [0_u8; FRAME_BYTES];
     render_witness(&mut frame);
     if !display.initialise().await || !display.frame(&frame).await {
         fail_closed();
     }
+
+    // This task owns the radio because the audio toggle belongs on the keypad:
+    // the programming cable shares the speaker jack, so audio cannot be heard
+    // or safely switched over the serial link.
+    let mut receiver = Receiver::new(radio_pins, speaker_pin);
+    let mut observation = receiver.observe();
+    publish(observation);
+    render_receive_witness(
+        &mut frame,
+        observation.audio_routed,
+        rssi_raw(observation),
+        observation.squelch_open,
+    );
+    if !display.frame(&frame).await {
+        fail_closed();
+    }
+
     let mut debounce = Debouncer::new();
+    let mut next_sample = Instant::now();
     loop {
         let sample = match decode(keypad.scan().await) {
             Ok(Some(key)) => Sample::Key(key),
@@ -396,14 +525,53 @@ async fn ui_task(mut display: DisplayPins, mut keypad: KeypadPins) {
             Err(_) => Sample::Invalid,
         };
         let now = u32::try_from(Instant::now().as_millis()).unwrap_or(u32::MAX);
+        let mut redraw = false;
+
         if let Edge::Pressed(key) = debounce.update(now, sample) {
-            render_key_witness(&mut frame, key);
+            if matches!(key, Key::Side1) {
+                // Side key one toggles receive audio. AFIK implements no
+                // transmit path, so this can only route received audio.
+                receiver.set_audio(!observation.audio_routed);
+                observation = receiver.observe();
+                publish(observation);
+                redraw = true;
+            } else {
+                render_key_witness(&mut frame, key);
+                if !display.frame(&frame).await {
+                    fail_closed();
+                }
+            }
+        }
+
+        // Metering runs only while audio is routed, which is also when the
+        // cable is expected to be unplugged. With audio muted the bus stays
+        // idle so the serial link is never disturbed.
+        if observation.audio_routed && Instant::now() >= next_sample {
+            observation = receiver.observe();
+            publish(observation);
+            next_sample = Instant::now() + Duration::from_millis(RF_SAMPLE_MILLISECONDS);
+            redraw = true;
+        }
+
+        if redraw {
+            render_receive_witness(
+                &mut frame,
+                observation.audio_routed,
+                rssi_raw(observation),
+                observation.squelch_open,
+            );
             if !display.frame(&frame).await {
                 fail_closed();
             }
         }
+
         Timer::after(Duration::from_millis(5)).await;
     }
+}
+
+/// Converts the reported half-dBm value back to the chip's raw RSSI count.
+fn rssi_raw(observation: RfObservation) -> u16 {
+    u16::try_from(observation.rssi_dbm_x2 + 320).unwrap_or(0)
 }
 
 fn fail_closed() -> ! {

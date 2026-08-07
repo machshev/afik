@@ -1655,3 +1655,35 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   persistent receiver fault cannot starve the display task.
 - **Confidence:** high; the symptom reproduced on two units and disappeared
   once the work moved inside the request.
+
+### EVID-K1-059 — The programming cable and the speaker share one jack
+
+- **Observation:** driving the audio-path pin `PA8` in any state removes the
+  serial link. Across three images on the same unit: `AFIK-K1-0.8` never
+  touched `PA8` and serial worked; `AFIK-K1-0.9` drove it low (amplifier off)
+  at boot and serial was dead while the display and keypad kept running;
+  `AFIK-K1-1.0` left it untouched until requested, serial worked, and the link
+  dropped the moment an audio request drove the pin.
+- **Interpretation:** the K1 programming cable occupies the speaker and
+  microphone jack, so the audio path and the host serial path contend for the
+  same physical connection. With the cable inserted the internal speaker is
+  disconnected, so receive audio cannot be heard over it either.
+- **Consequence:** audio cannot be commanded or observed over the serial link.
+  `AFIK-K1-1.1` moves the audio toggle to the keypad and shows the receive
+  state on the display, so the operator unplugs the cable, listens, and reads
+  the screen. See `ADR-055`.
+
+### EVID-K1-060 — Demodulated receive audio confirmed on the exact unit
+
+- **Image:** `AFIK-K1-1.1`, 31,672 bytes, CRC-32 `827b5f8e`, written through
+  bootloader `7.03.01` with all 124 pages acknowledged and no retry.
+- **Observation:** with the serial cable unplugged, pressing side key one
+  switched the display to `AUDIO ON` and receiver noise was audible from the
+  speaker on 145.500 MHz narrow FM.
+- **What this establishes:** the complete receive chain works on this board:
+  the bit-banged three-wire bus, the BK4829 power-on table, tuning, the
+  demodulator and audio output register, and the `PA8` audio amplifier.
+- **What it does not establish:** sensitivity, audio quality, calibrated
+  squelch, tone decoding, or reception of a specific signal. The channel ran
+  with the pinned squelch-off thresholds, so open-squelch noise is the expected
+  sound. `RISK-030` and `RISK-031` remain open.
