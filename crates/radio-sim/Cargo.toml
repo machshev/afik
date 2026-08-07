@@ -12,6 +12,7 @@ radio-aprs = { path = "../radio-aprs" }
 radio-bk4819 = { path = "../radio-bk4819" }
 radio-channel-control = { path = "../radio-channel-control" }
 radio-channel-plan = { path = "../radio-channel-plan" }
+radio-device = { path = "../radio-device" }
 radio-domain = { path = "../radio-domain" }
 radio-programmer = { path = "../radio-programmer" }
 radio-protocol = { path = "../radio-protocol" }

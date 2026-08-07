@@ -2408,6 +2408,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "radio-device"
+version = "0.1.0"
+dependencies = [
+ "radio-channel-plan",
+ "radio-domain",
+ "radio-protocol",
+ "radio-storage",
+]
+
+[[package]]
 name = "radio-domain"
 version = "0.1.0"
 
@@ -2509,6 +2519,7 @@ dependencies = [
  "radio-bk4819",
  "radio-channel-control",
  "radio-channel-plan",
+ "radio-device",
  "radio-domain",
  "radio-programmer",
  "radio-protocol",

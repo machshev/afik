@@ -1,0 +1,19 @@
+[package]
+name = "radio-device"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Heap-free device-side configuration protocol service"
+
+[dependencies]
+radio-protocol = { path = "../radio-protocol" }
+radio-storage = { path = "../radio-storage" }
+
+[dev-dependencies]
+radio-channel-plan = { path = "../radio-channel-plan" }
+radio-domain = { path = "../radio-domain" }
+
+[lints]
+workspace = true

@@ -16,18 +16,11 @@ use radio_channel_control::{
     ControlUpdate as ChannelControlUpdate, ScanConfig, TimerDirective, TimerToken,
 };
 use radio_channel_plan::{GeneratedBank, PlanEncoding};
+use radio_device::{DeviceEvent, DeviceService};
 use radio_domain::{ActiveChannel, Frequency, SignalMeasurement, TxClass};
 use radio_programmer::ProtocolTransport;
-use radio_protocol::{
-    decode_list_objects_request, encode_frame, Command, DeviceCapabilities, DeviceErrorCode, Frame,
-    ObjectDescriptor, ObjectListPage, PayloadReader, PayloadWriter, ProtocolError, Service,
-    StreamDecoder, FLAG_ERROR, FLAG_RESPONSE, MAX_ENCODED_FRAME, MAX_LIST_OBJECTS_PER_PAGE,
-    MAX_PAYLOAD, PROTOCOL_VERSION,
-};
-use radio_storage::{
-    validate_object, ObjectKey, ObjectKind, StorageError, StorageObject, TransactionalStore,
-    MAX_OBJECT_DATA, STORAGE_FORMAT_VERSION,
-};
+use radio_protocol::{Command, DeviceCapabilities, ProtocolError, Service, MAX_ENCODED_FRAME};
+use radio_storage::ObjectKey;
 use radio_tx_policy::{LoadStatus, TxAuthorisation, TxPolicy, PERMISSION_RECORD_LEN};
 use radio_ui::{BootUi, KeyEvent, KeySet, UiAction, UiView};
 use std::{
@@ -987,15 +980,72 @@ pub enum TraceKind {
     },
 }
 
+impl From<DeviceEvent> for TraceKind {
+    fn from(event: DeviceEvent) -> Self {
+        match event {
+            DeviceEvent::Request {
+                sequence,
+                service,
+                command,
+            } => Self::Request {
+                sequence,
+                service,
+                command,
+            },
+            DeviceEvent::PacketDiscarded(error) => Self::PacketDiscarded(error),
+            DeviceEvent::DuplicateRequestReplayed { sequence } => {
+                Self::DuplicateRequestReplayed { sequence }
+            }
+            DeviceEvent::SequenceConflictRejected { sequence } => {
+                Self::SequenceConflictRejected { sequence }
+            }
+            DeviceEvent::TransactionBegan {
+                transaction,
+                generation,
+            } => Self::TransactionBegan {
+                transaction,
+                generation,
+            },
+            DeviceEvent::ObjectStaged { transaction, key } => {
+                Self::ObjectStaged { transaction, key }
+            }
+            DeviceEvent::TransactionValidated { transaction } => {
+                Self::TransactionValidated { transaction }
+            }
+            DeviceEvent::TransactionAborted { transaction } => {
+                Self::TransactionAborted { transaction }
+            }
+            DeviceEvent::TransactionCommitted {
+                transaction,
+                generation,
+            } => Self::TransactionCommitted {
+                transaction,
+                generation,
+            },
+            DeviceEvent::ObjectRead(key) => Self::ObjectRead(key),
+            DeviceEvent::ObjectsListed {
+                generation,
+                offset,
+                count,
+            } => Self::ObjectsListed {
+                generation,
+                offset,
+                count,
+            },
+            DeviceEvent::Response { sequence, command } => Self::Response { sequence, command },
+        }
+    }
+}
+
 /// Deterministic protocol-level simulated radio.
+///
+/// The device half of the protocol lives in `radio-device` and is shared with
+/// the target firmware, so this simulator adds only virtual time and the
+/// observable trace.
 pub struct SimDevice {
     clock: SimClock,
-    decoder: StreamDecoder,
-    store: TransactionalStore<SIM_MAX_OBJECTS>,
-    active_transaction: Option<u32>,
-    last_exchange: Option<(Frame, Frame)>,
+    service: DeviceService<SIM_MAX_OBJECTS>,
     trace: Vec<TraceEvent>,
-    capabilities: DeviceCapabilities,
 }
 
 impl Default for SimDevice {
@@ -1009,19 +1059,10 @@ impl SimDevice {
     pub fn new() -> Self {
         Self {
             clock: SimClock::new(),
-            decoder: StreamDecoder::new(),
-            store: TransactionalStore::new(),
-            active_transaction: None,
-            last_exchange: None,
+            service: DeviceService::with_plan_encodings(
+                PlanEncoding::LinearSimplex.capability_bit(),
+            ),
             trace: Vec::new(),
-            capabilities: DeviceCapabilities {
-                protocol_version: PROTOCOL_VERSION,
-                storage_version: STORAGE_FORMAT_VERSION,
-                max_frame_payload: u16::try_from(MAX_PAYLOAD).unwrap_or(u16::MAX),
-                max_objects: u16::try_from(SIM_MAX_OBJECTS).unwrap_or(u16::MAX),
-                max_object_size: u16::try_from(MAX_OBJECT_DATA).unwrap_or(u16::MAX),
-                plan_encodings: PlanEncoding::LinearSimplex.capability_bit(),
-            },
         }
     }
 
@@ -1032,7 +1073,7 @@ impl SimDevice {
 
     /// Returns the fixed capability profile used for offline compilation.
     pub const fn capabilities(&self) -> DeviceCapabilities {
-        self.capabilities
+        self.service.capabilities()
     }
 
     /// Advances device virtual time explicitly.
@@ -1047,288 +1088,27 @@ impl SimDevice {
 
     /// Returns the active storage generation.
     pub const fn generation(&self) -> u32 {
-        self.store.generation()
+        self.service.generation()
     }
 
     /// Consumes stream bytes and returns zero or more complete response frames.
     pub fn ingest(&mut self, bytes: &[u8]) -> Vec<u8> {
         let mut responses = Vec::new();
+        let at_ms = self.clock.now_ms();
+        let trace = &mut self.trace;
+        let mut encoded = [0_u8; MAX_ENCODED_FRAME];
         for byte in bytes {
-            let Some(result) = self.decoder.push(*byte) else {
-                continue;
+            let mut record = |event: DeviceEvent| {
+                trace.push(TraceEvent {
+                    at_ms,
+                    kind: TraceKind::from(event),
+                });
             };
-            match result {
-                Ok(request) => {
-                    self.record(TraceKind::Request {
-                        sequence: request.sequence(),
-                        service: request.service(),
-                        command: request.command(),
-                    });
-                    match self.handle_exchange(&request) {
-                        Ok(response) => {
-                            let mut encoded = [0_u8; MAX_ENCODED_FRAME];
-                            if let Ok(length) = encode_frame(&response, &mut encoded) {
-                                responses.extend_from_slice(&encoded[..length]);
-                                self.record(TraceKind::Response {
-                                    sequence: response.sequence(),
-                                    command: response.command(),
-                                });
-                            }
-                        }
-                        Err(error) => self.record(TraceKind::PacketDiscarded(error)),
-                    }
-                }
-                Err(error) => self.record(TraceKind::PacketDiscarded(error)),
+            if let Some(length) = self.service.push(*byte, &mut encoded, &mut record) {
+                responses.extend_from_slice(&encoded[..length]);
             }
         }
         responses
-    }
-
-    fn handle_exchange(&mut self, request: &Frame) -> Result<Frame, ProtocolError> {
-        if let Some((previous_request, previous_response)) = self.last_exchange {
-            if previous_request.sequence() == request.sequence() {
-                if previous_request == *request {
-                    self.record(TraceKind::DuplicateRequestReplayed {
-                        sequence: request.sequence(),
-                    });
-                    return Ok(previous_response);
-                }
-                self.record(TraceKind::SequenceConflictRejected {
-                    sequence: request.sequence(),
-                });
-                return Self::error_response(request, DeviceErrorCode::SequenceConflict);
-            }
-        }
-        let response = self.handle_request(request)?;
-        self.last_exchange = Some((*request, response));
-        Ok(response)
-    }
-
-    fn handle_request(&mut self, request: &Frame) -> Result<Frame, ProtocolError> {
-        if request.flags() != 0 {
-            return Self::error_response(request, DeviceErrorCode::MalformedPayload);
-        }
-        match request.service() {
-            Service::DeviceInfo => self.handle_device_info(request),
-            Service::Configuration => self.handle_configuration(request),
-            Service::RuntimeControl | Service::FirmwareUpdate | Service::Diagnostics => {
-                Self::error_response(request, DeviceErrorCode::UnsupportedService)
-            }
-        }
-    }
-
-    fn handle_device_info(&self, request: &Frame) -> Result<Frame, ProtocolError> {
-        match request.command() {
-            Command::Hello => {
-                if request.payload() == [PROTOCOL_VERSION] {
-                    Self::success_response(request, &[PROTOCOL_VERSION])
-                } else {
-                    Self::error_response(request, DeviceErrorCode::MalformedPayload)
-                }
-            }
-            Command::GetCapabilities => {
-                if !request.payload().is_empty() {
-                    return Self::error_response(request, DeviceErrorCode::MalformedPayload);
-                }
-                let mut payload = [0_u8; DeviceCapabilities::ENCODED_LEN];
-                let length = self.capabilities.encode(&mut payload)?;
-                Self::success_response(request, &payload[..length])
-            }
-            _ => Self::error_response(request, DeviceErrorCode::UnsupportedCommand),
-        }
-    }
-
-    fn handle_configuration(&mut self, request: &Frame) -> Result<Frame, ProtocolError> {
-        match request.command() {
-            Command::ListObjects => self.list_objects(request),
-            Command::ReadObject => self.read_object(request),
-            Command::BeginTransaction => self.begin_transaction(request),
-            Command::WriteObject => self.write_object(request),
-            Command::ValidateTransaction => self.validate_transaction(request),
-            Command::CommitTransaction => self.commit_transaction(request),
-            Command::AbortTransaction => self.abort_transaction(request),
-            _ => Self::error_response(request, DeviceErrorCode::UnsupportedCommand),
-        }
-    }
-
-    fn list_objects(&mut self, request: &Frame) -> Result<Frame, ProtocolError> {
-        let Ok(offset) = decode_list_objects_request(request.payload()) else {
-            return Self::error_response(request, DeviceErrorCode::MalformedPayload);
-        };
-        let mut objects = Vec::new();
-        for object in self.store.active_objects() {
-            objects.push(ObjectDescriptor {
-                kind: object.key().kind as u8,
-                id: object.key().id,
-                encoded_len: u16::try_from(object.len())
-                    .map_err(|_| ProtocolError::PayloadTooLarge)?,
-            });
-        }
-        objects.sort_unstable_by_key(|object| (object.kind, object.id));
-        let total_objects =
-            u16::try_from(objects.len()).map_err(|_| ProtocolError::PayloadTooLarge)?;
-        if offset > total_objects {
-            return Self::error_response(request, DeviceErrorCode::MalformedPayload);
-        }
-        let start = usize::from(offset);
-        let end = cmp::min(
-            start.saturating_add(MAX_LIST_OBJECTS_PER_PAGE),
-            objects.len(),
-        );
-        let page = &objects[start..end];
-        let mut payload = [0_u8; MAX_PAYLOAD];
-        let length = ObjectListPage::encode(
-            self.store.generation(),
-            total_objects,
-            offset,
-            page,
-            &mut payload,
-        )?;
-        self.record(TraceKind::ObjectsListed {
-            generation: self.store.generation(),
-            offset,
-            count: u16::try_from(page.len()).map_err(|_| ProtocolError::PayloadTooLarge)?,
-        });
-        Self::success_response(request, &payload[..length])
-    }
-
-    fn read_object(&mut self, request: &Frame) -> Result<Frame, ProtocolError> {
-        let Ok(key) = parse_object_key(request.payload()) else {
-            return Self::error_response(request, DeviceErrorCode::MalformedPayload);
-        };
-        let object = match self.store.read(key) {
-            Ok(object) => *object,
-            Err(StorageError::ObjectNotFound) => {
-                return Self::error_response(request, DeviceErrorCode::ObjectNotFound);
-            }
-            Err(error) => return Self::error_response(request, map_storage_error(error)),
-        };
-        let mut payload = [0_u8; MAX_PAYLOAD];
-        let length = {
-            let mut writer = PayloadWriter::new(&mut payload);
-            writer.write_u8(object.key().kind as u8)?;
-            writer.write_u16(object.key().id)?;
-            writer.write_u16(
-                u16::try_from(object.len()).map_err(|_| ProtocolError::PayloadTooLarge)?,
-            )?;
-            writer.write_bytes(object.data())?;
-            writer.len()
-        };
-        self.record(TraceKind::ObjectRead(key));
-        Self::success_response(request, &payload[..length])
-    }
-
-    fn begin_transaction(&mut self, request: &Frame) -> Result<Frame, ProtocolError> {
-        let Ok(transaction) = parse_transaction(request.payload()) else {
-            return Self::error_response(request, DeviceErrorCode::MalformedPayload);
-        };
-        if self.active_transaction.is_some() {
-            return Self::error_response(request, DeviceErrorCode::TransactionAlreadyOpen);
-        }
-        if let Err(error) = self.store.begin() {
-            return Self::error_response(request, map_storage_error(error));
-        }
-        self.active_transaction = Some(transaction);
-        self.record(TraceKind::TransactionBegan {
-            transaction,
-            generation: self.store.generation(),
-        });
-        Self::success_response(request, &self.store.generation().to_le_bytes())
-    }
-
-    fn write_object(&mut self, request: &Frame) -> Result<Frame, ProtocolError> {
-        let Ok((transaction, object)) = parse_write_object(request.payload()) else {
-            return Self::error_response(request, DeviceErrorCode::MalformedPayload);
-        };
-        if self.active_transaction != Some(transaction) {
-            return Self::error_response(request, DeviceErrorCode::NoTransaction);
-        }
-        if let Err(error) = self.store.write(object) {
-            return Self::error_response(request, map_storage_error(error));
-        }
-        self.record(TraceKind::ObjectStaged {
-            transaction,
-            key: object.key(),
-        });
-        Self::success_response(request, &[])
-    }
-
-    fn validate_transaction(&mut self, request: &Frame) -> Result<Frame, ProtocolError> {
-        let transaction_result = self.require_transaction(request);
-        let Ok(transaction) = transaction_result else {
-            return Self::error_response(request, transaction_result.unwrap_err());
-        };
-        if let Err(error) = self.store.validate(validate_object) {
-            return Self::error_response(request, map_storage_error(error));
-        }
-        self.record(TraceKind::TransactionValidated { transaction });
-        Self::success_response(request, &[])
-    }
-
-    fn commit_transaction(&mut self, request: &Frame) -> Result<Frame, ProtocolError> {
-        let transaction_result = self.require_transaction(request);
-        let Ok(transaction) = transaction_result else {
-            return Self::error_response(request, transaction_result.unwrap_err());
-        };
-        let generation = match self.store.commit() {
-            Ok(generation) => generation,
-            Err(error) => return Self::error_response(request, map_storage_error(error)),
-        };
-        self.active_transaction = None;
-        self.record(TraceKind::TransactionCommitted {
-            transaction,
-            generation,
-        });
-        Self::success_response(request, &generation.to_le_bytes())
-    }
-
-    fn abort_transaction(&mut self, request: &Frame) -> Result<Frame, ProtocolError> {
-        let transaction_result = self.require_transaction(request);
-        let Ok(transaction) = transaction_result else {
-            return Self::error_response(request, transaction_result.unwrap_err());
-        };
-        if let Err(error) = self.store.abort() {
-            return Self::error_response(request, map_storage_error(error));
-        }
-        self.active_transaction = None;
-        self.record(TraceKind::TransactionAborted { transaction });
-        Self::success_response(request, &[])
-    }
-
-    fn require_transaction(&self, request: &Frame) -> Result<u32, DeviceErrorCode> {
-        let transaction =
-            parse_transaction(request.payload()).map_err(|_| DeviceErrorCode::MalformedPayload)?;
-        if self.active_transaction != Some(transaction) {
-            return Err(DeviceErrorCode::NoTransaction);
-        }
-        Ok(transaction)
-    }
-
-    fn success_response(request: &Frame, payload: &[u8]) -> Result<Frame, ProtocolError> {
-        Frame::new(
-            request.service(),
-            FLAG_RESPONSE,
-            request.sequence(),
-            request.command(),
-            payload,
-        )
-    }
-
-    fn error_response(request: &Frame, code: DeviceErrorCode) -> Result<Frame, ProtocolError> {
-        Frame::new(
-            request.service(),
-            FLAG_RESPONSE | FLAG_ERROR,
-            request.sequence(),
-            Command::Error,
-            &[request.command() as u8, code as u8],
-        )
-    }
-
-    fn record(&mut self, kind: TraceKind) {
-        self.trace.push(TraceEvent {
-            at_ms: self.clock.now_ms(),
-            kind,
-        });
     }
 }
 
@@ -1394,67 +1174,17 @@ impl ProtocolTransport for SimTransport {
     }
 }
 
-fn parse_object_key(payload: &[u8]) -> Result<ObjectKey, ProtocolError> {
-    let mut reader = PayloadReader::new(payload);
-    let kind =
-        ObjectKind::try_from(reader.read_u8()?).map_err(|_| ProtocolError::MalformedPayload)?;
-    let id = reader.read_u16()?;
-    reader.finish()?;
-    Ok(ObjectKey { kind, id })
-}
-
-fn parse_transaction(payload: &[u8]) -> Result<u32, ProtocolError> {
-    let mut reader = PayloadReader::new(payload);
-    let transaction = reader.read_u32()?;
-    reader.finish()?;
-    Ok(transaction)
-}
-
-fn parse_write_object(payload: &[u8]) -> Result<(u32, StorageObject), ProtocolError> {
-    let mut reader = PayloadReader::new(payload);
-    let transaction = reader.read_u32()?;
-    let kind =
-        ObjectKind::try_from(reader.read_u8()?).map_err(|_| ProtocolError::MalformedPayload)?;
-    let id = reader.read_u16()?;
-    let length = usize::from(reader.read_u16()?);
-    let data = reader.read_bytes(length)?;
-    reader.finish()?;
-    let object = StorageObject::new(ObjectKey { kind, id }, data)
-        .map_err(|_| ProtocolError::MalformedPayload)?;
-    Ok((transaction, object))
-}
-
-const fn map_storage_error(error: StorageError) -> DeviceErrorCode {
-    match error {
-        StorageError::ObjectTooLarge | StorageError::StoreFull => DeviceErrorCode::CapacityExceeded,
-        StorageError::TransactionAlreadyOpen => DeviceErrorCode::TransactionAlreadyOpen,
-        StorageError::NoTransaction => DeviceErrorCode::NoTransaction,
-        StorageError::CandidateNotValidated => DeviceErrorCode::NotValidated,
-        StorageError::ValidationFailed
-        | StorageError::UnsupportedObject
-        | StorageError::MalformedObject => DeviceErrorCode::ValidationFailed,
-        StorageError::ObjectNotFound => DeviceErrorCode::ObjectNotFound,
-        StorageError::GenerationOverflow
-        | StorageError::ImageBufferTooSmall
-        | StorageError::ImageTooLarge
-        | StorageError::MalformedImage
-        | StorageError::UnsupportedImageVersion
-        | StorageError::ImageIntegrity
-        | StorageError::NonCanonicalImage => DeviceErrorCode::Internal,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        map_storage_error, AprsSimError, AprsSimulator, AprsTraceEvent, AprsTraceKind,
-        ChannelSimError, ChannelSimulator, ChannelTraceEvent, ChannelTraceKind, RfBusOperation,
-        RfSimulator, RfTraceEvent, RfTraceKind, SimDevice, SimTransport, TraceKind, UiSimulator,
-        UiTraceKind,
+        AprsSimError, AprsSimulator, AprsTraceEvent, AprsTraceKind, ChannelSimError,
+        ChannelSimulator, ChannelTraceEvent, ChannelTraceKind, RfBusOperation, RfSimulator,
+        RfTraceEvent, RfTraceKind, SimDevice, SimTransport, TraceKind, UiSimulator, UiTraceKind,
     };
     use radio_aprs::{AprsError, DiscoveryError, DiscoveryUpdate};
     use radio_channel_control::{ChannelTxError, ControlState, ScanConfig};
     use radio_channel_plan::{BankName, GeneratedBank, PlanEncoding};
+    use radio_device::map_storage_error;
     use radio_domain::{ActiveChannel, BankId, Frequency, FrequencyStep, TxClass};
     use radio_programmer::{
         ListedObject, Programmer, ProgrammerError, ProtocolTransport, RadioProject,
