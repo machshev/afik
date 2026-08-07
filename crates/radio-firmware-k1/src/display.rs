@@ -816,9 +816,9 @@ mod operating_screen_tests {
     #[test]
     fn the_info_screen_separates_retained_and_built_in_configurations() {
         let mut retained = [0_u8; FRAME_BYTES];
-        render_info_screen(&mut retained, b"AFIK-K1-2.1", 7, 16, true);
+        render_info_screen(&mut retained, b"AFIK-K1-2.2", 7, 16, true);
         let mut built_in = [0_u8; FRAME_BYTES];
-        render_info_screen(&mut built_in, b"AFIK-K1-2.1", 0, 5, false);
+        render_info_screen(&mut built_in, b"AFIK-K1-2.2", 0, 5, false);
         assert_ne!(retained, built_in);
         assert!(retained.iter().any(|byte| *byte != 0));
     }

@@ -44,7 +44,8 @@ Usage:\n\
   afik-programmer --help\n\
   afik-programmer --version\n\
 \n\
-PROJECT is one or more of --bank SPEC and --channel SPEC.\n\
+PROJECT is one or more of --bank SPEC, --channel SPEC, and\n\
+--channel-bank SPEC.\n\
 Bank SPEC: ID:NAME:BASE_HZ:SPACING_HZ:COUNT:TX_CLASS\n\
 Channel SPEC: ID:NAME:RECEIVE_HZ:BANK:TX_CLASS, where BANK is - for none\n\
 Channel bank SPEC: ID:NAME:scan|noscan\n\

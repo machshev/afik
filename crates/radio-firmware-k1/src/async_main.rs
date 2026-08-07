@@ -55,7 +55,7 @@ const _: [(); 8] = [(); PAGES];
 const K1_VECTOR_TABLE_ORIGIN: u32 = 0x0800_2800;
 
 /// Identity this image reports on the information screen.
-const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-2.1";
+const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-2.2";
 
 /// Interval between receive samples while audio is routed.
 const RF_SAMPLE_MILLISECONDS: u64 = 500;

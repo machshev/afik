@@ -34,6 +34,10 @@ const REG_DEMODULATOR_42: RegisterAddress = RegisterAddress::known(0x42);
 const REG_FILTER_BANDWIDTH: RegisterAddress = RegisterAddress::known(0x43);
 const REG_AF_OUTPUT: RegisterAddress = RegisterAddress::known(0x47);
 const REG_AF_DAC_GAIN: RegisterAddress = RegisterAddress::known(0x48);
+/// Low nibble of `REG_48`, the AF DAC gain applied after the receive gains.
+const AF_DAC_GAIN_MASK: u16 = 0x000F;
+/// Maximum AF DAC gain, the value the pinned source selects for every mode.
+const AF_DAC_GAIN_MAXIMUM: u16 = 0x000F;
 const REG_SQUELCH_CLOSE_GLITCH: RegisterAddress = RegisterAddress::known(0x4D);
 const REG_SQUELCH_OPEN_GLITCH: RegisterAddress = RegisterAddress::known(0x4E);
 const REG_SQUELCH_NOISE: RegisterAddress = RegisterAddress::known(0x4F);
@@ -586,7 +590,14 @@ impl<B: RegisterBus> Bk4819<B> {
         }
         self.write(REG_AUDIO_54, 0x9009)?;
         self.write(REG_AUDIO_55, 0x31A9)?;
-        self.write(REG_AF_DAC_GAIN, 0x000F)?;
+        // The evidence records this step as the AF DAC gain, which is the low
+        // nibble. Writing the bare value would also clear the AF receive gain
+        // fields the profile's audio level established, leaving the output
+        // barely audible.
+        self.write(
+            REG_AF_DAC_GAIN,
+            (self.profile.af_level & !AF_DAC_GAIN_MASK) | AF_DAC_GAIN_MAXIMUM,
+        )?;
         self.write(
             REG_AF_TAIL,
             if matches!(modulation, Modulation::Usb) {
@@ -763,8 +774,9 @@ mod tests {
 
     use super::{
         cdcss_code_word, ctcss_control_word, AfOutput, ReceiveMetrics, ReceiveSetup, SquelchError,
-        SquelchThresholds, ToneStatus, REG_AF_OUTPUT, REG_FILTER_BANDWIDTH, REG_GPIO_OUT,
-        REG_INTERRUPT_FLAGS, REG_SQUELCH_RSSI, REG_SUB_AUDIO_CONTROL, REG_SUB_AUDIO_FREQUENCY,
+        SquelchThresholds, ToneStatus, BK4819_PROFILE, BK4829_PROFILE, REG_AF_DAC_GAIN,
+        REG_AF_OUTPUT, REG_FILTER_BANDWIDTH, REG_GPIO_OUT, REG_INTERRUPT_FLAGS, REG_SQUELCH_RSSI,
+        REG_SUB_AUDIO_CONTROL, REG_SUB_AUDIO_FREQUENCY,
     };
     use crate::tests_support::{FakeBus, Operation};
     use crate::{
@@ -985,6 +997,31 @@ mod tests {
                 radio.bus().operations.last(),
                 Some(&Operation::Write(REG_AF_OUTPUT, 0x6040))
             );
+        }
+    }
+
+    #[test]
+    fn configuring_receive_keeps_the_profile_audio_gains_at_maximum_dac_gain() {
+        // Writing the bare DAC gain would clear the AF receive gain fields the
+        // profile established, which is audible as a nearly silent speaker.
+        for profile in [BK4819_PROFILE, BK4829_PROFILE] {
+            let mut radio = Bk4819::with_profile(FakeBus::new(None), profile);
+            radio.recover_to_standby().unwrap();
+            radio
+                .configure_receive(&setup(Modulation::Fm, Tone::None, 145_500_000))
+                .unwrap();
+
+            let expected = (profile.af_level & !0x000F) | 0x000F;
+            assert_eq!(expected & 0x000F, 0x000F);
+            assert_eq!(expected & !0x000F, profile.af_level & !0x000F);
+            assert!(radio
+                .bus()
+                .operations
+                .contains(&Operation::Write(REG_AF_DAC_GAIN, expected)));
+            assert!(!radio
+                .bus()
+                .operations
+                .contains(&Operation::Write(REG_AF_DAC_GAIN, 0x000F)));
         }
     }
 
