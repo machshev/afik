@@ -219,8 +219,10 @@ pub struct OperatingView<'a> {
     pub monitoring: bool,
     /// Active bank filter, if any.
     pub bank: Option<BankIndicator<'a>>,
-    /// Channel number being typed, if any.
-    pub entry: Option<u16>,
+    /// Number being typed, if any: a channel position, or VFO kilohertz.
+    pub entry: Option<u32>,
+    /// VFO tuning step in hertz, set only while the VFO is the active source.
+    pub vfo_step_hz: Option<u32>,
 }
 
 /// Columns the operating screen gives the bank indicator.
@@ -254,9 +256,9 @@ impl BankIndicator<'_> {
     }
 }
 
-/// One bank list row, carrying the exact text the row shows.
+/// One selector-list row, carrying the exact text the row shows.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct BankRow {
+pub struct SelectorRow {
     /// Row label bytes.
     label: [u8; LIST_NAME_BYTES],
     /// Used label bytes.
@@ -265,22 +267,28 @@ pub struct BankRow {
     pub active: bool,
 }
 
-impl BankRow {
-    /// Builds the unfiltered row, which every bank list offers first.
+impl SelectorRow {
+    /// Builds one row from exact label bytes.
     #[must_use]
-    pub fn all(active: bool) -> Self {
-        Self::with_label(b"ALL CHANNELS", active)
+    pub fn text(label: &[u8], active: bool) -> Self {
+        Self::with_label(label, active)
     }
 
     /// Builds one bank row, falling back to the identifier when unnamed.
     #[must_use]
-    pub fn named(id: u16, name: &[u8], active: bool) -> Self {
+    pub fn bank(id: u16, name: &[u8], active: bool) -> Self {
         if name.is_empty() {
             let mut label = *b"BANK 00";
             write_two_digits(&mut label[5..], id);
             return Self::with_label(&label, active);
         }
         Self::with_label(name, active)
+    }
+
+    /// Builds one tuning-step row.
+    #[must_use]
+    pub fn step(step_hz: u32, active: bool) -> Self {
+        Self::with_label(&step_label(step_hz), active)
     }
 
     fn with_label(label: &[u8], active: bool) -> Self {
@@ -340,19 +348,30 @@ impl ListRow {
 pub fn render_operating_screen(frame: &mut [u8; FRAME_BYTES], view: &OperatingView<'_>) {
     frame.fill(0);
 
-    let mut position = *b"00/00";
-    write_two_digits(&mut position[..2], view.position);
-    write_two_digits(&mut position[3..], view.total);
-    draw_text(frame, 0, 0, &position);
-
-    if let Some(entry) = view.entry {
-        let mut typed = *b"CH --";
-        write_two_digits(&mut typed[3..], entry);
-        draw_text(frame, WIDTH - 5 * 6, 0, &typed);
-    } else if let Some(bank) = view.bank {
-        draw_text(frame, WIDTH - 5 * 6, 0, &bank.label());
+    if let Some(step_hz) = view.vfo_step_hz {
+        // The VFO has no position in a list and no bank, so the header names the
+        // source and the tuning step Up and Down apply.
+        draw_text(frame, 0, 0, b"VFO");
+        let label = step_label(step_hz);
+        draw_text(frame, WIDTH - label.len() * 6, 0, &label);
     } else {
-        draw_text(frame, WIDTH - 5 * 6, 0, b"ALL  ");
+        let mut position = *b"00/00";
+        write_two_digits(&mut position[..2], view.position);
+        write_two_digits(&mut position[3..], view.total);
+        draw_text(frame, 0, 0, &position);
+
+        if view.entry.is_none() {
+            match view.bank {
+                Some(bank) => draw_text(frame, WIDTH - 5 * 6, 0, &bank.label()),
+                None => draw_text(frame, WIDTH - 5 * 6, 0, b"ALL  "),
+            }
+        }
+    }
+    if let Some(entry) = view.entry {
+        // Typed digits replace the indicator so the operator can see what the
+        // radio will act on before it acts.
+        let typed = entry_label(entry, view.vfo_step_hz.is_some());
+        draw_text(frame, WIDTH - typed.len() * 6, 0, &typed);
     }
 
     let width = view.name.len() * 6;
@@ -420,14 +439,20 @@ pub fn render_channel_list(
     }
 }
 
-/// Produces the bank list.
+/// Produces one titled selector list: receive sources or tuning steps.
 ///
-/// The first row of the whole list is the unfiltered view, so clearing a filter
-/// is a visible choice rather than a side effect of cycling past the last bank.
-/// `cursor_row` selects which of the supplied rows is marked.
-pub fn render_bank_list(frame: &mut [u8; FRAME_BYTES], rows: &[BankRow], cursor_row: usize) {
+/// Every choice the operator has is shown as a row with the one in force marked,
+/// so selecting the VFO, clearing a bank filter, or changing the tuning step is
+/// a visible choice rather than a side effect of cycling. `cursor_row` selects
+/// which of the supplied rows is marked.
+pub fn render_selector_list(
+    frame: &mut [u8; FRAME_BYTES],
+    title: &[u8],
+    rows: &[SelectorRow],
+    cursor_row: usize,
+) {
     frame.fill(0);
-    draw_text(frame, 0, 0, b"BANKS");
+    draw_text(frame, 0, 0, title);
     if rows.is_empty() {
         draw_text(frame, 4, 24, b"NONE PROGRAMMED");
         draw_text(frame, 4, 40, b"USE AFIK STUDIO");
@@ -483,6 +508,79 @@ pub fn render_info_screen(
             b"BUILT-IN SET   "
         },
     );
+}
+
+/// Longest tuning-step label, which is the widest of the fixed set.
+pub const STEP_LABEL_BYTES: usize = 8;
+
+/// Returns the fixed-width label for one tuning step in hertz.
+///
+/// Steps are whole or fractional kilohertz up to one megahertz, so the label is
+/// derived from the value rather than tabulated beside it: the screen cannot
+/// disagree with the step the shell will actually apply.
+#[must_use]
+pub fn step_label(step_hz: u32) -> [u8; STEP_LABEL_BYTES] {
+    let mut label = [b' '; STEP_LABEL_BYTES];
+    if step_hz >= 1_000_000 {
+        let megahertz = (step_hz / 1_000_000).min(9);
+        label[..5].copy_from_slice(b"0 MHZ");
+        label[0] = b'0' + u8::try_from(megahertz).unwrap_or(0);
+        return label;
+    }
+    let kilohertz = step_hz / 1_000;
+    let fraction = step_hz % 1_000 / 10;
+    let mut written = 0;
+    for divisor in [100, 10, 1] {
+        let digit = kilohertz / divisor % 10;
+        if written == 0 && digit == 0 && divisor != 1 {
+            continue;
+        }
+        label[written] = b'0' + u8::try_from(digit).unwrap_or(0);
+        written += 1;
+    }
+    if fraction != 0 {
+        label[written] = b'.';
+        written += 1;
+        label[written] = b'0' + u8::try_from(fraction / 10 % 10).unwrap_or(0);
+        written += 1;
+        if fraction % 10 != 0 {
+            label[written] = b'0' + u8::try_from(fraction % 10).unwrap_or(0);
+            written += 1;
+        }
+    }
+    let tail = b" KHZ";
+    for (offset, byte) in tail.iter().enumerate() {
+        if written + offset < STEP_LABEL_BYTES {
+            label[written + offset] = *byte;
+        }
+    }
+    label
+}
+
+/// Returns the label for digits being typed, in either entry mode.
+fn entry_label(entry: u32, vfo: bool) -> [u8; 8] {
+    let mut label = [b' '; 8];
+    if !vfo {
+        label[..5].copy_from_slice(b"CH --");
+        write_two_digits(&mut label[3..5], u16::try_from(entry).unwrap_or(u16::MAX));
+        return label;
+    }
+    // Kilohertz digits are shown left to right exactly as typed, so a partial
+    // frequency is never mistaken for a complete one.
+    let mut value = entry;
+    let mut digits = [b' '; 6];
+    let mut used = 0;
+    while used < digits.len() {
+        digits[digits.len() - 1 - used] = b'0' + u8::try_from(value % 10).unwrap_or(0);
+        used += 1;
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    let start = digits.len() - used;
+    label[..used].copy_from_slice(&digits[start..]);
+    label
 }
 
 fn write_two_digits(destination: &mut [u8], value: u16) {
@@ -804,8 +902,9 @@ mod tests {
 #[cfg(test)]
 mod operating_screen_tests {
     use super::{
-        render_bank_list, render_channel_list, render_info_screen, render_operating_screen,
-        BankIndicator, BankRow, ListRow, OperatingView, FRAME_BYTES, LIST_NAME_BYTES,
+        render_channel_list, render_info_screen, render_operating_screen, render_selector_list,
+        step_label, BankIndicator, ListRow, OperatingView, SelectorRow, FRAME_BYTES,
+        LIST_NAME_BYTES,
     };
 
     fn view() -> OperatingView<'static> {
@@ -820,6 +919,7 @@ mod operating_screen_tests {
             monitoring: false,
             bank: None,
             entry: None,
+            vfo_step_hz: None,
         }
     }
 
@@ -942,11 +1042,11 @@ mod operating_screen_tests {
     }
 
     #[test]
-    fn the_bank_list_marks_the_cursor_and_the_filter_in_force() {
+    fn the_selector_list_marks_the_cursor_and_the_choice_in_force() {
         let rows = [
-            BankRow::all(false),
-            BankRow::named(1, b"AMATEUR 2M", true),
-            BankRow::named(3, b"", false),
+            SelectorRow::text(b"ALL CHANNELS", false),
+            SelectorRow::bank(1, b"AMATEUR 2M", true),
+            SelectorRow::bank(3, b"", false),
         ];
         assert_eq!(rows[0].label(), b"ALL CHANNELS");
         assert_eq!(
@@ -956,19 +1056,20 @@ mod operating_screen_tests {
         );
 
         let mut cursor_first = [0_u8; FRAME_BYTES];
-        render_bank_list(&mut cursor_first, &rows, 0);
+        render_selector_list(&mut cursor_first, b"SOURCE", &rows, 0);
         let mut cursor_second = [0_u8; FRAME_BYTES];
-        render_bank_list(&mut cursor_second, &rows, 1);
+        render_selector_list(&mut cursor_second, b"SOURCE", &rows, 1);
         assert_ne!(cursor_first, cursor_second);
         assert!(cursor_first.iter().any(|byte| *byte != 0));
 
         let mut unmarked = [0_u8; FRAME_BYTES];
-        render_bank_list(
+        render_selector_list(
             &mut unmarked,
+            b"SOURCE",
             &[
-                BankRow::all(true),
-                BankRow::named(1, b"AMATEUR 2M", false),
-                BankRow::named(3, b"", false),
+                SelectorRow::text(b"ALL CHANNELS", true),
+                SelectorRow::bank(1, b"AMATEUR 2M", false),
+                SelectorRow::bank(3, b"", false),
             ],
             0,
         );
@@ -976,24 +1077,57 @@ mod operating_screen_tests {
     }
 
     #[test]
-    fn an_empty_bank_list_says_so_instead_of_going_blank() {
+    fn the_vfo_screen_shows_its_step_instead_of_a_position_and_bank() {
+        let memory = render(&view());
+        let vfo = render(&OperatingView {
+            vfo_step_hz: Some(12_500),
+            ..view()
+        });
+        assert_ne!(memory, vfo);
+        let coarser = render(&OperatingView {
+            vfo_step_hz: Some(1_000_000),
+            ..view()
+        });
+        assert_ne!(vfo, coarser, "the step in force is visible");
+
+        // Typed kilohertz digits replace the step indicator while they are being
+        // entered, in either mode.
+        let typing = render(&OperatingView {
+            vfo_step_hz: Some(12_500),
+            entry: Some(4335),
+            ..view()
+        });
+        assert_ne!(vfo, typing);
+    }
+
+    #[test]
+    fn tuning_step_labels_are_derived_from_the_step_itself() {
+        assert_eq!(&step_label(6_250)[..8], b"6.25 KHZ");
+        assert_eq!(&step_label(12_500)[..8], b"12.5 KHZ");
+        assert_eq!(&step_label(25_000)[..6], b"25 KHZ");
+        assert_eq!(&step_label(100_000)[..7], b"100 KHZ");
+        assert_eq!(&step_label(1_000_000)[..5], b"1 MHZ");
+    }
+
+    #[test]
+    fn an_empty_selector_list_says_so_instead_of_going_blank() {
         let mut frame = [0_u8; FRAME_BYTES];
-        render_bank_list(&mut frame, &[], 0);
+        render_selector_list(&mut frame, b"SOURCE", &[], 0);
         assert!(frame.iter().any(|byte| *byte != 0));
     }
 
     #[test]
     fn a_long_bank_name_is_truncated_to_the_visible_width() {
-        let row = BankRow::named(1, b"A VERY LONG BANK NAME", false);
+        let row = SelectorRow::bank(1, b"A VERY LONG BANK NAME", false);
         assert_eq!(row.label().len(), LIST_NAME_BYTES);
     }
 
     #[test]
     fn the_info_screen_separates_retained_and_built_in_configurations() {
         let mut retained = [0_u8; FRAME_BYTES];
-        render_info_screen(&mut retained, b"AFIK-K1-2.3", 7, 16, true);
+        render_info_screen(&mut retained, b"AFIK-K1-2.4", 7, 16, true);
         let mut built_in = [0_u8; FRAME_BYTES];
-        render_info_screen(&mut built_in, b"AFIK-K1-2.3", 0, 5, false);
+        render_info_screen(&mut built_in, b"AFIK-K1-2.4", 0, 5, false);
         assert_ne!(retained, built_in);
         assert!(retained.iter().any(|byte| *byte != 0));
     }

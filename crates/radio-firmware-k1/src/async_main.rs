@@ -32,32 +32,36 @@ use radio_bk4819::{
 use radio_channel_control::{
     BankedReceiveController, ChannelMemory, ChannelReceiveSetup, ReceiveObservation,
 };
-use radio_channel_plan::BankName;
+use radio_channel_plan::{
+    BankMask, BankName, ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord,
+};
 use radio_device::DeviceService;
-use radio_domain::{BankId, Modulation, Tone};
+use radio_domain::{
+    Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, SquelchLevel,
+    Tone, TxClass,
+};
 use radio_firmware_k1::bk4819_bus::ThreeWireBus;
-use radio_firmware_k1::channels::{built_in, BUILT_IN_CHANNELS};
 use radio_firmware_k1::configuration::{
     device_service, Programmed, MAX_CHANNELS, RETAINED_IMAGE_BYTES,
 };
 use radio_firmware_k1::display::{
-    render_bank_list, render_channel_list, render_info_screen, render_operating_screen,
-    BankIndicator, BankRow, ListRow, OperatingView, COLUMN_OFFSET, FRAME_BYTES, LIST_ROWS, PAGES,
-    SETUP_COMMANDS, WIDTH,
+    render_channel_list, render_info_screen, render_operating_screen, render_selector_list,
+    BankIndicator, ListRow, OperatingView, SelectorRow, COLUMN_OFFSET, FRAME_BYTES, LIST_ROWS,
+    PAGES, SETUP_COMMANDS, WIDTH,
 };
 use radio_firmware_k1::keypad::{decode, Debouncer, Edge, KeypadScan, Sample};
 use radio_firmware_k1::py32f071_bk4819::Bk4819Pins;
 use radio_firmware_k1::py32f071_retained::RetainedConfiguration;
 use radio_firmware_k1::py32f071_runtime::{compose, K1RuntimePeripherals};
 use radio_firmware_k1::py32f071_runtime_init::init;
-use radio_firmware_k1::shell::{Context, Intent, Screen, Shell};
+use radio_firmware_k1::shell::{Context, Intent, Mode, Screen, Shell, Source, VFO_STEPS_HZ};
 use radio_protocol::MAX_ENCODED_FRAME;
 
 const _: [(); 8] = [(); PAGES];
 const K1_VECTOR_TABLE_ORIGIN: u32 = 0x0800_2800;
 
 /// Identity this image reports on the information screen.
-const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-2.3";
+const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-2.4";
 
 /// Interval between receive samples while audio is routed.
 const RF_SAMPLE_MILLISECONDS: u64 = 500;
@@ -478,12 +482,65 @@ fn publish<const OBJECTS: usize>(service: &DeviceService<OBJECTS>, retained: boo
     });
 }
 
-/// Builds the receive-only channel set this image ships with.
-fn built_in_memory() -> Option<ChannelMemory<MAX_CHANNELS>> {
+/// Builds the receive source the shell says the operator is listening to.
+///
+/// The image carries no channel set of its own: the VFO is the source which
+/// always has something to tune, so an unprogrammed radio is a VFO radio rather
+/// than an inert one. Both sources drive the same banked controller, so tuning,
+/// monitoring, and metering behave identically either way.
+fn activate(
+    programmed: &Programmed,
+    shell: &Shell,
+) -> Option<(
+    BankedReceiveController<ChannelMemory<MAX_CHANNELS>>,
+    Option<ChannelReceiveSetup>,
+)> {
+    let (memory, bank) = match shell.mode() {
+        Mode::Vfo => (vfo_memory(shell, programmed.config().squelch)?, None),
+        Mode::Memory => {
+            if programmed.is_empty() {
+                return None;
+            }
+            (programmed.memory(), shell.bank_filter())
+        }
+    };
+    let (controller, update) =
+        BankedReceiveController::activate(memory, programmed.config(), bank).ok()?;
+    Some((
+        controller,
+        update.activation.map(|activation| activation.setup),
+    ))
+}
+
+/// Builds a one-channel store holding the VFO frequency.
+///
+/// The VFO is expressed as an ordinary receive-only channel record so it reuses
+/// the whole programmed receive path unchanged. It is `TxClass::Never` like
+/// everything else this image constructs.
+fn vfo_memory(shell: &Shell, squelch: SquelchLevel) -> Option<ChannelMemory<MAX_CHANNELS>> {
+    let receive = Frequency::from_hz(shell.vfo_hz()).ok()?;
+    let step = FrequencyStep::from_hz(shell.vfo_step_hz()).ok()?;
+    let record = ChannelRecord::new(ChannelDefinition {
+        id: ChannelId::new(1),
+        name: ChannelName::new("VFO").ok()?,
+        receive,
+        // Receive-only: the transmit frequency mirrors receive and the class
+        // denies transmission outright.
+        transmit: receive,
+        rx_tone: Tone::None,
+        tx_tone: Tone::None,
+        modulation: Modulation::Fm,
+        bandwidth: Bandwidth::Narrow,
+        power: PowerLevel::Low,
+        step,
+        squelch,
+        flags: ChannelFlags::default(),
+        banks: BankMask::default(),
+        tx_class: TxClass::Never,
+    })
+    .ok()?;
     let mut memory = ChannelMemory::new();
-    for index in 0..BUILT_IN_CHANNELS {
-        memory.insert(built_in(index).ok()?).ok()?;
-    }
+    memory.insert(record).ok()?;
     Some(memory)
 }
 
@@ -501,60 +558,49 @@ async fn ui_task(
     }
 
     // The serial task publishes exactly once at start-up, either the retained
-    // configuration or an empty one, so waiting for it avoids showing the
-    // built-in set to an operator whose radio is programmed.
+    // configuration or an empty one, so waiting for it avoids showing the VFO to
+    // an operator whose radio is programmed.
     let publication = PROGRAMMED.wait().await;
     let mut generation = publication.generation;
     let mut retained = publication.retained;
-    let Some(built_in) = built_in_memory() else {
-        fail_closed();
-    };
     let mut programmed = publication.programmed;
-    let mut memory = if programmed.is_empty() {
-        built_in
-    } else {
-        programmed.memory()
-    };
-    let Ok((mut controller, update)) =
-        BankedReceiveController::activate(memory, programmed.config(), None)
-    else {
-        fail_closed();
-    };
 
     let mut shell = Shell::new();
     let (banks, bank_count) = programmed.populated_banks();
     shell.set_banks(banks, bank_count);
+    // A programmed radio starts on its channels; only an empty one stays in the
+    // VFO, which is the source it can always use.
+    if !programmed.is_empty() {
+        shell.select_memory();
+    }
+    let mut activation = activate(&programmed, &shell);
 
     let mut receiver = Receiver::new(radio_pins, speaker_pin);
-    let mut pending = update.activation.map(|activation| activation.setup);
+    let mut pending = activation.as_mut().and_then(|(_, setup)| setup.take());
     let mut pending_audio = None;
     let mut debounce = Debouncer::new();
     let mut next_sample = Instant::now();
     let mut redraw = true;
 
     loop {
-        let context = Context {
-            visible_channels: controller.visible_channels(),
-            active_index: controller.visible_position(),
-        };
+        let context = activation
+            .as_ref()
+            .map_or(Context::default(), |(controller, _)| Context {
+                visible_channels: controller.visible_channels(),
+                active_index: controller.visible_position(),
+            });
 
         if let Some(publication) = PROGRAMMED.try_take() {
             generation = publication.generation;
             retained = publication.retained;
             programmed = publication.programmed;
-            memory = if programmed.is_empty() {
-                built_in
-            } else {
-                programmed.memory()
-            };
-            if let Ok((replacement, update)) =
-                BankedReceiveController::activate(memory, programmed.config(), None)
-            {
-                controller = replacement;
-                pending = update.activation.map(|activation| activation.setup);
-            }
             let (banks, bank_count) = programmed.populated_banks();
             shell.set_banks(banks, bank_count);
+            if !programmed.is_empty() {
+                shell.select_memory();
+            }
+            activation = activate(&programmed, &shell);
+            pending = activation.as_mut().and_then(|(_, setup)| setup.take());
             redraw = true;
         }
 
@@ -572,6 +618,21 @@ async fn ui_task(
         match intent {
             Intent::Idle => {}
             Intent::Redraw => redraw = true,
+            // Changing source or retuning the VFO rebuilds the receive source
+            // from the shell, so both paths share one activation rule. They come
+            // before the guard below because selecting the VFO is exactly how an
+            // operator leaves an empty memory.
+            Intent::SetSource(_) | Intent::TuneVfo => {
+                activation = activate(&programmed, &shell);
+                if let Some(setup) = activation.as_mut().and_then(|(_, setup)| setup.take()) {
+                    pending = Some(setup);
+                }
+                redraw = true;
+            }
+            // Every remaining intent acts on a channel. An empty memory has
+            // none, so there is nothing to route audio from, hold open, or
+            // select, and the interface only redraws.
+            _ if activation.is_none() => redraw = true,
             Intent::ToggleAudio => {
                 // Deferred like a retune rather than dropped, so a press during
                 // a host exchange still takes effect.
@@ -579,25 +640,25 @@ async fn ui_task(
                 redraw = true;
             }
             Intent::ToggleMonitor => {
-                let update = controller.set_monitor(!controller.is_monitoring());
-                if let Some(activation) = update.activation {
-                    pending = Some(activation.setup);
+                if let Some((controller, _)) = activation.as_mut() {
+                    let update = controller.set_monitor(!controller.is_monitoring());
+                    if let Some(activation) = update.activation {
+                        pending = Some(activation.setup);
+                    }
                 }
                 redraw = true;
             }
-            Intent::SelectNext
-            | Intent::SelectPrevious
-            | Intent::SelectIndex(_)
-            | Intent::SetBank(_) => {
-                let update = match intent {
-                    Intent::SelectNext => controller.select_next(),
-                    Intent::SelectPrevious => controller.select_previous(),
-                    Intent::SelectIndex(position) => controller.select_visible(position),
-                    Intent::SetBank(bank) => controller.set_bank(bank),
-                    _ => unreachable!(),
-                };
-                if let Some(activation) = update.ok().and_then(|update| update.activation) {
-                    pending = Some(activation.setup);
+            Intent::SelectNext | Intent::SelectPrevious | Intent::SelectIndex(_) => {
+                if let Some((controller, _)) = activation.as_mut() {
+                    let update = match intent {
+                        Intent::SelectNext => controller.select_next(),
+                        Intent::SelectPrevious => controller.select_previous(),
+                        Intent::SelectIndex(position) => controller.select_visible(position),
+                        _ => unreachable!(),
+                    };
+                    if let Some(activation) = update.ok().and_then(|update| update.activation) {
+                        pending = Some(activation.setup);
+                    }
                 }
                 redraw = true;
             }
@@ -614,7 +675,9 @@ async fn ui_task(
             pending_audio = None;
             redraw = true;
         } else if receiver.audio_routed && Instant::now() >= next_sample && bus_available() {
-            if let Some(observation) = receiver.observe() {
+            if let (Some(observation), Some((controller, _))) =
+                (receiver.observe(), activation.as_mut())
+            {
                 controller.observe(observation).ok();
             }
             next_sample = Instant::now() + Duration::from_millis(RF_SAMPLE_MILLISECONDS);
@@ -625,7 +688,7 @@ async fn ui_task(
             render(
                 &mut frame,
                 &shell,
-                &controller,
+                activation.as_ref().map(|(controller, _)| controller),
                 &receiver,
                 &programmed,
                 generation,
@@ -644,30 +707,42 @@ async fn ui_task(
 fn render(
     frame: &mut [u8; FRAME_BYTES],
     shell: &Shell,
-    controller: &BankedReceiveController<ChannelMemory<MAX_CHANNELS>>,
+    controller: Option<&BankedReceiveController<ChannelMemory<MAX_CHANNELS>>>,
     receiver: &Receiver,
     programmed: &Programmed,
     generation: u32,
     retained: bool,
 ) {
-    let visible = controller.visible_channels();
     // Names are fixed-capacity values copied out of the configuration, so they
     // are held here for as long as the view borrows their bytes.
     let filter = shell.bank_filter();
     let filter_name = filter.and_then(|bank| bank_name(programmed, bank));
-    let channel = controller.channel();
+    // Only an empty memory has no controller: the VFO always has one, so this is
+    // the "you have selected channels but programmed none" case.
+    let (visible, channel) = match controller {
+        Some(controller) => (controller.visible_channels(), Some(controller.channel())),
+        None => (0, None),
+    };
+    let vfo_step_hz = matches!(shell.mode(), Mode::Vfo).then(|| shell.vfo_step_hz());
+    // The name is a fixed-capacity value copied out of the record, so it is held
+    // here for as long as the view borrows its bytes.
+    let channel_name = channel.map(|channel| channel.name());
     match shell.screen() {
         Screen::Operating => render_operating_screen(
             frame,
             &OperatingView {
-                position: controller.visible_position().saturating_add(1),
+                position: controller.map_or(0, |controller| {
+                    controller.visible_position().saturating_add(1)
+                }),
                 total: visible,
-                name: channel.name().as_str().as_bytes(),
+                name: channel_name
+                    .as_ref()
+                    .map_or(&[][..], |name| name.as_str().as_bytes()),
                 frequency_hz: receiver.frequency_hz,
                 rssi_raw: receiver.rssi_raw,
                 squelch_open: receiver.squelch_open,
                 audio_routed: receiver.audio_routed,
-                monitoring: controller.is_monitoring(),
+                monitoring: controller.is_some_and(BankedReceiveController::is_monitoring),
                 bank: filter.map(|bank| BankIndicator {
                     id: bank.get(),
                     name: filter_name
@@ -675,34 +750,56 @@ fn render(
                         .map_or(&[][..], |name| name.as_str().as_bytes()),
                 }),
                 entry: shell.entry(),
+                vfo_step_hz,
             },
         ),
-        Screen::BankList => {
-            let mut rows = [BankRow::default(); LIST_ROWS];
-            // The unfiltered view is row zero, so the pages match the cursor the
-            // shell reports without translating between two numbering schemes.
-            let first = shell.bank_cursor() / LIST_ROWS * LIST_ROWS;
+        Screen::SourceList => {
+            let mut rows = [SelectorRow::default(); LIST_ROWS];
+            // The rows the shell offers are paged directly, so the cursor it
+            // reports needs no translation into a second numbering scheme.
+            let first = shell.source_cursor() / LIST_ROWS * LIST_ROWS;
             let mut count = 0;
             for offset in 0..LIST_ROWS {
                 let row = first + offset;
-                if row >= shell.bank_rows() {
+                let Some(source) = shell.source_at(row) else {
                     break;
-                }
-                rows[offset] = match shell.bank_at(row) {
-                    None => BankRow::all(filter.is_none()),
-                    Some(bank) => {
+                };
+                let active = shell.is_active_source(row);
+                rows[offset] = match source {
+                    Source::Vfo => SelectorRow::text(b"VFO", active),
+                    Source::AllChannels => SelectorRow::text(b"ALL CHANNELS", active),
+                    Source::Bank(bank) => {
                         let name = bank_name(programmed, bank);
-                        BankRow::named(
+                        SelectorRow::bank(
                             bank.get(),
                             name.as_ref()
                                 .map_or(&[][..], |name| name.as_str().as_bytes()),
-                            filter == Some(bank),
+                            active,
                         )
                     }
                 };
                 count += 1;
             }
-            render_bank_list(frame, &rows[..count], shell.bank_cursor() - first);
+            render_selector_list(
+                frame,
+                b"SOURCE",
+                &rows[..count],
+                shell.source_cursor() - first,
+            );
+        }
+        Screen::StepList => {
+            let mut rows = [SelectorRow::default(); LIST_ROWS];
+            let first = shell.step_cursor() / LIST_ROWS * LIST_ROWS;
+            let mut count = 0;
+            for offset in 0..LIST_ROWS {
+                let row = first + offset;
+                let Some(step) = VFO_STEPS_HZ.get(row) else {
+                    break;
+                };
+                rows[offset] = SelectorRow::step(*step, row == shell.step_index());
+                count += 1;
+            }
+            render_selector_list(frame, b"STEP", &rows[..count], shell.step_cursor() - first);
         }
         Screen::ChannelList => {
             let mut rows = [ListRow::default(); LIST_ROWS];
@@ -713,13 +810,17 @@ fn render(
             let mut count = 0;
             for offset in 0..visible_rows {
                 let position = first + offset;
-                let Some(channel) = controller.visible_channel(position) else {
+                let Some((channel, active)) = controller.and_then(|controller| {
+                    controller
+                        .visible_channel(position)
+                        .map(|channel| (channel, position == controller.visible_position()))
+                }) else {
                     break;
                 };
                 rows[usize::from(offset)] = ListRow::new(
                     position.saturating_add(1),
                     channel.name().as_str().as_bytes(),
-                    position == controller.visible_position(),
+                    active,
                 );
                 count += 1;
             }

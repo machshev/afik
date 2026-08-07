@@ -1,6 +1,9 @@
 //! The egui application drawing the validated project model.
 
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use eframe::egui::{self, ComboBox, Grid, RichText, ScrollArea, TextEdit};
 use radio_domain::{
@@ -50,7 +53,6 @@ pub struct StudioApp {
     listing: Vec<(String, u16, u16)>,
     flash_operation: FlashOperation,
     flash_request: FlashRequest,
-    flash_transaction: String,
     flash_crc32: String,
     flash_job: Option<FlashJob>,
     flash_progress: Option<(u16, u16)>,
@@ -72,7 +74,6 @@ impl Default for StudioApp {
             listing: Vec::new(),
             flash_operation: FlashOperation::BackupEeprom,
             flash_request: FlashRequest::default(),
-            flash_transaction: String::new(),
             flash_crc32: String::new(),
             flash_job: None,
             flash_progress: None,
@@ -210,10 +211,28 @@ impl StudioApp {
         match session.backup() {
             Ok(backup) => match ProjectModel::from_image(&backup.image) {
                 Ok(project) => {
+                    let channels = project.channels.len();
+                    let banks = project.banks.len();
                     self.project = project;
                     self.errors.clear();
-                    self.status =
-                        format!("Loaded generation {} from the device.", backup.generation);
+                    // An empty read is the ordinary state of a radio nobody has
+                    // programmed yet, and it is easy to mistake for a failure:
+                    // the channel and bank tabs stay empty either way.
+                    self.status = if channels == 0 && banks == 0 {
+                        format!(
+                            "The radio holds no programmed configuration at generation {}. \
+                             Anything it is showing is its own built-in set. \
+                             Edit the Channels and Banks tabs and write them to it.",
+                            backup.generation
+                        )
+                    } else {
+                        self.tab = Tab::Channels;
+                        format!(
+                            "Loaded {channels} channels and {banks} banks from generation {} \
+                             into the Channels and Banks tabs.",
+                            backup.generation
+                        )
+                    };
                 }
                 Err(error) => self.status = error.to_string(),
             },
@@ -254,9 +273,13 @@ impl StudioApp {
             }
             Ok(bytes) => match ProjectModel::from_image(&bytes) {
                 Ok(project) => {
+                    self.status = format!(
+                        "Loaded {} channels and {} banks from {path}.",
+                        project.channels.len(),
+                        project.banks.len()
+                    );
                     self.project = project;
                     self.errors.clear();
-                    self.status = format!("Loaded {path}.");
                 }
                 Err(error) => self.status = error.to_string(),
             },
@@ -287,15 +310,46 @@ impl StudioApp {
         }
     }
 
+    /// Classifies the radio on the selected port without writing to it.
+    fn identify_radio(&mut self) {
+        match flash::identify(&self.flash_request.device) {
+            Ok(identity) => {
+                // The version becomes the confirmation the write compares
+                // against the radio, so it is read rather than remembered.
+                self.flash_request
+                    .bootloader_version
+                    .clone_from(&identity.version);
+                self.flash_status = format!(
+                    "{} bootloader {} on {}.",
+                    identity.family,
+                    identity.version,
+                    self.flash_request.device.display()
+                );
+            }
+            Err(error) => self.flash_status = error.to_string(),
+        }
+    }
+
     fn start_flash(&mut self) {
-        self.flash_request.transaction_id =
-            u32::from_str_radix(self.flash_transaction.trim().trim_start_matches("0x"), 16)
-                .unwrap_or(0);
+        // A fresh identifier per run is generated rather than typed: the
+        // bootloader ties every acknowledgement to it and reuse would make one
+        // run's acknowledgements indistinguishable from another's.
+        match flash::fresh_transaction_id() {
+            Ok(transaction_id) => self.flash_request.transaction_id = transaction_id,
+            Err(error) => {
+                self.flash_status = error.to_string();
+                return;
+            }
+        }
         self.flash_request.image_crc32 =
             u32::from_str_radix(self.flash_crc32.trim().trim_start_matches("0x"), 16).unwrap_or(0);
         match flash::start(self.flash_operation, self.flash_request.clone()) {
             Ok(job) => {
-                self.flash_status = format!("Running: {}", job.operation().label());
+                self.flash_status = format!(
+                    "Running: {} under transaction {:08x}",
+                    job.operation().label(),
+                    self.flash_request.transaction_id
+                );
                 self.flash_progress = None;
                 self.flash_job = Some(job);
             }
@@ -660,6 +714,11 @@ impl StudioApp {
                     candidates => format!("Detected {} devices; choose one.", candidates.len()),
                 };
             }
+            // Reading the bootloader version off the radio is read-only and
+            // fills in the confirmation the write checks against it.
+            if ui.button("Identify radio").clicked() {
+                self.identify_radio();
+            }
         });
         // A flashing target is never selected automatically, however few
         // candidates there are: the operator clicks the exact unit.
@@ -679,15 +738,24 @@ impl StudioApp {
             ),
             FlashOperation::K1Recovery => {
                 path_field(ui, "Recovery image", &mut self.flash_request.firmware);
+                digest_label(ui, &self.flash_request.firmware);
                 self.k1_confirmations(ui, false);
             }
             FlashOperation::K1Application => {
                 path_field(ui, "Application image", &mut self.flash_request.firmware);
+                digest_label(ui, &self.flash_request.firmware);
                 path_field(
                     ui,
                     "Known-good recovery image",
                     &mut self.flash_request.recovery,
                 );
+                digest_label(ui, &self.flash_request.recovery);
+                path_field(
+                    ui,
+                    "Retained EEPROM backup",
+                    &mut self.flash_request.eeprom_backup,
+                );
+                digest_label(ui, &self.flash_request.eeprom_backup);
                 self.k1_confirmations(ui, true);
             }
             FlashOperation::K5Application => {
@@ -702,6 +770,7 @@ impl StudioApp {
                     "Retained EEPROM backup",
                     &mut self.flash_request.eeprom_backup,
                 );
+                digest_label(ui, &self.flash_request.eeprom_backup);
                 text_field(
                     ui,
                     "Firmware version",
@@ -718,7 +787,6 @@ impl StudioApp {
                     &mut self.flash_request.recovery_rehearsed_confirmation,
                 );
                 text_field(ui, "Image CRC-32 (hex)", &mut self.flash_crc32);
-                text_field(ui, "Transaction id (hex)", &mut self.flash_transaction);
             }
         }
     }
@@ -761,7 +829,26 @@ impl StudioApp {
                 &mut self.flash_request.recovery_rehearsed_confirmation,
             );
         }
-        text_field(ui, "Transaction id (hex)", &mut self.flash_transaction);
+        text_field(ui, "Image CRC-32 (hex)", &mut self.flash_crc32);
+    }
+}
+
+/// Reports the size and CRC-32 of one selected file, or why it cannot be read.
+///
+/// Firmware cannot be read back off a radio, so the digests of the retained
+/// recovery image and EEPROM backup are the only evidence the operator has that
+/// the files selected are the pair kept for this exact unit.
+fn digest_label(ui: &mut egui::Ui, path: &Path) {
+    if path.as_os_str().is_empty() {
+        return;
+    }
+    match flash::artefact_digest(path) {
+        Ok((bytes, crc)) => {
+            ui.label(format!("    {bytes} bytes, CRC-32 {crc:08x}"));
+        }
+        Err(error) => {
+            ui.colored_label(WARNING_COLOUR, format!("    {error}"));
+        }
     }
 }
 

@@ -1,12 +1,17 @@
-//! Receive-only operator shell: screens, channel selection, and bank filter.
+//! Receive-only operator shell: screens, channel and VFO selection, and banks.
 //!
 //! The shell is pure. It consumes debounced key presses and explicit
 //! milliseconds and returns the intent the caller should apply to the shared
-//! receive controller, so every screen transition, numeric entry, and bank
-//! filter step is host-testable without a display, a keypad, or a radio.
+//! receive controller, so every screen transition, numeric entry, bank filter
+//! step, and VFO tuning step is host-testable without a display, a keypad, or a
+//! radio.
+//!
+//! The operator listens to one of two sources: a programmed memory channel or
+//! the VFO, which is a directly tuned frequency. A radio nobody has programmed
+//! is simply in VFO, so there is no separate unprogrammed mode.
 //!
 //! No intent can transmit. The set deliberately contains selection, bank
-//! filtering, monitoring, and receive-audio routing only.
+//! filtering, VFO tuning, monitoring, and receive-audio routing only.
 
 use radio_domain::BankId;
 
@@ -16,19 +21,66 @@ use crate::keypad::Key;
 /// Digits a channel-number entry accepts.
 pub const ENTRY_DIGITS: usize = 2;
 
+/// Digits a VFO frequency entry accepts, in kilohertz.
+///
+/// Six digits reach 999.999 MHz in whole kilohertz. A finer offset, such as the
+/// 6.25 kHz PMR446 raster, is reached from there with the tuning step, so the
+/// keypad needs no more digits than an operator will actually type.
+pub const VFO_ENTRY_DIGITS: usize = 6;
+
 /// Milliseconds an incomplete channel-number entry waits before it commits.
 pub const ENTRY_TIMEOUT_MILLISECONDS: u32 = 1_200;
+
+/// Frequency the VFO starts on.
+pub const VFO_DEFAULT_HZ: u32 = 145_500_000;
+
+/// Selectable VFO tuning steps in hertz.
+pub const VFO_STEPS_HZ: [u32; 6] = [6_250, 12_500, 25_000, 50_000, 100_000, 1_000_000];
+
+/// Lowest frequency the VFO will tune to.
+///
+/// This is a representation bound, not a claim about the radio: the published
+/// BK4819 ranges conflict and the board's own filters are unknown, so tuning
+/// inside this range is not a promise that the radio can hear anything there.
+/// See `EVID-BK4819-007`.
+pub const VFO_MINIMUM_HZ: u32 = 1_000_000;
+
+/// Highest frequency the VFO will tune to, which six kilohertz digits can name.
+pub const VFO_MAXIMUM_HZ: u32 = 999_999_000;
+
+/// Which receive source the operator is listening to.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Mode {
+    /// A programmed memory channel, filtered by the active bank.
+    #[default]
+    Memory,
+    /// A directly tuned frequency.
+    Vfo,
+}
+
+/// One row of the source list.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Source {
+    /// The directly tuned VFO.
+    Vfo,
+    /// Every programmed channel, with no bank filter.
+    AllChannels,
+    /// Only the channels in one bank.
+    Bank(BankId),
+}
 
 /// Which screen the operator is looking at.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Screen {
-    /// Channel name, frequency, and receive state.
+    /// The active channel or VFO frequency, and the receive state.
     #[default]
     Operating,
     /// Scrollable list of the channels in the active view.
     ChannelList,
-    /// The populated banks plus the unfiltered view.
-    BankList,
+    /// The VFO and every populated bank.
+    SourceList,
+    /// The selectable VFO tuning steps.
+    StepList,
     /// Image identity and storage state.
     Info,
 }
@@ -46,8 +98,10 @@ pub enum Intent {
     SelectPrevious,
     /// Select one zero-based index in the active view.
     SelectIndex(u16),
-    /// Apply a bank filter, or clear it with `None`.
-    SetBank(Option<BankId>),
+    /// Listen to a different source, which may be the VFO.
+    SetSource(Source),
+    /// Rebuild the receive source because the VFO frequency changed.
+    TuneVfo,
     /// Route or mute demodulated receive audio.
     ToggleAudio,
     /// Open or close the squelch override.
@@ -67,7 +121,8 @@ pub struct Context {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct Entry {
     digits: u8,
-    value: u16,
+    /// Digits typed so far: a channel position, or a VFO frequency in kilohertz.
+    value: u32,
     started_ms: u32,
 }
 
@@ -75,12 +130,16 @@ struct Entry {
 #[derive(Clone, Copy, Debug)]
 pub struct Shell {
     screen: Screen,
+    mode: Mode,
     cursor: u16,
     entry: Option<Entry>,
     bank_filter: Option<BankId>,
     banks: [Option<BankId>; MAX_BANKS],
     bank_count: usize,
-    bank_cursor: usize,
+    source_cursor: usize,
+    vfo_hz: u32,
+    step_index: usize,
+    step_cursor: usize,
 }
 
 impl Default for Shell {
@@ -95,13 +154,52 @@ impl Shell {
     pub const fn new() -> Self {
         Self {
             screen: Screen::Operating,
+            // Nothing is programmed until a host says otherwise, and the VFO is
+            // the source which always has something to tune.
+            mode: Mode::Vfo,
             cursor: 0,
             entry: None,
             bank_filter: None,
             banks: [None; MAX_BANKS],
             bank_count: 0,
-            bank_cursor: 0,
+            source_cursor: 0,
+            vfo_hz: VFO_DEFAULT_HZ,
+            step_index: 1,
+            step_cursor: 1,
         }
+    }
+
+    /// Returns the source the operator is listening to.
+    #[must_use]
+    pub const fn mode(&self) -> Mode {
+        self.mode
+    }
+
+    /// Returns the VFO frequency in hertz.
+    #[must_use]
+    pub const fn vfo_hz(&self) -> u32 {
+        self.vfo_hz
+    }
+
+    /// Returns the VFO tuning step in hertz.
+    #[must_use]
+    pub fn vfo_step_hz(&self) -> u32 {
+        VFO_STEPS_HZ
+            .get(self.step_index)
+            .copied()
+            .unwrap_or(VFO_STEPS_HZ[1])
+    }
+
+    /// Returns the step-list cursor row.
+    #[must_use]
+    pub const fn step_cursor(&self) -> usize {
+        self.step_cursor
+    }
+
+    /// Returns the selected step row.
+    #[must_use]
+    pub const fn step_index(&self) -> usize {
+        self.step_index
     }
 
     /// Returns the visible screen.
@@ -122,9 +220,9 @@ impl Shell {
         self.bank_filter
     }
 
-    /// Returns the digits typed so far, if a channel number is being entered.
+    /// Returns the digits typed so far, if a number is being entered.
     #[must_use]
-    pub fn entry(&self) -> Option<u16> {
+    pub fn entry(&self) -> Option<u32> {
         self.entry.map(|entry| entry.value)
     }
 
@@ -134,25 +232,48 @@ impl Shell {
         &self.banks[..self.bank_count]
     }
 
-    /// Returns the bank-list cursor row, where row zero is the unfiltered view.
+    /// Returns the source-list cursor row.
     #[must_use]
-    pub const fn bank_cursor(&self) -> usize {
-        self.bank_cursor
+    pub const fn source_cursor(&self) -> usize {
+        self.source_cursor
     }
 
-    /// Returns the number of bank-list rows, including the unfiltered view.
+    /// Returns the number of source-list rows: the VFO, every channel, and banks.
     #[must_use]
-    pub const fn bank_rows(&self) -> usize {
-        self.bank_count + 1
+    pub const fn source_rows(&self) -> usize {
+        self.bank_count + 2
     }
 
-    /// Returns the bank one bank-list row selects, or `None` for every channel.
+    /// Returns the source one row selects.
     #[must_use]
-    pub fn bank_at(&self, row: usize) -> Option<BankId> {
-        if row == 0 {
-            return None;
+    pub fn source_at(&self, row: usize) -> Option<Source> {
+        match row {
+            0 => Some(Source::Vfo),
+            1 => Some(Source::AllChannels),
+            _ => self.banks.get(row - 2).copied().flatten().map(Source::Bank),
         }
-        self.banks.get(row - 1).copied().flatten()
+    }
+
+    /// Reports whether one source row is the source in use.
+    #[must_use]
+    pub fn is_active_source(&self, row: usize) -> bool {
+        match (self.source_at(row), self.mode) {
+            (Some(Source::Vfo), Mode::Vfo) => true,
+            (Some(Source::AllChannels), Mode::Memory) => self.bank_filter.is_none(),
+            (Some(Source::Bank(bank)), Mode::Memory) => self.bank_filter == Some(bank),
+            _ => false,
+        }
+    }
+
+    /// Selects the programmed memory as the source.
+    ///
+    /// A host write is the operator asking for their channels, so the radio
+    /// leaves the VFO for them rather than waiting to be told twice.
+    pub fn select_memory(&mut self) {
+        self.mode = Mode::Memory;
+        self.entry = None;
+        self.cursor = 0;
+        self.source_cursor = self.source_row();
     }
 
     /// Replaces the selectable banks after a configuration is programmed.
@@ -164,27 +285,30 @@ impl Shell {
         self.bank_count = count.min(MAX_BANKS);
         self.entry = None;
         self.cursor = 0;
-        self.bank_cursor = 0;
         if self
             .bank_filter
             .is_some_and(|filter| !self.banks[..self.bank_count].contains(&Some(filter)))
         {
             self.bank_filter = None;
+            self.source_cursor = self.source_row();
             return true;
         }
-        self.bank_cursor = self.filter_row();
+        self.source_cursor = self.source_row();
         false
     }
 
-    /// Returns the bank-list row the active filter occupies.
-    fn filter_row(&self) -> usize {
+    /// Returns the source-list row the source in use occupies.
+    fn source_row(&self) -> usize {
+        if matches!(self.mode, Mode::Vfo) {
+            return 0;
+        }
         self.bank_filter
             .and_then(|filter| {
                 self.banks[..self.bank_count]
                     .iter()
                     .position(|bank| *bank == Some(filter))
             })
-            .map_or(0, |position| position + 1)
+            .map_or(1, |position| position + 2)
     }
 
     /// Applies one debounced key press.
@@ -204,7 +328,7 @@ impl Shell {
                 };
                 Intent::Redraw
             }
-            Key::Star => self.open_banks(),
+            Key::Star => self.open_sources(),
             Key::Menu => self.confirm(context),
             Key::Exit => self.cancel(),
             Key::Up => self.step(true, context),
@@ -236,13 +360,18 @@ impl Shell {
     fn step(&mut self, forwards: bool, context: Context) -> Intent {
         self.entry = None;
         match self.screen {
-            Screen::Operating => {
-                if forwards {
-                    Intent::SelectNext
-                } else {
-                    Intent::SelectPrevious
+            Screen::Operating => match self.mode {
+                // In the VFO the operating screen tunes by one step, which is
+                // what Up and Down mean when there is no channel list to walk.
+                Mode::Vfo => self.tune(forwards),
+                Mode::Memory => {
+                    if forwards {
+                        Intent::SelectNext
+                    } else {
+                        Intent::SelectPrevious
+                    }
                 }
-            }
+            },
             Screen::ChannelList => {
                 if context.visible_channels == 0 {
                     self.cursor = 0;
@@ -262,9 +391,47 @@ impl Shell {
                 };
                 Intent::Redraw
             }
-            Screen::BankList => self.step_bank(forwards),
+            Screen::SourceList => self.step_row(forwards, self.source_rows(), true),
+            Screen::StepList => self.step_row(forwards, VFO_STEPS_HZ.len(), false),
             Screen::Info => Intent::Redraw,
         }
+    }
+
+    /// Moves the cursor of one bounded list, wrapping at both ends.
+    fn step_row(&mut self, forwards: bool, rows: usize, source: bool) -> Intent {
+        let last = rows.saturating_sub(1);
+        let cursor = if source {
+            &mut self.source_cursor
+        } else {
+            &mut self.step_cursor
+        };
+        *cursor = if forwards {
+            if *cursor >= last {
+                0
+            } else {
+                *cursor + 1
+            }
+        } else if *cursor == 0 {
+            last
+        } else {
+            *cursor - 1
+        };
+        Intent::Redraw
+    }
+
+    /// Tunes the VFO by one step, refusing to leave the representable range.
+    fn tune(&mut self, upwards: bool) -> Intent {
+        let step = self.vfo_step_hz();
+        let tuned = if upwards {
+            self.vfo_hz.saturating_add(step)
+        } else {
+            self.vfo_hz.saturating_sub(step)
+        };
+        if !(VFO_MINIMUM_HZ..=VFO_MAXIMUM_HZ).contains(&tuned) {
+            return Intent::Redraw;
+        }
+        self.vfo_hz = tuned;
+        Intent::TuneVfo
     }
 
     fn confirm(&mut self, context: Context) -> Intent {
@@ -272,10 +439,25 @@ impl Shell {
             return self.commit_entry(entry, context);
         }
         match self.screen {
-            Screen::BankList => self.commit_bank(),
+            Screen::SourceList => self.commit_source(),
+            Screen::StepList => {
+                self.screen = Screen::Operating;
+                self.step_index = self.step_cursor;
+                Intent::Redraw
+            }
             Screen::Operating => {
-                self.screen = Screen::ChannelList;
-                self.cursor = context.active_index;
+                // Each mode's list is the one the operator can act on: memory
+                // channels in memory mode, tuning steps in the VFO.
+                match self.mode {
+                    Mode::Vfo => {
+                        self.screen = Screen::StepList;
+                        self.step_cursor = self.step_index;
+                    }
+                    Mode::Memory => {
+                        self.screen = Screen::ChannelList;
+                        self.cursor = context.active_index;
+                    }
+                }
                 Intent::Redraw
             }
             Screen::ChannelList => {
@@ -304,7 +486,7 @@ impl Shell {
         Intent::Redraw
     }
 
-    fn digit(&mut self, digit: u16, now_ms: u32, context: Context) -> Intent {
+    fn digit(&mut self, digit: u32, now_ms: u32, context: Context) -> Intent {
         let mut entry = self.entry.unwrap_or(Entry {
             digits: 0,
             value: 0,
@@ -313,7 +495,7 @@ impl Shell {
         entry.value = entry.value * 10 + digit;
         entry.digits += 1;
         entry.started_ms = now_ms;
-        if usize::from(entry.digits) >= ENTRY_DIGITS {
+        if usize::from(entry.digits) >= self.entry_digits() {
             self.entry = None;
             return self.commit_entry(entry, context);
         }
@@ -321,69 +503,102 @@ impl Shell {
         Intent::Redraw
     }
 
-    /// Resolves a completed entry into a selection.
+    /// Returns how many digits the current mode's entry accepts.
+    const fn entry_digits(&self) -> usize {
+        match self.mode {
+            Mode::Memory => ENTRY_DIGITS,
+            Mode::Vfo => VFO_ENTRY_DIGITS,
+        }
+    }
+
+    /// Resolves a completed entry into a selection or a VFO frequency.
     ///
-    /// The typed number is the one-based position shown on the operating
-    /// screen, so what the operator reads is what the operator can type. An
-    /// out-of-range number is discarded rather than clamped onto a channel the
+    /// In memory mode the typed number is the one-based position shown on the
+    /// operating screen, so what the operator reads is what the operator can
+    /// type. In the VFO it is a frequency in whole kilohertz. Either way a value
+    /// outside range is discarded rather than clamped onto something the
     /// operator did not ask for.
     fn commit_entry(&mut self, entry: Entry, context: Context) -> Intent {
         self.entry = None;
         self.screen = Screen::Operating;
-        if entry.value == 0 || entry.value > context.visible_channels {
-            return Intent::Redraw;
+        match self.mode {
+            Mode::Vfo => {
+                // Digits fill from the megahertz side, so "145" and a pause is
+                // 145.000 MHz rather than 145 kHz: what the operator typed is
+                // what the screen already showed them.
+                let missing = VFO_ENTRY_DIGITS.saturating_sub(usize::from(entry.digits));
+                let Some(scale) = 10_u32.checked_pow(u32::try_from(missing).unwrap_or(0)) else {
+                    return Intent::Redraw;
+                };
+                let Some(hertz) = entry
+                    .value
+                    .checked_mul(scale)
+                    .and_then(|kilohertz| kilohertz.checked_mul(1_000))
+                else {
+                    return Intent::Redraw;
+                };
+                if !(VFO_MINIMUM_HZ..=VFO_MAXIMUM_HZ).contains(&hertz) {
+                    return Intent::Redraw;
+                }
+                self.vfo_hz = hertz;
+                Intent::TuneVfo
+            }
+            Mode::Memory => {
+                let position = u16::try_from(entry.value).unwrap_or(u16::MAX);
+                if position == 0 || position > context.visible_channels {
+                    return Intent::Redraw;
+                }
+                Intent::SelectIndex(position - 1)
+            }
         }
-        Intent::SelectIndex(entry.value - 1)
     }
 
-    /// Opens the bank list, or closes it if it is already open.
+    /// Opens the source list, or closes it if it is already open.
     ///
-    /// The list opens on the active filter, so the operator can see which bank
-    /// is in force instead of inferring it from a cycle of identifiers.
-    fn open_banks(&mut self) -> Intent {
+    /// The list opens on the source in use, so the operator can see whether the
+    /// radio is on the VFO, on every channel, or on one bank.
+    fn open_sources(&mut self) -> Intent {
         self.entry = None;
-        if self.screen == Screen::BankList {
+        if self.screen == Screen::SourceList {
             self.screen = Screen::Operating;
             return Intent::Redraw;
         }
-        self.screen = Screen::BankList;
-        self.bank_cursor = self.filter_row();
+        self.screen = Screen::SourceList;
+        self.source_cursor = self.source_row();
         Intent::Redraw
     }
 
-    /// Moves the bank-list cursor over the banks plus the unfiltered view.
-    fn step_bank(&mut self, forwards: bool) -> Intent {
-        let last = self.bank_rows() - 1;
-        self.bank_cursor = if forwards {
-            if self.bank_cursor >= last {
-                0
-            } else {
-                self.bank_cursor + 1
-            }
-        } else if self.bank_cursor == 0 {
-            last
-        } else {
-            self.bank_cursor - 1
-        };
-        Intent::Redraw
-    }
-
-    /// Applies the bank the cursor names and returns to the operating screen.
-    fn commit_bank(&mut self) -> Intent {
+    /// Applies the source the cursor names and returns to the operating screen.
+    fn commit_source(&mut self) -> Intent {
         self.screen = Screen::Operating;
-        let selected = self.bank_at(self.bank_cursor);
-        if selected == self.bank_filter {
+        let Some(selected) = self.source_at(self.source_cursor) else {
+            return Intent::Redraw;
+        };
+        if self.is_active_source(self.source_cursor) {
             return Intent::Redraw;
         }
-        self.bank_filter = selected;
+        match selected {
+            Source::Vfo => self.mode = Mode::Vfo,
+            Source::AllChannels => {
+                self.mode = Mode::Memory;
+                self.bank_filter = None;
+            }
+            Source::Bank(bank) => {
+                self.mode = Mode::Memory;
+                self.bank_filter = Some(bank);
+            }
+        }
         self.cursor = 0;
-        Intent::SetBank(selected)
+        Intent::SetSource(selected)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Context, Intent, Screen, Shell, ENTRY_TIMEOUT_MILLISECONDS};
+    use super::{
+        Context, Intent, Mode, Screen, Shell, Source, ENTRY_TIMEOUT_MILLISECONDS, VFO_DEFAULT_HZ,
+        VFO_MAXIMUM_HZ, VFO_STEPS_HZ,
+    };
     use crate::configuration::MAX_BANKS;
     use crate::keypad::Key;
     use radio_domain::BankId;
@@ -403,25 +618,241 @@ mod tests {
         (banks, ids.len())
     }
 
+    /// Returns a shell listening to every programmed channel, as an operator
+    /// with a programmed radio would leave it.
+    fn memory_shell(ids: &[u16]) -> Shell {
+        let mut shell = Shell::new();
+        let (banks, count) = bank_table(ids);
+        shell.set_banks(banks, count);
+        shell.press(Key::Star, 0, context(8, 0));
+        shell.press(Key::Up, 1, context(8, 0));
+        assert_eq!(
+            shell.press(Key::Menu, 2, context(8, 0)),
+            Intent::SetSource(Source::AllChannels)
+        );
+        assert_eq!(shell.mode(), Mode::Memory);
+        shell
+    }
+
+    #[test]
+    fn a_radio_starts_in_the_vfo_because_nothing_is_programmed_yet() {
+        let shell = Shell::new();
+        assert_eq!(shell.mode(), Mode::Vfo);
+        assert_eq!(shell.screen(), Screen::Operating);
+        assert_eq!(shell.vfo_hz(), VFO_DEFAULT_HZ);
+        assert_eq!(shell.vfo_step_hz(), 12_500);
+    }
+
+    #[test]
+    fn the_vfo_tunes_by_its_step_and_stops_at_the_representable_edge() {
+        let mut shell = Shell::new();
+        assert_eq!(shell.press(Key::Up, 0, context(0, 0)), Intent::TuneVfo);
+        assert_eq!(shell.vfo_hz(), 145_512_500);
+        assert_eq!(shell.press(Key::Down, 10, context(0, 0)), Intent::TuneVfo);
+        assert_eq!(shell.vfo_hz(), VFO_DEFAULT_HZ);
+
+        // The top of the range is a representation bound, not a claim about what
+        // the radio can hear, and tuning past it changes nothing.
+        shell.press(Key::Digit9, 20, context(0, 0));
+        shell.press(Key::Digit9, 21, context(0, 0));
+        shell.press(Key::Digit9, 22, context(0, 0));
+        shell.press(Key::Digit9, 23, context(0, 0));
+        shell.press(Key::Digit9, 24, context(0, 0));
+        assert_eq!(shell.press(Key::Digit9, 25, context(0, 0)), Intent::TuneVfo);
+        assert_eq!(shell.vfo_hz(), VFO_MAXIMUM_HZ);
+        assert_eq!(shell.press(Key::Up, 30, context(0, 0)), Intent::Redraw);
+        assert_eq!(shell.vfo_hz(), VFO_MAXIMUM_HZ);
+    }
+
+    #[test]
+    fn a_typed_vfo_frequency_is_kilohertz_and_commits_on_the_sixth_digit() {
+        let mut shell = Shell::new();
+        for (index, digit) in [
+            Key::Digit4,
+            Key::Digit3,
+            Key::Digit3,
+            Key::Digit5,
+            Key::Digit0,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let elapsed = u32::try_from(index).unwrap_or(0) * 10;
+            assert_eq!(shell.press(digit, elapsed, context(0, 0)), Intent::Redraw);
+        }
+        assert_eq!(shell.entry(), Some(43_350));
+        assert_eq!(
+            shell.press(Key::Digit0, 100, context(0, 0)),
+            Intent::TuneVfo
+        );
+        assert_eq!(shell.vfo_hz(), 433_500_000);
+        assert_eq!(shell.entry(), None);
+
+        // Digits fill from the megahertz side, so a partial entry needs no
+        // padding: "145" and a pause is 145.000 MHz.
+        shell.press(Key::Digit1, 200, context(0, 0));
+        shell.press(Key::Digit4, 210, context(0, 0));
+        shell.press(Key::Digit5, 220, context(0, 0));
+        assert_eq!(
+            shell.tick(220 + ENTRY_TIMEOUT_MILLISECONDS, context(0, 0)),
+            Intent::TuneVfo
+        );
+        assert_eq!(shell.vfo_hz(), 145_000_000);
+
+        // Four digits are the same rule: 433.5 MHz.
+        shell.press(Key::Digit4, 300, context(0, 0));
+        shell.press(Key::Digit3, 310, context(0, 0));
+        shell.press(Key::Digit3, 320, context(0, 0));
+        shell.press(Key::Digit5, 330, context(0, 0));
+        assert_eq!(
+            shell.tick(330 + ENTRY_TIMEOUT_MILLISECONDS, context(0, 0)),
+            Intent::TuneVfo
+        );
+        assert_eq!(shell.vfo_hz(), 433_500_000);
+    }
+
+    #[test]
+    fn an_out_of_range_vfo_frequency_is_discarded() {
+        let mut shell = Shell::new();
+        shell.press(Key::Digit0, 0, context(0, 0));
+        assert_eq!(
+            shell.tick(ENTRY_TIMEOUT_MILLISECONDS, context(0, 0)),
+            Intent::Redraw,
+            "zero is not a frequency"
+        );
+        assert_eq!(shell.vfo_hz(), VFO_DEFAULT_HZ);
+    }
+
+    #[test]
+    fn the_step_list_opens_on_the_step_in_force_and_applies_the_chosen_one() {
+        let mut shell = Shell::new();
+        assert_eq!(shell.press(Key::Menu, 0, context(0, 0)), Intent::Redraw);
+        assert_eq!(shell.screen(), Screen::StepList);
+        assert_eq!(shell.step_cursor(), shell.step_index());
+
+        shell.press(Key::Down, 10, context(0, 0));
+        assert_eq!(shell.step_cursor(), 0);
+        assert_eq!(shell.press(Key::Menu, 20, context(0, 0)), Intent::Redraw);
+        assert_eq!(shell.screen(), Screen::Operating);
+        assert_eq!(shell.vfo_step_hz(), VFO_STEPS_HZ[0]);
+
+        // The finest step reaches the PMR446 raster from a whole megahertz.
+        shell.press(Key::Digit4, 30, context(0, 0));
+        shell.press(Key::Digit4, 31, context(0, 0));
+        shell.press(Key::Digit6, 32, context(0, 0));
+        shell.press(Key::Digit0, 33, context(0, 0));
+        shell.press(Key::Digit0, 34, context(0, 0));
+        shell.press(Key::Digit0, 35, context(0, 0));
+        assert_eq!(shell.vfo_hz(), 446_000_000);
+        shell.press(Key::Up, 40, context(0, 0));
+        assert_eq!(shell.vfo_hz(), 446_006_250);
+    }
+
+    #[test]
+    fn the_source_list_offers_the_vfo_every_channel_and_each_bank() {
+        let mut shell = Shell::new();
+        let (banks, count) = bank_table(&[1, 3]);
+        assert!(!shell.set_banks(banks, count));
+
+        assert_eq!(shell.press(Key::Star, 0, context(8, 0)), Intent::Redraw);
+        assert_eq!(shell.screen(), Screen::SourceList);
+        assert_eq!(shell.source_rows(), 4);
+        assert_eq!(shell.source_at(0), Some(Source::Vfo));
+        assert_eq!(shell.source_at(1), Some(Source::AllChannels));
+        assert_eq!(shell.source_at(2), Some(Source::Bank(BankId::new(1))));
+        assert_eq!(shell.source_at(3), Some(Source::Bank(BankId::new(3))));
+        assert_eq!(shell.source_cursor(), 0, "the VFO is the source in use");
+        assert!(shell.is_active_source(0));
+
+        shell.press(Key::Up, 10, context(8, 0));
+        shell.press(Key::Up, 11, context(8, 0));
+        assert_eq!(
+            shell.press(Key::Menu, 20, context(8, 0)),
+            Intent::SetSource(Source::Bank(BankId::new(1)))
+        );
+        assert_eq!(shell.mode(), Mode::Memory);
+        assert_eq!(shell.bank_filter(), Some(BankId::new(1)));
+
+        // Reopening shows the bank in force rather than the first row.
+        shell.press(Key::Star, 30, context(4, 0));
+        assert_eq!(shell.source_cursor(), 2);
+        assert!(shell.is_active_source(2));
+        assert_eq!(
+            shell.press(Key::Menu, 40, context(4, 0)),
+            Intent::Redraw,
+            "choosing the source already in force retunes nothing"
+        );
+
+        // Returning to the VFO is one selection, not a mode key.
+        shell.press(Key::Star, 50, context(4, 0));
+        shell.press(Key::Down, 60, context(4, 0));
+        shell.press(Key::Down, 61, context(4, 0));
+        assert_eq!(
+            shell.press(Key::Menu, 70, context(4, 0)),
+            Intent::SetSource(Source::Vfo)
+        );
+        assert_eq!(shell.mode(), Mode::Vfo);
+        assert_eq!(
+            shell.bank_filter(),
+            Some(BankId::new(1)),
+            "the bank filter is kept for the next return to memory"
+        );
+    }
+
+    #[test]
+    fn the_source_list_closes_without_changing_the_source() {
+        let mut shell = memory_shell(&[2, 5]);
+        shell.press(Key::Star, 0, context(8, 0));
+        shell.press(Key::Up, 10, context(8, 0));
+        assert_eq!(shell.press(Key::Exit, 20, context(8, 0)), Intent::Redraw);
+        assert_eq!(shell.screen(), Screen::Operating);
+        assert_eq!(shell.bank_filter(), None, "exit applies nothing");
+        assert_eq!(shell.mode(), Mode::Memory);
+
+        shell.press(Key::Star, 30, context(8, 0));
+        assert_eq!(
+            shell.press(Key::Star, 40, context(8, 0)),
+            Intent::Redraw,
+            "star closes the list it opened"
+        );
+        assert_eq!(shell.screen(), Screen::Operating);
+    }
+
+    #[test]
+    fn an_unprogrammed_radio_offers_the_vfo_and_an_empty_memory() {
+        let mut shell = Shell::new();
+        shell.press(Key::Star, 0, context(0, 0));
+        assert_eq!(shell.screen(), Screen::SourceList);
+        assert_eq!(shell.source_rows(), 2, "the VFO and every channel");
+        assert!(shell.banks().is_empty());
+        shell.press(Key::Up, 10, context(0, 0));
+        assert_eq!(
+            shell.press(Key::Menu, 20, context(0, 0)),
+            Intent::SetSource(Source::AllChannels),
+            "an empty memory is selectable and simply shows nothing"
+        );
+        assert_eq!(shell.mode(), Mode::Memory);
+    }
+
     #[test]
     fn the_operating_screen_steps_channels_and_the_list_moves_a_cursor() {
-        let mut shell = Shell::new();
-        assert_eq!(shell.press(Key::Up, 0, context(4, 1)), Intent::SelectNext);
+        let mut shell = memory_shell(&[0]);
+        assert_eq!(shell.press(Key::Up, 10, context(4, 1)), Intent::SelectNext);
         assert_eq!(
-            shell.press(Key::Down, 10, context(4, 1)),
+            shell.press(Key::Down, 20, context(4, 1)),
             Intent::SelectPrevious
         );
 
-        assert_eq!(shell.press(Key::Menu, 20, context(4, 1)), Intent::Redraw);
+        assert_eq!(shell.press(Key::Menu, 30, context(4, 1)), Intent::Redraw);
         assert_eq!(shell.screen(), Screen::ChannelList);
         assert_eq!(shell.cursor(), 1, "the list opens on the active channel");
-        shell.press(Key::Up, 30, context(4, 1));
         shell.press(Key::Up, 40, context(4, 1));
-        assert_eq!(shell.cursor(), 3);
         shell.press(Key::Up, 50, context(4, 1));
+        assert_eq!(shell.cursor(), 3);
+        shell.press(Key::Up, 60, context(4, 1));
         assert_eq!(shell.cursor(), 0, "the cursor wraps at the end of the view");
         assert_eq!(
-            shell.press(Key::Menu, 60, context(4, 1)),
+            shell.press(Key::Menu, 70, context(4, 1)),
             Intent::SelectIndex(0)
         );
         assert_eq!(shell.screen(), Screen::Operating);
@@ -429,13 +860,13 @@ mod tests {
 
     #[test]
     fn exit_leaves_a_screen_without_changing_the_selection() {
-        let mut shell = Shell::new();
-        shell.press(Key::Menu, 0, context(4, 2));
-        shell.press(Key::Up, 10, context(4, 2));
-        assert_eq!(shell.press(Key::Exit, 20, context(4, 2)), Intent::Redraw);
+        let mut shell = memory_shell(&[0]);
+        shell.press(Key::Menu, 10, context(4, 2));
+        shell.press(Key::Up, 20, context(4, 2));
+        assert_eq!(shell.press(Key::Exit, 30, context(4, 2)), Intent::Redraw);
         assert_eq!(shell.screen(), Screen::Operating);
         assert_eq!(
-            shell.press(Key::Exit, 30, context(4, 2)),
+            shell.press(Key::Exit, 40, context(4, 2)),
             Intent::Idle,
             "exit on the operating screen has nothing to cancel"
         );
@@ -443,8 +874,8 @@ mod tests {
 
     #[test]
     fn a_two_digit_number_selects_the_position_it_names() {
-        let mut shell = Shell::new();
-        assert_eq!(shell.press(Key::Digit1, 0, context(16, 0)), Intent::Redraw);
+        let mut shell = memory_shell(&[0]);
+        assert_eq!(shell.press(Key::Digit1, 10, context(16, 0)), Intent::Redraw);
         assert_eq!(shell.entry(), Some(1));
         assert_eq!(
             shell.press(Key::Digit2, 100, context(16, 0)),
@@ -455,7 +886,7 @@ mod tests {
 
     #[test]
     fn one_digit_commits_after_the_entry_timeout() {
-        let mut shell = Shell::new();
+        let mut shell = memory_shell(&[0]);
         shell.press(Key::Digit3, 1_000, context(16, 0));
         assert_eq!(shell.tick(1_500, context(16, 0)), Intent::Idle);
         assert_eq!(
@@ -467,16 +898,16 @@ mod tests {
 
     #[test]
     fn an_out_of_range_or_zero_number_selects_nothing() {
-        let mut shell = Shell::new();
-        shell.press(Key::Digit9, 0, context(4, 0));
+        let mut shell = memory_shell(&[0]);
+        shell.press(Key::Digit9, 10, context(4, 0));
         assert_eq!(
-            shell.press(Key::Digit9, 10, context(4, 0)),
+            shell.press(Key::Digit9, 20, context(4, 0)),
             Intent::Redraw,
             "99 is not a channel in a four-channel view"
         );
-        shell.press(Key::Digit0, 20, context(4, 0));
+        shell.press(Key::Digit0, 30, context(4, 0));
         assert_eq!(
-            shell.press(Key::Digit0, 30, context(4, 0)),
+            shell.press(Key::Digit0, 40, context(4, 0)),
             Intent::Redraw,
             "channel zero does not exist"
         );
@@ -484,9 +915,9 @@ mod tests {
 
     #[test]
     fn exit_clears_a_partial_number_before_it_can_select() {
-        let mut shell = Shell::new();
-        shell.press(Key::Digit1, 0, context(16, 0));
-        assert_eq!(shell.press(Key::Exit, 10, context(16, 0)), Intent::Redraw);
+        let mut shell = memory_shell(&[0]);
+        shell.press(Key::Digit1, 10, context(16, 0));
+        assert_eq!(shell.press(Key::Exit, 20, context(16, 0)), Intent::Redraw);
         assert_eq!(shell.entry(), None);
         assert_eq!(
             shell.tick(10_000, context(16, 0)),
@@ -496,93 +927,13 @@ mod tests {
     }
 
     #[test]
-    fn the_bank_list_names_its_rows_and_applies_the_chosen_bank() {
-        let mut shell = Shell::new();
-        let (banks, count) = bank_table(&[1, 3]);
-        assert!(!shell.set_banks(banks, count));
-
-        assert_eq!(shell.press(Key::Star, 0, context(8, 0)), Intent::Redraw);
-        assert_eq!(shell.screen(), Screen::BankList);
-        assert_eq!(
-            shell.bank_rows(),
-            3,
-            "every populated bank plus the unfiltered view"
-        );
-        assert_eq!(
-            shell.bank_cursor(),
-            0,
-            "the list opens on the active filter"
-        );
-        assert_eq!(shell.bank_at(0), None);
-        assert_eq!(shell.bank_at(1), Some(BankId::new(1)));
-        assert_eq!(shell.bank_at(2), Some(BankId::new(3)));
-
-        shell.press(Key::Up, 10, context(8, 0));
-        assert_eq!(shell.bank_cursor(), 1);
-        assert_eq!(
-            shell.press(Key::Menu, 20, context(8, 0)),
-            Intent::SetBank(Some(BankId::new(1)))
-        );
-        assert_eq!(shell.screen(), Screen::Operating);
-        assert_eq!(shell.bank_filter(), Some(BankId::new(1)));
-
-        // Reopening shows which bank is in force rather than the first row.
-        shell.press(Key::Star, 30, context(4, 0));
-        assert_eq!(shell.bank_cursor(), 1);
-        shell.press(Key::Down, 40, context(4, 0));
-        assert_eq!(
-            shell.bank_cursor(),
-            0,
-            "the cursor wraps onto every channel"
-        );
-        assert_eq!(
-            shell.press(Key::Menu, 50, context(4, 0)),
-            Intent::SetBank(None)
-        );
-        assert_eq!(shell.bank_filter(), None);
-    }
-
-    #[test]
-    fn the_bank_list_closes_without_changing_the_filter() {
-        let mut shell = Shell::new();
-        let (banks, count) = bank_table(&[2, 5]);
-        shell.set_banks(banks, count);
-        shell.press(Key::Star, 0, context(8, 0));
-        shell.press(Key::Up, 10, context(8, 0));
-        assert_eq!(shell.press(Key::Exit, 20, context(8, 0)), Intent::Redraw);
-        assert_eq!(shell.screen(), Screen::Operating);
-        assert_eq!(shell.bank_filter(), None, "exit applies nothing");
-
-        // Star toggles the list shut, and choosing the filter already in force
-        // redraws rather than retuning the receiver.
-        shell.press(Key::Star, 30, context(8, 0));
-        assert_eq!(shell.press(Key::Star, 40, context(8, 0)), Intent::Redraw);
-        assert_eq!(shell.screen(), Screen::Operating);
-        shell.press(Key::Star, 50, context(8, 0));
-        assert_eq!(shell.press(Key::Menu, 60, context(8, 0)), Intent::Redraw);
-        assert_eq!(shell.bank_filter(), None);
-    }
-
-    #[test]
-    fn an_unprogrammed_radio_offers_only_the_unfiltered_row() {
-        let mut shell = Shell::new();
-        shell.press(Key::Star, 0, context(5, 0));
-        assert_eq!(shell.screen(), Screen::BankList);
-        assert_eq!(shell.bank_rows(), 1);
-        assert!(shell.banks().is_empty());
-        assert_eq!(shell.press(Key::Up, 10, context(5, 0)), Intent::Redraw);
-        assert_eq!(shell.bank_cursor(), 0, "there is nowhere else to go");
-        assert_eq!(shell.press(Key::Menu, 20, context(5, 0)), Intent::Redraw);
-        assert_eq!(shell.screen(), Screen::Operating);
-    }
-
-    #[test]
     fn a_filter_the_new_configuration_does_not_populate_is_cleared() {
         let mut shell = Shell::new();
         let (banks, count) = bank_table(&[1, 3]);
         shell.set_banks(banks, count);
         shell.press(Key::Star, 0, context(8, 0));
         shell.press(Key::Up, 5, context(8, 0));
+        shell.press(Key::Up, 6, context(8, 0));
         shell.press(Key::Menu, 8, context(8, 0));
         assert_eq!(shell.bank_filter(), Some(BankId::new(1)));
 
@@ -596,33 +947,35 @@ mod tests {
 
     #[test]
     fn no_key_can_produce_a_transmit_intent() {
-        let mut shell = Shell::new();
-        for key in [
-            Key::Side1,
-            Key::Side2,
-            Key::Ptt,
-            Key::Menu,
-            Key::Up,
-            Key::Down,
-            Key::Exit,
-            Key::Star,
-            Key::Function,
-            Key::Digit0,
-            Key::Digit1,
-            Key::Digit9,
-        ] {
-            let intent = shell.press(key, 0, context(4, 0));
-            assert!(matches!(
-                intent,
-                Intent::Idle
-                    | Intent::Redraw
-                    | Intent::SelectNext
-                    | Intent::SelectPrevious
-                    | Intent::SelectIndex(_)
-                    | Intent::SetBank(_)
-                    | Intent::ToggleAudio
-                    | Intent::ToggleMonitor
-            ));
+        for mut shell in [Shell::new(), memory_shell(&[1])] {
+            for key in [
+                Key::Side1,
+                Key::Side2,
+                Key::Ptt,
+                Key::Menu,
+                Key::Up,
+                Key::Down,
+                Key::Exit,
+                Key::Star,
+                Key::Function,
+                Key::Digit0,
+                Key::Digit1,
+                Key::Digit9,
+            ] {
+                let intent = shell.press(key, 100, context(4, 0));
+                assert!(matches!(
+                    intent,
+                    Intent::Idle
+                        | Intent::Redraw
+                        | Intent::SelectNext
+                        | Intent::SelectPrevious
+                        | Intent::SelectIndex(_)
+                        | Intent::SetSource(_)
+                        | Intent::TuneVfo
+                        | Intent::ToggleAudio
+                        | Intent::ToggleMonitor
+                ));
+            }
         }
     }
 
@@ -636,5 +989,6 @@ mod tests {
             Intent::Redraw
         );
         assert_eq!(shell.screen(), Screen::Operating);
+        assert_eq!(shell.vfo_hz(), VFO_DEFAULT_HZ);
     }
 }
