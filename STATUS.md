@@ -2052,3 +2052,32 @@ Verified 2026-08-05:
   `K1SIDE-025` still needs its physical side-key observation.
 - **Next smallest actionable task:** enable the audio path so demodulated audio
   can be confirmed against the metering, with transmit still unreachable.
+
+## Work Package 30 progress
+
+- **Audio result:** confirmed on the exact unit. `AFIK-K1-1.1` (31,672 bytes,
+  CRC-32 `827b5f8e`) was written with all 124 pages acknowledged. With the
+  serial cable unplugged, side key one switched the display to `AUDIO ON` and
+  receiver noise was audible from the speaker on 145.500 MHz. `EVID-K1-060`
+  holds the observation.
+- **Shared-jack constraint:** driving the audio path pin `PA8` in any state
+  removes the serial link, and the internal speaker is disconnected while the
+  cable is inserted. Audio is therefore a keypad control, not a serial command.
+  `EVID-K1-059` and `ADR-055` record this.
+- **Operating image:** `AFIK-K1-1.2` (37,592 bytes, CRC-32 `87f96286`) is built,
+  gated, and packaged. Up and Down select one of five receive-only built-in
+  channels through the same `radio-channel-control` banked controller the host
+  tooling uses, side key one toggles audio, and the display shows the channel
+  name, frequency, raw RSSI, squelch link, and audio state. The serial
+  responder reads a published snapshot and never touches the register bus.
+- **Verification:** `cargo fmt --all --check`,
+  `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo test --workspace` (241 tests), `tool/build-k1-async.sh --release`,
+  `tool/package-k1-async-image.sh`, `tool/test-k1-async-image.sh`, and
+  `git diff --check` all passed.
+- **Remaining:** write `AFIK-K1-1.2` and confirm on the unit that Up and Down
+  retune the receiver, that the display and the serial observation agree, and
+  that audio still toggles.
+- **Open gates:** `RISK-030` receive is proven only as raw metering plus
+  audible noise; `RISK-031` the squelch calibration lives in external SPI
+  flash; `K1SIDE-025` still needs its physical side-key observation.
