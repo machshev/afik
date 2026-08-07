@@ -32,16 +32,18 @@ use radio_bk4819::{
 use radio_channel_control::{
     BankedReceiveController, ChannelMemory, ChannelReceiveSetup, ReceiveObservation,
 };
+use radio_channel_plan::BankName;
 use radio_device::DeviceService;
-use radio_domain::{Modulation, Tone};
+use radio_domain::{BankId, Modulation, Tone};
 use radio_firmware_k1::bk4819_bus::ThreeWireBus;
 use radio_firmware_k1::channels::{built_in, BUILT_IN_CHANNELS};
 use radio_firmware_k1::configuration::{
     device_service, Programmed, MAX_CHANNELS, RETAINED_IMAGE_BYTES,
 };
 use radio_firmware_k1::display::{
-    render_channel_list, render_info_screen, render_operating_screen, ListRow, OperatingView,
-    COLUMN_OFFSET, FRAME_BYTES, LIST_ROWS, PAGES, SETUP_COMMANDS, WIDTH,
+    render_bank_list, render_channel_list, render_info_screen, render_operating_screen,
+    BankIndicator, BankRow, ListRow, OperatingView, COLUMN_OFFSET, FRAME_BYTES, LIST_ROWS, PAGES,
+    SETUP_COMMANDS, WIDTH,
 };
 use radio_firmware_k1::keypad::{decode, Debouncer, Edge, KeypadScan, Sample};
 use radio_firmware_k1::py32f071_bk4819::Bk4819Pins;
@@ -55,7 +57,7 @@ const _: [(); 8] = [(); PAGES];
 const K1_VECTOR_TABLE_ORIGIN: u32 = 0x0800_2800;
 
 /// Identity this image reports on the information screen.
-const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-2.2";
+const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-2.3";
 
 /// Interval between receive samples while audio is routed.
 const RF_SAMPLE_MILLISECONDS: u64 = 500;
@@ -625,6 +627,7 @@ async fn ui_task(
                 &shell,
                 &controller,
                 &receiver,
+                &programmed,
                 generation,
                 retained,
             );
@@ -643,26 +646,64 @@ fn render(
     shell: &Shell,
     controller: &BankedReceiveController<ChannelMemory<MAX_CHANNELS>>,
     receiver: &Receiver,
+    programmed: &Programmed,
     generation: u32,
     retained: bool,
 ) {
     let visible = controller.visible_channels();
+    // Names are fixed-capacity values copied out of the configuration, so they
+    // are held here for as long as the view borrows their bytes.
+    let filter = shell.bank_filter();
+    let filter_name = filter.and_then(|bank| bank_name(programmed, bank));
+    let channel = controller.channel();
     match shell.screen() {
         Screen::Operating => render_operating_screen(
             frame,
             &OperatingView {
                 position: controller.visible_position().saturating_add(1),
                 total: visible,
-                name: controller.channel().name().as_str().as_bytes(),
+                name: channel.name().as_str().as_bytes(),
                 frequency_hz: receiver.frequency_hz,
                 rssi_raw: receiver.rssi_raw,
                 squelch_open: receiver.squelch_open,
                 audio_routed: receiver.audio_routed,
                 monitoring: controller.is_monitoring(),
-                bank: shell.bank_filter().map(|bank| bank.get()),
+                bank: filter.map(|bank| BankIndicator {
+                    id: bank.get(),
+                    name: filter_name
+                        .as_ref()
+                        .map_or(&[][..], |name| name.as_str().as_bytes()),
+                }),
                 entry: shell.entry(),
             },
         ),
+        Screen::BankList => {
+            let mut rows = [BankRow::default(); LIST_ROWS];
+            // The unfiltered view is row zero, so the pages match the cursor the
+            // shell reports without translating between two numbering schemes.
+            let first = shell.bank_cursor() / LIST_ROWS * LIST_ROWS;
+            let mut count = 0;
+            for offset in 0..LIST_ROWS {
+                let row = first + offset;
+                if row >= shell.bank_rows() {
+                    break;
+                }
+                rows[offset] = match shell.bank_at(row) {
+                    None => BankRow::all(filter.is_none()),
+                    Some(bank) => {
+                        let name = bank_name(programmed, bank);
+                        BankRow::named(
+                            bank.get(),
+                            name.as_ref()
+                                .map_or(&[][..], |name| name.as_str().as_bytes()),
+                            filter == Some(bank),
+                        )
+                    }
+                };
+                count += 1;
+            }
+            render_bank_list(frame, &rows[..count], shell.bank_cursor() - first);
+        }
         Screen::ChannelList => {
             let mut rows = [ListRow::default(); LIST_ROWS];
             let visible_rows = u16::try_from(LIST_ROWS).unwrap_or(u16::MAX);
@@ -691,6 +732,11 @@ fn render(
         }
         Screen::Info => render_info_screen(frame, IMAGE_IDENTITY, generation, visible, retained),
     }
+}
+
+/// Returns the host-programmed name of one bank, if the host named it.
+fn bank_name(programmed: &Programmed, bank: BankId) -> Option<BankName> {
+    programmed.bank(bank).map(|entry| entry.name())
 }
 
 fn fail_closed() -> ! {

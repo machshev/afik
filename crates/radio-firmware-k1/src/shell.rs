@@ -27,6 +27,8 @@ pub enum Screen {
     Operating,
     /// Scrollable list of the channels in the active view.
     ChannelList,
+    /// The populated banks plus the unfiltered view.
+    BankList,
     /// Image identity and storage state.
     Info,
 }
@@ -78,6 +80,7 @@ pub struct Shell {
     bank_filter: Option<BankId>,
     banks: [Option<BankId>; MAX_BANKS],
     bank_count: usize,
+    bank_cursor: usize,
 }
 
 impl Default for Shell {
@@ -97,6 +100,7 @@ impl Shell {
             bank_filter: None,
             banks: [None; MAX_BANKS],
             bank_count: 0,
+            bank_cursor: 0,
         }
     }
 
@@ -124,6 +128,33 @@ impl Shell {
         self.entry.map(|entry| entry.value)
     }
 
+    /// Returns the populated banks in identifier order.
+    #[must_use]
+    pub fn banks(&self) -> &[Option<BankId>] {
+        &self.banks[..self.bank_count]
+    }
+
+    /// Returns the bank-list cursor row, where row zero is the unfiltered view.
+    #[must_use]
+    pub const fn bank_cursor(&self) -> usize {
+        self.bank_cursor
+    }
+
+    /// Returns the number of bank-list rows, including the unfiltered view.
+    #[must_use]
+    pub const fn bank_rows(&self) -> usize {
+        self.bank_count + 1
+    }
+
+    /// Returns the bank one bank-list row selects, or `None` for every channel.
+    #[must_use]
+    pub fn bank_at(&self, row: usize) -> Option<BankId> {
+        if row == 0 {
+            return None;
+        }
+        self.banks.get(row - 1).copied().flatten()
+    }
+
     /// Replaces the selectable banks after a configuration is programmed.
     ///
     /// A filter which the new configuration does not populate is cleared, so
@@ -133,6 +164,7 @@ impl Shell {
         self.bank_count = count.min(MAX_BANKS);
         self.entry = None;
         self.cursor = 0;
+        self.bank_cursor = 0;
         if self
             .bank_filter
             .is_some_and(|filter| !self.banks[..self.bank_count].contains(&Some(filter)))
@@ -140,7 +172,19 @@ impl Shell {
             self.bank_filter = None;
             return true;
         }
+        self.bank_cursor = self.filter_row();
         false
+    }
+
+    /// Returns the bank-list row the active filter occupies.
+    fn filter_row(&self) -> usize {
+        self.bank_filter
+            .and_then(|filter| {
+                self.banks[..self.bank_count]
+                    .iter()
+                    .position(|bank| *bank == Some(filter))
+            })
+            .map_or(0, |position| position + 1)
     }
 
     /// Applies one debounced key press.
@@ -160,7 +204,7 @@ impl Shell {
                 };
                 Intent::Redraw
             }
-            Key::Star => self.cycle_bank(),
+            Key::Star => self.open_banks(),
             Key::Menu => self.confirm(context),
             Key::Exit => self.cancel(),
             Key::Up => self.step(true, context),
@@ -218,6 +262,7 @@ impl Shell {
                 };
                 Intent::Redraw
             }
+            Screen::BankList => self.step_bank(forwards),
             Screen::Info => Intent::Redraw,
         }
     }
@@ -227,6 +272,7 @@ impl Shell {
             return self.commit_entry(entry, context);
         }
         match self.screen {
+            Screen::BankList => self.commit_bank(),
             Screen::Operating => {
                 self.screen = Screen::ChannelList;
                 self.cursor = context.active_index;
@@ -290,29 +336,48 @@ impl Shell {
         Intent::SelectIndex(entry.value - 1)
     }
 
-    fn cycle_bank(&mut self) -> Intent {
+    /// Opens the bank list, or closes it if it is already open.
+    ///
+    /// The list opens on the active filter, so the operator can see which bank
+    /// is in force instead of inferring it from a cycle of identifiers.
+    fn open_banks(&mut self) -> Intent {
         self.entry = None;
-        self.cursor = 0;
-        if self.bank_count == 0 {
-            self.bank_filter = None;
+        if self.screen == Screen::BankList {
+            self.screen = Screen::Operating;
             return Intent::Redraw;
         }
-        let next = match self.bank_filter {
-            None => self.banks[0],
-            Some(current) => {
-                let position = self.banks[..self.bank_count]
-                    .iter()
-                    .position(|bank| *bank == Some(current));
-                match position {
-                    Some(position) if position + 1 < self.bank_count => self.banks[position + 1],
-                    // Past the last populated bank the filter clears, so every
-                    // programmed channel is reachable again.
-                    _ => None,
-                }
+        self.screen = Screen::BankList;
+        self.bank_cursor = self.filter_row();
+        Intent::Redraw
+    }
+
+    /// Moves the bank-list cursor over the banks plus the unfiltered view.
+    fn step_bank(&mut self, forwards: bool) -> Intent {
+        let last = self.bank_rows() - 1;
+        self.bank_cursor = if forwards {
+            if self.bank_cursor >= last {
+                0
+            } else {
+                self.bank_cursor + 1
             }
+        } else if self.bank_cursor == 0 {
+            last
+        } else {
+            self.bank_cursor - 1
         };
-        self.bank_filter = next;
-        Intent::SetBank(next)
+        Intent::Redraw
+    }
+
+    /// Applies the bank the cursor names and returns to the operating screen.
+    fn commit_bank(&mut self) -> Intent {
+        self.screen = Screen::Operating;
+        let selected = self.bank_at(self.bank_cursor);
+        if selected == self.bank_filter {
+            return Intent::Redraw;
+        }
+        self.bank_filter = selected;
+        self.cursor = 0;
+        Intent::SetBank(selected)
     }
 }
 
@@ -431,23 +496,84 @@ mod tests {
     }
 
     #[test]
-    fn the_bank_filter_cycles_through_populated_banks_and_clears() {
+    fn the_bank_list_names_its_rows_and_applies_the_chosen_bank() {
         let mut shell = Shell::new();
         let (banks, count) = bank_table(&[1, 3]);
         assert!(!shell.set_banks(banks, count));
+
+        assert_eq!(shell.press(Key::Star, 0, context(8, 0)), Intent::Redraw);
+        assert_eq!(shell.screen(), Screen::BankList);
         assert_eq!(
-            shell.press(Key::Star, 0, context(8, 0)),
+            shell.bank_rows(),
+            3,
+            "every populated bank plus the unfiltered view"
+        );
+        assert_eq!(
+            shell.bank_cursor(),
+            0,
+            "the list opens on the active filter"
+        );
+        assert_eq!(shell.bank_at(0), None);
+        assert_eq!(shell.bank_at(1), Some(BankId::new(1)));
+        assert_eq!(shell.bank_at(2), Some(BankId::new(3)));
+
+        shell.press(Key::Up, 10, context(8, 0));
+        assert_eq!(shell.bank_cursor(), 1);
+        assert_eq!(
+            shell.press(Key::Menu, 20, context(8, 0)),
             Intent::SetBank(Some(BankId::new(1)))
         );
+        assert_eq!(shell.screen(), Screen::Operating);
+        assert_eq!(shell.bank_filter(), Some(BankId::new(1)));
+
+        // Reopening shows which bank is in force rather than the first row.
+        shell.press(Key::Star, 30, context(4, 0));
+        assert_eq!(shell.bank_cursor(), 1);
+        shell.press(Key::Down, 40, context(4, 0));
         assert_eq!(
-            shell.press(Key::Star, 10, context(4, 0)),
-            Intent::SetBank(Some(BankId::new(3)))
+            shell.bank_cursor(),
+            0,
+            "the cursor wraps onto every channel"
         );
         assert_eq!(
-            shell.press(Key::Star, 20, context(2, 0)),
+            shell.press(Key::Menu, 50, context(4, 0)),
             Intent::SetBank(None)
         );
         assert_eq!(shell.bank_filter(), None);
+    }
+
+    #[test]
+    fn the_bank_list_closes_without_changing_the_filter() {
+        let mut shell = Shell::new();
+        let (banks, count) = bank_table(&[2, 5]);
+        shell.set_banks(banks, count);
+        shell.press(Key::Star, 0, context(8, 0));
+        shell.press(Key::Up, 10, context(8, 0));
+        assert_eq!(shell.press(Key::Exit, 20, context(8, 0)), Intent::Redraw);
+        assert_eq!(shell.screen(), Screen::Operating);
+        assert_eq!(shell.bank_filter(), None, "exit applies nothing");
+
+        // Star toggles the list shut, and choosing the filter already in force
+        // redraws rather than retuning the receiver.
+        shell.press(Key::Star, 30, context(8, 0));
+        assert_eq!(shell.press(Key::Star, 40, context(8, 0)), Intent::Redraw);
+        assert_eq!(shell.screen(), Screen::Operating);
+        shell.press(Key::Star, 50, context(8, 0));
+        assert_eq!(shell.press(Key::Menu, 60, context(8, 0)), Intent::Redraw);
+        assert_eq!(shell.bank_filter(), None);
+    }
+
+    #[test]
+    fn an_unprogrammed_radio_offers_only_the_unfiltered_row() {
+        let mut shell = Shell::new();
+        shell.press(Key::Star, 0, context(5, 0));
+        assert_eq!(shell.screen(), Screen::BankList);
+        assert_eq!(shell.bank_rows(), 1);
+        assert!(shell.banks().is_empty());
+        assert_eq!(shell.press(Key::Up, 10, context(5, 0)), Intent::Redraw);
+        assert_eq!(shell.bank_cursor(), 0, "there is nowhere else to go");
+        assert_eq!(shell.press(Key::Menu, 20, context(5, 0)), Intent::Redraw);
+        assert_eq!(shell.screen(), Screen::Operating);
     }
 
     #[test]
@@ -456,6 +582,8 @@ mod tests {
         let (banks, count) = bank_table(&[1, 3]);
         shell.set_banks(banks, count);
         shell.press(Key::Star, 0, context(8, 0));
+        shell.press(Key::Up, 5, context(8, 0));
+        shell.press(Key::Menu, 8, context(8, 0));
         assert_eq!(shell.bank_filter(), Some(BankId::new(1)));
 
         let (banks, count) = bank_table(&[5]);

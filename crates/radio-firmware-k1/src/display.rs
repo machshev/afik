@@ -218,9 +218,88 @@ pub struct OperatingView<'a> {
     /// Whether the squelch override is held open.
     pub monitoring: bool,
     /// Active bank filter, if any.
-    pub bank: Option<u16>,
+    pub bank: Option<BankIndicator<'a>>,
     /// Channel number being typed, if any.
     pub entry: Option<u16>,
+}
+
+/// Columns the operating screen gives the bank indicator.
+pub const BANK_INDICATOR_BYTES: usize = 5;
+
+/// The active bank filter as the operating screen shows it.
+///
+/// The host names its banks, so the name is what the operator recognises. An
+/// unnamed bank, which is what a built-in set or an older configuration has,
+/// falls back to the identifier rather than to blank space.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BankIndicator<'a> {
+    /// Bank identifier.
+    pub id: u16,
+    /// Programmed bank name, which may be empty.
+    pub name: &'a [u8],
+}
+
+impl BankIndicator<'_> {
+    /// Returns the fixed-width indicator text.
+    fn label(&self) -> [u8; BANK_INDICATOR_BYTES] {
+        let mut label = *b"BK 00";
+        if self.name.is_empty() {
+            write_two_digits(&mut label[3..], self.id);
+            return label;
+        }
+        label = [b' '; BANK_INDICATOR_BYTES];
+        let length = self.name.len().min(BANK_INDICATOR_BYTES);
+        label[..length].copy_from_slice(&self.name[..length]);
+        label
+    }
+}
+
+/// One bank list row, carrying the exact text the row shows.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct BankRow {
+    /// Row label bytes.
+    label: [u8; LIST_NAME_BYTES],
+    /// Used label bytes.
+    label_len: u8,
+    /// Whether this row is the filter in force.
+    pub active: bool,
+}
+
+impl BankRow {
+    /// Builds the unfiltered row, which every bank list offers first.
+    #[must_use]
+    pub fn all(active: bool) -> Self {
+        Self::with_label(b"ALL CHANNELS", active)
+    }
+
+    /// Builds one bank row, falling back to the identifier when unnamed.
+    #[must_use]
+    pub fn named(id: u16, name: &[u8], active: bool) -> Self {
+        if name.is_empty() {
+            let mut label = *b"BANK 00";
+            write_two_digits(&mut label[5..], id);
+            return Self::with_label(&label, active);
+        }
+        Self::with_label(name, active)
+    }
+
+    fn with_label(label: &[u8], active: bool) -> Self {
+        let mut row = Self {
+            label: [0; LIST_NAME_BYTES],
+            label_len: 0,
+            active,
+        };
+        let length = label.len().min(LIST_NAME_BYTES);
+        row.label[..length].copy_from_slice(&label[..length]);
+        row.label_len = u8::try_from(length).unwrap_or(0);
+        row
+    }
+
+    /// Returns the row label.
+    #[must_use]
+    pub fn label(&self) -> &[u8] {
+        &self.label[..usize::from(self.label_len)]
+    }
 }
 
 /// One channel list row.
@@ -271,9 +350,7 @@ pub fn render_operating_screen(frame: &mut [u8; FRAME_BYTES], view: &OperatingVi
         write_two_digits(&mut typed[3..], entry);
         draw_text(frame, WIDTH - 5 * 6, 0, &typed);
     } else if let Some(bank) = view.bank {
-        let mut label = *b"BK 00";
-        write_two_digits(&mut label[3..], bank);
-        draw_text(frame, WIDTH - 5 * 6, 0, &label);
+        draw_text(frame, WIDTH - 5 * 6, 0, &bank.label());
     } else {
         draw_text(frame, WIDTH - 5 * 6, 0, b"ALL  ");
     }
@@ -337,6 +414,31 @@ pub fn render_channel_list(
         write_two_digits(&mut number[..2], row.position);
         draw_text(frame, 6, y, &number);
         draw_text(frame, 6 + 3 * 6, y, row.name());
+        if row.active {
+            draw_text(frame, WIDTH - 6, y, b"*");
+        }
+    }
+}
+
+/// Produces the bank list.
+///
+/// The first row of the whole list is the unfiltered view, so clearing a filter
+/// is a visible choice rather than a side effect of cycling past the last bank.
+/// `cursor_row` selects which of the supplied rows is marked.
+pub fn render_bank_list(frame: &mut [u8; FRAME_BYTES], rows: &[BankRow], cursor_row: usize) {
+    frame.fill(0);
+    draw_text(frame, 0, 0, b"BANKS");
+    if rows.is_empty() {
+        draw_text(frame, 4, 24, b"NONE PROGRAMMED");
+        draw_text(frame, 4, 40, b"USE AFIK STUDIO");
+        return;
+    }
+    for (index, row) in rows.iter().take(LIST_ROWS).enumerate() {
+        let y = 12 + index * 11;
+        if index == cursor_row {
+            draw_text(frame, 0, y, b">");
+        }
+        draw_text(frame, 6, y, row.label());
         if row.active {
             draw_text(frame, WIDTH - 6, y, b"*");
         }
@@ -702,8 +804,8 @@ mod tests {
 #[cfg(test)]
 mod operating_screen_tests {
     use super::{
-        render_channel_list, render_info_screen, render_operating_screen, ListRow, OperatingView,
-        FRAME_BYTES, LIST_NAME_BYTES,
+        render_bank_list, render_channel_list, render_info_screen, render_operating_screen,
+        BankIndicator, BankRow, ListRow, OperatingView, FRAME_BYTES, LIST_NAME_BYTES,
     };
 
     fn view() -> OperatingView<'static> {
@@ -751,7 +853,14 @@ mod operating_screen_tests {
                 ..view()
             },
             OperatingView {
-                bank: Some(2),
+                bank: Some(BankIndicator {
+                    id: 2,
+                    name: b"PMR446",
+                }),
+                ..view()
+            },
+            OperatingView {
+                bank: Some(BankIndicator { id: 2, name: b"" }),
                 ..view()
             },
             OperatingView {
@@ -774,12 +883,12 @@ mod operating_screen_tests {
     #[test]
     fn a_typed_channel_number_replaces_the_bank_indicator() {
         let typed = render(&OperatingView {
-            bank: Some(2),
+            bank: Some(BankIndicator { id: 2, name: b"" }),
             entry: Some(7),
             ..view()
         });
         let bank = render(&OperatingView {
-            bank: Some(2),
+            bank: Some(BankIndicator { id: 2, name: b"" }),
             ..view()
         });
         assert_ne!(typed, bank);
@@ -814,11 +923,77 @@ mod operating_screen_tests {
     }
 
     #[test]
+    fn a_bank_indicator_prefers_the_programmed_name_over_the_identifier() {
+        let named = render(&OperatingView {
+            bank: Some(BankIndicator {
+                id: 2,
+                name: b"PMR446",
+            }),
+            ..view()
+        });
+        let numbered = render(&OperatingView {
+            bank: Some(BankIndicator { id: 2, name: b"" }),
+            ..view()
+        });
+        let unfiltered = render(&view());
+        assert_ne!(named, numbered, "a named bank shows its name");
+        assert_ne!(named, unfiltered);
+        assert_ne!(numbered, unfiltered);
+    }
+
+    #[test]
+    fn the_bank_list_marks_the_cursor_and_the_filter_in_force() {
+        let rows = [
+            BankRow::all(false),
+            BankRow::named(1, b"AMATEUR 2M", true),
+            BankRow::named(3, b"", false),
+        ];
+        assert_eq!(rows[0].label(), b"ALL CHANNELS");
+        assert_eq!(
+            rows[2].label(),
+            b"BANK 03",
+            "an unnamed bank shows its number"
+        );
+
+        let mut cursor_first = [0_u8; FRAME_BYTES];
+        render_bank_list(&mut cursor_first, &rows, 0);
+        let mut cursor_second = [0_u8; FRAME_BYTES];
+        render_bank_list(&mut cursor_second, &rows, 1);
+        assert_ne!(cursor_first, cursor_second);
+        assert!(cursor_first.iter().any(|byte| *byte != 0));
+
+        let mut unmarked = [0_u8; FRAME_BYTES];
+        render_bank_list(
+            &mut unmarked,
+            &[
+                BankRow::all(true),
+                BankRow::named(1, b"AMATEUR 2M", false),
+                BankRow::named(3, b"", false),
+            ],
+            0,
+        );
+        assert_ne!(cursor_first, unmarked, "the filter in force is marked");
+    }
+
+    #[test]
+    fn an_empty_bank_list_says_so_instead_of_going_blank() {
+        let mut frame = [0_u8; FRAME_BYTES];
+        render_bank_list(&mut frame, &[], 0);
+        assert!(frame.iter().any(|byte| *byte != 0));
+    }
+
+    #[test]
+    fn a_long_bank_name_is_truncated_to_the_visible_width() {
+        let row = BankRow::named(1, b"A VERY LONG BANK NAME", false);
+        assert_eq!(row.label().len(), LIST_NAME_BYTES);
+    }
+
+    #[test]
     fn the_info_screen_separates_retained_and_built_in_configurations() {
         let mut retained = [0_u8; FRAME_BYTES];
-        render_info_screen(&mut retained, b"AFIK-K1-2.2", 7, 16, true);
+        render_info_screen(&mut retained, b"AFIK-K1-2.3", 7, 16, true);
         let mut built_in = [0_u8; FRAME_BYTES];
-        render_info_screen(&mut built_in, b"AFIK-K1-2.2", 0, 5, false);
+        render_info_screen(&mut built_in, b"AFIK-K1-2.3", 0, 5, false);
         assert_ne!(retained, built_in);
         assert!(retained.iter().any(|byte| *byte != 0));
     }
