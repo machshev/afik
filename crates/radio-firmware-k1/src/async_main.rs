@@ -47,7 +47,7 @@ use radio_domain::{
 use radio_firmware_k1::battery::{Battery, Calibration};
 use radio_firmware_k1::bk4819_bus::ThreeWireBus;
 use radio_firmware_k1::configuration::{
-    device_service, store_squelch, Programmed, MAX_OBJECTS, RETAINED_IMAGE_BYTES,
+    device_service, store_squelch, Programmed, CONFIGURATION_STORE_BYTES, RETAINED_IMAGE_BYTES,
 };
 use radio_firmware_k1::display::{
     render_channel_list, render_info_screen, render_operating_screen, render_selector_list,
@@ -57,14 +57,14 @@ use radio_firmware_k1::display::{
 use radio_firmware_k1::keypad::{decode, Debouncer, Edge, KeypadScan, Sample};
 use radio_firmware_k1::py32f071_battery::BatterySense;
 use radio_firmware_k1::py32f071_bk4819::Bk4819Pins;
-use radio_firmware_k1::py32f071_eeprom::{RetainError, RetainedConfiguration, CONFIGURATION_BYTES};
+use radio_firmware_k1::py32f071_eeprom::{RetainError, RetainedConfiguration};
 use radio_firmware_k1::py32f071_runtime::{compose, K1RuntimePeripherals};
 use radio_firmware_k1::py32f071_runtime_init::init;
 use radio_firmware_k1::shell::{
     Context, Intent, Mode, Screen, Setting, Shell, Source, SETTINGS, SQUELCH_LEVELS, VFO_STEPS_HZ,
 };
 use radio_protocol::MAX_ENCODED_FRAME;
-use radio_storage::StorageObject;
+use radio_storage::ObjectArena;
 
 const _: [(); 8] = [(); PAGES];
 const K1_VECTOR_TABLE_ORIGIN: u32 = 0x0800_2800;
@@ -549,10 +549,9 @@ async fn serial_task(mut uart: Uart<'static, Async>, memory: EepromPins) {
     // receiver, so an absent or unresponsive memory leaves the store empty
     // rather than stopping the radio.
     let mut image = [0_u8; RETAINED_IMAGE_BYTES];
-    // The device stores channels, named banks, and the global configuration,
-    // and refuses at validation time to activate more channels than the
-    // interface can select.
-    let mut service = device_service(CONFIGURATION_BYTES);
+    // The device stores channels, named banks, plans, and the global
+    // configuration, in whatever mixture fits the bytes it declares.
+    let mut service = device_service();
 
     // Publish before touching the external memory. The interface task waits for
     // the first publication before it reads a key, so anything slow or broken
@@ -697,12 +696,12 @@ async fn serial_task(mut uart: Uart<'static, Async>, memory: EepromPins) {
 /// A snapshot the interface cannot use is published as an empty configuration
 /// rather than dropped, so the display always reports what the radio really
 /// holds and falls back to the built-in channels.
-fn publish<const OBJECTS: usize>(
-    service: &DeviceService<OBJECTS>,
+fn publish<const BYTES: usize>(
+    service: &DeviceService<BYTES>,
     retained: bool,
     memory: MemoryState,
 ) {
-    store_objects(service.active_objects());
+    store_objects(service.active_payload());
     let programmed = Programmed::index(service.active_objects()).unwrap_or_default();
     PROGRAMMED.signal(Publication {
         programmed,
@@ -725,20 +724,17 @@ fn publish<const OBJECTS: usize>(
 /// task reads. Nothing decoded is held anywhere: a channel is built from these
 /// objects on the lookup that needs it and dropped again, so what a radio can
 /// hold is bounded by the storage it advertises rather than by its SRAM.
-static ACTIVE: Mutex<CriticalSectionRawMutex, RefCell<[Option<StorageObject>; MAX_OBJECTS]>> =
-    Mutex::new(RefCell::new([None; MAX_OBJECTS]));
+static ACTIVE: Mutex<CriticalSectionRawMutex, RefCell<ObjectArena<CONFIGURATION_STORE_BYTES>>> =
+    Mutex::new(RefCell::new(ObjectArena::new()));
 
-/// Replaces the shared object snapshot.
-fn store_objects<'a, I>(objects: I)
-where
-    I: IntoIterator<Item = &'a StorageObject>,
-{
+/// Replaces the shared object snapshot from one packed payload.
+///
+/// The store keeps its objects packed and ordered, so this is a byte copy of
+/// what the device is running rather than an object table rebuilt beside it.
+fn store_objects(payload: &[u8]) {
     ACTIVE.lock(|cell| {
         let mut snapshot = cell.borrow_mut();
-        *snapshot = [None; MAX_OBJECTS];
-        for (slot, object) in snapshot.iter_mut().zip(objects) {
-            *slot = Some(*object);
-        }
+        *snapshot = ObjectArena::from_payload(payload).unwrap_or_default();
     });
 }
 
@@ -766,7 +762,7 @@ impl ChannelSource for Listening {
         match self {
             Self::Vfo(record) => (index == 0).then_some(*record),
             Self::Memory(programmed) => {
-                ACTIVE.lock(|cell| programmed.channel_at(cell.borrow().iter().flatten(), index))
+                ACTIVE.lock(|cell| programmed.channel_at(&*cell.borrow(), index))
             }
         }
     }
@@ -774,7 +770,9 @@ impl ChannelSource for Listening {
     fn member_at(&self, index: u16, bank: BankId) -> bool {
         match self {
             Self::Vfo(_) => false,
-            Self::Memory(programmed) => programmed.member_at(index, bank),
+            Self::Memory(programmed) => {
+                ACTIVE.lock(|cell| programmed.member_at(&*cell.borrow(), index, bank))
+            }
         }
     }
 }
@@ -1215,7 +1213,7 @@ fn render(
 
 /// Returns the host-programmed name of one bank, if the host named it.
 fn bank_name(programmed: &Programmed, bank: BankId) -> Option<BankName> {
-    ACTIVE.lock(|cell| programmed.bank_name(cell.borrow().iter().flatten(), bank))
+    ACTIVE.lock(|cell| programmed.bank_name(&*cell.borrow(), bank))
 }
 
 fn fail_closed() -> ! {

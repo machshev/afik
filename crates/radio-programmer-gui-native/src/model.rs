@@ -19,9 +19,10 @@ use radio_domain::{
 use radio_programmer::{CompileError, ConfigurationCompiler, DeviceCapabilities, RadioProject};
 use radio_storage::{
     decode_channel, decode_channel_bank, decode_configuration_image, decode_generated_bank,
-    decode_radio_config, ObjectKind, CHANNEL_BANK_ENCODED_LEN, CHANNEL_ENCODED_LEN,
-    CONFIGURATION_IMAGE_HEADER_LEN, CONFIGURATION_IMAGE_OBJECT_HEADER_LEN,
-    GENERATED_BANK_ENCODED_LEN, MAX_OBJECT_DATA, RADIO_CONFIG_ENCODED_LEN, STORAGE_FORMAT_VERSION,
+    decode_radio_config, generated_bank_encoded_len, ObjectKind, CHANNEL_BANK_ENCODED_LEN,
+    CHANNEL_ENCODED_LEN, CONFIGURATION_IMAGE_HEADER_LEN, CONFIGURATION_IMAGE_OBJECT_HEADER_LEN,
+    MAX_GENERATED_BANK_ENCODED_LEN, MAX_OBJECT_DATA, RADIO_CONFIG_ENCODED_LEN,
+    STORAGE_FORMAT_VERSION,
 };
 
 /// Maximum objects an offline host project may hold.
@@ -385,6 +386,8 @@ pub struct StorageSummary {
     pub expanded_channels: usize,
     /// Stored plans which expand into channels.
     pub plans: usize,
+    /// Bytes the generated plans themselves occupy.
+    pub plan_bytes: usize,
 }
 
 impl StorageSummary {
@@ -408,8 +411,16 @@ impl StorageSummary {
     /// The comparison is against the same configuration written as explicit
     /// channel rows, which would need no plan objects at all.
     pub const fn bytes_saved(&self) -> usize {
-        self.expanded_channels * CHANNEL_ENCODED_LEN - self.plans * GENERATED_BANK_ENCODED_LEN
+        self.expanded_channels * CHANNEL_ENCODED_LEN - self.plan_bytes
     }
+}
+
+/// Returns the bytes one validated plan occupies in a radio's store.
+///
+/// Each encoding family is stored at its own length, so a simplex band costs
+/// less than a repeater sub-band and the editor says so.
+fn plan_bytes(plan: GeneratedBank) -> usize {
+    generated_bank_encoded_len(plan.encoding()).unwrap_or(MAX_GENERATED_BANK_ENCODED_LEN)
 }
 
 /// One validated bank, which is either named or a compact generated plan.
@@ -581,7 +592,7 @@ impl BankDraft {
                         format!("must be at most {MAX_GENERATED_CHANNELS} in one plan"),
                     ));
                 }
-                let plan = GeneratedBank::linear_fixed_offset_with(
+                let plan = GeneratedBank::linear_from_offset_with(
                     BankId::new(self.id),
                     name,
                     base,
@@ -652,6 +663,17 @@ impl BankDraft {
                 .with(ChannelFlags::BUSY_LOCKOUT, self.busy_lockout)
                 .with(ChannelFlags::COMPANDER, self.compander),
         })
+    }
+
+    /// Returns the bytes this plan occupies in a radio's store.
+    ///
+    /// A row which does not yet validate stores nothing, so it reports zero
+    /// rather than a length no radio would ever be asked for.
+    pub fn stored_bytes(&self) -> usize {
+        match self.validate(0) {
+            Ok(ValidatedBank::Generated(plan)) => plan_bytes(plan),
+            _ => 0,
+        }
     }
 
     /// Returns the channels this plan expands to, name and frequency in order.
@@ -903,8 +925,10 @@ impl ProjectModel {
                     summary.bytes += CHANNEL_BANK_ENCODED_LEN;
                 }
                 Ok(ValidatedBank::Generated(plan)) => {
+                    let stored = plan_bytes(plan);
                     summary.objects += 1;
-                    summary.bytes += GENERATED_BANK_ENCODED_LEN;
+                    summary.bytes += stored;
+                    summary.plan_bytes += stored;
                     summary.plans += 1;
                     summary.expanded_channels += usize::from(plan.channel_count());
                 }
@@ -1126,7 +1150,7 @@ mod tests {
     use super::{
         format_mhz, parse_frequency, BankDraft, BankKind, ChannelDraft, ConfigDraft, ModelScope,
         ProjectModel, ToneDraft, ToneKind, ValidatedBank, CHANNEL_ENCODED_LEN,
-        GENERATED_BANK_ENCODED_LEN, GENERATED_CHANNEL_ID_BASE,
+        GENERATED_CHANNEL_ID_BASE,
     };
     use radio_channel_control::{ChannelSource, ProgrammedMemory};
     use radio_channel_plan::{ChannelFlags, MAX_BANKS};
@@ -1424,7 +1448,7 @@ mod tests {
         assert_eq!(summary.plans, 1);
         assert_eq!(
             summary.bytes_saved(),
-            16 * CHANNEL_ENCODED_LEN - GENERATED_BANK_ENCODED_LEN
+            16 * CHANNEL_ENCODED_LEN - summary.plan_bytes
         );
         // Sixteen channels for one object: the whole point of the plan.
         assert_eq!(summary.objects, stored_only.objects + 1);

@@ -458,7 +458,7 @@ fn parse_bank(spec: &str) -> Result<GeneratedBank, CliError> {
         Some(field) => Offset::from_hz(parse_integer::<i32>(field, "transmit offset")?),
         None => Offset::from_hz(0),
     };
-    let mut bank = GeneratedBank::linear_fixed_offset_with(
+    let mut bank = GeneratedBank::linear_from_offset_with(
         BankId::new(id),
         name,
         base,
@@ -666,10 +666,11 @@ fn render_verified_receipt(
 
 fn render_info(capabilities: radio_programmer::DeviceCapabilities) -> String {
     format!(
-        "protocol_version={}\nstorage_version={}\nmax_frame_payload={}\nmax_objects={}\nmax_object_size={}\nplan_encodings=0x{:04x}\n",
+        "protocol_version={}\nstorage_version={}\nmax_frame_payload={}\nconfiguration_bytes={}\nmax_objects={}\nmax_object_size={}\nplan_encodings=0x{:04x}\n",
         capabilities.protocol_version,
         capabilities.storage_version,
         capabilities.max_frame_payload,
+        capabilities.configuration_bytes,
         capabilities.max_objects,
         capabilities.max_object_size,
         capabilities.plan_encodings,
@@ -939,7 +940,7 @@ mod tests {
             invoke(&["--sim", "info"]),
             CliOutcome {
                 exit_code: EXIT_SUCCESS,
-                stdout: "protocol_version=1\nstorage_version=3\nmax_frame_payload=128\nmax_objects=8\nmax_object_size=64\nplan_encodings=0x0001\n".into(),
+                stdout: "protocol_version=1\nstorage_version=4\nmax_frame_payload=128\nconfiguration_bytes=512\nmax_objects=24\nmax_object_size=64\nplan_encodings=0x0001\n".into(),
                 stderr: String::new(),
             }
         );

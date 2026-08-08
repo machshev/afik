@@ -15,8 +15,8 @@
 
 use radio_domain::{BankId, SquelchLevel, MAX_SQUELCH_LEVEL};
 
-use crate::configuration::MAX_BANKS;
 use crate::keypad::Key;
+use radio_channel_plan::MAX_BANKS;
 
 /// Digits a channel-number entry accepts.
 pub const ENTRY_DIGITS: usize = 2;
@@ -183,7 +183,7 @@ pub struct Shell {
     cursor: u16,
     entry: Option<Entry>,
     bank_filter: Option<BankId>,
-    banks: [Option<BankId>; MAX_BANKS],
+    banks: [Option<BankId>; MAX_BANKS as usize],
     bank_count: usize,
     source_cursor: usize,
     vfo_hz: u32,
@@ -212,7 +212,7 @@ impl Shell {
             cursor: 0,
             entry: None,
             bank_filter: None,
-            banks: [None; MAX_BANKS],
+            banks: [None; MAX_BANKS as usize],
             bank_count: 0,
             source_cursor: 0,
             vfo_hz: VFO_DEFAULT_HZ,
@@ -362,9 +362,9 @@ impl Shell {
     ///
     /// A filter which the new configuration does not populate is cleared, so
     /// the operator can never be left looking at an empty view.
-    pub fn set_banks(&mut self, banks: [Option<BankId>; MAX_BANKS], count: usize) -> bool {
+    pub fn set_banks(&mut self, banks: [Option<BankId>; MAX_BANKS as usize], count: usize) -> bool {
         self.banks = banks;
-        self.bank_count = count.min(MAX_BANKS);
+        self.bank_count = count.min(MAX_BANKS as usize);
         self.entry = None;
         self.cursor = 0;
         if self
@@ -764,8 +764,8 @@ mod tests {
         Context, Intent, Mode, Screen, Shell, Source, ENTRY_TIMEOUT_MILLISECONDS, VFO_DEFAULT_HZ,
         VFO_MAXIMUM_HZ, VFO_STEPS_HZ,
     };
-    use crate::configuration::MAX_BANKS;
     use crate::keypad::Key;
+    use radio_channel_plan::MAX_BANKS;
     use radio_domain::{BankId, SquelchLevel};
 
     fn context(visible: u16, active: u16) -> Context {
@@ -775,8 +775,8 @@ mod tests {
         }
     }
 
-    fn bank_table(ids: &[u16]) -> ([Option<BankId>; MAX_BANKS], usize) {
-        let mut banks = [None; MAX_BANKS];
+    fn bank_table(ids: &[u16]) -> ([Option<BankId>; MAX_BANKS as usize], usize) {
+        let mut banks = [None; MAX_BANKS as usize];
         for (slot, id) in banks.iter_mut().zip(ids) {
             *slot = Some(BankId::new(*id));
         }

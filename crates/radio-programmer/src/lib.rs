@@ -15,7 +15,8 @@ use radio_storage::{
     configuration_image_len, decode_channel, decode_channel_bank, decode_configuration_image,
     decode_generated_bank, decode_radio_config, encode_channel, encode_channel_bank,
     encode_configuration_image, encode_generated_bank, encode_radio_config, ObjectKey, ObjectKind,
-    StorageError, StorageObject, StorageUsage, MAX_OBJECT_DATA, STORAGE_FORMAT_VERSION,
+    StorageError, StorageObject, StorageUsage, MAX_OBJECT_DATA, OBJECT_ENTRY_HEADER_LEN,
+    STORAGE_FORMAT_VERSION,
 };
 
 const MAX_RECEIVE_CALLS: usize = MAX_ENCODED_FRAME + 1;
@@ -164,7 +165,11 @@ impl RadioProject {
 pub struct CapacityReport {
     /// Number of device objects produced.
     pub object_count: u16,
-    /// Encoded object payload bytes used.
+    /// Packed configuration bytes these objects occupy in a device store.
+    ///
+    /// This counts each object's entry header as well as its payload, because
+    /// that is what a device charges for it and what its declared
+    /// `configuration_bytes` bounds.
     pub storage_bytes: u32,
     /// Generated channel count represented by those objects.
     pub generated_channels: u32,
@@ -212,8 +217,13 @@ pub enum CompileError {
     DuplicateObject(ObjectKey),
     /// The target does not support a required plan encoding.
     UnsupportedPlanEncoding(PlanEncoding),
-    /// The object count exceeds the negotiated target limit.
-    TooManyObjects,
+    /// The configuration needs more stored bytes than the target declares.
+    ConfigurationTooLarge {
+        /// Packed bytes this configuration occupies.
+        needed: u32,
+        /// Packed bytes the target declared it has.
+        available: u32,
+    },
     /// One object exceeds target or protocol payload limits.
     ObjectTooLarge,
     /// A bounded storage encoding failed.
@@ -238,7 +248,10 @@ impl fmt::Display for CompileError {
             Self::UnsupportedPlanEncoding(encoding) => {
                 write!(formatter, "target does not support {encoding:?}")
             }
-            Self::TooManyObjects => formatter.write_str("configuration has too many objects"),
+            Self::ConfigurationTooLarge { needed, available } => write!(
+                formatter,
+                "configuration needs {needed} stored bytes and the target has {available}"
+            ),
             Self::ObjectTooLarge => formatter.write_str("configuration object is too large"),
             Self::Storage(error) => write!(formatter, "storage encoding failed: {error}"),
             Self::UnsupportedStorageVersion => {
@@ -279,9 +292,6 @@ impl ConfigurationCompiler {
             + project.channels.len()
             + project.banks.len()
             + usize::from(project.config.is_some());
-        if object_count > usize::from(self.capabilities.max_objects) {
-            return Err(CompileError::TooManyObjects);
-        }
         let mut objects = Vec::with_capacity(object_count);
         for bank in &project.generated_banks {
             objects.push(encode_generated_bank(*bank)?);
@@ -311,10 +321,10 @@ impl ConfigurationCompiler {
     pub fn decode_image(&self, bytes: &[u8]) -> Result<CompiledConfiguration, CompileError> {
         self.require_storage_version()?;
         let image = decode_configuration_image(bytes)?;
-        if image.object_count() > self.capabilities.max_objects {
-            return Err(CompileError::TooManyObjects);
-        }
-        let objects = image.objects().collect::<Vec<_>>();
+        let objects = image
+            .objects()
+            .map(|object| StorageObject::new(object.key(), object.data()))
+            .collect::<Result<Vec<_>, _>>()?;
         let report = self.validate_objects(&objects)?;
         Ok(CompiledConfiguration { objects, report })
     }
@@ -343,9 +353,6 @@ impl ConfigurationCompiler {
     }
 
     fn validate_objects(&self, objects: &[StorageObject]) -> Result<CapacityReport, CompileError> {
-        if objects.len() > usize::from(self.capabilities.max_objects) {
-            return Err(CompileError::TooManyObjects);
-        }
         let mut report = CapacityReport::default();
         for object in objects {
             if object.len() > usize::from(self.capabilities.max_object_size)
@@ -394,9 +401,20 @@ impl ConfigurationCompiler {
             report.storage_bytes = report
                 .storage_bytes
                 .checked_add(
-                    u32::try_from(object.len()).map_err(|_| CompileError::CapacityOverflow)?,
+                    u32::try_from(object.len() + OBJECT_ENTRY_HEADER_LEN)
+                        .map_err(|_| CompileError::CapacityOverflow)?,
                 )
                 .ok_or(CompileError::CapacityOverflow)?;
+        }
+        // The one bound a target declares. A device which reports no
+        // configuration storage declares nothing rather than a full store, so
+        // it is left to refuse what it cannot hold as the bytes arrive.
+        let available = self.capabilities.configuration_bytes;
+        if available != 0 && report.storage_bytes > available {
+            return Err(CompileError::ConfigurationTooLarge {
+                needed: report.storage_bytes,
+                available,
+            });
         }
         Ok(report)
     }
@@ -516,7 +534,10 @@ impl ConfigurationSnapshot {
                 }
             }
             storage_bytes = storage_bytes
-                .checked_add(u32::try_from(object.len()).map_err(|_| StorageError::ImageTooLarge)?)
+                .checked_add(
+                    u32::try_from(object.len() + OBJECT_ENTRY_HEADER_LEN)
+                        .map_err(|_| StorageError::ImageTooLarge)?,
+                )
                 .ok_or(StorageError::ImageTooLarge)?;
         }
 
@@ -934,10 +955,15 @@ fn parse_device_error<E>(requested: Command, response: &Frame) -> ProgrammerErro
 }
 
 /// Converts active storage usage into a programmer capacity report.
-pub const fn report_active_usage(usage: StorageUsage) -> CapacityReport {
+pub fn report_active_usage(usage: StorageUsage) -> CapacityReport {
     CapacityReport {
         object_count: usage.object_count,
-        storage_bytes: usage.payload_bytes,
+        // What a device charges for its objects, headers included, so an
+        // active snapshot and a compiled project are measured the same way.
+        storage_bytes: usage.payload_bytes.saturating_add(
+            u32::from(usage.object_count)
+                .saturating_mul(u32::try_from(OBJECT_ENTRY_HEADER_LEN).unwrap_or(u32::MAX)),
+        ),
         generated_channels: 0,
         explicit_channels: 0,
         banks: 0,
@@ -955,7 +981,7 @@ mod tests {
     use radio_domain::{BankId, Frequency, FrequencyStep, RadioConfig, TxClass};
     use radio_storage::{
         decode_configuration_image, encode_generated_bank, ObjectKey, ObjectKind, StorageError,
-        StorageObject, GENERATED_BANK_ENCODED_LEN, STORAGE_FORMAT_VERSION,
+        StorageObject, GENERATED_BANK_CORE_LEN, OBJECT_ENTRY_HEADER_LEN, STORAGE_FORMAT_VERSION,
     };
 
     fn capabilities() -> DeviceCapabilities {
@@ -970,9 +996,11 @@ mod tests {
         }
     }
 
-    fn capabilities_for(object_count: u16) -> DeviceCapabilities {
+    /// A target declaring room for exactly `objects` generated banks.
+    fn capabilities_for(objects: u16) -> DeviceCapabilities {
         DeviceCapabilities {
-            max_objects: object_count,
+            configuration_bytes: u32::from(objects)
+                * u32::try_from(OBJECT_ENTRY_HEADER_LEN + GENERATED_BANK_CORE_LEN).unwrap(),
             ..capabilities()
         }
     }
@@ -999,7 +1027,7 @@ mod tests {
         assert_eq!(compiled.report().object_count, 1);
         assert_eq!(
             compiled.report().storage_bytes,
-            u32::try_from(GENERATED_BANK_ENCODED_LEN).unwrap()
+            u32::try_from(OBJECT_ENTRY_HEADER_LEN + GENERATED_BANK_CORE_LEN).unwrap()
         );
         assert_eq!(compiled.report().generated_channels, 16);
     }
@@ -1166,9 +1194,13 @@ mod tests {
         let mut image = vec![0; compiled.image_len().unwrap()];
         compiled.encode_image(&mut image).unwrap();
 
+        let one_bank = capabilities_for(1);
         assert_eq!(
-            ConfigurationCompiler::new(capabilities_for(1)).decode_image(&image),
-            Err(CompileError::TooManyObjects)
+            ConfigurationCompiler::new(one_bank).decode_image(&image),
+            Err(CompileError::ConfigurationTooLarge {
+                needed: one_bank.configuration_bytes * 2,
+                available: one_bank.configuration_bytes,
+            })
         );
         let mut limits = capabilities_for(2);
         limits.max_object_size = 30;
@@ -1210,7 +1242,10 @@ mod tests {
             snapshot.report().unwrap(),
             super::CapacityReport {
                 object_count: 2,
-                storage_bytes: u32::try_from(GENERATED_BANK_ENCODED_LEN * 2).unwrap(),
+                storage_bytes: u32::try_from(
+                    (OBJECT_ENTRY_HEADER_LEN + GENERATED_BANK_CORE_LEN) * 2
+                )
+                .unwrap(),
                 generated_channels: 32,
                 ..super::CapacityReport::default()
             }

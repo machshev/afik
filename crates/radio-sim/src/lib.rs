@@ -29,8 +29,11 @@ use std::{
     rc::Rc,
 };
 
-/// Maximum configuration objects in the first simulated device profile.
-pub const SIM_MAX_OBJECTS: usize = 8;
+/// Configuration bytes the first simulated device profile stores.
+///
+/// One number, as on a radio: what the simulated device holds is whatever fits
+/// these packed bytes, in whatever mixture of objects a project uses.
+pub const SIM_CONFIGURATION_BYTES: usize = 512;
 
 /// Explicitly advanced deterministic virtual clock.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1044,7 +1047,7 @@ impl From<DeviceEvent> for TraceKind {
 /// observable trace.
 pub struct SimDevice {
     clock: SimClock,
-    service: DeviceService<SIM_MAX_OBJECTS>,
+    service: DeviceService<SIM_CONFIGURATION_BYTES>,
     trace: Vec<TraceEvent>,
 }
 
@@ -1195,7 +1198,7 @@ mod tests {
     };
     use radio_storage::{
         decode_configuration_image, decode_generated_bank, encode_generated_bank, ObjectKey,
-        ObjectKind, StorageError, StorageObject, GENERATED_BANK_ENCODED_LEN,
+        ObjectKind, StorageError, StorageObject, GENERATED_BANK_CORE_LEN, OBJECT_ENTRY_HEADER_LEN,
     };
     use radio_tx_policy::{LoadStatus, PermissionSet, StoredPermissions, TxPolicy};
     use radio_ui::{Key, KeyEvent, KeySet, UiAction, UiView};
@@ -1832,7 +1835,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             compiled.report().storage_bytes,
-            u32::try_from(GENERATED_BANK_ENCODED_LEN).unwrap()
+            u32::try_from(OBJECT_ENTRY_HEADER_LEN + GENERATED_BANK_CORE_LEN).unwrap()
         );
         assert_eq!(compiled.report().generated_channels, 16);
 
@@ -1927,7 +1930,7 @@ mod tests {
 
         let receipt = programmer.write_configuration(&compiled).unwrap();
         let listing = programmer.list_objects().unwrap();
-        let encoded_len = u16::try_from(GENERATED_BANK_ENCODED_LEN).unwrap();
+        let encoded_len = u16::try_from(GENERATED_BANK_CORE_LEN).unwrap();
         assert_eq!(listing.generation, receipt.generation);
         assert_eq!(
             listing.objects,
@@ -2231,7 +2234,7 @@ mod tests {
                 kind: ObjectKind::GeneratedBank,
                 id: 4,
             },
-            &[0_u8; GENERATED_BANK_ENCODED_LEN],
+            &[0_u8; GENERATED_BANK_CORE_LEN],
         )
         .unwrap();
         let (write_payload, write_len) = write_object_payload(transaction, &malformed);

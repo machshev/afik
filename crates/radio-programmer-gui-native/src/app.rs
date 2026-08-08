@@ -12,7 +12,7 @@ use radio_domain::{
     MAX_BATTERY_SAVE_RATIO, MAX_SQUELCH_LEVEL,
 };
 use radio_programmer::CapacityReport;
-use radio_storage::{CHANNEL_ENCODED_LEN, GENERATED_BANK_ENCODED_LEN};
+use radio_storage::CHANNEL_ENCODED_LEN;
 
 use radio_programmer_serial::SUPPORTED_BAUDS;
 
@@ -1247,7 +1247,7 @@ fn generated_expansion(ui: &mut egui::Ui, bank: &BankDraft) {
         );
         return;
     }
-    let stored = GENERATED_BANK_ENCODED_LEN;
+    let stored = bank.stored_bytes();
     let explicit = usize::from(bank.channel_count) * CHANNEL_ENCODED_LEN;
     egui::CollapsingHeader::new(format!(
         "Expands to {} channels on the radio: {stored} stored bytes instead of {explicit}",

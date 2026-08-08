@@ -6,7 +6,7 @@
 use core::fmt;
 use radio_channel_plan::{
     BankFlags, BankMask, BankName, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
-    ChannelRecord, ChannelTemplate, Designator, GeneratedBank, MAX_BANK_NAME_LEN,
+    ChannelRecord, ChannelTemplate, Designator, GeneratedBank, PlanEncoding, MAX_BANK_NAME_LEN,
     MAX_CHANNEL_NAME_LEN, MAX_DESIGNATOR_LEN,
 };
 use radio_domain::{
@@ -22,17 +22,21 @@ const NO_CALLING_INDEX: u16 = u16::MAX;
 
 /// Current object encoding version.
 ///
-/// Version 3 carries a generated bank's channel-name designator and numbering,
-/// the index it marks as its calling channel, and a fixed transmit offset, so a
-/// plan expands to the channel names a published band plan uses and a repeater
-/// sub-band is one stored object. Version 2 carried the per-channel template
-/// but derived names from a truncated bank name and could express simplex
-/// banks only. Earlier versions are rejected rather than guessed at.
-pub const STORAGE_FORMAT_VERSION: u8 = 3;
+/// Version 4 splits a generated bank into a shared core and a per-encoding
+/// tail, and stores the encoding family the plan declares rather than inferring
+/// it from a zero offset, so each plan costs what its own family needs. Version
+/// 3 carried the designator, numbering, calling index and a transmit offset
+/// every plan paid for. Earlier versions are rejected rather than guessed at.
+pub const STORAGE_FORMAT_VERSION: u8 = 4;
 /// Maximum bytes held by one device object in the first storage model.
 pub const MAX_OBJECT_DATA: usize = 64;
-/// Encoded byte length of a version-3 generated-bank object.
-pub const GENERATED_BANK_ENCODED_LEN: usize = 59;
+/// Encoded byte length of the shared core every generated-bank object carries.
+///
+/// What follows it is the declared encoding's own tail, which is empty for a
+/// simplex plan and four bytes of transmit offset for a fixed-offset one.
+pub const GENERATED_BANK_CORE_LEN: usize = 56;
+/// Longest generated-bank object any implemented encoding produces.
+pub const MAX_GENERATED_BANK_ENCODED_LEN: usize = GENERATED_BANK_CORE_LEN + 4;
 /// Encoded byte length of a version-3 explicit channel object.
 pub const CHANNEL_ENCODED_LEN: usize = 42;
 /// Encoded byte length of a version-3 named channel-bank object.
@@ -87,7 +91,101 @@ pub struct ObjectKey {
     pub id: u16,
 }
 
+/// Anything which presents one identified encoded configuration object.
+///
+/// A store holds its objects packed end to end and lends them out as borrowed
+/// slices; an encoder produces one owned object at a time. Both are objects to
+/// every decoder and validator here, so nothing has to be copied into a
+/// worst-case buffer merely to be read.
+pub trait Object {
+    /// Returns the object identity.
+    fn key(&self) -> ObjectKey;
+
+    /// Returns the encoded object bytes.
+    fn data(&self) -> &[u8];
+
+    /// Returns the encoded object length.
+    fn len(&self) -> usize {
+        self.data().len()
+    }
+
+    /// Reports whether the object data is empty.
+    fn is_empty(&self) -> bool {
+        self.data().is_empty()
+    }
+}
+
+impl<T: Object + ?Sized> Object for &T {
+    fn key(&self) -> ObjectKey {
+        (**self).key()
+    }
+
+    fn data(&self) -> &[u8] {
+        (**self).data()
+    }
+}
+
+/// One encoded configuration object borrowed from the bytes holding it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ObjectRef<'a> {
+    key: ObjectKey,
+    data: &'a [u8],
+}
+
+impl<'a> ObjectRef<'a> {
+    /// Borrows encoded object data without copying it.
+    pub const fn new(key: ObjectKey, data: &'a [u8]) -> Self {
+        Self { key, data }
+    }
+
+    /// Returns the object identity.
+    pub const fn key(self) -> ObjectKey {
+        self.key
+    }
+
+    /// Returns the encoded object bytes.
+    pub const fn data(self) -> &'a [u8] {
+        self.data
+    }
+
+    /// Returns the encoded object length.
+    pub const fn len(self) -> usize {
+        self.data.len()
+    }
+
+    /// Reports whether the object data is empty.
+    pub const fn is_empty(self) -> bool {
+        self.data.is_empty()
+    }
+}
+
+impl PartialEq<StorageObject> for ObjectRef<'_> {
+    fn eq(&self, other: &StorageObject) -> bool {
+        self.key == other.key() && self.data == other.data()
+    }
+}
+
+impl PartialEq<ObjectRef<'_>> for StorageObject {
+    fn eq(&self, other: &ObjectRef<'_>) -> bool {
+        other == self
+    }
+}
+
+impl Object for ObjectRef<'_> {
+    fn key(&self) -> ObjectKey {
+        self.key
+    }
+
+    fn data(&self) -> &[u8] {
+        self.data
+    }
+}
+
 /// A fixed-capacity encoded configuration object.
+///
+/// This is the interchange form an encoder returns and a host holds. A store
+/// does not use it: [`MAX_OBJECT_DATA`] is what one object may carry over the
+/// wire, not what one object costs a device to keep.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StorageObject {
     key: ObjectKey,
@@ -130,6 +228,24 @@ impl StorageObject {
     pub const fn is_empty(self) -> bool {
         self.len == 0
     }
+
+    /// Borrows this object without copying its bytes.
+    pub fn as_ref(&self) -> ObjectRef<'_> {
+        ObjectRef {
+            key: self.key,
+            data: self.data(),
+        }
+    }
+}
+
+impl Object for StorageObject {
+    fn key(&self) -> ObjectKey {
+        self.key
+    }
+
+    fn data(&self) -> &[u8] {
+        self.data()
+    }
 }
 
 /// Storage transaction or object-format failure.
@@ -167,6 +283,8 @@ pub enum StorageError {
     ImageIntegrity,
     /// Image objects are not in strict canonical stable-key order.
     NonCanonicalImage,
+    /// A plan encoding family is declared but not implemented here.
+    UnsupportedEncoding(PlanEncoding),
 }
 
 impl fmt::Display for StorageError {
@@ -196,6 +314,9 @@ impl fmt::Display for StorageError {
             Self::NonCanonicalImage => {
                 formatter.write_str("configuration image object order is not canonical")
             }
+            Self::UnsupportedEncoding(encoding) => {
+                write!(formatter, "unimplemented plan encoding {encoding:?}")
+            }
         }
     }
 }
@@ -209,78 +330,270 @@ pub struct StorageUsage {
     pub payload_bytes: u32,
 }
 
+/// Bytes one arena entry spends on identity and length before its payload.
+///
+/// This is the canonical image object header, and deliberately so: an arena
+/// holds exactly the bytes an image payload holds, in exactly the same order.
+pub const OBJECT_ENTRY_HEADER_LEN: usize = CONFIGURATION_IMAGE_OBJECT_HEADER_LEN;
+
+/// Smallest payload any currently defined object encodes to.
+///
+/// A device derives the object count it can hold from its byte bound and this,
+/// so what it advertises is an honest upper bound rather than a second limit.
+pub const MIN_OBJECT_ENCODED_LEN: usize = RADIO_CONFIG_ENCODED_LEN;
+
+/// A packed byte arena holding one complete object set in canonical order.
+///
+/// Objects are stored end to end as `(kind, id, length, payload)` entries and
+/// kept in strict `(kind, id)` order, so what an arena holds is byte for byte
+/// what a canonical configuration image carries after its header. What bounds
+/// an arena is `BYTES` and nothing else: no object count, no per-kind count,
+/// and no worst-case size charged to every object whatever it holds.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ObjectSet<const OBJECTS: usize> {
-    slots: [Option<StorageObject>; OBJECTS],
+pub struct ObjectArena<const BYTES: usize> {
+    bytes: [u8; BYTES],
+    len: usize,
 }
 
-impl<const OBJECTS: usize> ObjectSet<OBJECTS> {
-    const fn empty() -> Self {
-        Self {
-            slots: [None; OBJECTS],
-        }
-    }
-
-    fn write(&mut self, object: StorageObject) -> Result<(), StorageError> {
-        if let Some(slot) = self
-            .slots
-            .iter_mut()
-            .find(|slot| slot.is_some_and(|stored| stored.key == object.key))
-        {
-            *slot = Some(object);
-            return Ok(());
-        }
-        let slot = self
-            .slots
-            .iter_mut()
-            .find(|slot| slot.is_none())
-            .ok_or(StorageError::StoreFull)?;
-        *slot = Some(object);
-        Ok(())
-    }
-
-    fn read(&self, key: ObjectKey) -> Option<&StorageObject> {
-        self.slots.iter().flatten().find(|object| object.key == key)
-    }
-
-    fn iter(&self) -> impl Iterator<Item = &StorageObject> {
-        self.slots.iter().flatten()
-    }
-
-    fn usage(&self) -> StorageUsage {
-        self.iter()
-            .fold(StorageUsage::default(), |mut usage, object| {
-                usage.object_count += 1;
-                usage.payload_bytes += u32::from(object.len);
-                usage
-            })
-    }
-}
-
-/// A bounded store with isolated active and candidate snapshots.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TransactionalStore<const OBJECTS: usize> {
-    active: ObjectSet<OBJECTS>,
-    candidate: Option<ObjectSet<OBJECTS>>,
-    candidate_validated: bool,
-    generation: u32,
-}
-
-impl<const OBJECTS: usize> Default for TransactionalStore<OBJECTS> {
+impl<const BYTES: usize> Default for ObjectArena<BYTES> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<const OBJECTS: usize> TransactionalStore<OBJECTS> {
-    /// Constructs an empty generation-zero store.
+impl<const BYTES: usize> ObjectArena<BYTES> {
+    /// Constructs an empty arena.
+    #[must_use]
     pub const fn new() -> Self {
         Self {
-            active: ObjectSet::empty(),
+            bytes: [0; BYTES],
+            len: 0,
+        }
+    }
+
+    /// Copies one packed payload into an arena, checking it as it goes.
+    ///
+    /// This is how a snapshot is shared without rebuilding it object by
+    /// object: the bytes an arena holds are the bytes a canonical image
+    /// carries, so a payload from either is the same payload. Entries which
+    /// are out of order, overrun the payload, or name an unknown kind are
+    /// refused rather than half copied.
+    pub fn from_payload(payload: &[u8]) -> Result<Self, StorageError> {
+        if payload.len() > BYTES {
+            return Err(StorageError::StoreFull);
+        }
+        let mut arena = Self::new();
+        arena.bytes[..payload.len()].copy_from_slice(payload);
+        arena.len = payload.len();
+        let mut previous = None;
+        let mut seen = 0;
+        for object in &arena {
+            if previous.is_some_and(|key| key >= object.key()) {
+                return Err(StorageError::NonCanonicalImage);
+            }
+            previous = Some(object.key());
+            seen += OBJECT_ENTRY_HEADER_LEN + object.len();
+        }
+        if seen != payload.len() {
+            return Err(StorageError::MalformedImage);
+        }
+        Ok(arena)
+    }
+
+    /// Returns the total bytes this arena can hold.
+    #[must_use]
+    pub const fn capacity(&self) -> usize {
+        BYTES
+    }
+
+    /// Returns the packed entry bytes, which are a canonical image payload.
+    #[must_use]
+    pub fn payload(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
+
+    /// Adds or replaces one object, compacting the entries around it.
+    pub fn write(&mut self, object: &impl Object) -> Result<(), StorageError> {
+        let key = object.key();
+        let data = object.data();
+        if data.len() > MAX_OBJECT_DATA {
+            return Err(StorageError::ObjectTooLarge);
+        }
+        let entry_len = OBJECT_ENTRY_HEADER_LEN + data.len();
+        let (offset, replaced) = self.locate(key);
+        let old_len = replaced.unwrap_or(0);
+        let new_len = self
+            .len
+            .checked_sub(old_len)
+            .and_then(|len| len.checked_add(entry_len))
+            .ok_or(StorageError::StoreFull)?;
+        if new_len > BYTES {
+            return Err(StorageError::StoreFull);
+        }
+        // One memmove keeps the entries packed and ordered whether this
+        // replaces a shorter object, a longer one, or none at all.
+        self.bytes
+            .copy_within(offset + old_len..self.len, offset + entry_len);
+        self.bytes[offset] = key.kind as u8;
+        self.bytes[offset + 1..offset + 3].copy_from_slice(&key.id.to_le_bytes());
+        let encoded_len = u16::try_from(data.len()).map_err(|_| StorageError::ObjectTooLarge)?;
+        self.bytes[offset + 3..offset + OBJECT_ENTRY_HEADER_LEN]
+            .copy_from_slice(&encoded_len.to_le_bytes());
+        self.bytes[offset + OBJECT_ENTRY_HEADER_LEN..offset + entry_len].copy_from_slice(data);
+        self.len = new_len;
+        Ok(())
+    }
+
+    /// Removes one object, closing the gap it leaves.
+    pub fn remove(&mut self, key: ObjectKey) -> Result<(), StorageError> {
+        let (offset, replaced) = self.locate(key);
+        let entry_len = replaced.ok_or(StorageError::ObjectNotFound)?;
+        self.bytes.copy_within(offset + entry_len..self.len, offset);
+        self.len -= entry_len;
+        Ok(())
+    }
+
+    /// Reads one object without copying its bytes.
+    #[must_use]
+    pub fn read(&self, key: ObjectKey) -> Option<ObjectRef<'_>> {
+        self.iter().find(|object| object.key() == key)
+    }
+
+    /// Iterates over every object in strict `(kind, id)` order.
+    #[must_use]
+    pub fn iter(&self) -> ObjectArenaIter<'_> {
+        ObjectArenaIter {
+            payload: self.payload(),
+            offset: 0,
+        }
+    }
+
+    /// Returns the number of objects held.
+    #[must_use]
+    pub fn object_count(&self) -> u16 {
+        u16::try_from(self.iter().count()).unwrap_or(u16::MAX)
+    }
+
+    /// Reports object-count and payload usage.
+    #[must_use]
+    pub fn usage(&self) -> StorageUsage {
+        self.iter()
+            .fold(StorageUsage::default(), |mut usage, object| {
+                usage.object_count += 1;
+                usage.payload_bytes += u32::try_from(object.len()).unwrap_or(u32::MAX);
+                usage
+            })
+    }
+
+    /// Returns where one key belongs and, if it is present, its entry length.
+    ///
+    /// Entries are ordered, so the first entry which does not sort before the
+    /// key is either that key or the entry it must be inserted in front of.
+    fn locate(&self, key: ObjectKey) -> (usize, Option<usize>) {
+        let mut offset = 0;
+        while offset + OBJECT_ENTRY_HEADER_LEN <= self.len {
+            let entry_len = OBJECT_ENTRY_HEADER_LEN + self.entry_data_len(offset);
+            match self.entry_key(offset) {
+                Some(entry) if entry == key => return (offset, Some(entry_len)),
+                Some(entry) if entry > key => return (offset, None),
+                _ => offset += entry_len,
+            }
+        }
+        (self.len, None)
+    }
+
+    fn entry_data_len(&self, offset: usize) -> usize {
+        usize::from(u16::from_le_bytes([
+            self.bytes[offset + 3],
+            self.bytes[offset + 4],
+        ]))
+    }
+
+    /// Returns one entry's key, or `None` for a kind byte never written here.
+    fn entry_key(&self, offset: usize) -> Option<ObjectKey> {
+        Some(ObjectKey {
+            kind: ObjectKind::try_from(self.bytes[offset]).ok()?,
+            id: u16::from_le_bytes([self.bytes[offset + 1], self.bytes[offset + 2]]),
+        })
+    }
+}
+
+impl<'a, const BYTES: usize> IntoIterator for &'a ObjectArena<BYTES> {
+    type Item = ObjectRef<'a>;
+    type IntoIter = ObjectArenaIter<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+/// Iterator over the packed objects of one arena.
+#[derive(Clone, Debug)]
+pub struct ObjectArenaIter<'a> {
+    payload: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> Iterator for ObjectArenaIter<'a> {
+    type Item = ObjectRef<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.offset + OBJECT_ENTRY_HEADER_LEN > self.payload.len() {
+            return None;
+        }
+        let kind = ObjectKind::try_from(self.payload[self.offset]).ok()?;
+        let id = u16::from_le_bytes([self.payload[self.offset + 1], self.payload[self.offset + 2]]);
+        let data_len = usize::from(u16::from_le_bytes([
+            self.payload[self.offset + 3],
+            self.payload[self.offset + 4],
+        ]));
+        let start = self.offset + OBJECT_ENTRY_HEADER_LEN;
+        let end = start
+            .checked_add(data_len)
+            .filter(|end| *end <= self.payload.len())?;
+        self.offset = end;
+        Some(ObjectRef {
+            key: ObjectKey { kind, id },
+            data: &self.payload[start..end],
+        })
+    }
+}
+
+/// A byte-bounded store with isolated active and candidate snapshots.
+///
+/// `BYTES` is the whole bound. A store holds as many objects of whatever kinds
+/// as its packed bytes have room for, so a device declares one number and a
+/// host can decide what fits from that number alone.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransactionalStore<const BYTES: usize> {
+    active: ObjectArena<BYTES>,
+    candidate: Option<ObjectArena<BYTES>>,
+    candidate_validated: bool,
+    generation: u32,
+}
+
+impl<const BYTES: usize> Default for TransactionalStore<BYTES> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<const BYTES: usize> TransactionalStore<BYTES> {
+    /// Constructs an empty generation-zero store.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            active: ObjectArena::new(),
             candidate: None,
             candidate_validated: false,
             generation: 0,
         }
+    }
+
+    /// Returns the bytes one snapshot can hold.
+    #[must_use]
+    pub const fn capacity(&self) -> usize {
+        BYTES
     }
 
     /// Returns the active snapshot generation.
@@ -299,7 +612,7 @@ impl<const OBJECTS: usize> TransactionalStore<OBJECTS> {
     }
 
     /// Adds or replaces an object in the candidate snapshot.
-    pub fn write(&mut self, object: StorageObject) -> Result<(), StorageError> {
+    pub fn write(&mut self, object: &impl Object) -> Result<(), StorageError> {
         self.candidate
             .as_mut()
             .ok_or(StorageError::NoTransaction)?
@@ -308,10 +621,20 @@ impl<const OBJECTS: usize> TransactionalStore<OBJECTS> {
         Ok(())
     }
 
+    /// Removes an object from the candidate snapshot.
+    pub fn remove(&mut self, key: ObjectKey) -> Result<(), StorageError> {
+        self.candidate
+            .as_mut()
+            .ok_or(StorageError::NoTransaction)?
+            .remove(key)?;
+        self.candidate_validated = false;
+        Ok(())
+    }
+
     /// Validates every candidate object and marks the unchanged candidate valid.
     pub fn validate<F>(&mut self, mut validator: F) -> Result<(), StorageError>
     where
-        F: FnMut(&StorageObject) -> bool,
+        F: FnMut(ObjectRef<'_>) -> bool,
     {
         let candidate = self.candidate.as_ref().ok_or(StorageError::NoTransaction)?;
         if !candidate.iter().all(&mut validator) {
@@ -351,16 +674,20 @@ impl<const OBJECTS: usize> TransactionalStore<OBJECTS> {
     }
 
     /// Reads an object from the active snapshot.
-    pub fn read(&self, key: ObjectKey) -> Result<&StorageObject, StorageError> {
+    pub fn read(&self, key: ObjectKey) -> Result<ObjectRef<'_>, StorageError> {
         self.active.read(key).ok_or(StorageError::ObjectNotFound)
     }
 
-    /// Iterates over active objects without exposing candidate data.
-    ///
-    /// The store does not define an external ordering; protocol users must sort
-    /// stable object keys before serialising a listing.
-    pub fn active_objects(&self) -> impl Iterator<Item = &StorageObject> {
+    /// Iterates over active objects, in canonical order, without exposing
+    /// candidate data.
+    pub fn active_objects(&self) -> ObjectArenaIter<'_> {
         self.active.iter()
+    }
+
+    /// Returns the active snapshot as a canonical image payload.
+    #[must_use]
+    pub fn active_payload(&self) -> &[u8] {
+        self.active.payload()
     }
 
     /// Reports active-snapshot usage.
@@ -370,105 +697,146 @@ impl<const OBJECTS: usize> TransactionalStore<OBJECTS> {
 }
 
 /// Encodes a generated bank as a versioned storage object.
+///
+/// The shared core is written first and the declared encoding's own tail after
+/// it, so a plan costs what its family actually needs: a simplex band carries
+/// no transmit offset at all, and a repeater sub-band carries exactly one.
 pub fn encode_generated_bank(bank: GeneratedBank) -> Result<StorageObject, StorageError> {
-    let mut data = [0_u8; GENERATED_BANK_ENCODED_LEN];
+    let mut data = [0_u8; MAX_GENERATED_BANK_ENCODED_LEN];
     data[0] = STORAGE_FORMAT_VERSION;
-    data[1..3].copy_from_slice(&bank.id().get().to_le_bytes());
-    data[3] = bank.name().len();
-    data[4..4 + MAX_BANK_NAME_LEN].copy_from_slice(&bank.name().field());
-    data[20..24].copy_from_slice(&bank.base().as_hz().to_le_bytes());
-    data[24..28].copy_from_slice(&bank.spacing().as_hz().to_le_bytes());
-    data[28..30].copy_from_slice(&bank.channel_count().to_le_bytes());
-    data[30] = bank.tx_class() as u8;
+    data[1] = bank.encoding() as u8;
+    data[2..4].copy_from_slice(&bank.id().get().to_le_bytes());
+    data[4] = bank.name().len();
+    data[5..5 + MAX_BANK_NAME_LEN].copy_from_slice(&bank.name().field());
+    data[21..25].copy_from_slice(&bank.base().as_hz().to_le_bytes());
+    data[25..29].copy_from_slice(&bank.spacing().as_hz().to_le_bytes());
+    data[29..31].copy_from_slice(&bank.channel_count().to_le_bytes());
+    data[31] = bank.tx_class() as u8;
     let template = bank.template();
-    encode_tone(template.rx_tone, &mut data[31..34]);
-    encode_tone(template.tx_tone, &mut data[34..37]);
-    data[37] = template.modulation as u8;
-    data[38] = template.bandwidth as u8;
-    data[39] = template.power as u8;
-    data[40..44].copy_from_slice(&template.step.as_hz().to_le_bytes());
-    data[44] = template.squelch.get();
-    data[45] = template.flags.bits();
-    data[46] = bank.designator().len();
-    data[47..47 + MAX_DESIGNATOR_LEN].copy_from_slice(&bank.designator().field());
-    data[51..53].copy_from_slice(&bank.first_number().to_le_bytes());
+    encode_tone(template.rx_tone, &mut data[32..35]);
+    encode_tone(template.tx_tone, &mut data[35..38]);
+    data[38] = template.modulation as u8;
+    data[39] = template.bandwidth as u8;
+    data[40] = template.power as u8;
+    data[41..45].copy_from_slice(&template.step.as_hz().to_le_bytes());
+    data[45] = template.squelch.get();
+    data[46] = template.flags.bits();
+    data[47] = bank.designator().len();
+    data[48..48 + MAX_DESIGNATOR_LEN].copy_from_slice(&bank.designator().field());
+    data[52..54].copy_from_slice(&bank.first_number().to_le_bytes());
     // No index is representable as a channel number, so the absent marker is
     // the one value a bank can never mark: the whole plan index space is
     // bounded well below it.
-    data[53..55].copy_from_slice(
+    data[54..56].copy_from_slice(
         &bank
             .calling_index()
             .unwrap_or(NO_CALLING_INDEX)
             .to_le_bytes(),
     );
-    data[55..59].copy_from_slice(&bank.offset().as_hz().to_le_bytes());
+    let length = generated_bank_encoded_len(bank.encoding())?;
+    match bank.encoding() {
+        PlanEncoding::LinearSimplex => {}
+        PlanEncoding::LinearFixedOffset => {
+            data[56..60].copy_from_slice(&bank.offset().as_hz().to_le_bytes());
+        }
+        encoding => return Err(StorageError::UnsupportedEncoding(encoding)),
+    }
     StorageObject::new(
         ObjectKey {
             kind: ObjectKind::GeneratedBank,
             id: bank.id().get(),
         },
-        &data,
+        &data[..length],
     )
 }
 
+/// Returns the encoded length of one plan encoding, core and tail together.
+///
+/// Every remaining declared family is variable length, so this answers only
+/// for those which are implemented and refuses the rest by name rather than
+/// guessing at a size.
+pub const fn generated_bank_encoded_len(encoding: PlanEncoding) -> Result<usize, StorageError> {
+    match encoding {
+        PlanEncoding::LinearSimplex => Ok(GENERATED_BANK_CORE_LEN),
+        PlanEncoding::LinearFixedOffset => Ok(GENERATED_BANK_CORE_LEN + 4),
+        other => Err(StorageError::UnsupportedEncoding(other)),
+    }
+}
+
 /// Decodes and fully validates a generated-bank storage object.
-pub fn decode_generated_bank(object: &StorageObject) -> Result<GeneratedBank, StorageError> {
-    if object.key.kind != ObjectKind::GeneratedBank {
+pub fn decode_generated_bank(object: &impl Object) -> Result<GeneratedBank, StorageError> {
+    let key = object.key();
+    if key.kind != ObjectKind::GeneratedBank {
         return Err(StorageError::UnsupportedObject);
     }
     let data = object.data();
-    if data.len() != GENERATED_BANK_ENCODED_LEN || data[0] != STORAGE_FORMAT_VERSION {
+    if data.len() < GENERATED_BANK_CORE_LEN || data[0] != STORAGE_FORMAT_VERSION {
         return Err(StorageError::MalformedObject);
     }
-    let id = u16::from_le_bytes([data[1], data[2]]);
-    if id != object.key.id {
+    let encoding = PlanEncoding::try_from(data[1]).map_err(|_| StorageError::MalformedObject)?;
+    if data.len() != generated_bank_encoded_len(encoding)? {
+        return Err(StorageError::MalformedObject);
+    }
+    let id = u16::from_le_bytes([data[2], data[3]]);
+    if id != key.id {
         return Err(StorageError::MalformedObject);
     }
     let mut name_field = [0_u8; MAX_BANK_NAME_LEN];
-    name_field.copy_from_slice(&data[4..20]);
+    name_field.copy_from_slice(&data[5..21]);
     let name =
-        BankName::from_field(name_field, data[3]).map_err(|_| StorageError::MalformedObject)?;
-    let base = Frequency::from_hz(u32::from_le_bytes([data[20], data[21], data[22], data[23]]))
+        BankName::from_field(name_field, data[4]).map_err(|_| StorageError::MalformedObject)?;
+    let base = Frequency::from_hz(u32::from_le_bytes([data[21], data[22], data[23], data[24]]))
         .map_err(|_| StorageError::MalformedObject)?;
     let spacing =
-        FrequencyStep::from_hz(u32::from_le_bytes([data[24], data[25], data[26], data[27]]))
+        FrequencyStep::from_hz(u32::from_le_bytes([data[25], data[26], data[27], data[28]]))
             .map_err(|_| StorageError::MalformedObject)?;
-    let channel_count = u16::from_le_bytes([data[28], data[29]]);
-    let tx_class = TxClass::try_from(data[30]).map_err(|_| StorageError::MalformedObject)?;
+    let channel_count = u16::from_le_bytes([data[29], data[30]]);
+    let tx_class = TxClass::try_from(data[31]).map_err(|_| StorageError::MalformedObject)?;
     let template = ChannelTemplate {
-        rx_tone: decode_tone(&data[31..34])?,
-        tx_tone: decode_tone(&data[34..37])?,
-        modulation: Modulation::try_from(data[37]).map_err(|_| StorageError::MalformedObject)?,
-        bandwidth: Bandwidth::try_from(data[38]).map_err(|_| StorageError::MalformedObject)?,
-        power: PowerLevel::try_from(data[39]).map_err(|_| StorageError::MalformedObject)?,
-        step: FrequencyStep::from_hz(u32::from_le_bytes([data[40], data[41], data[42], data[43]]))
+        rx_tone: decode_tone(&data[32..35])?,
+        tx_tone: decode_tone(&data[35..38])?,
+        modulation: Modulation::try_from(data[38]).map_err(|_| StorageError::MalformedObject)?,
+        bandwidth: Bandwidth::try_from(data[39]).map_err(|_| StorageError::MalformedObject)?,
+        power: PowerLevel::try_from(data[40]).map_err(|_| StorageError::MalformedObject)?,
+        step: FrequencyStep::from_hz(u32::from_le_bytes([data[41], data[42], data[43], data[44]]))
             .map_err(|_| StorageError::MalformedObject)?,
-        squelch: SquelchLevel::new(data[44]).map_err(|_| StorageError::MalformedObject)?,
-        flags: ChannelFlags::from_bits(data[45]).map_err(|_| StorageError::MalformedObject)?,
+        squelch: SquelchLevel::new(data[45]).map_err(|_| StorageError::MalformedObject)?,
+        flags: ChannelFlags::from_bits(data[46]).map_err(|_| StorageError::MalformedObject)?,
     };
     let mut designator_field = [0_u8; MAX_DESIGNATOR_LEN];
-    designator_field.copy_from_slice(&data[47..51]);
-    let designator = Designator::from_field(designator_field, data[46])
+    designator_field.copy_from_slice(&data[48..52]);
+    let designator = Designator::from_field(designator_field, data[47])
         .map_err(|_| StorageError::MalformedObject)?;
-    let first_number = u16::from_le_bytes([data[51], data[52]]);
-    let calling = match u16::from_le_bytes([data[53], data[54]]) {
+    let first_number = u16::from_le_bytes([data[52], data[53]]);
+    let calling = match u16::from_le_bytes([data[54], data[55]]) {
         NO_CALLING_INDEX => None,
         index => Some(index),
     };
-    let offset = Offset::from_hz(i32::from_le_bytes([data[55], data[56], data[57], data[58]]));
-    GeneratedBank::linear_fixed_offset_with(
-        BankId::new(id),
-        name,
-        base,
-        spacing,
-        channel_count,
-        tx_class,
-        template,
-        offset,
-    )
-    .and_then(|bank| bank.with_designator(designator, first_number))
-    .and_then(|bank| bank.with_calling_index(calling))
-    .map_err(|_| StorageError::MalformedObject)
+    let bank = match encoding {
+        PlanEncoding::LinearSimplex => GeneratedBank::linear_simplex_with(
+            BankId::new(id),
+            name,
+            base,
+            spacing,
+            channel_count,
+            tx_class,
+            template,
+        ),
+        PlanEncoding::LinearFixedOffset => GeneratedBank::linear_fixed_offset_with(
+            BankId::new(id),
+            name,
+            base,
+            spacing,
+            channel_count,
+            tx_class,
+            template,
+            Offset::from_hz(i32::from_le_bytes([data[56], data[57], data[58], data[59]])),
+        ),
+        other => return Err(StorageError::UnsupportedEncoding(other)),
+    };
+    bank.and_then(|bank| bank.with_designator(designator, first_number))
+        .and_then(|bank| bank.with_calling_index(calling))
+        .map_err(|_| StorageError::MalformedObject)
 }
 
 /// Encodes an explicit channel as a versioned storage object.
@@ -500,8 +868,9 @@ pub fn encode_channel(channel: ChannelRecord) -> Result<StorageObject, StorageEr
 }
 
 /// Decodes and fully validates an explicit channel storage object.
-pub fn decode_channel(object: &StorageObject) -> Result<ChannelRecord, StorageError> {
-    if object.key.kind != ObjectKind::Channel {
+pub fn decode_channel(object: &impl Object) -> Result<ChannelRecord, StorageError> {
+    let key = object.key();
+    if key.kind != ObjectKind::Channel {
         return Err(StorageError::UnsupportedObject);
     }
     let data = object.data();
@@ -509,7 +878,7 @@ pub fn decode_channel(object: &StorageObject) -> Result<ChannelRecord, StorageEr
         return Err(StorageError::MalformedObject);
     }
     let id = u16::from_le_bytes([data[1], data[2]]);
-    if id != object.key.id {
+    if id != key.id {
         return Err(StorageError::MalformedObject);
     }
     let mut name_field = [0_u8; MAX_CHANNEL_NAME_LEN];
@@ -568,8 +937,9 @@ pub fn encode_channel_bank(bank: ChannelBank) -> Result<StorageObject, StorageEr
 }
 
 /// Decodes and fully validates a named channel-bank storage object.
-pub fn decode_channel_bank(object: &StorageObject) -> Result<ChannelBank, StorageError> {
-    if object.key.kind != ObjectKind::ChannelBank {
+pub fn decode_channel_bank(object: &impl Object) -> Result<ChannelBank, StorageError> {
+    let key = object.key();
+    if key.kind != ObjectKind::ChannelBank {
         return Err(StorageError::UnsupportedObject);
     }
     let data = object.data();
@@ -578,7 +948,7 @@ pub fn decode_channel_bank(object: &StorageObject) -> Result<ChannelBank, Storag
         return Err(StorageError::MalformedObject);
     }
     let id = u16::from_le_bytes([data[1], data[2]]);
-    if id != object.key.id {
+    if id != key.id {
         return Err(StorageError::MalformedObject);
     }
     let mut name_field = [0_u8; MAX_BANK_NAME_LEN];
@@ -614,11 +984,12 @@ pub fn encode_radio_config(config: RadioConfig) -> Result<StorageObject, Storage
 }
 
 /// Decodes and fully validates the global radio-configuration object.
-pub fn decode_radio_config(object: &StorageObject) -> Result<RadioConfig, StorageError> {
-    if object.key.kind != ObjectKind::RadioConfig {
+pub fn decode_radio_config(object: &impl Object) -> Result<RadioConfig, StorageError> {
+    let key = object.key();
+    if key.kind != ObjectKind::RadioConfig {
         return Err(StorageError::UnsupportedObject);
     }
-    if object.key.id != RADIO_CONFIG_OBJECT_ID {
+    if key.id != RADIO_CONFIG_OBJECT_ID {
         return Err(StorageError::MalformedObject);
     }
     let data = object.data();
@@ -673,8 +1044,8 @@ fn decode_tone(field: &[u8]) -> Result<Tone, StorageError> {
 }
 
 /// Validates any currently supported configuration object.
-pub fn validate_object(object: &StorageObject) -> bool {
-    match object.key.kind {
+pub fn validate_object(object: &impl Object) -> bool {
+    match object.key().kind {
         ObjectKind::GeneratedBank => decode_generated_bank(object).is_ok(),
         ObjectKind::Channel => decode_channel(object).is_ok(),
         ObjectKind::ChannelBank => decode_channel_bank(object).is_ok(),
@@ -713,8 +1084,8 @@ pub struct ConfigurationImageObjects<'a> {
     remaining: u16,
 }
 
-impl Iterator for ConfigurationImageObjects<'_> {
-    type Item = StorageObject;
+impl<'a> Iterator for ConfigurationImageObjects<'a> {
+    type Item = ObjectRef<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.remaining == 0 {
@@ -735,7 +1106,7 @@ impl Iterator for ConfigurationImageObjects<'_> {
 impl ExactSizeIterator for ConfigurationImageObjects<'_> {}
 
 /// Calculates the exact canonical image length for a complete object set.
-pub fn configuration_image_len(objects: &[StorageObject]) -> Result<usize, StorageError> {
+pub fn configuration_image_len(objects: &[impl Object]) -> Result<usize, StorageError> {
     let _object_count = u16::try_from(objects.len()).map_err(|_| StorageError::ImageTooLarge)?;
     let payload_len = objects.iter().try_fold(0_usize, |length, object| {
         length
@@ -755,7 +1126,7 @@ pub fn configuration_image_len(objects: &[StorageObject]) -> Result<usize, Stora
 /// Objects must be in strict `(kind, id)` order. The returned length is the
 /// only portion of `output` written by this function.
 pub fn encode_configuration_image(
-    objects: &[StorageObject],
+    objects: &[impl Object],
     output: &mut [u8],
 ) -> Result<usize, StorageError> {
     validate_canonical_objects(objects)?;
@@ -802,17 +1173,15 @@ impl<'a> ConfigurationImageWriter<'a> {
     }
 
     /// Appends the next object in strict canonical key order.
-    pub fn push(&mut self, object: &StorageObject) -> Result<(), StorageError> {
+    pub fn push(&mut self, object: &impl Object) -> Result<(), StorageError> {
         if self.written == self.object_count {
             return Err(StorageError::ImageTooLarge);
         }
-        if self
-            .previous_key
-            .is_some_and(|previous| previous >= object.key())
-        {
+        let key = object.key();
+        if self.previous_key.is_some_and(|previous| previous >= key) {
             return Err(StorageError::NonCanonicalImage);
         }
-        if !validate_object(object) {
+        if !validate_object(&object) {
             return Err(StorageError::MalformedObject);
         }
         let object_len = u16::try_from(object.len()).map_err(|_| StorageError::ObjectTooLarge)?;
@@ -826,14 +1195,13 @@ impl<'a> ConfigurationImageWriter<'a> {
         if data_end > self.output.len() {
             return Err(StorageError::ImageBufferTooSmall);
         }
-        self.output[self.offset] = object.key().kind as u8;
-        self.output[self.offset + 1..self.offset + 3]
-            .copy_from_slice(&object.key().id.to_le_bytes());
+        self.output[self.offset] = key.kind as u8;
+        self.output[self.offset + 1..self.offset + 3].copy_from_slice(&key.id.to_le_bytes());
         self.output[self.offset + 3..header_end].copy_from_slice(&object_len.to_le_bytes());
         self.output[header_end..data_end].copy_from_slice(object.data());
         self.offset = data_end;
         self.written += 1;
-        self.previous_key = Some(object.key());
+        self.previous_key = Some(key);
         Ok(())
     }
 
@@ -923,7 +1291,7 @@ pub fn decode_configuration_image(bytes: &[u8]) -> Result<ConfigurationImage<'_>
     })
 }
 
-fn validate_canonical_objects(objects: &[StorageObject]) -> Result<(), StorageError> {
+fn validate_canonical_objects(objects: &[impl Object]) -> Result<(), StorageError> {
     let mut previous_key = None;
     for object in objects {
         if previous_key.is_some_and(|key| key >= object.key()) {
@@ -940,7 +1308,7 @@ fn validate_canonical_objects(objects: &[StorageObject]) -> Result<(), StorageEr
 fn decode_image_entry(
     payload: &[u8],
     offset: usize,
-) -> Result<(StorageObject, usize), StorageError> {
+) -> Result<(ObjectRef<'_>, usize), StorageError> {
     let header_end = offset
         .checked_add(CONFIGURATION_IMAGE_OBJECT_HEADER_LEN)
         .filter(|end| *end <= payload.len())
@@ -952,7 +1320,10 @@ fn decode_image_entry(
         .checked_add(usize::from(encoded_len))
         .filter(|end| *end <= payload.len())
         .ok_or(StorageError::MalformedImage)?;
-    let object = StorageObject::new(ObjectKey { kind, id }, &payload[header_end..data_end])?;
+    if usize::from(encoded_len) > MAX_OBJECT_DATA {
+        return Err(StorageError::ObjectTooLarge);
+    }
+    let object = ObjectRef::new(ObjectKey { kind, id }, &payload[header_end..data_end]);
     Ok((object, data_end))
 }
 
@@ -980,17 +1351,18 @@ mod tests {
         configuration_image_crc, configuration_image_len, decode_channel, decode_channel_bank,
         decode_configuration_image, decode_generated_bank, decode_radio_config, encode_channel,
         encode_channel_bank, encode_configuration_image, encode_generated_bank,
-        encode_radio_config, validate_object, ObjectKey, ObjectKind, StorageError, StorageObject,
-        TransactionalStore, CHANNEL_BANK_ENCODED_LEN, CHANNEL_ENCODED_LEN,
-        CONFIGURATION_IMAGE_HEADER_LEN, CONFIGURATION_IMAGE_MAGIC, CONFIGURATION_IMAGE_VERSION,
-        RADIO_CONFIG_ENCODED_LEN, STORAGE_FORMAT_VERSION,
+        encode_radio_config, validate_object, ConfigurationImageWriter, ObjectArena, ObjectKey,
+        ObjectKind, ObjectRef, StorageError, StorageObject, TransactionalStore,
+        CHANNEL_BANK_ENCODED_LEN, CHANNEL_ENCODED_LEN, CONFIGURATION_IMAGE_HEADER_LEN,
+        CONFIGURATION_IMAGE_MAGIC, CONFIGURATION_IMAGE_VERSION, GENERATED_BANK_CORE_LEN,
+        OBJECT_ENTRY_HEADER_LEN, RADIO_CONFIG_ENCODED_LEN, STORAGE_FORMAT_VERSION,
     };
     use radio_channel_plan::{
         BankFlags, BankMask, BankName, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
-        ChannelRecord, ChannelTemplate, GeneratedBank, GENERATED_CHANNEL_ID_BASE,
+        ChannelRecord, ChannelTemplate, GeneratedBank, PlanEncoding, GENERATED_CHANNEL_ID_BASE,
     };
     use radio_domain::{
-        Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel,
+        Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, Offset, PowerLevel,
         RadioConfig, RadioFlags, ScanResume, SquelchLevel, Tone, TxClass,
     };
     use std::{vec, vec::Vec};
@@ -1065,6 +1437,60 @@ mod tests {
         let expected = bank(4, "PMR446");
         let encoded = encode_generated_bank(expected).unwrap();
         assert_eq!(decode_generated_bank(&encoded).unwrap(), expected);
+    }
+
+    /// Each plan family is stored at its own length, and says which it is.
+    #[test]
+    fn a_simplex_plan_encodes_shorter_than_a_repeater_plan() {
+        let simplex = bank(4, "2M SIMPLEX");
+        let encoded = encode_generated_bank(simplex).unwrap();
+        assert_eq!(simplex.encoding(), PlanEncoding::LinearSimplex);
+        assert_eq!(
+            encoded.len(),
+            GENERATED_BANK_CORE_LEN,
+            "a simplex plan carries no transmit offset at all"
+        );
+
+        let repeater = GeneratedBank::linear_fixed_offset_with(
+            BankId::new(5),
+            BankName::new("2M REPEATERS").unwrap(),
+            Frequency::from_hz(145_600_000).unwrap(),
+            FrequencyStep::from_hz(12_500).unwrap(),
+            8,
+            TxClass::Amateur,
+            ChannelTemplate::narrow_fm(FrequencyStep::from_hz(12_500).unwrap()),
+            Offset::from_hz(-600_000),
+        )
+        .unwrap();
+        let encoded_repeater = encode_generated_bank(repeater).unwrap();
+        assert_eq!(
+            encoded_repeater.len(),
+            GENERATED_BANK_CORE_LEN + 4,
+            "a repeater plan carries exactly one"
+        );
+        assert!(encoded.len() < encoded_repeater.len());
+        assert_eq!(decode_generated_bank(&encoded_repeater).unwrap(), repeater);
+
+        // The declared family survives storage even where an offset cannot
+        // distinguish it, which is what an inference from zero could not do.
+        let degenerate = GeneratedBank::linear_fixed_offset_with(
+            BankId::new(6),
+            BankName::new("PARKED").unwrap(),
+            Frequency::from_hz(145_600_000).unwrap(),
+            FrequencyStep::from_hz(12_500).unwrap(),
+            8,
+            TxClass::Amateur,
+            ChannelTemplate::narrow_fm(FrequencyStep::from_hz(12_500).unwrap()),
+            Offset::from_hz(0),
+        )
+        .unwrap();
+        let stored = encode_generated_bank(degenerate).unwrap();
+        assert_eq!(stored.len(), GENERATED_BANK_CORE_LEN + 4);
+        assert_eq!(
+            decode_generated_bank(&stored).unwrap().encoding(),
+            PlanEncoding::LinearFixedOffset
+        );
+        assert_ne!(degenerate.encoding(), simplex.encoding());
     }
 
     fn channel(id: u16, name: &str) -> ChannelRecord {
@@ -1265,17 +1691,17 @@ mod tests {
             kind: ObjectKind::GeneratedBank,
             id: 4,
         };
-        let mut store = TransactionalStore::<2>::new();
+        let mut store = TransactionalStore::<256>::new();
         store.begin().unwrap();
         store
-            .write(encode_generated_bank(bank(4, "PMR446")).unwrap())
+            .write(&encode_generated_bank(bank(4, "PMR446")).unwrap())
             .unwrap();
         assert_eq!(store.read(key), Err(StorageError::ObjectNotFound));
         assert_eq!(store.commit(), Err(StorageError::CandidateNotValidated));
-        store.validate(validate_object).unwrap();
+        store.validate(|object| validate_object(&object)).unwrap();
         assert_eq!(store.commit().unwrap(), 1);
         assert_eq!(
-            decode_generated_bank(store.read(key).unwrap()).unwrap(),
+            decode_generated_bank(&store.read(key).unwrap()).unwrap(),
             bank(4, "PMR446")
         );
     }
@@ -1286,22 +1712,139 @@ mod tests {
             kind: ObjectKind::GeneratedBank,
             id: 4,
         };
-        let mut store = TransactionalStore::<2>::new();
+        let mut store = TransactionalStore::<256>::new();
         store.begin().unwrap();
         store
-            .write(encode_generated_bank(bank(4, "original")).unwrap())
+            .write(&encode_generated_bank(bank(4, "original")).unwrap())
             .unwrap();
-        store.validate(validate_object).unwrap();
+        store.validate(|object| validate_object(&object)).unwrap();
         store.commit().unwrap();
 
         store.begin().unwrap();
         store
-            .write(encode_generated_bank(bank(4, "candidate")).unwrap())
+            .write(&encode_generated_bank(bank(4, "candidate")).unwrap())
             .unwrap();
         store.abort().unwrap();
         assert_eq!(
-            decode_generated_bank(store.read(key).unwrap()).unwrap(),
+            decode_generated_bank(&store.read(key).unwrap()).unwrap(),
             bank(4, "original")
+        );
+    }
+
+    /// A packed arena has to survive objects arriving in any order, changing
+    /// length under replacement, and leaving.
+    #[test]
+    fn the_arena_stays_packed_and_ordered_through_replacement_and_removal() {
+        let mut arena = ObjectArena::<512>::new();
+        let plan = encode_generated_bank(bank(1, "PLAN")).unwrap();
+        let first = encode_channel(channel(2, "TWO")).unwrap();
+        let second = encode_channel(channel(9, "NINE")).unwrap();
+        let config = encode_radio_config(RadioConfig::conservative()).unwrap();
+
+        // Written last-first: the arena orders them, so its bytes are already
+        // a canonical image payload.
+        for object in [&config, &second, &first, &plan] {
+            arena.write(object).unwrap();
+        }
+        assert_eq!(
+            arena.iter().map(ObjectRef::key).collect::<Vec<_>>(),
+            vec![plan.key(), first.key(), second.key(), config.key()]
+        );
+        let expected = arena.usage();
+        assert_eq!(expected.object_count, 4);
+        assert_eq!(
+            usize::try_from(expected.payload_bytes).unwrap() + 4 * OBJECT_ENTRY_HEADER_LEN,
+            arena.payload().len()
+        );
+
+        // Replacing the shortest object with the longest one moves every entry
+        // after it, and nothing before it.
+        let grown = StorageObject::new(config.key(), &[0; 40]).unwrap();
+        arena.write(&grown).unwrap();
+        assert_eq!(arena.read(config.key()).unwrap().len(), 40);
+        assert_eq!(
+            decode_channel(&arena.read(first.key()).unwrap()).unwrap(),
+            channel(2, "TWO")
+        );
+        arena.write(&config).unwrap();
+        assert_eq!(arena.usage(), expected, "shrinking again leaves no gap");
+
+        arena.remove(first.key()).unwrap();
+        assert_eq!(
+            arena.iter().map(ObjectRef::key).collect::<Vec<_>>(),
+            vec![plan.key(), second.key(), config.key()]
+        );
+        assert_eq!(arena.remove(first.key()), Err(StorageError::ObjectNotFound));
+        assert_eq!(
+            decode_channel(&arena.read(second.key()).unwrap()).unwrap(),
+            channel(9, "NINE")
+        );
+    }
+
+    /// Bytes are the whole bound, and a transaction which exceeds them has to
+    /// leave the running configuration exactly as it was.
+    #[test]
+    fn a_store_is_bounded_by_bytes_and_a_failed_transaction_changes_nothing() {
+        let plan = encode_generated_bank(bank(1, "PLAN")).unwrap();
+        let entry = OBJECT_ENTRY_HEADER_LEN + plan.len();
+        let mut store = TransactionalStore::<
+            { 2 * (OBJECT_ENTRY_HEADER_LEN + GENERATED_BANK_CORE_LEN) },
+        >::new();
+        assert_eq!(store.capacity(), 2 * entry);
+
+        store.begin().unwrap();
+        store.write(&plan).unwrap();
+        store.validate(|object| validate_object(&object)).unwrap();
+        store.commit().unwrap();
+        let active = store.active_payload().to_vec();
+
+        store.begin().unwrap();
+        store
+            .write(&encode_generated_bank(bank(2, "SECOND")).unwrap())
+            .unwrap();
+        assert_eq!(
+            store.write(&encode_generated_bank(bank(3, "THIRD")).unwrap()),
+            Err(StorageError::StoreFull),
+            "one declared number bounds the configuration"
+        );
+        store.abort().unwrap();
+        assert_eq!(store.active_payload(), active);
+        assert_eq!(store.usage().object_count, 1);
+
+        // The same bytes as one object of a kind with no count of its own.
+        store.begin().unwrap();
+        for id in 2..4 {
+            store
+                .write(&encode_generated_bank(bank(id, "PLAN")).unwrap())
+                .ok();
+        }
+        store.abort().unwrap();
+        assert_eq!(store.active_payload(), active);
+    }
+
+    /// The store holds what an image carries, so one is the other's payload.
+    #[test]
+    fn an_active_snapshot_is_the_image_payload_it_encodes_to() {
+        let mut store = TransactionalStore::<512>::new();
+        store.begin().unwrap();
+        store
+            .write(&encode_channel(channel(2, "TWO")).unwrap())
+            .unwrap();
+        store
+            .write(&encode_generated_bank(bank(1, "PLAN")).unwrap())
+            .unwrap();
+        store.validate(|object| validate_object(&object)).unwrap();
+        store.commit().unwrap();
+
+        let mut image = [0_u8; 256];
+        let mut writer = ConfigurationImageWriter::new(&mut image, 2).unwrap();
+        for object in store.active_objects() {
+            writer.push(&object).unwrap();
+        }
+        let length = writer.finish().unwrap();
+        assert_eq!(
+            &image[CONFIGURATION_IMAGE_HEADER_LEN..length],
+            store.active_payload()
         );
     }
 
@@ -1318,12 +1861,12 @@ mod tests {
         assert_eq!(
             &image[..image_len],
             &[
-                0x41, 0x46, 0x49, 0x4B, 0x01, 0x03, 0x01, 0x00, 0x40, 0x00, 0x00, 0x00, 0x60, 0x45,
-                0x48, 0xA5, 0x01, 0x04, 0x00, 0x3B, 0x00, 0x03, 0x04, 0x00, 0x01, 0x41, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xEA,
-                0x83, 0x95, 0x1A, 0xD4, 0x30, 0x00, 0x00, 0x10, 0x00, 0x01, 0x01, 0xE8, 0x03, 0x03,
-                0x17, 0x00, 0x00, 0x00, 0x01, 0xD4, 0x30, 0x00, 0x00, 0x04, 0x02, 0x02, 0x41, 0x20,
-                0x00, 0x00, 0x01, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00,
+                0x41, 0x46, 0x49, 0x4B, 0x01, 0x04, 0x01, 0x00, 0x3D, 0x00, 0x00, 0x00, 0x0B, 0x08,
+                0x7A, 0x8F, 0x01, 0x04, 0x00, 0x38, 0x00, 0x04, 0x00, 0x04, 0x00, 0x01, 0x41, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0xEA, 0x83, 0x95, 0x1A, 0xD4, 0x30, 0x00, 0x00, 0x10, 0x00, 0x01, 0x01, 0xE8, 0x03,
+                0x03, 0x17, 0x00, 0x00, 0x00, 0x01, 0xD4, 0x30, 0x00, 0x00, 0x04, 0x02, 0x02, 0x41,
+                0x20, 0x00, 0x00, 0x01, 0x00, 0xFF, 0xFF,
             ]
         );
         let decoded = decode_configuration_image(&image[..image_len]).unwrap();
@@ -1331,11 +1874,14 @@ mod tests {
         assert_eq!(decoded.objects().collect::<Vec<_>>(), vec![object]);
     }
 
+    /// The empty object set, typed: an image of nothing is still an image.
+    const NO_OBJECTS: &[StorageObject] = &[];
+
     #[test]
     fn empty_image_is_valid_and_buffers_are_bounded() {
         let mut image = [0_u8; CONFIGURATION_IMAGE_HEADER_LEN];
         assert_eq!(
-            encode_configuration_image(&[], &mut image).unwrap(),
+            encode_configuration_image(NO_OBJECTS, &mut image).unwrap(),
             CONFIGURATION_IMAGE_HEADER_LEN
         );
         assert_eq!(
@@ -1343,7 +1889,7 @@ mod tests {
             0
         );
         assert_eq!(
-            encode_configuration_image(&[], &mut image[..15]),
+            encode_configuration_image(NO_OBJECTS, &mut image[..15]),
             Err(StorageError::ImageBufferTooSmall)
         );
 

@@ -36,8 +36,7 @@ pub const CONFIGURATION_BYTES: u32 = 4_096;
 
 // A region which cannot hold the largest programmable configuration would fail
 // only after the operator had already programmed the radio.
-const _: () =
-    assert!(crate::configuration::MAX_CONFIGURATION_IMAGE_BYTES <= CONFIGURATION_BYTES as usize);
+const _: () = assert!(RETAINED_IMAGE_BYTES <= CONFIGURATION_BYTES as usize);
 
 /// Divider applied to the peripheral clock for the memory.
 ///

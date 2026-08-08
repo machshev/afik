@@ -63,6 +63,8 @@ pub enum PlanError {
     NumberingOverflow,
     /// The calling-channel index was outside the bank.
     CallingOutOfRange,
+    /// A stored plan named an encoding family this build does not define.
+    UnsupportedEncoding,
 }
 
 impl fmt::Display for PlanError {
@@ -83,6 +85,9 @@ impl fmt::Display for PlanError {
                 formatter.write_str("derived channel name is too long to display")
             }
             Self::NumberingOverflow => formatter.write_str("channel numbering overflows"),
+            Self::UnsupportedEncoding => {
+                formatter.write_str("unsupported channel-plan encoding family")
+            }
             Self::CallingOutOfRange => formatter.write_str("calling-channel index is outside bank"),
         }
     }
@@ -185,6 +190,22 @@ impl PlanEncoding {
     }
 }
 
+impl TryFrom<u8> for PlanEncoding {
+    type Error = PlanError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::LinearSimplex),
+            1 => Ok(Self::LinearFixedOffset),
+            2 => Ok(Self::LinearToned),
+            3 => Ok(Self::TableSimplex),
+            4 => Ok(Self::TableMixedDuplex),
+            5 => Ok(Self::SparseExceptions),
+            _ => Err(PlanError::UnsupportedEncoding),
+        }
+    }
+}
+
 /// The per-channel settings every channel of a generated plan shares.
 ///
 /// A generated plan stores one of these instead of one complete channel record
@@ -255,6 +276,7 @@ pub struct GeneratedBank {
     tx_class: TxClass,
     template: ChannelTemplate,
     calling_index: Option<u16>,
+    encoding: PlanEncoding,
     offset: Offset,
 }
 
@@ -297,6 +319,7 @@ impl GeneratedBank {
             channel_count,
             tx_class,
             template,
+            PlanEncoding::LinearSimplex,
             Offset::from_hz(0),
         )
     }
@@ -326,8 +349,43 @@ impl GeneratedBank {
             channel_count,
             tx_class,
             template,
+            PlanEncoding::LinearFixedOffset,
             offset,
         )
+    }
+
+    /// Constructs an arithmetic bank whose family follows one offset field.
+    ///
+    /// An editor asks the operator for a transmit offset rather than for an
+    /// encoding family, so this is where the two meet: a zero offset declares a
+    /// simplex plan and any other declares a fixed-offset one. The plan carries
+    /// that declaration from here on, and storage charges it for the family it
+    /// declared rather than re-deriving one.
+    #[allow(clippy::too_many_arguments)]
+    pub fn linear_from_offset_with(
+        id: BankId,
+        name: BankName,
+        base: Frequency,
+        spacing: FrequencyStep,
+        channel_count: u16,
+        tx_class: TxClass,
+        template: ChannelTemplate,
+        offset: Offset,
+    ) -> Result<Self, PlanError> {
+        if offset.as_hz() == 0 {
+            Self::linear_simplex_with(id, name, base, spacing, channel_count, tx_class, template)
+        } else {
+            Self::linear_fixed_offset_with(
+                id,
+                name,
+                base,
+                spacing,
+                channel_count,
+                tx_class,
+                template,
+                offset,
+            )
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -339,6 +397,7 @@ impl GeneratedBank {
         channel_count: u16,
         tx_class: TxClass,
         template: ChannelTemplate,
+        encoding: PlanEncoding,
         offset: Offset,
     ) -> Result<Self, PlanError> {
         if channel_count == 0 {
@@ -366,6 +425,7 @@ impl GeneratedBank {
             tx_class,
             template: template.validate()?,
             calling_index: None,
+            encoding,
             offset,
         };
         plan.validate_numbering()?;
@@ -483,17 +543,16 @@ impl GeneratedBank {
         self.tx_class
     }
 
-    /// Returns the compact encoding family.
+    /// Returns the compact encoding family this plan declares.
     ///
-    /// The family follows the offset rather than being stored beside it, so a
-    /// plan cannot claim an encoding its own contents contradict and the
-    /// capability bit a host negotiates is always the one the plan needs.
+    /// The family is a property of the plan rather than an inference from a
+    /// zero. A simplex plan says so and carries no transmit offset at all; a
+    /// fixed-offset plan says so and carries one, whatever its value. That is
+    /// what lets each encoding be stored at its own length, and what stops a
+    /// repeater sub-band programmed at a zero offset silently becoming
+    /// something else on the way to the radio and back.
     pub const fn encoding(self) -> PlanEncoding {
-        if self.offset.as_hz() == 0 {
-            PlanEncoding::LinearSimplex
-        } else {
-            PlanEncoding::LinearFixedOffset
-        }
+        self.encoding
     }
 
     /// Expands one channel without materialising the rest of the bank.

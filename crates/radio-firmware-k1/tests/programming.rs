@@ -9,31 +9,32 @@ use radio_channel_plan::{
     BankFlags, BankMask, BankName, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
     ChannelRecord,
 };
-use radio_device::DeviceService;
 use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, RadioConfig,
     SquelchLevel, Tone, TxClass,
 };
 use radio_firmware_k1::configuration::{
-    device_service, Programmed, MAX_CHANNELS, MAX_OBJECTS, RETAINED_IMAGE_BYTES,
+    device_service, K1DeviceService, Programmed, CONFIGURATION_STORE_BYTES, RETAINED_IMAGE_BYTES,
 };
-/// The region the K1 image claims in external memory for its configuration.
-const CONFIGURATION_BYTES: u32 = 4_096;
-#[allow(unused_imports)]
-use radio_firmware_k1::configuration::kind_limits as _kind_limits;
-use radio_programmer::{Programmer, ProgrammerError, ProtocolTransport, RadioProject};
-use radio_protocol::{Command, DeviceErrorCode, MAX_ENCODED_FRAME};
+use radio_programmer::{CompileError, Programmer, ProtocolTransport, RadioProject};
+
+/// Explicit channels these tests program.
+///
+/// Nothing about the image fixes this number any more; it is simply a full
+/// project which comfortably fits the bytes the K1 declares.
+const CHANNELS: u16 = 8;
+use radio_protocol::MAX_ENCODED_FRAME;
 
 /// The device service behind an in-process byte stream.
 struct DeviceTransport {
-    service: DeviceService<MAX_OBJECTS>,
+    service: K1DeviceService,
     queue: std::collections::VecDeque<u8>,
 }
 
 impl DeviceTransport {
     fn new() -> Self {
         Self {
-            service: device_service(CONFIGURATION_BYTES),
+            service: device_service(),
             queue: std::collections::VecDeque::new(),
         }
     }
@@ -126,11 +127,12 @@ fn the_host_programmer_writes_reads_back_and_activates_a_full_configuration() {
     let mut programmer = Programmer::connect(DeviceTransport::new()).expect("connect");
     let capabilities = programmer.capabilities();
     assert_eq!(
-        capabilities.max_objects,
-        u16::try_from(MAX_OBJECTS).unwrap()
+        capabilities.configuration_bytes,
+        u32::try_from(CONFIGURATION_STORE_BYTES).unwrap(),
+        "the device declares the one number which bounds a configuration"
     );
 
-    let project = project(u16::try_from(MAX_CHANNELS).unwrap());
+    let project = project(CHANNELS);
     let compiled = programmer
         .compiler()
         .compile(&project)
@@ -143,10 +145,7 @@ fn the_host_programmer_writes_reads_back_and_activates_a_full_configuration() {
     // The image decodes the active snapshot with the same code the radio runs.
     let activated = Programmed::index(programmer.transport().service.active_objects())
         .expect("programmed configuration");
-    assert_eq!(
-        activated.channel_count(),
-        u16::try_from(MAX_CHANNELS).unwrap()
-    );
+    assert_eq!(activated.channel_count(), CHANNELS);
     assert_eq!(activated.config().backlight_seconds, 30);
     assert_eq!(
         activated
@@ -177,7 +176,7 @@ fn a_written_configuration_survives_the_retained_image_round_trip() {
     let mut programmer = Programmer::connect(DeviceTransport::new()).expect("connect");
     let compiled = programmer
         .compiler()
-        .compile(&project(u16::try_from(MAX_CHANNELS).unwrap()))
+        .compile(&project(CHANNELS))
         .expect("compile");
     programmer
         .write_configuration_verified(&compiled)
@@ -192,7 +191,7 @@ fn a_written_configuration_survives_the_retained_image_round_trip() {
     assert!(length <= RETAINED_IMAGE_BYTES);
 
     // A restart restores from those exact bytes and reaches the same state.
-    let mut restarted = device_service(CONFIGURATION_BYTES);
+    let mut restarted = device_service();
     assert_eq!(restarted.load_image(&image[..length]), Ok(1));
     assert_eq!(
         Programmed::index(restarted.active_objects()).expect("restored"),
@@ -200,28 +199,39 @@ fn a_written_configuration_survives_the_retained_image_round_trip() {
     );
 }
 
+/// A project is refused for the bytes it needs, and for nothing else.
 #[test]
-fn more_channels_than_the_interface_can_select_are_refused_before_activation() {
-    let mut programmer = Programmer::connect(DeviceTransport::new()).expect("connect");
+fn a_configuration_larger_than_the_declared_bytes_is_refused_by_the_host() {
+    let programmer = Programmer::connect(DeviceTransport::new()).expect("connect");
+    let available = u32::try_from(CONFIGURATION_STORE_BYTES).unwrap();
+
+    // Explicit channels are the expensive way to fill a store, which is the
+    // point: the same bytes buy thousands of channels as plans.
+    let fits = u16::try_from(available / 47).expect("channels which fit");
     let compiled = programmer
         .compiler()
-        .compile(&project(u16::try_from(MAX_CHANNELS).unwrap() + 1))
-        .expect("the store can stage more than the interface selects");
-    let error = programmer
-        .write_configuration_verified(&compiled)
-        .expect_err("the device must refuse the over-large candidate");
+        .compile(&project(fits - 2))
+        .expect("a project which fits is compiled");
+    assert!(compiled.report().storage_bytes <= available);
     assert!(
-        matches!(
-            error,
-            ProgrammerError::Device {
-                command: Command::ValidateTransaction,
-                code: DeviceErrorCode::ValidationFailed,
-            }
-        ),
-        "unexpected error: {error:?}"
+        compiled.report().explicit_channels > 20,
+        "a byte-bounded store holds far more explicit channels than a fixed table did"
     );
-    assert_eq!(programmer.transport().service.generation(), 0);
-    assert_eq!(programmer.transport().service.active_objects().count(), 0);
+
+    let error = programmer
+        .compiler()
+        .compile(&project(fits + 8))
+        .expect_err("a project which does not fit is refused");
+    match error {
+        CompileError::ConfigurationTooLarge {
+            needed,
+            available: declared,
+        } => {
+            assert!(needed > declared);
+            assert_eq!(declared, available);
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
 }
 
 #[test]
