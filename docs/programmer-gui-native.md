@@ -131,8 +131,10 @@ accidental-selection check.
 **Identify radio** classifies the bootloader read-only and fills in the version
 the write then checks against the radio, so a mistyped version or a K5 in
 bootloader mode stops the run before any page is written. A K1 application write
-additionally requires an image CRC-32 confirmation, exactly as the flasher CLI's
-`flash-afik-k1` does. The per-run
+asks for no confirmation phrases: the editor already shows the device, the image,
+and its digest, and a phrase typed beside them proves only that the operator knew
+the phrase. The recovery write, which can leave a unit needing rescue, still asks
+for its exact target phrase. The per-run
 transaction identifier is generated rather than typed: the bootloader ties every
 acknowledgement to it, so reuse would make one run's acknowledgements
 indistinguishable from another's.

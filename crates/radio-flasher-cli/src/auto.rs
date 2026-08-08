@@ -19,6 +19,8 @@ use crate::{
 
 use radio_flasher::k1::K1RecoveryImage;
 
+use crate::prompt::{self, AssumeYes, Confirm};
+
 const K1_MAX_IMAGE_BYTES: usize =
     (radio_flasher::k1::K1_APPLICATION_END - radio_flasher::k1::K1_APPLICATION_ORIGIN) as usize;
 
@@ -36,23 +38,25 @@ Usage:\n\
   afik-flasher [--device PATH|auto] probe-clock-control\n\
   afik-flasher [--device PATH|auto] backup-eeprom OUTPUT [--force]\n\
   afik-flasher [--device PATH|auto] flash-recovery IMAGE --backup EEPROM \\\n    --confirm-target TARGET --confirm-image-crc32 CRC32 [--version VERSION]\n\
-  afik-flasher [--device PATH|auto] flash-afik-k1 IMAGE --version VERSION \\\n\
-    --confirm-target TARGET --confirm-image-crc32 CRC32 \\\n\
-    --confirm-recovery-rehearsed PHRASE [--recovery RAW] [--backup EEPROM]\n\
+  afik-flasher [--device PATH|auto] flash-afik-k1 IMAGE \\\n\
+    [--yes] [--recovery RAW] [--backup EEPROM]\n\
   afik-flasher --help\n\
   afik-flasher --version\n\
 \n\
-The default device selector is auto. It accepts exactly one USB serial\n\
-candidate, then classifies the bootloader protocol: K5 V1 2.* or the pinned\n\
-K1 7.03.* family. Zero or multiple candidates fail closed.\n\
+The default device selector is auto. One USB serial candidate is used, and\n\
+several are offered as a choice on a terminal or fail closed without one. It\n\
+then classifies the bootloader protocol: K5 V1 2.* or the pinned K1 7.03.*\n\
+family.\n\
 Recovery flashing remains separately gated. The K1 AFIK application command\n\
-requires the exact AFIK target phrase and confirmation that recovery was\n\
-rehearsed on this unit. It cannot reach the bootloader: the protocol addresses\n\
-a page index, not an address, and the image is bounded to the application\n\
-region, so an application which does not boot is recovered by flashing again.\n\
-A retained recovery image and EEPROM backup are therefore optional here, and\n\
-are still validated when supplied. Recovery flashing, which does put a unit at\n\
-risk, still requires the backup.\n\
+takes the image and nothing else. It cannot reach the bootloader: the protocol\n\
+addresses a page index, not an address, and the image is bounded to the\n\
+application region, so an application which does not boot is recovered by\n\
+flashing again. Before writing, it classifies the radio read-only and shows the\n\
+device, bootloader, image, size and CRC-32 for confirmation. Pass --yes to skip\n\
+that prompt; without a terminal to ask, the write is refused rather than\n\
+assumed. A retained recovery image and EEPROM backup are optional and are\n\
+validated when supplied. Recovery flashing, which does put a unit at risk,\n\
+still requires the backup and its exact phrases.\n\
 The read-only probe-normal command sends one normal-mode hello and is the\n\
 serial witness command for an AFIK application. The read-only probe-keypad\n\
 command prints four raw active-low row masks without interpreting them as keys.\n\
@@ -69,13 +73,26 @@ Serial is fixed at 38400 8-N-1.\n";
 
 /// Runs one generic flasher invocation against supplied output streams.
 pub fn run_to<W: Write, E: Write>(arguments: &[String], stdout: &mut W, stderr: &mut E) -> i32 {
+    run_with(arguments, &mut prompt::terminal(), stdout, stderr)
+}
+
+/// Runs one invocation against an explicit confirmer.
+///
+/// Separating this from [`run_to`] is what lets the confirmation behaviour be
+/// tested without a terminal attached.
+pub fn run_with<C: Confirm, W: Write, E: Write>(
+    arguments: &[String],
+    confirm: &mut C,
+    stdout: &mut W,
+    stderr: &mut E,
+) -> i32 {
     match parse(arguments) {
         Ok(Parsed::Help) => write_success(stdout, HELP),
         Ok(Parsed::Version) => write_success(
             stdout,
             &format!("afik-flasher {}\n", env!("CARGO_PKG_VERSION")),
         ),
-        Ok(parsed) => match execute(parsed, stdout) {
+        Ok(parsed) => match execute(parsed, confirm, stdout) {
             Ok(()) => EXIT_SUCCESS,
             Err(error) => write_failure(stderr, EXIT_OPERATION, error),
         },
@@ -133,10 +150,8 @@ struct K1AfikFlashArguments {
     /// Optional retained EEPROM backup, validated and logged when supplied.
     /// This command issues no EEPROM operation.
     backup: Option<PathBuf>,
-    version: String,
-    target_confirmation: String,
-    image_crc32_confirmation: String,
-    recovery_rehearsed_confirmation: String,
+    /// Skip the confirmation prompt because the operator already decided.
+    assume_yes: bool,
 }
 
 struct FlashContext<'a> {
@@ -300,13 +315,18 @@ fn parse_flash_afik_k1(arguments: &[String]) -> Result<K1AfikFlashArguments, Str
         .ok_or_else(|| "flash-afik-k1 requires IMAGE".to_owned())?;
     let mut recovery = None;
     let mut backup = None;
-    let mut version = None;
-    let mut target_confirmation = None;
-    let mut image_crc32_confirmation = None;
-    let mut recovery_rehearsed_confirmation = None;
+    let mut assume_yes = false;
     let mut offset = 1;
     while offset < arguments.len() {
         let option = &arguments[offset];
+        if option == "--yes" {
+            if assume_yes {
+                return Err("--yes was provided more than once".to_owned());
+            }
+            assume_yes = true;
+            offset += 1;
+            continue;
+        }
         let value = arguments
             .get(offset + 1)
             .filter(|value| !value.starts_with("--"))
@@ -314,14 +334,6 @@ fn parse_flash_afik_k1(arguments: &[String]) -> Result<K1AfikFlashArguments, Str
         match option.as_str() {
             "--recovery" => set_once(&mut recovery, PathBuf::from(value), option)?,
             "--backup" => set_once(&mut backup, PathBuf::from(value), option)?,
-            "--version" => set_once(&mut version, value.clone(), option)?,
-            "--confirm-target" => set_once(&mut target_confirmation, value.clone(), option)?,
-            "--confirm-image-crc32" => {
-                set_once(&mut image_crc32_confirmation, value.clone(), option)?;
-            }
-            "--confirm-recovery-rehearsed" => {
-                set_once(&mut recovery_rehearsed_confirmation, value.clone(), option)?;
-            }
             _ => return Err(format!("unknown flash-afik-k1 option: {option}")),
         }
         offset += 2;
@@ -330,14 +342,7 @@ fn parse_flash_afik_k1(arguments: &[String]) -> Result<K1AfikFlashArguments, Str
         image: PathBuf::from(image),
         recovery,
         backup,
-        version: version.ok_or_else(|| "flash-afik-k1 requires --version VERSION".to_owned())?,
-        target_confirmation: target_confirmation
-            .ok_or_else(|| "flash-afik-k1 requires --confirm-target TARGET".to_owned())?,
-        image_crc32_confirmation: image_crc32_confirmation
-            .ok_or_else(|| "flash-afik-k1 requires --confirm-image-crc32 CRC32".to_owned())?,
-        recovery_rehearsed_confirmation: recovery_rehearsed_confirmation.ok_or_else(|| {
-            "flash-afik-k1 requires --confirm-recovery-rehearsed PHRASE".to_owned()
-        })?,
+        assume_yes,
     })
 }
 
@@ -349,11 +354,15 @@ fn set_once<T>(slot: &mut Option<T>, value: T, option: &str) -> Result<(), Strin
     }
 }
 
-fn execute<W: Write>(parsed: Parsed, stdout: &mut W) -> Result<(), CliError> {
+fn execute<W: Write, C: Confirm>(
+    parsed: Parsed,
+    confirm: &mut C,
+    stdout: &mut W,
+) -> Result<(), CliError> {
     let Parsed::Hardware { device, command } = parsed else {
         unreachable!("handled before execution");
     };
-    let device = resolve_device(&device)?;
+    let device = resolve_device(&device, confirm)?;
     match command {
         Command::Identify => identify(&device, stdout),
         Command::ProbeNormal => probe_normal(&device, stdout),
@@ -365,33 +374,58 @@ fn execute<W: Write>(parsed: Parsed, stdout: &mut W) -> Result<(), CliError> {
         Command::ProbeClockControl => probe_clock_control_marker(&device, stdout),
         Command::Backup { output, force } => backup(&device, &output, force, stdout),
         Command::Flash(arguments) => flash(&device, &arguments, stdout),
-        Command::FlashAfikK1(arguments) => flash_afik_k1(&device, &arguments, stdout),
-    }
-}
-
-fn resolve_device(selector: &DeviceSelector) -> Result<PathBuf, CliError> {
-    match selector {
-        DeviceSelector::Explicit(path) => Ok(path.clone()),
-        DeviceSelector::Auto => {
-            let candidates = discover_usb_serial_devices().map_err(CliError::operation)?;
-            select_auto_device(&candidates).map_err(CliError::Operation)
+        Command::FlashAfikK1(arguments) => {
+            if arguments.assume_yes {
+                flash_afik_k1(&device, &arguments, &mut AssumeYes, stdout)
+            } else {
+                flash_afik_k1(&device, &arguments, confirm, stdout)
+            }
         }
     }
 }
 
-fn select_auto_device(candidates: &[PathBuf]) -> Result<PathBuf, String> {
+fn resolve_device<C: Confirm>(
+    selector: &DeviceSelector,
+    confirm: &mut C,
+) -> Result<PathBuf, CliError> {
+    match selector {
+        DeviceSelector::Explicit(path) => Ok(path.clone()),
+        DeviceSelector::Auto => {
+            let candidates = discover_usb_serial_devices().map_err(CliError::operation)?;
+            select_auto_device(&candidates, confirm).map_err(CliError::Operation)
+        }
+    }
+}
+
+/// Picks the radio to talk to, asking only when the answer is genuinely unclear.
+///
+/// One candidate is not a question worth asking: the operator plugged in one
+/// radio and every command then names the device it used in its own output.
+/// Several candidates is a real ambiguity, and guessing there could write to the
+/// wrong device, so it is either answered by the operator or refused.
+fn select_auto_device<C: Confirm>(
+    candidates: &[PathBuf],
+    confirm: &mut C,
+) -> Result<PathBuf, String> {
     match candidates {
         [] => Err("no USB serial devices detected; supply --device PATH".into()),
         [device] => Ok(device.clone()),
         _ => {
-            let list = candidates
+            let options = candidates
                 .iter()
-                .map(|path| format!("  {}", path.display()))
-                .collect::<Vec<_>>()
-                .join("\n");
-            Err(format!(
-                "multiple USB serial devices detected; choose one with --device PATH:\n{list}"
-            ))
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>();
+            match confirm.choose("Several USB serial devices are present:", &options) {
+                Ok(Some(index)) => Ok(candidates[index].clone()),
+                Ok(None) | Err(_) => Err(format!(
+                    "multiple USB serial devices detected; choose one with --device PATH:\n{}",
+                    options
+                        .iter()
+                        .map(|option| format!("  {option}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                )),
+            }
         }
     }
 }
@@ -560,9 +594,10 @@ fn flash<W: Write>(
     }
 }
 
-fn flash_afik_k1<W: Write>(
+fn flash_afik_k1<W: Write, C: Confirm>(
     device: &Path,
     arguments: &K1AfikFlashArguments,
+    confirm: &mut C,
     stdout: &mut W,
 ) -> Result<(), CliError> {
     let image_raw = read_bounded(&arguments.image, K1_MAX_IMAGE_BYTES, "AFIK K1 image")?;
@@ -592,15 +627,12 @@ fn flash_afik_k1<W: Write>(
         .map(EepromBackup::from_raw)
         .transpose()
         .map_err(CliError::operation)?;
-    let supplied_crc = parse_crc32(&arguments.image_crc32_confirmation)?;
-    let expected_crc = crc32(image.bytes());
-    if supplied_crc != expected_crc {
-        return Err(CliError::Operation(format!(
-            "image CRC-32 confirmation mismatch: expected {expected_crc:08x}, supplied {supplied_crc:08x}"
-        )));
-    }
+    let image_crc = crc32(image.bytes());
     let transaction_id = fresh_transaction_id()?;
     let mut serial = open_serial(device)?;
+    // Classification is read-only, so it runs before the operator is asked. That
+    // way the confirmation names the radio actually on the other end of the
+    // cable rather than the one the operator meant to plug in.
     let family = detect_bootloader(&mut serial).map_err(CliError::operation)?;
     let info = match &family {
         radio_flasher::BootloaderFamily::K1(info) => info,
@@ -611,12 +643,28 @@ fn flash_afik_k1<W: Write>(
             )));
         }
     };
-    if arguments.version != info.version() {
-        return Err(CliError::Operation(format!(
-            "K1 bootloader version confirmation mismatch: detected {}, supplied {}",
-            info.version(),
-            arguments.version
-        )));
+
+    let summary = format!(
+        "About to write an AFIK application to a radio:\n\
+         \x20 device:     {}\n\
+         \x20 bootloader: K1 {}\n\
+         \x20 image:      {}\n\
+         \x20 bytes:      {} in {} pages\n\
+         \x20 crc32:      {image_crc:08x}\n\
+         This replaces the application and cannot be read back.",
+        device.display(),
+        info.version(),
+        arguments.image.display(),
+        image.bytes().len(),
+        image.page_count(),
+    );
+    if !confirm.confirm(&summary).map_err(CliError::operation)? {
+        return Err(CliError::Operation(if confirm.is_interactive() {
+            "write declined".to_owned()
+        } else {
+            "nothing can answer a confirmation prompt here; pass --yes to write unattended"
+                .to_owned()
+        }));
     }
 
     writeln!(stdout, "device={}", device.display()).map_err(CliError::operation)?;
@@ -634,6 +682,7 @@ fn flash_afik_k1<W: Write>(
         None => writeln!(stdout, "backup_crc32=none_retained"),
     }
     .map_err(CliError::operation)?;
+    writeln!(stdout, "image_crc32={image_crc:08x}").map_err(CliError::operation)?;
     writeln!(stdout, "transaction_id={transaction_id:08x}").map_err(CliError::operation)?;
     stdout.flush().map_err(CliError::operation)?;
 
@@ -642,10 +691,6 @@ fn flash_afik_k1<W: Write>(
         &image,
         recovery.as_ref(),
         info.version(),
-        radio_flasher::k1::K1ApplicationConfirmations {
-            target: &arguments.target_confirmation,
-            recovery_rehearsed: &arguments.recovery_rehearsed_confirmation,
-        },
         transaction_id,
         |page| {
             let complete = page + 1;
@@ -750,7 +795,9 @@ fn flash_k5<W: Write>(
 mod tests {
     use std::path::PathBuf;
 
-    use super::{parse, select_auto_device, Command, DeviceSelector, Parsed};
+    use super::{parse, run_with, select_auto_device, Command, DeviceSelector, Parsed};
+    use crate::prompt::TerminalConfirm;
+    use crate::EXIT_SUCCESS;
 
     fn strings(arguments: &[&str]) -> Vec<String> {
         arguments.iter().map(ToString::to_string).collect()
@@ -827,41 +874,107 @@ mod tests {
         ));
     }
 
+    /// The image is the whole command. Everything else is optional.
     #[test]
-    fn k1_afik_parser_requires_recovery_and_rehearsal_guards() {
-        assert!(parse(&strings(&["flash-afik-k1", "image.raw"])).is_err());
+    fn k1_afik_parser_takes_the_image_and_nothing_else() {
+        assert!(
+            matches!(
+                parse(&strings(&["flash-afik-k1", "image.raw"])).unwrap(),
+                Parsed::Hardware {
+                    command: Command::FlashAfikK1(_),
+                    ..
+                }
+            ),
+            "an image alone is a complete command"
+        );
+
         let arguments = strings(&[
             "flash-afik-k1",
             "image.raw",
+            "--yes",
             "--recovery",
             "recovery.raw",
             "--backup",
             "eeprom.raw",
-            "--version",
-            "7.03.01",
+        ]);
+        let Parsed::Hardware {
+            command: Command::FlashAfikK1(parsed),
+            ..
+        } = parse(&arguments).unwrap()
+        else {
+            panic!("expected a K1 AFIK flash command");
+        };
+        assert!(parsed.assume_yes);
+        assert_eq!(parsed.recovery, Some(PathBuf::from("recovery.raw")));
+        assert_eq!(parsed.backup, Some(PathBuf::from("eeprom.raw")));
+
+        // The phrases this command used to demand are gone, so passing one is a
+        // mistake worth reporting rather than something silently ignored.
+        assert!(parse(&strings(&[
+            "flash-afik-k1",
+            "image.raw",
             "--confirm-target",
             "UV-K1-AFIK-7.03.01",
-            "--confirm-image-crc32",
-            "12345678",
-            "--confirm-recovery-rehearsed",
-            "K1-RECOVERY-REHEARSED-ON-THIS-UNIT",
-        ]);
-        assert!(matches!(
-            parse(&arguments).unwrap(),
-            Parsed::Hardware {
-                command: Command::FlashAfikK1(_),
-                ..
-            }
-        ));
+        ]))
+        .is_err());
+        assert!(
+            parse(&strings(&["flash-afik-k1"])).is_err(),
+            "IMAGE is required"
+        );
+    }
+
+    /// A write must not proceed unless something actually approved it.
+    #[test]
+    fn a_declined_or_unanswerable_confirmation_writes_nothing() {
+        // No device is opened and no image is read: the refusal happens before
+        // any of that, so these run without hardware.
+        let arguments = strings(&["--device", "/dev/null", "flash-afik-k1", "/nonexistent.raw"]);
+        let mut declined = TerminalConfirm::new(&b"n\n"[..], Vec::new(), true);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        assert_ne!(
+            run_with(&arguments, &mut declined, &mut stdout, &mut stderr),
+            EXIT_SUCCESS
+        );
+
+        let mut silent = TerminalConfirm::new(&b"y\n"[..], Vec::new(), false);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        assert_ne!(
+            run_with(&arguments, &mut silent, &mut stdout, &mut stderr),
+            EXIT_SUCCESS
+        );
     }
 
     #[test]
-    fn auto_selection_fails_closed_for_zero_or_multiple_candidates() {
-        assert!(select_auto_device(&[]).unwrap_err().contains("no USB"));
+    fn auto_selection_asks_only_when_the_radio_is_ambiguous() {
+        let mut never = TerminalConfirm::new(&b""[..], Vec::new(), false);
+        assert!(select_auto_device(&[], &mut never)
+            .unwrap_err()
+            .contains("no USB"));
+
+        // One candidate is not a question: the operator plugged in one radio.
+        let one = vec![PathBuf::from("/dev/ttyUSB0")];
+        assert_eq!(
+            select_auto_device(&one, &mut never).unwrap(),
+            PathBuf::from("/dev/ttyUSB0")
+        );
+
         let candidates = vec![PathBuf::from("/dev/ttyUSB0"), PathBuf::from("/dev/ttyUSB1")];
-        let error = select_auto_device(&candidates).unwrap_err();
+        let error = select_auto_device(&candidates, &mut never).unwrap_err();
         assert!(error.contains("multiple USB"));
         assert!(error.contains("ttyUSB0"));
         assert!(error.contains("ttyUSB1"));
+
+        // On a terminal the ambiguity is a question, and the answer is used.
+        let mut second = TerminalConfirm::new(&b"2\n"[..], Vec::new(), true);
+        assert_eq!(
+            select_auto_device(&candidates, &mut second).unwrap(),
+            PathBuf::from("/dev/ttyUSB1")
+        );
+
+        // A nonsense answer is not a selection.
+        let mut nonsense = TerminalConfirm::new(&b"9\n"[..], Vec::new(), true);
+        assert!(select_auto_device(&candidates, &mut nonsense).is_err());
     }
 }

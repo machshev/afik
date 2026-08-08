@@ -29,7 +29,9 @@ pub const EXIT_USAGE: i32 = 2;
 pub const K5_BAUD: u32 = 38_400;
 
 /// Runs the generic auto-detecting K1/K5 CLI.
-pub use auto::{run_to as run_auto_to, HELP as AUTO_HELP};
+pub mod prompt;
+
+pub use auto::{run_to as run_auto_to, run_with as run_auto_with, HELP as AUTO_HELP};
 
 /// Stable command help text.
 pub const HELP: &str = "AFIK UV-K5 V1 recovery-gated flasher\n\

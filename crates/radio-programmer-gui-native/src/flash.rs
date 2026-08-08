@@ -253,7 +253,14 @@ pub fn validate_request(
                     "identify the radio, or enter the observed 7.03.x bootloader version",
                 ));
             }
-            if request.target_confirmation.trim().is_empty() {
+            // The recovery write still asks for its phrase, because that path
+            // can leave a unit needing rescue. The application write does not:
+            // the editor already shows the operator the device, image, and
+            // digest, and a phrase typed beside them adds no knowledge of what
+            // is about to happen.
+            if matches!(operation, FlashOperation::K1Recovery)
+                && request.target_confirmation.trim().is_empty()
+            {
                 return Err(FlashRequestError::new("enter the target confirmation"));
             }
             if matches!(operation, FlashOperation::K1Application) {
@@ -266,11 +273,6 @@ pub fn validate_request(
                 // validated when the operator does supply them.
                 optional_file(&request.recovery, "recovery image")?;
                 optional_file(&request.eeprom_backup, "EEPROM backup")?;
-                if request.recovery_rehearsed_confirmation.trim().is_empty() {
-                    return Err(FlashRequestError::new(
-                        "enter the recovery-rehearsed confirmation",
-                    ));
-                }
             }
         }
         FlashOperation::K5Application => {
@@ -372,10 +374,6 @@ fn run(
                 &image,
                 recovery.as_ref(),
                 &request.bootloader_version,
-                k1::K1ApplicationConfirmations {
-                    target: &request.target_confirmation,
-                    recovery_rehearsed: &request.recovery_rehearsed_confirmation,
-                },
                 request.transaction_id,
                 |page| step(sender, page, total),
             )
@@ -621,10 +619,19 @@ mod tests {
         bad_bootloader.bootloader_version = "2.00.06".to_owned();
         assert!(validate_request(FlashOperation::K1Recovery, &bad_bootloader).is_err());
 
-        let mut no_rehearsal = request.clone();
-        no_rehearsal.recovery_rehearsed_confirmation = String::new();
-        assert!(validate_request(FlashOperation::K1Application, &no_rehearsal).is_err());
+        // A K1 application write asks for no phrases at all: what the operator
+        // is shown before the write is the device, the image, and its digest.
+        let mut no_phrases = request.clone();
+        no_phrases.recovery_rehearsed_confirmation = String::new();
+        no_phrases.target_confirmation = String::new();
+        validate_request(FlashOperation::K1Application, &no_phrases).unwrap();
         validate_request(FlashOperation::K1Application, &request).unwrap();
+
+        // The recovery write can leave a unit needing rescue, so it still asks.
+        assert!(validate_request(FlashOperation::K1Recovery, &no_phrases)
+            .unwrap_err()
+            .to_string()
+            .contains("target confirmation"));
 
         // The K1 application path cannot reach the bootloader and issues no
         // EEPROM operation, so neither retained artefact is required and a
