@@ -4,11 +4,11 @@
 
 use radio_channel_plan::{
     BankFlags, BankMask, BankName, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
-    ChannelRecord, GeneratedBank,
+    ChannelRecord, ChannelTemplate, Designator, GeneratedBank,
 };
 use radio_domain::{
-    Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, SquelchLevel,
-    Tone, TxClass,
+    Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, Offset, PowerLevel,
+    SquelchLevel, Tone, TxClass,
 };
 use radio_programmer::{Programmer, ProtocolTransport, RadioProject};
 use radio_programmer_serial::{is_supported_baud, LinuxSerialTransport};
@@ -47,6 +47,10 @@ Usage:\n\
 PROJECT is one or more of --bank SPEC, --channel SPEC, and\n\
 --channel-bank SPEC.\n\
 Bank SPEC: ID:NAME:BASE_HZ:SPACING_HZ:COUNT:TX_CLASS\n\
+  optionally :DESIGNATOR:FIRST_NUMBER[:CALLING[:OFFSET_HZ]]\n\
+  DESIGNATOR is up to four characters the radio names channels with, and a\n\
+  trailing space separates the number. CALLING is a zero-based index or -.\n\
+  OFFSET_HZ is 0 for simplex or the signed transmit offset of a repeater.\n\
 Channel SPEC: ID:NAME:RECEIVE_HZ:BANK:TX_CLASS, where BANK is - for none\n\
 Channel bank SPEC: ID:NAME:scan|noscan\n\
 TX_CLASS: never, licence-free, amateur, marine, aeronautical, business, experimental\n\
@@ -421,11 +425,24 @@ fn parse_channel(spec: &str) -> Result<ChannelRecord, CliError> {
     .map_err(|error| CliError::Usage(format!("invalid channel: {error}")))
 }
 
+/// Parses one generated plan.
+///
+/// The first six fields describe the arithmetic. The optional tail describes
+/// how the radio names what it expands and where it transmits, so a plan
+/// written from here reaches the same channels the editor produces: a
+/// designator and a first number give `S8` through `S23` rather than a name
+/// derived from the plan, a calling index names one of them `S20 CALL`, and a
+/// non-zero offset makes the plan a repeater bank.
+///
+/// The designator is taken exactly as written, because a trailing space is what
+/// separates `PMR 1` from `PMR1` and trimming it would silently change what the
+/// operator reads on the radio.
 fn parse_bank(spec: &str) -> Result<GeneratedBank, CliError> {
     let fields = spec.split(':').collect::<Vec<_>>();
-    if fields.len() != 6 {
+    if !(6..=10).contains(&fields.len()) || fields.len() == 7 {
         return Err(CliError::Usage(format!(
-            "bank spec requires six colon-separated fields: {spec}"
+            "bank spec requires six colon-separated fields, or eight to ten \
+             with DESIGNATOR:FIRST_NUMBER[:CALLING[:OFFSET_HZ]]: {spec}"
         )));
     }
     let id = parse_integer::<u16>(fields[0], "bank ID")?;
@@ -437,8 +454,39 @@ fn parse_bank(spec: &str) -> Result<GeneratedBank, CliError> {
         .map_err(|error| CliError::Usage(format!("invalid spacing: {error}")))?;
     let count = parse_integer::<u16>(fields[4], "channel count")?;
     let class = parse_class(fields[5])?;
-    GeneratedBank::linear_simplex(BankId::new(id), name, base, spacing, count, class)
-        .map_err(|error| CliError::Usage(format!("invalid generated bank: {error}")))
+    let offset = match fields.get(9) {
+        Some(field) => Offset::from_hz(parse_integer::<i32>(field, "transmit offset")?),
+        None => Offset::from_hz(0),
+    };
+    let mut bank = GeneratedBank::linear_fixed_offset_with(
+        BankId::new(id),
+        name,
+        base,
+        spacing,
+        count,
+        class,
+        ChannelTemplate::narrow_fm(spacing),
+        offset,
+    )
+    .map_err(|error| CliError::Usage(format!("invalid generated bank: {error}")))?;
+    if let (Some(designator), Some(first)) = (fields.get(6), fields.get(7)) {
+        let designator = Designator::new(designator)
+            .map_err(|error| CliError::Usage(format!("invalid designator: {error}")))?;
+        let first = parse_integer::<u16>(first, "first channel number")?;
+        bank = bank
+            .with_designator(designator, first)
+            .map_err(|error| CliError::Usage(format!("invalid plan numbering: {error}")))?;
+    }
+    if let Some(field) = fields.get(8) {
+        let calling = match *field {
+            "-" => None,
+            value => Some(parse_integer::<u16>(value, "calling channel index")?),
+        };
+        bank = bank
+            .with_calling_index(calling)
+            .map_err(|error| CliError::Usage(format!("invalid calling channel: {error}")))?;
+    }
+    Ok(bank)
 }
 
 /// Parses one named channel bank.
@@ -731,6 +779,57 @@ fn infallible(error: Infallible) -> CliTransportError {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_bank_spec_carries_the_designator_numbering_and_calling_channel() {
+        // UK 2 m FM simplex: S8 at 145.200 through S23, calling on S20.
+        let bank =
+            super::parse_bank("1:2M SIMPLEX:145200000:25000:16:amateur:S:8:12").expect("bank spec");
+        assert_eq!(bank.name().as_str(), "2M SIMPLEX");
+        assert_eq!(bank.designator().as_str(), "S");
+        assert_eq!(bank.first_number(), 8);
+        assert_eq!(bank.channel_record(0).unwrap().name().as_str(), "S8");
+        assert_eq!(bank.channel_record(12).unwrap().name().as_str(), "S20 CALL");
+        assert_eq!(bank.channel_record(15).unwrap().name().as_str(), "S23");
+        assert_eq!(bank.offset().as_hz(), 0);
+    }
+
+    #[test]
+    fn a_bank_spec_keeps_a_trailing_space_in_the_designator() {
+        // The space is what separates `PMR 1` from `PMR1`, so it is not trimmed.
+        let bank = super::parse_bank("0:PMR446:446006250:12500:16:licence-free:PMR :1:-")
+            .expect("bank spec");
+        assert_eq!(bank.designator().as_str(), "PMR ");
+        assert_eq!(bank.channel_record(0).unwrap().name().as_str(), "PMR 1");
+        assert_eq!(bank.calling_index(), None);
+    }
+
+    #[test]
+    fn a_bank_spec_with_an_offset_is_a_repeater_plan() {
+        let bank = super::parse_bank("3:2M REPEATERS:145600000:12500:16:amateur:RV:48:-:-600000")
+            .expect("bank spec");
+        assert_eq!(
+            bank.encoding(),
+            radio_channel_plan::PlanEncoding::LinearFixedOffset
+        );
+        let first = bank.channel_record(0).unwrap();
+        assert_eq!(first.name().as_str(), "RV48");
+        assert_eq!(first.receive().as_hz(), 145_600_000);
+        assert_eq!(first.transmit().as_hz(), 145_000_000);
+    }
+
+    #[test]
+    fn a_six_field_bank_spec_still_works_and_derives_its_designator() {
+        let bank =
+            super::parse_bank("0:PMR446:446006250:12500:16:licence-free").expect("bank spec");
+        assert_eq!(bank.channel_record(0).unwrap().name().as_str(), "PMR 1");
+    }
+
+    #[test]
+    fn a_bank_spec_rejects_a_calling_channel_outside_the_plan() {
+        assert!(super::parse_bank("1:S:145200000:25000:4:amateur:S:8:9").is_err());
+        assert!(super::parse_bank("1:S:145200000:25000:4:amateur:S").is_err());
+    }
     use super::{run, CliOutcome, EXIT_OPERATION, EXIT_SUCCESS, EXIT_USAGE, HELP};
     use radio_storage::decode_configuration_image;
     use std::{
