@@ -378,31 +378,26 @@ impl ListRow {
 pub fn render_operating_screen(frame: &mut [u8; FRAME_BYTES], view: &OperatingView<'_>) {
     frame.fill(0);
 
-    if let Some(step_hz) = view.vfo_step_hz {
+    // The top line is a status row: what the radio is listening to on the left,
+    // and how much battery is left to keep doing it on the right. The battery
+    // holds its corner whatever else changes, so an operator learns one place to
+    // glance at rather than hunting for it among the things that move.
+    if view.vfo_step_hz.is_some() {
         // The VFO has no position in a list and no bank, so the header names the
-        // source and the tuning step Up and Down apply.
+        // source instead.
         draw_text(frame, 0, 0, b"VFO");
-        let label = step_label(step_hz);
-        draw_text(frame, WIDTH - label.len() * 6, 0, &label);
     } else {
         let mut position = *b"00/00";
         write_two_digits(&mut position[..2], view.position);
         write_two_digits(&mut position[3..], view.total);
         draw_text(frame, 0, 0, &position);
-
-        if view.entry.is_none() {
-            match view.bank {
-                Some(bank) => draw_text(frame, WIDTH - 5 * 6, 0, &bank.label()),
-                None => draw_text(frame, WIDTH - 5 * 6, 0, b"ALL  "),
-            }
-        }
     }
-    if let Some(entry) = view.entry {
-        // Typed digits replace the indicator so the operator can see what the
-        // radio will act on before it acts.
-        let typed = entry_label(entry, view.vfo_step_hz.is_some());
-        draw_text(frame, WIDTH - typed.len() * 6, 0, &typed);
-    }
+    draw_text(
+        frame,
+        WIDTH - BATTERY_LABEL_BYTES * 6,
+        0,
+        &battery_label(view.battery_percent),
+    );
 
     let width = view.name.len() * 6;
     draw_text(frame, WIDTH.saturating_sub(width) / 2, 12, view.name);
@@ -419,34 +414,55 @@ pub fn render_operating_screen(frame: &mut [u8; FRAME_BYTES], view: &OperatingVi
             b"SQ SHUT"
         },
     );
-    draw_text(frame, 0, 55, &battery_label(view.battery_percent));
+    // The bottom line carries what the operator is doing rather than what the
+    // radio is: the number being typed, the tuning step it will move by, or the
+    // bank the channel list is filtered to. Typed digits take precedence so the
+    // operator can see what the radio will act on before it acts.
+    if let Some(entry) = view.entry {
+        let typed = entry_label(entry, view.vfo_step_hz.is_some());
+        draw_text(frame, 0, 55, &typed);
+    } else if let Some(step_hz) = view.vfo_step_hz {
+        draw_text(frame, 0, 55, &step_label(step_hz));
+    } else {
+        match view.bank {
+            Some(bank) => draw_text(frame, 0, 55, &bank.label()),
+            None => draw_text(frame, 0, 55, b"ALL  "),
+        }
+    }
     if view.monitoring {
         draw_text(frame, WIDTH - 3 * 6, 55, b"MON");
     }
 }
 
 /// Columns the battery indicator occupies.
-pub const BATTERY_LABEL_BYTES: usize = 8;
+pub const BATTERY_LABEL_BYTES: usize = 4;
 
 /// Renders the battery indicator.
+///
+/// The label carries no prefix: it sits alone in the top right corner, where
+/// nothing else appears, so a percentage there needs no naming. The number is
+/// right aligned so the digits do not shuffle sideways as the charge falls.
 ///
 /// A radio which does not know its charge says so rather than showing a
 /// plausible number, because the whole point of the indicator is to be trusted
 /// when it says the pack is nearly flat.
 #[must_use]
 pub fn battery_label(percent: Option<u8>) -> [u8; BATTERY_LABEL_BYTES] {
-    let mut label = *b"BAT ---%";
     let Some(percent) = percent else {
-        return label;
+        return *b" --%";
     };
+    let mut label = *b"   %";
     let percent = percent.min(100);
-    if percent == 100 {
-        label[4..7].copy_from_slice(b"100");
+    if percent >= 100 {
+        label[0] = b'1';
+        label[1] = b'0';
+        label[2] = b'0';
         return label;
     }
-    label[4] = b' ';
-    label[5] = b'0' + percent / 10;
-    label[6] = b'0' + percent % 10;
+    if percent >= 10 {
+        label[1] = b'0' + percent / 10;
+    }
+    label[2] = b'0' + percent % 10;
     label
 }
 
@@ -817,6 +833,7 @@ fn glyph(byte: u8) -> [u8; 5] {
         b'(' => [0x00, 0x1C, 0x22, 0x41, 0x00],
         b')' => [0x00, 0x41, 0x22, 0x1C, 0x00],
         b'_' => [0x40, 0x40, 0x40, 0x40, 0x40],
+        b'%' => [0x23, 0x13, 0x08, 0x64, 0x62],
         _ => [0x00, 0x00, 0x00, 0x00, 0x00],
     }
 }
@@ -1058,18 +1075,74 @@ mod operating_screen_tests {
     /// An indicator is only useful if it is believed when it says nearly flat.
     #[test]
     fn the_battery_indicator_says_when_it_does_not_know() {
-        use super::battery_label;
+        use super::{battery_label, BATTERY_LABEL_BYTES};
 
-        assert_eq!(&battery_label(None), b"BAT ---%");
-        assert_eq!(&battery_label(Some(0)), b"BAT  00%");
-        assert_eq!(&battery_label(Some(7)), b"BAT  07%");
-        assert_eq!(&battery_label(Some(87)), b"BAT  87%");
-        assert_eq!(&battery_label(Some(100)), b"BAT 100%");
+        assert_eq!(&battery_label(None), b" --%");
+        assert_eq!(&battery_label(Some(0)), b"  0%");
+        assert_eq!(&battery_label(Some(7)), b"  7%");
+        assert_eq!(&battery_label(Some(16)), b" 16%");
+        assert_eq!(&battery_label(Some(87)), b" 87%");
+        assert_eq!(&battery_label(Some(100)), b"100%");
         assert_eq!(
             &battery_label(Some(200)),
-            b"BAT 100%",
+            b"100%",
             "a reading past full is clamped, not rendered as nonsense"
         );
+
+        // The label fits the corner it is drawn into.
+        assert_eq!(
+            BATTERY_LABEL_BYTES * 6,
+            24,
+            "four columns of the fixed font"
+        );
+    }
+
+    /// A character the font does not have draws as blank space.
+    ///
+    /// The battery label read `16` with no sign on the exact unit because the
+    /// font had no `%`. Nothing failed and nothing warned: the glyph table
+    /// simply returned five empty columns. Every character the screen puts in a
+    /// fixed label is therefore checked here, so the next one added to a label
+    /// without a glyph is caught on the host rather than on the radio.
+    #[test]
+    fn every_character_the_screen_draws_has_a_glyph() {
+        use super::{battery_label, glyph, megahertz, rssi_label, step_label};
+        use crate::shell::VFO_STEPS_HZ;
+
+        let mut fixed = std::vec::Vec::new();
+        fixed.extend_from_slice(b"VFO");
+        fixed.extend_from_slice(b"ALL  ");
+        fixed.extend_from_slice(b"MON");
+        fixed.extend_from_slice(b"SQ OPEN");
+        fixed.extend_from_slice(b"SQ SHUT");
+        fixed.extend_from_slice(b"BANK 00");
+        fixed.extend_from_slice(b"SETTINGS");
+        fixed.extend_from_slice(b"SQUELCH");
+        fixed.extend_from_slice(b"SOURCE");
+        fixed.extend_from_slice(b"STEP");
+        fixed.extend_from_slice(b"0  OPEN");
+        fixed.extend_from_slice(&rssi_label(148));
+        fixed.extend_from_slice(&battery_label(None));
+        fixed.extend_from_slice(&battery_label(Some(16)));
+        fixed.extend_from_slice(&battery_label(Some(100)));
+        fixed.extend_from_slice(&megahertz(145_500_000));
+        for step in VFO_STEPS_HZ {
+            fixed.extend_from_slice(&step_label(step));
+        }
+        fixed.extend_from_slice(SelectorRow::squelch_setting(0).label());
+        fixed.extend_from_slice(SelectorRow::squelch_setting(5).label());
+
+        for byte in fixed {
+            if byte == b' ' {
+                continue;
+            }
+            assert_ne!(
+                glyph(byte),
+                [0; 5],
+                "the screen draws {:?} but the font has no glyph for it",
+                char::from(byte)
+            );
+        }
     }
 
     #[test]
