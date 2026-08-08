@@ -18,6 +18,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use cortex_m_rt::entry;
 use embassy_executor::Executor;
+use embassy_futures::select::{select, Either};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Timer};
@@ -42,7 +43,8 @@ use radio_domain::{
 };
 use radio_firmware_k1::bk4819_bus::ThreeWireBus;
 use radio_firmware_k1::configuration::{
-    device_service, Programmed, MAX_CHANNELS, MAX_GENERATED_BANKS, RETAINED_IMAGE_BYTES,
+    device_service, store_squelch, Programmed, MAX_CHANNELS, MAX_GENERATED_BANKS,
+    RETAINED_IMAGE_BYTES,
 };
 use radio_firmware_k1::display::{
     render_channel_list, render_info_screen, render_operating_screen, render_selector_list,
@@ -54,7 +56,9 @@ use radio_firmware_k1::py32f071_bk4819::Bk4819Pins;
 use radio_firmware_k1::py32f071_eeprom::{RetainError, RetainedConfiguration, CONFIGURATION_BYTES};
 use radio_firmware_k1::py32f071_runtime::{compose, K1RuntimePeripherals};
 use radio_firmware_k1::py32f071_runtime_init::init;
-use radio_firmware_k1::shell::{Context, Intent, Mode, Screen, Shell, Source, VFO_STEPS_HZ};
+use radio_firmware_k1::shell::{
+    Context, Intent, Mode, Screen, Setting, Shell, Source, SETTINGS, SQUELCH_LEVELS, VFO_STEPS_HZ,
+};
 use radio_protocol::MAX_ENCODED_FRAME;
 
 const _: [(); 8] = [(); PAGES];
@@ -64,7 +68,16 @@ const K1_VECTOR_TABLE_ORIGIN: u32 = 0x0800_2800;
 const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-3.4";
 
 /// Interval between receive samples while audio is routed.
-const RF_SAMPLE_MILLISECONDS: u64 = 500;
+///
+/// This is the squelch's reaction time as well as the meter's refresh rate: the
+/// speaker opens and shuts on these samples, so a half-second interval would
+/// clip the start of every transmission and leave noise after the end of it.
+/// One sample is a handful of bit-banged register reads, and the serial link
+/// still holds the bus off while a host is mid-exchange.
+const RF_SAMPLE_MILLISECONDS: u64 = 60;
+
+/// Shortest interval between redraws caused by a changed meter reading.
+const METER_REDRAW_MILLISECONDS: u64 = 300;
 
 /// Milliseconds the radio bus stays idle after the last serial byte.
 ///
@@ -78,6 +91,13 @@ static LINK_QUIET_UNTIL: AtomicU32 = AtomicU32::new(0);
 
 /// Latest configuration the serial task activated.
 static PROGRAMMED: Signal<CriticalSectionRawMutex, Publication> = Signal::new();
+
+/// Squelch level the operator chose on the handset.
+///
+/// The serial task owns the store and the external memory, so the interface
+/// asks rather than writes. A choice the operator makes while a host is
+/// mid-exchange waits its turn instead of racing it.
+static SQUELCH_CHOICE: Signal<CriticalSectionRawMutex, SquelchLevel> = Signal::new();
 
 /// One activated configuration handed to the user interface task.
 #[derive(Clone, Copy)]
@@ -376,14 +396,38 @@ impl Receiver {
                 self.speaker = Some(Output::new(pin, Level::Low, Speed::Low));
             }
         }
-        if let Some(speaker) = self.speaker.as_mut() {
-            speaker.set_high();
-        }
         self.audio_routed = true;
+        // The amplifier is claimed, not opened: the squelch decides what the
+        // operator actually hears, and it has not been sampled on this channel
+        // yet. A retune therefore lands in silence rather than in noise.
+        self.gate_audio();
+    }
+
+    /// Drives the speaker amplifier from the squelch link.
+    ///
+    /// The chip's carrier squelch is the decision and this is the consequence,
+    /// so the operator hears exactly what the level they chose lets through. At
+    /// level zero, and while monitoring, the link reads permanently open and
+    /// the amplifier simply stays on.
+    fn gate_audio(&mut self) {
+        let open = self.squelch_open;
+        if let Some(speaker) = self.speaker.as_mut() {
+            if open {
+                speaker.set_high();
+            } else {
+                speaker.set_low();
+            }
+        }
     }
 
     /// Applies one controller-selected channel to the receiver.
-    fn tune(&mut self, setup: ChannelReceiveSetup) {
+    ///
+    /// `radio_wide` is the level the operator set for the whole radio. It
+    /// replaces whatever level the channel was programmed with, because a
+    /// global control a stored channel could silently veto would not be one.
+    /// A level the controller has already forced open is left alone: that is
+    /// monitoring, and monitoring outranks both.
+    fn tune(&mut self, setup: ChannelReceiveSetup, radio_wide: SquelchLevel) {
         if !self.started {
             self.bring_up();
         }
@@ -395,10 +439,11 @@ impl Receiver {
             modulation: setup.modulation,
             bandwidth: setup.bandwidth,
             tone: setup.tone,
-            // The K1 keeps its squelch calibration in external flash which
-            // AFIK does not yet read, so this image reports raw metrics with
-            // the pinned source's squelch-off set.
-            squelch: SquelchThresholds::squelch_off(),
+            squelch: SquelchThresholds::for_level(if setup.squelch.is_open() {
+                setup.squelch
+            } else {
+                radio_wide
+            }),
             af: AfOutput::Demodulated,
         };
         if self.radio.configure_receive(&request).is_err() {
@@ -406,6 +451,8 @@ impl Receiver {
             return;
         }
         self.frequency_hz = setup.frequency.as_hz();
+        // The previous channel's link result says nothing about this one.
+        self.squelch_open = false;
         let _ = self.radio.read_back(ReadbackRegister::FilterBandwidth);
         self.route_audio();
     }
@@ -419,6 +466,7 @@ impl Receiver {
             Ok(metrics) => {
                 self.rssi_raw = u16::try_from(metrics.rssi_dbm_x2 + 320).unwrap_or(0);
                 self.squelch_open = metrics.squelch_open;
+                self.gate_audio();
                 Some(ReceiveObservation {
                     squelch_open: metrics.squelch_open,
                     tone_matched: None,
@@ -522,11 +570,33 @@ async fn serial_task(mut uart: Uart<'static, Async>, memory: EepromPins) {
     // whether or not this task is running.
     let mut received = [0_u8; MAX_ENCODED_FRAME];
     loop {
-        let Ok(count) = uart.read_until_idle(&mut received).await else {
-            // Yield before retrying so a persistent receiver error can never
-            // starve the interface task.
-            Timer::after_millis(1).await;
-            continue;
+        // The host and the operator are two sources of change for one store, so
+        // this task waits on both and serves whichever arrives. Nothing here
+        // interrupts a frame in progress: `read_until_idle` has already returned
+        // by the time a handset choice can be taken.
+        let count = match select(uart.read_until_idle(&mut received), SQUELCH_CHOICE.wait()).await {
+            Either::First(Ok(count)) => count,
+            Either::First(Err(_)) => {
+                // Yield before retrying so a persistent receiver error can never
+                // starve the interface task.
+                Timer::after_millis(1).await;
+                continue;
+            }
+            Either::Second(level) => {
+                // A handset setting which did not survive a battery change would
+                // not be worth the menu, so it is stored exactly like a host
+                // write and republished from the store rather than assumed.
+                if store_squelch(&mut service, level).is_ok() {
+                    let mut retained_now = false;
+                    if let Ok(length) = service.encode_active_image(&mut image) {
+                        if let Some(configuration) = retained.as_mut() {
+                            retained_now = configuration.write(&image, length).await.is_ok();
+                        }
+                    }
+                    publish(&service, retained_now, memory_state);
+                }
+                continue;
+            }
         };
         for index in 0..count {
             let byte = received[index];
@@ -684,6 +754,7 @@ async fn ui_task(
     let mut shell = Shell::new();
     let (banks, bank_count) = programmed.populated_banks();
     shell.set_banks(banks, bank_count);
+    shell.set_squelch(programmed.config().squelch);
     // A programmed radio starts on its channels; only an empty one stays in the
     // VFO, which is the source it can always use.
     if !programmed.is_empty() {
@@ -695,6 +766,7 @@ async fn ui_task(
     let mut pending = activation.as_mut().and_then(|(_, setup)| setup.take());
     let mut debounce = Debouncer::new();
     let mut next_sample = Instant::now();
+    let mut next_meter_redraw = Instant::now();
     let mut redraw = true;
 
     loop {
@@ -712,6 +784,7 @@ async fn ui_task(
             programmed = publication.programmed;
             let (banks, bank_count) = programmed.populated_banks();
             shell.set_banks(banks, bank_count);
+            shell.set_squelch(programmed.config().squelch);
             if !programmed.is_empty() {
                 shell.select_memory();
             }
@@ -748,6 +821,17 @@ async fn ui_task(
             // Every remaining intent acts on a channel. An empty memory has
             // none, so there is nothing to hold open or select, and the
             // interface only redraws.
+            // Squelch is a radio-wide setting, so it applies with or without a
+            // channel to hear it on and is handled before the guard below.
+            Intent::SetSquelch(level) => {
+                SQUELCH_CHOICE.signal(level);
+                // Retune so the new level reaches the chip now rather than at
+                // the next channel change.
+                if let Some((controller, _)) = activation.as_ref() {
+                    pending = Some(controller.setup());
+                }
+                redraw = true;
+            }
             _ if activation.is_none() => redraw = true,
             Intent::ToggleMonitor => {
                 if let Some((controller, _)) = activation.as_mut() {
@@ -777,17 +861,26 @@ async fn ui_task(
         // The bit-banged radio bus blocks the executor, so it only runs while
         // the serial link is quiet. Bus work is deferred, never dropped.
         if let Some(setup) = pending.filter(|_| bus_available()) {
-            receiver.tune(setup);
+            receiver.tune(setup, shell.squelch());
             pending = None;
             redraw = true;
         } else if receiver.audio_routed && Instant::now() >= next_sample && bus_available() {
+            let was_open = receiver.squelch_open;
             if let (Some(observation), Some((controller, _))) =
                 (receiver.observe(), activation.as_mut())
             {
                 controller.observe(observation).ok();
             }
             next_sample = Instant::now() + Duration::from_millis(RF_SAMPLE_MILLISECONDS);
-            redraw = true;
+            // The squelch is sampled far faster than a screen needs redrawing.
+            // The link opening or shutting is worth showing at once; a moving
+            // meter reading is not, and repainting every sample would spend the
+            // display bus on nothing an operator can read.
+            if was_open != receiver.squelch_open || Instant::now() >= next_meter_redraw {
+                next_meter_redraw =
+                    Instant::now() + Duration::from_millis(METER_REDRAW_MILLISECONDS);
+                redraw = true;
+            }
         }
 
         if redraw {
@@ -896,6 +989,34 @@ fn render(
                 &rows[..count],
                 shell.source_cursor() - first,
             );
+        }
+        Screen::Settings => {
+            let mut rows = [SelectorRow::default(); LIST_ROWS];
+            let mut count = 0;
+            for (offset, setting) in SETTINGS.iter().take(LIST_ROWS).enumerate() {
+                rows[offset] = match setting {
+                    Setting::Squelch => SelectorRow::squelch_setting(shell.squelch().get()),
+                };
+                count += 1;
+            }
+            render_selector_list(frame, b"SETTINGS", &rows[..count], shell.settings_cursor());
+        }
+        Screen::SquelchList => {
+            let mut rows = [SelectorRow::default(); LIST_ROWS];
+            let cursor = usize::from(shell.squelch_cursor());
+            let first = cursor / LIST_ROWS * LIST_ROWS;
+            let mut count = 0;
+            for offset in 0..LIST_ROWS {
+                let Ok(level) = u8::try_from(first + offset) else {
+                    break;
+                };
+                if level >= SQUELCH_LEVELS {
+                    break;
+                }
+                rows[offset] = SelectorRow::squelch_level(level, level == shell.squelch().get());
+                count += 1;
+            }
+            render_selector_list(frame, b"SQUELCH", &rows[..count], cursor - first);
         }
         Screen::StepList => {
             let mut rows = [SelectorRow::default(); LIST_ROWS];

@@ -291,6 +291,36 @@ impl SelectorRow {
         Self::with_label(&step_label(step_hz), active)
     }
 
+    /// Builds the settings-menu row for the radio-wide squelch level.
+    ///
+    /// The row carries its own value, so the operator can read the setting
+    /// without opening it.
+    #[must_use]
+    pub fn squelch_setting(level: u8) -> Self {
+        let mut label = [b' '; LIST_NAME_BYTES];
+        label[..7].copy_from_slice(b"SQUELCH");
+        if level == 0 {
+            label[9..13].copy_from_slice(b"OPEN");
+        } else {
+            label[9] = b'0' + level.min(9);
+        }
+        Self::with_label(&label, false)
+    }
+
+    /// Builds one squelch-level row.
+    ///
+    /// Level zero is named rather than numbered, because "no squelch at all" is
+    /// a different kind of choice from "one step quieter than four".
+    #[must_use]
+    pub fn squelch_level(level: u8, active: bool) -> Self {
+        if level == 0 {
+            return Self::with_label(b"0  OPEN", active);
+        }
+        let mut label = *b"0";
+        label[0] = b'0' + level.min(9);
+        Self::with_label(&label, active)
+    }
+
     fn with_label(label: &[u8], active: bool) -> Self {
         let mut row = Self {
             label: [0; LIST_NAME_BYTES],

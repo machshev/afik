@@ -14,11 +14,11 @@ use radio_channel_plan::{
     BankName, ChannelBank, GeneratedBank, PlanEncoding, MAX_BANKS as PLAN_MAX_BANKS,
 };
 use radio_device::{DeviceService, KindLimits};
-use radio_domain::{BankId, RadioConfig};
+use radio_domain::{BankId, RadioConfig, SquelchLevel};
 use radio_storage::{
-    decode_channel, decode_channel_bank, decode_generated_bank, decode_radio_config, ObjectKind,
-    StorageError, StorageObject, CHANNEL_BANK_ENCODED_LEN, CHANNEL_ENCODED_LEN,
-    CONFIGURATION_IMAGE_HEADER_LEN, CONFIGURATION_IMAGE_OBJECT_HEADER_LEN,
+    decode_channel, decode_channel_bank, decode_generated_bank, decode_radio_config,
+    encode_radio_config, ObjectKind, StorageError, StorageObject, CHANNEL_BANK_ENCODED_LEN,
+    CHANNEL_ENCODED_LEN, CONFIGURATION_IMAGE_HEADER_LEN, CONFIGURATION_IMAGE_OBJECT_HEADER_LEN,
     GENERATED_BANK_ENCODED_LEN, RADIO_CONFIG_ENCODED_LEN,
 };
 
@@ -109,6 +109,42 @@ pub fn device_service(configuration_bytes: u32) -> DeviceService<MAX_OBJECTS> {
         kind_limits(),
         configuration_bytes,
     )
+}
+
+/// Replaces the stored radio-wide squelch level.
+///
+/// The operator can change squelch on the handset, and a setting which did not
+/// survive a battery change would not be worth the menu. The active snapshot is
+/// rewritten through the ordinary validating path with one field changed, so a
+/// rejected result leaves the radio exactly as it was rather than half
+/// reconfigured. A radio which was never programmed gains a configuration
+/// object carrying the conservative defaults and the chosen level.
+///
+/// The caller is responsible for retaining the resulting image; this changes
+/// what the radio is running, not what its memory holds.
+pub fn store_squelch<const OBJECTS: usize>(
+    service: &mut DeviceService<OBJECTS>,
+    squelch: SquelchLevel,
+) -> Result<u32, StorageError> {
+    let mut config = RadioConfig::conservative();
+    let mut objects = [None; OBJECTS];
+    let mut count = 0;
+    for object in service.active_objects() {
+        if object.key().kind == ObjectKind::RadioConfig {
+            // The one object being replaced is not carried over, so the level
+            // is the only field this changes.
+            config = decode_radio_config(object)?;
+            continue;
+        }
+        let slot = objects.get_mut(count).ok_or(StorageError::StoreFull)?;
+        *slot = Some(*object);
+        count += 1;
+    }
+    config.squelch = squelch;
+    let replacement = encode_radio_config(config)?;
+    let slot = objects.get_mut(count).ok_or(StorageError::StoreFull)?;
+    *slot = Some(replacement);
+    service.load(objects.into_iter().flatten())
 }
 
 /// Why an active object snapshot cannot become a programmed configuration.
@@ -270,7 +306,10 @@ impl Programmed {
 
 #[cfg(test)]
 mod tests {
-    use super::{ConfigurationError, Programmed, MAX_CHANNELS, MAX_EXPANDED_CHANNELS, MAX_OBJECTS};
+    use super::{
+        device_service, store_squelch, ConfigurationError, Programmed, MAX_CHANNELS,
+        MAX_EXPANDED_CHANNELS, MAX_OBJECTS,
+    };
     use radio_channel_control::ChannelSource;
     use radio_channel_plan::{
         BankFlags, BankMask, BankName, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
@@ -428,6 +467,70 @@ mod tests {
         assert_eq!(
             Programmed::from_objects(objects.iter()),
             Err(ConfigurationError::TooManyChannels)
+        );
+    }
+
+    /// A level chosen on the handset has to become part of what is stored.
+    #[test]
+    fn storing_a_squelch_level_keeps_every_other_object_and_field() {
+        let mut service = device_service(4_096);
+        let bank = BankId::new(2);
+        let mask = BankMask::default().with(bank, true).expect("mask");
+        service
+            .load([
+                encode_channel(channel(7, 433_500_000, mask)).expect("channel"),
+                encode_channel(channel(3, 145_500_000, mask)).expect("channel"),
+                encode_radio_config(RadioConfig {
+                    backlight_seconds: 30,
+                    squelch: SquelchLevel::new(2).expect("level"),
+                    ..RadioConfig::conservative()
+                })
+                .expect("config"),
+            ])
+            .expect("load");
+        let before = service.generation();
+
+        store_squelch(&mut service, SquelchLevel::new(8).expect("level")).expect("store");
+        assert_ne!(service.generation(), before, "the change is a new snapshot");
+
+        let programmed = Programmed::from_objects(service.active_objects()).expect("programmed");
+        assert_eq!(programmed.config().squelch, SquelchLevel::new(8).unwrap());
+        assert_eq!(
+            programmed.config().backlight_seconds,
+            30,
+            "no other field is disturbed"
+        );
+        assert_eq!(programmed.channel_count(), 2, "no channel is lost");
+        assert_eq!(
+            service
+                .active_objects()
+                .filter(|object| object.key().kind == ObjectKind::RadioConfig)
+                .count(),
+            1,
+            "the configuration is replaced, not duplicated"
+        );
+    }
+
+    /// An unprogrammed radio still has to be able to set its own squelch.
+    #[test]
+    fn storing_a_squelch_level_on_an_empty_radio_creates_the_configuration() {
+        let mut service = device_service(4_096);
+        assert_eq!(service.active_objects().count(), 0);
+
+        store_squelch(&mut service, SquelchLevel::new(6).expect("level")).expect("store");
+
+        let programmed = Programmed::from_objects(service.active_objects()).expect("programmed");
+        assert_eq!(programmed.config().squelch, SquelchLevel::new(6).unwrap());
+        assert_eq!(
+            RadioConfig {
+                squelch: programmed.config().squelch,
+                ..programmed.config()
+            },
+            RadioConfig {
+                squelch: SquelchLevel::new(6).unwrap(),
+                ..RadioConfig::conservative()
+            },
+            "everything else stays at the conservative defaults"
         );
     }
 

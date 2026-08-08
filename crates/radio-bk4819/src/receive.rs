@@ -7,7 +7,7 @@
 
 use core::fmt;
 
-use radio_domain::{Bandwidth, Frequency, Modulation, Tone};
+use radio_domain::{Bandwidth, Frequency, Modulation, SquelchLevel, Tone};
 
 use crate::{
     Bk4819, DriverError, DriverState, FrequencyWord, RegisterAddress, RegisterBus, MODE_STANDBY,
@@ -234,6 +234,15 @@ pub enum AfOutput {
     Demodulated,
 }
 
+/// RSSI count at which squelch level one opens, about -130 dBm.
+const SQUELCH_BASE_RSSI: u8 = 54;
+
+/// RSSI counts each further squelch level adds, which is 3 dB.
+const SQUELCH_RSSI_STEP: u8 = 6;
+
+/// RSSI counts between the open and close thresholds, which is 1 dB.
+const SQUELCH_RSSI_HYSTERESIS: u8 = 2;
+
 /// Board-supplied squelch thresholds in the chip's own integer units.
 ///
 /// These values are calibration data. The driver validates their internal
@@ -288,6 +297,39 @@ impl SquelchThresholds {
             open_noise: 0x7F,
             close_noise: 0x7F,
             open_glitch: 0xFF,
+            close_glitch: 0xFF,
+        }
+    }
+
+    /// Returns AFIK's own thresholds for one operator squelch level.
+    ///
+    /// The per-unit calibration this radio was factory-programmed with is not
+    /// readable evidence yet, so these are AFIK's values, not the unit's. They
+    /// are deliberately conservative about what they claim: only the RSSI pair
+    /// varies with the level, and the noise and glitch pairs are left one step
+    /// below their permissive maximum so they satisfy the hysteresis rule
+    /// without ever being the reason the squelch shuts. An operator therefore
+    /// gets one predictable control, carrier strength, rather than three
+    /// interacting ones whose units AFIK cannot justify.
+    ///
+    /// RSSI counts are 0.5 dB per step with `dBm = count / 2 - 160`, so level
+    /// one opens at about -130 dBm and level nine at about -106 dBm, in 3 dB
+    /// increments with 1 dB of hysteresis. Level zero is
+    /// [`SquelchThresholds::squelch_off`] and never shuts.
+    #[must_use]
+    pub const fn for_level(level: SquelchLevel) -> Self {
+        if level.is_open() {
+            return Self::squelch_off();
+        }
+        let open_rssi = SQUELCH_BASE_RSSI + SQUELCH_RSSI_STEP * level.get();
+        Self {
+            open_rssi,
+            close_rssi: open_rssi - SQUELCH_RSSI_HYSTERESIS,
+            // One step below the permissive maximum, which is the largest pair
+            // that still satisfies the open-below-close hysteresis rule.
+            open_noise: 0x7E,
+            close_noise: 0x7F,
+            open_glitch: 0xFE,
             close_glitch: 0xFF,
         }
     }
@@ -810,6 +852,64 @@ mod tests {
         assert!(operations.contains(&Operation::Write(REG_SQUELCH_RSSI, 0x0000)));
         assert!(operations.contains(&Operation::Write(super::REG_SQUELCH_NOISE, 0x7F7F)));
         assert!(operations.contains(&Operation::Write(super::REG_SQUELCH_CLOSE_GLITCH, 0xA0FF)));
+    }
+
+    /// The operator's level has to reach the chip as one predictable control.
+    #[test]
+    fn each_squelch_level_gates_on_carrier_strength_alone() {
+        use radio_domain::{SquelchLevel, MAX_SQUELCH_LEVEL};
+
+        assert_eq!(
+            SquelchThresholds::for_level(SquelchLevel::OPEN),
+            SquelchThresholds::squelch_off(),
+            "level zero is the pinned squelch-off set and never shuts"
+        );
+
+        let mut previous = 0;
+        for level in 1..=MAX_SQUELCH_LEVEL {
+            let set = SquelchThresholds::for_level(SquelchLevel::new(level).unwrap());
+            assert!(
+                set.open_rssi > previous,
+                "a higher level must demand a stronger carrier"
+            );
+            previous = set.open_rssi;
+            assert!(
+                set.open_rssi > set.close_rssi,
+                "the set must carry hysteresis"
+            );
+            assert_eq!(
+                (
+                    set.open_noise,
+                    set.close_noise,
+                    set.open_glitch,
+                    set.close_glitch
+                ),
+                (0x7E, 0x7F, 0xFE, 0xFF),
+                "noise and glitch stay permissive: AFIK has no calibration for them"
+            );
+            // Every level must be a set the driver would accept from a board.
+            SquelchThresholds::new(
+                set.open_rssi,
+                set.close_rssi,
+                set.open_noise,
+                set.close_noise,
+                set.open_glitch,
+                set.close_glitch,
+            )
+            .expect("a derived set must satisfy the same rules as a supplied one");
+        }
+
+        // The documented endpoints, in the chip's 0.5 dB steps from -160 dBm.
+        assert_eq!(
+            SquelchThresholds::for_level(SquelchLevel::new(1).unwrap()).open_rssi,
+            60,
+            "level one opens at about -130 dBm"
+        );
+        assert_eq!(
+            SquelchThresholds::for_level(SquelchLevel::new(MAX_SQUELCH_LEVEL).unwrap()).open_rssi,
+            108,
+            "level nine opens at about -106 dBm"
+        );
     }
 
     #[test]

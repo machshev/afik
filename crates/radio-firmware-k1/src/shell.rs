@@ -13,7 +13,7 @@
 //! No intent can transmit. The set deliberately contains selection, bank
 //! filtering, VFO tuning, and monitoring only.
 
-use radio_domain::BankId;
+use radio_domain::{BankId, SquelchLevel, MAX_SQUELCH_LEVEL};
 
 use crate::configuration::MAX_BANKS;
 use crate::keypad::Key;
@@ -62,6 +62,19 @@ enum Direction {
     Down,
 }
 
+/// Which bounded list cursor one arrow key press moves.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Cursor {
+    /// The receive-source list.
+    Source,
+    /// The VFO tuning-step list.
+    Step,
+    /// The settings menu.
+    Settings,
+    /// The squelch-level list.
+    Squelch,
+}
+
 /// Which receive source the operator is listening to.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Mode {
@@ -95,9 +108,31 @@ pub enum Screen {
     SourceList,
     /// The selectable VFO tuning steps.
     StepList,
+    /// The radio-wide settings an operator can change from the handset.
+    Settings,
+    /// The selectable squelch levels.
+    SquelchList,
     /// Image identity and storage state.
     Info,
 }
+
+/// One row of the settings menu.
+///
+/// The menu exists so a setting can be changed on the radio rather than only
+/// from a host, so every row here is a value the operator can reach in the
+/// field. It is deliberately a list rather than a numbered menu: the same Up,
+/// Down, Menu, and Exit keys work on it as on every other screen.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Setting {
+    /// The radio-wide squelch level applied when no channel overrides it.
+    Squelch,
+}
+
+/// Every settings row, in the order the menu lists them.
+pub const SETTINGS: [Setting; 1] = [Setting::Squelch];
+
+/// Selectable squelch levels, from permanently open to tightest.
+pub const SQUELCH_LEVELS: u8 = MAX_SQUELCH_LEVEL + 1;
 
 /// What the caller should do to the receive controller.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -118,6 +153,8 @@ pub enum Intent {
     TuneVfo,
     /// Open or close the squelch override.
     ToggleMonitor,
+    /// Apply and store a new radio-wide squelch level.
+    SetSquelch(SquelchLevel),
 }
 
 /// The receive state the shell needs to bound its own decisions.
@@ -152,6 +189,9 @@ pub struct Shell {
     vfo_hz: u32,
     step_index: usize,
     step_cursor: usize,
+    settings_cursor: usize,
+    squelch: SquelchLevel,
+    squelch_cursor: u8,
 }
 
 impl Default for Shell {
@@ -178,7 +218,37 @@ impl Shell {
             vfo_hz: VFO_DEFAULT_HZ,
             step_index: 1,
             step_cursor: 1,
+            settings_cursor: 0,
+            squelch: SquelchLevel::CONSERVATIVE,
+            squelch_cursor: SquelchLevel::CONSERVATIVE.get(),
         }
+    }
+
+    /// Returns the radio-wide squelch level in force.
+    #[must_use]
+    pub const fn squelch(&self) -> SquelchLevel {
+        self.squelch
+    }
+
+    /// Adopts the squelch level a programmed configuration carries.
+    ///
+    /// A host write is the authority on this, so the handset menu shows what
+    /// the radio was last programmed with rather than its own stale copy.
+    pub fn set_squelch(&mut self, squelch: SquelchLevel) {
+        self.squelch = squelch;
+        self.squelch_cursor = squelch.get();
+    }
+
+    /// Returns the settings-menu cursor row.
+    #[must_use]
+    pub const fn settings_cursor(&self) -> usize {
+        self.settings_cursor
+    }
+
+    /// Returns the squelch-list cursor row.
+    #[must_use]
+    pub const fn squelch_cursor(&self) -> u8 {
+        self.squelch_cursor
     }
 
     /// Returns the source the operator is listening to.
@@ -326,9 +396,9 @@ impl Shell {
     /// Applies one debounced key press.
     pub fn press(&mut self, key: Key, now_ms: u32, context: Context) -> Intent {
         match key {
-            // Audio is not a mode the operator has to find, so side key one no
-            // longer routes it and has nothing else to do yet.
-            Key::Side1 => Intent::Idle,
+            // Audio is not a mode the operator has to find, so side key one
+            // opens the settings menu instead of routing it.
+            Key::Side1 => self.open_settings(),
             Key::Side2 => Intent::ToggleMonitor,
             // Receive-only: the image constructs no transmit path, so the
             // push-to-talk input cannot reach the radio.
@@ -411,8 +481,12 @@ impl Shell {
                 };
                 Intent::Redraw
             }
-            Screen::SourceList => self.step_row(direction, self.source_rows(), true),
-            Screen::StepList => self.step_row(direction, VFO_STEPS_HZ.len(), false),
+            Screen::SourceList => self.step_row(direction, self.source_rows(), Cursor::Source),
+            Screen::StepList => self.step_row(direction, VFO_STEPS_HZ.len(), Cursor::Step),
+            Screen::Settings => self.step_row(direction, SETTINGS.len(), Cursor::Settings),
+            Screen::SquelchList => {
+                self.step_row(direction, usize::from(SQUELCH_LEVELS), Cursor::Squelch)
+            }
             Screen::Info => Intent::Redraw,
         }
     }
@@ -421,12 +495,14 @@ impl Shell {
     ///
     /// Rows are drawn top to bottom in index order, so Up decrements: the
     /// highlight moves the way the key points.
-    fn step_row(&mut self, direction: Direction, rows: usize, source: bool) -> Intent {
+    fn step_row(&mut self, direction: Direction, rows: usize, which: Cursor) -> Intent {
         let last = rows.saturating_sub(1);
-        let cursor = if source {
-            &mut self.source_cursor
-        } else {
-            &mut self.step_cursor
+        let mut squelch_cursor = usize::from(self.squelch_cursor);
+        let cursor = match which {
+            Cursor::Source => &mut self.source_cursor,
+            Cursor::Step => &mut self.step_cursor,
+            Cursor::Settings => &mut self.settings_cursor,
+            Cursor::Squelch => &mut squelch_cursor,
         };
         *cursor = match direction {
             Direction::Up => {
@@ -444,6 +520,9 @@ impl Shell {
                 }
             }
         };
+        if matches!(which, Cursor::Squelch) {
+            self.squelch_cursor = u8::try_from(squelch_cursor).unwrap_or(0);
+        }
         Intent::Redraw
     }
 
@@ -472,6 +551,31 @@ impl Shell {
                 self.screen = Screen::Operating;
                 self.step_index = self.step_cursor;
                 Intent::Redraw
+            }
+            Screen::Settings => {
+                match SETTINGS.get(self.settings_cursor) {
+                    Some(Setting::Squelch) => {
+                        self.screen = Screen::SquelchList;
+                        self.squelch_cursor = self.squelch.get();
+                    }
+                    // A menu row with nothing behind it cannot open a screen the
+                    // operator would then be stuck on.
+                    None => self.screen = Screen::Operating,
+                }
+                Intent::Redraw
+            }
+            Screen::SquelchList => {
+                // Back to the operating screen rather than the menu: the point
+                // of changing squelch is to hear what it did.
+                self.screen = Screen::Operating;
+                let Ok(level) = SquelchLevel::new(self.squelch_cursor) else {
+                    return Intent::Redraw;
+                };
+                if level == self.squelch {
+                    return Intent::Redraw;
+                }
+                self.squelch = level;
+                Intent::SetSquelch(level)
             }
             Screen::Operating => {
                 // Each mode's list is the one the operator can act on: memory
@@ -510,11 +614,28 @@ impl Shell {
         if self.screen == Screen::Operating {
             return Intent::Idle;
         }
-        self.screen = Screen::Operating;
+        // Exit unwinds one step, so a value list returns to the menu that opened
+        // it rather than throwing the operator all the way out.
+        self.screen = if self.screen == Screen::SquelchList {
+            Screen::Settings
+        } else {
+            Screen::Operating
+        };
         Intent::Redraw
     }
 
     fn digit(&mut self, digit: u32, now_ms: u32, context: Context) -> Intent {
+        // On a settings screen a digit is a choice, not the start of a channel
+        // number or a frequency. The squelch levels are exactly the ten digits,
+        // so typing one picks it outright.
+        match self.screen {
+            Screen::SquelchList => {
+                self.squelch_cursor = u8::try_from(digit).unwrap_or(0);
+                return self.confirm(context);
+            }
+            Screen::Settings => return Intent::Idle,
+            _ => {}
+        }
         let mut entry = self.entry.unwrap_or(Entry {
             digits: 0,
             value: 0,
@@ -581,6 +702,22 @@ impl Shell {
         }
     }
 
+    /// Opens the settings menu, or closes it if it is already open.
+    ///
+    /// The menu opens on its first row every time. It is short and the operator
+    /// reached it from a dedicated key, so remembering where they were last
+    /// would hide the rest of it rather than save them a press.
+    fn open_settings(&mut self) -> Intent {
+        self.entry = None;
+        if matches!(self.screen, Screen::Settings | Screen::SquelchList) {
+            self.screen = Screen::Operating;
+            return Intent::Redraw;
+        }
+        self.screen = Screen::Settings;
+        self.settings_cursor = 0;
+        Intent::Redraw
+    }
+
     /// Opens the source list, or closes it if it is already open.
     ///
     /// The list opens on the source in use, so the operator can see whether the
@@ -629,7 +766,7 @@ mod tests {
     };
     use crate::configuration::MAX_BANKS;
     use crate::keypad::Key;
-    use radio_domain::BankId;
+    use radio_domain::{BankId, SquelchLevel};
 
     fn context(visible: u16, active: u16) -> Context {
         Context {
@@ -868,6 +1005,94 @@ mod tests {
         assert!(shell.vfo_hz() > before, "up tunes upwards");
     }
 
+    /// The operator can set squelch on the radio, not only from a host.
+    #[test]
+    fn the_settings_menu_changes_the_squelch_level_from_the_handset() {
+        let mut shell = Shell::new();
+        assert_eq!(shell.squelch(), SquelchLevel::CONSERVATIVE);
+
+        assert_eq!(shell.press(Key::Side1, 0, context(0, 0)), Intent::Redraw);
+        assert_eq!(shell.screen(), Screen::Settings);
+        assert_eq!(shell.settings_cursor(), 0);
+
+        assert_eq!(shell.press(Key::Menu, 10, context(0, 0)), Intent::Redraw);
+        assert_eq!(shell.screen(), Screen::SquelchList);
+        assert_eq!(
+            shell.squelch_cursor(),
+            SquelchLevel::CONSERVATIVE.get(),
+            "the list opens on the level in force"
+        );
+
+        shell.press(Key::Down, 20, context(0, 0));
+        shell.press(Key::Down, 21, context(0, 0));
+        assert_eq!(shell.squelch_cursor(), 5);
+        assert_eq!(
+            shell.press(Key::Menu, 30, context(0, 0)),
+            Intent::SetSquelch(SquelchLevel::new(5).expect("level"))
+        );
+        assert_eq!(shell.squelch(), SquelchLevel::new(5).expect("level"));
+        assert_eq!(
+            shell.screen(),
+            Screen::Operating,
+            "the operator is returned to where they can hear the effect"
+        );
+
+        // Choosing the level already in force changes nothing.
+        shell.press(Key::Side1, 40, context(0, 0));
+        shell.press(Key::Menu, 41, context(0, 0));
+        assert_eq!(shell.press(Key::Menu, 42, context(0, 0)), Intent::Redraw);
+        assert_eq!(shell.squelch(), SquelchLevel::new(5).expect("level"));
+
+        // A digit is the whole choice on this screen, not a channel number.
+        shell.press(Key::Side1, 50, context(0, 0));
+        shell.press(Key::Menu, 51, context(0, 0));
+        assert_eq!(
+            shell.press(Key::Digit0, 52, context(0, 0)),
+            Intent::SetSquelch(SquelchLevel::OPEN)
+        );
+        assert_eq!(shell.squelch(), SquelchLevel::OPEN);
+        assert_eq!(shell.entry(), None, "no channel number was ever started");
+    }
+
+    #[test]
+    fn the_settings_menu_unwinds_one_screen_at_a_time() {
+        let mut shell = Shell::new();
+        shell.press(Key::Side1, 0, context(0, 0));
+        shell.press(Key::Menu, 10, context(0, 0));
+        assert_eq!(shell.screen(), Screen::SquelchList);
+
+        shell.press(Key::Down, 20, context(0, 0));
+        assert_eq!(shell.press(Key::Exit, 30, context(0, 0)), Intent::Redraw);
+        assert_eq!(shell.screen(), Screen::Settings, "exit returns to the menu");
+        assert_eq!(
+            shell.squelch(),
+            SquelchLevel::CONSERVATIVE,
+            "a cancelled choice applies nothing"
+        );
+        assert_eq!(shell.press(Key::Exit, 40, context(0, 0)), Intent::Redraw);
+        assert_eq!(shell.screen(), Screen::Operating);
+
+        // The side key closes what it opened, from either screen.
+        shell.press(Key::Side1, 50, context(0, 0));
+        assert_eq!(shell.press(Key::Side1, 60, context(0, 0)), Intent::Redraw);
+        assert_eq!(shell.screen(), Screen::Operating);
+        shell.press(Key::Side1, 70, context(0, 0));
+        shell.press(Key::Menu, 71, context(0, 0));
+        assert_eq!(shell.press(Key::Side1, 80, context(0, 0)), Intent::Redraw);
+        assert_eq!(shell.screen(), Screen::Operating);
+    }
+
+    /// A host write is the authority on the level the menu shows.
+    #[test]
+    fn a_programmed_squelch_level_replaces_what_the_menu_shows() {
+        let mut shell = Shell::new();
+        shell.set_squelch(SquelchLevel::new(7).expect("level"));
+        assert_eq!(shell.squelch(), SquelchLevel::new(7).expect("level"));
+        shell.press(Key::Side1, 0, context(0, 0));
+        shell.press(Key::Menu, 10, context(0, 0));
+        assert_eq!(shell.squelch_cursor(), 7);
+    }
+
     #[test]
     fn the_source_list_closes_without_changing_the_source() {
         let mut shell = memory_shell(&[2, 5]);
@@ -908,7 +1133,10 @@ mod tests {
         let mut shell = memory_shell(&[0]);
         // Positions are drawn downwards, so the down key walks towards the last
         // channel and the up key walks back towards the first.
-        assert_eq!(shell.press(Key::Down, 10, context(4, 1)), Intent::SelectNext);
+        assert_eq!(
+            shell.press(Key::Down, 10, context(4, 1)),
+            Intent::SelectNext
+        );
         assert_eq!(
             shell.press(Key::Up, 20, context(4, 1)),
             Intent::SelectPrevious
@@ -1050,6 +1278,7 @@ mod tests {
                         | Intent::SetSource(_)
                         | Intent::TuneVfo
                         | Intent::ToggleMonitor
+                        | Intent::SetSquelch(_)
                 ));
             }
         }
