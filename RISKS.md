@@ -590,9 +590,9 @@
   never started. `AFIK-K1-4.0` did the same after a slot-budget change added 512
   bytes of statics, and cleared the then-4,096-byte scripted floor on its way to
   being flashed. The gate was not missing; it was set too low to catch either.
-- **Required experiment:** add a stack-headroom gate, for example a linker
-  assertion on `.bss` end against a reserved stack region, or a painted-stack
-  high-water measurement on the exact unit.
+- **Required experiment:** a painted-stack high-water measurement on the exact
+  unit. The linker assertion is now in place, so what remains open is knowing
+  what peak use actually is rather than guessing a floor above what has failed.
 
 ## RISK-034 — The squelch levels and the battery percentage are unverified
 

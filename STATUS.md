@@ -2,43 +2,33 @@
 
 ## Current work package
 
-**`PLAN-037` is software complete and unwritten: the channelised bank model is
-now genuinely shared and genuinely unbounded. The K1's 128-expanded-channel
-limit is gone — it was never a memory cost, because nothing is materialised, and
-it could silently discard an accepted write. What bounds a plan now is only the
-identifier packing, the selection index space, and the storage each device
-advertises. Expanded lookup and bank membership resolve from the packed
-identifier instead of walking, so a band-sized plan is cheap to filter as well as
-to store.
+**`PLAN-037` is software complete and written to the exact unit: the channelised
+bank model is now genuinely shared, genuinely unbounded, and held once. The
+K1's 128-expanded-channel limit is gone — it was never a memory cost, because
+nothing is materialised, and it could silently discard an accepted write. What
+bounds a plan now is the identifier packing, the selection index space, and the
+storage each device advertises. Expanded lookup and bank membership resolve from
+the packed identifier rather than by walking, so a band-sized plan is as cheap to
+filter as to store.
 
-A plan now names its channels the way a band plan does. `GeneratedBank` carries a
+A plan names its channels the way a band plan does. `GeneratedBank` carries a
 designator and a first number, so UK 2 m simplex expands to `S8` through `S23`
-rather than to a truncated bank name and a position; the studio keeps the full
-plan name as its own label. `ChannelFlags::CALLING` marks one index, named
-`S20 CALL`, and means the same on an explicit record. `LinearFixedOffset` is
-implemented, so a repeater sub-band is one stored object.
+while the studio keeps `2M SIMPLEX` as its own label. `ChannelFlags::CALLING`
+marks one index, named `S20 CALL`, and means the same on an explicit record.
+`LinearFixedOffset` is implemented, so a repeater sub-band is one stored object.
+The editor's claim that a stored channel cannot join a plan's bank was false and
+is corrected, with a test that builds the radio's own store from the editor's own
+validated objects and proves both give the same answer.
 
-Every preset is now plans: the UK and EU simplex set is forty channels in three
-stored objects against twelve channels in fifteen, and the airband is 760
-channels in one. The K1 slot budget moved from twelve channels and two plans to
-eight and six, because a plan slot costs about the same RAM and buys a whole
-band. Storage format version 3 carries all of it and rejects version 2, so the
-plan written to the exact unit under `EEPROM-035` must be written again.
+The radio no longer holds its configuration four times over. `Programmed` is an
+index of roughly ninety bytes whether the radio holds four channels or four
+thousand; the objects live once, encoded, and a record is decoded on the lookup
+that needs it. Static RAM fell from 10,988 bytes to 9,284, with 7,100 free.
 
-`AFIK-K1-4.0` is built, gated, and packaged. Nothing physical is claimed: no
-write, no boot, and no observation of any of this on the unit.**
-
-
-**`FIELD-036` is software complete and awaiting its physical confirmation: the
-first day of carrying the radio produced four faults and all four are fixed.
-The up key moves towards the first row on every screen instead of away from it;
-receive audio follows the tuned channel rather than a side key; the operator's
-squelch level now reaches the chip, gates the speaker, and is settable from a
-handset menu which stores what was chosen; and the operating screen shows the
-battery charge, which the radio has always been able to read and never did.
-`AFIK-K1-3.5` is built, gated, and packaged. Nothing physical is claimed: the
-squelch thresholds are AFIK's own and no level has been heard on air, and the
-battery percentage has never been compared against a meter (`RISK-034`).**
+Written over the repaired serial link: three generated-bank objects, 177 stored
+bytes, forty channels, read back at generation 1. `AFIK-K1-4.3` is built, gated,
+packaged and flashed. Nothing about the operator interface is observed: nobody
+has turned the radio to `S20 CALL` and seen it read 145.500000.**
 
 **`EEPROM-035` is complete and confirmed on the exact unit: a radio's channels
 and settings live in the external serial memory it already carries, and its
@@ -88,20 +78,58 @@ Run on the pinned environment, 2026-08-08:
 
 - `cargo fmt --all --check`: clean.
 - `cargo clippy --workspace --all-targets -- -D warnings`: clean.
-- `cargo test --workspace`: 50 test targets pass, 361 tests, 0 failures.
+- `cargo test --workspace`: 366 tests pass, 0 failures.
 - `tool/build-k1-async.sh --release`: builds.
 - `tool/verify-k1-async-image.sh`: 192 vector bytes, initial SP `0x20004000`,
-  Reset `0x080028c1`, required IRQ handlers present, static RAM 10,988 bytes
-  with 5,396 bytes of stack headroom. The 512-byte rise is the slot rebalance:
-  four explicit channel slots traded for four plan slots.
-- `tool/package-k1-async-image.sh --force`: `AFIK-K1-4.0`, 92,048 bytes,
-  CRC-32 `93db25e9`, SHA-256
-  `834813c31c00cebe2641a559fddc7859f9ada7857964f29fc0f3d093103c70ea`.
+  Reset `0x080028c1`, required IRQ handlers present, static RAM 9,284 bytes with
+  7,100 bytes of stack headroom.
+- `tool/package-k1-async-image.sh --force`: `AFIK-K1-4.3`, 84,120 bytes, CRC-32
+  `bfe9f80e`, SHA-256
+  `10e7a83cf127e7fb0675151a76f16a73e7ff3176b8a9b1dc696c8244fd1e4717`.
 
-Not run and not claimed: any physical write, boot, or observation of this image.
-The 2 m repeater sub-band shipped as a preset (`RV48` upwards from 145.600,
-inputs 600 kHz below) has no evidence entry and needs one before it is treated
-as authoritative rather than as a starting point the operator confirms.
+### Physical write and configuration, 2026-08-08
+
+`flash-afik-k1` wrote `AFIK-K1-4.3` over the auto-detected `/dev/ttyUSB0` at K1
+bootloader `7.03.01`: `329/329` pages acknowledged in transaction `5ec5fd10`,
+`status=acknowledged_not_read_back`, with no retained recovery image or EEPROM
+backup supplied. The image boots: the operator interface responds and the
+information screen reports its identity.
+
+`afik-programmer info` returns protocol 1, storage 3, 23 objects, 64-byte
+objects and plan encodings `0x0003`. `write` stored three generated banks —
+PMR446, UK 2 m simplex, UK 70 cm simplex — as 177 bytes expanding to forty
+channels, and `list` read them back at generation 1 as three 59-byte objects.
+
+Not observed: any channel on the display. The designator naming, the calling
+markers and the frequencies they derive have been asserted by tests and never
+seen on the unit.
+
+### Two corrections during this work
+
+`AFIK-K1-4.0` did not start. A slot rebalance added 512 bytes of statics and
+left 5,396 bytes of stack. `tool/verify-k1-async-image.sh` had checked a floor
+all along, at 4,096 bytes, so the image packaged and flashed without complaint —
+as `AFIK-K1-2.5` had before it. `RISK-033` described the gate as missing when it
+was merely set below every value that has ever failed. The floor is now 6,144
+bytes in the script and asserted at link time in
+`crates/radio-firmware-k1/stack-headroom.x`, confirmed to fire by raising it
+above the current headroom and watching the link fail.
+
+The application serial link had never worked, in any cable state. The radio
+heard every host frame and refused every one. Two explanations were offered and
+both were wrong: the stream decoder is delimiter-synchronised and cannot be
+poisoned, and the inherited clock reads 48 MHz whether the cable is attached
+through a power cycle or not, which divides to 38,400 exactly. A hello encodes
+to fourteen bytes and the radio received sixteen. Opening a USB serial port puts
+a byte or two on the line; frames were delimited only at the end, so the rubbish
+folded into the packet and failed its own decoder. The transport now sends a
+leading delimiter, which a receiver holding nothing ignores.
+
+What found it was counting rather than reasoning. `AFIK-K1-4.2` added a
+discarded-packet counter to the information screen beside the received and
+answered counts, because a frame heard and rejected was until then
+indistinguishable from a frame never received. One reading of `RX 16 TX 0 D 1`
+turned the fault from a theory into an arithmetic comparison of two lengths.
 
 ## FIELD-036 verification
 
@@ -155,6 +183,9 @@ levels and the battery percentage both need the experiments named in
 
 ## State
 
+- Work Package 37 the shared bank model, unbounded and held once: software
+  complete and written to the unit; the operator interface is unobserved.
+- Work Package 38 storage-shaped bounds and minimal plan encodings: not started.
 - Work Package 36 operator fixes from the first day of use: software complete;
   arrow direction, always-on audio, applied squelch with a handset menu, and
   the battery indicator. Physical confirmation pending.

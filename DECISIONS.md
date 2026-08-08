@@ -947,3 +947,64 @@ meaning.
   answered counters. Those counters distinguished a deaf interface from an
   unanswered frame in one power cycle, having previously cost several images of
   speculation.
+
+## ADR-062 — The radio holds its configuration once, encoded
+
+- **Date:** 2026-08-08
+- **Status:** accepted for `PLAN-037`
+- A generated plan does not materialise its channels. The radio nonetheless
+  materialised its whole configuration: the device service held it encoded in an
+  active and a candidate snapshot, `Programmed` held it again decoded, and that
+  decoded copy passed by value into the publication signal, the interface task
+  and the receive controller. The same channels occupied SRAM about four times.
+  Laziness stopped one level too low.
+- `Programmed` is now an index and holds no configuration — each stored
+  channel's identifier and bank mask, each plan's bank and channel count, which
+  identifiers a named bank defines, and the global receive settings. The objects
+  live once, encoded, in one shared snapshot.
+- Counting, bank filtering and scan navigation are answered from the index
+  alone, with no lock and no decode, because they only need to know how many
+  channels there are and which bank each belongs to. Only materialising a record
+  reaches the snapshot, once per channel actually shown or tuned.
+- The consequence is the point: object bounds size stored bytes and a small
+  index rather than a decoded cache. `MAX_CHANNELS` was a RAM decision and
+  should not have been. `ARENA-038` finishes the job by making declared bytes
+  the only bound.
+
+## ADR-063 — An encoding is declared, and costs what it is
+
+- **Date:** 2026-08-08
+- **Status:** accepted for `PLAN-037`, superseded in part by `ARENA-038`
+- `LinearFixedOffset` was added by giving `GeneratedBank` a transmit offset and
+  deriving the encoding from whether that offset is zero. That was wrong twice
+  over: every simplex plan now carries four bytes it never uses, and the
+  encoding became an inference from data rather than a declared property.
+- It survived review because a fixed 70-byte object slot charges a 55-byte plan
+  and a 59-byte plan the same, so the waste was invisible. That is the same
+  blindness the slot store imposes everywhere, and the reason to remove it.
+- The intended shape is a shared plan core with a per-encoding tail: nothing for
+  simplex, an offset for a repeater, a tone for a toned plan, a table for the
+  table encodings. Expansion stays one implementation, because names,
+  identifiers, membership and the template are all core and only the transmit
+  frequency consults the tail. `TableSimplex`, `TableMixedDuplex` and
+  `SparseExceptions` are variable length and cannot be expressed any other way
+  without sizing every plan for the worst case.
+
+## ADR-064 — Frames are delimited at both ends
+
+- **Date:** 2026-08-08
+- **Status:** accepted for `PLAN-037`
+- Frames are COBS packets terminated by a zero byte, and were delimited at the
+  end only. Opening a USB serial port puts a byte or two on the line as it
+  settles, so a receiver holds rubbish when the frame begins and the packet it
+  decodes is the rubbish and the frame together. It fails COBS, or its length,
+  or its CRC, and never becomes a request. A radio received sixteen bytes for a
+  fourteen-byte hello and refused every frame it was ever sent.
+- The transport sends a zero byte before each frame. A receiver holding
+  something decodes and discards it separately, then decodes the frame from a
+  clean start; a receiver holding nothing ignores it, because a delimiter with
+  an empty buffer is not a packet. The cost is one byte per frame.
+- The device decoder already recovered on the next delimiter and needed no
+  change. What was missing was a delimiter before the first frame rather than
+  after the last one.
+

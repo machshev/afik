@@ -1708,3 +1708,107 @@
 - **Remaining:** every physical claim. The squelch thresholds are AFIK's own and
   no level has been heard on air; the battery percentage has never been compared
   against a meter. Both experiments are named in `EVID-K1-063` and `RISK-034`.
+
+## PLAN-037 — The shared bank model, unbounded, and held once
+
+- **Status:** software complete (2026-08-08); written to the exact unit;
+  physical observation of the operator interface pending
+- **Objective:** answer whether the radio and the studio fully supported the
+  channelised bank model they were meant to share. They did not. Remove the
+  bound that was not a cost, name channels the way a band plan does, implement
+  the second arithmetic encoding, correct what the editor claimed about bank
+  membership, and stop the radio holding its configuration four times over.
+- **Scope:** `radio-channel-plan` designator and first-number naming,
+  `ChannelFlags::CALLING` and `GeneratedBank::calling_index`, the
+  `LinearFixedOffset` encoding derived from the transmit offset,
+  `generated_channel_parts` and `ChannelSource::member_at` so lookup and bank
+  filtering resolve arithmetically; storage format version 3; `Programmed` as an
+  index over one shared encoded snapshot; the K1 stack reserve; the studio's
+  membership claim and plan editors; the CLI bank spec tail; every preset as
+  plans; the leading frame delimiter in the serial transport.
+- **Exclusions:** the byte arena and per-encoding plan tails, which `ARENA-038`
+  carries; marine and business-radio presets, whose numbering is not arithmetic
+  and which need a table encoding rather than a linear plan; the 8.33 kHz
+  airband channel numbering for the same reason.
+- **Dependencies:** `PLAN-034`, `EEPROM-035`, `FIELD-036`.
+- **Tests required:** designator and calling-channel naming including the
+  length bound refused at construction; identifier unpacking; a repeater plan's
+  offset applied at both ends of its range; a band-sized plan accepted whole; a
+  stored channel selected beside a plan's channels under one bank filter, proved
+  by building the radio's own store from the editor's own validated objects;
+  every preset validating, compiling, and expanding to the designators a band
+  plan uses; the CLI spec tail including a preserved trailing space.
+- **Acceptance criteria:** no image bound on expanded channels; host and device
+  agree on bank membership by construction rather than by comment; the studio
+  and the CLI can write the same plan; workspace tests, Clippy, format and the
+  K1 image gates stay green.
+- **Result:** software complete. Bounds are now the eleven bits the identifier
+  packing has for an index, the `u16` selection space, and the storage each
+  device advertises. `Programmed` holds roughly ninety bytes whether the radio
+  holds four channels or four thousand; the objects live once, encoded, and a
+  record is decoded on the lookup that needs it. Static RAM fell from 10,988
+  bytes to 9,284 with 7,100 free.
+- **Written to the exact unit:** three generated-bank objects, 177 stored bytes,
+  forty channels, read back at generation 1. PMR446 as `PMR 1` to `PMR 16`, UK
+  2 m simplex as `S8` to `S23` with `S20 CALL`, UK 70 cm simplex as `SU16` to
+  `SU23` with `SU20 CALL`. The same set as explicit records is twelve channels
+  for 570 bytes.
+- **Image:** `AFIK-K1-4.3`, 84,120 bytes, CRC-32 `bfe9f80e`, Reset
+  `0x080028c1`, SHA-256
+  `10e7a83cf127e7fb0675151a76f16a73e7ff3176b8a9b1dc696c8244fd1e4717`.
+- **Corrections made during this work.** `AFIK-K1-4.0` did not start. A slot
+  rebalance added 512 bytes of statics and left 5,396 bytes of stack, and the
+  scripted floor which should have caught it was set at 4,096, so it packaged
+  and flashed without complaint. `RISK-033` had predicted exactly this and
+  described the gate as missing when it was merely too low. The floor is now
+  6,144 bytes and asserted at link time in `stack-headroom.x`, confirmed to fire
+  by raising it above the current headroom rather than by assumption.
+- **Second correction.** The application serial link had never worked. The radio
+  heard every frame and refused every one, and two theories about why — a
+  poisoned decoder and a wrong inherited clock — were both wrong; the inherited
+  clock is 48 MHz in every cable state and divides to 38,400 exactly. A hello
+  encodes to fourteen bytes and the radio received sixteen. Opening a USB serial
+  port puts a byte or two on the line, frames were delimited only at the end, and
+  the rubbish folded into the packet. The transport now sends a leading
+  delimiter. What found it was counting rather than reasoning: the discarded
+  counter added mid-investigation turned "bytes in, nothing out" into "a
+  complete packet was refused", and comparing sent against received length did
+  the rest.
+- **Remaining:** every physical claim about the operator interface. Nobody has
+  turned the radio to `S20 CALL` and seen it read 145.500000, and the derived
+  designator naming has been asserted by tests and never observed.
+
+## ARENA-038 — Storage-shaped bounds and minimal plan encodings
+
+- **Status:** not started
+- **Objective:** make stored bytes the only bound a radio declares, and charge
+  each plan encoding what it actually costs. `MAX_CHANNELS`, `MAX_BANKS`,
+  `MAX_GENERATED_BANKS` and `kind_limits` should stop existing.
+- **Scope:** replace the fixed `MAX_OBJECT_DATA` object slot with a packed byte
+  arena and a directory of `(key, offset, length)`; make `configuration_bytes`
+  the binding capability rather than a displayed one; split `GeneratedBank` into
+  a shared core and a per-encoding tail so a simplex plan stops carrying a
+  repeater's four bytes of offset and the declared encoding is a property rather
+  than an inference from a zero; a storage format bump carrying both.
+- **Rationale:** a `StorageObject` is 70 bytes whatever it holds — 42 for a
+  channel, 22 for a named bank, 16 for the configuration, 59 for a plan — so the
+  K1's active and candidate snapshots reserve 3,220 bytes to hold at most about
+  880. The remaining declared encodings make this necessary rather than merely
+  wasteful: `TableSimplex`, `TableMixedDuplex` and `SparseExceptions` are all
+  variable length, and a slot store must size every slot for the worst case.
+- **Dependencies:** `PLAN-037`.
+- **Assumptions:** the studio already computes stored bytes with the radio's own
+  encoders and already displays them against the advertised
+  `configuration_bytes`, so the host side becomes a constraint rather than a
+  new calculation. No protocol change is needed; `DeviceCapabilities` already
+  carries the field.
+- **Tests required:** arena compaction on replace and delete, including that a
+  failed transaction leaves the active bytes untouched; per-encoding round trips
+  at their own lengths; a project refused for bytes rather than for object
+  count; the K1 accepting whatever fits its advertised region.
+- **Acceptance criteria:** one declared number bounds a configuration; a simplex
+  plan encodes shorter than a repeater plan; no per-kind object limit survives.
+- **Risks:** compaction is a memmove of up to about a kilobyte inside a
+  transaction. Against an EEPROM page program measured in milliseconds that is
+  noise, but it is new and must be tested rather than assumed.
+

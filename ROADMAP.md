@@ -11,6 +11,12 @@
 9. Programmer GUI.
 10. Frequency Copy research.
 11. APRS receive feasibility and repeater discovery.
+12. Target bring-up, host-programmed configuration, and the operator shell on
+    the exact K1 unit.
+13. The channelised bank model as the stored form, shared without deviation
+    between the radio and the studio.
+14. Storage-shaped bounds: a byte arena, per-encoding plan tails, and the
+    remaining table encodings.
 
 Later work packages must not begin until the current package's exit criteria
 in `STATUS.md` are met or explicitly revised in `DECISIONS.md`.
