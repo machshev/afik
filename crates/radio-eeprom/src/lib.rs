@@ -36,11 +36,19 @@ pub const ERASED_BYTE: u8 = 0xFF;
 /// First address AFIK may claim.
 ///
 /// The radio's own firmware maps its channels, names, settings, calibration,
-/// and boot logo into the bottom of this device; the pinned reference build
-/// reaches approximately `0xD000`. This bound is the next whole 64 KiB above
-/// that, so a claimed region cannot overlap anything that firmware uses even if
-/// a later build grows into the rest of its map.
-pub const VENDOR_RESERVED_BYTES: u32 = 0x1_0000;
+/// and boot logo into the bottom of this device. `EVID-K1-064` records the
+/// addresses the pinned reference build actually reads and writes: settings
+/// around `0x00A000`, a calibration block at `0x010000` holding the RSSI,
+/// transmit-power, battery, VOX, and miscellaneous entries through `0x010190`,
+/// and a whole boot-logo sector at `0x011000`.
+///
+/// This bound was `0x1_0000`, which was wrong: it sat below the calibration
+/// block and the logo sector, so a region claimed at exactly that address would
+/// have been accepted and its erase would have destroyed this unit's battery
+/// and RSSI calibration. It is now the next whole 64 KiB above everything the
+/// pinned build touches, so a claimed region cannot overlap that map even if a
+/// later build grows into the rest of it.
+pub const VENDOR_RESERVED_BYTES: u32 = 0x2_0000;
 
 /// Command opcodes this driver issues.
 mod command {
@@ -627,6 +635,33 @@ mod tests {
             Err(RegionError::VendorReserved)
         );
         assert!(Region::new(VENDOR_RESERVED_BYTES, SECTOR_BYTES).is_ok());
+
+        // Every address the pinned reference build reads or writes must be
+        // inside the guarded area. The bound used to sit below the calibration
+        // block, so a region claimed at 0x10000 was accepted and its erase would
+        // have destroyed this unit's battery and RSSI calibration. See
+        // `EVID-K1-064`.
+        for vendor in [
+            0x00_A008, // settings
+            0x00_A0C8, // boot logo lines
+            0x01_0000, // calibration block
+            0x01_00D0, // transmit power table
+            0x01_0140, // battery calibration
+            0x01_0188, // miscellaneous state
+            0x01_1000, // boot logo sector
+            0x01_1FFF, // end of the boot logo sector
+        ] {
+            assert!(
+                vendor < VENDOR_RESERVED_BYTES,
+                "0x{vendor:06x} is vendor data and must be outside anything AFIK can claim"
+            );
+            let sector = vendor / SECTOR_BYTES * SECTOR_BYTES;
+            assert_eq!(
+                Region::new(sector, SECTOR_BYTES),
+                Err(RegionError::VendorReserved),
+                "a region claimed over 0x{vendor:06x} must be refused"
+            );
+        }
 
         assert_eq!(
             Region::new(0x10_0000 + 1, SECTOR_BYTES),

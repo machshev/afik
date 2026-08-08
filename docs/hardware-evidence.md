@@ -1788,3 +1788,37 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   against a meter across the pack at a charged and a part-discharged state, and
   confirm the indicator falls monotonically over a discharge. Until that is
   done the percentage is unverified on this radio.
+
+### EVID-K1-064 — Extent of the vendor's external-memory map on the K1
+
+- **Source:** `armel/uv-k1-k5v3-firmware-custom` at the pinned commit
+  `fe9c4e9432694b50aea651084a043aae0b58673d`, every `PY25Q16_ReadBuffer` and
+  `PY25Q16_WriteBuffer` call site: `App/settings.c`, `App/radio.c`, and
+  `App/ui/welcome.c`.
+- **Addresses used:** settings and the boot-logo line data from `0x00A008`
+  through `0x00A160`; a calibration block based at `0x010000` holding the RSSI
+  calibration at `+0xC0` and `+0xC8`, the per-band transmit-power table at
+  `0x0100D0`, the battery calibration at `+0x140`, the VOX thresholds at
+  `+0x150` and `+0x168`, and miscellaneous retained state at `+0x188`; and a
+  whole boot-logo sector at `LOGO_FLASH_ADDR` `0x011000`, which the welcome
+  screen reads a status line and a full framebuffer out of.
+- **Highest address touched:** the end of the boot-logo sector, `0x012000`.
+- **Correction this forced:** `radio-eeprom` guarded only below `0x010000`,
+  which is the first address of the calibration block rather than the last
+  address of the vendor's map. A region claimed at exactly `0x010000` was
+  therefore accepted, and its erase-before-write would have destroyed this
+  unit's battery calibration, RSSI calibration, transmit-power table, VOX
+  thresholds, and boot logo. No AFIK build ever claimed such a region: the K1
+  image claims `0x100000`, so nothing was written and no unit was damaged. The
+  bound is now `0x020000`.
+- **Second correction:** the same wrong bound made the read-only vendor path
+  refuse the battery calibration at `0x010140`, which is why `AFIK-K1-3.5`
+  reported `BAT ---%` on the exact unit rather than a charge.
+- **Confidence:** high for the addresses, which are literal constants at their
+  call sites in a working implementation for this board. The map is not
+  necessarily complete: it covers what this build touches, not everything the
+  factory tooling may have written, which is why the bound is rounded up to the
+  next whole 64 KiB rather than set to `0x012000`.
+- **Permitted use:** cite as the reason AFIK claims no external-memory region
+  below `0x020000` and as the source of the battery calibration address. AFIK
+  reads the battery calibration and writes nothing in this range.

@@ -25,10 +25,11 @@ use crate::eeprom_bus::{EepromPort, SpiEepromBus};
 /// First address of the region AFIK claims for its configuration.
 ///
 /// The radio's own firmware maps its channels, names, settings, calibration,
-/// and boot logo into the bottom of this device, reaching approximately
-/// `0xD000`. One megabyte is half of the evidenced part and far above anything
-/// that map can grow into, so an AFIK configuration and the vendor's data
-/// cannot meet. `radio-eeprom` refuses a region below its own bound as well.
+/// and boot logo into the bottom of this device, reaching `0x012000` at the end
+/// of its boot-logo sector; `EVID-K1-064` lists the addresses. One megabyte is
+/// half of the evidenced part and far above anything that map can grow into, so
+/// an AFIK configuration and the vendor's data cannot meet. `radio-eeprom`
+/// refuses a region below its own bound as well.
 pub const CONFIGURATION_ORIGIN: u32 = 0x10_0000;
 /// Bytes claimed for the configuration, one erase sector.
 pub const CONFIGURATION_BYTES: u32 = 4_096;
