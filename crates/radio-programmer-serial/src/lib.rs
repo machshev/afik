@@ -163,6 +163,20 @@ impl ProtocolTransport for LinuxSerialTransport {
     type Error = io::Error;
 
     fn send(&mut self, frame: &[u8]) -> Result<(), Self::Error> {
+        // A leading delimiter before every frame.
+        //
+        // Frames are COBS packets terminated by a zero byte, so a receiver
+        // which has accumulated anything before the frame starts folds that
+        // rubbish into the packet and rejects the whole thing. Opening a USB
+        // serial port puts a byte or two on the line as it settles, and a radio
+        // counted sixteen bytes arriving for a fourteen-byte hello and refused
+        // every one of them.
+        //
+        // A zero byte flushes whatever the receiver was holding: it decodes and
+        // discards that separately, then decodes this frame from a clean start.
+        // A receiver holding nothing ignores it, because a delimiter with an
+        // empty buffer is not a packet.
+        Write::write_all(self, &[0])?;
         Write::write_all(self, frame)?;
         Write::flush(self)
     }
