@@ -41,6 +41,7 @@ use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, SquelchLevel,
     Tone, TxClass,
 };
+use radio_firmware_k1::battery::{Battery, Calibration};
 use radio_firmware_k1::bk4819_bus::ThreeWireBus;
 use radio_firmware_k1::configuration::{
     device_service, store_squelch, Programmed, MAX_CHANNELS, MAX_GENERATED_BANKS,
@@ -52,6 +53,7 @@ use radio_firmware_k1::display::{
     FRAME_BYTES, LIST_ROWS, PAGES, SETUP_COMMANDS, WIDTH,
 };
 use radio_firmware_k1::keypad::{decode, Debouncer, Edge, KeypadScan, Sample};
+use radio_firmware_k1::py32f071_battery::BatterySense;
 use radio_firmware_k1::py32f071_bk4819::Bk4819Pins;
 use radio_firmware_k1::py32f071_eeprom::{RetainError, RetainedConfiguration, CONFIGURATION_BYTES};
 use radio_firmware_k1::py32f071_runtime::{compose, K1RuntimePeripherals};
@@ -79,6 +81,13 @@ const RF_SAMPLE_MILLISECONDS: u64 = 60;
 /// Shortest interval between redraws caused by a changed meter reading.
 const METER_REDRAW_MILLISECONDS: u64 = 300;
 
+/// Seconds between battery conversions.
+///
+/// A pack discharges over hours, so this is about how quickly the operator
+/// should see a fresh pack after a battery change rather than about tracking
+/// the discharge itself.
+const BATTERY_SAMPLE_SECONDS: u64 = 2;
+
 /// Milliseconds the radio bus stays idle after the last serial byte.
 ///
 /// The three-wire bus is bit-banged and blocks the executor for milliseconds,
@@ -91,6 +100,13 @@ static LINK_QUIET_UNTIL: AtomicU32 = AtomicU32::new(0);
 
 /// Latest configuration the serial task activated.
 static PROGRAMMED: Signal<CriticalSectionRawMutex, Publication> = Signal::new();
+
+/// The battery calibration the serial task read from the vendor block.
+///
+/// The external memory is on the serial task's bus, so it reads the calibration
+/// once and hands it over. Until it does, the interface reports that it does not
+/// know the charge rather than a number derived from nothing.
+static BATTERY_CALIBRATION: Signal<CriticalSectionRawMutex, Option<Calibration>> = Signal::new();
 
 /// Squelch level the operator chose on the handset.
 ///
@@ -207,7 +223,13 @@ fn main() -> ! {
         ) else {
             fail_closed();
         };
-        let Ok(ui) = ui_task(display, keypad, radio_pins, p.PA8) else {
+        let Ok(ui) = ui_task(
+            display,
+            keypad,
+            radio_pins,
+            p.PA8,
+            BatterySense::new(p.ADC1, p.PB0),
+        ) else {
             fail_closed();
         };
         spawner.spawn(serial);
@@ -549,6 +571,14 @@ async fn serial_task(mut uart: Uart<'static, Async>, memory: EepromPins) {
         }
     });
 
+    // The calibration is the radio's own data and never changes, so it is read
+    // once, here, while the bus is already in hand.
+    BATTERY_CALIBRATION.signal(
+        retained
+            .as_mut()
+            .and_then(RetainedConfiguration::read_battery_calibration),
+    );
+
     // Restore the retained configuration before the host or the operator can
     // see this radio. A missing, erased, or corrupt region simply leaves the
     // store empty and the built-in channels in charge.
@@ -722,6 +752,7 @@ async fn ui_task(
     mut keypad: KeypadPins,
     radio_pins: Bk4819Pins,
     speaker_pin: PA8,
+    mut battery_sense: BatterySense,
 ) {
     let mut frame = [0_u8; FRAME_BYTES];
     render_info_screen(
@@ -767,6 +798,8 @@ async fn ui_task(
     let mut debounce = Debouncer::new();
     let mut next_sample = Instant::now();
     let mut next_meter_redraw = Instant::now();
+    let mut battery = Battery::new();
+    let mut next_battery_sample = Instant::now();
     let mut redraw = true;
 
     loop {
@@ -776,6 +809,23 @@ async fn ui_task(
                 visible_channels: controller.visible_channels(),
                 active_index: controller.visible_position(),
             });
+
+        if let Some(calibration) = BATTERY_CALIBRATION.try_take() {
+            battery.calibrate(calibration);
+        }
+
+        // The converter is on no shared bus, so this needs no quiet link and
+        // costs one short blocking conversion. A pack discharges over hours;
+        // sampling it every couple of seconds is already generous, and the
+        // first full set of samples is what the indicator waits for.
+        if Instant::now() >= next_battery_sample {
+            let previous = battery.percent();
+            battery.sample(battery_sense.read());
+            next_battery_sample = Instant::now() + Duration::from_secs(BATTERY_SAMPLE_SECONDS);
+            if battery.percent() != previous {
+                redraw = true;
+            }
+        }
 
         if let Some(publication) = PROGRAMMED.try_take() {
             generation = publication.generation;
@@ -889,6 +939,7 @@ async fn ui_task(
                 &shell,
                 activation.as_ref().map(|(controller, _)| controller),
                 &receiver,
+                battery.percent(),
                 &programmed,
                 generation,
                 retained,
@@ -911,6 +962,7 @@ fn render(
         &BankedReceiveController<ProgrammedMemory<MAX_CHANNELS, MAX_GENERATED_BANKS>>,
     >,
     receiver: &Receiver,
+    battery_percent: Option<u8>,
     programmed: &Programmed,
     generation: u32,
     retained: bool,
@@ -944,7 +996,7 @@ fn render(
                 frequency_hz: receiver.frequency_hz,
                 rssi_raw: receiver.rssi_raw,
                 squelch_open: receiver.squelch_open,
-                audio_routed: receiver.audio_routed,
+                battery_percent,
                 monitoring: controller.is_some_and(BankedReceiveController::is_monitoring),
                 bank: filter.map(|bank| BankIndicator {
                     id: bank.get(),

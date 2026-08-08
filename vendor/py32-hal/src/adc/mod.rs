@@ -146,6 +146,15 @@ macro_rules! impl_adc_pin {
     };
 }
 
+// The generated F071 metadata carries no analogue pin table, so no channel
+// implementation is produced for this part and the converter would be unusable.
+// AFIK declares the one channel it has evidence for: the pinned K1 board
+// initialisation sets PB0 to analogue mode and selects converter channel eight
+// for the battery divider. See `EVID-K1-063`. No other channel is declared,
+// because no other pin's analogue function has been established.
+#[cfg(py32f071)]
+impl_adc_pin!(ADC1, PB0, 8);
+
 /// Get the maximum reading value for this resolution.
 ///
 /// This is `2**n - 1`.

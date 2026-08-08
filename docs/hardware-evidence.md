@@ -1735,3 +1735,56 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
 - **Confidence:** high for retention and exact restoration of a multi-page
   configuration on this unit. Wear behaviour and the erase-before-write boundary
   under power loss remain unobserved; the latter is `RISK-004`.
+
+### EVID-K1-063 — K1 battery sense path, calibration, and discharge curve
+
+- **Source:** `armel/uv-k1-k5v3-firmware-custom` at the pinned commit
+  `fe9c4e9432694b50aea651084a043aae0b58673d`: `App/board.c`,
+  `App/helper/battery.c`, `App/settings.c`, `App/CMakeLists.txt`, and
+  `Drivers/PY32F071_HAL_Driver`. The operator designated this source
+  authoritative for register values and pinout where primary documentation is
+  silent.
+- **Sense input:** `BOARD_ADC_Init` enables `GPIOB`, sets `PB0` and `PB1` to
+  analogue mode, enables `ADC1`, selects the ADC clock as `PCLK/4`, twelve-bit
+  resolution, right-aligned data, scan disabled, software trigger, single
+  conversion, no DMA, and sets regular sequencer rank one to
+  `LL_ADC_CHANNEL_8` with a 41.5-cycle sampling time. It then calibrates and
+  enables the converter. `PB1` is set to analogue mode but no channel is
+  assigned to it, so AFIK claims nothing about it.
+- **Reading:** `BOARD_ADC_GetBatteryInfo` starts one software conversion, waits
+  for end-of-sequence, and returns the twelve-bit result as the voltage. It
+  returns a constant zero for current, so the pinned firmware measures no
+  charging current on this board and neither does AFIK.
+- **Converter model:** the Puya `PY32F071` LL header uses `CR2` with `CAL`,
+  `SQR3` regular ranks, and `SMPR3` sampling times, which is the register model
+  the vendored `py32-metapac` selects as `adc_v2` for this part, and its
+  `CYCLES41_5` encoding matches `LL_ADC_SAMPLINGTIME_41CYCLES_5` exactly.
+  `ADC_PRECALIBRATION_DELAY_ADCCLOCKCYCLES` is `2` in
+  `py32f071_hal_adc_ex.c:73`, the same value the vendored HAL already carries
+  for the F072, so enabling that driver for the F071 introduces no new constant.
+- **Calibration:** `SETTINGS_InitEEPROM` reads six half-words from the external
+  memory at `0x010000 + 0x140` into `gBatteryCalibration`. Entry three is the
+  count the sense input reads at 7.60 V: `BATTERY_GetReadings` computes
+  `average * 760 / gBatteryCalibration[3]` in hundredths of a volt from a
+  rolling four-conversion average. This is per-unit data, is below the region
+  AFIK claims at `0x100000`, and AFIK reads it without a region so it can never
+  be written.
+- **Discharge curve:** `Voltage2PercentageTable` holds one piecewise-linear
+  curve per battery type. The 1500 mAh K1 entry is `{828,100}, {813,97},
+  {758,25}, {726,6}, {630,0}` in hundredths of a volt and percent, and the
+  source comments it as an estimated curve to be improved. `BATTERY_VoltsToPercent`
+  interpolates linearly between adjacent points and clamps to 0..100. Below
+  630 the pinned firmware declares the pack critical and reduces service.
+- **AFIK boundary:** AFIK selects the 1500 mAh curve because it cannot read
+  which pack is fitted, and reports no charge at all when the calibration is
+  absent, erased, or outside the converter's range. The percentage is therefore
+  an estimate from an estimated curve; it is a warning that the pack is going,
+  not a measurement of energy remaining.
+- **Confidence:** high for the sense pin, channel, converter configuration,
+  calibration location, and scale, all of which come directly from a working
+  implementation on this board. Medium for the curve, which the pinned source
+  itself marks estimated. No AFIK conversion has yet been observed on hardware.
+- **Required experiment:** on the exact unit, compare the reported voltage
+  against a meter across the pack at a charged and a part-discharged state, and
+  confirm the indicator falls monotonically over a discharge. Until that is
+  done the percentage is unverified on this radio.

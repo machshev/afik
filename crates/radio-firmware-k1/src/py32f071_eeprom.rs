@@ -18,6 +18,7 @@ use py32_hal::spi::{Error as SpiError, Spi};
 use radio_eeprom::{page_span, Eeprom, EepromError, JedecId, Region, RegionError};
 use radio_storage::{configuration_image_len_from_header, CONFIGURATION_IMAGE_HEADER_LEN};
 
+use crate::battery::{Calibration, CALIBRATION_ADDRESS, CALIBRATION_BYTES};
 use crate::configuration::RETAINED_IMAGE_BYTES;
 use crate::eeprom_bus::{EepromPort, SpiEepromBus};
 
@@ -131,6 +132,21 @@ impl RetainedConfiguration {
         } else {
             Err(RetainError::Absent(id))
         }
+    }
+
+    /// Reads the radio's own battery calibration, if it holds a usable one.
+    ///
+    /// This is the one thing AFIK reads from the vendor's data: without the
+    /// count the sense input reads at a known voltage, a conversion is a number
+    /// and not a battery level. The read takes no region, so it cannot become a
+    /// write, and a memory which does not answer simply leaves the radio without
+    /// a battery reading.
+    pub fn read_battery_calibration(&mut self) -> Option<Calibration> {
+        let mut block = [0_u8; CALIBRATION_BYTES];
+        self.eeprom
+            .read_vendor(CALIBRATION_ADDRESS, &mut block)
+            .ok()?;
+        Calibration::from_vendor_block(&block)
     }
 
     /// Reads a retained image into `buffer` and returns its exact length.

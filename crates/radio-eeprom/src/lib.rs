@@ -295,6 +295,32 @@ impl<B: NorBus> Eeprom<B> {
             .map_err(EepromError::Bus)
     }
 
+    /// Reads bytes the radio's own firmware wrote, below the claimable regions.
+    ///
+    /// Some facts about a unit are only recorded in the vendor's own data, and
+    /// its battery calibration is one of them: without it a voltage reading is
+    /// counts, not volts. This therefore exists, and is deliberately read-only
+    /// and takes no [`Region`]. A region is the thing that grants write access,
+    /// so a read which cannot obtain one cannot be turned into a write, and
+    /// there is no vendor-addressed erase or program to pair with this.
+    pub fn read_vendor(
+        &mut self,
+        address: u32,
+        buffer: &mut [u8],
+    ) -> Result<(), EepromError<B::Error>> {
+        if buffer.is_empty() {
+            return Ok(());
+        }
+        let len = u32::try_from(buffer.len()).map_err(|_| EepromError::OutOfRange)?;
+        match address.checked_add(len) {
+            Some(end) if end <= VENDOR_RESERVED_BYTES => {}
+            _ => return Err(EepromError::OutOfRange),
+        }
+        self.bus
+            .transfer(&read_header(address), &[], buffer)
+            .map_err(EepromError::Bus)
+    }
+
     /// Erases every sector of one claimed region.
     pub fn erase(&mut self, region: Region) -> Result<(), EepromError<B::Error>> {
         for sector in 0..region.sectors() {

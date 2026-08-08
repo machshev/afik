@@ -213,8 +213,8 @@ pub struct OperatingView<'a> {
     pub rssi_raw: u16,
     /// Whether the carrier squelch link is open.
     pub squelch_open: bool,
-    /// Whether demodulated audio is routed to the speaker.
-    pub audio_routed: bool,
+    /// Remaining battery charge, absent until the radio has a reading.
+    pub battery_percent: Option<u8>,
     /// Whether the squelch override is held open.
     pub monitoring: bool,
     /// Active bank filter, if any.
@@ -419,19 +419,35 @@ pub fn render_operating_screen(frame: &mut [u8; FRAME_BYTES], view: &OperatingVi
             b"SQ SHUT"
         },
     );
-    draw_text(
-        frame,
-        0,
-        55,
-        if view.audio_routed {
-            b"AUDIO ON "
-        } else {
-            b"AUDIO OFF"
-        },
-    );
+    draw_text(frame, 0, 55, &battery_label(view.battery_percent));
     if view.monitoring {
         draw_text(frame, WIDTH - 3 * 6, 55, b"MON");
     }
+}
+
+/// Columns the battery indicator occupies.
+pub const BATTERY_LABEL_BYTES: usize = 8;
+
+/// Renders the battery indicator.
+///
+/// A radio which does not know its charge says so rather than showing a
+/// plausible number, because the whole point of the indicator is to be trusted
+/// when it says the pack is nearly flat.
+#[must_use]
+pub fn battery_label(percent: Option<u8>) -> [u8; BATTERY_LABEL_BYTES] {
+    let mut label = *b"BAT ---%";
+    let Some(percent) = percent else {
+        return label;
+    };
+    let percent = percent.min(100);
+    if percent == 100 {
+        label[4..7].copy_from_slice(b"100");
+        return label;
+    }
+    label[4] = b' ';
+    label[5] = b'0' + percent / 10;
+    label[6] = b'0' + percent % 10;
+    label
 }
 
 /// Produces the scrollable channel list.
@@ -1025,7 +1041,7 @@ mod operating_screen_tests {
             frequency_hz: 145_500_000,
             rssi_raw: 148,
             squelch_open: false,
-            audio_routed: false,
+            battery_percent: Some(87),
             monitoring: false,
             bank: None,
             entry: None,
@@ -1037,6 +1053,23 @@ mod operating_screen_tests {
         let mut frame = [0xFF_u8; FRAME_BYTES];
         render_operating_screen(&mut frame, view);
         frame
+    }
+
+    /// An indicator is only useful if it is believed when it says nearly flat.
+    #[test]
+    fn the_battery_indicator_says_when_it_does_not_know() {
+        use super::battery_label;
+
+        assert_eq!(&battery_label(None), b"BAT ---%");
+        assert_eq!(&battery_label(Some(0)), b"BAT  00%");
+        assert_eq!(&battery_label(Some(7)), b"BAT  07%");
+        assert_eq!(&battery_label(Some(87)), b"BAT  87%");
+        assert_eq!(&battery_label(Some(100)), b"BAT 100%");
+        assert_eq!(
+            &battery_label(Some(200)),
+            b"BAT 100%",
+            "a reading past full is clamped, not rendered as nonsense"
+        );
     }
 
     #[test]
@@ -1055,7 +1088,11 @@ mod operating_screen_tests {
                 ..view()
             },
             OperatingView {
-                audio_routed: true,
+                battery_percent: Some(12),
+                ..view()
+            },
+            OperatingView {
+                battery_percent: None,
                 ..view()
             },
             OperatingView {

@@ -29,6 +29,7 @@ py32f071-usart1 = [
 py32f071-spi1 = ["py32f071-hal-inventory"]
 py32f071-eeprom = ["py32f071-hal-inventory", "dep:embassy-time"]
 py32f071-bk4819 = ["py32f071-hal-inventory", "dep:cortex-m"]
+py32f071-battery = ["py32f071-hal-inventory"]
 py32f071-runtime-composition = [
     "embassy-runtime",
     "py32f071-usart1",
@@ -42,6 +43,7 @@ py32f071-runtime-init = [
 async-firmware = [
     "py32f071-runtime-init",
     "py32f071-bk4819",
+    "py32f071-battery",
     "py32f071-eeprom",
     "dep:embassy-time",
     "dep:embassy-sync",

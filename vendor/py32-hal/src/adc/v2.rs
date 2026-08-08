@@ -89,7 +89,7 @@ pub enum Prescaler {
 
 impl Prescaler {
     fn from_pclk(freq: Hertz) -> Self {
-        #[cfg(py32f072)]
+        #[cfg(any(py32f071, py32f072))]
         const MAX_FREQUENCY: Hertz = Hertz(16_000_000);
         let raw_div = freq.0 / MAX_FREQUENCY.0;
         match raw_div {
@@ -320,7 +320,9 @@ where
 
         let adc_clock_mhz = 72_u32; // MAX
         let cpu_clock_mhz = unsafe { rcc::get_freqs() }.sys.to_hertz().unwrap().0 / 1_000_000;
-        #[cfg(py32f072)]
+        // `ADC_PRECALIBRATION_DELAY_ADCCLOCKCYCLES` is 2 in the Puya F071 and
+        // F072 HAL alike; see `EVID-K1-063`.
+        #[cfg(any(py32f071, py32f072))]
         let precalibration_cycles = 2_u32;
 
         let delay_us = (precalibration_cycles * adc_clock_mhz) / cpu_clock_mhz;

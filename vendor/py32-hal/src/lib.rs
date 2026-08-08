@@ -34,7 +34,6 @@ pub mod mode {
     impl_mode!(Async);
 }
 
-#[cfg(not(py32f071))]
 pub mod adc;
 #[cfg(dma)]
 pub mod dma;

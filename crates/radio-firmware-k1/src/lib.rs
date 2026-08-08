@@ -7,6 +7,7 @@ extern crate std;
 
 pub mod aux_inputs;
 pub mod backlight;
+pub mod battery;
 pub mod bk4819_bus;
 pub mod clock_handoff;
 pub mod configuration;
@@ -18,6 +19,8 @@ pub mod eeprom_bus;
 pub mod embassy_runtime;
 pub mod keypad;
 pub mod protocol;
+#[cfg(feature = "py32f071-battery")]
+pub mod py32f071_battery;
 #[cfg(feature = "py32f071-bk4819")]
 pub mod py32f071_bk4819;
 #[cfg(feature = "py32f071-clock-handoff")]
