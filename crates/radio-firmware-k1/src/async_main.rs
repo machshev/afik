@@ -70,7 +70,7 @@ const _: [(); 8] = [(); PAGES];
 const K1_VECTOR_TABLE_ORIGIN: u32 = 0x0800_2800;
 
 /// Identity this image reports on the information screen.
-const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-4.2";
+const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-4.3";
 
 /// Interval between receive samples while audio is routed.
 ///
@@ -135,6 +135,15 @@ fn now_ms() -> u32 {
 static SERIAL_RECEIVED: AtomicU32 = AtomicU32::new(0);
 /// Frames the serial task has answered, for the information screen.
 static SERIAL_ANSWERED: AtomicU32 = AtomicU32::new(0);
+/// Peripheral clock this image inherited, in kilohertz.
+///
+/// The image does not configure the clock; `init_inherited` adopts whatever the
+/// bootloader left in the RCC, and every baud rate is derived from it. It is
+/// published here so the information screen can show what the radio believes,
+/// because a wrong inheritance is otherwise visible only as a serial link which
+/// hears bytes and rejects every packet.
+static PERIPHERAL_CLOCK_KHZ: AtomicU32 = AtomicU32::new(0);
+
 /// Complete packets the serial task rejected as malformed.
 ///
 /// The device service reports these to an observer, and this image discarded
@@ -169,6 +178,7 @@ fn main() -> ! {
     let Ok(runtime_init) = init() else {
         fail_closed();
     };
+    PERIPHERAL_CLOCK_KHZ.store(runtime_init.clocks.pclk1_hz() / 1_000, Ordering::Relaxed);
     let p = runtime_init.peripherals;
     let Ok(runtime) = compose(K1RuntimePeripherals {
         usart: p.USART1,
@@ -840,6 +850,7 @@ async fn ui_task(
         false,
         MemoryState::Unknown,
         serial_counters(),
+        PERIPHERAL_CLOCK_KHZ.load(Ordering::Relaxed),
     );
     if !display.initialise().await || !display.frame(&frame).await {
         fail_closed();
@@ -1197,6 +1208,7 @@ fn render(
             retained,
             memory,
             serial_counters(),
+            PERIPHERAL_CLOCK_KHZ.load(Ordering::Relaxed),
         ),
     }
 }

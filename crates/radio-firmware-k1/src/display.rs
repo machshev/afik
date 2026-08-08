@@ -537,6 +537,7 @@ pub fn render_selector_list(
 /// This is the display-side witness for a flashed image: the identity string,
 /// the active configuration generation the host programmed, and whether that
 /// configuration was restored from the radio's own retained storage.
+#[allow(clippy::too_many_arguments)]
 pub fn render_info_screen(
     frame: &mut [u8; FRAME_BYTES],
     identity: &[u8],
@@ -545,16 +546,27 @@ pub fn render_info_screen(
     retained: bool,
     memory: MemoryState,
     serial: SerialCounters,
+    peripheral_clock_khz: u32,
 ) {
     frame.fill(0);
     let width = identity.len() * 6;
     draw_text(frame, WIDTH.saturating_sub(width) / 2, 0, identity);
 
-    let mut generation_label = *b"GEN 0000000000";
+    // The peripheral clock sits beside the generation because this image does
+    // not configure the clock, it inherits whatever the bootloader left. Every
+    // baud rate is derived from this number, so a serial link which hears bytes
+    // and rejects every packet is asking to be told what the radio thinks its
+    // clock is.
+    let mut generation_label = *b"GEN000000 CLK00000";
     let mut value = generation;
-    for index in (4..14).rev() {
+    for index in (3..9).rev() {
         generation_label[index] = b'0' + u8::try_from(value % 10).unwrap_or(0);
         value /= 10;
+    }
+    let mut clock = peripheral_clock_khz;
+    for index in (13..18).rev() {
+        generation_label[index] = b'0' + u8::try_from(clock % 10).unwrap_or(0);
+        clock /= 10;
     }
     draw_text(frame, 0, 18, &generation_label);
 
@@ -1363,6 +1375,7 @@ mod operating_screen_tests {
                 answered: 3,
                 discarded: 2,
             },
+            24_000,
         );
         let mut unstored = [0_u8; FRAME_BYTES];
         render_info_screen(
@@ -1373,6 +1386,7 @@ mod operating_screen_tests {
             false,
             MemoryState::Absent,
             SerialCounters::default(),
+            24_000,
         );
         assert_ne!(retained, unstored);
         assert!(retained.iter().any(|byte| *byte != 0));
