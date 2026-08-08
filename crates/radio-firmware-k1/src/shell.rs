@@ -48,6 +48,20 @@ pub const VFO_MINIMUM_HZ: u32 = 1_000_000;
 /// Highest frequency the VFO will tune to, which six kilohertz digits can name.
 pub const VFO_MAXIMUM_HZ: u32 = 999_999_000;
 
+/// Which way an arrow key points.
+///
+/// Every screen this shell draws lists its rows downwards, so Up always moves
+/// towards the top of what the operator is looking at: the previous list row and
+/// the previous channel position. The VFO is the one exception, because a
+/// frequency is not a list and the up key tunes upwards.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Direction {
+    /// Towards the top of the screen, or upwards in frequency.
+    Up,
+    /// Towards the bottom of the screen, or downwards in frequency.
+    Down,
+}
+
 /// Which receive source the operator is listening to.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Mode {
@@ -331,8 +345,8 @@ impl Shell {
             Key::Star => self.open_sources(),
             Key::Menu => self.confirm(context),
             Key::Exit => self.cancel(),
-            Key::Up => self.step(true, context),
-            Key::Down => self.step(false, context),
+            Key::Up => self.step(Direction::Up, context),
+            Key::Down => self.step(Direction::Down, context),
             Key::Digit0 => self.digit(0, now_ms, context),
             Key::Digit1 => self.digit(1, now_ms, context),
             Key::Digit2 => self.digit(2, now_ms, context),
@@ -357,20 +371,21 @@ impl Shell {
         self.commit_entry(entry, context)
     }
 
-    fn step(&mut self, forwards: bool, context: Context) -> Intent {
+    fn step(&mut self, direction: Direction, context: Context) -> Intent {
         self.entry = None;
         match self.screen {
             Screen::Operating => match self.mode {
                 // In the VFO the operating screen tunes by one step, which is
                 // what Up and Down mean when there is no channel list to walk.
-                Mode::Vfo => self.tune(forwards),
-                Mode::Memory => {
-                    if forwards {
-                        Intent::SelectNext
-                    } else {
-                        Intent::SelectPrevious
-                    }
-                }
+                // This is the one place Up means "larger": a frequency is not a
+                // list, and every radio tunes upwards on the up key.
+                Mode::Vfo => self.tune(matches!(direction, Direction::Up)),
+                // Positions count downwards on the channel list, so Up moves
+                // towards position one exactly as it does with the list open.
+                Mode::Memory => match direction {
+                    Direction::Up => Intent::SelectPrevious,
+                    Direction::Down => Intent::SelectNext,
+                },
             },
             Screen::ChannelList => {
                 if context.visible_channels == 0 {
@@ -378,43 +393,56 @@ impl Shell {
                     return Intent::Redraw;
                 }
                 let last = context.visible_channels - 1;
-                self.cursor = if forwards {
-                    if self.cursor >= last {
-                        0
-                    } else {
-                        self.cursor + 1
+                self.cursor = match direction {
+                    Direction::Up => {
+                        if self.cursor == 0 {
+                            last
+                        } else {
+                            self.cursor - 1
+                        }
                     }
-                } else if self.cursor == 0 {
-                    last
-                } else {
-                    self.cursor - 1
+                    Direction::Down => {
+                        if self.cursor >= last {
+                            0
+                        } else {
+                            self.cursor + 1
+                        }
+                    }
                 };
                 Intent::Redraw
             }
-            Screen::SourceList => self.step_row(forwards, self.source_rows(), true),
-            Screen::StepList => self.step_row(forwards, VFO_STEPS_HZ.len(), false),
+            Screen::SourceList => self.step_row(direction, self.source_rows(), true),
+            Screen::StepList => self.step_row(direction, VFO_STEPS_HZ.len(), false),
             Screen::Info => Intent::Redraw,
         }
     }
 
     /// Moves the cursor of one bounded list, wrapping at both ends.
-    fn step_row(&mut self, forwards: bool, rows: usize, source: bool) -> Intent {
+    ///
+    /// Rows are drawn top to bottom in index order, so Up decrements: the
+    /// highlight moves the way the key points.
+    fn step_row(&mut self, direction: Direction, rows: usize, source: bool) -> Intent {
         let last = rows.saturating_sub(1);
         let cursor = if source {
             &mut self.source_cursor
         } else {
             &mut self.step_cursor
         };
-        *cursor = if forwards {
-            if *cursor >= last {
-                0
-            } else {
-                *cursor + 1
+        *cursor = match direction {
+            Direction::Up => {
+                if *cursor == 0 {
+                    last
+                } else {
+                    *cursor - 1
+                }
             }
-        } else if *cursor == 0 {
-            last
-        } else {
-            *cursor - 1
+            Direction::Down => {
+                if *cursor >= last {
+                    0
+                } else {
+                    *cursor + 1
+                }
+            }
         };
         Intent::Redraw
     }
@@ -625,7 +653,7 @@ mod tests {
         let (banks, count) = bank_table(ids);
         shell.set_banks(banks, count);
         shell.press(Key::Star, 0, context(8, 0));
-        shell.press(Key::Up, 1, context(8, 0));
+        shell.press(Key::Down, 1, context(8, 0));
         assert_eq!(
             shell.press(Key::Menu, 2, context(8, 0)),
             Intent::SetSource(Source::AllChannels)
@@ -730,8 +758,8 @@ mod tests {
         assert_eq!(shell.screen(), Screen::StepList);
         assert_eq!(shell.step_cursor(), shell.step_index());
 
-        shell.press(Key::Down, 10, context(0, 0));
-        assert_eq!(shell.step_cursor(), 0);
+        shell.press(Key::Up, 10, context(0, 0));
+        assert_eq!(shell.step_cursor(), 0, "up moves towards the first row");
         assert_eq!(shell.press(Key::Menu, 20, context(0, 0)), Intent::Redraw);
         assert_eq!(shell.screen(), Screen::Operating);
         assert_eq!(shell.vfo_step_hz(), VFO_STEPS_HZ[0]);
@@ -764,8 +792,8 @@ mod tests {
         assert_eq!(shell.source_cursor(), 0, "the VFO is the source in use");
         assert!(shell.is_active_source(0));
 
-        shell.press(Key::Up, 10, context(8, 0));
-        shell.press(Key::Up, 11, context(8, 0));
+        shell.press(Key::Down, 10, context(8, 0));
+        shell.press(Key::Down, 11, context(8, 0));
         assert_eq!(
             shell.press(Key::Menu, 20, context(8, 0)),
             Intent::SetSource(Source::Bank(BankId::new(1)))
@@ -785,8 +813,8 @@ mod tests {
 
         // Returning to the VFO is one selection, not a mode key.
         shell.press(Key::Star, 50, context(4, 0));
-        shell.press(Key::Down, 60, context(4, 0));
-        shell.press(Key::Down, 61, context(4, 0));
+        shell.press(Key::Up, 60, context(4, 0));
+        shell.press(Key::Up, 61, context(4, 0));
         assert_eq!(
             shell.press(Key::Menu, 70, context(4, 0)),
             Intent::SetSource(Source::Vfo)
@@ -797,6 +825,47 @@ mod tests {
             Some(BankId::new(1)),
             "the bank filter is kept for the next return to memory"
         );
+    }
+
+    /// Up moves towards the top of whatever is on screen.
+    ///
+    /// Every list this shell draws runs downwards in index order, so an up key
+    /// which incremented the cursor moved the highlight the wrong way. The VFO
+    /// is deliberately excluded: a frequency is not a list.
+    #[test]
+    fn up_moves_towards_the_first_row_on_every_list() {
+        let mut shell = Shell::new();
+        let (banks, count) = bank_table(&[1, 3]);
+        shell.set_banks(banks, count);
+
+        // Source list: four rows, opening on the VFO.
+        shell.press(Key::Star, 0, context(8, 0));
+        assert_eq!(shell.source_cursor(), 0);
+        shell.press(Key::Up, 10, context(8, 0));
+        assert_eq!(shell.source_cursor(), 3, "up wraps to the last row");
+        shell.press(Key::Down, 20, context(8, 0));
+        assert_eq!(shell.source_cursor(), 0, "down wraps back to the first row");
+        shell.press(Key::Down, 30, context(8, 0));
+        assert_eq!(shell.source_cursor(), 1);
+        shell.press(Key::Up, 40, context(8, 0));
+        assert_eq!(shell.source_cursor(), 0);
+        shell.press(Key::Exit, 50, context(8, 0));
+
+        // Step list: opens on the step in force.
+        shell.press(Key::Menu, 60, context(0, 0));
+        assert_eq!(shell.screen(), Screen::StepList);
+        assert_eq!(shell.step_cursor(), 1);
+        shell.press(Key::Up, 70, context(0, 0));
+        assert_eq!(shell.step_cursor(), 0);
+        shell.press(Key::Down, 80, context(0, 0));
+        shell.press(Key::Down, 90, context(0, 0));
+        assert_eq!(shell.step_cursor(), 2);
+        shell.press(Key::Exit, 100, context(0, 0));
+
+        // The VFO is the exception: up is a larger frequency, not a lower row.
+        let before = shell.vfo_hz();
+        assert_eq!(shell.press(Key::Up, 110, context(0, 0)), Intent::TuneVfo);
+        assert!(shell.vfo_hz() > before, "up tunes upwards");
     }
 
     #[test]
@@ -825,7 +894,7 @@ mod tests {
         assert_eq!(shell.screen(), Screen::SourceList);
         assert_eq!(shell.source_rows(), 2, "the VFO and every channel");
         assert!(shell.banks().is_empty());
-        shell.press(Key::Up, 10, context(0, 0));
+        shell.press(Key::Down, 10, context(0, 0));
         assert_eq!(
             shell.press(Key::Menu, 20, context(0, 0)),
             Intent::SetSource(Source::AllChannels),
@@ -837,20 +906,28 @@ mod tests {
     #[test]
     fn the_operating_screen_steps_channels_and_the_list_moves_a_cursor() {
         let mut shell = memory_shell(&[0]);
-        assert_eq!(shell.press(Key::Up, 10, context(4, 1)), Intent::SelectNext);
+        // Positions are drawn downwards, so the down key walks towards the last
+        // channel and the up key walks back towards the first.
+        assert_eq!(shell.press(Key::Down, 10, context(4, 1)), Intent::SelectNext);
         assert_eq!(
-            shell.press(Key::Down, 20, context(4, 1)),
+            shell.press(Key::Up, 20, context(4, 1)),
             Intent::SelectPrevious
         );
 
         assert_eq!(shell.press(Key::Menu, 30, context(4, 1)), Intent::Redraw);
         assert_eq!(shell.screen(), Screen::ChannelList);
         assert_eq!(shell.cursor(), 1, "the list opens on the active channel");
-        shell.press(Key::Up, 40, context(4, 1));
-        shell.press(Key::Up, 50, context(4, 1));
+        shell.press(Key::Down, 40, context(4, 1));
+        shell.press(Key::Down, 50, context(4, 1));
         assert_eq!(shell.cursor(), 3);
-        shell.press(Key::Up, 60, context(4, 1));
+        shell.press(Key::Down, 60, context(4, 1));
         assert_eq!(shell.cursor(), 0, "the cursor wraps at the end of the view");
+        shell.press(Key::Up, 65, context(4, 1));
+        assert_eq!(shell.cursor(), 3, "up wraps back to the last row");
+        shell.press(Key::Up, 66, context(4, 1));
+        shell.press(Key::Up, 67, context(4, 1));
+        shell.press(Key::Up, 68, context(4, 1));
+        assert_eq!(shell.cursor(), 0, "up walks towards the first row");
         assert_eq!(
             shell.press(Key::Menu, 70, context(4, 1)),
             Intent::SelectIndex(0)
@@ -932,8 +1009,8 @@ mod tests {
         let (banks, count) = bank_table(&[1, 3]);
         shell.set_banks(banks, count);
         shell.press(Key::Star, 0, context(8, 0));
-        shell.press(Key::Up, 5, context(8, 0));
-        shell.press(Key::Up, 6, context(8, 0));
+        shell.press(Key::Down, 5, context(8, 0));
+        shell.press(Key::Down, 6, context(8, 0));
         shell.press(Key::Menu, 8, context(8, 0));
         assert_eq!(shell.bank_filter(), Some(BankId::new(1)));
 
