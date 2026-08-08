@@ -2,6 +2,17 @@
 
 ## Current work package
 
+**`FIELD-036` is software complete and awaiting its physical confirmation: the
+first day of carrying the radio produced four faults and all four are fixed.
+The up key moves towards the first row on every screen instead of away from it;
+receive audio follows the tuned channel rather than a side key; the operator's
+squelch level now reaches the chip, gates the speaker, and is settable from a
+handset menu which stores what was chosen; and the operating screen shows the
+battery charge, which the radio has always been able to read and never did.
+`AFIK-K1-3.5` is built, gated, and packaged. Nothing physical is claimed: the
+squelch thresholds are AFIK's own and no level has been heard on air, and the
+battery percentage has never been compared against a meter (`RISK-034`).**
+
 **`EEPROM-035` is complete and confirmed on the exact unit: a radio's channels
 and settings live in the external serial memory it already carries, and its
 internal flash holds firmware and nothing else. A PMR446 plan written over
@@ -44,8 +55,30 @@ The bounded AFIK witness image was flashed through the intended CH340 path and
 returned the exact normal-mode hello after power-cycle. Full radio application
 features remain outside this bounded slice.
 
+## FIELD-036 verification
+
+Run on the pinned environment, 2026-08-08:
+
+- `cargo fmt --all --check`: clean.
+- `cargo clippy --workspace --all-targets -- -D warnings`: clean.
+- `cargo test --workspace`: 50 test targets pass, 0 failures.
+- `tool/build-k1-async.sh --release`: builds.
+- `tool/verify-k1-async-image.sh`: 192 vector bytes, initial SP `0x20004000`,
+  Reset `0x080028c1`, required IRQ handlers present, static RAM 10,476 bytes
+  with 5,908 bytes of stack headroom.
+- `tool/package-k1-async-image.sh --force`: `AFIK-K1-3.5`, 85,208 bytes,
+  CRC-32 `839d1529`, SHA-256
+  `897a95bb513bbafd3341ff021ceaf14dd649cc5b328a5b948a5c2dee87b80277`.
+
+Not run and not claimed: any physical observation of this image. The squelch
+levels and the battery percentage both need the experiments named in
+`EVID-K1-063` and `RISK-034` before either is described as measured.
+
 ## State
 
+- Work Package 36 operator fixes from the first day of use: software complete;
+  arrow direction, always-on audio, applied squelch with a handset menu, and
+  the battery indicator. Physical confirmation pending.
 - Repository foundation and first architecture milestone: complete.
 - Work Package 2 programmer and simulator protocol loop: complete.
 - Work Package 3 minimal target boot proof: complete.

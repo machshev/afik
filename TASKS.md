@@ -1658,3 +1658,49 @@
   power cut during a retain leaves the region erased and the previous
   configuration gone. Two alternating regions with a commit pointer would fix
   it, and the 2 MiB device has ample room; tracked as `RISK-004`.
+
+## FIELD-036 — Operator fixes from the first day of real use
+
+- **Status:** software complete (2026-08-08); physical confirmation pending
+- **Objective:** fix what the first day of carrying the radio showed: the arrow
+  keys moved lists the wrong way, audio was hidden behind a key, the squelch was
+  never applied so the speaker carried noise, and the pack went flat without
+  warning.
+- **Scope:** arrow-key direction across every screen; receive audio enabled by
+  the tuned channel rather than a key; a derived squelch threshold set applied
+  through the existing driver path with the speaker following the squelch link;
+  a handset settings menu whose choice is stored and retained; the battery sense
+  path, its calibration, its discharge curve, and the operating-screen
+  indicator; the studio's existing radio-wide squelch control labelled with what
+  it governs.
+- **Exclusions:** per-channel squelch as an override, which this image
+  deliberately ignores in favour of the radio-wide level; battery type
+  selection, which AFIK cannot read; charging-current detection, which the
+  pinned firmware does not measure on this board either; and any further
+  settings rows.
+- **Dependencies:** `EEPROM-035`.
+- **Tests required:** arrow direction on every list and both operating modes;
+  the derived threshold set's monotonicity, hysteresis, and acceptance by the
+  driver's own validator; the settings menu's navigation, digit entry, cancel
+  path, and adoption of a programmed level; squelch storage preserving every
+  other object and field, including on an unprogrammed radio; the battery
+  scale, averaging, curve, and its refusal to report without a calibration.
+- **Acceptance criteria:** up moves towards the first row everywhere except VFO
+  tuning; no key routes audio; the operator's squelch level reaches the chip and
+  survives a power cycle; the charge is shown or honestly absent; workspace
+  tests, Clippy, format, and the K1 image gates stay green.
+- **Result:** software complete. `SquelchThresholds::for_level` derives the set,
+  `store_squelch` rewrites the stored configuration through the validating path,
+  and `battery` owns the voltage and curve arithmetic with no hardware in it.
+  `EVID-K1-063` records the sense pin, converter configuration, calibration
+  location, and curve from the pinned source, including that the F071
+  precalibration delay matches the value the vendored HAL already carried.
+- **Vendor change:** the vendored `py32-hal` had its ADC module disabled for the
+  F071 because the generated metadata carries no analogue pin table and one
+  constant was F072-only. Both are now supplied from the pinned Puya driver, and
+  only the one evidenced channel is declared.
+- **Image:** `AFIK-K1-3.5`, 85,208 bytes, CRC-32 `839d1529`, Reset `0x080028c1`,
+  SHA-256 `897a95bb513bbafd3341ff021ceaf14dd649cc5b328a5b948a5c2dee87b80277`.
+- **Remaining:** every physical claim. The squelch thresholds are AFIK's own and
+  no level has been heard on air; the battery percentage has never been compared
+  against a meter. Both experiments are named in `EVID-K1-063` and `RISK-034`.

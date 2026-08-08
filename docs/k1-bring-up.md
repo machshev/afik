@@ -403,8 +403,10 @@ The operating image therefore puts the operator controls on the radio:
 | Up / Down | Select the next or previous built-in channel |
 | Side key 1 | Route or mute receive audio |
 
+Both of those have since changed; the current controls are below.
+
 The display shows the channel name, the frequency in megahertz, the chip's raw
-RSSI count, the squelch link, and the audio state. The serial link answers
+RSSI count, the squelch link, and the battery charge. The serial link answers
 `hello` and `probe-rf`, reading a published snapshot rather than touching the
 bus, so a request can never bit-bang beside an inbound frame.
 
@@ -471,8 +473,12 @@ advertises its object capacity and refuses a larger channel set with the stable
 | Digits | Type a channel number, or a VFO frequency in megahertz |
 | Star | Open or close the source list: the VFO, every channel, each bank |
 | Function | Show or hide the information screen |
-| Side key 1 | Route or mute receive audio |
+| Side key 1 | Open or close the settings menu |
 | Side key 2 | Hold the squelch open |
+
+Up moves towards the top of whatever is on screen: the previous list row and the
+previous channel position. The VFO is the single exception, because a frequency
+is not a list and the up key tunes upwards.
 
 Typed numbers are the positions the operating screen shows, so what the operator
 reads is what the operator can type. An out-of-range number selects nothing
@@ -485,6 +491,41 @@ a second Star leave the source alone. In memory mode the operating screen shows
 the active bank's name, falling back to `BANK nn` for a bank the host never named
 and `ALL` when nothing is filtered.
 
+### Settings
+
+Side key one opens the settings menu, which holds the radio-wide squelch level.
+Up and Down move between levels, Menu applies one, and a digit picks that level
+outright. Exit returns to the menu and then to the operating screen; the side key
+closes the menu from either screen.
+
+The chosen level is stored exactly as a host write is, through the validating
+path and into external memory, so it survives the battery going flat. It applies
+to every channel: a stored channel's own squelch level is kept in the project but
+does not override the radio-wide setting, because a global control a channel
+could veto would not be one. Holding side key two still forces the squelch open
+regardless of both.
+
+Level zero is the pinned squelch-off threshold set and never shuts. Levels one to
+nine are AFIK's own thresholds, not this unit's calibration: only the carrier
+strength pair varies, three decibels per step from about -130 dBm with one
+decibel of hysteresis, and the noise and glitch pairs stay permissive because
+their units are not evidenced. The chip's squelch link then drives the speaker
+amplifier, sampled every 60 ms.
+
+### The battery
+
+The operating screen shows the remaining charge. `EVID-K1-063` records the sense
+path: the pack is divided onto `PB0`, which is converter channel eight, and the
+count that input reads at 7.60 V is stored in the radio's own external memory at
+`0x010140`. AFIK reads that calibration through a read-only path which takes no
+region, so it can never write over it.
+
+A radio without a usable calibration shows `BAT ---%` rather than a plausible
+number. The percentage comes from the 1500 mAh discharge curve the pinned source
+records for the K1, which that source itself marks estimated, so it is a warning
+that the pack is going rather than a measurement of energy remaining. No AFIK
+conversion has been observed against a meter yet.
+
 ### The VFO
 
 The image carries no channel set of its own, so a radio nobody has programmed
@@ -492,7 +533,7 @@ starts in the VFO and there is no separate unprogrammed mode. A host write moves
 the radio onto its channels; the source list moves it back.
 
 The VFO is an ordinary receive-only channel record driving the same banked
-controller as a programmed channel, so tuning, monitoring, audio routing, and
+controller as a programmed channel, so tuning, monitoring, squelch, and
 metering behave identically and the image gains no second receive path. Its
 class is `TxClass::Never` like everything else here.
 

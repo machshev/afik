@@ -34,6 +34,12 @@ const EXPANSION_PREVIEW_ROWS: usize = 32;
 /// Colour used for advisory text which is not a validation failure.
 const WARNING_COLOUR: egui::Color32 = egui::Color32::from_rgb(0xB7, 0x6E, 0x00);
 
+/// What the radio-wide squelch level actually governs, said once.
+const SQUELCH_HINT: &str = "Applies to every channel on the radio. The operator \
+can change it from the handset settings menu, and the radio stores what they \
+chose. A channel's own squelch level is kept in the project but does not \
+override this.";
+
 /// Which editor tab is visible.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum Tab {
@@ -572,8 +578,9 @@ impl StudioApp {
         self.project_bar(ui);
         let config = &mut self.project.config;
         Grid::new("radio").num_columns(2).show(ui, |ui| {
-            ui.label("Squelch level");
-            ui.add(egui::DragValue::new(&mut config.squelch).range(0..=MAX_SQUELCH_LEVEL));
+            ui.label("Squelch level").on_hover_text(SQUELCH_HINT);
+            ui.add(egui::DragValue::new(&mut config.squelch).range(0..=MAX_SQUELCH_LEVEL))
+                .on_hover_text(SQUELCH_HINT);
             ui.end_row();
 
             ui.label("Backlight seconds");

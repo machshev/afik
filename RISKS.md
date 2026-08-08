@@ -544,12 +544,16 @@
   from the external PY25Q16 flash at `0x010000` and `0x010060`, not from the
   8 KiB EEPROM AFIK backs up. Until AFIK reads that device, no calibrated
   squelch is possible on this board.
-- **Mitigation:** the driver takes thresholds as validated inputs and the K1
-  image uses the source's documented squelch-off set, so no invented
-  calibration can reach the chip. `RISK-028` records the same gap at the
-  driver boundary.
-- **Required experiment:** define a read-only PY25Q16 access path under its own
-  evidence entry before mapping squelch levels to thresholds.
+- **Mitigation:** the driver still takes thresholds as validated inputs, and the
+  K1 image now applies `SquelchThresholds::for_level`, which is AFIK's own
+  table and is documented as such. It varies only the carrier-strength pair and
+  leaves the noise and glitch pairs permissive, so the one thing it claims is
+  the one thing the operator can judge by ear. `RISK-028` records the same gap
+  at the driver boundary, and `RISK-034` tracks the consequence.
+- **Required experiment:** map the pinned source's per-band calibration layout
+  under its own evidence entry and use this unit's values instead of AFIK's.
+  The read-only external-memory path this needs now exists: `Eeprom::read_vendor`
+  already reads the battery calibration from the same device.
 
 ## RISK-032 — No AFIK flash write has been observed on this MCU
 
@@ -581,3 +585,24 @@
 - **Required experiment:** add a stack-headroom gate, for example a linker
   assertion on `.bss` end against a reserved stack region, or a painted-stack
   high-water measurement on the exact unit.
+
+## RISK-034 — The squelch levels and the battery percentage are unverified
+
+- **State:** open
+- **Impact:** two numbers the operator will act on are estimates. The squelch
+  thresholds are AFIK's own, so a level may open on noise or shut on a workable
+  signal, and the operator would reasonably read that as the radio being deaf.
+  The battery percentage comes from a discharge curve the pinned source itself
+  marks estimated, applied to a converter reading no AFIK build has compared
+  against a meter, so it could show usable charge on a pack about to cut out,
+  which is the failure the indicator exists to prevent.
+- **Mitigation:** the squelch level is reachable in two key presses from the
+  operating screen and level zero disables it outright, so an operator who does
+  not trust it can turn it off without a host. The battery indicator reports
+  nothing at all rather than a number when the calibration is absent or
+  implausible, and its arithmetic is host-tested against the curve.
+- **Required experiment:** on the exact unit, sweep the squelch levels against
+  a known weak signal and record which levels open; and compare the reported
+  voltage against a meter across the pack when charged and part discharged,
+  then confirm the indicator falls monotonically over a discharge. Until both
+  are done, neither number may be described as measured.
