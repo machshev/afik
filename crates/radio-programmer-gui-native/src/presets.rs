@@ -6,7 +6,7 @@
 //! their own national band plan, and for the transmit classification every
 //! channel carries. Nothing here is applied without an explicit request.
 
-use radio_domain::TxClass;
+use radio_domain::{Bandwidth, PowerLevel, TxClass};
 
 use crate::model::{BankDraft, BankKind, ChannelDraft, ProjectModel};
 
@@ -161,8 +161,8 @@ impl Preset {
 
     /// Builds the project this preset describes, replacing nothing.
     ///
-    /// The generated-plan preset carries no explicit channels: it is one compact
-    /// bank a target expands for itself, which the K1 receive image cannot do.
+    /// The generated-plan preset carries no explicit channels: it is one stored
+    /// plan a target expands into complete channels for itself.
     pub fn build(&self) -> ProjectModel {
         let mut project = ProjectModel::new();
         if self.channels.is_empty() && self.banks.is_empty() {
@@ -175,6 +175,11 @@ impl Preset {
                 channel_count: 16,
                 tx_class: TxClass::LicenceFreePlan,
                 scan_enabled: true,
+                // Analogue PMR446 is narrow FM at low power by allocation.
+                bandwidth: Bandwidth::Narrow,
+                power: PowerLevel::Low,
+                step_hz: 12_500,
+                ..BankDraft::default()
             });
             return project;
         }

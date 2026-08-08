@@ -10,6 +10,7 @@ members = [
     "crates/radio-flasher-cli",
     "crates/radio-channel-plan",
     "crates/radio-device",
+    "crates/radio-eeprom",
     "crates/radio-channel-control",
     "crates/radio-storage",
     "crates/radio-tx-policy",

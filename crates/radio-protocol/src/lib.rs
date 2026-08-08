@@ -172,11 +172,17 @@ pub struct DeviceCapabilities {
     pub max_object_size: u16,
     /// Bitset of supported channel plan encodings.
     pub plan_encodings: u16,
+    /// Bytes the device reserves for a stored configuration image.
+    ///
+    /// This is the capacity a whole configuration must fit, so a host can say
+    /// how much room a project leaves before it writes one. A device which
+    /// declares zero is not reporting a bound.
+    pub configuration_bytes: u32,
 }
 
 impl DeviceCapabilities {
     /// Encoded capability payload length.
-    pub const ENCODED_LEN: usize = 10;
+    pub const ENCODED_LEN: usize = 14;
 
     /// Encodes capabilities into a command payload.
     pub fn encode(self, output: &mut [u8]) -> Result<usize, ProtocolError> {
@@ -187,6 +193,7 @@ impl DeviceCapabilities {
         writer.write_u16(self.max_objects)?;
         writer.write_u16(self.max_object_size)?;
         writer.write_u16(self.plan_encodings)?;
+        writer.write_u32(self.configuration_bytes)?;
         Ok(writer.len())
     }
 
@@ -200,6 +207,7 @@ impl DeviceCapabilities {
             max_objects: reader.read_u16()?,
             max_object_size: reader.read_u16()?,
             plan_encodings: reader.read_u16()?,
+            configuration_bytes: reader.read_u32()?,
         };
         reader.finish()?;
         Ok(capabilities)
@@ -859,6 +867,7 @@ mod tests {
             max_objects: 8,
             max_object_size: 64,
             plan_encodings: 1,
+            configuration_bytes: 4_096,
         };
         let mut bytes = [0_u8; DeviceCapabilities::ENCODED_LEN];
         let len = expected.encode(&mut bytes).unwrap();

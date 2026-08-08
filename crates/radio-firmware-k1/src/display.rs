@@ -481,6 +481,8 @@ pub fn render_info_screen(
     generation: u32,
     channels: u16,
     retained: bool,
+    memory: MemoryState,
+    serial: SerialCounters,
 ) {
     frame.fill(0);
     let width = identity.len() * 6;
@@ -505,9 +507,87 @@ pub fn render_info_screen(
         if retained {
             b"STORED IN RADIO"
         } else {
-            b"BUILT-IN SET   "
+            b"NOTHING STORED "
         },
     );
+
+    // The external memory is where a configuration lives, so its state belongs
+    // on the screen the operator can reach without a host.
+    draw_text(frame, 0, 56, &memory.label());
+
+    // Serial counters, so an operator with no host can see whether the radio is
+    // hearing anything at all. `EVID-K1-061` is what these are for: a silent
+    // host exchange is otherwise indistinguishable from a dead interface.
+    let mut link = *b"RX 0000 TX 0000";
+    write_four_digits(&mut link[3..7], serial.received);
+    write_four_digits(&mut link[11..15], serial.answered);
+    draw_text(frame, 0, 8, &link);
+}
+
+/// Serial-link counters shown on the information screen.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SerialCounters {
+    /// Bytes the radio has received, which wraps.
+    pub received: u16,
+    /// Frames the radio has answered, which wraps.
+    pub answered: u16,
+}
+
+/// Writes one four-digit decimal field.
+fn write_four_digits(field: &mut [u8], value: u16) {
+    let mut remaining = value % 10_000;
+    for index in (0..4).rev() {
+        field[index] = b'0' + u8::try_from(remaining % 10).unwrap_or(0);
+        remaining /= 10;
+    }
+}
+
+/// What the radio found when it looked for its external configuration memory.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MemoryState {
+    /// The memory has not been looked for yet.
+    #[default]
+    Unknown,
+    /// A device answered with these identification bytes.
+    Present([u8; 3]),
+    /// The bus answered but no device was there.
+    Absent,
+    /// The bus itself failed.
+    Failed,
+}
+
+/// Bytes in one external-memory state label.
+pub const MEMORY_LABEL_BYTES: usize = 15;
+
+impl MemoryState {
+    /// Returns the fixed-width label for this state.
+    #[must_use]
+    pub fn label(self) -> [u8; MEMORY_LABEL_BYTES] {
+        let mut label = *b"MEM ...........";
+        match self {
+            Self::Unknown => label[4..].copy_from_slice(b"UNTRIED    "),
+            Self::Absent => label[4..].copy_from_slice(b"NONE       "),
+            Self::Failed => label[4..].copy_from_slice(b"BUS FAILED "),
+            Self::Present(id) => {
+                label[4..].copy_from_slice(b"ID 00 00 00");
+                for (index, byte) in id.iter().enumerate() {
+                    let at = 7 + index * 3;
+                    label[4 + at - 4] = hex_digit(byte >> 4);
+                    label[4 + at - 3] = hex_digit(byte & 0x0F);
+                }
+            }
+        }
+        label
+    }
+}
+
+/// Returns the uppercase hexadecimal digit for one nibble.
+const fn hex_digit(nibble: u8) -> u8 {
+    if nibble < 10 {
+        b'0' + nibble
+    } else {
+        b'A' + (nibble - 10)
+    }
 }
 
 /// Longest tuning-step label, which is the widest of the fixed set.
@@ -903,8 +983,8 @@ mod tests {
 mod operating_screen_tests {
     use super::{
         render_channel_list, render_info_screen, render_operating_screen, render_selector_list,
-        step_label, BankIndicator, ListRow, OperatingView, SelectorRow, FRAME_BYTES,
-        LIST_NAME_BYTES,
+        step_label, BankIndicator, ListRow, MemoryState, OperatingView, SelectorRow,
+        SerialCounters, FRAME_BYTES, LIST_NAME_BYTES, MEMORY_LABEL_BYTES,
     };
 
     fn view() -> OperatingView<'static> {
@@ -1123,12 +1203,54 @@ mod operating_screen_tests {
     }
 
     #[test]
-    fn the_info_screen_separates_retained_and_built_in_configurations() {
+    fn the_info_screen_separates_retained_and_unstored_configurations() {
         let mut retained = [0_u8; FRAME_BYTES];
-        render_info_screen(&mut retained, b"AFIK-K1-2.4", 7, 16, true);
-        let mut built_in = [0_u8; FRAME_BYTES];
-        render_info_screen(&mut built_in, b"AFIK-K1-2.4", 0, 5, false);
-        assert_ne!(retained, built_in);
+        render_info_screen(
+            &mut retained,
+            b"AFIK-K1-3.2",
+            7,
+            16,
+            true,
+            MemoryState::Present([0x68, 0x40, 0x15]),
+            SerialCounters {
+                received: 12,
+                answered: 3,
+            },
+        );
+        let mut unstored = [0_u8; FRAME_BYTES];
+        render_info_screen(
+            &mut unstored,
+            b"AFIK-K1-3.2",
+            0,
+            5,
+            false,
+            MemoryState::Absent,
+            SerialCounters::default(),
+        );
+        assert_ne!(retained, unstored);
         assert!(retained.iter().any(|byte| *byte != 0));
+    }
+
+    #[test]
+    fn every_memory_state_has_a_distinct_fixed_width_label() {
+        let states = [
+            MemoryState::Unknown,
+            MemoryState::Absent,
+            MemoryState::Failed,
+            MemoryState::Present([0x68, 0x40, 0x15]),
+        ];
+        for state in states {
+            assert_eq!(state.label().len(), MEMORY_LABEL_BYTES);
+        }
+        // The identification is what distinguishes a working memory from a
+        // plausible-looking failure, so it is shown exactly.
+        // The exact unit answers with this identification: a 16 Mbit serial NOR
+        // memory, manufacturer 0x68, recorded by `EVID-K1-060`.
+        assert_eq!(
+            &MemoryState::Present([0x68, 0x40, 0x15]).label(),
+            b"MEM ID 68 40 15"
+        );
+        assert_eq!(&MemoryState::Absent.label(), b"MEM NONE       ");
+        assert_ne!(MemoryState::Unknown.label(), MemoryState::Failed.label());
     }
 }

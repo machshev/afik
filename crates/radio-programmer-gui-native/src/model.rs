@@ -8,7 +8,8 @@ use std::fmt;
 
 use radio_channel_plan::{
     BankFlags, BankMask, BankName, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
-    ChannelRecord, GeneratedBank, PlanEncoding, MAX_BANKS,
+    ChannelRecord, ChannelTemplate, GeneratedBank, PlanEncoding, GENERATED_CHANNEL_ID_BASE,
+    MAX_BANKS, MAX_GENERATED_CHANNELS,
 };
 use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, RadioConfig,
@@ -17,7 +18,9 @@ use radio_domain::{
 use radio_programmer::{CompileError, ConfigurationCompiler, DeviceCapabilities, RadioProject};
 use radio_storage::{
     decode_channel, decode_channel_bank, decode_configuration_image, decode_generated_bank,
-    decode_radio_config, ObjectKind, MAX_OBJECT_DATA, STORAGE_FORMAT_VERSION,
+    decode_radio_config, ObjectKind, CHANNEL_BANK_ENCODED_LEN, CHANNEL_ENCODED_LEN,
+    CONFIGURATION_IMAGE_HEADER_LEN, CONFIGURATION_IMAGE_OBJECT_HEADER_LEN,
+    GENERATED_BANK_ENCODED_LEN, MAX_OBJECT_DATA, RADIO_CONFIG_ENCODED_LEN, STORAGE_FORMAT_VERSION,
 };
 
 /// Maximum objects an offline host project may hold.
@@ -37,6 +40,9 @@ pub fn host_capabilities() -> DeviceCapabilities {
         max_objects: MAX_PROJECT_OBJECTS,
         max_object_size: u16::try_from(MAX_OBJECT_DATA).unwrap_or(u16::MAX),
         plan_encodings: PlanEncoding::LinearSimplex.capability_bit(),
+        // Offline the host declares no stored-configuration bound; a connected
+        // radio reports its own, and that is what the editor shows.
+        configuration_bytes: 0,
     }
 }
 
@@ -296,6 +302,17 @@ impl ChannelDraft {
                     .map_err(|_| error(scope, "banks", "references an unaddressable bank"))?;
             }
         }
+        if self.id >= GENERATED_CHANNEL_ID_BASE {
+            return Err(error(
+                scope,
+                "id",
+                format!(
+                    "must be 0 to {}; higher identifiers belong to channels a radio \
+                     expands from a generated plan",
+                    GENERATED_CHANNEL_ID_BASE - 1
+                ),
+            ));
+        }
         ChannelRecord::new(ChannelDefinition {
             id: ChannelId::new(self.id),
             name,
@@ -340,8 +357,9 @@ impl BankKind {
         match self {
             Self::Named => "Groups the explicit channel rows which claim membership of this bank.",
             Self::Generated => {
-                "Stores one arithmetic simplex plan the radio expands itself, so no \
-                 channel row is needed. The target must advertise the plan encoding."
+                "One stored plan the radio expands into complete channels, however many \
+                 it holds, so no channel row is stored for any of them. The target must \
+                 advertise the plan encoding."
             }
         }
     }
@@ -349,6 +367,46 @@ impl BankKind {
     /// Returns every selectable kind in display order.
     pub const fn all() -> [Self; 2] {
         [Self::Named, Self::Generated]
+    }
+}
+
+/// What one project costs a radio, and what its plans saved.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct StorageSummary {
+    /// Stored objects, including the global configuration.
+    pub objects: usize,
+    /// Stored bytes, excluding the image container header.
+    pub bytes: usize,
+    /// Channels which cost one stored object each.
+    pub stored_channels: usize,
+    /// Channels the radio expands from stored plans at no per-channel cost.
+    pub expanded_channels: usize,
+    /// Stored plans which expand into channels.
+    pub plans: usize,
+}
+
+impl StorageSummary {
+    /// Returns every channel the radio can select.
+    pub const fn selectable_channels(&self) -> usize {
+        self.stored_channels + self.expanded_channels
+    }
+
+    /// Returns the bytes one canonical image of this project occupies.
+    ///
+    /// This is what a radio must find room for: every stored object plus the
+    /// image container header and one envelope per object.
+    pub const fn image_bytes(&self) -> usize {
+        CONFIGURATION_IMAGE_HEADER_LEN
+            + self.bytes
+            + self.objects * CONFIGURATION_IMAGE_OBJECT_HEADER_LEN
+    }
+
+    /// Returns the bytes saved by expanding plans instead of storing channels.
+    ///
+    /// The comparison is against the same configuration written as explicit
+    /// channel rows, which would need no plan objects at all.
+    pub const fn bytes_saved(&self) -> usize {
+        self.expanded_channels * CHANNEL_ENCODED_LEN - self.plans * GENERATED_BANK_ENCODED_LEN
     }
 }
 
@@ -362,6 +420,8 @@ pub enum ValidatedBank {
 }
 
 /// One editable bank row.
+// Each flag mirrors one stored device flag bit, so they stay separate fields.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BankDraft {
     /// Bank identifier from zero to fifteen.
@@ -380,6 +440,26 @@ pub struct BankDraft {
     pub channel_count: u16,
     /// Trusted transmit classification of every generated channel.
     pub tx_class: TxClass,
+    /// Receive-side tone squelch shared by every generated channel.
+    pub rx_tone: ToneDraft,
+    /// Transmit-side tone shared by every generated channel.
+    pub tx_tone: ToneDraft,
+    /// Modulation family shared by every generated channel.
+    pub modulation: Modulation,
+    /// Occupied bandwidth shared by every generated channel.
+    pub bandwidth: Bandwidth,
+    /// Power level shared by every generated channel.
+    pub power: PowerLevel,
+    /// Manual tuning step used from a generated channel.
+    pub step_hz: u32,
+    /// Squelch level shared by every generated channel.
+    pub squelch: u8,
+    /// Skip every generated channel while scanning.
+    pub scan_skip: bool,
+    /// Inhibit transmission on a busy generated channel.
+    pub busy_lockout: bool,
+    /// Request the audio compander on every generated channel.
+    pub compander: bool,
 }
 
 impl Default for BankDraft {
@@ -393,6 +473,16 @@ impl Default for BankDraft {
             spacing_hz: 12_500,
             channel_count: 16,
             tx_class: TxClass::Never,
+            rx_tone: ToneDraft::default(),
+            tx_tone: ToneDraft::default(),
+            modulation: Modulation::Fm,
+            bandwidth: Bandwidth::Narrow,
+            power: PowerLevel::Low,
+            step_hz: 12_500,
+            squelch: 3,
+            scan_skip: false,
+            busy_lockout: false,
+            compander: false,
         }
     }
 }
@@ -411,6 +501,7 @@ impl BankDraft {
 
     /// Builds a draft from a validated generated plan.
     pub fn from_generated(bank: GeneratedBank) -> Self {
+        let template = bank.template();
         Self {
             id: bank.id().get(),
             name: bank.name().as_str().to_owned(),
@@ -419,6 +510,16 @@ impl BankDraft {
             spacing_hz: bank.spacing().as_hz(),
             channel_count: bank.channel_count(),
             tx_class: bank.tx_class(),
+            rx_tone: ToneDraft::from_tone(template.rx_tone),
+            tx_tone: ToneDraft::from_tone(template.tx_tone),
+            modulation: template.modulation,
+            bandwidth: template.bandwidth,
+            power: template.power,
+            step_hz: template.step.as_hz(),
+            squelch: template.squelch.get(),
+            scan_skip: template.flags.contains(ChannelFlags::SCAN_SKIP),
+            busy_lockout: template.flags.contains(ChannelFlags::BUSY_LOCKOUT),
+            compander: template.flags.contains(ChannelFlags::COMPANDER),
             ..Self::default()
         }
     }
@@ -451,13 +552,21 @@ impl BankDraft {
                 if self.channel_count == 0 {
                     return Err(error(scope, "channels", "must be at least one channel"));
                 }
-                GeneratedBank::linear_simplex(
+                if self.channel_count > MAX_GENERATED_CHANNELS {
+                    return Err(error(
+                        scope,
+                        "channels",
+                        format!("must be at most {MAX_GENERATED_CHANNELS} in one plan"),
+                    ));
+                }
+                GeneratedBank::linear_simplex_with(
                     BankId::new(self.id),
                     name,
                     base,
                     spacing,
                     self.channel_count,
                     self.tx_class,
+                    self.template(scope)?,
                 )
                 .map(ValidatedBank::Generated)
                 .map_err(|_| {
@@ -469,6 +578,46 @@ impl BankDraft {
                 })
             }
         }
+    }
+
+    /// Validates the per-channel settings every generated channel shares.
+    fn template(&self, scope: ModelScope) -> Result<ChannelTemplate, ModelError> {
+        Ok(ChannelTemplate {
+            rx_tone: self.rx_tone.validate(scope, "receive tone")?,
+            tx_tone: self.tx_tone.validate(scope, "transmit tone")?,
+            modulation: self.modulation,
+            bandwidth: self.bandwidth,
+            power: self.power,
+            step: FrequencyStep::from_hz(self.step_hz)
+                .map_err(|_| error(scope, "step", "must be a non-zero number of hertz"))?,
+            squelch: SquelchLevel::new(self.squelch)
+                .map_err(|_| error(scope, "squelch", "must be 0 to 9"))?,
+            flags: ChannelFlags::default()
+                .with(ChannelFlags::SCAN_SKIP, self.scan_skip)
+                .with(ChannelFlags::BUSY_LOCKOUT, self.busy_lockout)
+                .with(ChannelFlags::COMPANDER, self.compander),
+        })
+    }
+
+    /// Returns the channels this plan expands to, name and frequency in order.
+    ///
+    /// The plan is what the radio stores, so the editor shows what it becomes
+    /// rather than asking the operator to picture it. At most `limit` channels
+    /// are returned; the caller reports how many were left out.
+    pub fn expansion(&self, limit: usize) -> Vec<(String, String)> {
+        let Ok(ValidatedBank::Generated(plan)) = self.validate(0) else {
+            return Vec::new();
+        };
+        (0..plan.channel_count())
+            .take(limit)
+            .filter_map(|index| {
+                let channel = plan.channel_record(index).ok()?;
+                Some((
+                    channel.name().as_str().to_owned(),
+                    format_mhz(channel.receive().as_hz()),
+                ))
+            })
+            .collect()
     }
 
     /// Returns the first and last generated frequency when the plan is valid.
@@ -665,21 +814,57 @@ impl ProjectModel {
         });
     }
 
-    /// Returns the name of the named bank holding each addressable identifier.
+    /// Returns what each addressable bank identifier is defined as.
     ///
-    /// Channel membership only resolves against named banks, so a generated
-    /// plan never claims an entry here.
-    pub fn bank_names(&self) -> Vec<Option<String>> {
-        let mut names = vec![None; MAX_BANKS as usize];
+    /// Channel membership only resolves against named banks. A generated plan
+    /// owns its identifier too, because every channel it expands to is a member
+    /// of that bank, so the editor can say why a checkbox will not group
+    /// anything.
+    pub fn bank_slots(&self) -> Vec<Option<(BankKind, String)>> {
+        let mut slots = vec![None; MAX_BANKS as usize];
         for bank in &self.banks {
-            if !matches!(bank.kind, BankKind::Named) {
-                continue;
-            }
-            if let Some(slot) = names.get_mut(usize::from(bank.id)) {
-                *slot = Some(bank.name.trim().to_owned());
+            if let Some(slot) = slots.get_mut(usize::from(bank.id)) {
+                if slot.is_none() || matches!(bank.kind, BankKind::Named) {
+                    *slot = Some((bank.kind, bank.name.trim().to_owned()));
+                }
             }
         }
-        names
+        slots
+    }
+
+    /// Returns what this project costs a radio, and what the plans saved.
+    ///
+    /// Only rows which validate are counted, so the figures always describe a
+    /// configuration which could actually be written.
+    pub fn storage_summary(&self) -> StorageSummary {
+        let mut summary = StorageSummary::default();
+        for (row, draft) in self.banks.iter().enumerate() {
+            match draft.validate(row) {
+                Ok(ValidatedBank::Named(_)) => {
+                    summary.objects += 1;
+                    summary.bytes += CHANNEL_BANK_ENCODED_LEN;
+                }
+                Ok(ValidatedBank::Generated(plan)) => {
+                    summary.objects += 1;
+                    summary.bytes += GENERATED_BANK_ENCODED_LEN;
+                    summary.plans += 1;
+                    summary.expanded_channels += usize::from(plan.channel_count());
+                }
+                Err(_) => {}
+            }
+        }
+        for (row, draft) in self.channels.iter().enumerate() {
+            if draft.validate(row).is_ok() {
+                summary.objects += 1;
+                summary.bytes += CHANNEL_ENCODED_LEN;
+                summary.stored_channels += 1;
+            }
+        }
+        if self.config.validate().is_ok() {
+            summary.objects += 1;
+            summary.bytes += RADIO_CONFIG_ENCODED_LEN;
+        }
+        summary
     }
 
     /// Validates every row and builds one compilable project.
@@ -882,9 +1067,11 @@ fn format_tenths(tenths_hz: u16) -> String {
 mod tests {
     use super::{
         format_mhz, parse_frequency, BankDraft, BankKind, ChannelDraft, ConfigDraft, ModelScope,
-        ProjectModel, ToneDraft, ToneKind, ValidatedBank,
+        ProjectModel, ToneDraft, ToneKind, ValidatedBank, CHANNEL_ENCODED_LEN,
+        GENERATED_BANK_ENCODED_LEN, GENERATED_CHANNEL_ID_BASE,
     };
-    use radio_domain::{ScanResume, Tone, TxClass};
+    use radio_channel_plan::ChannelFlags;
+    use radio_domain::{Bandwidth, BankId, PowerLevel, ScanResume, Tone, TxClass};
 
     fn project() -> ProjectModel {
         let mut model = ProjectModel::new();
@@ -1112,6 +1299,112 @@ mod tests {
         assert_eq!(loaded.banks[0].tx_class, TxClass::LicenceFreePlan);
         assert!(loaded.channels.is_empty());
         assert_eq!(loaded.to_image().unwrap(), image);
+    }
+
+    #[test]
+    fn a_plan_template_is_edited_once_and_reaches_every_expanded_channel() {
+        let mut model = ProjectModel::new();
+        model.add_generated_bank();
+        model.banks[0].id = 2;
+        model.banks[0].name = "PMR446".to_owned();
+        model.banks[0].base_mhz = "446.00625".to_owned();
+        model.banks[0].channel_count = 8;
+        model.banks[0].bandwidth = Bandwidth::Wide;
+        model.banks[0].power = PowerLevel::Medium;
+        model.banks[0].squelch = 5;
+        model.banks[0].busy_lockout = true;
+        model.banks[0].rx_tone = ToneDraft {
+            kind: ToneKind::Ctcss,
+            value: "100.0".to_owned(),
+        };
+
+        let ValidatedBank::Generated(plan) = model.banks[0].validate(0).unwrap() else {
+            panic!("a generated row must validate into a generated plan");
+        };
+        for index in 0..plan.channel_count() {
+            let channel = plan.channel_record(index).unwrap();
+            assert_eq!(channel.bandwidth(), Bandwidth::Wide);
+            assert_eq!(channel.power(), PowerLevel::Medium);
+            assert_eq!(channel.squelch().get(), 5);
+            assert_eq!(channel.rx_tone(), Tone::Ctcss(1_000));
+            assert!(channel.flags().contains(ChannelFlags::BUSY_LOCKOUT));
+            assert!(channel.is_member_of(BankId::new(2)));
+        }
+
+        // The editor shows those channels, and the template survives storage.
+        let expansion = model.banks[0].expansion(4);
+        assert_eq!(expansion.len(), 4);
+        assert_eq!(
+            expansion[0],
+            ("PMR446 01".to_owned(), "446.006250".to_owned())
+        );
+        assert_eq!(
+            expansion[3],
+            ("PMR446 04".to_owned(), "446.043750".to_owned())
+        );
+
+        let image = model.to_image().unwrap();
+        let loaded = ProjectModel::from_image(&image).unwrap();
+        assert_eq!(loaded.banks[0].bandwidth, Bandwidth::Wide);
+        assert_eq!(loaded.banks[0].power, PowerLevel::Medium);
+        assert_eq!(loaded.banks[0].squelch, 5);
+        assert!(loaded.banks[0].busy_lockout);
+        assert_eq!(loaded.banks[0].rx_tone.value, "100.0");
+    }
+
+    #[test]
+    fn the_storage_summary_reports_what_the_plans_saved() {
+        let mut model = project();
+        let stored_only = model.storage_summary();
+        assert_eq!(stored_only.stored_channels, 1);
+        assert_eq!(stored_only.expanded_channels, 0);
+        assert_eq!(stored_only.selectable_channels(), 1);
+
+        model.add_generated_bank();
+        model.banks[1].name = "PMR446".to_owned();
+        model.banks[1].base_mhz = "446.00625".to_owned();
+        model.banks[1].channel_count = 16;
+        let summary = model.storage_summary();
+        assert_eq!(summary.stored_channels, 1);
+        assert_eq!(summary.expanded_channels, 16);
+        assert_eq!(summary.selectable_channels(), 17);
+        assert_eq!(summary.plans, 1);
+        assert_eq!(
+            summary.bytes_saved(),
+            16 * CHANNEL_ENCODED_LEN - GENERATED_BANK_ENCODED_LEN
+        );
+        // Sixteen channels for one object: the whole point of the plan.
+        assert_eq!(summary.objects, stored_only.objects + 1);
+
+        // An invalid row is not counted, so the figures always describe a
+        // configuration which could be written.
+        model.banks[1].base_mhz = "not a frequency".to_owned();
+        assert_eq!(model.storage_summary().expanded_channels, 0);
+    }
+
+    #[test]
+    fn a_stored_channel_cannot_claim_an_expanded_identifier() {
+        let mut model = project();
+        model.channels[0].id = GENERATED_CHANNEL_ID_BASE;
+        let failure = model.channels[0].validate(0).unwrap_err();
+        assert_eq!(failure.field, "id");
+        assert!(failure.detail.contains("generated plan"));
+    }
+
+    #[test]
+    fn bank_slots_name_the_plan_which_owns_an_identifier() {
+        let mut model = ProjectModel::new();
+        model.add_bank();
+        model.banks[0].id = 0;
+        model.banks[0].name = "2M".to_owned();
+        model.add_generated_bank();
+        model.banks[1].id = 4;
+        model.banks[1].name = "PMR446".to_owned();
+
+        let slots = model.bank_slots();
+        assert_eq!(slots[0], Some((BankKind::Named, "2M".to_owned())));
+        assert_eq!(slots[4], Some((BankKind::Generated, "PMR446".to_owned())));
+        assert_eq!(slots[5], None);
     }
 
     #[test]

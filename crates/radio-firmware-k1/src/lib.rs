@@ -13,6 +13,7 @@ pub mod configuration;
 #[cfg(test)]
 mod cooperative_progress;
 pub mod display;
+pub mod eeprom_bus;
 #[cfg(feature = "embassy-runtime")]
 pub mod embassy_runtime;
 pub mod keypad;
@@ -23,10 +24,11 @@ pub mod py32f071_bk4819;
 pub mod py32f071_clock_handoff;
 #[cfg(feature = "py32f071-clock-publication")]
 pub mod py32f071_clock_publication;
+#[cfg(feature = "py32f071-eeprom")]
+pub mod py32f071_eeprom;
 #[cfg(feature = "py32f071-hal-inventory")]
 pub mod py32f071_hal_inventory;
-#[cfg(feature = "py32f071-retained")]
-pub mod py32f071_retained;
+
 #[cfg(feature = "py32f071-runtime-composition")]
 pub mod py32f071_runtime;
 #[cfg(feature = "py32f071-runtime-init")]

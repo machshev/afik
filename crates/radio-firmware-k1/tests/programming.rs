@@ -17,9 +17,11 @@ use radio_domain::{
 use radio_firmware_k1::configuration::{
     device_service, Programmed, MAX_CHANNELS, MAX_OBJECTS, RETAINED_IMAGE_BYTES,
 };
-use radio_programmer::{
-    CompileError, Programmer, ProgrammerError, ProtocolTransport, RadioProject,
-};
+/// The region the K1 image claims in external memory for its configuration.
+const CONFIGURATION_BYTES: u32 = 4_096;
+#[allow(unused_imports)]
+use radio_firmware_k1::configuration::kind_limits as _kind_limits;
+use radio_programmer::{Programmer, ProgrammerError, ProtocolTransport, RadioProject};
 use radio_protocol::{Command, DeviceErrorCode, MAX_ENCODED_FRAME};
 
 /// The device service behind an in-process byte stream.
@@ -31,7 +33,7 @@ struct DeviceTransport {
 impl DeviceTransport {
     fn new() -> Self {
         Self {
-            service: device_service(),
+            service: device_service(CONFIGURATION_BYTES),
             queue: std::collections::VecDeque::new(),
         }
     }
@@ -187,7 +189,7 @@ fn a_written_configuration_survives_the_retained_image_round_trip() {
     assert!(length <= RETAINED_IMAGE_BYTES);
 
     // A restart restores from those exact bytes and reaches the same state.
-    let mut restarted = device_service();
+    let mut restarted = device_service(CONFIGURATION_BYTES);
     assert_eq!(restarted.load_image(&image[..length]), Ok(1));
     assert_eq!(
         Programmed::from_objects(restarted.active_objects()).expect("restored"),
@@ -221,34 +223,67 @@ fn more_channels_than_the_interface_can_select_are_refused_before_activation() {
 }
 
 #[test]
-fn a_compact_generated_plan_is_refused_before_the_radio_is_contacted() {
+fn a_compact_generated_plan_is_written_once_and_expands_on_the_radio() {
+    use radio_channel_control::ChannelSource;
     use radio_channel_plan::{GeneratedBank, PlanEncoding};
 
-    let programmer = Programmer::connect(DeviceTransport::new()).expect("connect");
+    let mut programmer = Programmer::connect(DeviceTransport::new()).expect("connect");
     assert_eq!(
         programmer.capabilities().plan_encodings,
-        0,
-        "this image activates explicit channel records only"
+        PlanEncoding::LinearSimplex.capability_bit(),
+        "this image expands linear simplex plans itself"
     );
+
     let mut project = RadioProject::new();
     project.add_generated_bank(
         GeneratedBank::linear_simplex(
-            BankId::new(0),
-            BankName::new("PLAN").expect("name"),
-            Frequency::from_hz(145_000_000).expect("frequency"),
+            BankId::new(3),
+            BankName::new("PMR446").expect("name"),
+            Frequency::from_hz(446_006_250).expect("frequency"),
             FrequencyStep::from_hz(12_500).expect("step"),
-            8,
+            16,
             TxClass::Never,
         )
         .expect("generated bank"),
     );
-    let error = programmer
+    let compiled = programmer
         .compiler()
         .compile(&project)
-        .expect_err("an unsupported encoding is rejected offline");
+        .expect("compile against negotiated capabilities");
+    // Sixteen channels cost one object, which is the whole point of the plan.
+    assert_eq!(compiled.report().object_count, 1);
+    programmer
+        .write_configuration_verified(&compiled)
+        .expect("transactional write with read-back");
+
+    let activated = Programmed::from_objects(programmer.transport().service.active_objects())
+        .expect("programmed configuration");
+    assert_eq!(activated.channel_count(), 16);
     assert_eq!(
-        error,
-        CompileError::UnsupportedPlanEncoding(PlanEncoding::LinearSimplex)
+        activated.memory().stored_len(),
+        0,
+        "no channel record was stored for an expanded channel"
     );
-    assert_eq!(programmer.transport().service.generation(), 0);
+    let first = activated.memory().get(0).expect("first expanded channel");
+    assert_eq!(first.name().as_str(), "PMR446 01");
+    assert_eq!(first.receive().as_hz(), 446_006_250);
+    assert_eq!(first.tx_class(), TxClass::Never);
+    assert!(first.is_member_of(BankId::new(3)));
+    assert_eq!(
+        activated.memory().get(15).expect("last").receive().as_hz(),
+        446_193_750
+    );
+
+    // The plan names and populates its own bank, so the operator can filter to
+    // it without a named-bank object beside it.
+    let (banks, count) = activated.populated_banks();
+    assert_eq!(count, 1);
+    assert_eq!(banks[0], Some(BankId::new(3)));
+    assert_eq!(
+        activated
+            .bank_name(BankId::new(3))
+            .expect("plan name")
+            .as_str(),
+        "PMR446"
+    );
 }

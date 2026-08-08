@@ -6,11 +6,13 @@ use std::{
 };
 
 use eframe::egui::{self, ComboBox, Grid, RichText, ScrollArea, TextEdit};
+use radio_channel_plan::MAX_GENERATED_CHANNELS;
 use radio_domain::{
     Bandwidth, Modulation, PowerLevel, ScanResume, TxClass, BACKLIGHT_ALWAYS_ON,
     MAX_BATTERY_SAVE_RATIO, MAX_SQUELCH_LEVEL,
 };
 use radio_programmer::CapacityReport;
+use radio_storage::{CHANNEL_ENCODED_LEN, GENERATED_BANK_ENCODED_LEN};
 
 use radio_programmer_serial::SUPPORTED_BAUDS;
 
@@ -18,8 +20,8 @@ use crate::{
     device::{self, DeviceCandidate, DeviceChoice, DeviceChooser},
     flash::{self, FlashJob, FlashOperation, FlashProgress, FlashRequest},
     model::{
-        BankDraft, BankKind, ChannelDraft, ModelError, ProjectModel, ToneDraft, ToneKind,
-        MAX_PROJECT_IMAGE_BYTES,
+        BankDraft, BankKind, ChannelDraft, ModelError, ProjectModel, StorageSummary, ToneDraft,
+        ToneKind, MAX_PROJECT_IMAGE_BYTES,
     },
     presets::PRESETS,
     session::DeviceSession,
@@ -27,6 +29,8 @@ use crate::{
 };
 
 const BANK_COUNT: u16 = 16;
+/// Channels of one generated plan the editor lists before summarising the rest.
+const EXPANSION_PREVIEW_ROWS: usize = 32;
 /// Colour used for advisory text which is not a validation failure.
 const WARNING_COLOUR: egui::Color32 = egui::Color32::from_rgb(0xB7, 0x6E, 0x00);
 
@@ -457,19 +461,33 @@ impl StudioApp {
         ui.separator();
     }
 
+    /// Returns the configuration bytes the connected radio declares, if any.
+    ///
+    /// Offline there is no radio to ask, and a project can be written to any of
+    /// them, so no capacity is claimed rather than one being invented.
+    fn configuration_capacity(&self) -> u32 {
+        self.session
+            .as_ref()
+            .map_or(0, |session| session.capabilities().configuration_bytes)
+    }
+
     fn channels_tab(&mut self, ui: &mut egui::Ui) {
         self.project_bar(ui);
         ui.horizontal_wrapped(|ui| {
             if ui.button("Add channel").clicked() {
                 self.project.add_channel();
             }
-            ui.label(format!("{} channels", self.project.channels.len()));
+            ui.label(format!("{} channel rows", self.project.channels.len()));
         });
+        let summary = self.project.storage_summary();
+        storage_summary_label(ui, &summary);
+        configuration_space_label(ui, self.configuration_capacity(), &summary);
         ui.separator();
 
         // Membership only means something for a named bank, so each checkbox
-        // says which bank it joins and whether that bank exists yet.
-        let bank_names = self.project.bank_names();
+        // says which bank it joins, whether that bank exists yet, and whether
+        // the identifier already belongs to a plan the radio expands.
+        let bank_slots = self.project.bank_slots();
         let mut action = None;
         ScrollArea::both().show(ui, |ui| {
             for (row, channel) in self.project.channels.iter_mut().enumerate() {
@@ -477,7 +495,7 @@ impl StudioApp {
                     egui::CollapsingHeader::new(channel_row_label(row, channel))
                         .default_open(true)
                         .show(ui, |ui| {
-                            if let Some(requested) = channel_row_editor(ui, channel, &bank_names) {
+                            if let Some(requested) = channel_row_editor(ui, channel, &bank_slots) {
                                 action = Some((requested, row));
                             }
                         });
@@ -505,6 +523,9 @@ impl StudioApp {
             }
             ui.label(format!("{} banks", self.project.banks.len()));
         });
+        let summary = self.project.storage_summary();
+        storage_summary_label(ui, &summary);
+        configuration_space_label(ui, self.configuration_capacity(), &summary);
         // A compact plan is only storable on a target which advertises the
         // encoding, so say so before the operator writes one.
         if self
@@ -950,7 +971,7 @@ enum RowAction {
 fn channel_row_editor(
     ui: &mut egui::Ui,
     channel: &mut ChannelDraft,
-    bank_names: &[Option<String>],
+    bank_slots: &[Option<(BankKind, String)>],
 ) -> Option<RowAction> {
     Grid::new("channel").num_columns(4).show(ui, |ui| {
         ui.label("Id");
@@ -1001,8 +1022,12 @@ fn channel_row_editor(
             for bank in 0..BANK_COUNT {
                 let index = usize::from(bank);
                 let response = ui.checkbox(&mut channel.banks[index], format!("{bank}"));
-                match bank_names.get(index).and_then(Option::as_ref) {
-                    Some(name) => response.on_hover_text(name.clone()),
+                match bank_slots.get(index).and_then(Option::as_ref) {
+                    Some((BankKind::Named, name)) => response.on_hover_text(name.clone()),
+                    Some((BankKind::Generated, name)) => response.on_hover_text(format!(
+                        "{name} is a generated plan; the radio expands its own channels \
+                         into this bank and a stored channel cannot join them"
+                    )),
                     None => response.on_hover_text("no named bank defines this identifier"),
                 };
             }
@@ -1053,7 +1078,9 @@ fn bank_row_editor(ui: &mut egui::Ui, bank: &mut BankDraft) -> bool {
                 ui.end_row();
 
                 ui.label("Channels");
-                ui.add(egui::DragValue::new(&mut bank.channel_count).range(1..=u16::MAX));
+                ui.add(
+                    egui::DragValue::new(&mut bank.channel_count).range(1..=MAX_GENERATED_CHANNELS),
+                );
                 ui.label("TX class");
                 tx_class_editor(ui, &mut bank.tx_class);
                 ui.end_row();
@@ -1069,10 +1096,129 @@ fn bank_row_editor(ui: &mut egui::Ui, bank: &mut BankDraft) -> bool {
                     }
                 };
                 ui.end_row();
+
+                // Every expanded channel shares these settings: they are stored
+                // once with the plan, not once per channel.
+                ui.label("RX tone");
+                tone_editor(ui, "plan-rx", &mut bank.rx_tone);
+                ui.label("TX tone");
+                tone_editor(ui, "plan-tx", &mut bank.tx_tone);
+                ui.end_row();
+
+                ui.label("Modulation");
+                modulation_editor(ui, &mut bank.modulation);
+                ui.label("Bandwidth");
+                bandwidth_editor(ui, &mut bank.bandwidth);
+                ui.end_row();
+
+                ui.label("Power");
+                power_editor(ui, &mut bank.power);
+                ui.label("Step Hz");
+                ui.add(egui::DragValue::new(&mut bank.step_hz).speed(125.0));
+                ui.end_row();
+
+                ui.label("Squelch");
+                ui.add(egui::DragValue::new(&mut bank.squelch).range(0..=MAX_SQUELCH_LEVEL));
+                ui.label("Flags");
+                ui.horizontal_wrapped(|ui| {
+                    ui.checkbox(&mut bank.scan_skip, "Scan skip");
+                    ui.checkbox(&mut bank.busy_lockout, "Busy lockout");
+                    ui.checkbox(&mut bank.compander, "Compander");
+                });
+                ui.end_row();
             }
         }
     });
+    if matches!(bank.kind, BankKind::Generated) {
+        generated_expansion(ui, bank);
+    }
     ui.button("Remove bank").clicked()
+}
+
+/// Shows the channels one stored plan becomes on the radio.
+///
+/// The plan is the only thing written, so this is the operator's view of what
+/// the radio will build from it: the same names, order, and frequencies the
+/// channel list will show.
+fn generated_expansion(ui: &mut egui::Ui, bank: &BankDraft) {
+    let expansion = bank.expansion(EXPANSION_PREVIEW_ROWS);
+    if expansion.is_empty() {
+        ui.colored_label(
+            WARNING_COLOUR,
+            "this plan does not yet describe any channel the radio could expand",
+        );
+        return;
+    }
+    let stored = GENERATED_BANK_ENCODED_LEN;
+    let explicit = usize::from(bank.channel_count) * CHANNEL_ENCODED_LEN;
+    egui::CollapsingHeader::new(format!(
+        "Expands to {} channels on the radio: {stored} stored bytes instead of {explicit}",
+        bank.channel_count
+    ))
+    .default_open(false)
+    .show(ui, |ui| {
+        Grid::new("expansion").num_columns(2).show(ui, |ui| {
+            for (name, receive) in &expansion {
+                ui.label(name);
+                ui.label(format!("{receive} MHz"));
+                ui.end_row();
+            }
+        });
+        let shown = u16::try_from(expansion.len()).unwrap_or(u16::MAX);
+        if bank.channel_count > shown {
+            ui.label(format!(
+                "{} further channels follow the same plan.",
+                bank.channel_count - shown
+            ));
+        }
+    });
+}
+
+/// Reports how much of a connected radio's configuration memory is left.
+///
+/// The capacity is the radio's own declared bound, not a host guess, so this
+/// says nothing at all when no radio is connected or when one declares none.
+fn configuration_space_label(ui: &mut egui::Ui, capacity: u32, summary: &StorageSummary) {
+    if capacity == 0 {
+        return;
+    }
+    let used = u32::try_from(summary.image_bytes()).unwrap_or(u32::MAX);
+    let remaining = capacity.saturating_sub(used);
+    let text =
+        format!("Radio configuration memory: {used} of {capacity} bytes used, {remaining} free.");
+    if used > capacity {
+        ui.colored_label(
+            WARNING_COLOUR,
+            format!(
+                "Radio configuration memory: {used} bytes needed, {capacity} available. \
+                 This project is {} bytes too large to write.",
+                used - capacity
+            ),
+        );
+    } else {
+        ui.label(text);
+    }
+}
+
+/// Reports what the project costs a radio and what its plans saved.
+fn storage_summary_label(ui: &mut egui::Ui, summary: &StorageSummary) {
+    let saving = if summary.expanded_channels > 0 {
+        format!(
+            " Plans saved {} bytes against storing those channels.",
+            summary.bytes_saved()
+        )
+    } else {
+        String::new()
+    };
+    ui.label(format!(
+        "{} selectable channels: {} stored, {} expanded from plans. \
+         {} objects, {} stored bytes.{saving}",
+        summary.selectable_channels(),
+        summary.stored_channels,
+        summary.expanded_channels,
+        summary.objects,
+        summary.bytes,
+    ));
 }
 
 fn bank_kind_editor(ui: &mut egui::Ui, kind: &mut BankKind) {

@@ -186,6 +186,12 @@ pub const MAX_SQUELCH_LEVEL: u8 = 9;
 pub struct SquelchLevel(u8);
 
 impl SquelchLevel {
+    /// The level at which carrier squelch is disabled and audio always passes.
+    pub const OPEN: Self = Self(0);
+
+    /// The level a radio uses until an operator chooses another.
+    pub const CONSERVATIVE: Self = Self(3);
+
     /// Constructs a squelch level inside the accepted envelope.
     pub const fn new(level: u8) -> Result<Self, DomainError> {
         if level > MAX_SQUELCH_LEVEL {
@@ -357,7 +363,7 @@ impl RadioConfig {
     /// Returns a conservative default configuration.
     pub const fn conservative() -> Self {
         Self {
-            squelch: SquelchLevel(3),
+            squelch: SquelchLevel::CONSERVATIVE,
             backlight_seconds: 10,
             scan_resume: ScanResume::TimeOut,
             scan_dwell_ms: 150,

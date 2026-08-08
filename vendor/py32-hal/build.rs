@@ -852,7 +852,7 @@ fn main() {
         (("sai", "WS"), quote!(crate::sai::WsPin)),
         (("spi", "SCK"), quote!(crate::spi::SckPin)),
         (("spi", "MOSI"), quote!(crate::spi::MosiPin)),
-        // (("spi", "MISO"), quote!(crate::spi::MisoPin)),
+        (("spi", "MISO"), quote!(crate::spi::MisoPin)),
         // (("spi", "NSS"), quote!(crate::spi::CsPin)),
         // (("spi", "I2S_MCK"), quote!(crate::spi::MckPin)),
         // (("spi", "I2S_CK"), quote!(crate::spi::CkPin)),

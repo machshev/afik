@@ -9,14 +9,17 @@
 //! host programmed, and the image constructs no transmit path, so a channel
 //! programmed as transmittable still cannot key this radio.
 
-use radio_channel_control::{ChannelMemory, ChannelSource};
-use radio_channel_plan::{ChannelBank, MAX_BANKS as PLAN_MAX_BANKS};
+use radio_channel_control::{ChannelSource, ProgrammedMemory};
+use radio_channel_plan::{
+    BankName, ChannelBank, GeneratedBank, PlanEncoding, MAX_BANKS as PLAN_MAX_BANKS,
+};
 use radio_device::{DeviceService, KindLimits};
 use radio_domain::{BankId, RadioConfig};
 use radio_storage::{
-    decode_channel, decode_channel_bank, decode_radio_config, ObjectKind, StorageError,
-    StorageObject, CHANNEL_BANK_ENCODED_LEN, CHANNEL_ENCODED_LEN, CONFIGURATION_IMAGE_HEADER_LEN,
-    CONFIGURATION_IMAGE_OBJECT_HEADER_LEN, RADIO_CONFIG_ENCODED_LEN,
+    decode_channel, decode_channel_bank, decode_generated_bank, decode_radio_config, ObjectKind,
+    StorageError, StorageObject, CHANNEL_BANK_ENCODED_LEN, CHANNEL_ENCODED_LEN,
+    CONFIGURATION_IMAGE_HEADER_LEN, CONFIGURATION_IMAGE_OBJECT_HEADER_LEN,
+    GENERATED_BANK_ENCODED_LEN, RADIO_CONFIG_ENCODED_LEN,
 };
 
 /// Channels this image stores and selects.
@@ -28,13 +31,39 @@ use radio_storage::{
 pub const MAX_CHANNELS: usize = 12;
 
 /// Named banks this image stores.
-pub const MAX_BANKS: usize = PLAN_MAX_BANKS as usize;
+///
+/// Every bank object occupies a full fixed-size slot in both the active and the
+/// candidate snapshot, so a named bank costs this image far more RAM than its
+/// twenty-two encoded bytes. Eight is what the retained store can afford beside
+/// the channels, the plans, and a working stack; the membership mask still
+/// addresses sixteen, so a project using a higher identifier is refused at
+/// validation rather than silently dropped.
+pub const MAX_BANKS: usize = 8;
+
+// A bank this image stores must be addressable by a channel membership mask.
+const _: () = assert!(MAX_BANKS <= PLAN_MAX_BANKS as usize);
+
+/// Generated plans this image stores and expands.
+///
+/// A plan costs one stored object however many channels it holds, so this bound
+/// buys channels cheaply. It is set by RAM rather than by the retained-image
+/// budget: the configuration is held and copied by value, so every slot is paid
+/// for in each copy whether or not a plan occupies it, and the stack headroom
+/// the executor and the interrupt frames need is what limits it.
+pub const MAX_GENERATED_BANKS: usize = 2;
+
+/// Channels this image will expand from stored plans.
+///
+/// Expansion is arithmetic and holds no memory, but selection, the channel
+/// list, and scanning all walk the whole space, so the operator interface stays
+/// responsive only while that space is bounded.
+pub const MAX_EXPANDED_CHANNELS: u16 = 128;
 
 /// Configuration objects the device advertises and accepts.
 ///
-/// The bound is the sum of what this image can use: every channel, every bank,
-/// and the singleton radio configuration.
-pub const MAX_OBJECTS: usize = MAX_CHANNELS + MAX_BANKS + 1;
+/// The bound is the sum of what this image can use: every channel, every named
+/// bank, every generated plan, and the singleton radio configuration.
+pub const MAX_OBJECTS: usize = MAX_CHANNELS + MAX_BANKS + MAX_GENERATED_BANKS + 1;
 
 /// Bytes reserved for the retained canonical configuration image.
 ///
@@ -46,6 +75,7 @@ pub const RETAINED_IMAGE_BYTES: usize = 1_280;
 pub const MAX_CONFIGURATION_IMAGE_BYTES: usize = CONFIGURATION_IMAGE_HEADER_LEN
     + MAX_CHANNELS * (CONFIGURATION_IMAGE_OBJECT_HEADER_LEN + CHANNEL_ENCODED_LEN)
     + MAX_BANKS * (CONFIGURATION_IMAGE_OBJECT_HEADER_LEN + CHANNEL_BANK_ENCODED_LEN)
+    + MAX_GENERATED_BANKS * (CONFIGURATION_IMAGE_OBJECT_HEADER_LEN + GENERATED_BANK_ENCODED_LEN)
     + (CONFIGURATION_IMAGE_OBJECT_HEADER_LEN + RADIO_CONFIG_ENCODED_LEN);
 
 // A retained region which cannot hold the largest programmable configuration
@@ -60,9 +90,7 @@ const _: () = assert!(MAX_CONFIGURATION_IMAGE_BYTES <= RETAINED_IMAGE_BYTES);
 #[must_use]
 pub fn kind_limits() -> KindLimits {
     KindLimits {
-        // This image selects explicit channel records, so it activates no
-        // compact generated plan.
-        generated_banks: 0,
+        generated_banks: u16::try_from(MAX_GENERATED_BANKS).unwrap_or(u16::MAX),
         channels: u16::try_from(MAX_CHANNELS).unwrap_or(u16::MAX),
         channel_banks: u16::try_from(MAX_BANKS).unwrap_or(u16::MAX),
         radio_configs: 1,
@@ -71,8 +99,16 @@ pub fn kind_limits() -> KindLimits {
 
 /// Constructs the configuration service this image exposes over serial.
 #[must_use]
-pub fn device_service() -> DeviceService<MAX_OBJECTS> {
-    DeviceService::with_limits(0, kind_limits())
+pub fn device_service(configuration_bytes: u32) -> DeviceService<MAX_OBJECTS> {
+    // This image expands linear simplex plans itself, so it advertises that
+    // encoding and the host may compile one for it. The stored-configuration
+    // bound is the external-memory region the image claimed, so a host can say
+    // how much room a project leaves before writing it.
+    DeviceService::with_configuration_capacity(
+        PlanEncoding::LinearSimplex.capability_bit(),
+        kind_limits(),
+        configuration_bytes,
+    )
 }
 
 /// Why an active object snapshot cannot become a programmed configuration.
@@ -82,6 +118,10 @@ pub enum ConfigurationError {
     Object(StorageError),
     /// More channels were stored than this image can select.
     TooManyChannels,
+    /// Stored plans expanded to more channels than this image can select.
+    TooManyExpandedChannels,
+    /// More generated plans were stored than this image can expand.
+    TooManyPlans,
     /// A bank identifier was outside the addressable range.
     BankOutOfRange,
     /// The programmed global configuration failed revalidation.
@@ -91,7 +131,7 @@ pub enum ConfigurationError {
 /// One complete programmed configuration ready to drive the receiver.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Programmed {
-    memory: ChannelMemory<MAX_CHANNELS>,
+    memory: ProgrammedMemory<MAX_CHANNELS, MAX_GENERATED_BANKS>,
     banks: [Option<ChannelBank>; MAX_BANKS],
     config: RadioConfig,
 }
@@ -107,7 +147,7 @@ impl Programmed {
     #[must_use]
     pub const fn empty() -> Self {
         Self {
-            memory: ChannelMemory::new(),
+            memory: ProgrammedMemory::new(),
             banks: [None; MAX_BANKS],
             config: RadioConfig::conservative(),
         }
@@ -115,9 +155,10 @@ impl Programmed {
 
     /// Builds a configuration from one active object snapshot.
     ///
-    /// Generated banks are accepted by storage but are not expanded here: this
-    /// image selects explicit channel records only, so a radio programmed with
-    /// a compact plan reports no channels rather than inventing names for them.
+    /// Both channel kinds land in one selection space: an explicit record costs
+    /// one stored object, and a generated plan costs one stored object for
+    /// every channel it expands to. Nothing is expanded eagerly; only the
+    /// resulting channel count is checked against what this image can select.
     pub fn from_objects<'a, I>(objects: I) -> Result<Self, ConfigurationError>
     where
         I: IntoIterator<Item = &'a StorageObject>,
@@ -146,15 +187,24 @@ impl Programmed {
                         .validate()
                         .map_err(|_| ConfigurationError::InvalidConfig)?;
                 }
-                ObjectKind::GeneratedBank => {}
+                ObjectKind::GeneratedBank => {
+                    let plan = decode_generated_bank(object).map_err(ConfigurationError::Object)?;
+                    programmed
+                        .memory
+                        .install(plan)
+                        .map_err(|_| ConfigurationError::TooManyPlans)?;
+                }
             }
+        }
+        if programmed.memory.expanded_len() > MAX_EXPANDED_CHANNELS {
+            return Err(ConfigurationError::TooManyExpandedChannels);
         }
         Ok(programmed)
     }
 
-    /// Returns the ordered channel store.
+    /// Returns the ordered channel store, stored channels and plans together.
     #[must_use]
-    pub const fn memory(&self) -> ChannelMemory<MAX_CHANNELS> {
+    pub const fn memory(&self) -> ProgrammedMemory<MAX_CHANNELS, MAX_GENERATED_BANKS> {
         self.memory
     }
 
@@ -182,19 +232,33 @@ impl Programmed {
         self.banks.get(usize::from(bank.get())).copied().flatten()
     }
 
-    /// Returns the banks at least one programmed channel belongs to.
+    /// Returns the name to show for one bank.
+    ///
+    /// A generated plan names its own bank, so a radio programmed with plans
+    /// alone still shows the operator what each filter selects.
+    #[must_use]
+    pub fn bank_name(&self, bank: BankId) -> Option<BankName> {
+        self.bank(bank)
+            .map(ChannelBank::name)
+            .or_else(|| self.memory.plan(bank).map(GeneratedBank::name))
+    }
+
+    /// Returns the banks at least one selectable channel belongs to.
     ///
     /// The result is ordered by bank identifier and contains no bank without
-    /// members, so a bank filter can never select an empty view.
+    /// members, so a bank filter can never select an empty view. A generated
+    /// plan populates its own bank, because every channel it expands to is a
+    /// member of it.
     #[must_use]
     pub fn populated_banks(&self) -> ([Option<BankId>; MAX_BANKS], usize) {
         let mut banks = [None; MAX_BANKS];
         let mut count = 0;
         for raw in 0..u16::try_from(MAX_BANKS).unwrap_or(u16::MAX) {
             let bank = BankId::new(raw);
-            let populated = (0..self.memory.len())
-                .filter_map(|index| self.memory.get(index))
-                .any(|channel| channel.banks().contains(bank));
+            let populated = self.memory.plan(bank).is_some()
+                || (0..self.memory.stored_len())
+                    .filter_map(|index| self.memory.get(index))
+                    .any(|channel| channel.banks().contains(bank));
             if populated {
                 banks[count] = Some(bank);
                 count += 1;
@@ -206,19 +270,19 @@ impl Programmed {
 
 #[cfg(test)]
 mod tests {
-    use super::{ConfigurationError, Programmed, MAX_CHANNELS, MAX_OBJECTS};
+    use super::{ConfigurationError, Programmed, MAX_CHANNELS, MAX_EXPANDED_CHANNELS, MAX_OBJECTS};
     use radio_channel_control::ChannelSource;
     use radio_channel_plan::{
         BankFlags, BankMask, BankName, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
-        ChannelRecord,
+        ChannelRecord, GeneratedBank,
     };
     use radio_domain::{
         Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel,
         RadioConfig, SquelchLevel, Tone, TxClass,
     };
     use radio_storage::{
-        encode_channel, encode_channel_bank, encode_radio_config, ObjectKey, ObjectKind,
-        StorageObject,
+        encode_channel, encode_channel_bank, encode_generated_bank, encode_radio_config, ObjectKey,
+        ObjectKind, StorageObject,
     };
 
     fn channel(id: u16, hz: u32, banks: BankMask) -> ChannelRecord {
@@ -276,6 +340,71 @@ mod tests {
         let (banks, count) = programmed.populated_banks();
         assert_eq!(count, 1);
         assert_eq!(banks[0], Some(bank));
+    }
+
+    #[test]
+    fn stored_channels_and_expanded_plans_occupy_one_selection_space() {
+        let plan = GeneratedBank::linear_simplex(
+            BankId::new(5),
+            BankName::new("PMR446").expect("name"),
+            Frequency::from_hz(446_006_250).expect("frequency"),
+            FrequencyStep::from_hz(12_500).expect("step"),
+            16,
+            TxClass::Never,
+        )
+        .expect("plan");
+        let objects = [
+            encode_generated_bank(plan).expect("plan object"),
+            encode_channel(channel(1, 145_500_000, BankMask::default())).expect("channel"),
+        ];
+        let programmed = Programmed::from_objects(objects.iter()).expect("programmed");
+
+        assert_eq!(programmed.channel_count(), 17);
+        assert_eq!(programmed.memory().stored_len(), 1);
+        assert_eq!(programmed.memory().expanded_len(), 16);
+        assert_eq!(programmed.memory().get(0).expect("stored").id().get(), 1);
+        assert_eq!(
+            programmed
+                .memory()
+                .get(1)
+                .expect("expanded")
+                .name()
+                .as_str(),
+            "PMR446 01"
+        );
+
+        // The plan names and populates its own bank without a named-bank object.
+        let (banks, count) = programmed.populated_banks();
+        assert_eq!(count, 1);
+        assert_eq!(banks[0], Some(BankId::new(5)));
+        assert_eq!(
+            programmed
+                .bank_name(BankId::new(5))
+                .expect("plan name")
+                .as_str(),
+            "PMR446"
+        );
+        assert_eq!(programmed.bank(BankId::new(5)), None);
+    }
+
+    #[test]
+    fn plans_expanding_past_what_the_interface_selects_are_refused() {
+        let objects = [encode_generated_bank(
+            GeneratedBank::linear_simplex(
+                BankId::new(0),
+                BankName::new("BIG").expect("name"),
+                Frequency::from_hz(400_000_000).expect("frequency"),
+                FrequencyStep::from_hz(12_500).expect("step"),
+                MAX_EXPANDED_CHANNELS + 1,
+                TxClass::Never,
+            )
+            .expect("plan"),
+        )
+        .expect("plan object")];
+        assert_eq!(
+            Programmed::from_objects(objects.iter()),
+            Err(ConfigurationError::TooManyExpandedChannels)
+        );
     }
 
     #[test]

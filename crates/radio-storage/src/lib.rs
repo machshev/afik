@@ -6,7 +6,7 @@
 use core::fmt;
 use radio_channel_plan::{
     BankFlags, BankMask, BankName, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
-    ChannelRecord, GeneratedBank, MAX_BANK_NAME_LEN, MAX_CHANNEL_NAME_LEN,
+    ChannelRecord, ChannelTemplate, GeneratedBank, MAX_BANK_NAME_LEN, MAX_CHANNEL_NAME_LEN,
 };
 use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, RadioConfig,
@@ -14,16 +14,20 @@ use radio_domain::{
 };
 
 /// Current object encoding version.
-pub const STORAGE_FORMAT_VERSION: u8 = 1;
+///
+/// Version 2 carries the per-channel template inside a generated bank, so one
+/// stored plan expands to complete channel records rather than bare
+/// frequencies. Version 1 objects are rejected rather than guessed at.
+pub const STORAGE_FORMAT_VERSION: u8 = 2;
 /// Maximum bytes held by one device object in the first storage model.
 pub const MAX_OBJECT_DATA: usize = 64;
-/// Encoded byte length of a version-1 generated-bank object.
-pub const GENERATED_BANK_ENCODED_LEN: usize = 31;
-/// Encoded byte length of a version-1 explicit channel object.
+/// Encoded byte length of a version-2 generated-bank object.
+pub const GENERATED_BANK_ENCODED_LEN: usize = 46;
+/// Encoded byte length of a version-2 explicit channel object.
 pub const CHANNEL_ENCODED_LEN: usize = 42;
-/// Encoded byte length of a version-1 named channel-bank object.
+/// Encoded byte length of a version-2 named channel-bank object.
 pub const CHANNEL_BANK_ENCODED_LEN: usize = 22;
-/// Encoded byte length of a version-1 global radio-configuration object.
+/// Encoded byte length of a version-2 global radio-configuration object.
 pub const RADIO_CONFIG_ENCODED_LEN: usize = 16;
 /// Stable identifier of the single global radio-configuration object.
 pub const RADIO_CONFIG_OBJECT_ID: u16 = 0;
@@ -366,6 +370,15 @@ pub fn encode_generated_bank(bank: GeneratedBank) -> Result<StorageObject, Stora
     data[24..28].copy_from_slice(&bank.spacing().as_hz().to_le_bytes());
     data[28..30].copy_from_slice(&bank.channel_count().to_le_bytes());
     data[30] = bank.tx_class() as u8;
+    let template = bank.template();
+    encode_tone(template.rx_tone, &mut data[31..34]);
+    encode_tone(template.tx_tone, &mut data[34..37]);
+    data[37] = template.modulation as u8;
+    data[38] = template.bandwidth as u8;
+    data[39] = template.power as u8;
+    data[40..44].copy_from_slice(&template.step.as_hz().to_le_bytes());
+    data[44] = template.squelch.get();
+    data[45] = template.flags.bits();
     StorageObject::new(
         ObjectKey {
             kind: ObjectKind::GeneratedBank,
@@ -399,13 +412,25 @@ pub fn decode_generated_bank(object: &StorageObject) -> Result<GeneratedBank, St
             .map_err(|_| StorageError::MalformedObject)?;
     let channel_count = u16::from_le_bytes([data[28], data[29]]);
     let tx_class = TxClass::try_from(data[30]).map_err(|_| StorageError::MalformedObject)?;
-    GeneratedBank::linear_simplex(
+    let template = ChannelTemplate {
+        rx_tone: decode_tone(&data[31..34])?,
+        tx_tone: decode_tone(&data[34..37])?,
+        modulation: Modulation::try_from(data[37]).map_err(|_| StorageError::MalformedObject)?,
+        bandwidth: Bandwidth::try_from(data[38]).map_err(|_| StorageError::MalformedObject)?,
+        power: PowerLevel::try_from(data[39]).map_err(|_| StorageError::MalformedObject)?,
+        step: FrequencyStep::from_hz(u32::from_le_bytes([data[40], data[41], data[42], data[43]]))
+            .map_err(|_| StorageError::MalformedObject)?,
+        squelch: SquelchLevel::new(data[44]).map_err(|_| StorageError::MalformedObject)?,
+        flags: ChannelFlags::from_bits(data[45]).map_err(|_| StorageError::MalformedObject)?,
+    };
+    GeneratedBank::linear_simplex_with(
         BankId::new(id),
         name,
         base,
         spacing,
         channel_count,
         tx_class,
+        template,
     )
     .map_err(|_| StorageError::MalformedObject)
 }
@@ -926,7 +951,7 @@ mod tests {
     };
     use radio_channel_plan::{
         BankFlags, BankMask, BankName, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
-        ChannelRecord, GeneratedBank,
+        ChannelRecord, ChannelTemplate, GeneratedBank, GENERATED_CHANNEL_ID_BASE,
     };
     use radio_domain::{
         Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel,
@@ -935,13 +960,26 @@ mod tests {
     use std::{vec, vec::Vec};
 
     fn bank(id: u16, name: &str) -> GeneratedBank {
-        GeneratedBank::linear_simplex(
+        GeneratedBank::linear_simplex_with(
             BankId::new(id),
             BankName::new(name).unwrap(),
             Frequency::from_hz(446_006_250).unwrap(),
             FrequencyStep::from_hz(12_500).unwrap(),
             16,
             TxClass::LicenceFreePlan,
+            // A template unlike the conservative default, so the round trip
+            // proves every per-channel field survives storage.
+            ChannelTemplate {
+                rx_tone: Tone::Ctcss(1_000),
+                tx_tone: Tone::Dcs {
+                    code: 23,
+                    inverted: true,
+                },
+                power: PowerLevel::Medium,
+                squelch: SquelchLevel::new(4).unwrap(),
+                flags: ChannelFlags::default().with(ChannelFlags::BUSY_LOCKOUT, true),
+                ..ChannelTemplate::narrow_fm(FrequencyStep::from_hz(12_500).unwrap())
+            },
         )
         .unwrap()
     }
@@ -1233,7 +1271,7 @@ mod tests {
 
     #[test]
     fn canonical_image_has_an_exact_format_and_round_trips() {
-        let object = encode_generated_bank(bank(0x1234, "A")).unwrap();
+        let object = encode_generated_bank(bank(4, "A")).unwrap();
         let image_len = configuration_image_len(&[object]).unwrap();
         let mut image = vec![0xAA; image_len + 1];
         assert_eq!(
@@ -1244,10 +1282,11 @@ mod tests {
         assert_eq!(
             &image[..image_len],
             &[
-                0x41, 0x46, 0x49, 0x4B, 0x01, 0x01, 0x01, 0x00, 0x24, 0x00, 0x00, 0x00, 0x04, 0xAC,
-                0x45, 0x9C, 0x01, 0x34, 0x12, 0x1F, 0x00, 0x01, 0x34, 0x12, 0x01, 0x41, 0x00, 0x00,
+                0x41, 0x46, 0x49, 0x4B, 0x01, 0x02, 0x01, 0x00, 0x33, 0x00, 0x00, 0x00, 0x57, 0x74,
+                0x2F, 0xB5, 0x01, 0x04, 0x00, 0x2E, 0x00, 0x02, 0x04, 0x00, 0x01, 0x41, 0x00, 0x00,
                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xEA,
-                0x83, 0x95, 0x1A, 0xD4, 0x30, 0x00, 0x00, 0x10, 0x00, 0x01,
+                0x83, 0x95, 0x1A, 0xD4, 0x30, 0x00, 0x00, 0x10, 0x00, 0x01, 0x01, 0xE8, 0x03, 0x03,
+                0x17, 0x00, 0x00, 0x00, 0x01, 0xD4, 0x30, 0x00, 0x00, 0x04, 0x02,
             ]
         );
         let decoded = decode_configuration_image(&image[..image_len]).unwrap();
@@ -1271,8 +1310,10 @@ mod tests {
             Err(StorageError::ImageBufferTooSmall)
         );
 
-        let maximum = (0..u16::MAX)
-            .map(|id| encode_generated_bank(bank(id, "A")).unwrap())
+        // Every distinct explicit channel identifier: the largest object set an
+        // image can hold now that the reserved range belongs to expansion.
+        let maximum = (0..GENERATED_CHANNEL_ID_BASE)
+            .map(|id| encode_channel(channel(id, "A")).unwrap())
             .collect::<Vec<_>>();
         let maximum_len = configuration_image_len(&maximum).unwrap();
         let mut maximum_image = vec![0; maximum_len];
@@ -1281,8 +1322,11 @@ mod tests {
             maximum_len
         );
         let decoded_maximum = decode_configuration_image(&maximum_image).unwrap();
-        assert_eq!(decoded_maximum.object_count(), u16::MAX);
-        assert_eq!(decoded_maximum.objects().len(), usize::from(u16::MAX));
+        assert_eq!(decoded_maximum.object_count(), GENERATED_CHANNEL_ID_BASE);
+        assert_eq!(
+            decoded_maximum.objects().len(),
+            usize::from(GENERATED_CHANNEL_ID_BASE)
+        );
 
         let repeated = vec![maximum[0]; usize::from(u16::MAX) + 1];
         assert_eq!(

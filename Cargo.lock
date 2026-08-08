@@ -2422,6 +2422,10 @@ name = "radio-domain"
 version = "0.1.0"
 
 [[package]]
+name = "radio-eeprom"
+version = "0.1.0"
+
+[[package]]
 name = "radio-firmware-dp32g030"
 version = "0.1.0"
 
@@ -2440,6 +2444,7 @@ dependencies = [
  "radio-channel-plan",
  "radio-device",
  "radio-domain",
+ "radio-eeprom",
  "radio-programmer",
  "radio-protocol",
  "radio-storage",

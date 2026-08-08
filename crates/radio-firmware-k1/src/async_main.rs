@@ -23,14 +23,14 @@ use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Timer};
 use py32_hal::gpio::{Flex, Input, Level, Output, Pull, Speed};
 use py32_hal::mode::Async;
-use py32_hal::peripherals::{FLASH, PA8, SPI1};
+use py32_hal::peripherals::{PA0, PA1, PA2, PA3, PA8, SPI1, SPI2};
 use py32_hal::spi::SpiTx;
 use py32_hal::usart::Uart;
 use radio_bk4819::{
     AfOutput, Bk4819, ReadbackRegister, ReceiveSetup, SquelchThresholds, BK4829_PROFILE,
 };
 use radio_channel_control::{
-    BankedReceiveController, ChannelMemory, ChannelReceiveSetup, ReceiveObservation,
+    BankedReceiveController, ChannelReceiveSetup, ProgrammedMemory, ReceiveObservation,
 };
 use radio_channel_plan::{
     BankMask, BankName, ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord,
@@ -42,16 +42,16 @@ use radio_domain::{
 };
 use radio_firmware_k1::bk4819_bus::ThreeWireBus;
 use radio_firmware_k1::configuration::{
-    device_service, Programmed, MAX_CHANNELS, RETAINED_IMAGE_BYTES,
+    device_service, Programmed, MAX_CHANNELS, MAX_GENERATED_BANKS, RETAINED_IMAGE_BYTES,
 };
 use radio_firmware_k1::display::{
     render_channel_list, render_info_screen, render_operating_screen, render_selector_list,
-    BankIndicator, ListRow, OperatingView, SelectorRow, COLUMN_OFFSET, FRAME_BYTES, LIST_ROWS,
-    PAGES, SETUP_COMMANDS, WIDTH,
+    BankIndicator, ListRow, MemoryState, OperatingView, SelectorRow, SerialCounters, COLUMN_OFFSET,
+    FRAME_BYTES, LIST_ROWS, PAGES, SETUP_COMMANDS, WIDTH,
 };
 use radio_firmware_k1::keypad::{decode, Debouncer, Edge, KeypadScan, Sample};
 use radio_firmware_k1::py32f071_bk4819::Bk4819Pins;
-use radio_firmware_k1::py32f071_retained::RetainedConfiguration;
+use radio_firmware_k1::py32f071_eeprom::{RetainError, RetainedConfiguration, CONFIGURATION_BYTES};
 use radio_firmware_k1::py32f071_runtime::{compose, K1RuntimePeripherals};
 use radio_firmware_k1::py32f071_runtime_init::init;
 use radio_firmware_k1::shell::{Context, Intent, Mode, Screen, Shell, Source, VFO_STEPS_HZ};
@@ -61,7 +61,7 @@ const _: [(); 8] = [(); PAGES];
 const K1_VECTOR_TABLE_ORIGIN: u32 = 0x0800_2800;
 
 /// Identity this image reports on the information screen.
-const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-2.4";
+const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-3.4";
 
 /// Interval between receive samples while audio is routed.
 const RF_SAMPLE_MILLISECONDS: u64 = 500;
@@ -85,10 +85,24 @@ struct Publication {
     programmed: Programmed,
     generation: u32,
     retained: bool,
+    memory: MemoryState,
 }
 
 fn now_ms() -> u32 {
     u32::try_from(Instant::now().as_millis()).unwrap_or(u32::MAX)
+}
+
+/// Bytes the serial task has received, for the information screen.
+static SERIAL_RECEIVED: AtomicU32 = AtomicU32::new(0);
+/// Frames the serial task has answered, for the information screen.
+static SERIAL_ANSWERED: AtomicU32 = AtomicU32::new(0);
+
+/// Returns the current serial counters.
+fn serial_counters() -> SerialCounters {
+    SerialCounters {
+        received: u16::try_from(SERIAL_RECEIVED.load(Ordering::Relaxed) % 10_000).unwrap_or(0),
+        answered: u16::try_from(SERIAL_ANSWERED.load(Ordering::Relaxed) % 10_000).unwrap_or(0),
+    }
 }
 
 fn hold_bus_idle() {
@@ -161,7 +175,16 @@ fn main() -> ! {
     #[allow(unsafe_code)]
     let executor: &'static mut Executor = unsafe { core::mem::transmute(&mut executor) };
     executor.run(|spawner| {
-        let Ok(serial) = serial_task(serial, p.FLASH) else {
+        let Ok(serial) = serial_task(
+            serial,
+            EepromPins {
+                spi: p.SPI2,
+                sck: p.PA0,
+                mosi: p.PA1,
+                miso: p.PA2,
+                chip_select: p.PA3,
+            },
+        ) else {
             fail_closed();
         };
         let Ok(ui) = ui_task(display, keypad, radio_pins, p.PA8) else {
@@ -422,49 +445,125 @@ impl Receiver {
     }
 }
 
+/// The external configuration memory's peripheral and pins.
+///
+/// `EVID-K1-060` records this wiring: the memory is on `SPI2` with an
+/// active-low chip select the peripheral does not drive.
+struct EepromPins {
+    spi: SPI2,
+    sck: PA0,
+    mosi: PA1,
+    miso: PA2,
+    chip_select: PA3,
+}
+
 #[embassy_executor::task]
-async fn serial_task(mut uart: Uart<'static, Async>, flash: FLASH) {
-    let mut retained = RetainedConfiguration::new(flash);
+async fn serial_task(mut uart: Uart<'static, Async>, memory: EepromPins) {
+    // A radio which cannot reach its external memory is still a working
+    // receiver, so an absent or unresponsive memory leaves the store empty
+    // rather than stopping the radio.
     let mut image = [0_u8; RETAINED_IMAGE_BYTES];
     // The device stores channels, named banks, and the global configuration,
     // and refuses at validation time to activate more channels than the
     // interface can select.
-    let mut service = device_service();
+    let mut service = device_service(CONFIGURATION_BYTES);
+
+    // Publish before touching the external memory. The interface task waits for
+    // the first publication before it reads a key, so anything slow or broken
+    // in the memory path would otherwise leave the operator with a frozen
+    // screen and no way out. An empty configuration is the honest state until
+    // a restore succeeds.
+    publish(&service, false, MemoryState::Unknown);
+
+    // The external memory is opened read-only first. Its device and wiring come
+    // from the pinned reference firmware and have not been observed on this
+    // unit, so the identification is read, reported on the information screen,
+    // and only a memory which answers is used. The operator interface does not
+    // wait for any of this, so a memory which never answers costs a bounded
+    // delay here and nothing else.
+    let mut memory_state = MemoryState::Failed;
+    let mut retained = RetainedConfiguration::new(
+        memory.spi,
+        memory.sck,
+        memory.mosi,
+        memory.miso,
+        memory.chip_select,
+    )
+    .ok()
+    .and_then(|mut configuration| match configuration.identify() {
+        Ok(id) => {
+            memory_state =
+                MemoryState::Present([id.manufacturer, id.memory_type, id.capacity_code]);
+            Some(configuration)
+        }
+        Err(RetainError::Absent(_)) => {
+            memory_state = MemoryState::Absent;
+            None
+        }
+        Err(_) => {
+            memory_state = MemoryState::Failed;
+            None
+        }
+    });
 
     // Restore the retained configuration before the host or the operator can
     // see this radio. A missing, erased, or corrupt region simply leaves the
     // store empty and the built-in channels in charge.
-    let restored = retained
-        .read(&mut image)
-        .is_some_and(|length| service.load_image(&image[..length]).is_ok());
-    publish(&service, restored);
+    let restored = retained.as_mut().is_some_and(|configuration| {
+        configuration
+            .read(&mut image)
+            .is_some_and(|length| service.load_image(&image[..length]).is_ok())
+    });
+    publish(&service, restored, memory_state);
 
     let mut response = [0_u8; MAX_ENCODED_FRAME];
-    let mut received = [0_u8; 1];
+    // A whole frame at a time, collected by DMA and delimited by the idle line.
+    //
+    // Reading one byte per await lost bytes: this core runs one task at a time,
+    // and the interface task holds it for the length of a bit-banged BK4819
+    // transfer, so a byte arriving in that window had nowhere to go and the
+    // frame never completed. `EVID-K1-061` is that failure, seen as a radio
+    // which counted received bytes and answered nothing. DMA collects the burst
+    // whether or not this task is running.
+    let mut received = [0_u8; MAX_ENCODED_FRAME];
     loop {
-        if uart.read(&mut received).await.is_err() {
+        let Ok(count) = uart.read_until_idle(&mut received).await else {
             // Yield before retrying so a persistent receiver error can never
             // starve the interface task.
             Timer::after_millis(1).await;
             continue;
-        }
-        hold_bus_idle();
-        let before = service.generation();
-        let Some(length) = service.push(received[0], &mut response, &mut |_| {}) else {
-            continue;
         };
-        if service.generation() != before {
-            // Retain the new configuration before answering. The host is
-            // waiting for this response, so masking interrupts for the flash
-            // write cannot drop an inbound byte.
-            let retained_now = service
-                .encode_active_image(&mut image)
-                .ok()
-                .is_some_and(|length| retained.write(&image, length).is_ok());
-            publish(&service, retained_now);
+        for index in 0..count {
+            let byte = received[index];
+            // Only this task writes these, so a load and store is sufficient;
+            // this core has no atomic read-modify-write.
+            SERIAL_RECEIVED.store(
+                SERIAL_RECEIVED.load(Ordering::Relaxed).wrapping_add(1),
+                Ordering::Relaxed,
+            );
+            hold_bus_idle();
+            let before = service.generation();
+            let Some(length) = service.push(byte, &mut response, &mut |_| {}) else {
+                continue;
+            };
+            if service.generation() != before {
+                // Retain the new configuration before answering, so a host told
+                // that a transaction committed can rely on it being stored.
+                let mut retained_now = false;
+                if let Ok(length) = service.encode_active_image(&mut image) {
+                    if let Some(configuration) = retained.as_mut() {
+                        retained_now = configuration.write(&image, length).await.is_ok();
+                    }
+                }
+                publish(&service, retained_now, memory_state);
+            }
+            SERIAL_ANSWERED.store(
+                SERIAL_ANSWERED.load(Ordering::Relaxed).wrapping_add(1),
+                Ordering::Relaxed,
+            );
+            let _ = uart.write(&response[..length]).await;
+            hold_bus_idle();
         }
-        let _ = uart.write(&response[..length]).await;
-        hold_bus_idle();
     }
 }
 
@@ -473,12 +572,17 @@ async fn serial_task(mut uart: Uart<'static, Async>, flash: FLASH) {
 /// A snapshot the interface cannot use is published as an empty configuration
 /// rather than dropped, so the display always reports what the radio really
 /// holds and falls back to the built-in channels.
-fn publish<const OBJECTS: usize>(service: &DeviceService<OBJECTS>, retained: bool) {
+fn publish<const OBJECTS: usize>(
+    service: &DeviceService<OBJECTS>,
+    retained: bool,
+    memory: MemoryState,
+) {
     let programmed = Programmed::from_objects(service.active_objects()).unwrap_or_default();
     PROGRAMMED.signal(Publication {
         programmed,
         generation: service.generation(),
         retained: retained && !programmed.is_empty(),
+        memory,
     });
 }
 
@@ -492,7 +596,7 @@ fn activate(
     programmed: &Programmed,
     shell: &Shell,
 ) -> Option<(
-    BankedReceiveController<ChannelMemory<MAX_CHANNELS>>,
+    BankedReceiveController<ProgrammedMemory<MAX_CHANNELS, MAX_GENERATED_BANKS>>,
     Option<ChannelReceiveSetup>,
 )> {
     let (memory, bank) = match shell.mode() {
@@ -517,7 +621,10 @@ fn activate(
 /// The VFO is expressed as an ordinary receive-only channel record so it reuses
 /// the whole programmed receive path unchanged. It is `TxClass::Never` like
 /// everything else this image constructs.
-fn vfo_memory(shell: &Shell, squelch: SquelchLevel) -> Option<ChannelMemory<MAX_CHANNELS>> {
+fn vfo_memory(
+    shell: &Shell,
+    squelch: SquelchLevel,
+) -> Option<ProgrammedMemory<MAX_CHANNELS, MAX_GENERATED_BANKS>> {
     let receive = Frequency::from_hz(shell.vfo_hz()).ok()?;
     let step = FrequencyStep::from_hz(shell.vfo_step_hz()).ok()?;
     let record = ChannelRecord::new(ChannelDefinition {
@@ -539,7 +646,7 @@ fn vfo_memory(shell: &Shell, squelch: SquelchLevel) -> Option<ChannelMemory<MAX_
         tx_class: TxClass::Never,
     })
     .ok()?;
-    let mut memory = ChannelMemory::new();
+    let mut memory = ProgrammedMemory::new();
     memory.insert(record).ok()?;
     Some(memory)
 }
@@ -552,18 +659,32 @@ async fn ui_task(
     speaker_pin: PA8,
 ) {
     let mut frame = [0_u8; FRAME_BYTES];
-    render_info_screen(&mut frame, IMAGE_IDENTITY, 0, 0, false);
+    render_info_screen(
+        &mut frame,
+        IMAGE_IDENTITY,
+        0,
+        0,
+        false,
+        MemoryState::Unknown,
+        serial_counters(),
+    );
     if !display.initialise().await || !display.frame(&frame).await {
         fail_closed();
     }
 
-    // The serial task publishes exactly once at start-up, either the retained
-    // configuration or an empty one, so waiting for it avoids showing the VFO to
-    // an operator whose radio is programmed.
-    let publication = PROGRAMMED.wait().await;
-    let mut generation = publication.generation;
-    let mut retained = publication.retained;
-    let mut programmed = publication.programmed;
+    // The operator interface does not wait for the serial task. Waiting for its
+    // first publication tied the whole radio to that task starting: when it
+    // died, the display kept showing this boot frame and no key did anything,
+    // which is how `AFIK-K1-2.6` to `2.9` reached the operator. An empty
+    // configuration is the correct starting state, and the loop below adopts a
+    // publication the moment one arrives.
+    let publication = PROGRAMMED.try_take();
+    let mut generation = publication.as_ref().map_or(0, |value| value.generation);
+    let mut retained = publication.as_ref().is_some_and(|value| value.retained);
+    let mut memory_state = publication
+        .as_ref()
+        .map_or(MemoryState::Unknown, |value| value.memory);
+    let mut programmed = publication.map_or_else(Programmed::empty, |value| value.programmed);
 
     let mut shell = Shell::new();
     let (banks, bank_count) = programmed.populated_banks();
@@ -593,6 +714,7 @@ async fn ui_task(
         if let Some(publication) = PROGRAMMED.try_take() {
             generation = publication.generation;
             retained = publication.retained;
+            memory_state = publication.memory;
             programmed = publication.programmed;
             let (banks, bank_count) = programmed.populated_banks();
             shell.set_banks(banks, bank_count);
@@ -693,6 +815,7 @@ async fn ui_task(
                 &programmed,
                 generation,
                 retained,
+                memory_state,
             );
             if !display.frame(&frame).await {
                 fail_closed();
@@ -707,11 +830,14 @@ async fn ui_task(
 fn render(
     frame: &mut [u8; FRAME_BYTES],
     shell: &Shell,
-    controller: Option<&BankedReceiveController<ChannelMemory<MAX_CHANNELS>>>,
+    controller: Option<
+        &BankedReceiveController<ProgrammedMemory<MAX_CHANNELS, MAX_GENERATED_BANKS>>,
+    >,
     receiver: &Receiver,
     programmed: &Programmed,
     generation: u32,
     retained: bool,
+    memory: MemoryState,
 ) {
     // Names are fixed-capacity values copied out of the configuration, so they
     // are held here for as long as the view borrows their bytes.
@@ -831,13 +957,21 @@ fn render(
                 visible,
             );
         }
-        Screen::Info => render_info_screen(frame, IMAGE_IDENTITY, generation, visible, retained),
+        Screen::Info => render_info_screen(
+            frame,
+            IMAGE_IDENTITY,
+            generation,
+            visible,
+            retained,
+            memory,
+            serial_counters(),
+        ),
     }
 }
 
 /// Returns the host-programmed name of one bank, if the host named it.
 fn bank_name(programmed: &Programmed, bank: BankId) -> Option<BankName> {
-    programmed.bank(bank).map(|entry| entry.name())
+    programmed.bank_name(bank)
 }
 
 fn fail_closed() -> ! {

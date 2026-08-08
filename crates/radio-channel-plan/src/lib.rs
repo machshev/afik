@@ -15,6 +15,17 @@ pub const MAX_BANK_NAME_LEN: usize = 16;
 pub const MAX_CHANNEL_NAME_LEN: usize = 12;
 /// Number of banks addressable by one channel membership mask.
 pub const MAX_BANKS: u16 = 16;
+/// Lowest channel identifier reserved for channels a radio expands itself.
+///
+/// Explicit channel records are stored one object each and may use any
+/// identifier below this. Everything from here up is minted by expanding a
+/// generated plan, so a stored channel can never collide with an expanded one.
+pub const GENERATED_CHANNEL_ID_BASE: u16 = 0x8000;
+/// Channels one generated plan may contain.
+///
+/// The identifier of an expanded channel packs the bank identifier and the
+/// index into the reserved range, which bounds both.
+pub const MAX_GENERATED_CHANNELS: u16 = 1 << 11;
 
 /// Failure while constructing or expanding a channel plan.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -33,6 +44,10 @@ pub enum PlanError {
     BankOutOfRange,
     /// A reserved flag bit was set.
     ReservedFlag,
+    /// A generated plan held more channels than one plan may contain.
+    TooManyChannels,
+    /// An explicit channel claimed an identifier reserved for expansion.
+    ReservedChannelId,
 }
 
 impl fmt::Display for PlanError {
@@ -45,6 +60,10 @@ impl fmt::Display for PlanError {
             Self::InvalidTone => formatter.write_str("invalid CTCSS frequency or DCS code"),
             Self::BankOutOfRange => formatter.write_str("bank identifier is outside range"),
             Self::ReservedFlag => formatter.write_str("reserved flag bit is set"),
+            Self::TooManyChannels => formatter.write_str("generated plan holds too many channels"),
+            Self::ReservedChannelId => {
+                formatter.write_str("channel identifier is reserved for generated plans")
+            }
         }
     }
 }
@@ -144,7 +163,61 @@ impl PlanEncoding {
     }
 }
 
+/// The per-channel settings every channel of a generated plan shares.
+///
+/// A generated plan stores one of these instead of one complete channel record
+/// per channel, which is what makes the plan cheap: the whole bank costs one
+/// object however many channels it expands to.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ChannelTemplate {
+    /// Receive-side tone squelch requirement.
+    pub rx_tone: Tone,
+    /// Transmit-side tone requirement.
+    pub tx_tone: Tone,
+    /// Requested modulation family.
+    pub modulation: Modulation,
+    /// Requested occupied bandwidth.
+    pub bandwidth: Bandwidth,
+    /// Requested transmit power level.
+    pub power: PowerLevel,
+    /// Manual tuning step used from an expanded channel.
+    pub step: FrequencyStep,
+    /// Channel squelch level.
+    pub squelch: SquelchLevel,
+    /// Channel behaviour flags.
+    pub flags: ChannelFlags,
+}
+
+impl ChannelTemplate {
+    /// Returns the conservative narrow-FM template tuned by the plan spacing.
+    ///
+    /// The manual tuning step follows the channel spacing, so stepping off an
+    /// expanded channel lands on the next one in the plan.
+    #[must_use]
+    pub const fn narrow_fm(spacing: FrequencyStep) -> Self {
+        Self {
+            rx_tone: Tone::None,
+            tx_tone: Tone::None,
+            modulation: Modulation::Fm,
+            bandwidth: Bandwidth::Narrow,
+            power: PowerLevel::Low,
+            step: spacing,
+            squelch: SquelchLevel::CONSERVATIVE,
+            flags: ChannelFlags::empty(),
+        }
+    }
+
+    fn validate(self) -> Result<Self, PlanError> {
+        validate_tone(self.rx_tone)?;
+        validate_tone(self.tx_tone)?;
+        Ok(self)
+    }
+}
+
 /// A bounded arithmetic simplex channel bank.
+///
+/// One stored plan expands to [`channel_count`](Self::channel_count) complete
+/// channel records without storing any of them.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GeneratedBank {
     id: BankId,
@@ -153,10 +226,11 @@ pub struct GeneratedBank {
     spacing: FrequencyStep,
     channel_count: u16,
     tx_class: TxClass,
+    template: ChannelTemplate,
 }
 
 impl GeneratedBank {
-    /// Constructs and validates an arithmetic simplex bank.
+    /// Constructs an arithmetic simplex bank with the conservative template.
     pub fn linear_simplex(
         id: BankId,
         name: BankName,
@@ -165,8 +239,35 @@ impl GeneratedBank {
         channel_count: u16,
         tx_class: TxClass,
     ) -> Result<Self, PlanError> {
+        Self::linear_simplex_with(
+            id,
+            name,
+            base,
+            spacing,
+            channel_count,
+            tx_class,
+            ChannelTemplate::narrow_fm(spacing),
+        )
+    }
+
+    /// Constructs and validates an arithmetic simplex bank and its template.
+    pub fn linear_simplex_with(
+        id: BankId,
+        name: BankName,
+        base: Frequency,
+        spacing: FrequencyStep,
+        channel_count: u16,
+        tx_class: TxClass,
+        template: ChannelTemplate,
+    ) -> Result<Self, PlanError> {
         if channel_count == 0 {
             return Err(PlanError::EmptyBank);
+        }
+        if id.get() >= MAX_BANKS {
+            return Err(PlanError::BankOutOfRange);
+        }
+        if channel_count > MAX_GENERATED_CHANNELS {
+            return Err(PlanError::TooManyChannels);
         }
         base.checked_add_steps(spacing, channel_count - 1)?;
         Ok(Self {
@@ -176,7 +277,13 @@ impl GeneratedBank {
             spacing,
             channel_count,
             tx_class,
+            template: template.validate()?,
         })
+    }
+
+    /// Returns the per-channel settings every expanded channel shares.
+    pub const fn template(self) -> ChannelTemplate {
+        self.template
     }
 
     /// Returns the bank identifier.
@@ -226,6 +333,95 @@ impl GeneratedBank {
             tx_class: self.tx_class,
         })
     }
+
+    /// Expands one complete channel record without materialising the rest.
+    ///
+    /// The record is indistinguishable from a stored one: it carries the plan
+    /// template, a derived name, membership of this bank only, and an
+    /// identifier from the reserved generated range, so a radio can select,
+    /// filter, and scan it beside explicit channels.
+    pub fn channel_record(self, index: u16) -> Result<ChannelRecord, PlanError> {
+        if index >= self.channel_count {
+            return Err(PlanError::ChannelOutOfRange);
+        }
+        let frequency = self.base.checked_add_steps(self.spacing, index)?;
+        ChannelRecord::expanded(ChannelDefinition {
+            id: generated_channel_id(self.id, index)?,
+            name: self.channel_name(index)?,
+            receive: frequency,
+            // Linear simplex: an expanded channel transmits where it receives.
+            transmit: frequency,
+            rx_tone: self.template.rx_tone,
+            tx_tone: self.template.tx_tone,
+            modulation: self.template.modulation,
+            bandwidth: self.template.bandwidth,
+            power: self.template.power,
+            step: self.template.step,
+            squelch: self.template.squelch,
+            flags: self.template.flags,
+            banks: BankMask::default().with(self.id, true)?,
+            tx_class: self.tx_class,
+        })
+    }
+
+    /// Returns the derived name of one expanded channel.
+    ///
+    /// The plan name is truncated so the position always fits, because the
+    /// number is what the operator matches against the plan's documentation.
+    pub fn channel_name(self, index: u16) -> Result<ChannelName, PlanError> {
+        if index >= self.channel_count {
+            return Err(PlanError::ChannelOutOfRange);
+        }
+        let digits = decimal_digits(self.channel_count);
+        let name = self.name.as_str().as_bytes();
+        let mut prefix = name.len().min(MAX_CHANNEL_NAME_LEN - 1 - digits);
+        while prefix > 0 && name[prefix - 1] == b' ' {
+            prefix -= 1;
+        }
+        let mut field = [0_u8; MAX_CHANNEL_NAME_LEN];
+        field[..prefix].copy_from_slice(&name[..prefix]);
+        field[prefix] = b' ';
+        let len = prefix + 1 + digits;
+        let mut position = index + 1;
+        let mut digit = len;
+        while digit > prefix + 1 {
+            digit -= 1;
+            field[digit] = b'0' + u8::try_from(position % 10).unwrap_or(0);
+            position /= 10;
+        }
+        ChannelName::from_field(
+            field,
+            u8::try_from(len).map_err(|_| PlanError::InvalidName)?,
+        )
+    }
+}
+
+/// Returns the reserved identifier of one channel expanded from a plan.
+pub const fn generated_channel_id(bank: BankId, index: u16) -> Result<ChannelId, PlanError> {
+    if bank.get() >= MAX_BANKS {
+        return Err(PlanError::BankOutOfRange);
+    }
+    if index >= MAX_GENERATED_CHANNELS {
+        return Err(PlanError::TooManyChannels);
+    }
+    Ok(ChannelId::new(
+        GENERATED_CHANNEL_ID_BASE | (bank.get() << 11) | index,
+    ))
+}
+
+/// Reports whether one identifier belongs to a channel expanded from a plan.
+pub const fn is_generated_channel_id(id: ChannelId) -> bool {
+    id.get() >= GENERATED_CHANNEL_ID_BASE
+}
+
+const fn decimal_digits(count: u16) -> usize {
+    if count >= 1_000 {
+        4
+    } else if count >= 100 {
+        3
+    } else {
+        2
+    }
 }
 
 /// Per-channel behaviour flags which carry no transmit authority.
@@ -245,6 +441,12 @@ impl ChannelFlags {
     pub const COMPANDER: u8 = 0b0000_1000;
     /// Bits which must be zero in this format version.
     pub const RESERVED: u8 = 0b1111_0000;
+
+    /// Returns the flag field with no flag set.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self { bits: 0 }
+    }
 
     /// Validates a raw flag field.
     pub const fn from_bits(bits: u8) -> Result<Self, PlanError> {
@@ -384,7 +586,19 @@ pub struct ChannelDefinition {
 
 impl ChannelRecord {
     /// Constructs a channel after revalidating every constrained field.
+    ///
+    /// Records built here are stored one object each, including the ones a
+    /// generated plan expands, so only expansion may mint an identifier from
+    /// the reserved range.
     pub fn new(definition: ChannelDefinition) -> Result<Self, PlanError> {
+        if is_generated_channel_id(definition.id) {
+            return Err(PlanError::ReservedChannelId);
+        }
+        Self::expanded(definition)
+    }
+
+    /// Constructs a channel which may carry a reserved expansion identifier.
+    fn expanded(definition: ChannelDefinition) -> Result<Self, PlanError> {
         validate_tone(definition.rx_tone)?;
         validate_tone(definition.tx_tone)?;
         Ok(Self {
@@ -473,6 +687,11 @@ impl ChannelRecord {
     /// Returns the trusted transmit classification.
     pub const fn tx_class(self) -> TxClass {
         self.tx_class
+    }
+
+    /// Reports whether the radio expanded this channel from a generated plan.
+    pub const fn is_generated(self) -> bool {
+        is_generated_channel_id(self.id)
     }
 
     /// Reports whether the channel belongs to a bank.
@@ -597,8 +816,9 @@ fn validate_tone(tone: Tone) -> Result<(), PlanError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        BankFlags, BankMask, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
-        ChannelRecord,
+        generated_channel_id, is_generated_channel_id, BankFlags, BankMask, ChannelBank,
+        ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord, ChannelTemplate,
+        GENERATED_CHANNEL_ID_BASE, MAX_GENERATED_CHANNELS,
     };
     use radio_domain::{Bandwidth, ChannelId, Modulation, PowerLevel, SquelchLevel, Tone};
 
@@ -619,6 +839,90 @@ mod tests {
 
         assert_eq!(bank.channel(6).unwrap().receive.as_hz(), 446_081_250);
         assert_eq!(bank.channel(16), Err(PlanError::ChannelOutOfRange));
+    }
+
+    #[test]
+    fn a_generated_bank_expands_to_complete_channel_records() {
+        let template = ChannelTemplate {
+            rx_tone: Tone::Ctcss(1_000),
+            bandwidth: Bandwidth::Wide,
+            ..ChannelTemplate::narrow_fm(FrequencyStep::from_hz(12_500).unwrap())
+        };
+        let bank = GeneratedBank::linear_simplex_with(
+            BankId::new(3),
+            BankName::new("PMR446").unwrap(),
+            Frequency::from_hz(446_006_250).unwrap(),
+            FrequencyStep::from_hz(12_500).unwrap(),
+            16,
+            TxClass::LicenceFreePlan,
+            template,
+        )
+        .unwrap();
+
+        let first = bank.channel_record(0).unwrap();
+        assert_eq!(first.name().as_str(), "PMR446 01");
+        assert_eq!(first.receive().as_hz(), 446_006_250);
+        assert_eq!(first.transmit().as_hz(), 446_006_250);
+        assert_eq!(first.rx_tone(), Tone::Ctcss(1_000));
+        assert_eq!(first.bandwidth(), Bandwidth::Wide);
+        assert_eq!(first.tx_class(), TxClass::LicenceFreePlan);
+        assert!(first.is_member_of(BankId::new(3)));
+        assert!(!first.is_member_of(BankId::new(4)));
+        assert!(first.is_generated());
+
+        let last = bank.channel_record(15).unwrap();
+        assert_eq!(last.name().as_str(), "PMR446 16");
+        assert_eq!(last.receive().as_hz(), 446_193_750);
+        assert_ne!(first.id(), last.id());
+        assert_eq!(bank.channel_record(16), Err(PlanError::ChannelOutOfRange));
+    }
+
+    #[test]
+    fn expanded_identifiers_are_reserved_and_never_collide() {
+        let low = generated_channel_id(BankId::new(0), 0).unwrap();
+        let high = generated_channel_id(BankId::new(15), MAX_GENERATED_CHANNELS - 1).unwrap();
+        assert!(is_generated_channel_id(low));
+        assert!(is_generated_channel_id(high));
+        assert!(!is_generated_channel_id(ChannelId::new(
+            GENERATED_CHANNEL_ID_BASE - 1
+        )));
+        assert_eq!(
+            generated_channel_id(BankId::new(16), 0),
+            Err(PlanError::BankOutOfRange)
+        );
+        assert_eq!(
+            generated_channel_id(BankId::new(0), MAX_GENERATED_CHANNELS),
+            Err(PlanError::TooManyChannels)
+        );
+
+        let mut explicit = definition();
+        explicit.id = ChannelId::new(GENERATED_CHANNEL_ID_BASE);
+        assert_eq!(
+            ChannelRecord::new(explicit),
+            Err(PlanError::ReservedChannelId),
+            "a stored channel cannot claim an expanded identifier"
+        );
+    }
+
+    #[test]
+    fn expanded_names_keep_the_position_when_the_plan_name_is_long() {
+        let bank = GeneratedBank::linear_simplex(
+            BankId::new(1),
+            BankName::new("Marine channel").unwrap(),
+            Frequency::from_hz(156_050_000).unwrap(),
+            FrequencyStep::from_hz(50_000).unwrap(),
+            120,
+            TxClass::Never,
+        )
+        .unwrap();
+        assert_eq!(
+            bank.channel_record(0).unwrap().name().as_str(),
+            "Marine c 001"
+        );
+        assert_eq!(
+            bank.channel_record(119).unwrap().name().as_str(),
+            "Marine c 120"
+        );
     }
 
     #[test]

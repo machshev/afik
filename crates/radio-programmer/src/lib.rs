@@ -564,6 +564,7 @@ impl<T: ProtocolTransport> Programmer<T> {
                 max_objects: 0,
                 max_object_size: 0,
                 plan_encodings: 0,
+                configuration_bytes: 0,
             },
             next_sequence: 1,
             next_transaction: 1,
@@ -954,17 +955,18 @@ mod tests {
     use radio_domain::{BankId, Frequency, FrequencyStep, RadioConfig, TxClass};
     use radio_storage::{
         decode_configuration_image, encode_generated_bank, ObjectKey, ObjectKind, StorageError,
-        StorageObject, GENERATED_BANK_ENCODED_LEN,
+        StorageObject, GENERATED_BANK_ENCODED_LEN, STORAGE_FORMAT_VERSION,
     };
 
     fn capabilities() -> DeviceCapabilities {
         DeviceCapabilities {
             protocol_version: 1,
-            storage_version: 1,
+            storage_version: STORAGE_FORMAT_VERSION,
             max_frame_payload: 128,
             max_objects: 1,
             max_object_size: 64,
             plan_encodings: PlanEncoding::LinearSimplex.capability_bit(),
+            configuration_bytes: 4_096,
         }
     }
 
@@ -995,7 +997,10 @@ mod tests {
             .compile(&project)
             .unwrap();
         assert_eq!(compiled.report().object_count, 1);
-        assert_eq!(compiled.report().storage_bytes, 31);
+        assert_eq!(
+            compiled.report().storage_bytes,
+            u32::try_from(GENERATED_BANK_ENCODED_LEN).unwrap()
+        );
         assert_eq!(compiled.report().generated_channels, 16);
     }
 

@@ -7,8 +7,9 @@ mod banked;
 
 pub use banked::{
     BankedReceiveController, ChannelActivation as BankedChannelActivation, ChannelMemory,
-    ChannelReceiveSetup, ChannelSelection, ChannelSource, MemoryFull, ReceiveError, ReceiveMode,
-    ReceiveObservation, ReceiveState, ReceiveUpdate, ScanPhase as BankedScanPhase,
+    ChannelReceiveSetup, ChannelSelection, ChannelSource, MemoryFull, ProgrammedMemory,
+    ReceiveError, ReceiveMode, ReceiveObservation, ReceiveState, ReceiveUpdate,
+    ScanPhase as BankedScanPhase,
 };
 
 use core::fmt;

@@ -190,6 +190,19 @@ impl<const OBJECTS: usize> DeviceService<OBJECTS> {
     /// rejected with the stable `ValidationFailed` code before it can become
     /// active, and the previous configuration keeps running.
     pub fn with_limits(plan_encodings: u16, limits: KindLimits) -> Self {
+        Self::with_configuration_capacity(plan_encodings, limits, 0)
+    }
+
+    /// Constructs a service which also declares its stored-configuration bound.
+    ///
+    /// A device which retains its configuration knows how many bytes it has for
+    /// one, and the host cannot know that from the object counts alone. A zero
+    /// declares no bound rather than a full device.
+    pub fn with_configuration_capacity(
+        plan_encodings: u16,
+        limits: KindLimits,
+        configuration_bytes: u32,
+    ) -> Self {
         Self {
             decoder: StreamDecoder::new(),
             store: TransactionalStore::new(),
@@ -203,6 +216,7 @@ impl<const OBJECTS: usize> DeviceService<OBJECTS> {
                 max_objects: u16::try_from(OBJECTS).unwrap_or(u16::MAX),
                 max_object_size: u16::try_from(MAX_OBJECT_DATA).unwrap_or(u16::MAX),
                 plan_encodings,
+                configuration_bytes,
             },
         }
     }

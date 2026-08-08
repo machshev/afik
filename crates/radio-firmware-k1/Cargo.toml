@@ -27,7 +27,7 @@ py32f071-usart1 = [
     "py32-hal/rt",
 ]
 py32f071-spi1 = ["py32f071-hal-inventory"]
-py32f071-retained = ["py32f071-hal-inventory"]
+py32f071-eeprom = ["py32f071-hal-inventory", "dep:embassy-time"]
 py32f071-bk4819 = ["py32f071-hal-inventory", "dep:cortex-m"]
 py32f071-runtime-composition = [
     "embassy-runtime",
@@ -42,7 +42,7 @@ py32f071-runtime-init = [
 async-firmware = [
     "py32f071-runtime-init",
     "py32f071-bk4819",
-    "py32f071-retained",
+    "py32f071-eeprom",
     "dep:embassy-time",
     "dep:embassy-sync",
     "dep:cortex-m-rt",
@@ -56,6 +56,7 @@ radio-channel-control = { path = "../radio-channel-control" }
 radio-channel-plan = { path = "../radio-channel-plan" }
 radio-device = { path = "../radio-device" }
 radio-protocol = { path = "../radio-protocol" }
+radio-eeprom = { path = "../radio-eeprom" }
 radio-storage = { path = "../radio-storage" }
 radio-domain = { path = "../radio-domain" }
 embassy-executor = { version = "=0.10.0", default-features = false, features = ["executor-thread", "platform-cortex-m"], optional = true }

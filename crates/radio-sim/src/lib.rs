@@ -1830,7 +1830,10 @@ mod tests {
         let compiled = radio_programmer::ConfigurationCompiler::new(device.capabilities())
             .compile(&project)
             .unwrap();
-        assert_eq!(compiled.report().storage_bytes, 31);
+        assert_eq!(
+            compiled.report().storage_bytes,
+            u32::try_from(GENERATED_BANK_ENCODED_LEN).unwrap()
+        );
         assert_eq!(compiled.report().generated_channels, 16);
 
         let transport = SimTransport::new(device).with_max_read_size(1);

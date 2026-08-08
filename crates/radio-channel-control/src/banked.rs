@@ -7,7 +7,7 @@
 
 use core::fmt;
 
-use radio_channel_plan::ChannelRecord;
+use radio_channel_plan::{is_generated_channel_id, ChannelRecord, GeneratedBank};
 use radio_domain::{
     Bandwidth, BankId, ChannelId, DomainError, Frequency, FrequencyStep, Modulation, RadioConfig,
     ScanResume, SquelchLevel, Tone,
@@ -108,6 +108,162 @@ impl<const CHANNELS: usize> ChannelSource for ChannelMemory<CHANNELS> {
             return None;
         }
         self.channels[usize::from(index)]
+    }
+}
+
+/// A channel source holding stored channels and the plans a radio expands.
+///
+/// This is the channelised space-saving model as the radio sees it. An explicit
+/// channel costs one stored object; a generated plan costs one stored object
+/// however many channels it contains, and its channels are expanded here, on
+/// demand, into ordinary records. Selection, bank filtering, dual watch, and
+/// scanning cannot tell the two apart.
+///
+/// Stored channels come first in identifier order, then each plan's channels in
+/// bank order. Nothing is materialised: expansion happens per lookup, so a plan
+/// of a thousand channels occupies no more memory than a plan of ten.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProgrammedMemory<const CHANNELS: usize, const PLANS: usize> {
+    stored: ChannelMemory<CHANNELS>,
+    plans: [Option<GeneratedBank>; PLANS],
+    installed: u16,
+    expanded: u16,
+}
+
+impl<const CHANNELS: usize, const PLANS: usize> Default for ProgrammedMemory<CHANNELS, PLANS> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<const CHANNELS: usize, const PLANS: usize> ProgrammedMemory<CHANNELS, PLANS> {
+    /// Constructs a store holding neither channels nor plans.
+    pub const fn new() -> Self {
+        Self {
+            stored: ChannelMemory::new(),
+            plans: [None; PLANS],
+            installed: 0,
+            expanded: 0,
+        }
+    }
+
+    /// Constructs a store holding stored channels only.
+    pub const fn from_stored(stored: ChannelMemory<CHANNELS>) -> Self {
+        Self {
+            stored,
+            plans: [None; PLANS],
+            installed: 0,
+            expanded: 0,
+        }
+    }
+
+    /// Inserts or replaces one stored channel, keeping identifier order.
+    pub fn insert(&mut self, channel: ChannelRecord) -> Result<(), MemoryFull> {
+        self.stored.insert(channel)
+    }
+
+    /// Installs one generated plan, keeping bank-identifier order.
+    ///
+    /// Plans are held packed rather than one slot per addressable bank, because
+    /// a radio sizes this by the plans it will accept and every unused slot
+    /// costs it RAM in every copy of the configuration. A plan replaces one
+    /// already held for the same bank. The whole selection space is addressed by
+    /// a `u16` index, so a plan which would push the total past that bound is
+    /// refused rather than silently truncated.
+    pub fn install(&mut self, plan: GeneratedBank) -> Result<(), MemoryFull> {
+        let mut position = usize::from(self.installed);
+        for index in 0..usize::from(self.installed) {
+            let held = self.plans[index].ok_or(MemoryFull)?;
+            if held.id().get() == plan.id().get() {
+                self.expanded =
+                    self.checked_total(self.expanded - held.channel_count(), plan.channel_count())?;
+                self.plans[index] = Some(plan);
+                return Ok(());
+            }
+            if held.id().get() > plan.id().get() {
+                position = index;
+                break;
+            }
+        }
+        if usize::from(self.installed) >= PLANS {
+            return Err(MemoryFull);
+        }
+        let expanded = self.checked_total(self.expanded, plan.channel_count())?;
+        let mut index = usize::from(self.installed);
+        while index > position {
+            self.plans[index] = self.plans[index - 1];
+            index -= 1;
+        }
+        self.plans[position] = Some(plan);
+        self.installed += 1;
+        self.expanded = expanded;
+        Ok(())
+    }
+
+    /// Returns the expanded total, refusing one the index space cannot address.
+    fn checked_total(&self, expanded: u16, added: u16) -> Result<u16, MemoryFull> {
+        let total = expanded.checked_add(added).ok_or(MemoryFull)?;
+        if u32::from(self.stored.len()) + u32::from(total) > u32::from(u16::MAX) {
+            return Err(MemoryFull);
+        }
+        Ok(total)
+    }
+
+    /// Returns the plan installed for one bank.
+    pub fn plan(&self, bank: BankId) -> Option<GeneratedBank> {
+        self.plans
+            .iter()
+            .flatten()
+            .copied()
+            .find(|plan| plan.id().get() == bank.get())
+    }
+
+    /// Returns the number of channels which cost one stored object each.
+    pub fn stored_len(&self) -> u16 {
+        self.stored.len()
+    }
+
+    /// Returns the number of channels expanded from stored plans.
+    pub const fn expanded_len(&self) -> u16 {
+        self.expanded
+    }
+
+    /// Returns the channel with one identifier, stored or expanded.
+    pub fn find(&self, id: ChannelId) -> Option<ChannelRecord> {
+        if !is_generated_channel_id(id) {
+            return self.stored.find(id);
+        }
+        (0..self.expanded).find_map(|offset| {
+            let channel = self.expanded_channel(offset)?;
+            (channel.id() == id).then_some(channel)
+        })
+    }
+
+    /// Expands the channel at one zero-based offset into the plan space.
+    fn expanded_channel(&self, offset: u16) -> Option<ChannelRecord> {
+        let mut remaining = offset;
+        for plan in self.plans.iter().flatten() {
+            if remaining < plan.channel_count() {
+                return plan.channel_record(remaining).ok();
+            }
+            remaining -= plan.channel_count();
+        }
+        None
+    }
+}
+
+impl<const CHANNELS: usize, const PLANS: usize> ChannelSource
+    for ProgrammedMemory<CHANNELS, PLANS>
+{
+    fn len(&self) -> u16 {
+        self.stored.len().saturating_add(self.expanded)
+    }
+
+    fn get(&self, index: u16) -> Option<ChannelRecord> {
+        match index.checked_sub(self.stored.len()) {
+            None => self.stored.get(index),
+            Some(offset) => self.expanded_channel(offset),
+        }
     }
 }
 
@@ -801,12 +957,13 @@ fn channel_setup(channel: &ChannelRecord, monitor: bool) -> ChannelReceiveSetup 
 #[cfg(test)]
 mod tests {
     use super::{
-        BankedReceiveController, ChannelMemory, ChannelSelection, ChannelSource, ReceiveError,
-        ReceiveMode, ReceiveObservation, ReceiveState, ScanPhase,
+        BankedReceiveController, ChannelMemory, ChannelSelection, ChannelSource, MemoryFull,
+        ProgrammedMemory, ReceiveError, ReceiveMode, ReceiveObservation, ReceiveState, ScanPhase,
     };
     use crate::{TimerDirective, TimerToken};
     use radio_channel_plan::{
-        BankMask, ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord,
+        BankMask, BankName, ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord,
+        GeneratedBank,
     };
     use radio_domain::{
         Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel,
@@ -831,6 +988,88 @@ mod tests {
             tx_class: TxClass::Amateur,
         })
         .unwrap()
+    }
+
+    fn plan(id: u16, name: &str, base_hz: u32, count: u16) -> GeneratedBank {
+        GeneratedBank::linear_simplex(
+            BankId::new(id),
+            BankName::new(name).unwrap(),
+            Frequency::from_hz(base_hz).unwrap(),
+            FrequencyStep::from_hz(12_500).unwrap(),
+            count,
+            TxClass::LicenceFreePlan,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn stored_channels_and_expanded_plans_share_one_selection_space() {
+        let mut memory = ProgrammedMemory::<8, 2>::new();
+        memory.insert(channel(2, 145_200_000, 0b0010, 0)).unwrap();
+        memory.insert(channel(1, 145_100_000, 0b0010, 0)).unwrap();
+        memory.install(plan(3, "PMR446", 446_006_250, 16)).unwrap();
+        memory.install(plan(1, "Marine", 156_050_000, 4)).unwrap();
+
+        assert_eq!(memory.stored_len(), 2);
+        assert_eq!(memory.expanded_len(), 20);
+        assert_eq!(memory.len(), 22);
+
+        // Stored channels first in identifier order, then each plan in bank
+        // order, which is the order the operator steps through them.
+        assert_eq!(memory.get(0).unwrap().id().get(), 1);
+        assert_eq!(memory.get(1).unwrap().id().get(), 2);
+        let first_plan = memory.get(2).unwrap();
+        assert_eq!(first_plan.name().as_str(), "Marine 01");
+        assert_eq!(first_plan.receive().as_hz(), 156_050_000);
+        assert_eq!(memory.get(6).unwrap().name().as_str(), "PMR446 01");
+        assert_eq!(memory.get(21).unwrap().name().as_str(), "PMR446 16");
+        assert_eq!(memory.get(22), None);
+
+        let expanded = memory.get(21).unwrap();
+        assert_eq!(memory.find(expanded.id()), Some(expanded));
+        assert_eq!(memory.find(ChannelId::new(2)), memory.get(1));
+
+        // Replacing a plan resizes the space instead of appending to it.
+        memory.install(plan(3, "PMR446", 446_006_250, 8)).unwrap();
+        assert_eq!(memory.len(), 14);
+        assert_eq!(memory.plan(BankId::new(3)).unwrap().channel_count(), 8);
+        assert_eq!(memory.plan(BankId::new(0)), None);
+
+        // The store is sized by the plans it accepts, not by the addressable
+        // banks, so a further plan is refused rather than silently dropped.
+        assert_eq!(
+            memory.install(plan(5, "Extra", 433_000_000, 4)),
+            Err(MemoryFull)
+        );
+    }
+
+    #[test]
+    fn a_bank_filter_selects_and_scans_expanded_channels() {
+        let mut memory = ProgrammedMemory::<8, 4>::new();
+        memory.insert(channel(1, 145_100_000, 0b0010, 0)).unwrap();
+        memory.install(plan(3, "PMR446", 446_006_250, 4)).unwrap();
+
+        let (mut controller, _) = BankedReceiveController::activate(
+            memory,
+            RadioConfig::conservative(),
+            Some(BankId::new(3)),
+        )
+        .unwrap();
+        assert_eq!(controller.visible_channels(), 4);
+        let update = controller.select_visible(1).unwrap();
+        let activation = update.activation.unwrap();
+        assert_eq!(activation.setup.frequency.as_hz(), 446_018_750);
+        assert_eq!(
+            controller.visible_channel(1).unwrap().name().as_str(),
+            "PMR446 02",
+            "an expanded channel names its plan and position"
+        );
+
+        // The stored channel is outside the filtered view, and scanning walks
+        // the expanded channels exactly as it walks stored ones.
+        assert!(controller.select_visible(4).is_err());
+        controller.start_scanning().unwrap();
+        assert_eq!(controller.state(), ReceiveState::Scanning(ScanPhase::Dwell));
     }
 
     fn memory() -> ChannelMemory<8> {
