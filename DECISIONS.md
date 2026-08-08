@@ -1008,3 +1008,60 @@ meaning.
   change. What was missing was a delimiter before the first frame rather than
   after the last one.
 
+
+## ADR-065 — A store is bytes, and a device declares one number
+
+- **Date:** 2026-08-09
+- **Status:** accepted for `ARENA-038`; completes `ADR-062` and `ADR-063`
+- A store held a fixed table of fixed slots, each 70 bytes whatever it carried:
+  42 for a channel, 22 for a named bank, 16 for the configuration, 59 for a
+  plan. A device therefore had four bounds — the slot, the slot count, a count
+  per kind, and a declared byte capacity nothing enforced — and refused projects
+  it had the room for while reserving room it could not use. The K1 held 3,220
+  bytes across its two snapshots to store at most about 880.
+- Objects are now packed end to end as `(kind, id, length, payload)` entries in
+  strict `(kind, id)` order, and the bytes are the whole bound. Writing an
+  object which is present replaces it and compacts around it; removing one
+  closes its gap. Both are a single move within a transaction's own copy, so a
+  failed transaction leaves the active bytes untouched by construction.
+- That the entries are in canonical order and in the image's own layout is not a
+  coincidence but the design: an arena is an image payload. Retaining the active
+  snapshot became a copy rather than a sorted rebuild through a key index; the
+  snapshot the interface reads became the same copy; a listing became a page of
+  an order the store already holds. Three pieces of bookkeeping disappeared
+  because the bytes were arranged the way they are consumed.
+- A device declares `configuration_bytes` and nothing else binds. `max_objects`
+  is derived — the count those bytes imply given the shortest object any kind
+  encodes to — so it is an upper bound a host can trust rather than a second
+  limit it must satisfy. A host refuses a project for the bytes it needs and
+  names both numbers. A device reporting zero declares nothing rather than a
+  full store, and refuses what it cannot hold as the bytes arrive.
+- What the operator gets for those bytes is the operator's decision. The K1's
+  1,264 bytes are about twenty-six explicit channels, or two dozen band plans
+  and the tens of thousands of channels they expand to, or any mixture. The
+  firmware has no opinion, which is the difference between a bound and a policy.
+- Decoders take a borrowed object, so the store lends its bytes out rather than
+  copying them into a worst-case buffer to be read. `MAX_OBJECT_DATA` survives
+  as what one object may carry over the wire and in an image, which is a
+  protocol fact rather than a storage cost.
+
+## ADR-066 — The plan tail, and what a zero offset may not mean
+
+- **Date:** 2026-08-09
+- **Status:** accepted for `ARENA-038`; supersedes the inference in `ADR-063`
+- A generated bank is a 56-byte core plus its declared family's tail: nothing
+  for `LinearSimplex`, four bytes of transmit offset for `LinearFixedOffset`.
+  Version 3 charged both 59. The core carries everything expansion needs for
+  names, identifiers, membership and the template, so only the transmit
+  frequency consults the tail and expansion stays one implementation.
+- The family is stored, not derived. A repeater sub-band parked at a zero offset
+  is a repeater sub-band, and stays one across a write and a read-back; under
+  the inference it silently became a simplex plan and a host negotiating
+  capabilities was told it needed a bit it did not.
+- An editor asks the operator for an offset rather than for an encoding family,
+  so `linear_from_offset_with` is the one place the two meet: a zero declares
+  simplex and anything else declares fixed offset. After that the declaration
+  travels with the plan and storage charges it for what it declared.
+- Encodings which are declared but unimplemented are refused by name rather than
+  given a length. `TableSimplex`, `TableMixedDuplex` and `SparseExceptions` are
+  variable length; the packed store is what makes them expressible at all.

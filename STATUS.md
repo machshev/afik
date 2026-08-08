@@ -2,57 +2,53 @@
 
 ## Current work package
 
-**`PLAN-037` is software complete and written to the exact unit: the channelised
-bank model is now genuinely shared, genuinely unbounded, and held once. The
-K1's 128-expanded-channel limit is gone — it was never a memory cost, because
-nothing is materialised, and it could silently discard an accepted write. What
-bounds a plan now is the identifier packing, the selection index space, and the
-storage each device advertises. Expanded lookup and bank membership resolve from
-the packed identifier rather than by walking, so a band-sized plan is as cheap to
-filter as to store.
+**`ARENA-038` is complete and confirmed on the exact unit: a radio declares one
+number, `configuration_bytes`, and that number is the whole bound on what it
+will hold. The store is a packed byte arena — objects end to end as
+`(kind, id, length, payload)` in canonical key order — which is byte for byte
+what a configuration image carries after its header. Retaining the active
+snapshot is a copy rather than a sorted rebuild; the snapshot the interface
+reads is that copy again; a listing is a page of an order the store already
+holds. `MAX_CHANNELS`, `MAX_BANKS`, `MAX_GENERATED_BANKS`, `kind_limits` and
+`KindLimits` are gone, and a host refuses a project for the bytes it needs
+rather than for how many objects they are.
 
-A plan names its channels the way a band plan does. `GeneratedBank` carries a
-designator and a first number, so UK 2 m simplex expands to `S8` through `S23`
-while the studio keeps `2M SIMPLEX` as its own label. `ChannelFlags::CALLING`
-marks one index, named `S20 CALL`, and means the same on an explicit record.
-`LinearFixedOffset` is implemented, so a repeater sub-band is one stored object.
-The editor's claim that a stored channel cannot join a plan's bank was false and
-is corrected, with a test that builds the radio's own store from the editor's own
-validated objects and proves both give the same answer.
+A generated bank is now a 56-byte shared core plus its own family's tail:
+nothing for a simplex band, four bytes of transmit offset for a repeater
+sub-band, where version 3 charged both 59. The family is declared rather than
+inferred from a zero offset. Storage format version 4.
 
-The radio no longer holds its configuration four times over. `Programmed` is an
-index of roughly ninety bytes whether the radio holds four channels or four
-thousand; the objects live once, encoded, and a record is decoded on the lookup
-that needs it. Static RAM fell from 10,988 bytes to 9,284, with 7,100 free.
+The K1 declares 1,264 packed bytes — the 1,280 it retains less the image
+header — which is about twenty-six explicit channels where eight were allowed,
+or as many plans as fit, in any mixture. Static RAM fell from 9,284 bytes to
+8,188, with 8,196 free.
 
-Written over the repaired serial link: three generated-bank objects, 177 stored
-bytes, forty channels, read back at generation 1. `AFIK-K1-4.3` is built, gated,
-packaged and flashed. Nothing about the operator interface is observed: nobody
-has turned the radio to `S20 CALL` and seen it read 145.500000.**
+`AFIK-K1-5.0` is built, gated, packaged and flashed. Written over serial: three
+simplex plans, 183 packed bytes, forty channels, read back at generation 1 as
+three 56-byte objects.**
+
+**And the radio was turned to `S20 CALL` and read 145.500000, then power-cycled
+and read it again.** The designator naming, the calling marker, the arithmetic
+frequencies and the retention of a version-4 image in external memory are
+observed rather than asserted. That closes the one claim `PLAN-037` left open
+as well as this work package's own.
+
+**`PLAN-037` is complete: the channelised bank model is genuinely shared,
+genuinely unbounded, and held once. A plan names its channels the way a band
+plan does, `LinearFixedOffset` is implemented, and `Programmed` holds no
+configuration. Its one open claim — that a handset turned to `S20 CALL` reads
+145.500000 — was observed under `ARENA-038` above.**
 
 **`EEPROM-035` is complete and confirmed on the exact unit: a radio's channels
 and settings live in the external serial memory it already carries, and its
-internal flash holds firmware and nothing else. A PMR446 plan written over
-serial as one 46-byte object survived a power cycle and was restored as sixteen
-channels, with no internal-flash configuration store present to have held it.**
+internal flash holds firmware and nothing else.**
 
-**`PLAN-034` is complete in software: a generated plan is now the stored form of
-a bank of channels in the plan, storage, receive-control, K1 image, and studio
-layers alike. One 46-byte object holds a bank of any size and the radio expands
-it into complete channel records it selects, filters, and scans exactly as it
-does stored channels. `AFIK-K1-2.5` is built, gated, and packaged; the physical
-write and its confirmations are the remaining work.**
-
-**Work Package 31 (`RFK1-031`) is complete in software: the receive-only K1
-image is programmed by the host tooling over the shared configuration protocol,
-retains its configuration in a reserved flash sector, and gives the operator a
-complete channel-selection interface. The image `AFIK-K1-2.0` is built, gated,
-and packaged; the physical write and its confirmations are the remaining work.**
-
-Work Packages 26 to 30 are complete: banked explicit-channel storage, the
+Work Packages 26 to 34 are complete: banked explicit-channel storage, the
 receive path and its banked control, the native cross-platform editor, the
-side-key and PTT inputs, and audible demodulated receive audio confirmed on the
-exact unit.
+side-key and PTT inputs, audible demodulated receive audio confirmed on the
+exact unit, host-programmable channels with a retained configuration and the
+operator shell, studio usability and named bank operation, VFO receive mode,
+and the channelised plan model in the UI and the radio.
 
 The operator designated the pinned Armel K1 firmware authoritative for register
 values and pinout wherever primary documentation is silent. `EVID-BK4819-053`
@@ -62,15 +58,53 @@ and `EVID-K1-054` record exactly which values that covers.
 
 K1 has priority because an exact unit running Armel firmware is available for
 inspection. `K1EVID-013` supplies the K1 evidence baseline and same-unit
-recovery proof for this bounded host-tool task. Trusted existing firmware
-remains evidence, not production source: AFIK will not port, link, or
-incrementally translate its application or driver implementation.
+recovery proof. Trusted existing firmware remains evidence, not production
+source: AFIK will not port, link, or incrementally translate its application or
+driver implementation.
 
 `FLASH-012` is deferred with its software milestone intact and physical gates
 incomplete. It can resume unchanged when the exact K5 V1 hardware is available.
-The bounded AFIK witness image was flashed through the intended CH340 path and
-returned the exact normal-mode hello after power-cycle. Full radio application
-features remain outside this bounded slice.
+
+## ARENA-038 verification
+
+Run on the pinned environment, 2026-08-09:
+
+- `cargo fmt --all --check`: clean.
+- `cargo clippy --workspace --all-targets -- -D warnings`: clean.
+- `cargo test --workspace`: 370 tests pass, 0 failures.
+- `tool/build-k1-async.sh --release`: builds.
+- `tool/verify-k1-async-image.sh`: 192 vector bytes, initial SP `0x20004000`,
+  Reset `0x080028c1`, required IRQ handlers present, static RAM 8,188 bytes with
+  8,196 bytes of stack headroom.
+- `tool/package-k1-async-image.sh --force`: `AFIK-K1-5.0`, 83,352 bytes, SHA-256
+  `d085eef57ce72656d708cf714de9486cd801ca83159d7c50426bced553a1014b`.
+
+### Physical write, configuration and observation, 2026-08-09
+
+`flash-afik-k1` wrote `AFIK-K1-5.0` over the auto-detected `/dev/ttyUSB0` at K1
+bootloader `7.03.01`: `326/326` pages acknowledged,
+`status=acknowledged_not_read_back`. The image boots and the operator interface
+responds.
+
+`afik-programmer info` returns protocol 1, storage 4, `configuration_bytes=1264`,
+`max_objects=60`, 64-byte objects and plan encodings `0x0003`. `write` stored
+three generated banks — PMR446, UK 2 m simplex, UK 70 cm simplex — as 183 packed
+bytes expanding to forty channels, and `list` read them back at generation 1 as
+three 56-byte objects. Version 3 stored 59 bytes for each of the same plans.
+
+Observed on the handset: `S20 CALL` reads 145.500000, before and after a power
+cycle.
+
+### One dead end, recorded so it is not chased again
+
+Immediately after flashing, `afik-programmer info` and `probe-normal` reported
+no response three times while the radio's own information screen showed the
+received and answered counts climbing and the discarded count at zero. A raw
+sixteen-byte hello written straight at the port returned the exact fifteen-byte
+reply, and a raw capabilities request returned its exact twenty-eight-byte
+reply. The CLI then worked unchanged, and has worked since. Nothing was found
+and nothing was changed. The counters and the raw exchange between them rule out
+a framing, baud or payload fault, which is what they are there for.
 
 ## PLAN-037 verification
 

@@ -1711,8 +1711,8 @@
 
 ## PLAN-037 — The shared bank model, unbounded, and held once
 
-- **Status:** software complete (2026-08-08); written to the exact unit;
-  physical observation of the operator interface pending
+- **Status:** complete (2026-08-08); the operator observation it left open was
+  made under `ARENA-038` on 2026-08-09
 - **Objective:** answer whether the radio and the studio fully supported the
   channelised bank model they were meant to share. They did not. Remove the
   bound that was not a cost, name channels the way a band plan does, implement
@@ -1774,13 +1774,14 @@
   counter added mid-investigation turned "bytes in, nothing out" into "a
   complete packet was refused", and comparing sent against received length did
   the rest.
-- **Remaining:** every physical claim about the operator interface. Nobody has
-  turned the radio to `S20 CALL` and seen it read 145.500000, and the derived
-  designator naming has been asserted by tests and never observed.
+- **Closed on 2026-08-09:** the radio was turned to `S20 CALL` and read
+  145.500000, before and after a power cycle. The derived designator naming and
+  the calling marker are observed. The image which was on the unit at the time
+  was `AFIK-K1-5.0`, so what was confirmed is this model as `ARENA-038` left it.
 
 ## ARENA-038 — Storage-shaped bounds and minimal plan encodings
 
-- **Status:** not started
+- **Status:** complete (2026-08-09), confirmed on the exact unit
 - **Objective:** make stored bytes the only bound a radio declares, and charge
   each plan encoding what it actually costs. `MAX_CHANNELS`, `MAX_BANKS`,
   `MAX_GENERATED_BANKS` and `kind_limits` should stop existing.
@@ -1790,25 +1791,63 @@
   a shared core and a per-encoding tail so a simplex plan stops carrying a
   repeater's four bytes of offset and the declared encoding is a property rather
   than an inference from a zero; a storage format bump carrying both.
-- **Rationale:** a `StorageObject` is 70 bytes whatever it holds — 42 for a
+- **Rationale:** a `StorageObject` was 70 bytes whatever it held — 42 for a
   channel, 22 for a named bank, 16 for the configuration, 59 for a plan — so the
-  K1's active and candidate snapshots reserve 3,220 bytes to hold at most about
+  K1's active and candidate snapshots reserved 3,220 bytes to hold at most about
   880. The remaining declared encodings make this necessary rather than merely
   wasteful: `TableSimplex`, `TableMixedDuplex` and `SparseExceptions` are all
   variable length, and a slot store must size every slot for the worst case.
 - **Dependencies:** `PLAN-037`.
-- **Assumptions:** the studio already computes stored bytes with the radio's own
-  encoders and already displays them against the advertised
-  `configuration_bytes`, so the host side becomes a constraint rather than a
-  new calculation. No protocol change is needed; `DeviceCapabilities` already
-  carries the field.
 - **Tests required:** arena compaction on replace and delete, including that a
   failed transaction leaves the active bytes untouched; per-encoding round trips
   at their own lengths; a project refused for bytes rather than for object
   count; the K1 accepting whatever fits its advertised region.
 - **Acceptance criteria:** one declared number bounds a configuration; a simplex
   plan encodes shorter than a repeater plan; no per-kind object limit survives.
-- **Risks:** compaction is a memmove of up to about a kilobyte inside a
-  transaction. Against an EEPROM page program measured in milliseconds that is
-  noise, but it is new and must be tested rather than assumed.
-
+- **Result:** done, and the directory was not needed. Entries are packed end to
+  end as `(kind, id, length, payload)` in strict key order, which is byte for
+  byte what a canonical image carries after its header, so an arena and an image
+  payload are the same bytes: retaining the active snapshot is a copy rather
+  than a sorted rebuild, the shared snapshot the interface reads is that copy
+  again, and a listing is a page of an order the store already holds. Decoders
+  take a borrowed object, so nothing is copied into a worst-case buffer to be
+  read.
+- **What a device declares:** `configuration_bytes`, and everything else follows
+  from it. `max_objects` is the count those bytes imply given the shortest
+  object any kind encodes to — an upper bound rather than a second limit — and a
+  host refuses a project for the bytes it needs, naming both numbers.
+  `MAX_CHANNELS`, `MAX_BANKS`, `MAX_GENERATED_BANKS` and `kind_limits` are gone,
+  as is `KindLimits` itself. `Programmed` holds no per-channel table at all: its
+  arrays are the sixteen banks a membership mask addresses, which is structural.
+- **Plan encodings:** a generated bank is a 56-byte shared core plus its own
+  family's tail. `LinearSimplex` adds nothing; `LinearFixedOffset` adds four
+  bytes of transmit offset. Both were 59 in version 3. The family is declared
+  rather than inferred from a zero offset, so a repeater sub-band parked at zero
+  survives a write and a read-back as what it is. The editor and the CLI ask for
+  an offset and `linear_from_offset_with` is where that becomes a declaration.
+  Storage format version 4.
+- **What the K1 gained:** it declares 1,264 packed bytes, which is the 1,280 it
+  retains less the image header. That is about twenty-six explicit channels
+  where eight were allowed, or as many plans as fit, in any mixture. Static RAM
+  fell from 9,284 bytes to 8,188 with 8,196 bytes of stack headroom.
+- **Image:** `AFIK-K1-5.0`, 83,352 bytes, Reset `0x080028c1`, SHA-256
+  `d085eef57ce72656d708cf714de9486cd801ca83159d7c50426bced553a1014b`.
+- **Confirmed on the exact unit:** flashed over `/dev/ttyUSB0` at K1 bootloader
+  `7.03.01`, `326/326` pages acknowledged. `info` reports storage 4,
+  `configuration_bytes=1264`, `max_objects=60`, encodings `0x0003`. Three
+  simplex plans — PMR446, UK 2 m, UK 70 cm — were written as 183 packed bytes
+  expanding to forty channels and read back at generation 1 as three 56-byte
+  objects, where version 3 stored 59 each.
+- **Observed on the handset, at last:** the radio was turned to `S20 CALL` and
+  read 145.500000, and did so again after a power cycle. The derived designator
+  naming, the calling marker, the arithmetic frequencies and the retention of a
+  version-4 image in external memory are now seen rather than asserted. This
+  closes the physical claim `PLAN-037` left open as well as this one.
+- **One thing that cost time and was not a fault:** after flashing, the host
+  reported no complete response three times running while the radio's own
+  counters showed frames received and answered. A raw sixteen-byte hello sent
+  straight at the port returned the exact fifteen-byte reply, and the CLI then
+  worked unchanged and has worked since. Nothing was found to fix, and nothing
+  was changed on the strength of it; it is recorded because a reader of this
+  file may hit it and should not go looking for a framing fault that the
+  counters and the raw exchange had already ruled out.

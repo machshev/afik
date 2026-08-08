@@ -10,6 +10,27 @@ active snapshot on commit. Abort or any validation error leaves the active
 snapshot unchanged. This is logical atomicity; physical power-loss durability
 is deferred and tracked as `RISK-004`.
 
+## One bound, in bytes
+
+A store is a packed byte arena and its size in bytes is the whole bound. There
+is no object count, no per-kind count, and no fixed slot charged to every
+object whatever it holds. Objects are held end to end as
+`(kind, ID, length, payload)` entries in strict `(kind, ID)` order, which is
+exactly what a canonical image carries after its header, so an arena's bytes
+and an image payload are the same bytes. Writing an object which is already
+present replaces it and compacts the entries around it; removing one closes the
+gap it leaves.
+
+A device advertises those bytes as `configuration_bytes`, and everything else
+it reports follows from them: `max_objects` is the count the bytes imply given
+the shortest object any kind encodes to, which is an upper bound rather than a
+second limit. A host refuses a project for the bytes it needs and names both
+numbers. A device which reports zero bytes declares nothing rather than a full
+store, and is left to refuse what it cannot hold as the bytes arrive.
+
+`MAX_OBJECT_DATA` remains, and bounds what one object may carry over the wire
+and in an image. It is no longer what an object costs a device to keep.
+
 ## Where a radio keeps its configuration
 
 A radio retains one canonical configuration image in the external serial memory
@@ -25,18 +46,24 @@ same device. A write erases the whole claimed region before programming, so a
 shorter configuration never leaves the tail of an older one to be read back
 beside it.
 
-The K1 image claims one four-kilobyte region at one megabyte and declares its
-size in the capability profile, so a host can report how much room a project
-leaves rather than guessing.
+The K1 image claims one four-kilobyte region at one megabyte. What it declares
+in the capability profile is the smaller number that actually binds: the 1,264
+packed bytes its store holds, which with the image header is the 1,280 bytes it
+retains. A host can therefore report how much room a project leaves, and be
+refused for the right reason.
 
-The store exposes active objects without candidate data but does not define a
-wire order. Protocol implementations sort listings by stable object kind and
-ID before encoding them.
+The store keeps its objects in canonical `(kind, ID)` order, so a listing is a
+page of that order rather than a sorted copy of every descriptor a device
+holds, and a retained image needs no key index to write.
 
-Generated-bank payload version 2 is 46 bytes:
+## Generated banks: a shared core and a per-encoding tail
+
+A generated bank declares its encoding family and is stored at that family's
+own length. The 56-byte core every family carries is:
 
 ```text
-format version : u8
+format version : u8  (`4`)
+plan encoding  : u8  (`0` linear simplex, `1` linear fixed offset)
 bank ID        : u16 little endian
 name length    : u8
 name bytes     : fixed 16-byte field
@@ -54,13 +81,25 @@ power level    : u8
 step Hz        : u32 little endian
 squelch level  : u8
 channel flags  : u8
+designator len : u8
+designator     : fixed 4-byte field
+first number   : u16 little endian
+calling index  : u16 little endian (`0xFFFF` marks no calling channel)
 ```
 
-The trailing fields from the RX tone onwards are the `ChannelTemplate` every
-channel of the plan shares. They are what makes the plan a complete channel
-source rather than a list of frequencies: 46 bytes hold a whole bank, against
-42 bytes for each explicit channel record. Version 1 objects, which had no
-template, are rejected rather than reinterpreted.
+`LinearSimplex` adds nothing, so a simplex band is 56 bytes.
+`LinearFixedOffset` adds four bytes of signed transmit offset, so a repeater
+sub-band is 60. Both were 59 in version 3, where every plan paid for an offset
+and the family was inferred from whether that offset was zero. The family is
+now what the plan says it is, so a repeater sub-band parked at a zero offset
+stays a repeater sub-band across a write and a read-back. Encodings which are
+declared but not implemented are refused by name rather than given a length.
+
+The fields from the RX tone to the channel flags are the `ChannelTemplate`
+every channel of the plan shares. They are what makes the plan a complete
+channel source rather than a list of frequencies: 56 bytes hold a whole bank,
+against 42 bytes for each explicit channel record. Earlier versions are
+rejected rather than reinterpreted.
 
 ## Canonical configuration image
 
@@ -74,7 +113,7 @@ The 16-byte image header is:
 ```text
 magic                 : 4 bytes (`AFIK`)
 image version         : u8 (`1`)
-object format version : u8 (`2`)
+object format version : u8 (`4`)
 object count          : u16 little endian
 payload length        : u32 little endian
 CRC-32                : u32 little endian
@@ -101,7 +140,9 @@ Decoding checks the magic, both versions, exact total length, checksum, entry
 bounds, strict key order, and every object before returning an iterable image.
 The object count is bounded by `u16`, each object retains the existing
 `MAX_OBJECT_DATA` bound, and no decoded object is exposed after partial
-validation.
+validation. A device restores an image by staging its objects through the
+ordinary transactional path, so an image which no longer fits the store leaves
+the running configuration untouched.
 
 ## Explicit channels, named banks, and radio configuration
 

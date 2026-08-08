@@ -78,8 +78,9 @@ therefore only these, and no image adds an arbitrary one on top:
   packing has for an index;
 - the `u16` selection index space, which `ProgrammedMemory::install` checks
   across every stored channel and every installed plan;
-- storage, which each device advertises as `configuration_bytes`, `max_objects`,
-  and its per-kind object limits.
+- storage, which each device advertises as one number, `configuration_bytes`.
+  There is no per-kind limit and no object count to spend: a plan costs what its
+  own encoding needs, and what the operator gets for the bytes is their choice.
 
 An expanded identifier packs its bank and index, so `generated_channel_parts`
 resolves one arithmetically and `ChannelSource::member_at` answers bank

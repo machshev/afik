@@ -575,17 +575,18 @@
 ## RISK-033 — Target stack headroom is bounded by inspection, not by a gate
 
 - **State:** open
-- **Impact:** statics and task futures now occupy about 10.7 KiB of the
-  evidenced 16 KiB of SRAM, leaving roughly 5.6 KiB of stack. Nothing in the
-  build fails if a future change pushes peak stack use past that, and an
-  overflow would silently corrupt the top of `.bss`.
+- **Impact:** statics and task futures occupy about 8.0 KiB of the evidenced
+  16 KiB of SRAM, leaving 8,196 bytes of stack. Nothing in the build tells us
+  what peak stack use actually is, and an overflow would silently corrupt the
+  top of `.bss`.
 - **Mitigation:** `crates/radio-firmware-k1/stack-headroom.x` asserts a 6,144-byte
   reserve at link time, so a build which eats the headroom fails to link rather
   than packaging; `tool/verify-k1-async-image.sh` checks the same bound and
   records `llvm-size` with each image in `STATUS.md`. The reserve is a policy
   floor, not a measurement: it sits above the 5,396 bytes `AFIK-K1-4.0` had when
-  it reached the operator and did not start. The configuration is now held once,
-  encoded, so the object bounds no longer dominate RAM.
+  it reached the operator and did not start. The configuration is held once,
+  encoded, and `ARENA-038` packed it, so the store no longer reserves a
+  worst-case slot per object and headroom rose from 7,100 bytes to 8,196.
 - **Observed:** this risk has bitten twice. `AFIK-K1-2.5` exhausted the stack and
   never started. `AFIK-K1-4.0` did the same after a slot-budget change added 512
   bytes of statics, and cleared the then-4,096-byte scripted floor on its way to
@@ -614,3 +615,22 @@
   voltage against a meter across the pack when charged and part discharged,
   then confirm the indicator falls monotonically over a discharge. Until both
   are done, neither number may be described as measured.
+
+## RISK-035 — A packed store compacts inside a transaction
+
+- **State:** open
+- **Impact:** writing or removing an object moves every entry after it, up to
+  about a kilobyte on the K1. This happens inside a candidate transaction and
+  cannot corrupt the active bytes — the candidate is a separate copy and is
+  discarded whole on failure — but it is new work on a 48 MHz core in the path
+  of a host write, and it has been measured nowhere.
+- **Mitigation:** the move is bounded by the declared store size and happens
+  once per object written. Against an external-memory page program measured in
+  milliseconds it should be noise, and the host write of three plans over serial
+  showed no timeout on the exact unit. Compaction on replace, on growth, on
+  shrink and on removal is covered by host tests which check both the resulting
+  order and that the bytes before the change are untouched.
+- **Required experiment:** time a full-store write on the exact unit — enough
+  objects to fill the 1,264 bytes, written in an order which forces a move on
+  every one — and record whether any serial exchange approaches its timeout.
+  Until then the cost is argued rather than observed.
