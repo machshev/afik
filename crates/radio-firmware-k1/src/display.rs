@@ -580,9 +580,13 @@ pub fn render_info_screen(
     // Serial counters, so an operator with no host can see whether the radio is
     // hearing anything at all. `EVID-K1-061` is what these are for: a silent
     // host exchange is otherwise indistinguishable from a dead interface.
-    let mut link = *b"RX 0000 TX 0000";
-    write_four_digits(&mut link[3..7], serial.received);
-    write_four_digits(&mut link[11..15], serial.answered);
+    // `D` is packets which arrived complete and failed to decode. Without it,
+    // a frame the radio heard and rejected is indistinguishable from one it
+    // never received: both read as bytes in and nothing answered.
+    let mut link = *b"RX0000 TX0000 D0000";
+    write_four_digits(&mut link[2..6], serial.received);
+    write_four_digits(&mut link[9..13], serial.answered);
+    write_four_digits(&mut link[15..19], serial.discarded);
     draw_text(frame, 0, 8, &link);
 }
 
@@ -593,6 +597,8 @@ pub struct SerialCounters {
     pub received: u16,
     /// Frames the radio has answered, which wraps.
     pub answered: u16,
+    /// Complete packets the radio rejected as malformed, which wraps.
+    pub discarded: u16,
 }
 
 /// Writes one four-digit decimal field.
@@ -1355,6 +1361,7 @@ mod operating_screen_tests {
             SerialCounters {
                 received: 12,
                 answered: 3,
+                discarded: 2,
             },
         );
         let mut unstored = [0_u8; FRAME_BYTES];

@@ -39,7 +39,7 @@ use radio_channel_control::{
 use radio_channel_plan::{
     BankMask, BankName, ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord,
 };
-use radio_device::DeviceService;
+use radio_device::{DeviceEvent, DeviceService};
 use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, SquelchLevel,
     Tone, TxClass,
@@ -70,7 +70,7 @@ const _: [(); 8] = [(); PAGES];
 const K1_VECTOR_TABLE_ORIGIN: u32 = 0x0800_2800;
 
 /// Identity this image reports on the information screen.
-const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-4.1";
+const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-4.2";
 
 /// Interval between receive samples while audio is routed.
 ///
@@ -135,12 +135,20 @@ fn now_ms() -> u32 {
 static SERIAL_RECEIVED: AtomicU32 = AtomicU32::new(0);
 /// Frames the serial task has answered, for the information screen.
 static SERIAL_ANSWERED: AtomicU32 = AtomicU32::new(0);
+/// Complete packets the serial task rejected as malformed.
+///
+/// The device service reports these to an observer, and this image discarded
+/// them silently, which left a hole exactly where a fault hides: a frame heard
+/// and rejected looked the same as a frame never received. Counting them is
+/// what tells those apart without a host.
+static SERIAL_DISCARDED: AtomicU32 = AtomicU32::new(0);
 
 /// Returns the current serial counters.
 fn serial_counters() -> SerialCounters {
     SerialCounters {
         received: u16::try_from(SERIAL_RECEIVED.load(Ordering::Relaxed) % 10_000).unwrap_or(0),
         answered: u16::try_from(SERIAL_ANSWERED.load(Ordering::Relaxed) % 10_000).unwrap_or(0),
+        discarded: u16::try_from(SERIAL_DISCARDED.load(Ordering::Relaxed) % 10_000).unwrap_or(0),
     }
 }
 
@@ -641,7 +649,16 @@ async fn serial_task(mut uart: Uart<'static, Async>, memory: EepromPins) {
             );
             hold_bus_idle();
             let before = service.generation();
-            let Some(length) = service.push(byte, &mut response, &mut |_| {}) else {
+            // Only this task writes this, so a load and store is sufficient.
+            let mut observe = |event| {
+                if matches!(event, DeviceEvent::PacketDiscarded(_)) {
+                    SERIAL_DISCARDED.store(
+                        SERIAL_DISCARDED.load(Ordering::Relaxed).wrapping_add(1),
+                        Ordering::Relaxed,
+                    );
+                }
+            };
+            let Some(length) = service.push(byte, &mut response, &mut observe) else {
                 continue;
             };
             if service.generation() != before {
