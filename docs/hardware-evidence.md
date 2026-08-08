@@ -1687,3 +1687,51 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   squelch, tone decoding, or reception of a specific signal. The channel ran
   with the pinned squelch-off thresholds, so open-squelch noise is the expected
   sound. `RISK-030` and `RISK-031` remain open.
+
+### EVID-K1-060 — External configuration memory identified on the exact unit
+
+- **Source of the expectation:** pinned `armel/uv-k1-k5v3-firmware-custom` commit
+  `fe9c4e9432694b50aea651084a043aae0b58673d`. `App/driver/py25q16.c` drives a
+  serial NOR memory on `SPI2` with `SCK` on `PA0`, `MOSI` on `PA1`, `MISO` on
+  `PA2`, and chip select on `PA3`, using read `0x03`, page program `0x02`,
+  sector erase `0x20`, write enable `0x06`, and status `0x05`, with a 256-byte
+  page and a 4 KiB sector. `App/driver/eeprom_compat.c` maps the radio's logical
+  EEPROM addresses onto that device, reaching approximately `0xD000`.
+- **Observation on the exact unit, 2026-08-08:** `AFIK-K1-3.1` read the
+  identification over `SPI2` at start-up and reported `MEM ID 68 40 15` on the
+  information screen. The capacity code `0x15` is 2 MiB, which matches the
+  16 Mbit part the pinned source names.
+- **Correction to the expectation:** manufacturer `0x68` is not Puya `0x85`, so
+  the fitted device is a Boya-family `BY25Q16` rather than the `PY25Q16` the
+  pinned source drives. Geometry, capacity, and the command set used here are
+  the standard serial-NOR set both implement, and AFIK issues only those
+  commands. AFIK claims no compatibility beyond what it exercises.
+- **Confidence:** high for the wiring, the command set, and the fitted capacity
+  on this unit; the pinned source remains the only evidence for the pinout, and
+  the manufacturer differs from it.
+
+### EVID-K1-062 — Configuration retained in external memory across a power cycle
+
+- **Observation on the exact unit, 2026-08-08, running `AFIK-K1-3.2`:** a
+  generated PMR446 plan was written over serial as one 46-byte object and the
+  transaction verified by read-back, reporting `generation=1`. After a power
+  cycle the information screen reported sixteen channels.
+- **Why this is conclusive:** this image reserves no internal flash sector for
+  configuration. `py32f071_retained` and its sector were removed when the store
+  moved, and the packaging gates now allow the application the whole region
+  through `0x08020000`. The external memory is therefore the only place the
+  restored configuration could have come from.
+- **Multi-page observation, same unit, running `AFIK-K1-3.4`:** a complete
+  configuration of twelve explicit channels, two named banks, and one generated
+  plan was written over serial and verified: fifteen objects, 594 stored bytes,
+  a 685-byte canonical image spanning three 256-byte pages. Read back before and
+  after a power cycle, the image was byte-identical, SHA-256
+  `b72c662a7a93d7bbe86652d143fd0d15...`. Page splitting, the whole-region erase,
+  and the yielding retain therefore hold for a configuration larger than one
+  page.
+- **Observed detail:** a restored radio reports `generation=1` rather than the
+  generation it was written with. The generation counts commits in the running
+  session and is not carried in the image; the objects themselves are identical.
+- **Confidence:** high for retention and exact restoration of a multi-page
+  configuration on this unit. Wear behaviour and the erase-before-write boundary
+  under power loss remain unobserved; the latter is `RISK-004`.

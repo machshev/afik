@@ -863,3 +863,87 @@ meaning.
 - View positions belong to the receive controller beside the bank filter it
   already owns, not to the shell. The numbers the operator types are the
   positions the screen shows, resolved by the same code that filters the view.
+
+## ADR-059 — A generated plan is a stored channel source, not a shorthand
+
+- **Date:** 2026-08-07
+- **Status:** accepted for `PLAN-034`
+- A generated bank stored a base frequency, spacing, count, and transmit class
+  only. That is enough to name frequencies and not enough to be channels, so no
+  image expanded one: the K1 activated explicit records only and dropped the
+  object. The space saving existed in the storage format and nowhere else, while
+  the studio showed banks as containers for channel rows, which is the model the
+  plan was supposed to replace.
+- A plan now stores one `ChannelTemplate` beside its arithmetic: tones,
+  modulation, bandwidth, power, manual step, squelch, and behaviour flags, held
+  once for the whole bank. That is what makes it a channel source rather than a
+  frequency list, and it is the whole saving: 46 bytes hold a bank of any size
+  against 42 bytes for each explicit channel record. The object format version
+  is 2 and version 1 objects are rejected rather than reinterpreted, because
+  guessing an absent template would invent a radio's receive settings.
+- Expansion produces complete `ChannelRecord`s, so selection, bank filtering,
+  dual watch, and scanning cannot tell an expanded channel from a stored one and
+  need no second path. Expanded channels take identifiers from a reserved range
+  at or above `0x8000` which packs the bank and index; `ChannelRecord::new`
+  refuses that range, so a stored channel and an expanded one can never collide.
+  Names are derived as the truncated plan name plus the one-based position, so
+  the number the operator reads is the number in the plan's documentation.
+- `ProgrammedMemory` composes stored channels with installed plans and expands
+  per lookup. Nothing is materialised, so a plan of a thousand channels costs
+  the same RAM as a plan of ten, and the K1 bounds what it will select rather
+  than what a plan may contain: four plans by the retained-image budget and 128
+  expanded channels by what the interface can walk responsively.
+- The studio edits the template once per plan and expands the plan in place, so
+  the operator sees the channels the radio will build before writing them, and
+  both tabs report what the configuration costs and what the plans saved. A
+  channel row cannot join a plan's bank, because the plan already owns every
+  channel in it.
+
+## ADR-060 — Channels and settings live in external memory; internal flash is firmware only
+
+- **Date:** 2026-08-08
+- **Status:** accepted for `EEPROM-035`
+- ADR-057 reserved the last internal flash sector for a retained configuration
+  because the external memory was unread. That put the operator's data inside
+  the region the firmware occupies: programming a radio competed with the
+  space its own code needed, 1,280 bytes bounded the whole configuration, and
+  reflashing risked what the operator had entered. `EVID-K1-060` removed the
+  reason for it by identifying the fitted device.
+- Configuration now lives in the external serial NOR memory the radio already
+  carries, and internal flash holds firmware and nothing else. The reserved
+  sector is gone and the packaging gates give the application the whole region
+  through `0x08020000`. `EVID-K1-062` records one plan surviving a power cycle
+  with no internal-flash store present.
+- AFIK claims one sector-aligned region at 1 MiB, half the device and far above
+  the approximately 52 KiB the radio's own firmware maps. `radio-eeprom` refuses
+  any region below a fixed bound, so a wrong constant cannot reach the vendor's
+  channels, settings, or calibration; the claim is checked before any access.
+- The driver owns no bus, clock, or pin, and every access is bounded twice, by
+  the device capacity and by the claimed region. A write erases the whole region
+  before programming, so a shorter configuration cannot leave the tail of an
+  older one behind to be read back as valid.
+- The device declares the region size in its capability profile, so a host can
+  say how much room a project leaves rather than guessing. The studio shows that
+  as bytes used and free, and says nothing at all when no radio is connected.
+- The memory is opened read-only first and its identification is reported on the
+  information screen. A memory which does not answer leaves the radio a working
+  receiver with nothing retained, because a configuration store is not worth a
+  radio which will not start.
+
+## ADR-061 — The operator interface never waits on another task
+
+- **Date:** 2026-08-08
+- **Status:** accepted for `EEPROM-035`
+- The interface task waited for the serial task's first publication before it
+  read a key, so that the display would not show the VFO to an operator whose
+  radio was programmed. That coupling cost four images: when the serial task
+  died, the radio drew its boot information screen and then ignored every key,
+  which reads as a dead radio and hides which task actually failed.
+- The interface now starts from an empty configuration and adopts a publication
+  when one arrives. A radio whose serial or storage path is broken is still a
+  receiver the operator can tune, and the failure is visible instead of total.
+- The information screen carries the evidence an operator can read without a
+  host: the external memory's state and identification, and serial received and
+  answered counters. Those counters distinguished a deaf interface from an
+  unanswered frame in one power cycle, having previously cost several images of
+  speculation.

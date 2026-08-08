@@ -10,11 +10,30 @@ active snapshot on commit. Abort or any validation error leaves the active
 snapshot unchanged. This is logical atomicity; physical power-loss durability
 is deferred and tracked as `RISK-004`.
 
+## Where a radio keeps its configuration
+
+A radio retains one canonical configuration image in the external serial memory
+it already carries, not in the internal flash which holds its firmware. ADR-060
+records why, and `EVID-K1-060` and `EVID-K1-062` record the device and the
+observed retention.
+
+`radio-eeprom` drives that memory and bounds every access twice, by the device
+capacity and by the sector-aligned region the caller claimed. A region below a
+fixed bound is refused outright, so an AFIK write cannot reach the channels,
+settings, or calibration the radio's own firmware keeps in the bottom of the
+same device. A write erases the whole claimed region before programming, so a
+shorter configuration never leaves the tail of an older one to be read back
+beside it.
+
+The K1 image claims one four-kilobyte region at one megabyte and declares its
+size in the capability profile, so a host can report how much room a project
+leaves rather than guessing.
+
 The store exposes active objects without candidate data but does not define a
 wire order. Protocol implementations sort listings by stable object kind and
 ID before encoding them.
 
-Generated-bank payload version 1 contains:
+Generated-bank payload version 2 is 46 bytes:
 
 ```text
 format version : u8
@@ -25,7 +44,23 @@ base Hz        : u32 little endian
 spacing Hz     : u32 little endian
 channel count  : u16 little endian
 TX class       : u8
+RX tone kind   : u8  (0 none, 1 CTCSS, 2 DCS, 3 DCS inverted)
+RX tone value  : u16 little endian (CTCSS tenths of a hertz, or DCS octal code)
+TX tone kind   : u8
+TX tone value  : u16 little endian
+modulation     : u8
+bandwidth      : u8
+power level    : u8
+step Hz        : u32 little endian
+squelch level  : u8
+channel flags  : u8
 ```
+
+The trailing fields from the RX tone onwards are the `ChannelTemplate` every
+channel of the plan shares. They are what makes the plan a complete channel
+source rather than a list of frequencies: 46 bytes hold a whole bank, against
+42 bytes for each explicit channel record. Version 1 objects, which had no
+template, are rejected rather than reinterpreted.
 
 ## Canonical configuration image
 
@@ -39,7 +74,7 @@ The 16-byte image header is:
 ```text
 magic                 : 4 bytes (`AFIK`)
 image version         : u8 (`1`)
-object format version : u8 (`1`)
+object format version : u8 (`2`)
 object count          : u16 little endian
 payload length        : u32 little endian
 CRC-32                : u32 little endian
@@ -71,13 +106,13 @@ validation.
 ## Explicit channels, named banks, and radio configuration
 
 Work Package 26 adds three object kinds beside the generated bank. Each is a
-fixed-size version-1 payload, revalidated field by field on decode, and ordered
+fixed-size payload, revalidated field by field on decode, and ordered
 canonically by `(kind, id)`.
 
 Object kinds are `1` generated bank, `2` channel, `3` channel bank, and `4`
 radio configuration. The radio configuration is a singleton at ID `0`.
 
-Channel payload version 1 is 42 bytes:
+Channel payload version 2 is 42 bytes:
 
 ```text
 format version : u8

@@ -1,14 +1,39 @@
 # Channel plans
 
 The first implemented encoding is `LinearSimplex`. It stores a bank ID,
-bounded printable name, base frequency, positive spacing, channel count, and
-trusted TX class. Construction checks the final generated frequency so every
-valid index can be expanded without overflow.
+bounded printable name, base frequency, positive spacing, channel count,
+trusted TX class, and one `ChannelTemplate`. Construction checks the final
+generated frequency so every valid index can be expanded without overflow.
 
 Expansion is lazy: requesting channel `n` performs checked
 `base + spacing * n` arithmetic and returns one `ActiveChannel`. Scanning can
 therefore iterate a generated bank without allocating or decoding a flat
 channel list.
+
+## The channelised space-saving model
+
+A plan is not a shorthand for channels an operator must also store. It is the
+stored form: one object of `GENERATED_BANK_ENCODED_LEN` bytes holds a whole
+bank however many channels it contains, against 42 bytes for each explicit
+channel record.
+
+`GeneratedBank::channel_record(index)` expands one complete `ChannelRecord`, so
+an expanded channel is indistinguishable from a stored one at the point of use.
+It carries:
+
+- the plan's `ChannelTemplate` — tones, modulation, bandwidth, power, manual
+  step, squelch, and behaviour flags, stored once for the whole bank;
+- a derived name, the plan name truncated so the one-based position always fits
+  the twelve-character field, for example `PMR446 01`;
+- membership of the plan's own bank and no other, so a bank filter selects
+  exactly the plan;
+- an identifier from the reserved range at or above `GENERATED_CHANNEL_ID_BASE`
+  (`0x8000`), packing the bank identifier and the index.
+
+`ChannelRecord::new` refuses that reserved range, so only expansion mints those
+identifiers and a stored channel can never collide with an expanded one. One
+plan holds at most `MAX_GENERATED_CHANNELS` channels, which is what the
+identifier packing bounds.
 
 Work Package 7 adds `radio-channel-control` over this lazy expansion. It checks
 initial and manual indexes, wraps next/previous navigation at exact bank bounds,

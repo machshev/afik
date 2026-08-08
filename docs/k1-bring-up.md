@@ -423,21 +423,41 @@ configuration are written as a validated transaction and read back.
 
 ### Retained configuration
 
-A committed configuration is written to the last 8 KiB erase sector of the
-device, `0x0801E000` to `0x08020000`, as one canonical configuration image. The
-application region stops at `0x0801E000`: the linker memory map, the raw-image
-size gate, and the ELF LOAD gate all end there, so an application image can
-never overwrite a retained configuration. A larger image is refused by
-`tool/verify-k1-raw-image.sh` rather than truncated.
+A committed configuration is written to the external serial memory the radio
+already carries, as one canonical configuration image. Internal flash holds the
+firmware and nothing else: no sector is reserved, and the raw-image and ELF
+gates give the application the whole region through `0x08020000`. ADR-060
+records the move and why the earlier reserved sector was wrong.
 
-The image is retained *before* the commit response is sent. The host is waiting
-for that response, so masking interrupts for the erase and page writes cannot
-drop an inbound byte. An erased, foreign, truncated, or corrupt sector is
-treated as "nothing retained": the built-in channels stay in charge and the
-information screen says so.
+`EVID-K1-060` identifies the fitted device on the exact unit: a 2 MiB serial NOR
+memory answering `68 40 15` on `SPI2`, with `SCK` on `PA0`, `MOSI` on `PA1`,
+`MISO` on `PA2`, and chip select on `PA3`. That is a Boya-family part rather than
+the Puya one the pinned source drives; AFIK issues only the standard read, page
+program, sector erase, write enable, and status commands both implement.
 
-Bounds are set by the evidenced 16 KiB of SRAM: twelve channels, sixteen named
-banks, one radio configuration, and a 1,280-byte retained image. The device
+AFIK claims one four-kilobyte region at one megabyte. The radio's own firmware
+maps its channels, names, settings, calibration, and boot logo into roughly the
+bottom 52 KiB of the same device, and `radio-eeprom` refuses any region below a
+fixed 64 KiB bound, so an AFIK write cannot reach the vendor's data whatever its
+arguments. The whole claimed region is erased before programming, so a shorter
+configuration never leaves the tail of an older one behind.
+
+The memory is opened read-only at start-up and its identification is reported on
+the information screen, so an operator can tell a working memory from an absent
+one without a host. A memory which does not answer leaves the radio a working
+receiver with nothing retained.
+
+The image is retained before the commit response is sent, so a host told that a
+transaction committed can rely on it having been stored. An erased, foreign,
+truncated, or corrupt region is treated as "nothing retained" and the
+information screen says so. `EVID-K1-062` records one plan surviving a power
+cycle on the exact unit.
+
+Bounds are set by the evidenced 16 KiB of SRAM: twelve channels, eight named
+banks, two generated plans, one radio configuration, and a 1,280-byte staging
+buffer. Every stored object occupies a fixed slot in both the active and the
+candidate snapshot, so those counts cost far more RAM than their encoded bytes,
+and the interface has to keep a working stack beside them. The device
 advertises its object capacity and refuses a larger channel set with the stable
 `ValidationFailed` code at validation time, before it could become active.
 

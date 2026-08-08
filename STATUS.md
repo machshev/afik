@@ -2,6 +2,19 @@
 
 ## Current work package
 
+**`EEPROM-035` is complete and confirmed on the exact unit: a radio's channels
+and settings live in the external serial memory it already carries, and its
+internal flash holds firmware and nothing else. A PMR446 plan written over
+serial as one 46-byte object survived a power cycle and was restored as sixteen
+channels, with no internal-flash configuration store present to have held it.**
+
+**`PLAN-034` is complete in software: a generated plan is now the stored form of
+a bank of channels in the plan, storage, receive-control, K1 image, and studio
+layers alike. One 46-byte object holds a bank of any size and the radio expands
+it into complete channel records it selects, filters, and scans exactly as it
+does stored channels. `AFIK-K1-2.5` is built, gated, and packaged; the physical
+write and its confirmations are the remaining work.**
+
 **Work Package 31 (`RFK1-031`) is complete in software: the receive-only K1
 image is programmed by the host tooling over the shared configuration protocol,
 retains its configuration in a reserved flash sector, and gives the operator a
@@ -2269,3 +2282,102 @@ Complete, with the physical confirmations below observed on the exact unit.
 - **Next smallest task:** observe those three on the unit, then decide whether
   the dropped first exchange after boot deserves a fix in the image rather than
   a host retry.
+
+## PLAN-034 — the channelised space-saving model, 2026-08-07
+
+- A generated plan carried no per-channel settings, so no image expanded one:
+  the K1 advertised no plan encoding and dropped the object. The saving existed
+  in the storage format alone, and the studio presented banks as containers for
+  channel rows, which is the model the plan was meant to replace.
+- The plan object now carries one `ChannelTemplate` — tones, modulation,
+  bandwidth, power, manual step, squelch, and flags — stored once for the whole
+  bank. Object format version is 2; version 1 objects are rejected rather than
+  reinterpreted. `GENERATED_BANK_ENCODED_LEN` is 46 bytes against 42 bytes per
+  explicit channel record, so a sixteen-channel plan costs 46 bytes instead of
+  672.
+- Expansion produces complete `ChannelRecord`s with derived names
+  (`PMR446 01`), membership of the plan's own bank, and identifiers from a range
+  reserved at or above `0x8000`. `ChannelRecord::new` refuses that range, so a
+  stored channel can never collide with an expanded one.
+- `ProgrammedMemory<CHANNELS, BANKS>` composes stored channels with installed
+  plans behind the existing `ChannelSource`, expanding per lookup, so the banked
+  controller, bank filter, dual watch, and scanner are unchanged and hold no
+  materialised channels.
+- The K1 image advertises `LinearSimplex`, activates four plans by the
+  retained-image budget and 128 expanded channels by what the interface can walk
+  responsively, and names and populates a plan's bank without a named-bank
+  object beside it. The retained image still holds a full configuration: 1,237
+  of 1,280 reserved bytes.
+- The studio edits the template once per plan, expands the plan in place into
+  the channels the radio will build, and reports selectable channels, object and
+  byte cost, and the bytes the plans saved. A channel row cannot join a plan's
+  bank, and channel identifiers stop below the reserved range.
+- **Image:** `AFIK-K1-2.5`, 80,344 bytes, SHA-256
+  `4e5b9cb6ac653359642a3cd31168caae69c28973ca7d25b11cdc475590932536`, CRC-32
+  `6faaf8da`, Reset `0x080028c1`, `text=78576 data=1768 bss=11560`. The image
+  grew from `AFIK-K1-2.4` (73,920 bytes) by the expansion, template, and
+  composition code.
+- **Verification:** `nix develop path:. -c cargo fmt --all -- --check`,
+  `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`,
+  and `nix develop path:. -c cargo test --workspace` all pass; 48 test binaries.
+  `tool/build-k1-async.sh --release`, `tool/verify-k1-async-image.sh`,
+  `tool/verify-k1-raw-image.sh`, and `tool/package-k1-async-image.sh` pass.
+
+### Physical write on the exact unit, 2026-08-07
+
+- Read-only `afik-flasher --device auto identify` reported K1 bootloader
+  `7.03.01` on `/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0`,
+  `hardware_identity=not_proven_by_beacon`.
+- `flash-afik-k1` wrote `AFIK-K1-2.5`: `314/314` pages acknowledged in
+  transaction `6c497bdb`, `status=acknowledged_not_read_back`, against the
+  retained recovery image and the retained EEPROM backup `99765400`.
+- **Not yet observed:** the write is acknowledged, not read back, and nothing
+  has been observed running. The confirmations remaining on the unit are: the
+  image identity on the information screen after a power cycle; a plan
+  programmed over serial appearing as named channels; its bank filtering; and
+  the retained configuration surviving a power cycle.
+
+## EEPROM-035 — configuration in external memory, 2026-08-08
+
+- The configuration store moved out of the internal flash sector ADR-057
+  reserved and into the external serial NOR memory the radio already carries.
+  `py32f071_retained` and its sector are gone, and the raw-image and ELF gates
+  give the application the whole region through `0x08020000`.
+- `EVID-K1-060`: the fitted device answers `68 40 15` on `SPI2` with `SCK` on
+  `PA0`, `MOSI` on `PA1`, `MISO` on `PA2`, and chip select on `PA3`. Capacity
+  code `0x15` is 2 MiB. Manufacturer `0x68` is Boya, not the Puya `0x85` the
+  pinned source drives, so the fitted part is a `BY25Q16`-family device; AFIK
+  issues only the standard commands both implement.
+- `EVID-K1-062`: one generated plan written over serial, `generation=1`,
+  verified by read-back, restored as sixteen channels after a power cycle.
+- AFIK claims one four-kilobyte region at one megabyte. `radio-eeprom` refuses
+  any region below a fixed 64 KiB bound, so an AFIK write cannot reach the
+  vendor's channels, settings, or calibration in the bottom of the same device.
+- The device declares the region size in its capability profile and the studio
+  reports bytes used and free, saying nothing when no radio is connected.
+- Retention yields: the erase and each page program are issued and then polled
+  between executor yields, so storing a configuration no longer stops the
+  receive path and the operator interface.
+- **Hardware SPI, not bit-banging.** The memory is driven by the `SPI2`
+  peripheral. The vendored HAL had only a transmit-only interface built for the
+  display, so it gained a blocking full-duplex driver and a `MisoPin` trait, and
+  the generator's MISO mapping was enabled. The BK4819 three-wire bus remains
+  bit-banged because its bidirectional data line is `PB9`, which has no SPI
+  alternate function at all.
+- **Corrections during this work, all on the exact unit.** `AFIK-K1-2.5`
+  exhausted the stack and never started. `2.6` to `2.9` drew the boot
+  information screen and then ignored every key: the interface task waited for
+  the serial task's first publication, so a failure anywhere in the serial or
+  storage path read as a dead radio. ADR-061 removes that coupling. The serial
+  task also read the UART one byte per await and lost bytes whenever the
+  interface task held the core for a bit-banged transfer, which showed as
+  `RX 11 TX 0` on the information screen; it now reads a frame at a time by DMA
+  with idle-line delimiting.
+- **Multi-page confirmation:** fifteen objects, 594 stored bytes, a 685-byte
+  image spanning three pages, read back byte-identical across a power cycle.
+  `list` and repeated `info` exchanges now succeed while the radio holds a
+  configuration.
+- **Not yet observed:** wear behaviour, and the erase-before-write boundary
+  under power loss, which remains `RISK-004`. A power cut during a retain leaves
+  the region erased and the previous configuration lost; two alternating regions
+  with a commit pointer would fix it.

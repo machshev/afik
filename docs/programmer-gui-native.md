@@ -41,7 +41,8 @@ but never preselects a flashing target, however few candidates there are.
 The editor carries default channel sets so a first plan is not typed by hand: one
 UK and EU simplex set of PMR446 plus 2 m and 70 cm amateur FM simplex, twelve
 channels in three named banks, which is exactly what the K1 receive image holds;
-and one compact PMR446 generated plan for a target which expands plans.
+and one PMR446 generated plan, which is one stored object a target expands into
+sixteen channels.
 
 A set is a starting point, not an authority. Applying one replaces every channel
 and bank row, says how many rows it replaced, and asks the operator to confirm
@@ -68,16 +69,27 @@ floating point.
 - **Channels:** identifier, name, receive and transmit frequency, receive and
   transmit tone, modulation, bandwidth, power, step, squelch, per-channel flags,
   bank membership, and transmit class. Rows collapse, can be duplicated, and
-  name the bank each membership checkbox joins.
+  name the bank each membership checkbox joins. Each row is one stored object;
+  identifiers stop below the range reserved for channels a radio expands from a
+  plan.
 - **Banks:** the sixteen addressable bank identifiers. A row is either a named
   bank, which groups the channel rows claiming membership of it and carries the
-  scan flag, or a compact generated plan, which stores a base frequency,
-  channel spacing, channel count, and transmit class the radio expands for
-  itself. A generated row reports the span it covers. The two kinds are separate
-  stored objects, so one identifier can hold one of each. A target which
-  advertises no compact plan encoding is named as such before a write is
-  attempted; the K1 receive image is one, so plans can be saved to a file but
-  not written to it.
+  scan flag, or a generated plan, which stores a base frequency, channel
+  spacing, channel count, transmit class, and the per-channel template every
+  channel of the plan shares — tones, modulation, bandwidth, power, step,
+  squelch, and flags — edited once for the whole bank. A generated row reports
+  the span it covers and expands, in place, into the channels the radio will
+  build from it: the same names, order, and frequencies the radio's own channel
+  list shows, with what the plan costs in stored bytes against what those
+  channels would have cost. The two kinds are separate stored objects, so one
+  identifier can hold one of each; a channel row cannot join a plan's bank,
+  because the plan already owns every channel in it. A target which advertises
+  no plan encoding is named as such before a write is attempted.
+
+Both tabs carry the same summary line: how many channels the radio can select,
+how many of them are stored against expanded, the object and byte cost, and the
+bytes the plans saved. It counts only rows which validate, so it always
+describes a configuration which could be written.
 - **Radio:** squelch, backlight, scan resume mode and timings, dual watch,
   battery save, and the global behaviour flags.
 - **Device:** detect and select a serial device, choose the baud, connect or

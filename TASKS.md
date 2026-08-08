@@ -1576,3 +1576,85 @@
   `5d732fcd`, Reset `0x080028c1`, `text=72984 data=936 bss=9328`.
 - **Remaining:** confirm the bank list contents, the switch onto memory after a
   host write, and VFO tuning from the keypad by observation on the unit.
+
+## PLAN-034 — The channelised space-saving model in the UI and the radio
+
+- **Status:** software complete (2026-08-07); physical confirmation pending
+- **Objective:** make a generated plan the stored form of a bank of channels
+  everywhere, rather than a storage-format claim no image honoured and an
+  editor which presented banks as collections of channel rows.
+- **Scope:** a per-channel template inside the generated-bank object and object
+  format version 2; complete `ChannelRecord` expansion with derived names,
+  plan-bank membership, and reserved identifiers; `ProgrammedMemory` composing
+  stored channels with expanded plans behind the existing `ChannelSource`; the
+  K1 image accepting, retaining, expanding, filtering, and scanning plans and
+  advertising the encoding; the studio editing the template, expanding a plan in
+  place, and reporting stored cost against saving.
+- **Exclusions:** transmit of any kind; the remaining declared plan encodings,
+  which stay model vocabulary; migration of version 1 objects, which are
+  rejected; and any supported-band claim.
+- **Acceptance criteria:** one plan object programmes a bank of channels a radio
+  selects, filters, and scans exactly as it does stored channels; a stored
+  channel cannot claim an expanded identifier; the retained-image budget still
+  holds a full configuration; the editor shows the channels a plan becomes
+  before it is written; host, workspace Clippy, format, and embedded gates stay
+  green.
+- **Result:** software complete. `radio-channel-plan` expands complete records,
+  `radio-storage` carries the template at format version 2, `radio-channel-
+  control` composes both channel kinds, the K1 activates four plans and 128
+  expanded channels, and the studio edits the template and previews the
+  expansion. 48 workspace test binaries pass.
+- **Image:** `AFIK-K1-2.5`, 80,344 bytes, SHA-256
+  `4e5b9cb6ac653359642a3cd31168caae69c28973ca7d25b11cdc475590932536`, CRC-32
+  `6faaf8da`, Reset `0x080028c1`, `text=78576 data=1768 bss=11560`.
+- **Physical write:** `AFIK-K1-2.5` was written to the exact unit on 2026-08-07,
+  `314/314` pages acknowledged in transaction `6c497bdb`,
+  `status=acknowledged_not_read_back`.
+- **Remaining:** confirm on the unit that a plan programmed over serial appears
+  as named channels, that its bank filters, and that the retained configuration
+  survives a power cycle.
+
+## EEPROM-035 — Channels and settings in external memory, flash for firmware only
+
+- **Status:** complete (2026-08-08), confirmed on the exact unit
+- **Objective:** move a radio's configuration out of the internal flash which
+  holds its firmware and into the external memory it already carries, so
+  programming a radio cannot compete with the space its own code needs and a
+  configuration is not bounded by a spare sector.
+- **Scope:** a bounded external serial-memory driver with a claimed-region
+  boundary; the K1 board adapter on hardware `SPI2`; retention moved off
+  internal flash with the reserved sector and its module removed; the region
+  size declared in the capability profile and shown by the studio as space used
+  and free; a read-only identification probe reported on the information screen.
+- **Exclusions:** the radio's own firmware data, which AFIK never writes;
+  wear levelling; power-loss atomicity of the erase-before-write boundary, which
+  remains `RISK-004`; and any use of the remaining 2 MiB beyond the claimed
+  region.
+- **Acceptance criteria:** a configuration written over serial survives a power
+  cycle with no internal-flash store present; an AFIK write cannot address the
+  vendor's region; a memory which does not answer leaves a working receiver;
+  host, workspace Clippy, format, and embedded gates stay green.
+- **Result:** complete. `radio-eeprom` is the driver, `eeprom_bus` frames the
+  transfers over the peripheral, and `py32f071_eeprom` claims one four-kilobyte
+  region at one megabyte. `EVID-K1-060` identifies the fitted device as a 2 MiB
+  Boya-family part answering `68 40 15`, correcting the pinned source's Puya
+  part. `EVID-K1-062` records a PMR446 plan written as one 46-byte object,
+  retained across a power cycle, and restored as sixteen channels.
+- **Corrections made during this work:** `AFIK-K1-2.5` exhausted the stack and
+  did not start; `2.6` to `2.9` drew the boot information screen and then
+  ignored every key, because the interface task waited for the serial task's
+  first publication. ADR-061 removes that coupling and adds the memory state and
+  serial counters an operator can read without a host. The serial task also read
+  the UART one byte per await, which lost bytes whenever the interface task held
+  the core for a bit-banged BK4819 transfer; it now reads a frame at a time by
+  DMA with idle-line delimiting.
+- **Image:** `AFIK-K1-3.3`, 81,376 bytes, CRC-32 `2ede2fef`, Reset `0x080028c1`.
+- **Physical confirmation, 2026-08-08:** fifteen objects and a 685-byte image
+  spanning three pages were written, read back, power-cycled, and read back
+  byte-identical. `list` and repeated `info` exchanges succeed with the radio
+  holding a configuration, which the one-byte-per-await serial read had made
+  impossible.
+- **Remaining:** the erase-before-write boundary has no power-loss story. A
+  power cut during a retain leaves the region erased and the previous
+  configuration gone. Two alternating regions with a commit pointer would fix
+  it, and the 2 MiB device has ample room; tracked as `RISK-004`.

@@ -70,10 +70,18 @@ authentication. See `docs/programmer-gui-native.md`.
 
 ## Channels, banks, and the receive path
 
-Configuration storage holds explicit channel records, named banks, and one
-global radio configuration beside the original generated banks. Bank
-membership is a mask on the channel, so a channel can belong to several of the
-sixteen addressable banks; see `docs/storage-format.md`.
+Configuration storage holds explicit channel records, named banks, generated
+plans, and one global radio configuration. Bank membership is a mask on the
+channel, so a channel can belong to several of the sixteen addressable banks;
+see `docs/storage-format.md`.
+
+A generated plan is the channelised space-saving model: one 46-byte object holds
+a bank of any size, carrying the arithmetic and the per-channel template every
+channel of the bank shares, against 42 bytes for each explicit channel record.
+A radio expands it into complete channel records on demand, so selection, bank
+filtering, and scanning treat an expanded channel exactly like a stored one, and
+the editor shows the channels a plan becomes before it is written. See
+`docs/channel-plans.md`.
 
 The receive path programs the BK4819 for FM, AM, and USB with filter
 bandwidth, AGC, calibration-supplied squelch thresholds, CTCSS and CDCSS

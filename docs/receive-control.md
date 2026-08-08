@@ -12,6 +12,15 @@ logical timer directive for an external scheduler.
 order. Insertion replaces a channel with the same identifier in place and fails
 closed when the store is full.
 
+`ProgrammedMemory<CHANNELS, BANKS>` is the source a programmed radio actually
+uses: stored channels plus the generated plans it expands for itself. Stored
+channels come first in identifier order, then each plan's channels in bank
+order, and expansion happens per lookup rather than up front, so a plan of a
+thousand channels occupies no more memory than a plan of ten. Installing a plan
+replaces any plan already held for that bank and resizes the selection space.
+Selection, bank filtering, dual watch, and scanning cannot tell a stored channel
+from an expanded one.
+
 The controller holds an optional bank filter. With a filter set, only channels
 whose membership mask contains that bank are selectable, navigable, or
 scannable. Setting a filter which selects no channel is refused and leaves the
