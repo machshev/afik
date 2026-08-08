@@ -141,7 +141,7 @@ fn the_host_programmer_writes_reads_back_and_activates_a_full_configuration() {
     assert_eq!(receipt.generation, 1);
 
     // The image decodes the active snapshot with the same code the radio runs.
-    let activated = Programmed::from_objects(programmer.transport().service.active_objects())
+    let activated = Programmed::index(programmer.transport().service.active_objects())
         .expect("programmed configuration");
     assert_eq!(
         activated.channel_count(),
@@ -150,9 +150,11 @@ fn the_host_programmer_writes_reads_back_and_activates_a_full_configuration() {
     assert_eq!(activated.config().backlight_seconds, 30);
     assert_eq!(
         activated
-            .bank(BankId::new(1))
+            .bank_name(
+                programmer.transport().service.active_objects(),
+                BankId::new(1)
+            )
             .expect("named bank")
-            .name()
             .as_str(),
         "VHF ODD"
     );
@@ -163,8 +165,9 @@ fn the_host_programmer_writes_reads_back_and_activates_a_full_configuration() {
     // Every programmed channel keeps the class the host wrote, and this image
     // has no transmit path regardless.
     for index in 0..activated.channel_count() {
-        use radio_channel_control::ChannelSource;
-        let channel = activated.memory().get(index).expect("channel");
+        let channel = activated
+            .channel_at(programmer.transport().service.active_objects(), index)
+            .expect("channel");
         assert_eq!(channel.tx_class(), TxClass::Never);
     }
 }
@@ -192,9 +195,8 @@ fn a_written_configuration_survives_the_retained_image_round_trip() {
     let mut restarted = device_service(CONFIGURATION_BYTES);
     assert_eq!(restarted.load_image(&image[..length]), Ok(1));
     assert_eq!(
-        Programmed::from_objects(restarted.active_objects()).expect("restored"),
-        Programmed::from_objects(programmer.transport().service.active_objects())
-            .expect("programmed")
+        Programmed::index(restarted.active_objects()).expect("restored"),
+        Programmed::index(programmer.transport().service.active_objects()).expect("programmed")
     );
 }
 
@@ -224,7 +226,6 @@ fn more_channels_than_the_interface_can_select_are_refused_before_activation() {
 
 #[test]
 fn a_compact_generated_plan_is_written_once_and_expands_on_the_radio() {
-    use radio_channel_control::ChannelSource;
     use radio_channel_plan::{GeneratedBank, PlanEncoding};
 
     let mut programmer = Programmer::connect(DeviceTransport::new()).expect("connect");
@@ -257,21 +258,27 @@ fn a_compact_generated_plan_is_written_once_and_expands_on_the_radio() {
         .write_configuration_verified(&compiled)
         .expect("transactional write with read-back");
 
-    let activated = Programmed::from_objects(programmer.transport().service.active_objects())
+    let activated = Programmed::index(programmer.transport().service.active_objects())
         .expect("programmed configuration");
     assert_eq!(activated.channel_count(), 16);
     assert_eq!(
-        activated.memory().stored_len(),
+        activated.stored_channels(),
         0,
         "no channel record was stored for an expanded channel"
     );
-    let first = activated.memory().get(0).expect("first expanded channel");
+    let first = activated
+        .channel_at(programmer.transport().service.active_objects(), 0)
+        .expect("first expanded channel");
     assert_eq!(first.name().as_str(), "PMR 1");
     assert_eq!(first.receive().as_hz(), 446_006_250);
     assert_eq!(first.tx_class(), TxClass::Never);
     assert!(first.is_member_of(BankId::new(3)));
     assert_eq!(
-        activated.memory().get(15).expect("last").receive().as_hz(),
+        activated
+            .channel_at(programmer.transport().service.active_objects(), 15)
+            .expect("last")
+            .receive()
+            .as_hz(),
         446_193_750
     );
 
@@ -282,7 +289,10 @@ fn a_compact_generated_plan_is_written_once_and_expands_on_the_radio() {
     assert_eq!(banks[0], Some(BankId::new(3)));
     assert_eq!(
         activated
-            .bank_name(BankId::new(3))
+            .bank_name(
+                programmer.transport().service.active_objects(),
+                BankId::new(3)
+            )
             .expect("plan name")
             .as_str(),
         "PMR446"

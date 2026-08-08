@@ -16,10 +16,13 @@
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicU32, Ordering};
 
+use core::cell::RefCell;
 use cortex_m_rt::entry;
 use embassy_executor::Executor;
 use embassy_futures::select::{select, Either};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+
+use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Timer};
 use py32_hal::gpio::{Flex, Input, Level, Output, Pull, Speed};
@@ -31,7 +34,7 @@ use radio_bk4819::{
     AfOutput, Bk4819, ReadbackRegister, ReceiveSetup, SquelchThresholds, BK4829_PROFILE,
 };
 use radio_channel_control::{
-    BankedReceiveController, ChannelReceiveSetup, ProgrammedMemory, ReceiveObservation,
+    BankedReceiveController, ChannelReceiveSetup, ChannelSource, ReceiveObservation,
 };
 use radio_channel_plan::{
     BankMask, BankName, ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord,
@@ -44,8 +47,7 @@ use radio_domain::{
 use radio_firmware_k1::battery::{Battery, Calibration};
 use radio_firmware_k1::bk4819_bus::ThreeWireBus;
 use radio_firmware_k1::configuration::{
-    device_service, store_squelch, Programmed, MAX_CHANNELS, MAX_GENERATED_BANKS,
-    RETAINED_IMAGE_BYTES,
+    device_service, store_squelch, Programmed, MAX_OBJECTS, RETAINED_IMAGE_BYTES,
 };
 use radio_firmware_k1::display::{
     render_channel_list, render_info_screen, render_operating_screen, render_selector_list,
@@ -62,12 +64,13 @@ use radio_firmware_k1::shell::{
     Context, Intent, Mode, Screen, Setting, Shell, Source, SETTINGS, SQUELCH_LEVELS, VFO_STEPS_HZ,
 };
 use radio_protocol::MAX_ENCODED_FRAME;
+use radio_storage::StorageObject;
 
 const _: [(); 8] = [(); PAGES];
 const K1_VECTOR_TABLE_ORIGIN: u32 = 0x0800_2800;
 
 /// Identity this image reports on the information screen.
-const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-4.0";
+const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-4.1";
 
 /// Interval between receive samples while audio is routed.
 ///
@@ -672,7 +675,8 @@ fn publish<const OBJECTS: usize>(
     retained: bool,
     memory: MemoryState,
 ) {
-    let programmed = Programmed::from_objects(service.active_objects()).unwrap_or_default();
+    store_objects(service.active_objects());
+    let programmed = Programmed::index(service.active_objects()).unwrap_or_default();
     PROGRAMMED.signal(Publication {
         programmed,
         generation: service.generation(),
@@ -687,20 +691,81 @@ fn publish<const OBJECTS: usize>(
 /// always has something to tune, so an unprogrammed radio is a VFO radio rather
 /// than an inert one. Both sources drive the same banked controller, so tuning,
 /// monitoring, and metering behave identically either way.
+
+/// The one RAM copy of the configuration, as the external memory stores it.
+///
+/// The serial task owns the device service and republishes here; the interface
+/// task reads. Nothing decoded is held anywhere: a channel is built from these
+/// objects on the lookup that needs it and dropped again, so what a radio can
+/// hold is bounded by the storage it advertises rather than by its SRAM.
+static ACTIVE: Mutex<CriticalSectionRawMutex, RefCell<[Option<StorageObject>; MAX_OBJECTS]>> =
+    Mutex::new(RefCell::new([None; MAX_OBJECTS]));
+
+/// Replaces the shared object snapshot.
+fn store_objects<'a, I>(objects: I)
+where
+    I: IntoIterator<Item = &'a StorageObject>,
+{
+    ACTIVE.lock(|cell| {
+        let mut snapshot = cell.borrow_mut();
+        *snapshot = [None; MAX_OBJECTS];
+        for (slot, object) in snapshot.iter_mut().zip(objects) {
+            *slot = Some(*object);
+        }
+    });
+}
+
+/// What the operator is listening to: the VFO, or the programmed channels.
+///
+/// The programmed variant holds only the index. Counting, bank filtering and
+/// scan navigation — the walks which touch every channel — are answered from it
+/// without a lock or a decode. Only materialising a record, once per channel
+/// actually shown or tuned, reaches the shared snapshot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Listening {
+    Vfo(ChannelRecord),
+    Memory(Programmed),
+}
+
+impl ChannelSource for Listening {
+    fn len(&self) -> u16 {
+        match self {
+            Self::Vfo(_) => 1,
+            Self::Memory(programmed) => programmed.len(),
+        }
+    }
+
+    fn get(&self, index: u16) -> Option<ChannelRecord> {
+        match self {
+            Self::Vfo(record) => (index == 0).then_some(*record),
+            Self::Memory(programmed) => {
+                ACTIVE.lock(|cell| programmed.channel_at(cell.borrow().iter().flatten(), index))
+            }
+        }
+    }
+
+    fn member_at(&self, index: u16, bank: BankId) -> bool {
+        match self {
+            Self::Vfo(_) => false,
+            Self::Memory(programmed) => programmed.member_at(index, bank),
+        }
+    }
+}
+
 fn activate(
     programmed: &Programmed,
     shell: &Shell,
 ) -> Option<(
-    BankedReceiveController<ProgrammedMemory<MAX_CHANNELS, MAX_GENERATED_BANKS>>,
+    BankedReceiveController<Listening>,
     Option<ChannelReceiveSetup>,
 )> {
     let (memory, bank) = match shell.mode() {
-        Mode::Vfo => (vfo_memory(shell, programmed.config().squelch)?, None),
+        Mode::Vfo => (vfo_source(shell, programmed.config().squelch)?, None),
         Mode::Memory => {
             if programmed.is_empty() {
                 return None;
             }
-            (programmed.memory(), shell.bank_filter())
+            (Listening::Memory(*programmed), shell.bank_filter())
         }
     };
     let (controller, update) =
@@ -711,15 +776,12 @@ fn activate(
     ))
 }
 
-/// Builds a one-channel store holding the VFO frequency.
+/// Builds the one-channel source holding the VFO frequency.
 ///
 /// The VFO is expressed as an ordinary receive-only channel record so it reuses
 /// the whole programmed receive path unchanged. It is `TxClass::Never` like
 /// everything else this image constructs.
-fn vfo_memory(
-    shell: &Shell,
-    squelch: SquelchLevel,
-) -> Option<ProgrammedMemory<MAX_CHANNELS, MAX_GENERATED_BANKS>> {
+fn vfo_source(shell: &Shell, squelch: SquelchLevel) -> Option<Listening> {
     let receive = Frequency::from_hz(shell.vfo_hz()).ok()?;
     let step = FrequencyStep::from_hz(shell.vfo_step_hz()).ok()?;
     let record = ChannelRecord::new(ChannelDefinition {
@@ -741,9 +803,7 @@ fn vfo_memory(
         tx_class: TxClass::Never,
     })
     .ok()?;
-    let mut memory = ProgrammedMemory::new();
-    memory.insert(record).ok()?;
-    Some(memory)
+    Some(Listening::Vfo(record))
 }
 
 #[embassy_executor::task]
@@ -958,9 +1018,7 @@ async fn ui_task(
 fn render(
     frame: &mut [u8; FRAME_BYTES],
     shell: &Shell,
-    controller: Option<
-        &BankedReceiveController<ProgrammedMemory<MAX_CHANNELS, MAX_GENERATED_BANKS>>,
-    >,
+    controller: Option<&BankedReceiveController<Listening>>,
     receiver: &Receiver,
     battery_percent: Option<u8>,
     programmed: &Programmed,
@@ -1128,7 +1186,7 @@ fn render(
 
 /// Returns the host-programmed name of one bank, if the host named it.
 fn bank_name(programmed: &Programmed, bank: BankId) -> Option<BankName> {
-    programmed.bank_name(bank)
+    ACTIVE.lock(|cell| programmed.bank_name(cell.borrow().iter().flatten(), bank))
 }
 
 fn fail_closed() -> ! {

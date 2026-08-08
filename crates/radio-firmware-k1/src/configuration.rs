@@ -9,9 +9,9 @@
 //! host programmed, and the image constructs no transmit path, so a channel
 //! programmed as transmittable still cannot key this radio.
 
-use radio_channel_control::{ChannelSource, ProgrammedMemory};
 use radio_channel_plan::{
-    BankName, ChannelBank, GeneratedBank, PlanEncoding, MAX_BANKS as PLAN_MAX_BANKS,
+    BankMask, BankName, ChannelBank, ChannelRecord, GeneratedBank, PlanEncoding,
+    MAX_BANKS as PLAN_MAX_BANKS,
 };
 use radio_device::{DeviceService, KindLimits};
 use radio_domain::{BankId, RadioConfig, SquelchLevel};
@@ -164,17 +164,56 @@ pub enum ConfigurationError {
     TooManyChannels,
     /// More generated plans were stored than this image can expand.
     TooManyPlans,
+    /// Stored plans expanded past the index space selection can address.
+    TooManyExpanded,
     /// A bank identifier was outside the addressable range.
     BankOutOfRange,
     /// The programmed global configuration failed revalidation.
     InvalidConfig,
 }
 
-/// One complete programmed configuration ready to drive the receiver.
+/// One stored channel's identity and bank membership.
+///
+/// Held so that selection counting and bank filtering — the walks which touch
+/// every channel — need no decode and no lock. Four bytes against the
+/// forty-four a decoded record costs.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct StoredEntry {
+    id: u16,
+    banks: BankMask,
+}
+
+/// One installed plan's bank and size.
+///
+/// A plan expands into its own bank and no other, so this is everything bank
+/// filtering needs to know about it without decoding the plan.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct PlanEntry {
+    bank: u16,
+    count: u16,
+}
+
+/// An index over the programmed configuration, holding no configuration.
+///
+/// This is the channelised model applied all the way up. A generated plan does
+/// not materialise its channels; neither does the radio materialise its
+/// configuration. What is held here is what selection and filtering need to
+/// answer without touching storage — how many channels there are, which bank
+/// each belongs to, and the global receive settings. Everything else is decoded
+/// from the stored objects on the lookup that needs it and dropped again.
+///
+/// The consequence is that this type costs the same whether a radio holds four
+/// channels or four thousand, and the object bounds size stored bytes rather
+/// than SRAM.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Programmed {
-    memory: ProgrammedMemory<MAX_CHANNELS, MAX_GENERATED_BANKS>,
-    banks: [Option<ChannelBank>; MAX_BANKS],
+    stored: [StoredEntry; MAX_CHANNELS],
+    stored_len: u16,
+    plans: [PlanEntry; MAX_GENERATED_BANKS],
+    plan_len: u8,
+    expanded: u16,
+    /// Bank identifiers a named bank object defines.
+    named: u16,
     config: RadioConfig,
 }
 
@@ -185,26 +224,36 @@ impl Default for Programmed {
 }
 
 impl Programmed {
-    /// Returns an empty configuration carrying the conservative defaults.
+    /// Returns an empty index carrying the conservative defaults.
     #[must_use]
     pub const fn empty() -> Self {
         Self {
-            memory: ProgrammedMemory::new(),
-            banks: [None; MAX_BANKS],
+            stored: [StoredEntry {
+                id: 0,
+                banks: BankMask::from_bits(0),
+            }; MAX_CHANNELS],
+            stored_len: 0,
+            plans: [PlanEntry { bank: 0, count: 0 }; MAX_GENERATED_BANKS],
+            plan_len: 0,
+            expanded: 0,
+            named: 0,
             config: RadioConfig::conservative(),
         }
     }
 
-    /// Builds a configuration from one active object snapshot.
+    /// Indexes one active object snapshot without retaining any of it.
+    ///
+    /// Every object is decoded once, here, so that a malformed one is refused
+    /// before the radio runs on it. Nothing decoded is kept: what survives is
+    /// each stored channel's identifier and membership, each plan's bank and
+    /// size, and the global configuration.
     ///
     /// Both channel kinds land in one selection space: an explicit record costs
     /// one stored object, and a generated plan costs one stored object however
-    /// many channels it expands to. Nothing is expanded, ever: a plan is held as
-    /// the plan, so the only bounds are the stored objects this image accepts,
-    /// which it advertises, and the index space the selection uses, which
-    /// `install` checks. There is deliberately no bound on expanded channels,
-    /// because holding one would cost the operator channels for nothing.
-    pub fn from_objects<'a, I>(objects: I) -> Result<Self, ConfigurationError>
+    /// many channels it expands to. There is deliberately no bound on expanded
+    /// channels, because holding one would cost the operator channels for
+    /// nothing.
+    pub fn index<'a, I>(objects: I) -> Result<Self, ConfigurationError>
     where
         I: IntoIterator<Item = &'a StorageObject>,
     {
@@ -213,18 +262,17 @@ impl Programmed {
             match object.key().kind {
                 ObjectKind::Channel => {
                     let channel = decode_channel(object).map_err(ConfigurationError::Object)?;
-                    programmed
-                        .memory
-                        .insert(channel)
-                        .map_err(|_| ConfigurationError::TooManyChannels)?;
+                    programmed.insert_stored(StoredEntry {
+                        id: channel.id().get(),
+                        banks: channel.banks(),
+                    })?;
                 }
                 ObjectKind::ChannelBank => {
                     let bank = decode_channel_bank(object).map_err(ConfigurationError::Object)?;
-                    let slot = programmed
-                        .banks
-                        .get_mut(usize::from(bank.id().get()))
-                        .ok_or(ConfigurationError::BankOutOfRange)?;
-                    *slot = Some(bank);
+                    if usize::from(bank.id().get()) >= MAX_BANKS {
+                        return Err(ConfigurationError::BankOutOfRange);
+                    }
+                    programmed.named |= 1 << bank.id().get();
                 }
                 ObjectKind::RadioConfig => {
                     let config = decode_radio_config(object).map_err(ConfigurationError::Object)?;
@@ -234,20 +282,83 @@ impl Programmed {
                 }
                 ObjectKind::GeneratedBank => {
                     let plan = decode_generated_bank(object).map_err(ConfigurationError::Object)?;
-                    programmed
-                        .memory
-                        .install(plan)
-                        .map_err(|_| ConfigurationError::TooManyPlans)?;
+                    programmed.insert_plan(PlanEntry {
+                        bank: plan.id().get(),
+                        count: plan.channel_count(),
+                    })?;
                 }
             }
         }
         Ok(programmed)
     }
 
-    /// Returns the ordered channel store, stored channels and plans together.
-    #[must_use]
-    pub const fn memory(&self) -> ProgrammedMemory<MAX_CHANNELS, MAX_GENERATED_BANKS> {
-        self.memory
+    /// Inserts one stored-channel entry, keeping identifier order.
+    fn insert_stored(&mut self, entry: StoredEntry) -> Result<(), ConfigurationError> {
+        let len = usize::from(self.stored_len);
+        if len >= MAX_CHANNELS {
+            return Err(ConfigurationError::TooManyChannels);
+        }
+        let mut position = len;
+        for index in 0..len {
+            if self.stored[index].id == entry.id {
+                self.stored[index] = entry;
+                return Ok(());
+            }
+            if self.stored[index].id > entry.id {
+                position = index;
+                break;
+            }
+        }
+        let mut index = len;
+        while index > position {
+            self.stored[index] = self.stored[index - 1];
+            index -= 1;
+        }
+        self.stored[position] = entry;
+        self.stored_len += 1;
+        Ok(())
+    }
+
+    /// Inserts one plan entry, keeping bank order and checking the index space.
+    fn insert_plan(&mut self, entry: PlanEntry) -> Result<(), ConfigurationError> {
+        let len = usize::from(self.plan_len);
+        let mut position = len;
+        for index in 0..len {
+            if self.plans[index].bank == entry.bank {
+                let without = self.expanded - self.plans[index].count;
+                self.expanded = Self::checked_total(self.stored_len, without, entry.count)?;
+                self.plans[index] = entry;
+                return Ok(());
+            }
+            if self.plans[index].bank > entry.bank {
+                position = index;
+                break;
+            }
+        }
+        if len >= MAX_GENERATED_BANKS {
+            return Err(ConfigurationError::TooManyPlans);
+        }
+        let expanded = Self::checked_total(self.stored_len, self.expanded, entry.count)?;
+        let mut index = len;
+        while index > position {
+            self.plans[index] = self.plans[index - 1];
+            index -= 1;
+        }
+        self.plans[position] = entry;
+        self.plan_len += 1;
+        self.expanded = expanded;
+        Ok(())
+    }
+
+    /// Returns the expanded total, refusing one the index space cannot address.
+    fn checked_total(stored: u16, expanded: u16, added: u16) -> Result<u16, ConfigurationError> {
+        let total = expanded
+            .checked_add(added)
+            .ok_or(ConfigurationError::TooManyExpanded)?;
+        if u32::from(stored) + u32::from(total) > u32::from(u16::MAX) {
+            return Err(ConfigurationError::TooManyExpanded);
+        }
+        Ok(total)
     }
 
     /// Returns the global receive configuration.
@@ -256,22 +367,98 @@ impl Programmed {
         self.config
     }
 
+    /// Returns the number of channels this configuration selects.
+    #[must_use]
+    pub const fn len(&self) -> u16 {
+        self.stored_len.saturating_add(self.expanded)
+    }
+
     /// Returns the number of programmed channels.
     #[must_use]
-    pub fn channel_count(&self) -> u16 {
-        self.memory.len()
+    pub const fn channel_count(&self) -> u16 {
+        self.len()
+    }
+
+    /// Returns the number of channels which cost one stored object each.
+    #[must_use]
+    pub const fn stored_channels(&self) -> u16 {
+        self.stored_len
+    }
+
+    /// Returns the number of channels expanded from stored plans.
+    #[must_use]
+    pub const fn expanded_channels(&self) -> u16 {
+        self.expanded
+    }
+
+    /// Reports whether a named bank object defines one bank identifier.
+    #[must_use]
+    pub const fn is_named(&self, bank: BankId) -> bool {
+        self.named & (1 << bank.get()) != 0
     }
 
     /// Reports whether any channel was programmed.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.memory.is_empty()
+    pub const fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
-    /// Returns the programmed bank, if the host named it.
+    /// Reports whether the channel at one index belongs to one bank.
+    ///
+    /// Answered from the index alone: a stored channel carries its membership
+    /// here, and an expanded one belongs to its plan's bank and no other. So the
+    /// filtered walks never decode and never lock, which is what keeps a
+    /// band-sized plan cheap to select within.
     #[must_use]
-    pub fn bank(&self, bank: BankId) -> Option<ChannelBank> {
-        self.banks.get(usize::from(bank.get())).copied().flatten()
+    pub fn member_at(&self, index: u16, bank: BankId) -> bool {
+        match index.checked_sub(self.stored_len) {
+            None => self
+                .stored
+                .get(usize::from(index))
+                .is_some_and(|entry| entry.banks.contains(bank)),
+            Some(offset) => self
+                .plan_at(offset)
+                .is_some_and(|(plan, _)| plan.bank == bank.get()),
+        }
+    }
+
+    /// Returns the plan owning one plan-space offset, and the index within it.
+    fn plan_at(&self, offset: u16) -> Option<(PlanEntry, u16)> {
+        let mut remaining = offset;
+        for entry in self.plans.iter().take(usize::from(self.plan_len)) {
+            if remaining < entry.count {
+                return Some((*entry, remaining));
+            }
+            remaining -= entry.count;
+        }
+        None
+    }
+
+    /// Expands or decodes the channel at one index from the stored objects.
+    ///
+    /// This is the only path which touches storage, and it is taken once per
+    /// channel the operator actually sees or tunes rather than once per channel
+    /// walked. Nothing it decodes is retained.
+    #[must_use]
+    pub fn channel_at<'a, I>(&self, objects: I, index: u16) -> Option<ChannelRecord>
+    where
+        I: IntoIterator<Item = &'a StorageObject>,
+    {
+        match index.checked_sub(self.stored_len) {
+            None => {
+                let id = self.stored.get(usize::from(index))?.id;
+                let object = find(objects, ObjectKind::Channel, id)?;
+                decode_channel(object).ok()
+            }
+            Some(offset) => {
+                let (entry, inner) = self.plan_at(offset)?;
+                let object = find(objects, ObjectKind::GeneratedBank, entry.bank)?;
+                decode_generated_bank(object)
+                    .ok()?
+                    .channel_record(inner)
+                    .ok()
+            }
+        }
     }
 
     /// Returns the name to show for one bank.
@@ -279,10 +466,27 @@ impl Programmed {
     /// A generated plan names its own bank, so a radio programmed with plans
     /// alone still shows the operator what each filter selects.
     #[must_use]
-    pub fn bank_name(&self, bank: BankId) -> Option<BankName> {
-        self.bank(bank)
+    pub fn bank_name<'a, I>(&self, objects: I, bank: BankId) -> Option<BankName>
+    where
+        I: IntoIterator<Item = &'a StorageObject>,
+    {
+        // One pass: a named bank and a plan may share an identifier, and the
+        // name an operator chose wins over the one a plan derived.
+        let mut named = None;
+        let mut plan = None;
+        for object in objects {
+            if object.key().id != bank.get() {
+                continue;
+            }
+            match object.key().kind {
+                ObjectKind::ChannelBank => named = decode_channel_bank(object).ok(),
+                ObjectKind::GeneratedBank => plan = decode_generated_bank(object).ok(),
+                _ => {}
+            }
+        }
+        named
             .map(ChannelBank::name)
-            .or_else(|| self.memory.plan(bank).map(GeneratedBank::name))
+            .or_else(|| plan.map(GeneratedBank::name))
     }
 
     /// Returns the banks at least one selectable channel belongs to.
@@ -290,17 +494,23 @@ impl Programmed {
     /// The result is ordered by bank identifier and contains no bank without
     /// members, so a bank filter can never select an empty view. A generated
     /// plan populates its own bank, because every channel it expands to is a
-    /// member of it.
+    /// member of it. Answered from the index alone.
     #[must_use]
     pub fn populated_banks(&self) -> ([Option<BankId>; MAX_BANKS], usize) {
         let mut banks = [None; MAX_BANKS];
         let mut count = 0;
         for raw in 0..u16::try_from(MAX_BANKS).unwrap_or(u16::MAX) {
             let bank = BankId::new(raw);
-            let populated = self.memory.plan(bank).is_some()
-                || (0..self.memory.stored_len())
-                    .filter_map(|index| self.memory.get(index))
-                    .any(|channel| channel.banks().contains(bank));
+            let populated = self
+                .plans
+                .iter()
+                .take(usize::from(self.plan_len))
+                .any(|entry| entry.bank == raw)
+                || self
+                    .stored
+                    .iter()
+                    .take(usize::from(self.stored_len))
+                    .any(|entry| entry.banks.contains(bank));
             if populated {
                 banks[count] = Some(bank);
                 count += 1;
@@ -310,12 +520,21 @@ impl Programmed {
     }
 }
 
+/// Returns the stored object with one kind and identifier.
+fn find<'a, I>(objects: I, kind: ObjectKind, id: u16) -> Option<&'a StorageObject>
+where
+    I: IntoIterator<Item = &'a StorageObject>,
+{
+    objects
+        .into_iter()
+        .find(|object| object.key().kind == kind && object.key().id == id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         device_service, store_squelch, ConfigurationError, Programmed, MAX_CHANNELS, MAX_OBJECTS,
     };
-    use radio_channel_control::ChannelSource;
     use radio_channel_plan::{
         BankFlags, BankMask, BankName, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
         ChannelRecord, GeneratedBank,
@@ -372,15 +591,26 @@ mod tests {
             })
             .expect("config"),
         ];
-        let programmed = Programmed::from_objects(objects.iter()).expect("programmed");
+        let programmed = Programmed::index(objects.iter()).expect("programmed");
         assert_eq!(programmed.channel_count(), 2);
         assert_eq!(
-            programmed.memory().get(0).expect("first").id().get(),
+            programmed
+                .channel_at(objects.iter(), 0)
+                .expect("first")
+                .id()
+                .get(),
             3,
             "channels are ordered by stable identifier, not write order"
         );
         assert_eq!(programmed.config().backlight_seconds, 30);
-        assert_eq!(programmed.bank(bank).expect("bank").name().as_str(), "UHF");
+        assert!(programmed.is_named(bank));
+        assert_eq!(
+            programmed
+                .bank_name(objects.iter(), bank)
+                .expect("bank")
+                .as_str(),
+            "UHF"
+        );
         let (banks, count) = programmed.populated_banks();
         assert_eq!(count, 1);
         assert_eq!(banks[0], Some(bank));
@@ -401,16 +631,22 @@ mod tests {
             encode_generated_bank(plan).expect("plan object"),
             encode_channel(channel(1, 145_500_000, BankMask::default())).expect("channel"),
         ];
-        let programmed = Programmed::from_objects(objects.iter()).expect("programmed");
+        let programmed = Programmed::index(objects.iter()).expect("programmed");
 
         assert_eq!(programmed.channel_count(), 17);
-        assert_eq!(programmed.memory().stored_len(), 1);
-        assert_eq!(programmed.memory().expanded_len(), 16);
-        assert_eq!(programmed.memory().get(0).expect("stored").id().get(), 1);
+        assert_eq!(programmed.stored_channels(), 1);
+        assert_eq!(programmed.expanded_channels(), 16);
         assert_eq!(
             programmed
-                .memory()
-                .get(1)
+                .channel_at(objects.iter(), 0)
+                .expect("stored")
+                .id()
+                .get(),
+            1
+        );
+        assert_eq!(
+            programmed
+                .channel_at(objects.iter(), 1)
                 .expect("expanded")
                 .name()
                 .as_str(),
@@ -423,12 +659,15 @@ mod tests {
         assert_eq!(banks[0], Some(BankId::new(5)));
         assert_eq!(
             programmed
-                .bank_name(BankId::new(5))
+                .bank_name(objects.iter(), BankId::new(5))
                 .expect("plan name")
                 .as_str(),
             "PMR446"
         );
-        assert_eq!(programmed.bank(BankId::new(5)), None);
+        assert!(
+            !programmed.is_named(BankId::new(5)),
+            "the plan names its bank with no named-bank object beside it"
+        );
     }
 
     #[test]
@@ -448,19 +687,21 @@ mod tests {
             .expect("plan"),
         )
         .expect("plan object")];
-        let programmed = Programmed::from_objects(objects.iter()).expect("programmed");
-        assert_eq!(programmed.memory().len(), 760);
-        let last = programmed.memory().get(759).expect("last channel");
+        let programmed = Programmed::index(objects.iter()).expect("programmed");
+        assert_eq!(programmed.len(), 760);
+        let last = programmed
+            .channel_at(objects.iter(), 759)
+            .expect("last channel");
         assert_eq!(last.active().receive.as_hz(), 136_975_000);
     }
 
     #[test]
     fn an_unprogrammed_snapshot_is_empty_and_conservative() {
-        let programmed = Programmed::from_objects([].iter()).expect("programmed");
+        let programmed = Programmed::index([].iter()).expect("programmed");
         assert!(programmed.is_empty());
         assert_eq!(programmed.config(), RadioConfig::conservative());
         assert_eq!(programmed.populated_banks().1, 0);
-        assert_eq!(programmed.bank(BankId::new(0)), None);
+        assert!(!programmed.is_named(BankId::new(0)));
     }
 
     #[test]
@@ -473,7 +714,7 @@ mod tests {
         }
         assert!(objects.len() <= MAX_OBJECTS);
         assert_eq!(
-            Programmed::from_objects(objects.iter()),
+            Programmed::index(objects.iter()),
             Err(ConfigurationError::TooManyChannels)
         );
     }
@@ -501,7 +742,7 @@ mod tests {
         store_squelch(&mut service, SquelchLevel::new(8).expect("level")).expect("store");
         assert_ne!(service.generation(), before, "the change is a new snapshot");
 
-        let programmed = Programmed::from_objects(service.active_objects()).expect("programmed");
+        let programmed = Programmed::index(service.active_objects()).expect("programmed");
         assert_eq!(programmed.config().squelch, SquelchLevel::new(8).unwrap());
         assert_eq!(
             programmed.config().backlight_seconds,
@@ -527,7 +768,7 @@ mod tests {
 
         store_squelch(&mut service, SquelchLevel::new(6).expect("level")).expect("store");
 
-        let programmed = Programmed::from_objects(service.active_objects()).expect("programmed");
+        let programmed = Programmed::index(service.active_objects()).expect("programmed");
         assert_eq!(programmed.config().squelch, SquelchLevel::new(6).unwrap());
         assert_eq!(
             RadioConfig {
@@ -553,7 +794,7 @@ mod tests {
         )
         .expect("object");
         assert!(matches!(
-            Programmed::from_objects([malformed].iter()),
+            Programmed::index([malformed].iter()),
             Err(ConfigurationError::Object(_))
         ));
     }
