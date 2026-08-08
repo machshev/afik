@@ -70,7 +70,17 @@ Run on the pinned environment, 2026-08-08:
   CRC-32 `839d1529`, SHA-256
   `897a95bb513bbafd3341ff021ceaf14dd649cc5b328a5b948a5c2dee87b80277`.
 
-Not run and not claimed: any physical observation of this image. The squelch
+### Physical write, 2026-08-08
+
+`flash-afik-k1` wrote `AFIK-K1-3.5` over the auto-detected `/dev/ttyUSB0` at
+K1 bootloader `7.03.01`: `333/333` pages acknowledged in transaction `a7aec938`,
+`status=acknowledged_not_read_back`, image CRC-32 `839d1529`, with no retained
+recovery image or EEPROM backup supplied. This is page acceptance only. It is
+not evidence that the image boots, that any key behaves, that the squelch gates
+audio, or that the battery reads. The power-cycle and the observations below
+remain outstanding.
+
+Not run and not claimed: any further physical observation of this image. The squelch
 levels and the battery percentage both need the experiments named in
 `EVID-K1-063` and `RISK-034` before either is described as measured.
 
