@@ -21,6 +21,10 @@ pub trait ChannelSource {
     fn len(&self) -> u16;
 
     /// Returns the channel at one zero-based storage index.
+    ///
+    /// Every index below [`ChannelSource::len`] names a channel, so a source
+    /// answers all of them. Selection and scanning walk the index space and
+    /// take that as given.
     fn get(&self, index: u16) -> Option<ChannelRecord>;
 
     /// Reports whether the source stores no channels.
@@ -450,13 +454,7 @@ impl<C: ChannelSource> BankedReceiveController<C> {
         bank: Option<BankId>,
     ) -> Result<(Self, ReceiveUpdate), ReceiveError> {
         let config = config.validate().map_err(ReceiveError::InvalidConfig)?;
-        let index = (0..source.len())
-            .find(|index| {
-                source
-                    .get(*index)
-                    .is_some_and(|channel| is_member(&channel, bank))
-            })
-            .ok_or(ReceiveError::NoEligibleChannel)?;
+        let index = first_member(&source, bank).ok_or(ReceiveError::NoEligibleChannel)?;
         let channel = source.get(index).ok_or(ReceiveError::NoEligibleChannel)?;
         let vfo = channel_setup(&channel, false);
         let mut controller = Self {
@@ -547,13 +545,7 @@ impl<C: ChannelSource> BankedReceiveController<C> {
 
     /// Replaces the bank filter and selects its first eligible channel.
     pub fn set_bank(&mut self, bank: Option<BankId>) -> Result<ReceiveUpdate, ReceiveError> {
-        let index = (0..self.source.len())
-            .find(|index| {
-                self.source
-                    .get(*index)
-                    .is_some_and(|channel| is_member(&channel, bank))
-            })
-            .ok_or(ReceiveError::NoEligibleChannel)?;
+        let index = first_member(&self.source, bank).ok_or(ReceiveError::NoEligibleChannel)?;
         self.bank = bank;
         self.dual_watch_partner = None;
         self.select(index)
@@ -927,6 +919,14 @@ impl<C: ChannelSource> BankedReceiveController<C> {
         self.tune_to(frequency)
     }
 
+    /// Returns the next eligible index in one direction, wrapping once.
+    ///
+    /// The walk asks the source for membership before it asks for a record, and
+    /// asks for a record only where a scan has to read the skip flag. A bank
+    /// filter over a band-sized plan therefore steps past every other bank's
+    /// channels without expanding one of them, so a scan costs a decode per
+    /// channel it lands on rather than per channel it walks over. Nothing is
+    /// materialised either way: the record built here is dropped again.
     fn neighbour(&self, from: u16, forward: bool, scanning: bool) -> Result<u16, ReceiveError> {
         let count = self.source.len();
         if count == 0 {
@@ -945,12 +945,18 @@ impl<C: ChannelSource> BankedReceiveController<C> {
             } else {
                 index - 1
             };
-            let Some(channel) = self.source.get(index) else {
+            if !self.is_member_at(index) {
                 continue;
-            };
-            if is_member(&channel, self.bank) && !(scanning && channel.is_scan_skipped()) {
-                return Ok(index);
             }
+            if scanning
+                && self
+                    .source
+                    .get(index)
+                    .is_none_or(ChannelRecord::is_scan_skipped)
+            {
+                continue;
+            }
+            return Ok(index);
         }
         Err(ReceiveError::NoEligibleChannel)
     }
@@ -969,6 +975,14 @@ impl<C: ChannelSource> BankedReceiveController<C> {
 
 fn is_member(channel: &ChannelRecord, bank: Option<BankId>) -> bool {
     bank.is_none_or(|bank| channel.is_member_of(bank))
+}
+
+/// Returns the first index passing one bank filter, building no record.
+///
+/// Membership is the source's own question, so choosing where a filtered view
+/// starts costs arithmetic per channel rather than one expansion per channel.
+fn first_member<C: ChannelSource>(source: &C, bank: Option<BankId>) -> Option<u16> {
+    (0..source.len()).find(|index| bank.is_none_or(|bank| source.member_at(*index, bank)))
 }
 
 fn effective_squelch(squelch: SquelchLevel, monitor: bool) -> SquelchLevel {
@@ -997,6 +1011,7 @@ mod tests {
         ProgrammedMemory, ReceiveError, ReceiveMode, ReceiveObservation, ReceiveState, ScanPhase,
     };
     use crate::{TimerDirective, TimerToken};
+    use core::cell::Cell;
     use radio_channel_plan::{
         BankMask, BankName, ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord,
         GeneratedBank,
@@ -1426,5 +1441,98 @@ mod tests {
         assert_eq!(controller.visible_position(), 0);
         assert!(controller.select_visible(1).is_err());
         assert_eq!(controller.visible_channel(1), None);
+    }
+
+    /// A source which counts every record it is asked to build.
+    ///
+    /// Membership is answered from the index alone, which is exactly what a
+    /// stored plan can do, so the count is the number of channels the walk
+    /// actually expanded rather than the number it stepped over.
+    struct CountingSource {
+        channels: [ChannelRecord; 8],
+        built: Cell<u32>,
+    }
+
+    impl CountingSource {
+        /// Eight channels, evens in bank zero and odds in bank one.
+        fn new() -> Self {
+            let mut channels = [channel(1, 145_000_000, 0b0001, 0); 8];
+            for (index, slot) in channels.iter_mut().enumerate() {
+                let id = u16::try_from(index).unwrap() + 1;
+                let hertz = 145_000_000 + u32::try_from(index).unwrap() * 12_500;
+                let banks = if index % 2 == 0 { 0b0001 } else { 0b0010 };
+                *slot = channel(id, hertz, banks, 0);
+            }
+            Self {
+                channels,
+                built: Cell::new(0),
+            }
+        }
+
+        fn take_built(&self) -> u32 {
+            let count = self.built.get();
+            self.built.set(0);
+            count
+        }
+    }
+
+    impl ChannelSource for CountingSource {
+        fn len(&self) -> u16 {
+            u16::try_from(self.channels.len()).unwrap()
+        }
+
+        fn get(&self, index: u16) -> Option<ChannelRecord> {
+            self.built.set(self.built.get() + 1);
+            self.channels.get(usize::from(index)).copied()
+        }
+
+        fn member_at(&self, index: u16, bank: BankId) -> bool {
+            usize::from(index) < self.channels.len() && index % 2 == bank.get()
+        }
+    }
+
+    #[test]
+    fn selection_and_scanning_expand_only_the_channels_they_land_on() {
+        let source = CountingSource::new();
+        let (mut controller, _) = BankedReceiveController::activate(
+            source,
+            RadioConfig::conservative(),
+            Some(BankId::new(0)),
+        )
+        .unwrap();
+
+        // Activation asked membership of index zero and built that one record.
+        assert_eq!(controller.source.take_built(), 1);
+
+        // Counting and numbering a filtered view builds nothing at all.
+        assert_eq!(controller.visible_channels(), 4);
+        assert_eq!(controller.visible_position(), 0);
+        assert_eq!(controller.source.take_built(), 0);
+
+        // Stepping to the next eligible channel walks over the odd-indexed one
+        // without expanding it: one record is built, and it is the one selected.
+        let update = controller.select_next().unwrap();
+        assert_eq!(
+            update.activation.unwrap().selection,
+            ChannelSelection::Memory {
+                index: 2,
+                id: ChannelId::new(3),
+            }
+        );
+        assert_eq!(controller.source.take_built(), 1);
+
+        // A scan reads the skip flag, so it builds the candidate it lands on and
+        // still expands nothing it steps over.
+        let start = controller.start_scanning().unwrap();
+        assert_eq!(controller.source.take_built(), 1);
+        let update = controller.timer_elapsed(armed(start.timer)).unwrap();
+        assert_eq!(
+            update.activation.unwrap().selection,
+            ChannelSelection::Memory {
+                index: 4,
+                id: ChannelId::new(5),
+            }
+        );
+        assert_eq!(controller.source.take_built(), 2);
     }
 }
