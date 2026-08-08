@@ -323,8 +323,9 @@ struct Receiver {
     radio: Bk4819<ThreeWireBus<Bk4819Pins>>,
     /// Active-high receive audio amplifier enable on `PA8`.
     ///
-    /// The K1 programming cable shares the speaker and microphone jack, so the
-    /// pin is left untouched until the operator explicitly asks for audio.
+    /// The pin is claimed the first time a channel is tuned rather than at boot,
+    /// because the K1 programming cable shares the speaker and microphone jack
+    /// and an unprogrammed radio has nothing to play through it.
     speaker: Option<Output<'static>>,
     speaker_pin: Option<PA8>,
     faulted: bool,
@@ -352,20 +353,21 @@ impl Receiver {
         }
     }
 
-    /// Routes or mutes demodulated receive audio.
+    /// Enables the receive audio chain.
     ///
-    /// This drives the receive audio chain only: the chip's audio output and
-    /// the speaker amplifier. It cannot key the radio.
-    fn set_audio(&mut self, routed: bool) {
+    /// A receiver nobody can hear is not receiving, so this is not an operator
+    /// mode: audio follows the tuned channel. This drives the receive audio
+    /// chain only, the chip's audio output and the speaker amplifier, and it
+    /// cannot key the radio.
+    fn route_audio(&mut self) {
         if self.faulted || !self.started {
             return;
         }
-        let output = if routed {
-            AfOutput::Demodulated
-        } else {
-            AfOutput::Mute
-        };
-        if self.radio.set_af_output(Modulation::Fm, output).is_err() {
+        if self
+            .radio
+            .set_af_output(Modulation::Fm, AfOutput::Demodulated)
+            .is_err()
+        {
             self.faulted = true;
             return;
         }
@@ -375,13 +377,9 @@ impl Receiver {
             }
         }
         if let Some(speaker) = self.speaker.as_mut() {
-            if routed {
-                speaker.set_high();
-            } else {
-                speaker.set_low();
-            }
+            speaker.set_high();
         }
-        self.audio_routed = routed;
+        self.audio_routed = true;
     }
 
     /// Applies one controller-selected channel to the receiver.
@@ -401,11 +399,7 @@ impl Receiver {
             // AFIK does not yet read, so this image reports raw metrics with
             // the pinned source's squelch-off set.
             squelch: SquelchThresholds::squelch_off(),
-            af: if self.audio_routed {
-                AfOutput::Demodulated
-            } else {
-                AfOutput::Mute
-            },
+            af: AfOutput::Demodulated,
         };
         if self.radio.configure_receive(&request).is_err() {
             self.faulted = true;
@@ -413,6 +407,7 @@ impl Receiver {
         }
         self.frequency_hz = setup.frequency.as_hz();
         let _ = self.radio.read_back(ReadbackRegister::FilterBandwidth);
+        self.route_audio();
     }
 
     /// Samples metrics from the tuned receiver.
@@ -698,7 +693,6 @@ async fn ui_task(
 
     let mut receiver = Receiver::new(radio_pins, speaker_pin);
     let mut pending = activation.as_mut().and_then(|(_, setup)| setup.take());
-    let mut pending_audio = None;
     let mut debounce = Debouncer::new();
     let mut next_sample = Instant::now();
     let mut redraw = true;
@@ -752,15 +746,9 @@ async fn ui_task(
                 redraw = true;
             }
             // Every remaining intent acts on a channel. An empty memory has
-            // none, so there is nothing to route audio from, hold open, or
-            // select, and the interface only redraws.
+            // none, so there is nothing to hold open or select, and the
+            // interface only redraws.
             _ if activation.is_none() => redraw = true,
-            Intent::ToggleAudio => {
-                // Deferred like a retune rather than dropped, so a press during
-                // a host exchange still takes effect.
-                pending_audio = Some(!pending_audio.unwrap_or(receiver.audio_routed));
-                redraw = true;
-            }
             Intent::ToggleMonitor => {
                 if let Some((controller, _)) = activation.as_mut() {
                     let update = controller.set_monitor(!controller.is_monitoring());
@@ -791,10 +779,6 @@ async fn ui_task(
         if let Some(setup) = pending.filter(|_| bus_available()) {
             receiver.tune(setup);
             pending = None;
-            redraw = true;
-        } else if let Some(routed) = pending_audio.filter(|_| bus_available()) {
-            receiver.set_audio(routed);
-            pending_audio = None;
             redraw = true;
         } else if receiver.audio_routed && Instant::now() >= next_sample && bus_available() {
             if let (Some(observation), Some((controller, _))) =

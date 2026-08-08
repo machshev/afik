@@ -11,7 +11,7 @@
 //! is simply in VFO, so there is no separate unprogrammed mode.
 //!
 //! No intent can transmit. The set deliberately contains selection, bank
-//! filtering, VFO tuning, monitoring, and receive-audio routing only.
+//! filtering, VFO tuning, and monitoring only.
 
 use radio_domain::BankId;
 
@@ -116,8 +116,6 @@ pub enum Intent {
     SetSource(Source),
     /// Rebuild the receive source because the VFO frequency changed.
     TuneVfo,
-    /// Route or mute demodulated receive audio.
-    ToggleAudio,
     /// Open or close the squelch override.
     ToggleMonitor,
 }
@@ -328,7 +326,9 @@ impl Shell {
     /// Applies one debounced key press.
     pub fn press(&mut self, key: Key, now_ms: u32, context: Context) -> Intent {
         match key {
-            Key::Side1 => Intent::ToggleAudio,
+            // Audio is not a mode the operator has to find, so side key one no
+            // longer routes it and has nothing else to do yet.
+            Key::Side1 => Intent::Idle,
             Key::Side2 => Intent::ToggleMonitor,
             // Receive-only: the image constructs no transmit path, so the
             // push-to-talk input cannot reach the radio.
@@ -1049,7 +1049,6 @@ mod tests {
                         | Intent::SelectIndex(_)
                         | Intent::SetSource(_)
                         | Intent::TuneVfo
-                        | Intent::ToggleAudio
                         | Intent::ToggleMonitor
                 ));
             }
