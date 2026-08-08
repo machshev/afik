@@ -8,7 +8,11 @@
 //! carry no flash-read command, so a page acknowledgement is the only evidence a
 //! write produced and there is no firmware backup to take. What protects a unit
 //! is the retained known-good recovery image and the retained EEPROM backup,
-//! which every write path requires and reports the digest of before starting.
+//! which the recovery and K5 paths require and report the digest of before
+//! starting. The K1 application path does not: it addresses a page index rather
+//! than an address and issues no EEPROM operation, so it cannot reach the
+//! bootloader and a bad application is recovered by writing another one. Both
+//! artefacts stay optional there and are validated when supplied.
 
 use std::{
     fmt,
@@ -253,11 +257,15 @@ pub fn validate_request(
                 return Err(FlashRequestError::new("enter the target confirmation"));
             }
             if matches!(operation, FlashOperation::K1Application) {
-                require_file(&request.recovery, "recovery image")?;
-                // The retained EEPROM backup is what makes a failed application
-                // write recoverable, so this path requires it exactly as the
-                // flasher CLI's `flash-afik-k1` does.
-                require_file(&request.eeprom_backup, "EEPROM backup")?;
+                // Neither retained artefact is required here, exactly as the
+                // flasher CLI's `flash-afik-k1` no longer requires them. This
+                // path addresses a page index rather than an address and issues
+                // no EEPROM operation, so it cannot reach the bootloader and an
+                // application which does not boot is recovered by writing
+                // another one through the same passive beacon. Both are still
+                // validated when the operator does supply them.
+                optional_file(&request.recovery, "recovery image")?;
+                optional_file(&request.eeprom_backup, "EEPROM backup")?;
                 if request.recovery_rehearsed_confirmation.trim().is_empty() {
                     return Err(FlashRequestError::new(
                         "enter the recovery-rehearsed confirmation",
@@ -352,17 +360,17 @@ fn run(
         }
         FlashOperation::K1Application => {
             let image = read_k1_image(&request.firmware)?;
-            let recovery = read_k1_image(&request.recovery)?;
-            // The retained backup is required, so it is validated here even
-            // though the K1 bootloader path cannot write EEPROM.
-            let backup = read_eeprom_backup(&request.eeprom_backup)?;
+            // Both retained artefacts are optional for this operation and are
+            // validated only when the operator supplied one.
+            let recovery = read_optional(&request.recovery, read_k1_image)?;
+            let backup = read_optional(&request.eeprom_backup, read_eeprom_backup)?;
             confirm_image_crc32(&image, request.image_crc32)?;
             classify_k1(&mut serial, &request.bootloader_version)?;
             let total = image.page_count();
             let report = k1::flash_application(
                 &mut serial,
                 &image,
-                &recovery,
+                recovery.as_ref(),
                 &request.bootloader_version,
                 k1::K1ApplicationConfirmations {
                     target: &request.target_confirmation,
@@ -372,12 +380,18 @@ fn run(
                 |page| step(sender, page, total),
             )
             .map_err(|error| FlashRequestError::new(error.to_string()))?;
-            Ok(format!(
-                "wrote {} application pages under transaction {:08x} with retained backup CRC-32 {:08x}",
-                report.pages_acknowledged,
-                report.transaction_id,
-                backup.crc32()
-            ))
+            Ok(match backup {
+                Some(backup) => format!(
+                    "wrote {} application pages under transaction {:08x} with retained backup CRC-32 {:08x}",
+                    report.pages_acknowledged,
+                    report.transaction_id,
+                    backup.crc32()
+                ),
+                None => format!(
+                    "wrote {} application pages under transaction {:08x} with no retained backup",
+                    report.pages_acknowledged, report.transaction_id
+                ),
+            })
         }
         FlashOperation::K5Application => {
             let image = read_k5_image(&request.firmware)?;
@@ -472,6 +486,33 @@ fn require_file(path: &Path, description: &str) -> Result<(), FlashRequestError>
         )));
     }
     Ok(())
+}
+
+/// Reads and validates one retained artefact, if the operator supplied a path.
+///
+/// An unset field is the operator saying they are not retaining this artefact
+/// for this operation, which the K1 application path allows. A path which is set
+/// is always read and validated.
+fn read_optional<T>(
+    path: &Path,
+    read: impl Fn(&Path) -> Result<T, FlashRequestError>,
+) -> Result<Option<T>, FlashRequestError> {
+    if path.as_os_str().is_empty() {
+        return Ok(None);
+    }
+    read(path).map(Some)
+}
+
+/// Accepts an unset path, and checks any path the operator did set.
+///
+/// Leaving the field blank is a choice the operation allows. Typing something
+/// which is not a readable file is not: that is a mistake, and it is caught here
+/// rather than after the write has started.
+fn optional_file(path: &Path, description: &str) -> Result<(), FlashRequestError> {
+    if path.as_os_str().is_empty() {
+        return Ok(());
+    }
+    require_file(path, description)
 }
 
 fn read_bounded(
@@ -585,16 +626,35 @@ mod tests {
         assert!(validate_request(FlashOperation::K1Application, &no_rehearsal).is_err());
         validate_request(FlashOperation::K1Application, &request).unwrap();
 
-        // The retained backup is what makes a failed application write
-        // recoverable, so the K1 application path refuses to start without it.
-        let mut no_backup = request.clone();
-        no_backup.eeprom_backup = PathBuf::new();
-        assert!(validate_request(FlashOperation::K1Application, &no_backup)
-            .unwrap_err()
-            .to_string()
-            .contains("EEPROM backup"));
-        validate_request(FlashOperation::K1Recovery, &no_backup)
+        // The K1 application path cannot reach the bootloader and issues no
+        // EEPROM operation, so neither retained artefact is required and a
+        // failed write is recovered by writing another image.
+        let mut no_artefacts = request.clone();
+        no_artefacts.eeprom_backup = PathBuf::new();
+        no_artefacts.recovery = PathBuf::new();
+        validate_request(FlashOperation::K1Application, &no_artefacts)
+            .expect("recovery from a bad K1 application is another flash");
+        validate_request(FlashOperation::K1Recovery, &no_artefacts)
             .expect("a recovery write restores the known-good image itself");
+
+        // Optional is not unchecked: a path which was typed and does not exist
+        // is a mistake, not a decision, and is still refused.
+        let mut missing_backup = request.clone();
+        missing_backup.eeprom_backup = PathBuf::from("/nonexistent/eeprom.bin");
+        assert!(
+            validate_request(FlashOperation::K1Application, &missing_backup)
+                .unwrap_err()
+                .to_string()
+                .contains("EEPROM backup")
+        );
+        let mut missing_recovery = request.clone();
+        missing_recovery.recovery = PathBuf::from("/nonexistent/recovery.raw");
+        assert!(
+            validate_request(FlashOperation::K1Application, &missing_recovery)
+                .unwrap_err()
+                .to_string()
+                .contains("recovery image")
+        );
 
         let mut bad_version = request.clone();
         bad_version.firmware_version = "*".to_owned();

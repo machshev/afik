@@ -231,9 +231,11 @@ identity reported by the exact unit.
 
 This is a source- and vector-valid recovery candidate. The same-unit recovery
 rehearsal is complete and the bounded K1 target/image contract now exists in
-`K1BOOT-016`; the guarded AFIK writer requires this retained recovery image and
-backup before any physical witness-image write. The two matching local copies
-remain accepted for the current evidence package.
+`K1BOOT-016`. The guarded AFIK writer accepts this retained recovery image and
+backup and validates them when given, but no longer requires them: that path
+cannot reach the bootloader, so a bad application is recovered by writing
+another one. The recovery writer, which can, still requires the backup. The two
+matching local copies remain accepted for the current evidence package.
 
 ## K1BOOT-016 reset image
 

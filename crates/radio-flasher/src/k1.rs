@@ -260,10 +260,22 @@ where
     )
 }
 
-/// Writes a distinct AFIK K1 application after a recovery rehearsal gate.
+/// Writes an AFIK K1 application after the target and rehearsal gates.
 ///
-/// The recovery image is retained as an explicit input so the caller cannot
-/// accidentally turn the AFIK application command into another recovery write.
+/// This command cannot reach the bootloader. The wire protocol addresses a page
+/// index rather than an address, so the destination is the bootloader's own
+/// application origin and the host has no encoding for anything below it, and
+/// [`K1RecoveryImage::from_raw`] bounds the image to the application region so
+/// the page count cannot run past it either. The bootloader beacon is passive
+/// and survives every application write, which `EVID-K1-016` records on the
+/// exact unit, so an application which does not boot is recovered by flashing
+/// again rather than by a rescue procedure.
+///
+/// A retained recovery image is therefore optional. When one is supplied it is
+/// still compared against the image being written, so a caller who believes
+/// they are holding a way back cannot have named the same file twice. Passing
+/// `None` states that recovery is a second flash, which for this command it is.
+///
 /// The caller must have consumed the first K1 beacon while classifying the
 /// device. Three additional beacons are required for the version handshakes.
 /// Missing, malformed, mismatched, and rejected pages stop immediately; this
@@ -271,7 +283,7 @@ where
 pub fn flash_application<T, F>(
     transport: &mut T,
     image: &K1RecoveryImage,
-    recovery_image: &K1RecoveryImage,
+    recovery_image: Option<&K1RecoveryImage>,
     bootloader_version: &str,
     confirmations: K1ApplicationConfirmations<'_>,
     transaction_id: u32,
@@ -287,7 +299,7 @@ where
     if confirmations.recovery_rehearsed != K1_RECOVERY_REHEARSED_CONFIRMATION {
         return Err(K1FlashError::RecoveryNotRehearsed);
     }
-    if image == recovery_image {
+    if recovery_image.is_some_and(|recovery| image == recovery) {
         return Err(K1FlashError::ApplicationMatchesRecovery);
     }
     if !is_supported_bootloader_version(bootloader_version) {
@@ -584,7 +596,7 @@ mod tests {
     }
 
     #[test]
-    fn application_flash_requires_distinct_rehearsed_recovery() {
+    fn application_flash_rejects_a_recovery_image_that_is_the_image() {
         let image = K1RecoveryImage::from_raw(&raw_image(256)).unwrap();
         let mut transport = ScriptedTransport {
             input: Cursor::new(Vec::new()),
@@ -593,7 +605,7 @@ mod tests {
         let result = flash_application(
             &mut transport,
             &image,
-            &image,
+            Some(&image),
             "7.03.01",
             K1ApplicationConfirmations {
                 target: K1_AFIK_TARGET_CONFIRMATION,
@@ -612,7 +624,7 @@ mod tests {
         let result = flash_application(
             &mut transport,
             &image,
-            &recovery,
+            Some(&recovery),
             "7.03.01",
             K1ApplicationConfirmations {
                 target: K1_AFIK_TARGET_CONFIRMATION,
@@ -622,6 +634,64 @@ mod tests {
             |_| {},
         );
         assert!(matches!(result, Err(K1FlashError::RecoveryNotRehearsed)));
+        assert!(transport.output.is_empty());
+    }
+
+    /// A retained recovery image is optional, and its absence is not a way past
+    /// the confirmations that remain.
+    #[test]
+    fn application_flash_without_a_retained_recovery_still_checks_every_phrase() {
+        let image = K1RecoveryImage::from_raw(&raw_image(256)).unwrap();
+        let mut transport = ScriptedTransport {
+            input: Cursor::new(Vec::new()),
+            output: Vec::new(),
+        };
+
+        let result = flash_application(
+            &mut transport,
+            &image,
+            None,
+            "7.03.01",
+            K1ApplicationConfirmations {
+                target: "not-the-target",
+                recovery_rehearsed: K1_RECOVERY_REHEARSED_CONFIRMATION,
+            },
+            1,
+            |_| {},
+        );
+        assert!(matches!(result, Err(K1FlashError::TargetNotConfirmed)));
+        assert!(transport.output.is_empty());
+
+        let result = flash_application(
+            &mut transport,
+            &image,
+            None,
+            "7.03.01",
+            K1ApplicationConfirmations {
+                target: K1_AFIK_TARGET_CONFIRMATION,
+                recovery_rehearsed: "not-confirmed",
+            },
+            1,
+            |_| {},
+        );
+        assert!(matches!(result, Err(K1FlashError::RecoveryNotRehearsed)));
+        assert!(transport.output.is_empty());
+
+        // A zero transaction identifier is still refused without a recovery
+        // image to compare against, so the remaining gates are independent of it.
+        let result = flash_application(
+            &mut transport,
+            &image,
+            None,
+            "7.03.01",
+            K1ApplicationConfirmations {
+                target: K1_AFIK_TARGET_CONFIRMATION,
+                recovery_rehearsed: K1_RECOVERY_REHEARSED_CONFIRMATION,
+            },
+            0,
+            |_| {},
+        );
+        assert!(matches!(result, Err(K1FlashError::InvalidTransactionId)));
         assert!(transport.output.is_empty());
     }
 }

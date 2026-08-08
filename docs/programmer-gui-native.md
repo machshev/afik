@@ -113,15 +113,26 @@ page acknowledgements as they arrive. It adds no shortcut and weakens no gate.
 There is no firmware backup, and there cannot be one: the bootloader protocols
 this crate drives carry no flash-read command, so a page acknowledgement is the
 only evidence a write produced. What protects a unit is the retained known-good
-recovery image and the retained EEPROM backup. Every write path requires them and
-reports each file's size and CRC-32 before starting, because that digest is the
-only evidence available that the files on disk are the pair kept for that unit.
+recovery image and the retained EEPROM backup. The recovery and K5 paths require
+them and report each file's size and CRC-32 before starting, because that digest
+is the only evidence available that the files on disk are the pair kept for that
+unit.
+
+The K1 application path does not require either. It cannot reach the bootloader:
+the protocol addresses a page index rather than an address, so the destination is
+the bootloader's own application origin, and the image is bounded to the
+application region so the page count cannot run past it. It issues no EEPROM
+operation either. An application which does not boot is therefore recovered by
+writing another one through the same passive beacon, which `EVID-K1-016` records
+on the exact unit. Both artefacts stay optional there and are fully validated
+when supplied, so an operator who does retain them keeps every
+accidental-selection check.
 
 **Identify radio** classifies the bootloader read-only and fills in the version
 the write then checks against the radio, so a mistyped version or a K5 in
 bootloader mode stops the run before any page is written. A K1 application write
-additionally requires the retained EEPROM backup and an image CRC-32
-confirmation, exactly as the flasher CLI's `flash-afik-k1` does. The per-run
+additionally requires an image CRC-32 confirmation, exactly as the flasher CLI's
+`flash-afik-k1` does. The per-run
 transaction identifier is generated rather than typed: the bootloader ties every
 acknowledgement to it, so reuse would make one run's acknowledgements
 indistinguishable from another's.

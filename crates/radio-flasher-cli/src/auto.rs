@@ -36,9 +36,9 @@ Usage:\n\
   afik-flasher [--device PATH|auto] probe-clock-control\n\
   afik-flasher [--device PATH|auto] backup-eeprom OUTPUT [--force]\n\
   afik-flasher [--device PATH|auto] flash-recovery IMAGE --backup EEPROM \\\n    --confirm-target TARGET --confirm-image-crc32 CRC32 [--version VERSION]\n\
-  afik-flasher [--device PATH|auto] flash-afik-k1 IMAGE --recovery RAW \\\n\
-    --backup EEPROM --version VERSION --confirm-target TARGET \\\n\
-    --confirm-image-crc32 CRC32 --confirm-recovery-rehearsed PHRASE\n\
+  afik-flasher [--device PATH|auto] flash-afik-k1 IMAGE --version VERSION \\\n\
+    --confirm-target TARGET --confirm-image-crc32 CRC32 \\\n\
+    --confirm-recovery-rehearsed PHRASE [--recovery RAW] [--backup EEPROM]\n\
   afik-flasher --help\n\
   afik-flasher --version\n\
 \n\
@@ -46,8 +46,13 @@ The default device selector is auto. It accepts exactly one USB serial\n\
 candidate, then classifies the bootloader protocol: K5 V1 2.* or the pinned\n\
 K1 7.03.* family. Zero or multiple candidates fail closed.\n\
 Recovery flashing remains separately gated. The K1 AFIK application command\n\
-also requires a distinct recovery image, a known EEPROM backup, the exact AFIK\n\
-target phrase, and confirmation that recovery was rehearsed on this unit.\n\
+requires the exact AFIK target phrase and confirmation that recovery was\n\
+rehearsed on this unit. It cannot reach the bootloader: the protocol addresses\n\
+a page index, not an address, and the image is bounded to the application\n\
+region, so an application which does not boot is recovered by flashing again.\n\
+A retained recovery image and EEPROM backup are therefore optional here, and\n\
+are still validated when supplied. Recovery flashing, which does put a unit at\n\
+risk, still requires the backup.\n\
 The read-only probe-normal command sends one normal-mode hello and is the\n\
 serial witness command for an AFIK application. The read-only probe-keypad\n\
 command prints four raw active-low row masks without interpreting them as keys.\n\
@@ -121,8 +126,13 @@ struct FlashArguments {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct K1AfikFlashArguments {
     image: PathBuf,
-    recovery: PathBuf,
-    backup: PathBuf,
+    /// Optional retained recovery image, checked against the image being
+    /// written when it is supplied. This command cannot reach the bootloader,
+    /// so recovery from a bad application is a second flash.
+    recovery: Option<PathBuf>,
+    /// Optional retained EEPROM backup, validated and logged when supplied.
+    /// This command issues no EEPROM operation.
+    backup: Option<PathBuf>,
     version: String,
     target_confirmation: String,
     image_crc32_confirmation: String,
@@ -318,8 +328,8 @@ fn parse_flash_afik_k1(arguments: &[String]) -> Result<K1AfikFlashArguments, Str
     }
     Ok(K1AfikFlashArguments {
         image: PathBuf::from(image),
-        recovery: recovery.ok_or_else(|| "flash-afik-k1 requires --recovery RAW".to_owned())?,
-        backup: backup.ok_or_else(|| "flash-afik-k1 requires --backup EEPROM".to_owned())?,
+        recovery,
+        backup,
         version: version.ok_or_else(|| "flash-afik-k1 requires --version VERSION".to_owned())?,
         target_confirmation: target_confirmation
             .ok_or_else(|| "flash-afik-k1 requires --confirm-target TARGET".to_owned())?,
@@ -556,15 +566,32 @@ fn flash_afik_k1<W: Write>(
     stdout: &mut W,
 ) -> Result<(), CliError> {
     let image_raw = read_bounded(&arguments.image, K1_MAX_IMAGE_BYTES, "AFIK K1 image")?;
-    let recovery_raw = read_bounded(&arguments.recovery, K1_MAX_IMAGE_BYTES, "K1 recovery image")?;
     let image = K1RecoveryImage::from_raw(&image_raw).map_err(CliError::operation)?;
-    let recovery = K1RecoveryImage::from_raw(&recovery_raw).map_err(CliError::operation)?;
-    let backup_raw = read_bounded(
-        &arguments.backup,
-        radio_flasher::EEPROM_BYTES,
-        "EEPROM backup",
-    )?;
-    let backup = EepromBackup::from_raw(&backup_raw).map_err(CliError::operation)?;
+    // Both retained artefacts are optional for this command. It addresses a page
+    // index rather than an address, so it cannot reach the bootloader, and it
+    // issues no EEPROM operation. Recovery from an application which does not
+    // boot is another flash through the same passive beacon. When either is
+    // supplied it is still fully validated, so a caller who does retain them
+    // gets the same accidental-selection checks as before.
+    let recovery_raw = arguments
+        .recovery
+        .as_ref()
+        .map(|path| read_bounded(path, K1_MAX_IMAGE_BYTES, "K1 recovery image"))
+        .transpose()?;
+    let recovery = recovery_raw
+        .as_deref()
+        .map(K1RecoveryImage::from_raw)
+        .transpose()
+        .map_err(CliError::operation)?;
+    let backup = arguments
+        .backup
+        .as_ref()
+        .map(|path| read_bounded(path, radio_flasher::EEPROM_BYTES, "EEPROM backup"))
+        .transpose()?
+        .as_deref()
+        .map(EepromBackup::from_raw)
+        .transpose()
+        .map_err(CliError::operation)?;
     let supplied_crc = parse_crc32(&arguments.image_crc32_confirmation)?;
     let expected_crc = crc32(image.bytes());
     if supplied_crc != expected_crc {
@@ -597,16 +624,23 @@ fn flash_afik_k1<W: Write>(
     writeln!(stdout, "protocol_family={}", family.label()).map_err(CliError::operation)?;
     writeln!(stdout, "bootloader={}", info.version()).map_err(CliError::operation)?;
     writeln!(stdout, "image={}", arguments.image.display()).map_err(CliError::operation)?;
-    writeln!(stdout, "recovery_image={}", arguments.recovery.display())
-        .map_err(CliError::operation)?;
-    writeln!(stdout, "backup_crc32={:08x}", backup.crc32()).map_err(CliError::operation)?;
+    match &arguments.recovery {
+        Some(path) => writeln!(stdout, "recovery_image={}", path.display()),
+        None => writeln!(stdout, "recovery_image=none_retained"),
+    }
+    .map_err(CliError::operation)?;
+    match &backup {
+        Some(backup) => writeln!(stdout, "backup_crc32={:08x}", backup.crc32()),
+        None => writeln!(stdout, "backup_crc32=none_retained"),
+    }
+    .map_err(CliError::operation)?;
     writeln!(stdout, "transaction_id={transaction_id:08x}").map_err(CliError::operation)?;
     stdout.flush().map_err(CliError::operation)?;
 
     let report = radio_flasher::k1::flash_application(
         &mut serial,
         &image,
-        &recovery,
+        recovery.as_ref(),
         info.version(),
         radio_flasher::k1::K1ApplicationConfirmations {
             target: &arguments.target_confirmation,
