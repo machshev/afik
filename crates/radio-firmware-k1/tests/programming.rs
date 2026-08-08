@@ -230,8 +230,9 @@ fn a_compact_generated_plan_is_written_once_and_expands_on_the_radio() {
     let mut programmer = Programmer::connect(DeviceTransport::new()).expect("connect");
     assert_eq!(
         programmer.capabilities().plan_encodings,
-        PlanEncoding::LinearSimplex.capability_bit(),
-        "this image expands linear simplex plans itself"
+        PlanEncoding::LinearSimplex.capability_bit()
+            | PlanEncoding::LinearFixedOffset.capability_bit(),
+        "this image expands both arithmetic plan families itself"
     );
 
     let mut project = RadioProject::new();
@@ -265,7 +266,7 @@ fn a_compact_generated_plan_is_written_once_and_expands_on_the_radio() {
         "no channel record was stored for an expanded channel"
     );
     let first = activated.memory().get(0).expect("first expanded channel");
-    assert_eq!(first.name().as_str(), "PMR446 01");
+    assert_eq!(first.name().as_str(), "PMR 1");
     assert_eq!(first.receive().as_hz(), 446_006_250);
     assert_eq!(first.tx_class(), TxClass::Never);
     assert!(first.is_member_of(BankId::new(3)));

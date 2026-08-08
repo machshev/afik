@@ -2502,6 +2502,7 @@ name = "radio-programmer-gui-native"
 version = "0.1.0"
 dependencies = [
  "eframe",
+ "radio-channel-control",
  "radio-channel-plan",
  "radio-domain",
  "radio-flasher",

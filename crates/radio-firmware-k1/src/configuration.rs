@@ -22,13 +22,20 @@ use radio_storage::{
     GENERATED_BANK_ENCODED_LEN, RADIO_CONFIG_ENCODED_LEN,
 };
 
-/// Channels this image stores and selects.
+/// Explicit channels this image stores and selects.
 ///
 /// The bound is set by RAM, not by taste: the store holds an active and a
 /// candidate copy of every object, the interface holds the decoded channels,
 /// and all of it has to fit the evidenced 16 KiB of SRAM beside the executor,
 /// the framebuffer, and the retained-image buffer.
-pub const MAX_CHANNELS: usize = 12;
+///
+/// This is deliberately smaller than the plan bound below. A stored channel
+/// slot and a plan slot cost this image about the same RAM, but a stored slot
+/// buys one channel and a plan slot buys a whole band, so the budget is spent
+/// where it goes furthest. Explicit records are for the channels a plan cannot
+/// describe: a repeater filed with a simplex band, an off-grid calling channel,
+/// a one-off frequency.
+pub const MAX_CHANNELS: usize = 8;
 
 /// Named banks this image stores.
 ///
@@ -50,14 +57,11 @@ const _: () = assert!(MAX_BANKS <= PLAN_MAX_BANKS as usize);
 /// budget: the configuration is held and copied by value, so every slot is paid
 /// for in each copy whether or not a plan occupies it, and the stack headroom
 /// the executor and the interrupt frames need is what limits it.
-pub const MAX_GENERATED_BANKS: usize = 2;
-
-/// Channels this image will expand from stored plans.
 ///
-/// Expansion is arithmetic and holds no memory, but selection, the channel
-/// list, and scanning all walk the whole space, so the operator interface stays
-/// responsive only while that space is bounded.
-pub const MAX_EXPANDED_CHANNELS: u16 = 128;
+/// Six is what the UK and EU simplex set needs with room to spare: PMR446, the
+/// 2 m and 70 cm simplex bands, and their repeater sub-bands are five plans and
+/// somewhere over a hundred channels for under four hundred stored bytes.
+pub const MAX_GENERATED_BANKS: usize = 6;
 
 /// Configuration objects the device advertises and accepts.
 ///
@@ -100,12 +104,16 @@ pub fn kind_limits() -> KindLimits {
 /// Constructs the configuration service this image exposes over serial.
 #[must_use]
 pub fn device_service(configuration_bytes: u32) -> DeviceService<MAX_OBJECTS> {
-    // This image expands linear simplex plans itself, so it advertises that
-    // encoding and the host may compile one for it. The stored-configuration
-    // bound is the external-memory region the image claimed, so a host can say
-    // how much room a project leaves before writing it.
+    // This image expands both arithmetic plan families itself, so it advertises
+    // them and the host may compile either for it. A fixed-offset plan is
+    // honestly supported here: its receive frequencies are what this image
+    // tunes, and it constructs no transmit path for any channel, stored or
+    // expanded. The stored-configuration bound is the external-memory region
+    // the image claimed, so a host can say how much room a project leaves
+    // before writing it.
     DeviceService::with_configuration_capacity(
-        PlanEncoding::LinearSimplex.capability_bit(),
+        PlanEncoding::LinearSimplex.capability_bit()
+            | PlanEncoding::LinearFixedOffset.capability_bit(),
         kind_limits(),
         configuration_bytes,
     )
@@ -154,8 +162,6 @@ pub enum ConfigurationError {
     Object(StorageError),
     /// More channels were stored than this image can select.
     TooManyChannels,
-    /// Stored plans expanded to more channels than this image can select.
-    TooManyExpandedChannels,
     /// More generated plans were stored than this image can expand.
     TooManyPlans,
     /// A bank identifier was outside the addressable range.
@@ -192,9 +198,12 @@ impl Programmed {
     /// Builds a configuration from one active object snapshot.
     ///
     /// Both channel kinds land in one selection space: an explicit record costs
-    /// one stored object, and a generated plan costs one stored object for
-    /// every channel it expands to. Nothing is expanded eagerly; only the
-    /// resulting channel count is checked against what this image can select.
+    /// one stored object, and a generated plan costs one stored object however
+    /// many channels it expands to. Nothing is expanded, ever: a plan is held as
+    /// the plan, so the only bounds are the stored objects this image accepts,
+    /// which it advertises, and the index space the selection uses, which
+    /// `install` checks. There is deliberately no bound on expanded channels,
+    /// because holding one would cost the operator channels for nothing.
     pub fn from_objects<'a, I>(objects: I) -> Result<Self, ConfigurationError>
     where
         I: IntoIterator<Item = &'a StorageObject>,
@@ -231,9 +240,6 @@ impl Programmed {
                         .map_err(|_| ConfigurationError::TooManyPlans)?;
                 }
             }
-        }
-        if programmed.memory.expanded_len() > MAX_EXPANDED_CHANNELS {
-            return Err(ConfigurationError::TooManyExpandedChannels);
         }
         Ok(programmed)
     }
@@ -307,8 +313,7 @@ impl Programmed {
 #[cfg(test)]
 mod tests {
     use super::{
-        device_service, store_squelch, ConfigurationError, Programmed, MAX_CHANNELS,
-        MAX_EXPANDED_CHANNELS, MAX_OBJECTS,
+        device_service, store_squelch, ConfigurationError, Programmed, MAX_CHANNELS, MAX_OBJECTS,
     };
     use radio_channel_control::ChannelSource;
     use radio_channel_plan::{
@@ -409,7 +414,7 @@ mod tests {
                 .expect("expanded")
                 .name()
                 .as_str(),
-            "PMR446 01"
+            "PMR 1"
         );
 
         // The plan names and populates its own bank without a named-bank object.
@@ -427,23 +432,26 @@ mod tests {
     }
 
     #[test]
-    fn plans_expanding_past_what_the_interface_selects_are_refused() {
+    fn a_band_sized_plan_costs_one_object_and_is_accepted_whole() {
+        // The civil airband at 25 kHz is 760 channels. It is one stored object,
+        // so no bound on expanded channels may refuse it: doing so would cost
+        // the operator 759 channels to save nothing.
         let objects = [encode_generated_bank(
             GeneratedBank::linear_simplex(
                 BankId::new(0),
-                BankName::new("BIG").expect("name"),
-                Frequency::from_hz(400_000_000).expect("frequency"),
-                FrequencyStep::from_hz(12_500).expect("step"),
-                MAX_EXPANDED_CHANNELS + 1,
+                BankName::new("AIRBAND").expect("name"),
+                Frequency::from_hz(118_000_000).expect("frequency"),
+                FrequencyStep::from_hz(25_000).expect("step"),
+                760,
                 TxClass::Never,
             )
             .expect("plan"),
         )
         .expect("plan object")];
-        assert_eq!(
-            Programmed::from_objects(objects.iter()),
-            Err(ConfigurationError::TooManyExpandedChannels)
-        );
+        let programmed = Programmed::from_objects(objects.iter()).expect("programmed");
+        assert_eq!(programmed.memory().len(), 760);
+        let last = programmed.memory().get(759).expect("last channel");
+        assert_eq!(last.active().receive.as_hz(), 136_975_000);
     }
 
     #[test]

@@ -6,13 +6,22 @@
 use core::{fmt, str};
 use radio_domain::{
     ActiveChannel, Bandwidth, BankId, ChannelId, DomainError, Frequency, FrequencyStep, Modulation,
-    PowerLevel, SquelchLevel, Tone, TxClass,
+    Offset, PowerLevel, SquelchLevel, Tone, TxClass,
 };
 
 /// Maximum encoded byte length of a generated bank name.
 pub const MAX_BANK_NAME_LEN: usize = 16;
 /// Maximum encoded byte length of an explicit channel name.
 pub const MAX_CHANNEL_NAME_LEN: usize = 12;
+/// Maximum encoded byte length of a plan's channel-name designator.
+///
+/// The designator is what the operator reads on the radio, not the plan name.
+/// A UK 2 m simplex plan named `2M SIMPLEX` in the editor carries the
+/// designator `S`, so its channels expand to `S8` through `S23` and match the
+/// band plan an operator is holding.
+pub const MAX_DESIGNATOR_LEN: usize = 4;
+/// Suffix appended to the derived name of a plan's calling channel.
+const CALLING_SUFFIX: &[u8] = b" CALL";
 /// Number of banks addressable by one channel membership mask.
 pub const MAX_BANKS: u16 = 16;
 /// Lowest channel identifier reserved for channels a radio expands itself.
@@ -48,6 +57,12 @@ pub enum PlanError {
     TooManyChannels,
     /// An explicit channel claimed an identifier reserved for expansion.
     ReservedChannelId,
+    /// A plan's designator and numbering derive a name too long to display.
+    DerivedNameTooLong,
+    /// A plan's channel numbering ran past the representable range.
+    NumberingOverflow,
+    /// The calling-channel index was outside the bank.
+    CallingOutOfRange,
 }
 
 impl fmt::Display for PlanError {
@@ -64,6 +79,11 @@ impl fmt::Display for PlanError {
             Self::ReservedChannelId => {
                 formatter.write_str("channel identifier is reserved for generated plans")
             }
+            Self::DerivedNameTooLong => {
+                formatter.write_str("derived channel name is too long to display")
+            }
+            Self::NumberingOverflow => formatter.write_str("channel numbering overflows"),
+            Self::CallingOutOfRange => formatter.write_str("calling-channel index is outside bank"),
         }
     }
 }
@@ -137,6 +157,8 @@ impl<const CAPACITY: usize> FixedName<CAPACITY> {
 pub type BankName = FixedName<MAX_BANK_NAME_LEN>;
 /// A compact, display-safe explicit channel name.
 pub type ChannelName = FixedName<MAX_CHANNEL_NAME_LEN>;
+/// The short prefix a plan's expanded channel names are built from.
+pub type Designator = FixedName<MAX_DESIGNATOR_LEN>;
 
 /// Compact channel-plan encoding families.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -214,19 +236,26 @@ impl ChannelTemplate {
     }
 }
 
-/// A bounded arithmetic simplex channel bank.
+/// A bounded arithmetic channel bank.
 ///
 /// One stored plan expands to [`channel_count`](Self::channel_count) complete
-/// channel records without storing any of them.
+/// channel records without storing any of them. Receive frequencies are
+/// arithmetic; a zero [`offset`](Self::offset) makes every channel simplex and
+/// a non-zero one places the transmit frequency a fixed distance away, which is
+/// how a repeater bank is expressed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GeneratedBank {
     id: BankId,
     name: BankName,
+    designator: Designator,
+    first_number: u16,
     base: Frequency,
     spacing: FrequencyStep,
     channel_count: u16,
     tx_class: TxClass,
     template: ChannelTemplate,
+    calling_index: Option<u16>,
+    offset: Offset,
 }
 
 impl GeneratedBank {
@@ -260,6 +289,58 @@ impl GeneratedBank {
         tx_class: TxClass,
         template: ChannelTemplate,
     ) -> Result<Self, PlanError> {
+        Self::linear(
+            id,
+            name,
+            base,
+            spacing,
+            channel_count,
+            tx_class,
+            template,
+            Offset::from_hz(0),
+        )
+    }
+
+    /// Constructs and validates an arithmetic bank with a fixed transmit offset.
+    ///
+    /// A repeater bank is arithmetic in its output frequencies and constant in
+    /// the distance to its inputs, so one plan holds a whole repeater
+    /// sub-band. A zero offset is simplex and is better expressed with
+    /// [`linear_simplex_with`](Self::linear_simplex_with).
+    #[allow(clippy::too_many_arguments)]
+    pub fn linear_fixed_offset_with(
+        id: BankId,
+        name: BankName,
+        base: Frequency,
+        spacing: FrequencyStep,
+        channel_count: u16,
+        tx_class: TxClass,
+        template: ChannelTemplate,
+        offset: Offset,
+    ) -> Result<Self, PlanError> {
+        Self::linear(
+            id,
+            name,
+            base,
+            spacing,
+            channel_count,
+            tx_class,
+            template,
+            offset,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn linear(
+        id: BankId,
+        name: BankName,
+        base: Frequency,
+        spacing: FrequencyStep,
+        channel_count: u16,
+        tx_class: TxClass,
+        template: ChannelTemplate,
+        offset: Offset,
+    ) -> Result<Self, PlanError> {
         if channel_count == 0 {
             return Err(PlanError::EmptyBank);
         }
@@ -269,16 +350,82 @@ impl GeneratedBank {
         if channel_count > MAX_GENERATED_CHANNELS {
             return Err(PlanError::TooManyChannels);
         }
-        base.checked_add_steps(spacing, channel_count - 1)?;
-        Ok(Self {
+        let last = base.checked_add_steps(spacing, channel_count - 1)?;
+        // Both ends of the transmit range are checked here, so no expansion of
+        // a constructed plan can overflow the frequency representation.
+        base.checked_apply_offset(offset)?;
+        last.checked_apply_offset(offset)?;
+        let plan = Self {
             id,
             name,
+            designator: derived_designator(name)?,
+            first_number: 1,
             base,
             spacing,
             channel_count,
             tx_class,
             template: template.validate()?,
-        })
+            calling_index: None,
+            offset,
+        };
+        plan.validate_numbering()?;
+        Ok(plan)
+    }
+
+    /// Replaces the designator and the number its first channel carries.
+    ///
+    /// The plan name is what the editor shows and the radio labels the bank
+    /// with; the designator is what an operator reads on a channel. A UK 2 m
+    /// simplex plan uses `S` numbered from 8, so index 12 expands to `S20`.
+    pub fn with_designator(
+        mut self,
+        designator: Designator,
+        first_number: u16,
+    ) -> Result<Self, PlanError> {
+        self.designator = designator;
+        self.first_number = first_number;
+        self.validate_numbering()?;
+        Ok(self)
+    }
+
+    /// Marks one index as the calling channel of this bank, or clears the mark.
+    ///
+    /// The marked channel expands with [`ChannelFlags::CALLING`] set and is
+    /// named for its purpose rather than only its number, so `S20` becomes
+    /// `S20 CALL`.
+    pub fn with_calling_index(mut self, index: Option<u16>) -> Result<Self, PlanError> {
+        if let Some(index) = index {
+            if index >= self.channel_count {
+                return Err(PlanError::CallingOutOfRange);
+            }
+        }
+        self.calling_index = index;
+        self.validate_numbering()?;
+        Ok(self)
+    }
+
+    /// Checks that every name this plan derives fits the channel name field.
+    ///
+    /// The check is done once at construction over the longest name the plan
+    /// can produce, so expansion of a constructed plan never fails on a name.
+    fn validate_numbering(&self) -> Result<(), PlanError> {
+        let last = self
+            .first_number
+            .checked_add(self.channel_count - 1)
+            .ok_or(PlanError::NumberingOverflow)?;
+        let designator = usize::from(self.designator.len());
+        let mut longest = designator + decimal_digits(last);
+        if let Some(index) = self.calling_index {
+            let number = self
+                .first_number
+                .checked_add(index)
+                .ok_or(PlanError::NumberingOverflow)?;
+            longest = longest.max(designator + decimal_digits(number) + CALLING_SUFFIX.len());
+        }
+        if longest > MAX_CHANNEL_NAME_LEN {
+            return Err(PlanError::DerivedNameTooLong);
+        }
+        Ok(())
     }
 
     /// Returns the per-channel settings every expanded channel shares.
@@ -294,6 +441,26 @@ impl GeneratedBank {
     /// Returns the bank name.
     pub const fn name(self) -> BankName {
         self.name
+    }
+
+    /// Returns the prefix expanded channel names are built from.
+    pub const fn designator(self) -> Designator {
+        self.designator
+    }
+
+    /// Returns the number the first expanded channel carries.
+    pub const fn first_number(self) -> u16 {
+        self.first_number
+    }
+
+    /// Returns the index this plan marks as its calling channel.
+    pub const fn calling_index(self) -> Option<u16> {
+        self.calling_index
+    }
+
+    /// Returns the fixed transmit offset. Zero is simplex.
+    pub const fn offset(self) -> Offset {
+        self.offset
     }
 
     /// Returns the first channel frequency.
@@ -317,8 +484,16 @@ impl GeneratedBank {
     }
 
     /// Returns the compact encoding family.
+    ///
+    /// The family follows the offset rather than being stored beside it, so a
+    /// plan cannot claim an encoding its own contents contradict and the
+    /// capability bit a host negotiates is always the one the plan needs.
     pub const fn encoding(self) -> PlanEncoding {
-        PlanEncoding::LinearSimplex
+        if self.offset.as_hz() == 0 {
+            PlanEncoding::LinearSimplex
+        } else {
+            PlanEncoding::LinearFixedOffset
+        }
     }
 
     /// Expands one channel without materialising the rest of the bank.
@@ -326,10 +501,10 @@ impl GeneratedBank {
         if index >= self.channel_count {
             return Err(PlanError::ChannelOutOfRange);
         }
-        let frequency = self.base.checked_add_steps(self.spacing, index)?;
+        let receive = self.base.checked_add_steps(self.spacing, index)?;
         Ok(ActiveChannel {
-            receive: frequency,
-            transmit: frequency,
+            receive,
+            transmit: receive.checked_apply_offset(self.offset)?,
             tx_class: self.tx_class,
         })
     }
@@ -344,13 +519,15 @@ impl GeneratedBank {
         if index >= self.channel_count {
             return Err(PlanError::ChannelOutOfRange);
         }
-        let frequency = self.base.checked_add_steps(self.spacing, index)?;
+        let receive = self.base.checked_add_steps(self.spacing, index)?;
+        let calling = self.calling_index == Some(index);
         ChannelRecord::expanded(ChannelDefinition {
             id: generated_channel_id(self.id, index)?,
             name: self.channel_name(index)?,
-            receive: frequency,
-            // Linear simplex: an expanded channel transmits where it receives.
-            transmit: frequency,
+            receive,
+            // Simplex plans carry a zero offset, so this is the transmit
+            // frequency for both families without a second code path.
+            transmit: receive.checked_apply_offset(self.offset)?,
             rx_tone: self.template.rx_tone,
             tx_tone: self.template.tx_tone,
             modulation: self.template.modulation,
@@ -358,7 +535,7 @@ impl GeneratedBank {
             power: self.template.power,
             step: self.template.step,
             squelch: self.template.squelch,
-            flags: self.template.flags,
+            flags: self.template.flags.with(ChannelFlags::CALLING, calling),
             banks: BankMask::default().with(self.id, true)?,
             tx_class: self.tx_class,
         })
@@ -366,34 +543,71 @@ impl GeneratedBank {
 
     /// Returns the derived name of one expanded channel.
     ///
-    /// The plan name is truncated so the position always fits, because the
-    /// number is what the operator matches against the plan's documentation.
+    /// The name is the plan's designator followed by the channel's own number,
+    /// which is what an operator matches against a published band plan: a plan
+    /// designated `S` numbered from 8 expands to `S8` through `S23`. The
+    /// calling channel is named for its purpose as well, as `S20 CALL`.
+    /// Construction proved every name fits, so this cannot fail on length.
     pub fn channel_name(self, index: u16) -> Result<ChannelName, PlanError> {
         if index >= self.channel_count {
             return Err(PlanError::ChannelOutOfRange);
         }
-        let digits = decimal_digits(self.channel_count);
-        let name = self.name.as_str().as_bytes();
-        let mut prefix = name.len().min(MAX_CHANNEL_NAME_LEN - 1 - digits);
-        while prefix > 0 && name[prefix - 1] == b' ' {
-            prefix -= 1;
-        }
+        let number = self
+            .first_number
+            .checked_add(index)
+            .ok_or(PlanError::NumberingOverflow)?;
+        let designator = self.designator.as_str().as_bytes();
+        let digits = decimal_digits(number);
         let mut field = [0_u8; MAX_CHANNEL_NAME_LEN];
-        field[..prefix].copy_from_slice(&name[..prefix]);
-        field[prefix] = b' ';
-        let len = prefix + 1 + digits;
-        let mut position = index + 1;
+        let mut len = designator.len();
+        if len + digits > MAX_CHANNEL_NAME_LEN {
+            return Err(PlanError::DerivedNameTooLong);
+        }
+        field[..len].copy_from_slice(designator);
+        len += digits;
+        let mut remaining = number;
         let mut digit = len;
-        while digit > prefix + 1 {
+        while digit > len - digits {
             digit -= 1;
-            field[digit] = b'0' + u8::try_from(position % 10).unwrap_or(0);
-            position /= 10;
+            field[digit] = b'0' + u8::try_from(remaining % 10).unwrap_or(0);
+            remaining /= 10;
+        }
+        if self.calling_index == Some(index) {
+            if len + CALLING_SUFFIX.len() > MAX_CHANNEL_NAME_LEN {
+                return Err(PlanError::DerivedNameTooLong);
+            }
+            field[len..len + CALLING_SUFFIX.len()].copy_from_slice(CALLING_SUFFIX);
+            len += CALLING_SUFFIX.len();
         }
         ChannelName::from_field(
             field,
             u8::try_from(len).map_err(|_| PlanError::InvalidName)?,
         )
     }
+}
+
+/// Returns the designator a plan uses when the operator has not chosen one.
+///
+/// The plan name is what an editor shows; without a designator the radio still
+/// needs something short, so the leading word is taken and a space separates it
+/// from the number. `PMR446` gives `PMR 1`, which reads as a channel rather
+/// than as a truncated name run into a digit.
+fn derived_designator(name: BankName) -> Result<Designator, PlanError> {
+    let bytes = name.as_str().as_bytes();
+    let mut len = bytes.len().min(MAX_DESIGNATOR_LEN - 1);
+    while len > 0 && bytes[len - 1] == b' ' {
+        len -= 1;
+    }
+    if len == 0 {
+        return Err(PlanError::InvalidName);
+    }
+    let mut field = [0_u8; MAX_DESIGNATOR_LEN];
+    field[..len].copy_from_slice(&bytes[..len]);
+    field[len] = b' ';
+    Designator::from_field(
+        field,
+        u8::try_from(len + 1).map_err(|_| PlanError::InvalidName)?,
+    )
 }
 
 /// Returns the reserved identifier of one channel expanded from a plan.
@@ -414,13 +628,35 @@ pub const fn is_generated_channel_id(id: ChannelId) -> bool {
     id.get() >= GENERATED_CHANNEL_ID_BASE
 }
 
-const fn decimal_digits(count: u16) -> usize {
-    if count >= 1_000 {
+/// Returns the bank and index one expanded channel identifier packs.
+///
+/// Expansion mints identifiers by packing the two, so unpacking answers "which
+/// channel is this?" arithmetically. A radio therefore resolves an expanded
+/// channel without walking, and can test bank membership without building a
+/// record at all, which is what lets a plan hold a whole band cheaply.
+pub const fn generated_channel_parts(id: ChannelId) -> Option<(BankId, u16)> {
+    if id.get() < GENERATED_CHANNEL_ID_BASE {
+        return None;
+    }
+    let bits = id.get() & !GENERATED_CHANNEL_ID_BASE;
+    Some((BankId::new(bits >> 11), bits & (MAX_GENERATED_CHANNELS - 1)))
+}
+
+/// Returns the number of decimal digits one channel number is written with.
+///
+/// Numbers are not padded, because a designator is read against a published
+/// band plan which writes `S8`, not `S08`.
+const fn decimal_digits(number: u16) -> usize {
+    if number >= 10_000 {
+        5
+    } else if number >= 1_000 {
         4
-    } else if count >= 100 {
+    } else if number >= 100 {
         3
-    } else {
+    } else if number >= 10 {
         2
+    } else {
+        1
     }
 }
 
@@ -439,8 +675,16 @@ impl ChannelFlags {
     pub const REVERSE: u8 = 0b0000_0100;
     /// The audio compander is requested for this channel.
     pub const COMPANDER: u8 = 0b0000_1000;
+    /// The channel is the calling channel of its band or plan.
+    ///
+    /// The meaning is the same however the channel was obtained: an explicit
+    /// record may carry it, and a generated plan sets it on the one index its
+    /// [`GeneratedBank::calling_index`] names. A radio therefore implements
+    /// go-to-calling and the default dual-watch partner once, against the flag,
+    /// rather than once per channel kind.
+    pub const CALLING: u8 = 0b0001_0000;
     /// Bits which must be zero in this format version.
-    pub const RESERVED: u8 = 0b1111_0000;
+    pub const RESERVED: u8 = 0b1110_0000;
 
     /// Returns the flag field with no flag set.
     #[must_use]
@@ -822,8 +1066,10 @@ mod tests {
     };
     use radio_domain::{Bandwidth, ChannelId, Modulation, PowerLevel, SquelchLevel, Tone};
 
-    use super::{BankName, GeneratedBank, PlanError};
-    use radio_domain::{BankId, Frequency, FrequencyStep, TxClass};
+    use super::{
+        generated_channel_parts, BankName, Designator, GeneratedBank, PlanEncoding, PlanError,
+    };
+    use radio_domain::{BankId, Frequency, FrequencyStep, Offset, TxClass};
 
     #[test]
     fn linear_bank_expands_lazily() {
@@ -860,7 +1106,7 @@ mod tests {
         .unwrap();
 
         let first = bank.channel_record(0).unwrap();
-        assert_eq!(first.name().as_str(), "PMR446 01");
+        assert_eq!(first.name().as_str(), "PMR 1");
         assert_eq!(first.receive().as_hz(), 446_006_250);
         assert_eq!(first.transmit().as_hz(), 446_006_250);
         assert_eq!(first.rx_tone(), Tone::Ctcss(1_000));
@@ -871,7 +1117,7 @@ mod tests {
         assert!(first.is_generated());
 
         let last = bank.channel_record(15).unwrap();
-        assert_eq!(last.name().as_str(), "PMR446 16");
+        assert_eq!(last.name().as_str(), "PMR 16");
         assert_eq!(last.receive().as_hz(), 446_193_750);
         assert_ne!(first.id(), last.id());
         assert_eq!(bank.channel_record(16), Err(PlanError::ChannelOutOfRange));
@@ -905,7 +1151,10 @@ mod tests {
     }
 
     #[test]
-    fn expanded_names_keep_the_position_when_the_plan_name_is_long() {
+    fn a_plan_without_a_designator_derives_a_readable_one() {
+        // The editor's plan name may be longer than a channel field, so an
+        // undesignated plan takes its leading word and separates the number,
+        // rather than running a truncated name straight into a digit.
         let bank = GeneratedBank::linear_simplex(
             BankId::new(1),
             BankName::new("Marine channel").unwrap(),
@@ -915,14 +1164,133 @@ mod tests {
             TxClass::Never,
         )
         .unwrap();
+        assert_eq!(bank.designator().as_str(), "Mar ");
+        assert_eq!(bank.channel_record(0).unwrap().name().as_str(), "Mar 1");
+        assert_eq!(bank.channel_record(119).unwrap().name().as_str(), "Mar 120");
+    }
+
+    #[test]
+    fn a_designator_and_first_number_name_channels_as_a_band_plan_does() {
+        // UK 2 m FM simplex: S8 at 145.200 through S23, calling on S20.
+        let bank = GeneratedBank::linear_simplex(
+            BankId::new(1),
+            BankName::new("2M SIMPLEX").unwrap(),
+            Frequency::from_hz(145_200_000).unwrap(),
+            FrequencyStep::from_hz(25_000).unwrap(),
+            16,
+            TxClass::Amateur,
+        )
+        .unwrap()
+        .with_designator(Designator::new("S").unwrap(), 8)
+        .unwrap()
+        .with_calling_index(Some(12))
+        .unwrap();
+
+        // The editor keeps the full name; the radio shows the designator.
+        assert_eq!(bank.name().as_str(), "2M SIMPLEX");
+        assert_eq!(bank.channel_record(0).unwrap().name().as_str(), "S8");
+        assert_eq!(bank.channel_record(15).unwrap().name().as_str(), "S23");
+
+        let calling = bank.channel_record(12).unwrap();
+        assert_eq!(calling.name().as_str(), "S20 CALL");
+        assert_eq!(calling.receive().as_hz(), 145_500_000);
+        assert!(
+            calling.flags().contains(ChannelFlags::CALLING),
+            "the marked index carries the shared calling meaning"
+        );
+        assert!(!bank
+            .channel_record(11)
+            .unwrap()
+            .flags()
+            .contains(ChannelFlags::CALLING));
+    }
+
+    #[test]
+    fn a_plan_refuses_numbering_it_cannot_display() {
+        let bank = GeneratedBank::linear_simplex(
+            BankId::new(1),
+            BankName::new("70CM SIMPLEX").unwrap(),
+            Frequency::from_hz(433_400_000).unwrap(),
+            FrequencyStep::from_hz(25_000).unwrap(),
+            8,
+            TxClass::Amateur,
+        )
+        .unwrap();
+        // Four designator bytes plus five digits plus " CALL" cannot fit the
+        // twelve-byte field, and it is refused when the plan is built rather
+        // than by failing to expand the one channel which overruns.
+        let calling = bank.with_calling_index(Some(0)).unwrap();
         assert_eq!(
-            bank.channel_record(0).unwrap().name().as_str(),
-            "Marine c 001"
+            calling.with_designator(Designator::new("SU70").unwrap(), 60_000),
+            Err(PlanError::DerivedNameTooLong)
+        );
+        // Without the calling suffix the same numbering still fits.
+        assert!(bank
+            .with_designator(Designator::new("SU70").unwrap(), 60_000)
+            .is_ok());
+        assert_eq!(
+            bank.with_designator(Designator::new("SU").unwrap(), u16::MAX),
+            Err(PlanError::NumberingOverflow)
         );
         assert_eq!(
-            bank.channel_record(119).unwrap().name().as_str(),
-            "Marine c 120"
+            bank.with_calling_index(Some(8)),
+            Err(PlanError::CallingOutOfRange)
         );
+    }
+
+    #[test]
+    fn a_repeater_plan_offsets_every_transmit_frequency_by_one_constant() {
+        // UK 2 m repeater outputs run from 145.600 at 12.5 kHz with inputs
+        // 600 kHz below, so one plan holds the whole sub-band.
+        let bank = GeneratedBank::linear_fixed_offset_with(
+            BankId::new(4),
+            BankName::new("2M REPEATERS").unwrap(),
+            Frequency::from_hz(145_600_000).unwrap(),
+            FrequencyStep::from_hz(12_500).unwrap(),
+            16,
+            TxClass::Amateur,
+            ChannelTemplate::narrow_fm(FrequencyStep::from_hz(12_500).unwrap()),
+            Offset::from_hz(-600_000),
+        )
+        .unwrap()
+        .with_designator(Designator::new("RV").unwrap(), 48)
+        .unwrap();
+
+        assert_eq!(bank.encoding(), PlanEncoding::LinearFixedOffset);
+        let first = bank.channel_record(0).unwrap();
+        assert_eq!(first.name().as_str(), "RV48");
+        assert_eq!(first.receive().as_hz(), 145_600_000);
+        assert_eq!(first.transmit().as_hz(), 145_000_000);
+        let last = bank.channel_record(15).unwrap();
+        assert_eq!(last.name().as_str(), "RV63");
+        assert_eq!(last.transmit().as_hz(), 145_187_500);
+
+        // A simplex plan keeps the simplex encoding and negotiates its own bit.
+        let simplex = GeneratedBank::linear_simplex(
+            BankId::new(4),
+            BankName::new("2M REPEATERS").unwrap(),
+            Frequency::from_hz(145_600_000).unwrap(),
+            FrequencyStep::from_hz(12_500).unwrap(),
+            16,
+            TxClass::Amateur,
+        )
+        .unwrap();
+        assert_eq!(simplex.encoding(), PlanEncoding::LinearSimplex);
+        assert_ne!(
+            PlanEncoding::LinearFixedOffset.capability_bit(),
+            PlanEncoding::LinearSimplex.capability_bit()
+        );
+    }
+
+    #[test]
+    fn an_expanded_identifier_resolves_to_its_bank_and_index() {
+        let id = generated_channel_id(BankId::new(5), 700).unwrap();
+        assert_eq!(
+            generated_channel_parts(id),
+            Some((BankId::new(5), 700)),
+            "expansion packs the bank and index, so unpacking needs no search"
+        );
+        assert_eq!(generated_channel_parts(ChannelId::new(7)), None);
     }
 
     #[test]
@@ -997,8 +1365,8 @@ mod tests {
         assert_eq!(mask.bits(), 1);
         assert!(mask.with(BankId::new(0), false).unwrap().is_empty());
 
-        assert_eq!(ChannelFlags::from_bits(0x10), Err(PlanError::ReservedFlag));
-        assert_eq!(ChannelFlags::from_bits(0x0F).unwrap().bits(), 0x0F);
+        assert_eq!(ChannelFlags::from_bits(0x20), Err(PlanError::ReservedFlag));
+        assert_eq!(ChannelFlags::from_bits(0x1F).unwrap().bits(), 0x1F);
         assert_eq!(BankFlags::from_bits(0x02), Err(PlanError::ReservedFlag));
 
         let bank = ChannelBank::new(

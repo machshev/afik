@@ -1032,8 +1032,8 @@ fn channel_row_editor(
                 match bank_slots.get(index).and_then(Option::as_ref) {
                     Some((BankKind::Named, name)) => response.on_hover_text(name.clone()),
                     Some((BankKind::Generated, name)) => response.on_hover_text(format!(
-                        "{name} is a generated plan; the radio expands its own channels \
-                         into this bank and a stored channel cannot join them"
+                        "{name} is a generated plan; this channel is selected beside \
+                         the channels it expands, under the same bank filter"
                     )),
                     None => response.on_hover_text("no named bank defines this identifier"),
                 };
@@ -1073,73 +1073,164 @@ fn bank_row_editor(ui: &mut egui::Ui, bank: &mut BankDraft) -> bool {
                 ui.checkbox(&mut bank.scan_enabled, "Scan enabled");
                 ui.end_row();
             }
-            BankKind::Generated => {
-                ui.label("Base MHz");
-                ui.add(TextEdit::singleline(&mut bank.base_mhz).desired_width(120.0));
-                ui.label("Spacing Hz");
-                ui.add(
-                    egui::DragValue::new(&mut bank.spacing_hz)
-                        .speed(125.0)
-                        .range(1..=1_000_000),
-                );
-                ui.end_row();
-
-                ui.label("Channels");
-                ui.add(
-                    egui::DragValue::new(&mut bank.channel_count).range(1..=MAX_GENERATED_CHANNELS),
-                );
-                ui.label("TX class");
-                tx_class_editor(ui, &mut bank.tx_class);
-                ui.end_row();
-
-                ui.label("Span");
-                match bank.generated_span() {
-                    Some((first, last)) => ui.label(format!(
-                        "{first} to {last} MHz, {} channels",
-                        bank.channel_count
-                    )),
-                    None => {
-                        ui.colored_label(WARNING_COLOUR, "the plan is incomplete or out of range")
-                    }
-                };
-                ui.end_row();
-
-                // Every expanded channel shares these settings: they are stored
-                // once with the plan, not once per channel.
-                ui.label("RX tone");
-                tone_editor(ui, "plan-rx", &mut bank.rx_tone);
-                ui.label("TX tone");
-                tone_editor(ui, "plan-tx", &mut bank.tx_tone);
-                ui.end_row();
-
-                ui.label("Modulation");
-                modulation_editor(ui, &mut bank.modulation);
-                ui.label("Bandwidth");
-                bandwidth_editor(ui, &mut bank.bandwidth);
-                ui.end_row();
-
-                ui.label("Power");
-                power_editor(ui, &mut bank.power);
-                ui.label("Step Hz");
-                ui.add(egui::DragValue::new(&mut bank.step_hz).speed(125.0));
-                ui.end_row();
-
-                ui.label("Squelch");
-                ui.add(egui::DragValue::new(&mut bank.squelch).range(0..=MAX_SQUELCH_LEVEL));
-                ui.label("Flags");
-                ui.horizontal_wrapped(|ui| {
-                    ui.checkbox(&mut bank.scan_skip, "Scan skip");
-                    ui.checkbox(&mut bank.busy_lockout, "Busy lockout");
-                    ui.checkbox(&mut bank.compander, "Compander");
-                });
-                ui.end_row();
-            }
+            BankKind::Generated => generated_plan_editor(ui, bank),
         }
     });
     if matches!(bank.kind, BankKind::Generated) {
         generated_expansion(ui, bank);
     }
     ui.button("Remove bank").clicked()
+}
+
+/// Draws the editor for one generated plan.
+///
+/// A plan carries far more than a named bank does — its arithmetic, its
+/// numbering, its calling channel, and the template every expanded channel
+/// shares — so it is drawn here rather than inline in the bank row.
+fn generated_plan_editor(ui: &mut egui::Ui, bank: &mut BankDraft) {
+    ui.label("Base MHz");
+    ui.add(TextEdit::singleline(&mut bank.base_mhz).desired_width(120.0));
+    ui.label("Spacing Hz");
+    ui.add(
+        egui::DragValue::new(&mut bank.spacing_hz)
+            .speed(125.0)
+            .range(1..=1_000_000),
+    );
+    ui.end_row();
+
+    ui.label("Channels");
+    ui.add(egui::DragValue::new(&mut bank.channel_count).range(1..=MAX_GENERATED_CHANNELS));
+    ui.label("TX class");
+    tx_class_editor(ui, &mut bank.tx_class);
+    ui.end_row();
+
+    plan_naming_editor(ui, bank);
+
+    ui.label("TX offset Hz");
+    ui.add(
+        egui::DragValue::new(&mut bank.offset_hz)
+            .speed(1_000.0)
+            .range(-50_000_000..=50_000_000),
+    )
+    .on_hover_text(
+        "Zero is simplex. A repeater bank transmits a fixed distance from \
+                 where it receives, such as -600000 for UK 2 m repeaters.",
+    );
+    ui.label(if bank.offset_hz == 0 {
+        "simplex".to_owned()
+    } else {
+        format!("repeater, {:+} kHz", bank.offset_hz / 1_000)
+    });
+    ui.end_row();
+
+    ui.label("Span");
+    match bank.generated_span() {
+        Some((first, last)) => ui.label(format!(
+            "{first} to {last} MHz, {} channels",
+            bank.channel_count
+        )),
+        None => ui.colored_label(WARNING_COLOUR, "the plan is incomplete or out of range"),
+    };
+    ui.end_row();
+
+    // Every expanded channel shares these settings: they are stored
+    // once with the plan, not once per channel.
+    ui.label("RX tone");
+    tone_editor(ui, "plan-rx", &mut bank.rx_tone);
+    ui.label("TX tone");
+    tone_editor(ui, "plan-tx", &mut bank.tx_tone);
+    ui.end_row();
+
+    ui.label("Modulation");
+    modulation_editor(ui, &mut bank.modulation);
+    ui.label("Bandwidth");
+    bandwidth_editor(ui, &mut bank.bandwidth);
+    ui.end_row();
+
+    ui.label("Power");
+    power_editor(ui, &mut bank.power);
+    ui.label("Step Hz");
+    ui.add(egui::DragValue::new(&mut bank.step_hz).speed(125.0));
+    ui.end_row();
+
+    ui.label("Squelch");
+    ui.add(egui::DragValue::new(&mut bank.squelch).range(0..=MAX_SQUELCH_LEVEL));
+    ui.label("Flags");
+    ui.horizontal_wrapped(|ui| {
+        ui.checkbox(&mut bank.scan_skip, "Scan skip");
+        ui.checkbox(&mut bank.busy_lockout, "Busy lockout");
+        ui.checkbox(&mut bank.compander, "Compander");
+    });
+    ui.end_row();
+}
+
+/// Draws how a plan names and numbers the channels it expands.
+///
+/// The plan name is this editor's label for the bank; the designator and the
+/// first number are what the radio puts on a channel, which is what an operator
+/// matches against a published band plan.
+fn plan_naming_editor(ui: &mut egui::Ui, bank: &mut BankDraft) {
+    // The plan name above is this editor's label for the bank. The
+    // designator is what the radio shows on a channel, which an
+    // operator matches against a published band plan.
+    ui.label("Designator");
+    ui.add(
+        TextEdit::singleline(&mut bank.designator)
+            .hint_text("S")
+            .desired_width(60.0),
+    )
+    .on_hover_text(
+        "Prefix the radio names channels with, up to four characters. \
+                 A trailing space separates the number, as in \"PMR 1\". \
+                 Left empty the radio derives one from the plan name.",
+    );
+    ui.label("First number");
+    ui.add(egui::DragValue::new(&mut bank.first_number).range(0..=u16::MAX))
+        .on_hover_text(
+            "Number the first channel carries. UK 2 m simplex starts at 8, \
+                     so the plan expands to S8 upwards.",
+        );
+    ui.end_row();
+
+    ui.label("Calling channel");
+    let mut has_calling = bank.calling_index.is_some();
+    if ui
+        .checkbox(&mut has_calling, "")
+        .on_hover_text(
+            "Mark one channel as the band's calling channel. It is named \
+                     for its purpose as well as its number and the radio can reach \
+                     it directly.",
+        )
+        .changed()
+    {
+        bank.calling_index = has_calling.then_some(0);
+    }
+    if let Some(index) = bank.calling_index.as_mut() {
+        ui.horizontal(|ui| {
+            ui.add(egui::DragValue::new(index).range(0..=bank.channel_count.saturating_sub(1)));
+            ui.label(calling_label(
+                bank.designator.as_str(),
+                bank.first_number,
+                *index,
+            ));
+        });
+    } else {
+        ui.label("none");
+    }
+    ui.end_row();
+}
+
+/// Returns the name the marked calling channel will carry on the radio.
+///
+/// The operator is choosing an index, so the editor shows the name that index
+/// produces rather than leaving them to work it out.
+fn calling_label(designator: &str, first_number: u16, index: u16) -> String {
+    let number = first_number.saturating_add(index);
+    if designator.trim().is_empty() {
+        format!("channel {number}, named CALL")
+    } else {
+        format!("{designator}{number} CALL")
+    }
 }
 
 /// Shows the channels one stored plan becomes on the radio.

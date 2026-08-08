@@ -18,6 +18,7 @@ eframe = { version = "0.29", default-features = false, features = [
     "wayland",
     "x11",
 ] }
+radio-channel-control = { path = "../radio-channel-control" }
 radio-channel-plan = { path = "../radio-channel-plan" }
 radio-domain = { path = "../radio-domain" }
 radio-flasher = { path = "../radio-flasher" }

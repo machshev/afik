@@ -7,7 +7,7 @@
 
 use core::fmt;
 
-use radio_channel_plan::{is_generated_channel_id, ChannelRecord, GeneratedBank};
+use radio_channel_plan::{generated_channel_parts, ChannelRecord, GeneratedBank};
 use radio_domain::{
     Bandwidth, BankId, ChannelId, DomainError, Frequency, FrequencyStep, Modulation, RadioConfig,
     ScanResume, SquelchLevel, Tone,
@@ -26,6 +26,16 @@ pub trait ChannelSource {
     /// Reports whether the source stores no channels.
     fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Reports whether the channel at one index belongs to a bank.
+    ///
+    /// Bank filtering asks this of every index and the answer decides only
+    /// whether a channel is counted, so a source which can answer without
+    /// building the record should. The default builds it.
+    fn member_at(&self, index: u16, bank: BankId) -> bool {
+        self.get(index)
+            .is_some_and(|channel| channel.is_member_of(bank))
     }
 }
 
@@ -229,14 +239,30 @@ impl<const CHANNELS: usize, const PLANS: usize> ProgrammedMemory<CHANNELS, PLANS
     }
 
     /// Returns the channel with one identifier, stored or expanded.
+    ///
+    /// An expanded identifier packs the bank and index that minted it, so the
+    /// channel is reconstructed directly from the owning plan rather than found
+    /// by expanding the space until one matches.
     pub fn find(&self, id: ChannelId) -> Option<ChannelRecord> {
-        if !is_generated_channel_id(id) {
+        let Some((bank, index)) = generated_channel_parts(id) else {
             return self.stored.find(id);
+        };
+        self.plan(bank)?.channel_record(index).ok()
+    }
+
+    /// Returns the bank owning the expanded channel at one plan-space offset.
+    ///
+    /// Every channel a plan expands belongs to that plan's bank and no other,
+    /// so membership is decided by locating the plan alone.
+    fn expanded_bank(&self, offset: u16) -> Option<BankId> {
+        let mut remaining = offset;
+        for plan in self.plans.iter().flatten() {
+            if remaining < plan.channel_count() {
+                return Some(plan.id());
+            }
+            remaining -= plan.channel_count();
         }
-        (0..self.expanded).find_map(|offset| {
-            let channel = self.expanded_channel(offset)?;
-            (channel.id() == id).then_some(channel)
-        })
+        None
     }
 
     /// Expands the channel at one zero-based offset into the plan space.
@@ -263,6 +289,18 @@ impl<const CHANNELS: usize, const PLANS: usize> ChannelSource
         match index.checked_sub(self.stored.len()) {
             None => self.stored.get(index),
             Some(offset) => self.expanded_channel(offset),
+        }
+    }
+
+    fn member_at(&self, index: u16, bank: BankId) -> bool {
+        match index.checked_sub(self.stored.len()) {
+            None => self
+                .stored
+                .get(index)
+                .is_some_and(|channel| channel.is_member_of(bank)),
+            // An expanded channel needs no record built to answer this, which
+            // is what keeps a filtered view over a band-sized plan cheap.
+            Some(offset) => self.expanded_bank(offset) == Some(bank),
         }
     }
 }
@@ -541,6 +579,16 @@ impl<C: ChannelSource> BankedReceiveController<C> {
         })
     }
 
+    /// Reports whether the channel at one index passes the active filter.
+    ///
+    /// This asks the source rather than building the record, so a filtered view
+    /// over a band-sized plan costs arithmetic per channel instead of a full
+    /// expansion per channel.
+    fn is_member_at(&self, index: u16) -> bool {
+        self.bank
+            .is_none_or(|bank| self.source.member_at(index, bank))
+    }
+
     /// Returns the number of channels eligible under the active bank filter.
     ///
     /// A user interface numbers channels as the operator sees them, which is
@@ -548,11 +596,7 @@ impl<C: ChannelSource> BankedReceiveController<C> {
     /// defined here beside the filter itself.
     pub fn visible_channels(&self) -> u16 {
         (0..self.source.len())
-            .filter(|index| {
-                self.source
-                    .get(*index)
-                    .is_some_and(|channel| is_member(&channel, self.bank))
-            })
+            .filter(|index| self.is_member_at(*index))
             .count()
             .try_into()
             .unwrap_or(u16::MAX)
@@ -561,11 +605,7 @@ impl<C: ChannelSource> BankedReceiveController<C> {
     /// Returns the zero-based position of the selection in the filtered view.
     pub fn visible_position(&self) -> u16 {
         (0..self.index)
-            .filter(|index| {
-                self.source
-                    .get(*index)
-                    .is_some_and(|channel| is_member(&channel, self.bank))
-            })
+            .filter(|index| self.is_member_at(*index))
             .count()
             .try_into()
             .unwrap_or(u16::MAX)
@@ -580,11 +620,7 @@ impl<C: ChannelSource> BankedReceiveController<C> {
     /// Returns the storage index of one zero-based position in the view.
     pub fn visible_index(&self, position: u16) -> Option<u16> {
         (0..self.source.len())
-            .filter(|index| {
-                self.source
-                    .get(*index)
-                    .is_some_and(|channel| is_member(&channel, self.bank))
-            })
+            .filter(|index| self.is_member_at(*index))
             .nth(usize::from(position))
     }
 
@@ -1019,10 +1055,10 @@ mod tests {
         assert_eq!(memory.get(0).unwrap().id().get(), 1);
         assert_eq!(memory.get(1).unwrap().id().get(), 2);
         let first_plan = memory.get(2).unwrap();
-        assert_eq!(first_plan.name().as_str(), "Marine 01");
+        assert_eq!(first_plan.name().as_str(), "Mar 1");
         assert_eq!(first_plan.receive().as_hz(), 156_050_000);
-        assert_eq!(memory.get(6).unwrap().name().as_str(), "PMR446 01");
-        assert_eq!(memory.get(21).unwrap().name().as_str(), "PMR446 16");
+        assert_eq!(memory.get(6).unwrap().name().as_str(), "PMR 1");
+        assert_eq!(memory.get(21).unwrap().name().as_str(), "PMR 16");
         assert_eq!(memory.get(22), None);
 
         let expanded = memory.get(21).unwrap();
@@ -1061,8 +1097,8 @@ mod tests {
         assert_eq!(activation.setup.frequency.as_hz(), 446_018_750);
         assert_eq!(
             controller.visible_channel(1).unwrap().name().as_str(),
-            "PMR446 02",
-            "an expanded channel names its plan and position"
+            "PMR 2",
+            "an expanded channel names its designator and number"
         );
 
         // The stored channel is outside the filtered view, and scanning walks

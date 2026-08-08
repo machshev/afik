@@ -2,6 +2,33 @@
 
 ## Current work package
 
+**`PLAN-037` is software complete and unwritten: the channelised bank model is
+now genuinely shared and genuinely unbounded. The K1's 128-expanded-channel
+limit is gone — it was never a memory cost, because nothing is materialised, and
+it could silently discard an accepted write. What bounds a plan now is only the
+identifier packing, the selection index space, and the storage each device
+advertises. Expanded lookup and bank membership resolve from the packed
+identifier instead of walking, so a band-sized plan is cheap to filter as well as
+to store.
+
+A plan now names its channels the way a band plan does. `GeneratedBank` carries a
+designator and a first number, so UK 2 m simplex expands to `S8` through `S23`
+rather than to a truncated bank name and a position; the studio keeps the full
+plan name as its own label. `ChannelFlags::CALLING` marks one index, named
+`S20 CALL`, and means the same on an explicit record. `LinearFixedOffset` is
+implemented, so a repeater sub-band is one stored object.
+
+Every preset is now plans: the UK and EU simplex set is forty channels in three
+stored objects against twelve channels in fifteen, and the airband is 760
+channels in one. The K1 slot budget moved from twelve channels and two plans to
+eight and six, because a plan slot costs about the same RAM and buys a whole
+band. Storage format version 3 carries all of it and rejects version 2, so the
+plan written to the exact unit under `EEPROM-035` must be written again.
+
+`AFIK-K1-4.0` is built, gated, and packaged. Nothing physical is claimed: no
+write, no boot, and no observation of any of this on the unit.**
+
+
 **`FIELD-036` is software complete and awaiting its physical confirmation: the
 first day of carrying the radio produced four faults and all four are fixed.
 The up key moves towards the first row on every screen instead of away from it;
@@ -54,6 +81,27 @@ incomplete. It can resume unchanged when the exact K5 V1 hardware is available.
 The bounded AFIK witness image was flashed through the intended CH340 path and
 returned the exact normal-mode hello after power-cycle. Full radio application
 features remain outside this bounded slice.
+
+## PLAN-037 verification
+
+Run on the pinned environment, 2026-08-08:
+
+- `cargo fmt --all --check`: clean.
+- `cargo clippy --workspace --all-targets -- -D warnings`: clean.
+- `cargo test --workspace`: 50 test targets pass, 361 tests, 0 failures.
+- `tool/build-k1-async.sh --release`: builds.
+- `tool/verify-k1-async-image.sh`: 192 vector bytes, initial SP `0x20004000`,
+  Reset `0x080028c1`, required IRQ handlers present, static RAM 10,988 bytes
+  with 5,396 bytes of stack headroom. The 512-byte rise is the slot rebalance:
+  four explicit channel slots traded for four plan slots.
+- `tool/package-k1-async-image.sh --force`: `AFIK-K1-4.0`, 92,048 bytes,
+  CRC-32 `93db25e9`, SHA-256
+  `834813c31c00cebe2641a559fddc7859f9ada7857964f29fc0f3d093103c70ea`.
+
+Not run and not claimed: any physical write, boot, or observation of this image.
+The 2 m repeater sub-band shipped as a preset (`RV48` upwards from 145.600,
+inputs 600 kHz below) has no evidence entry and needs one before it is treated
+as authoritative rather than as a starting point the operator confirms.
 
 ## FIELD-036 verification
 

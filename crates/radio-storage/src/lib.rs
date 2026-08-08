@@ -6,26 +6,36 @@
 use core::fmt;
 use radio_channel_plan::{
     BankFlags, BankMask, BankName, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
-    ChannelRecord, ChannelTemplate, GeneratedBank, MAX_BANK_NAME_LEN, MAX_CHANNEL_NAME_LEN,
+    ChannelRecord, ChannelTemplate, Designator, GeneratedBank, MAX_BANK_NAME_LEN,
+    MAX_CHANNEL_NAME_LEN, MAX_DESIGNATOR_LEN,
 };
 use radio_domain::{
-    Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, RadioConfig,
-    RadioFlags, ScanResume, SquelchLevel, Tone, TxClass,
+    Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, Offset, PowerLevel,
+    RadioConfig, RadioFlags, ScanResume, SquelchLevel, Tone, TxClass,
 };
+
+/// Encoded calling-channel index meaning a plan marks no calling channel.
+///
+/// A plan holds at most `MAX_GENERATED_CHANNELS` channels, so this value is
+/// outside every index a plan can legitimately mark.
+const NO_CALLING_INDEX: u16 = u16::MAX;
 
 /// Current object encoding version.
 ///
-/// Version 2 carries the per-channel template inside a generated bank, so one
-/// stored plan expands to complete channel records rather than bare
-/// frequencies. Version 1 objects are rejected rather than guessed at.
-pub const STORAGE_FORMAT_VERSION: u8 = 2;
+/// Version 3 carries a generated bank's channel-name designator and numbering,
+/// the index it marks as its calling channel, and a fixed transmit offset, so a
+/// plan expands to the channel names a published band plan uses and a repeater
+/// sub-band is one stored object. Version 2 carried the per-channel template
+/// but derived names from a truncated bank name and could express simplex
+/// banks only. Earlier versions are rejected rather than guessed at.
+pub const STORAGE_FORMAT_VERSION: u8 = 3;
 /// Maximum bytes held by one device object in the first storage model.
 pub const MAX_OBJECT_DATA: usize = 64;
-/// Encoded byte length of a version-2 generated-bank object.
-pub const GENERATED_BANK_ENCODED_LEN: usize = 46;
-/// Encoded byte length of a version-2 explicit channel object.
+/// Encoded byte length of a version-3 generated-bank object.
+pub const GENERATED_BANK_ENCODED_LEN: usize = 59;
+/// Encoded byte length of a version-3 explicit channel object.
 pub const CHANNEL_ENCODED_LEN: usize = 42;
-/// Encoded byte length of a version-2 named channel-bank object.
+/// Encoded byte length of a version-3 named channel-bank object.
 pub const CHANNEL_BANK_ENCODED_LEN: usize = 22;
 /// Encoded byte length of a version-2 global radio-configuration object.
 pub const RADIO_CONFIG_ENCODED_LEN: usize = 16;
@@ -379,6 +389,19 @@ pub fn encode_generated_bank(bank: GeneratedBank) -> Result<StorageObject, Stora
     data[40..44].copy_from_slice(&template.step.as_hz().to_le_bytes());
     data[44] = template.squelch.get();
     data[45] = template.flags.bits();
+    data[46] = bank.designator().len();
+    data[47..47 + MAX_DESIGNATOR_LEN].copy_from_slice(&bank.designator().field());
+    data[51..53].copy_from_slice(&bank.first_number().to_le_bytes());
+    // No index is representable as a channel number, so the absent marker is
+    // the one value a bank can never mark: the whole plan index space is
+    // bounded well below it.
+    data[53..55].copy_from_slice(
+        &bank
+            .calling_index()
+            .unwrap_or(NO_CALLING_INDEX)
+            .to_le_bytes(),
+    );
+    data[55..59].copy_from_slice(&bank.offset().as_hz().to_le_bytes());
     StorageObject::new(
         ObjectKey {
             kind: ObjectKind::GeneratedBank,
@@ -423,7 +446,17 @@ pub fn decode_generated_bank(object: &StorageObject) -> Result<GeneratedBank, St
         squelch: SquelchLevel::new(data[44]).map_err(|_| StorageError::MalformedObject)?,
         flags: ChannelFlags::from_bits(data[45]).map_err(|_| StorageError::MalformedObject)?,
     };
-    GeneratedBank::linear_simplex_with(
+    let mut designator_field = [0_u8; MAX_DESIGNATOR_LEN];
+    designator_field.copy_from_slice(&data[47..51]);
+    let designator = Designator::from_field(designator_field, data[46])
+        .map_err(|_| StorageError::MalformedObject)?;
+    let first_number = u16::from_le_bytes([data[51], data[52]]);
+    let calling = match u16::from_le_bytes([data[53], data[54]]) {
+        NO_CALLING_INDEX => None,
+        index => Some(index),
+    };
+    let offset = Offset::from_hz(i32::from_le_bytes([data[55], data[56], data[57], data[58]]));
+    GeneratedBank::linear_fixed_offset_with(
         BankId::new(id),
         name,
         base,
@@ -431,7 +464,10 @@ pub fn decode_generated_bank(object: &StorageObject) -> Result<GeneratedBank, St
         channel_count,
         tx_class,
         template,
+        offset,
     )
+    .and_then(|bank| bank.with_designator(designator, first_number))
+    .and_then(|bank| bank.with_calling_index(calling))
     .map_err(|_| StorageError::MalformedObject)
 }
 
@@ -1113,7 +1149,7 @@ mod tests {
             (31, 2),
             (32, 3),
             (37, 10),
-            (38, 0x10),
+            (38, 0x20),
             (39, 7),
         ] {
             assert_eq!(
@@ -1282,11 +1318,12 @@ mod tests {
         assert_eq!(
             &image[..image_len],
             &[
-                0x41, 0x46, 0x49, 0x4B, 0x01, 0x02, 0x01, 0x00, 0x33, 0x00, 0x00, 0x00, 0x57, 0x74,
-                0x2F, 0xB5, 0x01, 0x04, 0x00, 0x2E, 0x00, 0x02, 0x04, 0x00, 0x01, 0x41, 0x00, 0x00,
+                0x41, 0x46, 0x49, 0x4B, 0x01, 0x03, 0x01, 0x00, 0x40, 0x00, 0x00, 0x00, 0x60, 0x45,
+                0x48, 0xA5, 0x01, 0x04, 0x00, 0x3B, 0x00, 0x03, 0x04, 0x00, 0x01, 0x41, 0x00, 0x00,
                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xEA,
                 0x83, 0x95, 0x1A, 0xD4, 0x30, 0x00, 0x00, 0x10, 0x00, 0x01, 0x01, 0xE8, 0x03, 0x03,
-                0x17, 0x00, 0x00, 0x00, 0x01, 0xD4, 0x30, 0x00, 0x00, 0x04, 0x02,
+                0x17, 0x00, 0x00, 0x00, 0x01, 0xD4, 0x30, 0x00, 0x00, 0x04, 0x02, 0x02, 0x41, 0x20,
+                0x00, 0x00, 0x01, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00,
             ]
         );
         let decoded = decode_configuration_image(&image[..image_len]).unwrap();
