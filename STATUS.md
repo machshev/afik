@@ -70,6 +70,27 @@ Run on the pinned environment, 2026-08-08:
   CRC-32 `839d1529`, SHA-256
   `897a95bb513bbafd3341ff021ceaf14dd649cc5b328a5b948a5c2dee87b80277`.
 
+### Battery correction, 2026-08-08
+
+`AFIK-K1-3.5` reported `BAT ---%` on the exact unit. The cause was a bound in
+`radio-eeprom` set one address too low: it guarded only below `0x010000`, the
+first address of the vendor's calibration block rather than the last address of
+its map, so the read-only vendor path refused the battery calibration at
+`0x010140` and the radio correctly reported that it did not know its charge.
+
+The same bound was a hole in the protection it exists to provide. A region
+claimed at exactly `0x010000` was accepted by `Region::new`, and its
+erase-before-write would have destroyed this unit's battery calibration, RSSI
+calibration, transmit-power table, VOX thresholds, and boot logo. No AFIK build
+ever claimed such a region, the K1 image claims `0x100000`, and nothing was
+written to that range, so no unit was damaged. `EVID-K1-064` lists every address
+the pinned build touches and the bound is now `0x020000`.
+
+`AFIK-K1-3.6`, 85,752 bytes, CRC-32 `d752ab27`, SHA-256
+`8c876273fce92282c61af4d64d13e4da8d9edc72702e51487e115d5dfa2dab3d`, wrote
+`335/335` pages in transaction over the auto-detected CH340 path. Whether the
+battery now reads is still unobserved.
+
 ### Physical write, 2026-08-08
 
 `flash-afik-k1` wrote `AFIK-K1-3.5` over the auto-detected `/dev/ttyUSB0` at

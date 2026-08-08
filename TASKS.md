@@ -1699,8 +1699,12 @@
   F071 because the generated metadata carries no analogue pin table and one
   constant was F072-only. Both are now supplied from the pinned Puya driver, and
   only the one evidenced channel is declared.
-- **Image:** `AFIK-K1-3.5`, 85,208 bytes, CRC-32 `839d1529`, Reset `0x080028c1`,
-  SHA-256 `897a95bb513bbafd3341ff021ceaf14dd649cc5b328a5b948a5c2dee87b80277`.
+- **Image:** `AFIK-K1-3.6`, 85,752 bytes, CRC-32 `d752ab27`, Reset `0x080028c1`,
+  SHA-256 `8c876273fce92282c61af4d64d13e4da8d9edc72702e51487e115d5dfa2dab3d`.
+- **Correction made during this work:** `AFIK-K1-3.5` read `BAT ---%` because
+  the `radio-eeprom` vendor bound sat at `0x010000`, below the calibration it
+  was meant to allow reading and below data it was meant to stop AFIK erasing.
+  `EVID-K1-064` establishes the real extent and the bound is now `0x020000`.
 - **Remaining:** every physical claim. The squelch thresholds are AFIK's own and
   no level has been heard on air; the battery percentage has never been compared
   against a meter. Both experiments are named in `EVID-K1-063` and `RISK-034`.
