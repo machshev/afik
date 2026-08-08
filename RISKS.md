@@ -579,9 +579,17 @@
   evidenced 16 KiB of SRAM, leaving roughly 5.6 KiB of stack. Nothing in the
   build fails if a future change pushes peak stack use past that, and an
   overflow would silently corrupt the top of `.bss`.
-- **Mitigation:** the object bounds which dominate RAM are explicit constants
-  with a comment saying why, and `llvm-size` is recorded with each image in
-  `STATUS.md`, so growth is visible in review.
+- **Mitigation:** `crates/radio-firmware-k1/stack-headroom.x` asserts a 6,144-byte
+  reserve at link time, so a build which eats the headroom fails to link rather
+  than packaging; `tool/verify-k1-async-image.sh` checks the same bound and
+  records `llvm-size` with each image in `STATUS.md`. The reserve is a policy
+  floor, not a measurement: it sits above the 5,396 bytes `AFIK-K1-4.0` had when
+  it reached the operator and did not start. The configuration is now held once,
+  encoded, so the object bounds no longer dominate RAM.
+- **Observed:** this risk has bitten twice. `AFIK-K1-2.5` exhausted the stack and
+  never started. `AFIK-K1-4.0` did the same after a slot-budget change added 512
+  bytes of statics, and cleared the then-4,096-byte scripted floor on its way to
+  being flashed. The gate was not missing; it was set too low to catch either.
 - **Required experiment:** add a stack-headroom gate, for example a linker
   assertion on `.bss` end against a reserved stack region, or a painted-stack
   high-water measurement on the exact unit.

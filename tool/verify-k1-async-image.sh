@@ -36,13 +36,20 @@ read -r initial_stack reset_vector < <(od -An -v -tx4 -N8 "$vectors")
 (( (16#$reset_vector & 1) == 1 )) || { echo "async Reset is not Thumb: $reset_vector" >&2; exit 1; }
 (( 16#$reset_vector >= 16#080028c0 && 16#$reset_vector < 16#08020000 )) || { echo "async Reset is out of range: $reset_vector" >&2; exit 1; }
 
-# Static RAM must leave the executor, the interrupt frames, and every by-value
-# configuration copy a working stack. A build which fits flash but not RAM
-# faults on the unit and shows nothing, so it is refused here rather than
-# packaged: `EVID-K1-020` evidences the 16 KiB SRAM and `link.x` places the
-# initial stack at its top.
+# Static RAM must leave the executor and the interrupt frames a working stack.
+# A build which fits flash but not RAM faults on the unit and shows nothing, so
+# it is refused here rather than packaged: `EVID-K1-020` evidences the 16 KiB
+# SRAM and `link.x` places the initial stack at its top.
+#
+# This floor was 4,096 bytes, and both images which reached the operator having
+# exhausted the stack cleared it: `AFIK-K1-2.5` and `AFIK-K1-4.0`, the latter at
+# 5,396 bytes free. The gate was not missing, it was set too low. It now matches
+# `_min_stack_size` in `crates/radio-firmware-k1/stack-headroom.x`, which
+# asserts the same bound at link time so a build outside this script cannot
+# escape it. Both remain a policy floor rather than a measurement; `RISK-033`
+# stays open until a painted-stack high-water reading on the exact unit.
 ram_bytes=16384
-minimum_stack_bytes=4096
+minimum_stack_bytes=6144
 static_bytes=$(llvm-size -A "$image_path" | awk '$1 == ".data" || $1 == ".bss" || $1 == ".uninit" { total += $2 } END { print total + 0 }')
 stack_headroom=$((ram_bytes - static_bytes))
 (( stack_headroom >= minimum_stack_bytes )) || {
