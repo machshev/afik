@@ -2138,21 +2138,30 @@
 ## CTRL-044 — Host control of the receiver over serial
 
 - **Status:** not started
-- **Objective:** implement the reserved `Service::RuntimeControl` as a bounded,
-  receive-only host control surface: take control, set the receive frequency,
-  read the raw metrics, release control. Enough to drive `SWEEP-040` from a
-  host, shaped so that later PC remote control extends it rather than replaces
-  it.
+- **Objective:** implement the reserved `Service::RuntimeControl` as a second
+  peer driving the operations the handset already drives — ask what the radio is
+  doing, stop a scan, choose VFO or memory, tune, select a channel, read the
+  metrics. Enough to drive `SWEEP-040` from a host, and the beginning of PC
+  remote control rather than a measurement fixture.
 - **Why this way:** `SWEEP-040` needs hundreds of readings across channels,
-  powers and repeats, which is not a handset measurement. The diagnostic image
-  could carry a throwaway tune command, but the operator wants full radio
-  control over serial eventually, so the first tune request should be the first
-  piece of that surface. `Service::RuntimeControl = 2` has been reserved since
-  `FOUND-001` with no commands defined; this fills it.
+  powers and repeats, which is not a handset measurement. The host has to drive
+  it, and full radio control over serial is wanted for its own sake, so the
+  measurement is one caller of a general surface rather than its reason to
+  exist. `Service::RuntimeControl = 2` has been reserved since `FOUND-001` with
+  no commands defined; this fills it.
+- **The key point:** this adds no radio behaviour. `BankedReceiveController`
+  already exposes every operation needed — `enter_vfo`, `enter_memory`,
+  `tune_to`, `tune_up`/`tune_down`, `select`, `select_next`/`select_previous`,
+  `set_bank`, `set_monitor`, `start_scanning`, `stop_scanning` — and the
+  interface task already calls them after decoding a key press. The host joins
+  at that same seam and its results flow through the same update application, so
+  retunes and scan timers are handled identically however the operation arrived.
+  What this task adds is an encoding, a way across the task boundary, and a
+  query.
 - **Scope:** `radio-protocol` (commands in the runtime-control range),
-  `radio-device` (service dispatch), `radio-firmware-k1` (serial task and the
-  interface/scan boundary), `radio-flasher-cli` or `radio-programmer-cli` (a
-  sweep command), `radio-sim` (deterministic coverage), docs.
+  `radio-device` (service dispatch), `radio-firmware-k1` (serial-to-interface
+  command path and the state query), `radio-programmer-cli` (control commands
+  and a sweep), `radio-sim` (deterministic coverage), docs.
 - **Dependencies:** `SCAN-039`, `ARENA-038`.
 - **Assumptions:** the existing framing, CRC, sequence and capability
   negotiation are unchanged. Capability negotiation must advertise runtime
@@ -2161,51 +2170,65 @@
 ### The boundary that makes it safe
 
 - **Receive only.** No runtime-control command mints, implies, or enables
-  transmit authority. `radio-tx-policy` is not consulted because nothing in
-  this service can ask for transmission; a command that would need it is not
-  added to this service.
-- **Ownership is explicit.** The interface task retunes the radio for channel
-  selection and scanning. A host that tunes while a scan is running is fighting
-  it, and the readings would be meaningless. So control is taken and released
-  as an explicit transition: taking it stops any scan and suspends interface
-  retuning, releasing it returns the radio to the operator's selection.
-- **Control is not configuration.** A host-set frequency is live state and is
-  never written to the store, never becomes the retained place, and does not
-  survive a power cycle. Turning the radio off returns an operator's radio.
-- **The handset wins.** A key press releases host control, exactly as any key
-  stops a scan today. The operator is never locked out of the radio in their
-  hand by something a host said.
-- **It fails closed.** Loss of the link, a malformed command, or a timeout
-  releases control and restores the operator's selection rather than leaving
-  the receiver parked wherever a host left it.
+  transmit authority. A command that would need it is not added to this service.
+- **Two peers, one state machine.** The host does not take ownership and the
+  interface is never suspended. Both drive the same controller, and the
+  controller's state is the single answer to what the radio is doing. There is
+  no host-control mode to be stuck in, nothing to time out, and no release path,
+  because nothing was taken. The operator's keypad keeps working throughout.
+- **The host can see what it is racing.** An operator can act in the middle of
+  a host sequence, and the mode/selection query is how a host notices rather
+  than something that protects it from happening. A measurement that wants an
+  undisturbed radio re-reads the state and says so if it moved.
+- **Control is not configuration.** A host-driven tune or selection is live
+  state on exactly the same terms as the operator's: it never becomes a
+  configuration write, and it reaches the retained place only by the rule that
+  already governs the operator's own selection.
+- **Cross-task, because the tasks own disjoint hardware.** The serial task owns
+  USART1 and cannot touch the controller the interface task owns. A command
+  crosses as a posted request and the resulting state comes back, mirroring the
+  existing path in the other direction where the interface reports its place and
+  the serial task writes it down.
 
 ### First slice
 
-- `TakeControl` / `ReleaseControl`, `SetReceiveFrequency(hz)`,
-  `ReadMetrics` returning the raw `ReceiveMetrics` fields already defined —
-  `rssi_dbm_x2`, `glitch`, `noise`, `squelch_open` — plus the frequency
-  actually tuned and a sample counter, so a host can tell a fresh reading from
-  a repeated one.
-- A host-side sweep that walks a range and emits one row per reading in a form
-  that can be plotted without further parsing.
-- Nothing else. Channel selection, squelch, scan start/stop, monitor and audio
-  routing are the obvious next commands and are deliberately not in this slice.
+- **Query:** current mode — memory, VFO, or scanning — plus the selection,
+  bank, and tuned frequency. This is what the display shows, in a form a host
+  can act on.
+- **Operations:** `StopScan` and `StartScan`, `EnterVfo` and `EnterMemory`,
+  `TuneTo(hz)`, and `SelectChannel(index)`. Each maps to one existing
+  controller method and returns the resulting state.
+- **Metrics:** the raw `ReceiveMetrics` fields already defined —
+  `rssi_dbm_x2`, `glitch`, `noise`, `squelch_open` — plus the frequency actually
+  tuned and the sample counter. The counter is not decoration: `RISK-008` has
+  the settle time unmeasured and the firmware already refuses to let the first
+  sample after a retune declare a channel busy, so a host must be able to tell a
+  settled reading from the one that arrived too early.
+- **Host side:** a sweep that walks a range, waits for a fresh sample at each
+  frequency, and emits one row per reading in a form that plots without further
+  parsing.
+- Nothing else. Squelch level, monitor, dual watch, audio routing and the
+  settings surface are the obvious next commands and are deliberately not here.
 
 ### Tests required
 
 - Command matrix over the new service: unsupported command, malformed payload,
-  out-of-range frequency, and commands sent without control held.
-- Control transitions: take while scanning stops the scan; release restores the
-  operator's selection; a key press releases; link loss releases.
-- No store mutation and no retained-place write from any runtime-control
-  command, proven against the arena.
+  out-of-range frequency, and an operation refused by the controller in the
+  state it was in.
+- Equivalence: a host operation and the keypad intent that drives the same
+  controller method leave identical state, proven against the controller rather
+  than asserted.
+- A host operation arriving while a scan runs behaves exactly as the keypad
+  equivalent does, including the scan timer consequences.
+- No configuration write from any runtime-control command, proven against the
+  arena, and the retained place written only under its existing rule.
 - Deterministic simulator coverage of the whole slice, and identical scripts
   producing identical traces.
 
 ### Acceptance criteria
 
-- A host can tune the receiver and read metrics over serial, and the radio
-  returns to the operator's selection afterwards by every exit path.
+- A host can ask what the radio is doing, stop a scan, tune, and read metrics,
+  and the handset behaves throughout as if the host were not there.
 - Capability negotiation advertises the service.
 - The workspace gate passes and `tool/build-k1-async.sh` builds the image;
   image and RAM cost recorded in `STATUS.md`.
