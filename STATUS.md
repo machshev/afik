@@ -2,6 +2,64 @@
 
 ## Current work package
 
+**`RISK-036` is the blocker, and the bench is the blocker before it.** The exact
+unit stops when a host sends to it. `AFIK-K1-6.2` is flashed and working as a
+handset; nothing about the radio's operator behaviour changed tonight.
+
+Established, and load-bearing:
+
+- The stop predates this week's work. `AFIK-K1-5.6` does it too, so it is not
+  `CTRL-044`.
+- When it reboots, it is a panic. `RCC_CSR` reads `SFT` after a host-provoked
+  reset, a cold boot reads `PWR`, the flags are cleared each boot so neither is
+  inherited, and the panic handler is the only caller of `sys_reset`.
+- `.uninit` does not survive a reset on this radio — a boot counter there reads
+  one every time — because the vendor bootloader runs first and uses that
+  memory. The panic reporter added in `5.8` therefore cannot work as built: it
+  writes the file and line correctly and no later boot can read them. `MEM` on
+  the information screen never meant that no panic occurred.
+- The protocol paths are clean. Two million arbitrary bytes and six hundred
+  thousand well-formed frames across every service and command, through both
+  `push` and the two-phase control path, panic nothing. Kept as regression tests.
+
+Not established, and previously claimed here in error:
+
+- **Whether any byte reaches the UART in application mode.** A screen report was
+  misread as the receive counter showing nine bytes; the row read
+  `RX000 TX000 D000 E000`. That claim is withdrawn.
+- The bisection is therefore unsettled. A byte-dropping image did not reset
+  where a parsing image does, but its counters showed nothing arriving, and if
+  nothing arrived then neither build ran the code they differ by.
+
+**The bench comes first.** One evening produced a freeze, a reboot, and neither,
+under nominally identical traffic. That is a connection, not firmware, and any
+further cut taken without a fixed cable, seating and power supply will measure
+the setup instead of the code.
+
+Kept from the evening because they earned it: the radio now recovers from a
+panic instead of freezing forever, the reset cause is on the information screen,
+and receiver errors are counted where they were previously discarded without
+trace.
+
+Commands run, all from `nix develop`:
+
+- `cargo fmt --all --check` — clean.
+- `cargo clippy --workspace --all-targets -- -D warnings` — clean.
+- `cargo test --workspace` — 50 test binaries, all passing.
+- `./tool/build-k1-async.sh --release`, `tool/package-k1-async-image.sh --force`,
+  `tool/test-k1-async-image.sh` — built, verified, checks passed.
+
+**Image:** `AFIK-K1-6.2`, 93,720 bytes, SHA-256
+`baa933040aa0f0f5e72065369810395d3ae6dbb0c304485a8c088ef92e18e050`. The
+diagnostic variant `6.2D`, built with `--features serial-drop-bytes`, counts
+received bytes and drops them without parsing; it says so in its identity.
+
+**Next smallest actionable task:** fix and record the physical setup, then take
+one reading — `RX` and `E` on a radio confirmed responsive while a host sends.
+Everything else in `RISK-036` branches off whether a byte arrives at all.
+
+## CTRL-044
+
 **`CTRL-044` is software complete and builds as `AFIK-K1-5.7`: a host can ask
 what the radio is doing, stop a scan, choose VFO or memory, tune, select a
 channel, and read a raw sample — over the same serial link that programs it.
