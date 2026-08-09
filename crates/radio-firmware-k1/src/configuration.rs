@@ -64,20 +64,31 @@ pub fn device_service() -> K1DeviceService {
     )
 }
 
-/// Replaces the stored radio-wide squelch level.
+/// One radio-wide setting the operator changed on the handset.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SettingChange {
+    /// The squelch level applied when no channel overrides it.
+    Squelch(SquelchLevel),
+    /// How long a scan listens to a channel before it moves on.
+    ScanDwellMs(u32),
+}
+
+/// Applies one handset setting to the stored radio-wide configuration.
 ///
-/// The operator can change squelch on the handset, and a setting which did not
+/// The operator can change these on the handset, and a setting which did not
 /// survive a battery change would not be worth the menu. The one object being
 /// changed is rewritten through the ordinary validating path, so a rejected
-/// result leaves the radio exactly as it was rather than half reconfigured. A
-/// radio which was never programmed gains a configuration object carrying the
-/// conservative defaults and the chosen level.
+/// value leaves the radio exactly as it was rather than half reconfigured — and
+/// a zero dwell is rejected there rather than here, because the domain owns
+/// what a valid configuration is. A radio which was never programmed gains a
+/// configuration object carrying the conservative defaults and the one chosen
+/// value.
 ///
 /// The caller is responsible for retaining the resulting image; this changes
 /// what the radio is running, not what its memory holds.
-pub fn store_squelch<const BYTES: usize>(
+pub fn store_setting<const BYTES: usize>(
     service: &mut DeviceService<BYTES>,
-    squelch: SquelchLevel,
+    change: SettingChange,
 ) -> Result<u32, StorageError> {
     let mut config = service
         .active_objects()
@@ -86,7 +97,10 @@ pub fn store_squelch<const BYTES: usize>(
             || Ok(RadioConfig::conservative()),
             |object| decode_radio_config(&object),
         )?;
-    config.squelch = squelch;
+    match change {
+        SettingChange::Squelch(squelch) => config.squelch = squelch,
+        SettingChange::ScanDwellMs(milliseconds) => config.scan_dwell_ms = milliseconds,
+    }
     let replacement = encode_radio_config(config)?;
     service.store_object(&replacement)
 }
@@ -397,7 +411,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        device_service, store_squelch, ConfigurationError, Programmed, CONFIGURATION_STORE_BYTES,
+        device_service, store_setting, ConfigurationError, Programmed, SettingChange,
+        CONFIGURATION_STORE_BYTES,
     };
     use radio_channel_plan::{
         BankFlags, BankMask, BankName, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
@@ -629,11 +644,19 @@ mod tests {
             .expect("load");
         let before = service.generation();
 
-        store_squelch(&mut service, SquelchLevel::new(8).expect("level")).expect("store");
+        store_setting(
+            &mut service,
+            SettingChange::Squelch(SquelchLevel::new(8).expect("level")),
+        )
+        .expect("store");
         assert_ne!(service.generation(), before, "the change is a new snapshot");
+
+        // A second setting changes its own field and leaves the first alone.
+        store_setting(&mut service, SettingChange::ScanDwellMs(40)).expect("store");
 
         let programmed = Programmed::index(service.active_objects()).expect("programmed");
         assert_eq!(programmed.config().squelch, SquelchLevel::new(8).unwrap());
+        assert_eq!(programmed.config().scan_dwell_ms, 40);
         assert_eq!(
             programmed.config().backlight_seconds,
             30,
@@ -656,7 +679,11 @@ mod tests {
         let mut service = device_service();
         assert_eq!(service.active_objects().count(), 0);
 
-        store_squelch(&mut service, SquelchLevel::new(6).expect("level")).expect("store");
+        store_setting(
+            &mut service,
+            SettingChange::Squelch(SquelchLevel::new(6).expect("level")),
+        )
+        .expect("store");
 
         let programmed = Programmed::index(service.active_objects()).expect("programmed");
         assert_eq!(programmed.config().squelch, SquelchLevel::new(6).unwrap());

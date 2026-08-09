@@ -40,6 +40,17 @@ pub const HOLD_MILLISECONDS: u32 = 600;
 /// Frequency the VFO starts on.
 pub const VFO_DEFAULT_HZ: u32 = 145_500_000;
 
+/// Selectable scan dwell values, in milliseconds.
+///
+/// How long a scan listens to a channel before moving on. The floor here is not
+/// a number this firmware knows: it is however long the fitted receiver needs
+/// to retune and then produce a squelch reading which means anything, and
+/// `RISK-008` records that settling time as unmeasured on this board. The list
+/// therefore reaches well below the conservative default, so the operator can
+/// find that floor on the unit, and well above it, so a radio which turns out
+/// to need longer can be given it.
+pub const SCAN_DWELLS_MS: [u32; 6] = [20, 40, 60, 100, 150, 300];
+
 /// Selectable VFO tuning steps in hertz.
 pub const VFO_STEPS_HZ: [u32; 6] = [6_250, 12_500, 25_000, 50_000, 100_000, 1_000_000];
 
@@ -79,6 +90,8 @@ enum Cursor {
     Settings,
     /// The squelch-level list.
     Squelch,
+    /// The scan-dwell list.
+    ScanDwell,
 }
 
 /// Which receive source the operator is listening to.
@@ -118,6 +131,8 @@ pub enum Screen {
     Settings,
     /// The selectable squelch levels.
     SquelchList,
+    /// The selectable scan dwell values.
+    ScanDwellList,
     /// Image identity and storage state.
     Info,
 }
@@ -132,10 +147,12 @@ pub enum Screen {
 pub enum Setting {
     /// The radio-wide squelch level applied when no channel overrides it.
     Squelch,
+    /// How long a scan listens to a channel before it moves on.
+    ScanDwell,
 }
 
 /// Every settings row, in the order the menu lists them.
-pub const SETTINGS: [Setting; 1] = [Setting::Squelch];
+pub const SETTINGS: [Setting; 2] = [Setting::Squelch, Setting::ScanDwell];
 
 /// Selectable squelch levels, from permanently open to tightest.
 pub const SQUELCH_LEVELS: u8 = MAX_SQUELCH_LEVEL + 1;
@@ -161,6 +178,8 @@ pub enum Intent {
     ToggleMonitor,
     /// Apply and store a new radio-wide squelch level.
     SetSquelch(SquelchLevel),
+    /// Apply and store a new scan dwell, in milliseconds.
+    SetScanDwell(u32),
     /// Walk the channels of the active view, stopping on a busy one.
     StartScan,
     /// Stop walking and stay on the channel the scan reached.
@@ -204,6 +223,8 @@ pub struct Shell {
     settings_cursor: usize,
     squelch: SquelchLevel,
     squelch_cursor: u8,
+    scan_dwell_ms: u32,
+    scan_dwell_cursor: usize,
     /// Whether a star press is still waiting to become a hold or a release.
     star_pending: bool,
 }
@@ -235,6 +256,10 @@ impl Shell {
             settings_cursor: 0,
             squelch: SquelchLevel::CONSERVATIVE,
             squelch_cursor: SquelchLevel::CONSERVATIVE.get(),
+            // Replaced by the programmed configuration the moment one arrives;
+            // this is only what an unprogrammed radio scans at.
+            scan_dwell_ms: SCAN_DWELLS_MS[4],
+            scan_dwell_cursor: 4,
             star_pending: false,
         }
     }
@@ -252,6 +277,38 @@ impl Shell {
     pub fn set_squelch(&mut self, squelch: SquelchLevel) {
         self.squelch = squelch;
         self.squelch_cursor = squelch.get();
+    }
+
+    /// Returns the scan dwell in force, in milliseconds.
+    #[must_use]
+    pub const fn scan_dwell_ms(&self) -> u32 {
+        self.scan_dwell_ms
+    }
+
+    /// Returns the highlighted row of the scan-dwell list.
+    #[must_use]
+    pub const fn scan_dwell_cursor(&self) -> usize {
+        self.scan_dwell_cursor
+    }
+
+    /// Adopts the scan dwell a programmed configuration carries.
+    ///
+    /// A host write is the authority on this exactly as it is on squelch, and a
+    /// dwell the menu cannot name is still shown by putting the cursor on the
+    /// nearest row rather than by pretending the radio scans at that row's
+    /// value.
+    pub fn set_scan_dwell(&mut self, milliseconds: u32) {
+        self.scan_dwell_ms = milliseconds;
+        self.scan_dwell_cursor = SCAN_DWELLS_MS
+            .iter()
+            .position(|dwell| *dwell == milliseconds)
+            .unwrap_or_else(|| {
+                SCAN_DWELLS_MS
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, dwell)| dwell.abs_diff(milliseconds))
+                    .map_or(0, |(index, _)| index)
+            });
     }
 
     /// Returns the settings-menu cursor row.
@@ -595,6 +652,9 @@ impl Shell {
             Screen::SquelchList => {
                 self.step_row(direction, usize::from(SQUELCH_LEVELS), Cursor::Squelch)
             }
+            Screen::ScanDwellList => {
+                self.step_row(direction, SCAN_DWELLS_MS.len(), Cursor::ScanDwell)
+            }
             Screen::Info => Intent::Redraw,
         }
     }
@@ -611,6 +671,7 @@ impl Shell {
             Cursor::Step => &mut self.step_cursor,
             Cursor::Settings => &mut self.settings_cursor,
             Cursor::Squelch => &mut squelch_cursor,
+            Cursor::ScanDwell => &mut self.scan_dwell_cursor,
         };
         *cursor = match direction {
             Direction::Up => {
@@ -666,6 +727,10 @@ impl Shell {
                         self.screen = Screen::SquelchList;
                         self.squelch_cursor = self.squelch.get();
                     }
+                    Some(Setting::ScanDwell) => {
+                        self.screen = Screen::ScanDwellList;
+                        self.set_scan_dwell(self.scan_dwell_ms);
+                    }
                     // A menu row with nothing behind it cannot open a screen the
                     // operator would then be stuck on.
                     None => self.screen = Screen::Operating,
@@ -684,6 +749,19 @@ impl Shell {
                 }
                 self.squelch = level;
                 Intent::SetSquelch(level)
+            }
+            Screen::ScanDwellList => {
+                // Back to the operating screen, like squelch: the point of
+                // changing the dwell is to hold star and see what it did.
+                self.screen = Screen::Operating;
+                let Some(dwell) = SCAN_DWELLS_MS.get(self.scan_dwell_cursor).copied() else {
+                    return Intent::Redraw;
+                };
+                if dwell == self.scan_dwell_ms {
+                    return Intent::Redraw;
+                }
+                self.scan_dwell_ms = dwell;
+                Intent::SetScanDwell(dwell)
             }
             Screen::Operating => {
                 // Each mode's list is the one the operator can act on: memory
@@ -724,7 +802,7 @@ impl Shell {
         }
         // Exit unwinds one step, so a value list returns to the menu that opened
         // it rather than throwing the operator all the way out.
-        self.screen = if self.screen == Screen::SquelchList {
+        self.screen = if matches!(self.screen, Screen::SquelchList | Screen::ScanDwellList) {
             Screen::Settings
         } else {
             Screen::Operating
@@ -741,7 +819,7 @@ impl Shell {
                 self.squelch_cursor = u8::try_from(digit).unwrap_or(0);
                 return self.confirm(context);
             }
-            Screen::Settings => return Intent::Idle,
+            Screen::Settings | Screen::ScanDwellList => return Intent::Idle,
             _ => {}
         }
         let mut entry = self.entry.unwrap_or(Entry {
@@ -817,7 +895,10 @@ impl Shell {
     /// would hide the rest of it rather than save them a press.
     fn open_settings(&mut self) -> Intent {
         self.entry = None;
-        if matches!(self.screen, Screen::Settings | Screen::SquelchList) {
+        if matches!(
+            self.screen,
+            Screen::Settings | Screen::SquelchList | Screen::ScanDwellList
+        ) {
             self.screen = Screen::Operating;
             return Intent::Redraw;
         }
@@ -869,8 +950,8 @@ impl Shell {
 #[cfg(test)]
 mod tests {
     use super::{
-        Context, Intent, Mode, Screen, Shell, Source, ENTRY_TIMEOUT_MILLISECONDS, VFO_DEFAULT_HZ,
-        VFO_MAXIMUM_HZ, VFO_STEPS_HZ,
+        Context, Intent, Mode, Screen, Shell, Source, ENTRY_TIMEOUT_MILLISECONDS, SCAN_DWELLS_MS,
+        VFO_DEFAULT_HZ, VFO_MAXIMUM_HZ, VFO_STEPS_HZ,
     };
     use crate::keypad::Key;
     use radio_channel_plan::MAX_BANKS;
@@ -1396,6 +1477,7 @@ mod tests {
                         | Intent::SetSquelch(_)
                         | Intent::StartScan
                         | Intent::StopScan
+                        | Intent::SetScanDwell(_)
                 ));
             }
         }
@@ -1412,6 +1494,69 @@ mod tests {
         );
         assert_eq!(shell.screen(), Screen::Operating);
         assert_eq!(shell.vfo_hz(), VFO_DEFAULT_HZ);
+    }
+
+    #[test]
+    fn the_settings_menu_changes_the_scan_dwell_from_the_handset() {
+        let mut shell = memory_shell(&[1]);
+        shell.set_scan_dwell(150);
+        assert_eq!(shell.scan_dwell_ms(), 150);
+
+        // Side key one, down one row past squelch, then into the dwell list.
+        assert_eq!(shell.press(Key::Side1, 0, context(4, 0)), Intent::Redraw);
+        assert_eq!(shell.screen(), Screen::Settings);
+        assert_eq!(shell.press(Key::Down, 10, context(4, 0)), Intent::Redraw);
+        assert_eq!(shell.press(Key::Menu, 20, context(4, 0)), Intent::Redraw);
+        assert_eq!(shell.screen(), Screen::ScanDwellList);
+        // The list opens on the dwell in force rather than at the top.
+        assert_eq!(SCAN_DWELLS_MS[shell.scan_dwell_cursor()], 150);
+
+        // Up from 150 ms is the next faster row, and confirming applies it.
+        assert_eq!(shell.press(Key::Up, 30, context(4, 0)), Intent::Redraw);
+        assert_eq!(
+            shell.press(Key::Menu, 40, context(4, 0)),
+            Intent::SetScanDwell(100)
+        );
+        assert_eq!(shell.scan_dwell_ms(), 100);
+        assert_eq!(shell.screen(), Screen::Operating);
+
+        // Choosing the dwell already in force changes nothing and stores
+        // nothing, so a look at the list is not a write to external memory.
+        shell.press(Key::Side1, 50, context(4, 0));
+        shell.press(Key::Down, 60, context(4, 0));
+        shell.press(Key::Menu, 70, context(4, 0));
+        assert_eq!(shell.press(Key::Menu, 80, context(4, 0)), Intent::Redraw);
+    }
+
+    /// A host may program a dwell the handset list cannot name.
+    #[test]
+    fn a_programmed_dwell_the_menu_cannot_name_puts_the_cursor_on_the_nearest() {
+        let mut shell = Shell::new();
+        shell.set_scan_dwell(37);
+        assert_eq!(
+            shell.scan_dwell_ms(),
+            37,
+            "the radio scans at what it holds"
+        );
+        assert_eq!(
+            SCAN_DWELLS_MS[shell.scan_dwell_cursor()],
+            40,
+            "and the list highlights the row nearest to it"
+        );
+    }
+
+    /// Exit unwinds the dwell list to the menu that opened it, like squelch.
+    #[test]
+    fn the_scan_dwell_list_unwinds_one_screen_at_a_time() {
+        let mut shell = Shell::new();
+        shell.press(Key::Side1, 0, context(0, 0));
+        shell.press(Key::Down, 10, context(0, 0));
+        shell.press(Key::Menu, 20, context(0, 0));
+        assert_eq!(shell.screen(), Screen::ScanDwellList);
+        assert_eq!(shell.press(Key::Exit, 30, context(0, 0)), Intent::Redraw);
+        assert_eq!(shell.screen(), Screen::Settings);
+        assert_eq!(shell.press(Key::Exit, 40, context(0, 0)), Intent::Redraw);
+        assert_eq!(shell.screen(), Screen::Operating);
     }
 
     #[test]

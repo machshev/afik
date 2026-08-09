@@ -48,7 +48,8 @@ use radio_domain::{
 use radio_firmware_k1::battery::{Battery, Calibration};
 use radio_firmware_k1::bk4819_bus::ThreeWireBus;
 use radio_firmware_k1::configuration::{
-    device_service, store_squelch, Programmed, CONFIGURATION_STORE_BYTES, RETAINED_IMAGE_BYTES,
+    device_service, store_setting, Programmed, SettingChange, CONFIGURATION_STORE_BYTES,
+    RETAINED_IMAGE_BYTES,
 };
 use radio_firmware_k1::display::{
     render_channel_list, render_info_screen, render_operating_screen, render_selector_list,
@@ -63,8 +64,8 @@ use radio_firmware_k1::py32f071_eeprom::{RetainError, RetainedConfiguration};
 use radio_firmware_k1::py32f071_runtime::{compose, K1RuntimePeripherals};
 use radio_firmware_k1::py32f071_runtime_init::init;
 use radio_firmware_k1::shell::{
-    Context, Intent, Mode, Screen, Setting, Shell, Source, HOLD_MILLISECONDS, SETTINGS,
-    SQUELCH_LEVELS, VFO_STEPS_HZ,
+    Context, Intent, Mode, Screen, Setting, Shell, Source, HOLD_MILLISECONDS, SCAN_DWELLS_MS,
+    SETTINGS, SQUELCH_LEVELS, VFO_STEPS_HZ,
 };
 use radio_protocol::MAX_ENCODED_FRAME;
 use radio_storage::ObjectArena;
@@ -73,7 +74,7 @@ const _: [(); 8] = [(); PAGES];
 const K1_VECTOR_TABLE_ORIGIN: u32 = 0x0800_2800;
 
 /// Identity this image reports on the information screen.
-const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-5.1";
+const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-5.2";
 
 /// Interval between receive samples while audio is routed.
 ///
@@ -83,6 +84,29 @@ const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-5.1";
 /// One sample is a handful of bit-banged register reads, and the serial link
 /// still holds the bus off while a host is mid-exchange.
 const RF_SAMPLE_MILLISECONDS: u64 = 60;
+
+/// Interval between receive samples while a scan is walking channels.
+///
+/// This is the scan's resolution. A dwell is judged in whole samples, so a
+/// dwell shorter than two of these cannot be judged at all, and the operating
+/// interval above would quantise every short dwell to itself.
+///
+/// It is deliberately far below any plausible receiver settling time. How long
+/// this board needs after a retune before a squelch reading means anything is
+/// unmeasured — `RISK-008` — and the dwell is the operator's control over that.
+/// This must not quietly become a second one.
+const SCAN_SAMPLE_MILLISECONDS: u64 = 5;
+
+/// Interval between user interface passes.
+const LOOP_MILLISECONDS: u64 = 5;
+
+/// Interval between user interface passes while a scan is running.
+///
+/// Every deadline the loop has is quantised to its own period, so a scan
+/// stepping every twenty milliseconds cannot be paced by a loop which wakes
+/// every five. A scan is short-lived and the operator is holding the radio
+/// while it runs, so the cost of a faster pass is one they are paying for.
+const SCAN_LOOP_MILLISECONDS: u64 = 1;
 
 /// Shortest interval between redraws caused by a changed meter reading.
 const METER_REDRAW_MILLISECONDS: u64 = 300;
@@ -114,12 +138,12 @@ static PROGRAMMED: Signal<CriticalSectionRawMutex, Publication> = Signal::new();
 /// know the charge rather than a number derived from nothing.
 static BATTERY_CALIBRATION: Signal<CriticalSectionRawMutex, Option<Calibration>> = Signal::new();
 
-/// Squelch level the operator chose on the handset.
+/// A radio-wide setting the operator changed on the handset.
 ///
 /// The serial task owns the store and the external memory, so the interface
 /// asks rather than writes. A choice the operator makes while a host is
 /// mid-exchange waits its turn instead of racing it.
-static SQUELCH_CHOICE: Signal<CriticalSectionRawMutex, SquelchLevel> = Signal::new();
+static SETTING_CHOICE: Signal<CriticalSectionRawMutex, SettingChange> = Signal::new();
 
 /// Where the operator has left the radio, for the task which owns the memory.
 ///
@@ -656,7 +680,7 @@ async fn serial_task(mut uart: Uart<'static, Async>, memory: EepromPins) {
         // by the time a handset choice can be taken.
         let count = match select3(
             uart.read_until_idle(&mut received),
-            SQUELCH_CHOICE.wait(),
+            SETTING_CHOICE.wait(),
             OPERATOR_PLACE.wait(),
         )
         .await
@@ -668,11 +692,11 @@ async fn serial_task(mut uart: Uart<'static, Async>, memory: EepromPins) {
                 Timer::after_millis(1).await;
                 continue;
             }
-            Either3::Second(level) => {
+            Either3::Second(change) => {
                 // A handset setting which did not survive a battery change would
                 // not be worth the menu, so it is stored exactly like a host
                 // write and republished from the store rather than assumed.
-                if store_squelch(&mut service, level).is_ok() {
+                if store_setting(&mut service, change).is_ok() {
                     let mut retained_now = false;
                     if let Ok(length) = service.encode_active_image(&mut image) {
                         if let Some(configuration) = retained.as_mut() {
@@ -869,6 +893,7 @@ fn adopt(shell: &mut Shell, programmed: &Programmed, place: Option<OperatorState
     let (banks, bank_count) = programmed.populated_banks();
     shell.set_banks(banks, bank_count);
     shell.set_squelch(programmed.config().squelch);
+    shell.set_scan_dwell(programmed.config().scan_dwell_ms);
     if let Some(place) = place {
         shell.restore_vfo(place.vfo_hz, usize::from(place.step_index));
     }
@@ -1027,6 +1052,8 @@ async fn ui_task(
     // The scan timer the controller asked for, and when it expires.
     let mut scan_timer: Option<(TimerToken, Instant)> = None;
     let mut next_sample = Instant::now();
+    // Whether the receiver has produced a reading on the channel it is now on.
+    let mut settled = false;
     let mut next_meter_redraw = Instant::now();
     let mut battery = Battery::new();
     let mut next_battery_sample = Instant::now();
@@ -1142,12 +1169,19 @@ async fn ui_task(
             // Squelch is a radio-wide setting, so it applies with or without a
             // channel to hear it on and is handled before the guard below.
             Intent::SetSquelch(level) => {
-                SQUELCH_CHOICE.signal(level);
+                SETTING_CHOICE.signal(SettingChange::Squelch(level));
                 // Retune so the new level reaches the chip now rather than at
                 // the next channel change.
                 if let Some((controller, _)) = activation.as_ref() {
                     pending = Some(controller.setup());
                 }
+                redraw = true;
+            }
+            // The dwell reaches the controller through the store, like every
+            // other programmed setting: it is written, republished, and adopted
+            // when the next activation is built. There is nothing to retune.
+            Intent::SetScanDwell(milliseconds) => {
+                SETTING_CHOICE.signal(SettingChange::ScanDwellMs(milliseconds));
                 redraw = true;
             }
             _ if activation.is_none() => redraw = true,
@@ -1238,19 +1272,44 @@ async fn ui_task(
         if let Some(setup) = pending.filter(|_| bus_available()) {
             receiver.tune(setup, shell.squelch());
             pending = None;
+            // Sample this channel from now rather than on whatever grid the
+            // last one left behind. A free-running interval meant the first
+            // reading of a scanned channel landed anywhere inside the dwell,
+            // so how many readings a channel got was a matter of phase.
+            next_sample = Instant::now();
+            settled = false;
             redraw = true;
         } else if receiver.audio_routed && Instant::now() >= next_sample && bus_available() {
             let was_open = receiver.squelch_open;
+            let scanning = activation.as_ref().is_some_and(|(controller, _)| {
+                matches!(controller.state(), ReceiveState::Scanning(_))
+            });
             if let (Some(observation), Some((controller, _))) =
                 (receiver.observe(), activation.as_mut())
             {
                 // While scanning this is what decides whether the channel is
                 // busy, so the hold it asks for has to reach the scan's clock.
-                if let Ok(update) = controller.observe(observation) {
-                    apply(update, &mut pending, &mut scan_timer);
+                //
+                // The first reading after a retune is taken while the
+                // synthesiser is still settling on the new frequency, and how
+                // long that takes on this board is unmeasured — `RISK-008`. It
+                // still updates the meter, which is honest about what was read,
+                // but it does not get to tell a scan a channel is busy: a false
+                // stop costs the whole hold, which is the one failure an
+                // operator would notice and could not explain.
+                if settled || !scanning {
+                    if let Ok(update) = controller.observe(observation) {
+                        apply(update, &mut pending, &mut scan_timer);
+                    }
                 }
+                settled = true;
             }
-            next_sample = Instant::now() + Duration::from_millis(RF_SAMPLE_MILLISECONDS);
+            next_sample = Instant::now()
+                + Duration::from_millis(if scanning {
+                    SCAN_SAMPLE_MILLISECONDS
+                } else {
+                    RF_SAMPLE_MILLISECONDS
+                });
             // The squelch is sampled far faster than a screen needs redrawing.
             // The link opening or shutting is worth showing at once; a moving
             // meter reading is not, and repainting every sample would spend the
@@ -1280,7 +1339,12 @@ async fn ui_task(
             redraw = false;
         }
 
-        Timer::after(Duration::from_millis(5)).await;
+        Timer::after(Duration::from_millis(if context.scanning {
+            SCAN_LOOP_MILLISECONDS
+        } else {
+            LOOP_MILLISECONDS
+        }))
+        .await;
     }
 }
 
@@ -1378,6 +1442,7 @@ fn render(
             for (offset, setting) in SETTINGS.iter().take(LIST_ROWS).enumerate() {
                 rows[offset] = match setting {
                     Setting::Squelch => SelectorRow::squelch_setting(shell.squelch().get()),
+                    Setting::ScanDwell => SelectorRow::scan_dwell_setting(shell.scan_dwell_ms()),
                 };
                 count += 1;
             }
@@ -1399,6 +1464,24 @@ fn render(
                 count += 1;
             }
             render_selector_list(frame, b"SQUELCH", &rows[..count], cursor - first);
+        }
+        Screen::ScanDwellList => {
+            let mut rows = [SelectorRow::default(); LIST_ROWS];
+            let first = shell.scan_dwell_cursor() / LIST_ROWS * LIST_ROWS;
+            let mut count = 0;
+            for offset in 0..LIST_ROWS {
+                let Some(dwell) = SCAN_DWELLS_MS.get(first + offset) else {
+                    break;
+                };
+                rows[offset] = SelectorRow::scan_dwell(*dwell, *dwell == shell.scan_dwell_ms());
+                count += 1;
+            }
+            render_selector_list(
+                frame,
+                b"SCAN",
+                &rows[..count],
+                shell.scan_dwell_cursor() - first,
+            );
         }
         Screen::StepList => {
             let mut rows = [SelectorRow::default(); LIST_ROWS];
