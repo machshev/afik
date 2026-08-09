@@ -1397,4 +1397,152 @@ mod tests {
             DeviceErrorCode::UnsupportedService as u8
         );
     }
+    #[test]
+    fn arbitrary_well_formed_frames_never_panic_the_service() {
+        // RISK-036 again, but reaching the handlers. Random bytes almost never
+        // form a valid frame, so they exercise the framing and stop there. A
+        // link running at the wrong rate can still deliver a frame which passes
+        // CRC while carrying field values no host would send.
+        let commands = [
+            Command::Hello,
+            Command::GetCapabilities,
+            Command::GetDeviceInfo,
+            Command::ListObjects,
+            Command::ReadObject,
+            Command::BeginTransaction,
+            Command::WriteObject,
+            Command::ValidateTransaction,
+            Command::CommitTransaction,
+            Command::AbortTransaction,
+            Command::Error,
+        ];
+        let services = [
+            Service::DeviceInfo,
+            Service::RuntimeControl,
+            Service::Configuration,
+            Service::FirmwareUpdate,
+            Service::Diagnostics,
+        ];
+
+        let mut service = DeviceService::<STORE_BYTES>::new();
+        let mut response = [0_u8; MAX_ENCODED_FRAME];
+        let mut state: u32 = 0x9E37_79B9;
+        let mut next = move || {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            state >> 8
+        };
+
+        for iteration in 0_u32..200_000 {
+            let command = commands[(next() as usize) % commands.len()];
+            let wire_service = services[(next() as usize) % services.len()];
+            let length = (next() as usize) % 24;
+            let mut payload = [0_u8; 24];
+            for slot in payload.iter_mut().take(length) {
+                *slot = u8::try_from(next() & 0xff).unwrap_or(0);
+            }
+            let sequence = u16::try_from(iteration % 3).unwrap_or(0);
+            let Ok(frame) = Frame::new(wire_service, 0, sequence, command, &payload[..length])
+            else {
+                continue;
+            };
+            let mut encoded = [0_u8; MAX_ENCODED_FRAME];
+            let Ok(encoded_len) = encode_frame(&frame, &mut encoded) else {
+                continue;
+            };
+            for byte in &encoded[..encoded_len] {
+                let _ = service.push(*byte, &mut response, &mut |_| {});
+            }
+        }
+    }
+
+    #[test]
+    fn arbitrary_frames_never_panic_the_two_phase_path() {
+        // The shipping firmware drives push_control, not push, and answers
+        // whatever surfaces. RISK-036 has the radio panicking on received
+        // bytes, so this drives the same path the radio does.
+        let commands = [
+            Command::Hello,
+            Command::GetReceiveState,
+            Command::GetReceiveMetrics,
+            Command::StopScan,
+            Command::StartScan,
+            Command::EnterVfo,
+            Command::EnterMemory,
+            Command::TuneTo,
+            Command::SelectChannel,
+            Command::ListObjects,
+            Command::WriteObject,
+            Command::Error,
+        ];
+        let services = [
+            Service::DeviceInfo,
+            Service::RuntimeControl,
+            Service::Configuration,
+            Service::FirmwareUpdate,
+            Service::Diagnostics,
+        ];
+
+        let mut service = DeviceService::<STORE_BYTES>::new();
+        let mut response = [0_u8; MAX_ENCODED_FRAME];
+        let mut state: u32 = 0x5DEE_CE66;
+        let mut next = move || {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            state >> 8
+        };
+
+        for iteration in 0_u32..200_000 {
+            let command = commands[(next() as usize) % commands.len()];
+            let wire_service = services[(next() as usize) % services.len()];
+            let length = (next() as usize) % 24;
+            let mut payload = [0_u8; 24];
+            for slot in payload.iter_mut().take(length) {
+                *slot = u8::try_from(next() & 0xff).unwrap_or(0);
+            }
+            let sequence = u16::try_from(iteration % 3).unwrap_or(0);
+            let Ok(frame) = Frame::new(wire_service, 0, sequence, command, &payload[..length])
+            else {
+                continue;
+            };
+            let mut encoded = [0_u8; MAX_ENCODED_FRAME];
+            let Ok(encoded_len) = encode_frame(&frame, &mut encoded) else {
+                continue;
+            };
+            for byte in &encoded[..encoded_len] {
+                match service.push_control(*byte, &mut response, &mut |_| {}) {
+                    Push::Idle | Push::Response(_) => {}
+                    Push::Control(pending) => {
+                        // Answer with whatever the radio might answer with,
+                        // including the wrong shape for the request.
+                        let answer = match next() % 3 {
+                            0 => ControlAnswer::State(state_report()),
+                            1 => ControlAnswer::Metrics(ReceiveMetricsReport {
+                                frequency_hz: next(),
+                                samples: u16::try_from(next() & 0xffff).unwrap_or(0),
+                                rssi_dbm_x2: -300,
+                                glitch: 0,
+                                noise: 0,
+                                squelch_open: true,
+                            }),
+                            _ => ControlAnswer::Refused(DeviceErrorCode::Internal),
+                        };
+                        let _ = service.answer_control(pending, answer, &mut response, &mut |_| {});
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn arbitrary_bytes_never_panic_the_decoder() {
+        // RISK-036: a link at the wrong rate delivers garbage, and garbage
+        // reaching this decoder must be refused rather than panic the radio.
+        let mut service = DeviceService::<STORE_BYTES>::new();
+        let mut response = [0_u8; MAX_ENCODED_FRAME];
+        let mut state: u32 = 0x1234_5678;
+        for _ in 0..2_000_000 {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let byte = u8::try_from((state >> 16) & 0xff).unwrap_or(0);
+            let _ = service.push(byte, &mut response, &mut |_| {});
+        }
+    }
 }
