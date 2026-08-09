@@ -17,6 +17,7 @@ pub mod display;
 pub mod eeprom_bus;
 #[cfg(feature = "embassy-runtime")]
 pub mod embassy_runtime;
+pub mod host_control;
 pub mod keypad;
 pub mod operator_state;
 pub mod protocol;

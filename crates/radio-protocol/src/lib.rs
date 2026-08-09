@@ -156,6 +156,18 @@ pub enum DeviceErrorCode {
     NotValidated = 9,
     /// A sequence was reused for request bytes that differ from the cached request.
     SequenceConflict = 10,
+    /// The operation is not valid in the state the device is currently in.
+    ///
+    /// The request was well formed and the device implements it. It cannot be
+    /// performed now — tuning while listening to a memory channel, or changing
+    /// source while a scan runs — and may succeed after a state change.
+    InvalidState = 11,
+    /// A well-formed request named a value the device cannot reach.
+    ///
+    /// A frequency outside the receiver's range, or a channel index which no
+    /// stored channel occupies. The bytes were readable; what they asked for
+    /// does not exist.
+    OutOfRange = 12,
     /// An unspecified device-side failure occurred.
     Internal = 255,
 }
@@ -175,6 +187,8 @@ impl TryFrom<u8> for DeviceErrorCode {
             8 => Ok(Self::CapacityExceeded),
             9 => Ok(Self::NotValidated),
             10 => Ok(Self::SequenceConflict),
+            11 => Ok(Self::InvalidState),
+            12 => Ok(Self::OutOfRange),
             255 => Ok(Self::Internal),
             _ => Err(ProtocolError::MalformedPayload),
         }
@@ -980,7 +994,7 @@ pub struct ReceiveStateReport {
     /// Whether a scan is running, and its phase if it is.
     pub scan: ScanActivity,
     /// Selected bank, absent when every programmed channel is in scope.
-    pub bank: Option<u8>,
+    pub bank: Option<u16>,
     /// Storage index of the selected channel; meaningless in VFO mode.
     pub index: u16,
     /// Stable identifier of the selected channel; zero in VFO mode.
@@ -993,7 +1007,7 @@ pub struct ReceiveStateReport {
 
 impl ReceiveStateReport {
     /// Encoded length of one report.
-    pub const ENCODED_LEN: usize = 14;
+    pub const ENCODED_LEN: usize = 15;
 
     /// Writes the report into a caller-supplied buffer.
     pub fn encode(&self, output: &mut [u8]) -> Result<usize, ProtocolError> {
@@ -1005,11 +1019,11 @@ impl ReceiveStateReport {
         // A bank is present or it is not, and the identifier is only meaningful
         // when it is; encoding them separately keeps every byte value legal.
         buffer[2] = u8::from(self.bank.is_some());
-        buffer[3] = self.bank.unwrap_or(0);
-        buffer[4..6].copy_from_slice(&self.index.to_le_bytes());
-        buffer[6..8].copy_from_slice(&self.channel_id.to_le_bytes());
-        buffer[8..10].copy_from_slice(&self.visible_channels.to_le_bytes());
-        buffer[10..14].copy_from_slice(&self.frequency_hz.to_le_bytes());
+        buffer[3..5].copy_from_slice(&self.bank.unwrap_or(0).to_le_bytes());
+        buffer[5..7].copy_from_slice(&self.index.to_le_bytes());
+        buffer[7..9].copy_from_slice(&self.channel_id.to_le_bytes());
+        buffer[9..11].copy_from_slice(&self.visible_channels.to_le_bytes());
+        buffer[11..15].copy_from_slice(&self.frequency_hz.to_le_bytes());
         Ok(Self::ENCODED_LEN)
     }
 
@@ -1023,17 +1037,17 @@ impl ReceiveStateReport {
         }
         let bank = match input[2] {
             0 => None,
-            1 => Some(input[3]),
+            1 => Some(u16::from_le_bytes([input[3], input[4]])),
             _ => return Err(ProtocolError::MalformedPayload),
         };
         Ok(Self {
             mode: ReceiveMode::try_from(input[0])?,
             scan: ScanActivity::try_from(input[1])?,
             bank,
-            index: u16::from_le_bytes([input[4], input[5]]),
-            channel_id: u16::from_le_bytes([input[6], input[7]]),
-            visible_channels: u16::from_le_bytes([input[8], input[9]]),
-            frequency_hz: u32::from_le_bytes([input[10], input[11], input[12], input[13]]),
+            index: u16::from_le_bytes([input[5], input[6]]),
+            channel_id: u16::from_le_bytes([input[7], input[8]]),
+            visible_channels: u16::from_le_bytes([input[9], input[10]]),
+            frequency_hz: u32::from_le_bytes([input[11], input[12], input[13], input[14]]),
         })
     }
 }
