@@ -74,7 +74,7 @@ const _: [(); 8] = [(); PAGES];
 const K1_VECTOR_TABLE_ORIGIN: u32 = 0x0800_2800;
 
 /// Identity this image reports on the information screen.
-const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-5.4";
+const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-5.5";
 
 /// Interval between receive samples while audio is routed.
 ///
@@ -859,6 +859,16 @@ struct Selected {
     channel_id: u16,
 }
 
+impl Selected {
+    /// Returns the memory selection one retained place names, if it named one.
+    fn from_place(place: OperatorState) -> Option<Self> {
+        place.memory_mode.then_some(Self {
+            index: place.index,
+            channel_id: place.channel_id,
+        })
+    }
+}
+
 /// Applies one controller update: the tuning it asks for, and the timer it arms.
 ///
 /// The controller owns every deadline a scan has and expresses them as
@@ -889,11 +899,20 @@ fn apply(
 /// A radio which has been used before comes back to the source, bank, and
 /// frequency the operator chose. One which has not starts on its channels,
 /// because a programmed radio which opened in the VFO would look unprogrammed.
-fn adopt(shell: &mut Shell, programmed: &Programmed, place: Option<OperatorState>) {
+fn adopt_settings(shell: &mut Shell, programmed: &Programmed) {
     let (banks, bank_count) = programmed.populated_banks();
     shell.set_banks(banks, bank_count);
     shell.set_squelch(programmed.config().squelch);
     shell.set_scan_dwell(programmed.config().scan_dwell_ms);
+}
+
+/// Points the shell at the source the operator was last listening to.
+///
+/// This runs once, when the radio adopts the configuration it booted with. A
+/// later configuration replaces what the radio holds, not what the operator is
+/// doing with it: someone changing a squelch level has not asked to be returned
+/// to the top of their channel list, or dragged out of the VFO.
+fn adopt_place(shell: &mut Shell, programmed: &Programmed, place: Option<OperatorState>) {
     if let Some(place) = place {
         shell.restore_vfo(place.vfo_hz, usize::from(place.step_index));
     }
@@ -907,45 +926,16 @@ fn adopt(shell: &mut Shell, programmed: &Programmed, place: Option<OperatorState
     }
 }
 
-/// Returns the radio to the exact channel the operator left it on.
+/// Builds the receive controller for whatever the shell says is in force.
 ///
-/// The index is checked against the identifier recorded beside it, because a
-/// host may have reprogrammed the radio since: an index which no longer names
-/// the same channel is not the operator's place, and the activated first
-/// channel of the view is a better answer than a channel nobody chose.
-fn reselect(
-    activation: &mut Option<(
-        BankedReceiveController<Listening>,
-        Option<ChannelReceiveSetup>,
-    )>,
-    programmed: &Programmed,
-    selected: &mut Selected,
-    place: Option<OperatorState>,
-) -> Option<ChannelReceiveSetup> {
-    let place = place?;
-    let (controller, _) = activation.as_mut()?;
-    *selected = Selected {
-        index: controller.index(),
-        channel_id: controller.channel().id().get(),
-    };
-    if !place.memory_mode {
-        return None;
-    }
-    let stored = ACTIVE.lock(|cell| programmed.channel_at(&*cell.borrow(), place.index))?;
-    if stored.id().get() != place.channel_id {
-        return None;
-    }
-    let update = controller.select(place.index).ok()?;
-    *selected = Selected {
-        index: place.index,
-        channel_id: place.channel_id,
-    };
-    update.activation.map(|activation| activation.setup)
-}
-
+/// `keep` is the memory channel the operator is on, which survives the rebuild
+/// if the configuration still has it. Every caller has one except the first: a
+/// radio which has just been switched on takes it from the retained place, and
+/// everything afterwards takes it from where the operator actually is.
 fn activate(
     programmed: &Programmed,
     shell: &Shell,
+    keep: Option<Selected>,
 ) -> Option<(
     BankedReceiveController<Listening>,
     Option<ChannelReceiveSetup>,
@@ -959,8 +949,9 @@ fn activate(
             (Listening::Memory(*programmed), shell.bank_filter())
         }
     };
+    let keep = keep.map(|kept| (kept.index, ChannelId::new(kept.channel_id)));
     let (controller, update) =
-        BankedReceiveController::activate(memory, programmed.config(), bank).ok()?;
+        BankedReceiveController::activate_at(memory, programmed.config(), bank, keep).ok()?;
     Some((
         controller,
         update.activation.map(|activation| activation.setup),
@@ -1036,13 +1027,13 @@ async fn ui_task(
     let mut programmed = publication.map_or_else(Programmed::empty, |value| value.programmed);
 
     let mut shell = Shell::new();
-    let mut selected = Selected::default();
-    adopt(&mut shell, &programmed, place);
-    let mut activation = activate(&programmed, &shell);
+    adopt_settings(&mut shell, &programmed);
+    adopt_place(&mut shell, &programmed, place);
+    // The retained place is where the operator left this radio, and it is the
+    // only thing which knows on the pass that adopts it.
+    let mut selected = place.and_then(Selected::from_place);
+    let mut activation = activate(&programmed, &shell, selected);
     let mut pending = activation.as_mut().and_then(|(_, setup)| setup.take());
-    if let Some(setup) = reselect(&mut activation, &programmed, &mut selected, place) {
-        pending = Some(setup);
-    }
 
     let mut receiver = Receiver::new(radio_pins, speaker_pin);
     let mut debounce = Debouncer::new();
@@ -1106,18 +1097,19 @@ async fn ui_task(
             generation = publication.generation;
             retained = publication.retained;
             memory_state = publication.memory;
+            let was_empty = programmed.is_empty();
             programmed = publication.programmed;
-            adopt(&mut shell, &programmed, publication.place);
-            activation = activate(&programmed, &shell);
-            pending = activation.as_mut().and_then(|(_, setup)| setup.take());
-            if let Some(setup) = reselect(
-                &mut activation,
-                &programmed,
-                &mut selected,
-                publication.place,
-            ) {
-                pending = Some(setup);
+            adopt_settings(&mut shell, &programmed);
+            // A radio which had no channels and now has some is being given
+            // them, so it leaves the VFO for them. One which already had them
+            // is only being told about a changed setting, and the operator
+            // stays exactly where they were.
+            if was_empty && !programmed.is_empty() {
+                shell.select_memory();
+                selected = None;
             }
+            activation = activate(&programmed, &shell, selected);
+            pending = activation.as_mut().and_then(|(_, setup)| setup.take());
             // A configuration arriving replaces what a scan was walking.
             scan_timer = None;
             redraw = true;
@@ -1157,7 +1149,11 @@ async fn ui_task(
             // before the guard below because selecting the VFO is exactly how an
             // operator leaves an empty memory.
             Intent::SetSource(_) | Intent::TuneVfo => {
-                activation = activate(&programmed, &shell);
+                // Choosing a source is the one rebuild the operator did ask
+                // for, so a bank change lands on that bank's first channel
+                // rather than dragging the old selection into it.
+                selected = None;
+                activation = activate(&programmed, &shell, None);
                 if let Some(setup) = activation.as_mut().and_then(|(_, setup)| setup.take()) {
                     pending = Some(setup);
                 }
@@ -1229,17 +1225,18 @@ async fn ui_task(
         // the top of the list.
         if let Some((controller, _)) = activation.as_ref() {
             if matches!(shell.mode(), Mode::Memory) {
-                selected = Selected {
+                selected = Some(Selected {
                     index: controller.index(),
                     channel_id: controller.channel().id().get(),
-                };
+                });
             }
         }
+        let kept = selected.unwrap_or_default();
         let place = OperatorState {
             memory_mode: matches!(shell.mode(), Mode::Memory),
             bank: shell.bank_filter(),
-            index: selected.index,
-            channel_id: selected.channel_id,
+            index: kept.index,
+            channel_id: kept.channel_id,
             vfo_hz: shell.vfo_hz(),
             step_index: u8::try_from(shell.step_index()).unwrap_or(0),
         };

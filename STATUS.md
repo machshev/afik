@@ -70,7 +70,17 @@ squelch is what distinguishes a signal on this channel from a strong one beside
 it, and its thresholds are per-unit calibration this radio cannot yet read;
 `RISK-008` carries that as the remaining work.
 
-`AFIK-K1-5.4` is flashed. **Three claims remain open and only a hand can close
+Leaving the settings menu then returned the radio to the first channel. A
+configuration republish was being treated as a boot: only the boot publication
+carries a retained place, so every later one rebuilt the controller from the
+first eligible channel — and would also have dragged a VFO operator into memory
+mode. Adopting the settings a configuration carries is now separate from
+restoring where the operator was, and the controller gained
+`activate_at`, which keeps one selection across a rebuild if the configuration
+still holds it. A radio which had no channels and gains some still leaves the
+VFO for them; one which is merely told about a changed setting does not move.
+
+`AFIK-K1-5.5` is flashed. **Three claims remain open and only a hand can close
 them: that the channel the radio is left on is the channel it comes back to
 after a power cycle, where in 60 to 100 the dwell floor lies, and whether a
 raised squelch level stops the scan on the transmitted channel.**
@@ -146,7 +156,7 @@ Run on the pinned environment, 2026-08-09:
 
 - `cargo fmt --all --check`: clean.
 - `cargo clippy --workspace --all-targets -- -D warnings`: clean.
-- `cargo test --workspace`: 383 tests pass, 0 failures.
+- `cargo test --workspace`: 384 tests pass, 0 failures.
 - `tool/build-k1-async.sh --release`: builds.
 - `tool/verify-k1-async-image.sh`: 192 vector bytes, initial SP `0x20004000`,
   Reset `0x080028c1`, required IRQ handlers present, static RAM 8,348 bytes with
@@ -158,6 +168,10 @@ The image grew 4,600 bytes over `5.0`. The controller's scan half had never been
 reachable from this image and was being stripped; it is reachable now.
 
 ### Physical write, 2026-08-09
+
+`AFIK-K1-5.5`, 90,384 bytes, SHA-256
+`9e20abd35b31adf07732b60ace375f281302884414017f61cca0695e057b2bd5`, `354/354`
+pages acknowledged. Static RAM 8,364 bytes with 8,020 bytes of stack headroom.
 
 `AFIK-K1-5.4`, 90,304 bytes, SHA-256
 `126db4efddd3115fff7602dc502933ce2b1813d411e9d9f6bee2bcd03623f861`, `353/353`

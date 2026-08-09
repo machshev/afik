@@ -453,8 +453,42 @@ impl<C: ChannelSource> BankedReceiveController<C> {
         config: RadioConfig,
         bank: Option<BankId>,
     ) -> Result<(Self, ReceiveUpdate), ReceiveError> {
+        Self::activate_at(source, config, bank, None)
+    }
+
+    /// Activates over a replaced source, keeping one selection if it survives.
+    ///
+    /// A controller is rebuilt whenever the configuration it reads is replaced,
+    /// and that happens for reasons which have nothing to do with the operator:
+    /// a squelch level they changed, a dwell they chose, a host writing a
+    /// setting. Rebuilding from the first eligible channel every time would
+    /// move them off the channel they were listening to as a side effect of
+    /// changing something else.
+    ///
+    /// `keep` is the index they were on and the identifier that index named. It
+    /// is honoured only if that index still exists, still passes the bank
+    /// filter, and still carries that identifier — a configuration may have
+    /// been rewritten under it, and an index which now names a different
+    /// channel is not where the operator was. Anything else falls back to the
+    /// first eligible channel, which is what a fresh activation would have
+    /// given them.
+    pub fn activate_at(
+        source: C,
+        config: RadioConfig,
+        bank: Option<BankId>,
+        keep: Option<(u16, ChannelId)>,
+    ) -> Result<(Self, ReceiveUpdate), ReceiveError> {
         let config = config.validate().map_err(ReceiveError::InvalidConfig)?;
-        let index = first_member(&source, bank).ok_or(ReceiveError::NoEligibleChannel)?;
+        let kept = keep.filter(|(index, id)| {
+            bank.is_none_or(|bank| source.member_at(*index, bank))
+                && source
+                    .get(*index)
+                    .is_some_and(|channel| channel.id() == *id)
+        });
+        let index = match kept {
+            Some((index, _)) => index,
+            None => first_member(&source, bank).ok_or(ReceiveError::NoEligibleChannel)?,
+        };
         let channel = source.get(index).ok_or(ReceiveError::NoEligibleChannel)?;
         let vfo = channel_setup(&channel, false);
         let mut controller = Self {
@@ -1441,6 +1475,73 @@ mod tests {
         assert_eq!(controller.visible_position(), 0);
         assert!(controller.select_visible(1).is_err());
         assert_eq!(controller.visible_channel(1), None);
+    }
+
+    /// Changing a setting must not move the operator off their channel.
+    #[test]
+    fn rebuilding_over_a_replaced_configuration_keeps_the_selection() {
+        let mut memory = ChannelMemory::<8>::new();
+        for id in 1..=4 {
+            memory
+                .insert(channel(id, 145_000_000 + u32::from(id) * 12_500, 0b0001, 0))
+                .unwrap();
+        }
+        let config = RadioConfig::conservative();
+
+        // The operator is on the third channel, which is what a rebuild has to
+        // give back rather than the first one.
+        let kept = Some((2, ChannelId::new(3)));
+        let (controller, update) =
+            BankedReceiveController::activate_at(memory, config, None, kept).unwrap();
+        assert_eq!(controller.index(), 2);
+        assert_eq!(controller.channel().id(), ChannelId::new(3));
+        assert_eq!(
+            update.activation.unwrap().selection,
+            ChannelSelection::Memory {
+                index: 2,
+                id: ChannelId::new(3),
+            }
+        );
+
+        // Nothing to keep is the ordinary fresh activation.
+        let (fresh, _) = BankedReceiveController::activate_at(memory, config, None, None).unwrap();
+        assert_eq!(fresh.index(), 0);
+
+        // An index which now names a different channel is not where the
+        // operator was, so a configuration rewritten underneath them falls back
+        // rather than landing on a channel nobody chose.
+        let (moved, _) = BankedReceiveController::activate_at(
+            memory,
+            config,
+            None,
+            Some((2, ChannelId::new(9))),
+        )
+        .unwrap();
+        assert_eq!(moved.index(), 0);
+
+        // Neither is an index past the end of a configuration which shrank.
+        let (gone, _) = BankedReceiveController::activate_at(
+            memory,
+            config,
+            None,
+            Some((99, ChannelId::new(3))),
+        )
+        .unwrap();
+        assert_eq!(gone.index(), 0);
+
+        // A kept channel outside the active bank filter is not eligible, so the
+        // filter wins and the operator lands inside the view they asked for.
+        let mut banked = ChannelMemory::<8>::new();
+        banked.insert(channel(1, 145_100_000, 0b0001, 0)).unwrap();
+        banked.insert(channel(2, 145_200_000, 0b0010, 0)).unwrap();
+        let (filtered, _) = BankedReceiveController::activate_at(
+            banked,
+            config,
+            Some(BankId::new(1)),
+            Some((0, ChannelId::new(1))),
+        )
+        .unwrap();
+        assert_eq!(filtered.channel().id(), ChannelId::new(2));
     }
 
     /// A source which counts every record it is asked to build.

@@ -1987,6 +1987,23 @@
 - **Fourth image:** `AFIK-K1-5.4`, 90,304 bytes, SHA-256
   `126db4efddd3115fff7602dc502933ce2b1813d411e9d9f6bee2bcd03623f861`, `353/353`
   pages acknowledged.
+- **Result — leaving the menu moved the operator:** a configuration republish
+  was being treated as a boot. Only the boot publication carries a retained
+  place, so a squelch or dwell change rebuilt the controller with nothing to
+  keep and landed on the first eligible channel; the same path would have
+  dragged a VFO operator into memory mode. Adopting the settings a
+  configuration carries is now separate from restoring where the operator was,
+  and the latter runs once. `BankedReceiveController::activate_at` keeps one
+  selection across a rebuild, honouring it only if the index still exists,
+  still passes the bank filter, and still carries the identifier recorded
+  beside it — the same rule the retained place is restored under, now in one
+  place and unit-tested rather than repeated in the firmware glue. A radio
+  which had no channels and gains some still leaves the VFO for them; choosing
+  a source still lands on that source's first channel, because that is a
+  rebuild the operator asked for.
+- **Fifth image:** `AFIK-K1-5.5`, 90,384 bytes, SHA-256
+  `9e20abd35b31adf07732b60ace375f281302884414017f61cca0695e057b2bd5`, static RAM
+  8,364 bytes with 8,020 bytes of stack headroom, `354/354` pages acknowledged.
 - **Open, and only observable by hand:** that the channel the radio is left on
   is the channel it comes back to after a power cycle; where in 60 to 100 the
   dwell floor lies; and whether a raised squelch level now stops the scan on the
