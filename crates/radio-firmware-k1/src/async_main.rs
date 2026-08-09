@@ -77,7 +77,14 @@ const _: [(); 8] = [(); PAGES];
 const K1_VECTOR_TABLE_ORIGIN: u32 = 0x0800_2800;
 
 /// Identity this image reports on the information screen.
-const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-6.1";
+///
+/// A diagnostic build says so on the screen. An image which drops every byte
+/// it receives must not be mistaken for one which answers.
+#[cfg(feature = "serial-drop-bytes")]
+const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-6.2D";
+/// Identity this image reports on the information screen.
+#[cfg(not(feature = "serial-drop-bytes"))]
+const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-6.2";
 
 /// Interval between receive samples while audio is routed.
 ///
@@ -822,6 +829,13 @@ async fn serial_task(mut uart: Uart<'static, Async>, memory: EepromPins) {
                 Ordering::Relaxed,
             );
             hold_bus_idle();
+
+            // `RISK-036`: with this feature the byte is counted and dropped,
+            // and nothing below this line runs. See the feature's own note.
+            if cfg!(feature = "serial-drop-bytes") {
+                continue;
+            }
+
             let before = service.generation();
             // Only this task writes this, so a load and store is sufficient.
             let mut observe = |event| {

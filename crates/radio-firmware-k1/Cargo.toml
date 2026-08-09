@@ -40,6 +40,16 @@ py32f071-runtime-init = [
     "py32f071-time-driver",
     "py32f071-runtime-composition",
 ]
+# RISK-036 bisection: count received bytes and drop them without parsing.
+#
+# The radio panics when a host sends to it, and the panic location cannot be
+# carried across the reset on this hardware. This halves the search instead: an
+# image built with this feature never reaches the protocol decoder, so a radio
+# which still panics is failing below it and one which stops is failing inside
+# it. It also makes the received counter mean something for the first time,
+# because counting no longer depends on anything downstream surviving.
+serial-drop-bytes = []
+
 async-firmware = [
     "py32f071-runtime-init",
     "py32f071-bk4819",
