@@ -2,6 +2,80 @@
 
 ## Current work package
 
+**`CTRL-044` is software complete and builds as `AFIK-K1-5.7`: a host can ask
+what the radio is doing, stop a scan, choose VFO or memory, tune, select a
+channel, and read a raw sample — over the same serial link that programs it.
+Nothing here is flashed or confirmed on the unit yet.**
+
+The host is a second peer beside the keypad rather than an owner of the radio.
+There is no host mode, nothing to take, nothing to release, and no timeout to
+be stuck behind, because nothing is suspended: both peers call the same
+`BankedReceiveController` methods and the controller's state is the one answer
+to what the radio is doing. Two tests state the equivalence directly — a host
+tuning the VFO and the keypad tuning it to the same frequency leave identical
+state, and so do a host and a key press stopping a scan.
+
+`Service::RuntimeControl` had been reserved since `FOUND-001` with no commands
+defined, and this fills it. The commands change live receive state and never
+write configuration, so nothing a host does survives a power cycle and the
+operator's keypad keeps working throughout.
+
+The serial task owns USART1 and the interface task owns the controller and the
+bit-banged bus, so a request crosses on a signal and its answer comes back on
+another — the same shape as the retained place travelling the other way.
+`DeviceService` gained a two-phase push for it: a runtime-control frame is
+decoded and handed to whoever owns the receiver, then answered in a second
+call. Replay is checked before the request is classified, so a resent frame
+replays its cached answer and never reaches the receiver — starting a scan
+twice is not the same as starting it once.
+
+`ReceiveMetrics` samples are now counted and kept, because a host cannot
+otherwise tell a fresh reading from the one it already had. `RISK-008` leaves
+settle time unmeasured and the firmware already refuses to let the first sample
+after a retune declare a channel busy; a host wanting a settled reading waits
+for the counter to advance.
+
+**The sweep's pacing is set by the radio, not chosen.** `LINK_QUIET_MILLISECONDS`
+is 250: the bit-banged bus is held idle for a quarter second after the last
+serial byte, so a host polling faster than that prevents the sampling it is
+waiting for and would read the same stale sample forever. `rf-sweep` waits
+before each attempt and accepts a sample only when its counter has moved and
+its frequency is the one asked for. That also means a host-driven probe
+measures the link's quiet window rather than the receiver's settling time, so
+`SWEEP-040` question six cannot be answered this way.
+
+**Two things are recorded rather than fixed.** A radio which has not sampled yet
+refuses metrics instead of reporting zeroes, which would be a real reading of
+zero to anyone reading it. And nothing in the control path knows the fitted
+receiver's band: `Frequency::from_hz` refuses only zero, so a host sweeping
+outside the band is answered successfully and the tune fails later at the
+driver. Inventing a band limit in the controller would be inventing evidence,
+so the current behaviour is pinned by a test instead.
+
+Commands run, all from `nix develop`:
+
+- `cargo fmt --all --check` — clean.
+- `cargo clippy --workspace --all-targets -- -D warnings` — clean.
+- `cargo test --workspace` — 50 test binaries, all passing.
+- `./tool/build-k1-async.sh --release` — built.
+- `tool/package-k1-async-image.sh --force` — verified.
+- `tool/test-k1-async-image.sh` — positive and negative checks passed.
+
+**Image:** `AFIK-K1-5.7`, 91,496 bytes, SHA-256
+`0f03cb1cc527ed6d43e9a3c208a79b51344b1edb644bf6125bb105ed201bdbfe`, static RAM
+8,448 bytes with 7,936 bytes of stack headroom. Runtime control costs 3,392
+bytes of image and 92 bytes of RAM over `5.6`.
+
+**Open, and only the unit can close them:** that a host request reaches the
+controller and comes back at all over this radio's serial link — `STATUS`
+records the `ARENA-038` serial dead end recurring after `5.2` and not clearing,
+so normal-mode serial is unproven on recent images and this whole path rests on
+it; that a host tune audibly retunes the receiver; that the keypad still
+behaves while a host is driving; and that `rf-sweep` completes a range without
+stalling on a sample that never arrives.
+
+## SCAN-039
+
 **`SCAN-039` is software complete and flashed to the exact unit: the radio
 scans, and it remembers where it was left. Holding star walks the source in
 force — one bank, or every programmed channel — dwelling on each, holding on a

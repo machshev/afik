@@ -2094,6 +2094,10 @@
 6. **Probe cost.** How long does a reading that only has to be compared need,
    against the 90 ms a dwell needs to make a squelch decision? A probe may be
    cheaper than a dwell, and if it is, that multiplies any structural saving.
+   **This one cannot be answered by the host-driven sweep.** The radio holds
+   its bit-banged bus idle for a quarter second after the last serial byte, so
+   a host-driven reading measures that window rather than the receiver. Probe
+   cost has to be measured by the radio's own scan, separately.
 7. **Two signals.** With two transmitters in the same bank, what does the
    falloff look like between them? This is where a single-hill search converges
    on the wrong answer, and the failure needs to be seen rather than assumed.
@@ -2137,7 +2141,7 @@
 
 ## CTRL-044 — Host control of the receiver over serial
 
-- **Status:** not started
+- **Status:** software complete, unconfirmed on the unit (2026-08-09)
 - **Objective:** implement the reserved `Service::RuntimeControl` as a second
   peer driving the operations the handset already drives — ask what the radio is
   doing, stop a scan, choose VFO or memory, tune, select a channel, read the
@@ -2233,3 +2237,25 @@
 - The workspace gate passes and `tool/build-k1-async.sh` builds the image;
   image and RAM cost recorded in `STATUS.md`.
 - `SWEEP-040` can be run from a host against the resulting image.
+
+### Completion notes
+
+- `Service::RuntimeControl` carries eight commands: state, metrics, stop and
+  start scan, VFO and memory, tune, and select. Each maps to one existing
+  controller method, and two tests assert that a host operation and the keypad
+  intent driving the same method leave identical state.
+- `DeviceService` gained a two-phase push. Replay is checked before the request
+  is classified, so a resent frame replays its cached answer rather than
+  performing the operation again. `push` is unchanged, so the simulator and
+  every host-side driver still answer `UnsupportedService`.
+- Samples are counted and kept so a host can distinguish a fresh reading from a
+  repeated one. `rf-sweep` waits on that counter.
+- Two `DeviceErrorCode` values were added rather than squashing refusals into
+  `Internal`: `InvalidState` for an operation the radio cannot perform from
+  where it is, and `OutOfRange` for a value it cannot reach.
+- **Not established:** none of this has run on the unit. Normal-mode serial is
+  unproven on images after `5.2` — the `ARENA-038` dead end — and this whole
+  path rests on it.
+- **Recorded, not fixed:** nothing in the control path knows the fitted
+  receiver's band, so a host may tune outside it, be answered successfully, and
+  have the tune fail later at the driver.
