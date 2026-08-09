@@ -69,6 +69,22 @@ pub enum Command {
     GetCapabilities = 0x02,
     /// Read stable device identity.
     GetDeviceInfo = 0x03,
+    /// Read what the receiver is currently doing.
+    GetReceiveState = 0x10,
+    /// Read one raw receive-metrics sample.
+    GetReceiveMetrics = 0x11,
+    /// Stop a running scan.
+    StopScan = 0x12,
+    /// Start scanning the current source.
+    StartScan = 0x13,
+    /// Leave memory channels for the tunable receiver.
+    EnterVfo = 0x14,
+    /// Leave the tunable receiver for memory channels.
+    EnterMemory = 0x15,
+    /// Tune the receiver to an exact frequency in hertz.
+    TuneTo = 0x16,
+    /// Select one memory channel by storage index.
+    SelectChannel = 0x17,
     /// List active configuration objects.
     ListObjects = 0x20,
     /// Read one active configuration object.
@@ -95,6 +111,14 @@ impl TryFrom<u8> for Command {
             0x01 => Ok(Self::Hello),
             0x02 => Ok(Self::GetCapabilities),
             0x03 => Ok(Self::GetDeviceInfo),
+            0x10 => Ok(Self::GetReceiveState),
+            0x11 => Ok(Self::GetReceiveMetrics),
+            0x12 => Ok(Self::StopScan),
+            0x13 => Ok(Self::StartScan),
+            0x14 => Ok(Self::EnterVfo),
+            0x15 => Ok(Self::EnterMemory),
+            0x16 => Ok(Self::TuneTo),
+            0x17 => Ok(Self::SelectChannel),
             0x20 => Ok(Self::ListObjects),
             0x21 => Ok(Self::ReadObject),
             0x22 => Ok(Self::BeginTransaction),
@@ -791,13 +815,200 @@ fn cobs_decode(input: &[u8], output: &mut [u8]) -> Result<usize, ProtocolError> 
     Ok(write_index)
 }
 
+/// Which source the receiver is currently listening to.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum ReceiveMode {
+    /// One stored memory channel.
+    Memory = 0,
+    /// The tunable receiver.
+    Vfo = 1,
+}
+
+impl TryFrom<u8> for ReceiveMode {
+    type Error = ProtocolError;
+
+    fn try_from(value: u8) -> Result<Self, ProtocolError> {
+        match value {
+            0 => Ok(Self::Memory),
+            1 => Ok(Self::Vfo),
+            _ => Err(ProtocolError::MalformedPayload),
+        }
+    }
+}
+
+/// Whether a scan is running, and what it is doing if so.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum ScanActivity {
+    /// No scan is running.
+    Idle = 0,
+    /// Waiting out the no-signal dwell on one channel.
+    Dwell = 1,
+    /// Holding on a channel which was found busy.
+    Hold = 2,
+}
+
+impl TryFrom<u8> for ScanActivity {
+    type Error = ProtocolError;
+
+    fn try_from(value: u8) -> Result<Self, ProtocolError> {
+        match value {
+            0 => Ok(Self::Idle),
+            1 => Ok(Self::Dwell),
+            2 => Ok(Self::Hold),
+            _ => Err(ProtocolError::MalformedPayload),
+        }
+    }
+}
+
+/// What the receiver is currently doing, as the display would show it.
+///
+/// This is live state. It says where the receiver is pointed and whether a scan
+/// is running; it carries no transmit frequency, class or authority, because
+/// nothing in the runtime-control service can ask for one.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReceiveStateReport {
+    /// Whether a memory channel or the tunable receiver is selected.
+    pub mode: ReceiveMode,
+    /// Whether a scan is running, and its phase if it is.
+    pub scan: ScanActivity,
+    /// Selected bank, absent when every programmed channel is in scope.
+    pub bank: Option<u8>,
+    /// Storage index of the selected channel; meaningless in VFO mode.
+    pub index: u16,
+    /// Stable identifier of the selected channel; zero in VFO mode.
+    pub channel_id: u16,
+    /// Channels the current bank filter admits.
+    pub visible_channels: u16,
+    /// Exact receive frequency in hertz.
+    pub frequency_hz: u32,
+}
+
+impl ReceiveStateReport {
+    /// Encoded length of one report.
+    pub const ENCODED_LEN: usize = 14;
+
+    /// Writes the report into a caller-supplied buffer.
+    pub fn encode(&self, output: &mut [u8]) -> Result<usize, ProtocolError> {
+        let buffer = output
+            .get_mut(..Self::ENCODED_LEN)
+            .ok_or(ProtocolError::OutputTooSmall)?;
+        buffer[0] = self.mode as u8;
+        buffer[1] = self.scan as u8;
+        // A bank is present or it is not, and the identifier is only meaningful
+        // when it is; encoding them separately keeps every byte value legal.
+        buffer[2] = u8::from(self.bank.is_some());
+        buffer[3] = self.bank.unwrap_or(0);
+        buffer[4..6].copy_from_slice(&self.index.to_le_bytes());
+        buffer[6..8].copy_from_slice(&self.channel_id.to_le_bytes());
+        buffer[8..10].copy_from_slice(&self.visible_channels.to_le_bytes());
+        buffer[10..14].copy_from_slice(&self.frequency_hz.to_le_bytes());
+        Ok(Self::ENCODED_LEN)
+    }
+
+    /// Reads one report from exactly its encoded bytes.
+    pub fn decode(input: &[u8]) -> Result<Self, ProtocolError> {
+        if input.len() < Self::ENCODED_LEN {
+            return Err(ProtocolError::MalformedPayload);
+        }
+        if input.len() > Self::ENCODED_LEN {
+            return Err(ProtocolError::TrailingPayload);
+        }
+        let bank = match input[2] {
+            0 => None,
+            1 => Some(input[3]),
+            _ => return Err(ProtocolError::MalformedPayload),
+        };
+        Ok(Self {
+            mode: ReceiveMode::try_from(input[0])?,
+            scan: ScanActivity::try_from(input[1])?,
+            bank,
+            index: u16::from_le_bytes([input[4], input[5]]),
+            channel_id: u16::from_le_bytes([input[6], input[7]]),
+            visible_channels: u16::from_le_bytes([input[8], input[9]]),
+            frequency_hz: u32::from_le_bytes([input[10], input[11], input[12], input[13]]),
+        })
+    }
+}
+
+/// A report a frame cannot carry is a report a host cannot read.
+const _: () = assert!(ReceiveStateReport::ENCODED_LEN <= MAX_PAYLOAD);
+
+/// One raw receive-metrics sample and the frequency it was taken at.
+///
+/// Every field is raw, in the chip's own units. `samples` is what makes a
+/// reading usable: the receiver needs an unmeasured settling time after a
+/// retune, so a host which wants a settled reading waits for this counter to
+/// advance past the value it saw when it asked for the frequency.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReceiveMetricsReport {
+    /// Frequency the sample was taken at, in hertz.
+    pub frequency_hz: u32,
+    /// Completed metric samples since boot, saturating.
+    pub samples: u16,
+    /// Approximate RSSI multiplied by two, preserving the 0.5 dB step.
+    pub rssi_dbm_x2: i16,
+    /// Raw glitch indicator; lower values indicate a cleaner signal.
+    pub glitch: u8,
+    /// Raw excess-noise indicator; lower values indicate a cleaner signal.
+    pub noise: u8,
+    /// Whether the carrier squelch link reads open.
+    pub squelch_open: bool,
+}
+
+impl ReceiveMetricsReport {
+    /// Encoded length of one report.
+    pub const ENCODED_LEN: usize = 11;
+
+    /// Writes the report into a caller-supplied buffer.
+    pub fn encode(&self, output: &mut [u8]) -> Result<usize, ProtocolError> {
+        let buffer = output
+            .get_mut(..Self::ENCODED_LEN)
+            .ok_or(ProtocolError::OutputTooSmall)?;
+        buffer[0..4].copy_from_slice(&self.frequency_hz.to_le_bytes());
+        buffer[4..6].copy_from_slice(&self.samples.to_le_bytes());
+        buffer[6..8].copy_from_slice(&self.rssi_dbm_x2.to_le_bytes());
+        buffer[8] = self.glitch;
+        buffer[9] = self.noise;
+        buffer[10] = u8::from(self.squelch_open);
+        Ok(Self::ENCODED_LEN)
+    }
+
+    /// Reads one report from exactly its encoded bytes.
+    pub fn decode(input: &[u8]) -> Result<Self, ProtocolError> {
+        if input.len() < Self::ENCODED_LEN {
+            return Err(ProtocolError::MalformedPayload);
+        }
+        if input.len() > Self::ENCODED_LEN {
+            return Err(ProtocolError::TrailingPayload);
+        }
+        let squelch_open = match input[10] {
+            0 => false,
+            1 => true,
+            _ => return Err(ProtocolError::MalformedPayload),
+        };
+        Ok(Self {
+            frequency_hz: u32::from_le_bytes([input[0], input[1], input[2], input[3]]),
+            samples: u16::from_le_bytes([input[4], input[5]]),
+            rssi_dbm_x2: i16::from_le_bytes([input[6], input[7]]),
+            glitch: input[8],
+            noise: input[9],
+            squelch_open,
+        })
+    }
+}
+
+const _: () = assert!(ReceiveMetricsReport::ENCODED_LEN <= MAX_PAYLOAD);
+
 #[cfg(test)]
 mod tests {
     use super::{
         cobs_encode, crc16_ccitt_false, decode_list_objects_request, decode_packet, encode_frame,
         encode_list_objects_request, Command, DeviceCapabilities, Frame, ObjectDescriptor,
-        ObjectListPage, ProtocolError, Service, StreamDecoder, CRC_LEN, FLAG_RESPONSE, HEADER_LEN,
-        MAGIC, MAX_ENCODED_FRAME, MAX_LIST_OBJECTS_PER_PAGE, MAX_PAYLOAD, PROTOCOL_VERSION,
+        ObjectListPage, ProtocolError, ReceiveMetricsReport, ReceiveMode, ReceiveStateReport,
+        ScanActivity, Service, StreamDecoder, CRC_LEN, FLAG_RESPONSE, HEADER_LEN, MAGIC,
+        MAX_ENCODED_FRAME, MAX_LIST_OBJECTS_PER_PAGE, MAX_PAYLOAD, PROTOCOL_VERSION,
     };
 
     fn encode_raw_frame(service: u8, command: u8) -> ([u8; MAX_ENCODED_FRAME], usize) {
@@ -970,5 +1181,136 @@ mod tests {
             ]
         );
         assert_eq!(recovered, Some(expected));
+    }
+
+    #[test]
+    fn runtime_control_commands_decode_from_their_wire_bytes() {
+        let expected = [
+            (0x10_u8, Command::GetReceiveState),
+            (0x11, Command::GetReceiveMetrics),
+            (0x12, Command::StopScan),
+            (0x13, Command::StartScan),
+            (0x14, Command::EnterVfo),
+            (0x15, Command::EnterMemory),
+            (0x16, Command::TuneTo),
+            (0x17, Command::SelectChannel),
+        ];
+        for (byte, command) in expected {
+            assert_eq!(Command::try_from(byte), Ok(command));
+            assert_eq!(command as u8, byte);
+        }
+        assert_eq!(Command::try_from(0x18), Err(ProtocolError::UnknownCommand));
+    }
+
+    #[test]
+    fn a_receive_state_report_round_trips_in_both_bank_forms() {
+        for bank in [None, Some(7)] {
+            let report = ReceiveStateReport {
+                mode: ReceiveMode::Memory,
+                scan: ScanActivity::Hold,
+                bank,
+                index: 300,
+                channel_id: 41,
+                visible_channels: 16,
+                frequency_hz: 145_500_000,
+            };
+            let mut buffer = [0_u8; ReceiveStateReport::ENCODED_LEN];
+            let length = report.encode(&mut buffer).expect("the report encodes");
+            assert_eq!(length, ReceiveStateReport::ENCODED_LEN);
+            assert_eq!(ReceiveStateReport::decode(&buffer), Ok(report));
+        }
+    }
+
+    #[test]
+    fn a_receive_state_report_rejects_wrong_lengths_and_illegal_bytes() {
+        let report = ReceiveStateReport {
+            mode: ReceiveMode::Vfo,
+            scan: ScanActivity::Idle,
+            bank: None,
+            index: 0,
+            channel_id: 0,
+            visible_channels: 0,
+            frequency_hz: 433_000_000,
+        };
+        let mut buffer = [0_u8; ReceiveStateReport::ENCODED_LEN + 1];
+        report.encode(&mut buffer).expect("the report encodes");
+
+        assert_eq!(
+            ReceiveStateReport::decode(&buffer[..ReceiveStateReport::ENCODED_LEN - 1]),
+            Err(ProtocolError::MalformedPayload)
+        );
+        assert_eq!(
+            ReceiveStateReport::decode(&buffer),
+            Err(ProtocolError::TrailingPayload)
+        );
+
+        let mut illegal = buffer;
+        illegal[0] = 2;
+        assert_eq!(
+            ReceiveStateReport::decode(&illegal[..ReceiveStateReport::ENCODED_LEN]),
+            Err(ProtocolError::MalformedPayload)
+        );
+
+        let mut illegal = buffer;
+        illegal[1] = 3;
+        assert_eq!(
+            ReceiveStateReport::decode(&illegal[..ReceiveStateReport::ENCODED_LEN]),
+            Err(ProtocolError::MalformedPayload)
+        );
+
+        // A bank presence byte which is neither absent nor present names no
+        // bank, so it cannot be silently read as one.
+        let mut illegal = buffer;
+        illegal[2] = 2;
+        assert_eq!(
+            ReceiveStateReport::decode(&illegal[..ReceiveStateReport::ENCODED_LEN]),
+            Err(ProtocolError::MalformedPayload)
+        );
+    }
+
+    #[test]
+    fn a_metrics_report_round_trips_including_a_negative_reading() {
+        let report = ReceiveMetricsReport {
+            frequency_hz: 145_512_500,
+            samples: 65_535,
+            rssi_dbm_x2: -238,
+            glitch: 12,
+            noise: 41,
+            squelch_open: true,
+        };
+        let mut buffer = [0_u8; ReceiveMetricsReport::ENCODED_LEN];
+        let length = report.encode(&mut buffer).expect("the report encodes");
+        assert_eq!(length, ReceiveMetricsReport::ENCODED_LEN);
+        assert_eq!(ReceiveMetricsReport::decode(&buffer), Ok(report));
+    }
+
+    #[test]
+    fn a_metrics_report_rejects_wrong_lengths_and_an_illegal_squelch_byte() {
+        let report = ReceiveMetricsReport {
+            frequency_hz: 145_000_000,
+            samples: 1,
+            rssi_dbm_x2: -300,
+            glitch: 0,
+            noise: 0,
+            squelch_open: false,
+        };
+        let mut buffer = [0_u8; ReceiveMetricsReport::ENCODED_LEN + 1];
+        report.encode(&mut buffer).expect("the report encodes");
+
+        assert_eq!(
+            ReceiveMetricsReport::decode(&buffer[..ReceiveMetricsReport::ENCODED_LEN - 1]),
+            Err(ProtocolError::MalformedPayload)
+        );
+        assert_eq!(
+            ReceiveMetricsReport::decode(&buffer),
+            Err(ProtocolError::TrailingPayload)
+        );
+
+        let mut illegal = buffer;
+        illegal[10] = 2;
+        assert_eq!(
+            ReceiveMetricsReport::decode(&illegal[..ReceiveMetricsReport::ENCODED_LEN]),
+            Err(ProtocolError::MalformedPayload)
+        );
     }
 }
