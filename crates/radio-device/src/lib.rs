@@ -17,10 +17,10 @@
 extern crate std;
 
 use radio_protocol::{
-    decode_list_objects_request, encode_frame, Command, DeviceCapabilities, DeviceErrorCode, Frame,
-    ObjectDescriptor, ObjectListPage, PayloadReader, PayloadWriter, ProtocolError, Service,
-    StreamDecoder, FLAG_ERROR, FLAG_RESPONSE, MAX_ENCODED_FRAME, MAX_LIST_OBJECTS_PER_PAGE,
-    MAX_PAYLOAD, PROTOCOL_VERSION,
+    decode_list_objects_request, encode_frame, Command, ControlRequest, DeviceCapabilities,
+    DeviceErrorCode, Frame, ObjectDescriptor, ObjectListPage, PayloadReader, PayloadWriter,
+    ProtocolError, ReceiveMetricsReport, ReceiveStateReport, Service, StreamDecoder, FLAG_ERROR,
+    FLAG_RESPONSE, MAX_ENCODED_FRAME, MAX_LIST_OBJECTS_PER_PAGE, MAX_PAYLOAD, PROTOCOL_VERSION,
 };
 use radio_storage::{
     decode_configuration_image, validate_object, ConfigurationImageWriter, Object, ObjectArenaIter,
@@ -331,24 +331,166 @@ impl<const BYTES: usize> DeviceService<BYTES> {
         Some(length)
     }
 
+    /// Pushes one byte, surfacing a runtime-control request instead of
+    /// refusing it.
+    ///
+    /// This service owns configuration, not the receiver, so it cannot answer a
+    /// runtime-control request itself. A caller which holds the receive
+    /// controller drives the exchange in two steps: this call decodes and
+    /// returns the request, the caller performs it, and
+    /// [`DeviceService::answer_control`] encodes the reply. Everything else
+    /// behaves exactly as [`DeviceService::push`], including replay.
+    ///
+    /// A caller which does not own a receiver should keep using
+    /// [`DeviceService::push`], which reports runtime control as an unsupported
+    /// service.
+    pub fn push_control<F: FnMut(DeviceEvent)>(
+        &mut self,
+        byte: u8,
+        response: &mut [u8],
+        observer: &mut F,
+    ) -> Push {
+        let Some(result) = self.decoder.push(byte) else {
+            return Push::Idle;
+        };
+        let request = match result {
+            Ok(request) => request,
+            Err(error) => {
+                observer(DeviceEvent::PacketDiscarded(error));
+                return Push::Idle;
+            }
+        };
+        observer(DeviceEvent::Request {
+            sequence: request.sequence(),
+            service: request.service(),
+            command: request.command(),
+        });
+
+        // Replay is checked before the request is classified, so a resent
+        // runtime-control frame replays its cached answer rather than
+        // performing the operation a second time. Starting a scan twice is not
+        // the same as starting it once.
+        let settled = match self.replayed(&request, observer) {
+            Some(frame) => Some(frame),
+            None if request.flags() == 0 && request.service() == Service::RuntimeControl => {
+                match ControlRequest::decode(request.command(), request.payload()) {
+                    Ok(control) => {
+                        return Push::Control(PendingControl { request, control });
+                    }
+                    // The command exists in the protocol but not in this
+                    // service, or its payload is not the shape the command
+                    // requires. Neither is something the receiver should be
+                    // asked about.
+                    Err(ProtocolError::UnknownCommand) => Some(self.settle(
+                        &request,
+                        error_response(&request, DeviceErrorCode::UnsupportedCommand),
+                    )),
+                    Err(_) => Some(self.settle(
+                        &request,
+                        error_response(&request, DeviceErrorCode::MalformedPayload),
+                    )),
+                }
+            }
+            None => None,
+        };
+
+        let frame = match settled {
+            Some(Ok(frame)) => frame,
+            Some(Err(error)) => {
+                observer(DeviceEvent::PacketDiscarded(error));
+                return Push::Idle;
+            }
+            None => match self.handle_request(&request, observer) {
+                Ok(frame) => {
+                    self.last_exchange = Some((request, frame));
+                    frame
+                }
+                Err(error) => {
+                    observer(DeviceEvent::PacketDiscarded(error));
+                    return Push::Idle;
+                }
+            },
+        };
+
+        match write_response(&frame, response, observer) {
+            Some(length) => Push::Response(length),
+            None => Push::Idle,
+        }
+    }
+
+    /// Encodes the reply to a request returned by
+    /// [`DeviceService::push_control`].
+    ///
+    /// Returns the response length written into `response`, or `None` if the
+    /// reply could not be encoded.
+    pub fn answer_control<F: FnMut(DeviceEvent)>(
+        &mut self,
+        pending: PendingControl,
+        answer: ControlAnswer,
+        response: &mut [u8],
+        observer: &mut F,
+    ) -> Option<usize> {
+        let request = pending.request;
+        let mut payload = [0_u8; MAX_PAYLOAD];
+        let built = match answer {
+            ControlAnswer::State(report) => report
+                .encode(&mut payload)
+                .and_then(|length| success_response(&request, &payload[..length])),
+            ControlAnswer::Metrics(report) => report
+                .encode(&mut payload)
+                .and_then(|length| success_response(&request, &payload[..length])),
+            ControlAnswer::Refused(code) => error_response(&request, code),
+        };
+        let frame = match self.settle(&request, built) {
+            Ok(frame) => frame,
+            Err(error) => {
+                observer(DeviceEvent::PacketDiscarded(error));
+                return None;
+            }
+        };
+        write_response(&frame, response, observer)
+    }
+
+    /// Records one settled exchange so an identical resend replays it.
+    fn settle(
+        &mut self,
+        request: &Frame,
+        built: Result<Frame, ProtocolError>,
+    ) -> Result<Frame, ProtocolError> {
+        let frame = built?;
+        self.last_exchange = Some((*request, frame));
+        Ok(frame)
+    }
+
+    /// Answers a resent or conflicting sequence without performing the request.
+    fn replayed<F: FnMut(DeviceEvent)>(
+        &self,
+        request: &Frame,
+        observer: &mut F,
+    ) -> Option<Result<Frame, ProtocolError>> {
+        let (previous_request, previous_response) = self.last_exchange?;
+        if previous_request.sequence() != request.sequence() {
+            return None;
+        }
+        if previous_request == *request {
+            observer(DeviceEvent::DuplicateRequestReplayed {
+                sequence: request.sequence(),
+            });
+            return Some(Ok(previous_response));
+        }
+        observer(DeviceEvent::SequenceConflictRejected {
+            sequence: request.sequence(),
+        });
+        Some(error_response(request, DeviceErrorCode::SequenceConflict))
+    }
+
     fn handle_exchange<F: FnMut(DeviceEvent)>(
         &mut self,
         request: &Frame,
         observer: &mut F,
     ) -> Result<Frame, ProtocolError> {
-        if let Some((previous_request, previous_response)) = self.last_exchange {
-            if previous_request.sequence() == request.sequence() {
-                if previous_request == *request {
-                    observer(DeviceEvent::DuplicateRequestReplayed {
-                        sequence: request.sequence(),
-                    });
-                    return Ok(previous_response);
-                }
-                observer(DeviceEvent::SequenceConflictRejected {
-                    sequence: request.sequence(),
-                });
-                return error_response(request, DeviceErrorCode::SequenceConflict);
-            }
+        if let Some(replayed) = self.replayed(request, observer) {
+            return replayed;
         }
         let response = self.handle_request(request, observer)?;
         self.last_exchange = Some((*request, response));
@@ -596,6 +738,63 @@ impl<const BYTES: usize> DeviceService<BYTES> {
     }
 }
 
+/// What one byte pushed through [`DeviceService::push_control`] produced.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Push {
+    /// No complete frame yet, or one which was discarded.
+    Idle,
+    /// A complete response of this many bytes was written.
+    Response(usize),
+    /// A runtime-control request the caller must perform and answer.
+    Control(PendingControl),
+}
+
+/// A decoded runtime-control request awaiting the caller's answer.
+///
+/// It carries the request frame so the answer can be addressed to the same
+/// sequence and command, which is what makes a resend replay rather than
+/// perform the operation again.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PendingControl {
+    request: Frame,
+    control: ControlRequest,
+}
+
+impl PendingControl {
+    /// Returns the operation the host asked for.
+    pub const fn request(&self) -> ControlRequest {
+        self.control
+    }
+}
+
+/// The caller's answer to one runtime-control request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ControlAnswer {
+    /// What the receiver is doing, after any requested change.
+    State(ReceiveStateReport),
+    /// One raw metrics sample.
+    Metrics(ReceiveMetricsReport),
+    /// The operation was refused, with the reason.
+    Refused(DeviceErrorCode),
+}
+
+/// Encodes one response frame into the caller's buffer.
+fn write_response<F: FnMut(DeviceEvent)>(
+    frame: &Frame,
+    response: &mut [u8],
+    observer: &mut F,
+) -> Option<usize> {
+    let mut encoded = [0_u8; MAX_ENCODED_FRAME];
+    let length = encode_frame(frame, &mut encoded).ok()?;
+    let destination = response.get_mut(..length)?;
+    destination.copy_from_slice(&encoded[..length]);
+    observer(DeviceEvent::Response {
+        sequence: frame.sequence(),
+        command: frame.command(),
+    });
+    Some(length)
+}
+
 fn success_response(request: &Frame, payload: &[u8]) -> Result<Frame, ProtocolError> {
     Frame::new(
         request.service(),
@@ -671,10 +870,11 @@ pub const fn map_storage_error(error: StorageError) -> DeviceErrorCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{DeviceEvent, DeviceService};
+    use super::{ControlAnswer, DeviceEvent, DeviceService, Push};
     use radio_protocol::{
-        decode_packet, encode_frame, Command, DeviceCapabilities, DeviceErrorCode, Frame,
-        PayloadWriter, Service, FLAG_ERROR, FLAG_RESPONSE, MAX_ENCODED_FRAME,
+        decode_packet, encode_frame, Command, ControlRequest, DeviceCapabilities, DeviceErrorCode,
+        Frame, PayloadWriter, ReceiveMetricsReport, ReceiveMode, ReceiveStateReport, ScanActivity,
+        Service, FLAG_ERROR, FLAG_RESPONSE, MAX_ENCODED_FRAME,
     };
     use radio_storage::{
         encode_channel, ObjectKey, ObjectKind, ObjectRef, StorageObject, CHANNEL_ENCODED_LEN,
@@ -989,5 +1189,212 @@ mod tests {
         assert_eq!(service.generation(), 0);
         assert_eq!(service.active_objects().count(), 0);
         assert_eq!(service.open_transaction(), None);
+    }
+
+    /// A state report distinct enough that a wrong one cannot pass for it.
+    fn state_report() -> ReceiveStateReport {
+        ReceiveStateReport {
+            mode: ReceiveMode::Vfo,
+            scan: ScanActivity::Idle,
+            bank: Some(2),
+            index: 5,
+            channel_id: 11,
+            visible_channels: 40,
+            frequency_hz: 145_512_500,
+        }
+    }
+
+    impl<const BYTES: usize> Harness<BYTES> {
+        /// Drives one runtime-control exchange, answering whatever surfaces.
+        ///
+        /// Returns the pending request the service surfaced and the decoded
+        /// response, so a test can assert on both halves of the split.
+        fn control(
+            &mut self,
+            sequence: u16,
+            command: Command,
+            payload: &[u8],
+            answer: ControlAnswer,
+        ) -> (Option<ControlRequest>, Frame) {
+            let request = Frame::new(Service::RuntimeControl, 0, sequence, command, payload)
+                .expect("request frame");
+            let mut encoded = [0_u8; MAX_ENCODED_FRAME];
+            let length = encode_frame(&request, &mut encoded).expect("encode request");
+            let mut response = [0_u8; MAX_ENCODED_FRAME];
+            let mut answered = None;
+            let mut surfaced = None;
+            for byte in &encoded[..length] {
+                let events = &mut self.events;
+                match self
+                    .service
+                    .push_control(*byte, &mut response, &mut |event| events.push(event))
+                {
+                    Push::Idle => {}
+                    Push::Response(len) => answered = Some(len),
+                    Push::Control(pending) => {
+                        surfaced = Some(pending.request());
+                        let events = &mut self.events;
+                        answered = self.service.answer_control(
+                            pending,
+                            answer,
+                            &mut response,
+                            &mut |event| events.push(event),
+                        );
+                    }
+                }
+            }
+            let length = answered.expect("one response frame");
+            (
+                surfaced,
+                decode_packet(&response[..length - 1]).expect("decode response"),
+            )
+        }
+    }
+
+    #[test]
+    fn a_control_request_surfaces_to_the_caller_and_its_answer_reaches_the_host() {
+        let mut harness = Harness::<STORE_BYTES>::new();
+        let (surfaced, response) = harness.control(
+            1,
+            Command::TuneTo,
+            &145_512_500_u32.to_le_bytes(),
+            ControlAnswer::State(state_report()),
+        );
+
+        assert_eq!(
+            surfaced,
+            Some(ControlRequest::TuneTo {
+                frequency_hz: 145_512_500
+            })
+        );
+        assert_eq!(response.flags(), FLAG_RESPONSE);
+        assert_eq!(response.command(), Command::TuneTo);
+        assert_eq!(
+            ReceiveStateReport::decode(response.payload()),
+            Ok(state_report())
+        );
+    }
+
+    #[test]
+    fn a_metrics_answer_reaches_the_host_unchanged() {
+        let mut harness = Harness::<STORE_BYTES>::new();
+        let metrics = ReceiveMetricsReport {
+            frequency_hz: 145_512_500,
+            samples: 1234,
+            rssi_dbm_x2: -238,
+            glitch: 9,
+            noise: 40,
+            squelch_open: true,
+        };
+        let (surfaced, response) = harness.control(
+            1,
+            Command::GetReceiveMetrics,
+            &[],
+            ControlAnswer::Metrics(metrics),
+        );
+
+        assert_eq!(surfaced, Some(ControlRequest::GetMetrics));
+        assert_eq!(
+            ReceiveMetricsReport::decode(response.payload()),
+            Ok(metrics)
+        );
+    }
+
+    #[test]
+    fn a_refused_control_request_answers_with_its_reason() {
+        let mut harness = Harness::<STORE_BYTES>::new();
+        let (surfaced, response) = harness.control(
+            1,
+            Command::StartScan,
+            &[],
+            ControlAnswer::Refused(DeviceErrorCode::Internal),
+        );
+
+        assert_eq!(surfaced, Some(ControlRequest::StartScan));
+        assert_eq!(response.flags(), FLAG_RESPONSE | FLAG_ERROR);
+        assert_eq!(response.command(), Command::Error);
+        assert_eq!(response.payload()[1], DeviceErrorCode::Internal as u8);
+    }
+
+    #[test]
+    fn a_malformed_control_payload_is_refused_without_reaching_the_receiver() {
+        let mut harness = Harness::<STORE_BYTES>::new();
+        // Three bytes is not a frequency, and the receiver is never asked to
+        // tune to whatever those bytes might be padded into.
+        let (surfaced, response) = harness.control(
+            1,
+            Command::TuneTo,
+            &[0, 0, 0],
+            ControlAnswer::State(state_report()),
+        );
+
+        assert_eq!(surfaced, None);
+        assert_eq!(response.flags(), FLAG_RESPONSE | FLAG_ERROR);
+        assert_eq!(
+            response.payload()[1],
+            DeviceErrorCode::MalformedPayload as u8
+        );
+    }
+
+    #[test]
+    fn a_configuration_command_on_the_control_service_is_an_unsupported_command() {
+        let mut harness = Harness::<STORE_BYTES>::new();
+        let (surfaced, response) = harness.control(
+            1,
+            Command::ListObjects,
+            &[],
+            ControlAnswer::State(state_report()),
+        );
+
+        assert_eq!(surfaced, None);
+        assert_eq!(
+            response.payload()[1],
+            DeviceErrorCode::UnsupportedCommand as u8
+        );
+    }
+
+    #[test]
+    fn a_resent_control_request_replays_instead_of_performing_it_again() {
+        let mut harness = Harness::<STORE_BYTES>::new();
+        let (first, first_response) = harness.control(
+            7,
+            Command::StartScan,
+            &[],
+            ControlAnswer::State(state_report()),
+        );
+        assert_eq!(first, Some(ControlRequest::StartScan));
+
+        // The same sequence and bytes again. Starting a scan twice is not the
+        // same as starting it once, so this must never reach the receiver.
+        let (second, second_response) = harness.control(
+            7,
+            Command::StartScan,
+            &[],
+            ControlAnswer::Refused(DeviceErrorCode::Internal),
+        );
+
+        assert_eq!(second, None);
+        assert_eq!(second_response, first_response);
+        assert!(harness
+            .events
+            .iter()
+            .any(|event| matches!(event, DeviceEvent::DuplicateRequestReplayed { sequence: 7 })));
+    }
+
+    #[test]
+    fn a_service_without_a_receiver_still_refuses_runtime_control() {
+        // `push` is what the simulator and any host-side driver use. It owns no
+        // receiver, so it must keep answering that this service is unsupported
+        // rather than silently doing nothing.
+        let mut harness = Harness::<STORE_BYTES>::new();
+        let request = Frame::new(Service::RuntimeControl, 0, 1, Command::GetReceiveState, &[])
+            .expect("request frame");
+        let response = harness.exchange(&request);
+
+        assert_eq!(response.flags(), FLAG_RESPONSE | FLAG_ERROR);
+        assert_eq!(
+            response.payload()[1],
+            DeviceErrorCode::UnsupportedService as u8
+        );
     }
 }
