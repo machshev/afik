@@ -17,6 +17,7 @@
     between the radio and the studio.
 14. Storage-shaped bounds: a byte arena, per-encoding plan tails, and the
     remaining table encodings.
+15. Scanning from the handset, and a radio which remembers where it was left.
 
 Later work packages must not begin until the current package's exit criteria
 in `STATUS.md` are met or explicitly revised in `DECISIONS.md`.

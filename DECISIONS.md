@@ -1065,3 +1065,43 @@ meaning.
 - Encodings which are declared but unimplemented are refused by name rather than
   given a length. `TableSimplex`, `TableMixedDuplex` and `SparseExceptions` are
   variable length; the packed store is what makes them expressible at all.
+
+## ADR-067 — The operator's place is not configuration
+
+- **Date:** 2026-08-09
+- **Status:** accepted
+- Where the operator left the radio — source, bank, channel, VFO frequency and
+  step — is stored in its own erase sector, as a sixteen-byte CRC-16 record
+  programmed into the next erased slot. It is not an object in the
+  configuration store and does not appear in a configuration image.
+- A configuration is what a host programmed: a canonical image, erased and
+  rewritten as one thing, changing when someone deliberately reprograms the
+  radio. A place is what the operator did afterwards, and it changes every time
+  they turn the channel knob. Sharing storage would spend the channel list's
+  erase cycles on a channel change, and would put the channel list at risk in
+  the window a place is being written.
+- Programming an erased slot rather than rewriting one is what makes the
+  ordinary save a single page program. A sector holds two hundred and fifty-six
+  records, so it is erased once every two hundred and fifty-six saves.
+- A place is therefore also allowed to be wrong. It carries the channel
+  identifier beside the index, and a restore which cannot match them starts at
+  the top of the view. Nothing downstream may treat a place as authority: it
+  names a selection, and the configuration remains the only thing that says
+  what that selection is.
+- The radio-wide squelch level stays in the configuration, where `EEPROM-035`
+  put it, because it is a setting a host may legitimately program.
+
+## ADR-068 — A walk asks membership before it asks for a channel
+
+- **Date:** 2026-08-09
+- **Status:** accepted
+- Selection, bank filtering, and scanning ask a `ChannelSource` whether an index
+  is in the active bank before asking it to build the record. A record is built
+  only where a scan must read the skip flag, or where a channel is selected.
+- A generated plan answers membership from arithmetic. Asking for the record
+  first meant a filtered walk expanded every channel of every other bank it
+  stepped over and threw all of them away, which is work proportional to the
+  whole plan for a step through one bank of it.
+- This is a cost rule, not a memory rule: nothing was ever materialised, and the
+  record a walk does build is still dropped again. What it buys is that a scan
+  over a band-sized plan costs a decode per channel it lands on.

@@ -1851,3 +1851,80 @@
   was changed on the strength of it; it is recorded because a reader of this
   file may hit it and should not go looking for a framing fault that the
   counters and the raw exchange had already ruled out.
+
+## SCAN-039 — Scanning from the handset, and a remembered place
+
+- **Status:** software complete (2026-08-09), flashed to the exact unit;
+  the two handset observations are open
+- **Objective:** let the operator scan the source they are already listening to,
+  and let the radio come back to where they left it after a power cycle.
+- **Scope:** a hold input in the shell and the two scan intents it produces; the
+  scan clock in the interface task, which is the missing half of the controller
+  the receive path already had; a `SCAN` marker on the operating screen; one
+  sixteen-byte operator-state record in its own erase sector, written by the
+  task which owns the memory bus and read once at start-up beside the
+  configuration it refers to; and a bank walk which stops expanding the channels
+  it steps over.
+- **Rationale:** `SCAN-007` built the whole deterministic scan — dwell, hold,
+  three resume modes, skip flags, stale-token safety — and `RX-027` wired its
+  selection half into the radio. Nothing ever armed its timers, so no key could
+  start one. Separately, a radio which forgets its channel every battery change
+  is one the operator sets up again before every use, and squelch was already
+  retained for exactly that reason.
+- **Dependencies:** `SCAN-007`, `RX-027`, `EEPROM-035`, `ARENA-038`.
+- **Tests required:** a source which counts the records a walk builds; the star
+  tap and the star hold as distinct inputs; every key stopping a running scan;
+  a record round trip, an erased slot, a foreign version, and every single-byte
+  corruption refused.
+- **Acceptance criteria:** a hold scans and any key stops it; the place survives
+  a power cycle; a filtered walk expands only the channels it lands on.
+- **Result — the walk:** selection and scanning asked the source for a record
+  before asking whether the channel was even in the active bank, so stepping
+  through a sixteen-channel bank inside a four-hundred-channel plan expanded
+  every channel in between and discarded all of them. Membership is now asked
+  first, which a plan answers from arithmetic, and a record is built only where
+  a scan has to read the skip flag or where a channel is actually selected. The
+  counting source proves it: one record for the channel selected, none for the
+  channels walked over. Nothing is materialised either way — the record built is
+  dropped again — so a scan of a band-sized plan costs no RAM beyond one record.
+- **Result — the key:** star commits on release rather than on the way down, so
+  a tap opens the source list and a hold scans it. Deciding on the press would
+  either open a list the hold then had to close again or lose the tap. While a
+  scan runs every key stops it and does nothing else, so no key both abandons
+  the scan and acts on the channel it happened to be sitting on.
+- **Result — the clock:** the controller expresses every deadline as a timer
+  directive rather than a wait, and the interface task now arms, cancels, and
+  reports expiry against it. Squelch observations already reached the
+  controller and were discarded; their updates now reach the clock, which is
+  what makes a busy channel hold. A stale token after a source change is
+  answered as unchanged, which is what the token existed for.
+- **Result — the place:** source, bank, channel index, the channel identifier
+  beside it, VFO frequency and tuning step, sixteen bytes with a CRC-16. It is
+  programmed into the next erased slot of its own erase sector at `0x101000`,
+  two hundred and fifty-six slots to a sector, so the ordinary cost of
+  remembering a channel change is one page program and an erase every two
+  hundred and fifty-six saves. It is deliberately not a configuration object:
+  the configuration is a canonical image erased and rewritten whole, and turning
+  the channel knob must neither spend the channel list's erase cycles nor put it
+  at risk in the window a place is being written. See `ADR-067`.
+- **Result — what a restore checks:** a place is written only once the selection
+  has held still for three seconds and never while scanning, so a walk across a
+  bank is one record rather than thirty. On the way back in the channel
+  identifier recorded beside the index has to still match what that index names,
+  because a host may have reprogrammed the radio since; when it does not, the
+  radio starts at the top of the view rather than on a channel nobody chose. A
+  bank the current configuration no longer populates is dropped, and a VFO
+  frequency or step outside range leaves the defaults in place.
+- **Image:** `AFIK-K1-5.1`, 87,952 bytes, Reset `0x080028c1`, SHA-256
+  `72f399dcf672efe7e68814d22c380302b7dcbf7244bd15c3231dfc4118151cfc`. Static RAM
+  8,348 bytes, up 160 from `5.0`, with 8,036 bytes of stack headroom. The image
+  grew 4,600 bytes because the controller's scan half was previously unreachable
+  and stripped.
+- **Flashed to the exact unit:** `/dev/ttyUSB0`, K1 bootloader `7.03.01`,
+  `344/344` pages acknowledged. `info` answers protocol 1, storage 4,
+  `configuration_bytes=1264`; `list` reads back the three generated banks at
+  generation 1, so the configuration in external memory survived the reflash.
+- **Open, and only observable by hand:** that holding star walks the bank and
+  stops on a busy channel, and that the channel the radio is left on is the
+  channel it comes back to after a power cycle. Neither can be established from
+  the host.

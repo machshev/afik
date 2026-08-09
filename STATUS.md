@@ -2,6 +2,40 @@
 
 ## Current work package
 
+**`SCAN-039` is software complete and flashed to the exact unit: the radio
+scans, and it remembers where it was left. Holding star walks the source in
+force — one bank, or every programmed channel — dwelling on each, holding on a
+busy one, and resuming as the programmed resume mode says. Any key stops it and
+where it stops is where the radio stays. The screen says `SCAN` while it runs.
+
+`SCAN-007` had built the whole deterministic scan and `RX-027` had wired its
+selection half into the radio; nothing ever armed its timers, so no key could
+start one. The interface task is now that clock, and the squelch observations
+it was already taking and discarding are what make a busy channel hold.
+
+The place the operator left the radio in — source, bank, channel, VFO frequency
+and step — is one sixteen-byte CRC-16 record programmed into the next erased
+slot of its own erase sector at `0x101000`. Two hundred and fifty-six slots to a
+sector, so remembering a channel change costs one page program and an erase
+every two hundred and fifty-six saves. It is deliberately not a configuration
+object: turning the channel knob must not spend the channel list's erase cycles.
+A place is written only after the selection has held still for three seconds and
+never while scanning, and a restore checks the channel identifier recorded
+beside the index still names the same channel before trusting it.
+
+A bank walk also stopped expanding the channels it steps over. Membership is
+asked first, which a plan answers from arithmetic, so a step through a
+sixteen-channel bank inside a four-hundred-channel plan no longer expands every
+channel in between. A counting source proves it.
+
+`AFIK-K1-5.1` is built, gated, packaged and flashed; `info` and `list` answer,
+and the three generated banks survived the reflash. **Two claims remain open and
+only a hand can close them: that holding star walks the bank and stops on a busy
+channel, and that the channel the radio is left on is the channel it comes back
+to after a power cycle.**
+
+## ARENA-038
+
 **`ARENA-038` is complete and confirmed on the exact unit: a radio declares one
 number, `configuration_bytes`, and that number is the whole bound on what it
 will hold. The store is a packed byte arena — objects end to end as
@@ -64,6 +98,45 @@ driver implementation.
 
 `FLASH-012` is deferred with its software milestone intact and physical gates
 incomplete. It can resume unchanged when the exact K5 V1 hardware is available.
+
+## SCAN-039 verification
+
+Run on the pinned environment, 2026-08-09:
+
+- `cargo fmt --all --check`: clean.
+- `cargo clippy --workspace --all-targets -- -D warnings`: clean.
+- `cargo test --workspace`: 379 tests pass, 0 failures.
+- `tool/build-k1-async.sh --release`: builds.
+- `tool/verify-k1-async-image.sh`: 192 vector bytes, initial SP `0x20004000`,
+  Reset `0x080028c1`, required IRQ handlers present, static RAM 8,348 bytes with
+  8,036 bytes of stack headroom.
+- `tool/package-k1-async-image.sh --force`: 87,952 bytes, SHA-256
+  `72f399dcf672efe7e68814d22c380302b7dcbf7244bd15c3231dfc4118151cfc`.
+
+The image grew 4,600 bytes over `5.0`. The controller's scan half had never been
+reachable from this image and was being stripped; it is reachable now.
+
+### Physical write, 2026-08-09
+
+`flash-afik-k1` wrote `AFIK-K1-5.1` over `/dev/ttyUSB0` at K1 bootloader
+`7.03.01`: `344/344` pages acknowledged, `status=acknowledged_not_read_back`.
+`afik-programmer info` answers protocol 1, storage 4, `configuration_bytes=1264`,
+and `list` reads back the three generated banks at generation 1, so the
+configuration in external memory survived the reflash unchanged.
+
+### What is not yet observed
+
+Both remaining claims are handset claims and neither can be established from the
+host. Hold star on the operating screen with channels selected: the position
+should step every 150 ms and `SCAN` should appear on the bottom line. Any key
+stops it. Then leave the radio on a channel for more than three seconds, power
+cycle it, and it should come back to that channel rather than to the first one.
+
+The scan dwell in force is the conservative default, 150 milliseconds, because
+no configuration object is stored on this unit. The receive path samples every
+60 milliseconds, so a channel is observed about twice before the dwell expires.
+If the scan proves to run past busy channels, that ratio is the first thing to
+suspect and `scan_dwell_ms` is host-programmable.
 
 ## ARENA-038 verification
 
