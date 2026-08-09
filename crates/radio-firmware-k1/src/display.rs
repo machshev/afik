@@ -590,6 +590,7 @@ pub fn render_info_screen(
     memory: MemoryState,
     serial: SerialCounters,
     peripheral_clock_khz: u32,
+    reset: ResetCause,
     panic: Option<PanicReport>,
 ) {
     frame.fill(0);
@@ -614,8 +615,9 @@ pub fn render_info_screen(
     }
     draw_text(frame, 0, 18, &generation_label);
 
-    let mut channel_label = *b"CHANNELS 00";
-    write_two_digits(&mut channel_label[9..], channels);
+    let mut channel_label = *b"CHANNELS 00 RST ....";
+    write_two_digits(&mut channel_label[9..11], channels);
+    channel_label[16..20].copy_from_slice(&reset.name());
     draw_text(frame, 0, 32, &channel_label);
 
     draw_text(
@@ -658,6 +660,58 @@ pub fn render_info_screen(
     write_three_digits(&mut link[13..16], serial.discarded);
     write_three_digits(&mut link[18..21], serial.errors);
     draw_text(frame, 0, 8, &link);
+}
+
+/// Why the radio last reset, as `RCC_CSR` recorded it.
+///
+/// The byte is bits 24 to 31 of that register, which is where every reset flag
+/// on this part lives. Bit positions come from the pinned metapac definition
+/// for this chip and nowhere else: 25 option-byte loader, 26 pin, 27 power,
+/// 28 software, 29 independent watchdog, 30 window watchdog.
+///
+/// `RISK-036` is what this is for. A radio which restarts when a host speaks to
+/// it is a different fault depending on whether that restart was a brown-out, a
+/// watchdog, or the software asking for it, and the part already knows which.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ResetCause(pub u8);
+
+impl ResetCause {
+    /// Option byte loader reset.
+    const OBL: u8 = 1 << 1;
+    /// Reset pin.
+    const PIN: u8 = 1 << 2;
+    /// Power or brown-out reset.
+    const PWR: u8 = 1 << 3;
+    /// Software-requested reset, which is what the panic handler now does.
+    const SFT: u8 = 1 << 4;
+    /// Independent watchdog reset.
+    const IWDG: u8 = 1 << 5;
+    /// Window watchdog reset.
+    const WWDG: u8 = 1 << 6;
+
+    /// Names the cause, or gives the raw flags when more than one is set.
+    ///
+    /// Naming one flag is what an operator can read back. More than one is
+    /// unusual and interesting, so those are shown as `x` and the raw hex
+    /// rather than collapsed into a name which would hide the others.
+    #[must_use]
+    pub fn name(&self) -> [u8; 4] {
+        match self.0 {
+            0 => *b"NONE",
+            Self::OBL => *b"OBL ",
+            Self::PIN => *b"PIN ",
+            Self::PWR => *b"PWR ",
+            Self::SFT => *b"SFT ",
+            Self::IWDG => *b"IWDG",
+            Self::WWDG => *b"WWDG",
+            raw => {
+                let mut name = *b"x   ";
+                name[1] = hex_digit(raw >> 4);
+                name[2] = hex_digit(raw & 0x0f);
+                name
+            }
+        }
+    }
 }
 
 /// Where a panic which restarted the radio came from.
@@ -1163,8 +1217,8 @@ mod tests {
 mod operating_screen_tests {
     use super::{
         render_channel_list, render_info_screen, render_operating_screen, render_selector_list,
-        step_label, BankIndicator, ListRow, MemoryState, OperatingView, PanicReport, SelectorRow,
-        SerialCounters, FRAME_BYTES, LIST_NAME_BYTES, MEMORY_LABEL_BYTES,
+        step_label, BankIndicator, ListRow, MemoryState, OperatingView, PanicReport, ResetCause,
+        SelectorRow, SerialCounters, FRAME_BYTES, LIST_NAME_BYTES, MEMORY_LABEL_BYTES,
     };
 
     fn view() -> OperatingView<'static> {
@@ -1516,6 +1570,7 @@ mod operating_screen_tests {
                 errors: 0,
             },
             24_000,
+            ResetCause::default(),
             None,
         );
         let mut unstored = [0_u8; FRAME_BYTES];
@@ -1528,6 +1583,7 @@ mod operating_screen_tests {
             MemoryState::Absent,
             SerialCounters::default(),
             24_000,
+            ResetCause::default(),
             None,
         );
         assert_ne!(retained, unstored);
@@ -1575,6 +1631,7 @@ mod operating_screen_tests {
             MemoryState::Present([0x68, 0x40, 0x15]),
             SerialCounters::default(),
             48_000,
+            ResetCause::default(),
             Some(panic),
         );
         let mut without_panic = [0_u8; FRAME_BYTES];
@@ -1587,6 +1644,7 @@ mod operating_screen_tests {
             MemoryState::Present([0x68, 0x40, 0x15]),
             SerialCounters::default(),
             48_000,
+            ResetCause::default(),
             None,
         );
         assert_ne!(with_panic, without_panic);
@@ -1634,6 +1692,7 @@ mod operating_screen_tests {
             MemoryState::Absent,
             SerialCounters::default(),
             48_000,
+            ResetCause::default(),
             None,
         );
         let mut erroring = [0_u8; FRAME_BYTES];
@@ -1651,8 +1710,66 @@ mod operating_screen_tests {
                 errors: 42,
             },
             48_000,
+            ResetCause::default(),
             None,
         );
         assert_ne!(silent, erroring);
+    }
+
+    #[test]
+    fn every_single_reset_flag_has_its_own_name() {
+        // Bit positions are the metapac's, offset by 24 because the byte kept
+        // is bits 24 to 31 of RCC_CSR.
+        let named = [
+            (0b0000_0000, *b"NONE"),
+            (0b0000_0010, *b"OBL "),
+            (0b0000_0100, *b"PIN "),
+            (0b0000_1000, *b"PWR "),
+            (0b0001_0000, *b"SFT "),
+            (0b0010_0000, *b"IWDG"),
+            (0b0100_0000, *b"WWDG"),
+        ];
+        for (raw, expected) in named {
+            assert_eq!(ResetCause(raw).name(), expected);
+        }
+    }
+
+    #[test]
+    fn more_than_one_flag_shows_the_raw_byte_rather_than_hiding_flags() {
+        // A pin reset and a power reset together is not either one of them, and
+        // naming one would discard the other.
+        assert_eq!(ResetCause(0b0000_1100).name(), *b"x0C ");
+        assert_eq!(ResetCause(0b1111_1111).name(), *b"xFF ");
+    }
+
+    #[test]
+    fn the_reset_cause_reaches_the_information_screen() {
+        let mut power = [0_u8; FRAME_BYTES];
+        render_info_screen(
+            &mut power,
+            b"AFIK-K1-6.0",
+            0,
+            0,
+            false,
+            MemoryState::Absent,
+            SerialCounters::default(),
+            48_000,
+            ResetCause(0b0000_1000),
+            None,
+        );
+        let mut software = [0_u8; FRAME_BYTES];
+        render_info_screen(
+            &mut software,
+            b"AFIK-K1-6.0",
+            0,
+            0,
+            false,
+            MemoryState::Absent,
+            SerialCounters::default(),
+            48_000,
+            ResetCause(0b0001_0000),
+            None,
+        );
+        assert_ne!(power, software);
     }
 }

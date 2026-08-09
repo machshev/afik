@@ -28,6 +28,7 @@ use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Timer};
 use py32_hal::gpio::{Flex, Input, Level, Output, Pull, Speed};
 use py32_hal::mode::Async;
+use py32_hal::pac::RCC;
 use py32_hal::peripherals::{PA0, PA1, PA2, PA3, PA8, SPI1, SPI2};
 use py32_hal::spi::SpiTx;
 use py32_hal::usart::Uart;
@@ -54,8 +55,8 @@ use radio_firmware_k1::configuration::{
 };
 use radio_firmware_k1::display::{
     render_channel_list, render_info_screen, render_operating_screen, render_selector_list,
-    BankIndicator, ListRow, MemoryState, OperatingView, PanicReport, SelectorRow, SerialCounters,
-    COLUMN_OFFSET, FRAME_BYTES, LIST_ROWS, PAGES, SETUP_COMMANDS, WIDTH,
+    BankIndicator, ListRow, MemoryState, OperatingView, PanicReport, ResetCause, SelectorRow,
+    SerialCounters, COLUMN_OFFSET, FRAME_BYTES, LIST_ROWS, PAGES, SETUP_COMMANDS, WIDTH,
 };
 use radio_firmware_k1::host_control;
 use radio_firmware_k1::keypad::{decode, Debouncer, Edge, KeypadScan, Sample};
@@ -76,7 +77,7 @@ const _: [(); 8] = [(); PAGES];
 const K1_VECTOR_TABLE_ORIGIN: u32 = 0x0800_2800;
 
 /// Identity this image reports on the information screen.
-const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-5.9";
+const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-6.0";
 
 /// Interval between receive samples while audio is routed.
 ///
@@ -221,6 +222,14 @@ static PERIPHERAL_CLOCK_KHZ: AtomicU32 = AtomicU32::new(0);
 /// what tells those apart without a host.
 static SERIAL_DISCARDED: AtomicU32 = AtomicU32::new(0);
 
+/// Reset flags from `RCC_CSR`, bits 24 to 31, read once at boot.
+static RESET_CAUSE: AtomicU32 = AtomicU32::new(0);
+
+/// Returns the reset cause this boot began with.
+fn reset_cause() -> ResetCause {
+    ResetCause(u8::try_from(RESET_CAUSE.load(Ordering::Relaxed) & 0xff).unwrap_or(0))
+}
+
 /// Receiver errors: bytes which arrived and could not be framed.
 ///
 /// A byte the UART cannot frame is never delivered, so it cannot be counted as
@@ -257,6 +266,15 @@ fn main() -> ! {
         fail_closed();
     };
     PERIPHERAL_CLOCK_KHZ.store(runtime_init.clocks.pclk1_hz() / 1_000, Ordering::Relaxed);
+
+    // Why the radio last reset, taken before anything else can provoke one and
+    // cleared immediately so the next boot reports its own cause rather than
+    // inheriting this one. `RISK-036`: the unit restarts when a host speaks to
+    // it, and this is the part saying whether that was a brown-out, a watchdog,
+    // or software asking.
+    let csr = RCC.csr().read();
+    RESET_CAUSE.store((csr.0 >> 24) & 0xff, Ordering::Relaxed);
+    RCC.csr().modify(|register| register.set_rmvf(true));
     let p = runtime_init.peripherals;
     let Ok(runtime) = compose(K1RuntimePeripherals {
         usart: p.USART1,
@@ -1102,6 +1120,7 @@ async fn ui_task(
         MemoryState::Unknown,
         serial_counters(),
         PERIPHERAL_CLOCK_KHZ.load(Ordering::Relaxed),
+        reset_cause(),
         // A radio which panicked says so on the first frame it draws, before
         // the operator has to know to go looking for it.
         recorded_panic(),
@@ -1629,6 +1648,7 @@ fn render(
             memory,
             serial_counters(),
             PERIPHERAL_CLOCK_KHZ.load(Ordering::Relaxed),
+            reset_cause(),
             recorded_panic(),
         ),
     }
