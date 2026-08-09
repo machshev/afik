@@ -19,7 +19,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use core::cell::RefCell;
 use cortex_m_rt::entry;
 use embassy_executor::Executor;
-use embassy_futures::select::{select3, Either3};
+use embassy_futures::select::{select, select3, Either, Either3};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 
 use embassy_sync::blocking_mutex::Mutex;
@@ -40,7 +40,7 @@ use radio_channel_control::{
 use radio_channel_plan::{
     BankMask, BankName, ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord,
 };
-use radio_device::{DeviceEvent, DeviceService};
+use radio_device::{ControlAnswer, DeviceEvent, DeviceService, Push};
 use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, SquelchLevel,
     Tone, TxClass,
@@ -56,6 +56,7 @@ use radio_firmware_k1::display::{
     BankIndicator, ListRow, MemoryState, OperatingView, SelectorRow, SerialCounters, COLUMN_OFFSET,
     FRAME_BYTES, LIST_ROWS, PAGES, SETUP_COMMANDS, WIDTH,
 };
+use radio_firmware_k1::host_control;
 use radio_firmware_k1::keypad::{decode, Debouncer, Edge, KeypadScan, Sample};
 use radio_firmware_k1::operator_state::OperatorState;
 use radio_firmware_k1::py32f071_battery::BatterySense;
@@ -67,14 +68,14 @@ use radio_firmware_k1::shell::{
     Context, Intent, Mode, Screen, Setting, Shell, Source, HOLD_MILLISECONDS, SETTINGS,
     SQUELCH_LEVELS, VFO_STEPS_HZ,
 };
-use radio_protocol::MAX_ENCODED_FRAME;
+use radio_protocol::{ControlRequest, DeviceErrorCode, ReceiveMetricsReport, MAX_ENCODED_FRAME};
 use radio_storage::ObjectArena;
 
 const _: [(); 8] = [(); PAGES];
 const K1_VECTOR_TABLE_ORIGIN: u32 = 0x0800_2800;
 
 /// Identity this image reports on the information screen.
-const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-5.6";
+const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-5.7";
 
 /// Interval between receive samples while audio is routed.
 ///
@@ -144,6 +145,25 @@ static BATTERY_CALIBRATION: Signal<CriticalSectionRawMutex, Option<Calibration>>
 /// asks rather than writes. A choice the operator makes while a host is
 /// mid-exchange waits its turn instead of racing it.
 static SETTING_CHOICE: Signal<CriticalSectionRawMutex, SettingChange> = Signal::new();
+
+/// One host runtime-control request, for the task which owns the controller.
+///
+/// The serial task owns USART1 and the interface task owns the receive
+/// controller, so a host request crosses here and its answer comes back on
+/// [`CONTROL_ANSWER`]. This is the same shape as the place going the other way:
+/// the task which can do the work does it, and neither reaches into the other.
+static CONTROL_REQUEST: Signal<CriticalSectionRawMutex, ControlRequest> = Signal::new();
+
+/// The answer to the request on [`CONTROL_REQUEST`].
+static CONTROL_ANSWER: Signal<CriticalSectionRawMutex, ControlAnswer> = Signal::new();
+
+/// Milliseconds a host waits for the interface task to answer one request.
+///
+/// The interface task answers from the controller alone and needs no bus, so
+/// this is generous rather than tight. It exists so a host cannot be left
+/// waiting forever by an interface task which has stopped: the link keeps
+/// working and says the radio did not answer, rather than going silent.
+const CONTROL_ANSWER_MILLISECONDS: u64 = 200;
 
 /// Where the operator has left the radio, for the task which owns the memory.
 ///
@@ -445,6 +465,15 @@ struct Receiver {
     frequency_hz: u32,
     rssi_raw: u16,
     squelch_open: bool,
+    /// Completed metric samples since boot, saturating.
+    ///
+    /// A host cannot otherwise tell a fresh reading from the one it already
+    /// had. The receiver needs an unmeasured settling time after a retune —
+    /// `RISK-008` — so a reading taken too soon measures settling rather than
+    /// signal, and a host which wants a settled one waits for this to advance.
+    samples: u16,
+    /// The most recent complete sample, as a host would read it.
+    last_metrics: Option<ReceiveMetricsReport>,
 }
 
 impl Receiver {
@@ -461,6 +490,8 @@ impl Receiver {
             frequency_hz: 0,
             rssi_raw: 0,
             squelch_open: false,
+            samples: 0,
+            last_metrics: None,
         }
     }
 
@@ -557,6 +588,20 @@ impl Receiver {
             Ok(metrics) => {
                 self.rssi_raw = u16::try_from(metrics.rssi_dbm_x2 + 320).unwrap_or(0);
                 self.squelch_open = metrics.squelch_open;
+                // Saturating, so a long-running radio stops counting rather
+                // than wrapping past a value a host is waiting to see pass.
+                self.samples = self.samples.saturating_add(1);
+                self.last_metrics = Some(ReceiveMetricsReport {
+                    // The frequency this sample was actually taken at, which is
+                    // the one the receiver is tuned to and not necessarily the
+                    // one the controller has most recently been asked for.
+                    frequency_hz: self.frequency_hz,
+                    samples: self.samples,
+                    rssi_dbm_x2: metrics.rssi_dbm_x2,
+                    glitch: metrics.glitch,
+                    noise: metrics.noise,
+                    squelch_open: metrics.squelch_open,
+                });
                 self.gate_audio();
                 Some(ReceiveObservation {
                     squelch_open: metrics.squelch_open,
@@ -737,8 +782,41 @@ async fn serial_task(mut uart: Uart<'static, Async>, memory: EepromPins) {
                     );
                 }
             };
-            let Some(length) = service.push(byte, &mut response, &mut observe) else {
-                continue;
+            let length = match service.push_control(byte, &mut response, &mut observe) {
+                Push::Idle => continue,
+                Push::Response(length) => length,
+                // The receiver belongs to the interface task, so the answer has
+                // to come from there. Nothing is held while waiting: this task
+                // owns only the link, and the operator's keypad is unaffected.
+                Push::Control(control) => {
+                    CONTROL_REQUEST.signal(control.request());
+                    let answered = select(
+                        CONTROL_ANSWER.wait(),
+                        Timer::after_millis(CONTROL_ANSWER_MILLISECONDS),
+                    )
+                    .await;
+                    let answer = match answered {
+                        Either::First(answer) => answer,
+                        // An interface task which did not answer leaves the
+                        // link working and the host told, rather than a serial
+                        // port which has silently stopped replying.
+                        Either::Second(()) => ControlAnswer::Refused(DeviceErrorCode::Internal),
+                    };
+                    let mut observe = |event| {
+                        if matches!(event, DeviceEvent::PacketDiscarded(_)) {
+                            SERIAL_DISCARDED.store(
+                                SERIAL_DISCARDED.load(Ordering::Relaxed).wrapping_add(1),
+                                Ordering::Relaxed,
+                            );
+                        }
+                    };
+                    let Some(length) =
+                        service.answer_control(control, answer, &mut response, &mut observe)
+                    else {
+                        continue;
+                    };
+                    length
+                }
             };
             if service.generation() != before {
                 // Retain the new configuration before answering, so a host told
@@ -1112,6 +1190,29 @@ async fn ui_task(
             // A configuration arriving replaces what a scan was walking.
             scan_timer = None;
             redraw = true;
+        }
+
+        // A host request reaches the same controller a key press does, and its
+        // update is applied by the same call. The operator is not locked out
+        // while this happens and nothing here is suspended: both peers drive
+        // one controller, and whichever arrives first is served first.
+        if let Some(request) = CONTROL_REQUEST.try_take() {
+            let answer = match activation.as_mut() {
+                Some((controller, _)) => {
+                    let performed =
+                        host_control::perform(controller, request, receiver.last_metrics);
+                    if let Some(update) = performed.update {
+                        apply(update, &mut pending, &mut scan_timer);
+                        redraw = true;
+                    }
+                    performed.answer
+                }
+                // No controller yet means no channels and no VFO: the radio has
+                // not finished starting. That is a state the request cannot be
+                // performed from, not a fault.
+                None => ControlAnswer::Refused(DeviceErrorCode::InvalidState),
+            };
+            CONTROL_ANSWER.signal(answer);
         }
 
         let sample = match decode(keypad.scan().await) {
