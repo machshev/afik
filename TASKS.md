@@ -1924,7 +1924,36 @@
   `344/344` pages acknowledged. `info` answers protocol 1, storage 4,
   `configuration_bytes=1264`; `list` reads back the three generated banks at
   generation 1, so the configuration in external memory survived the reflash.
+- **Result — what actually paced the scan:** not the dwell. Receive samples ran
+  on a free-running sixty-millisecond grid which a retune did not reset, so the
+  first reading of a scanned channel landed anywhere inside the dwell and how
+  many readings a channel got at all was a matter of phase; a hundred and fifty
+  millisecond dwell got two or one, and anything shorter would have got none. A
+  retune now schedules its own first sample, and while scanning the samples run
+  every five milliseconds and the interface loop every one, so a dwell is
+  quantised to something far below itself rather than to the operating cadence.
+- **Result — the first reading after a retune:** it updates the meter, which is
+  honest about what was read, but it does not get to tell a scan that a channel
+  is busy. How long this board needs to settle after a retune is unmeasured —
+  `RISK-008` — and a false stop costs the whole hold, which is the one failure
+  an operator would notice and could not explain. This is a workflow rule, not a
+  chip fact, and it is stated as one.
+- **Result — the dwell is the operator's:** a settings row beside squelch,
+  twenty to three hundred milliseconds, stored through `store_setting` and
+  retained like every other handset setting. The floor is deliberately not a
+  number this firmware states: the list reaches well below the conservative
+  default so the operator can find it on the unit, and well above it so a radio
+  which needs longer can be given it.
+- **Second image:** `AFIK-K1-5.2`, 90,064 bytes, SHA-256
+  `cc349e3a062957e94ba68f919c2528d11d4961d8e259e486c8729dc262327776`. Static RAM
+  8,356 bytes, 8,028 bytes of stack headroom. `352/352` pages acknowledged and
+  the operator interface runs.
 - **Open, and only observable by hand:** that holding star walks the bank and
-  stops on a busy channel, and that the channel the radio is left on is the
-  channel it comes back to after a power cycle. Neither can be established from
-  the host.
+  stops on a busy channel; that the channel the radio is left on is the channel
+  it comes back to after a power cycle; and the lowest dwell at which the scan
+  still stops on a signal, which is the `RISK-008` measurement this work package
+  exists to make takeable. None can be established from the host.
+- **Not confirmed over serial:** the `ARENA-038` serial dead end recurred
+  immediately after the `5.2` write and did not clear, so `info` and `list` have
+  not questioned this image the way they questioned `5.1`. The handset is its
+  only witness so far.

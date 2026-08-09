@@ -28,11 +28,26 @@ asked first, which a plan answers from arithmetic, so a step through a
 sixteen-channel bank inside a four-hundred-channel plan no longer expands every
 channel in between. A counting source proves it.
 
-`AFIK-K1-5.1` is built, gated, packaged and flashed; `info` and `list` answer,
-and the three generated banks survived the reflash. **Two claims remain open and
-only a hand can close them: that holding star walks the bank and stops on a busy
-channel, and that the channel the radio is left on is the channel it comes back
-to after a power cycle.**
+The scan was then found not to be paced by its dwell at all. Receive samples ran
+on a free-running sixty-millisecond grid which a retune did not reset, so the
+first reading of a scanned channel landed anywhere inside the dwell and how many
+readings a channel got was a matter of phase. A retune now schedules its own
+first sample; while scanning, samples run every five milliseconds and the
+interface loop every one. The first reading after a retune updates the meter but
+does not get to tell a scan a channel is busy, because how long this board needs
+to settle is unmeasured under `RISK-008` and a false stop costs the whole hold.
+
+The dwell is now a settings row — twenty to three hundred milliseconds — stored
+and retained exactly like squelch. The floor is not a number this firmware can
+honestly state, so the list reaches well below the conservative default and the
+operator finds it on the unit.
+
+`AFIK-K1-5.2` is built, gated, packaged and flashed, and the operator interface
+runs. **Three claims remain open and only a hand can close them: that holding
+star walks the bank and stops on a busy channel, that the channel the radio is
+left on is the channel it comes back to after a power cycle, and what the lowest
+dwell is at which the scan still stops on a signal — which is the `RISK-008`
+measurement this firmware has been built to take.**
 
 ## ARENA-038
 
@@ -105,7 +120,7 @@ Run on the pinned environment, 2026-08-09:
 
 - `cargo fmt --all --check`: clean.
 - `cargo clippy --workspace --all-targets -- -D warnings`: clean.
-- `cargo test --workspace`: 379 tests pass, 0 failures.
+- `cargo test --workspace`: 382 tests pass, 0 failures.
 - `tool/build-k1-async.sh --release`: builds.
 - `tool/verify-k1-async-image.sh`: 192 vector bytes, initial SP `0x20004000`,
   Reset `0x080028c1`, required IRQ handlers present, static RAM 8,348 bytes with
@@ -117,6 +132,20 @@ The image grew 4,600 bytes over `5.0`. The controller's scan half had never been
 reachable from this image and was being stripped; it is reachable now.
 
 ### Physical write, 2026-08-09
+
+`AFIK-K1-5.2`, 90,064 bytes, SHA-256
+`cc349e3a062957e94ba68f919c2528d11d4961d8e259e486c8729dc262327776`, static RAM
+8,356 bytes with 8,028 bytes of stack headroom, was written over `/dev/ttyUSB0`
+at K1 bootloader `7.03.01`: `352/352` pages acknowledged. The operator interface
+runs.
+
+The serial dead end recorded under `ARENA-038` recurred immediately after this
+write and has not cleared: `afik-programmer info` and `probe-normal` return
+nothing while the radio's own interface is responsive. It is the same phantom,
+it is not being chased again, and the next person to hit it should read the
+counters on the information screen before assuming anything about framing. What
+it does mean is that `5.2` has not been questioned over serial the way `5.1`
+was; the handset is the only witness this image currently has.
 
 `flash-afik-k1` wrote `AFIK-K1-5.1` over `/dev/ttyUSB0` at K1 bootloader
 `7.03.01`: `344/344` pages acknowledged, `status=acknowledged_not_read_back`.
