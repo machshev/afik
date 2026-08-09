@@ -649,3 +649,35 @@
   objects to fill the 1,264 bytes, written in an order which forces a move on
   every one — and record whether any serial exchange approaches its timeout.
   Until then the cost is argued rather than observed.
+
+## RISK-036 — The radio stops dead and does not say why
+
+- **State:** open, mechanism identified, cause unknown
+- **Impact:** the exact unit has been seen to freeze with its last frame on the
+  display, a completely unresponsive keypad, and a silent serial link. It has
+  happened on the information screen more than once, and it reproduces on
+  `AFIK-K1-5.6` as well as on `5.7`, so it predates the `CTRL-044` work rather
+  than being caused by it.
+- **Mechanism, established by reading the image:** `fail_closed` is an infinite
+  spin loop and the panic handler called it, discarding `PanicInfo`. Any panic
+  therefore produced exactly this signature, and the radio held the one piece
+  of evidence that would explain it.
+- **What is not established:** whether these freezes are panics at all. A hard
+  fault, a stack overflow which faults, or a stalled bit-banged bus would look
+  the same from outside. `RISK-033` already records that stack headroom is
+  bounded by inspection rather than measurement, which makes an overflow a live
+  candidate.
+- **Mitigation, `AFIK-K1-5.8`:** the panic handler records the panicking file
+  and line into the section startup does not clear and resets. The next boot
+  draws `PANIC <file>:<line>` on its first frame and on the information screen.
+  A freeze which now still freezes is evidence in itself: it means the fault is
+  reached without the panic handler running, and a `HardFault` handler doing the
+  same thing is the next instrument.
+- **Consequence for `ARENA-038`:** the serial dead end has always been witnessed
+  through the information screen, which is the screen the radio has been seen to
+  freeze on. Counter readings taken from a frozen display describe when the
+  radio stopped, not what the link did. `RX0000 TX0000 D0000` observed on
+  2026-08-09 was read this way and cannot be used as evidence that no bytes
+  arrived.
+- **Required next:** a counter reading taken while the radio is confirmed
+  responsive, and a panic or hard-fault location from a reproduction.
