@@ -56,9 +56,24 @@ be re-ranged again as the bracket closes. 150 ms stays as the row to return to,
 and a compile-time assertion ties it to `RadioConfig::conservative()` so the
 menu and the domain cannot disagree about what an unprogrammed radio scans at.
 
-**Two claims remain open and only a hand can close them: that the channel the
-radio is left on is the channel it comes back to after a power cycle, and where
-in 60 to 100 the floor actually lies.**
+The scan then stopped on the wrong channel beside a close transmitter, and the
+cause was the squelch rather than the scan: frequency and numbering were correct
+and the audio on the right channel was the transmission, so it was a squelch
+decision. AFIK gates on carrier strength alone and its nine levels spanned only
+-130 dBm to -106 dBm — all of it below what a handheld a metre away puts into
+the adjacent channels, so every level opened on it. `EVID-K1-070` records it.
+
+The range is now 8 dB a step, about -130 dBm to about -66 dBm, and each squelch
+row names the carrier strength it opens at so a threshold can be set against a
+signal rather than guessed. **This is a workaround, not the fix.** Noise-gated
+squelch is what distinguishes a signal on this channel from a strong one beside
+it, and its thresholds are per-unit calibration this radio cannot yet read;
+`RISK-008` carries that as the remaining work.
+
+`AFIK-K1-5.4` is flashed. **Three claims remain open and only a hand can close
+them: that the channel the radio is left on is the channel it comes back to
+after a power cycle, where in 60 to 100 the dwell floor lies, and whether a
+raised squelch level stops the scan on the transmitted channel.**
 
 ## ARENA-038
 
@@ -131,7 +146,7 @@ Run on the pinned environment, 2026-08-09:
 
 - `cargo fmt --all --check`: clean.
 - `cargo clippy --workspace --all-targets -- -D warnings`: clean.
-- `cargo test --workspace`: 382 tests pass, 0 failures.
+- `cargo test --workspace`: 383 tests pass, 0 failures.
 - `tool/build-k1-async.sh --release`: builds.
 - `tool/verify-k1-async-image.sh`: 192 vector bytes, initial SP `0x20004000`,
   Reset `0x080028c1`, required IRQ handlers present, static RAM 8,348 bytes with
@@ -143,6 +158,10 @@ The image grew 4,600 bytes over `5.0`. The controller's scan half had never been
 reachable from this image and was being stripped; it is reachable now.
 
 ### Physical write, 2026-08-09
+
+`AFIK-K1-5.4`, 90,304 bytes, SHA-256
+`126db4efddd3115fff7602dc502933ce2b1813d411e9d9f6bee2bcd03623f861`, `353/353`
+pages acknowledged.
 
 `AFIK-K1-5.3`, 90,200 bytes, SHA-256
 `ad3dd476cd471c719d64b7bb28b4759a5674f1ec7988542af9e6c7d065b69454`, static RAM

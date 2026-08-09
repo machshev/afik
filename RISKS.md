@@ -88,6 +88,15 @@
   inputs. Do not encode target timer rates, polling cadence, receiver settle
   time, RSSI thresholds, tone detection, or physical scan claims until the
   relevant chip/board behavior is sourced and measured safely.
+- **Carrier-only squelch, 2026-08-09:** `EVID-K1-070` records a scan stopping on
+  the wrong channel beside a close transmitter, because AFIK gates the squelch
+  on carrier strength alone and its whole threshold range sat below that
+  signal's adjacent-channel leakage. The range is now 8 dB a step to about
+  -66 dBm, which is a workaround rather than a fix: noise-gated squelch is what
+  distinguishes a signal on this channel from a strong one next to it, and its
+  thresholds are per-unit calibration data this radio cannot yet read. Do not
+  invent them. The remaining work is to read the unit's own squelch calibration
+  from the vendor block, exactly as the battery calibration is read.
 - **First measurement, 2026-08-09:** `EVID-K1-069` brackets the usable dwell on
   the exact unit between 60 and 100 milliseconds — the scan stops on a signal at
   100 and not at 60. This is one pass against one signal and measures the whole

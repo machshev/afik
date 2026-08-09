@@ -1963,9 +1963,34 @@
   rather than a change of design. A compile-time assertion ties the default row
   to `RadioConfig::conservative()`, so a future re-range cannot silently leave
   an unprogrammed radio scanning at a dwell its own menu cannot name.
+- **Result — why it stopped on the wrong channel:** the squelch, not the scan.
+  Beside a close transmitter the scan stopped two positions early; frequency and
+  channel numbering were correct and the audio on the right channel was the
+  transmission, which is what rules out an indexing fault. AFIK gates on carrier
+  strength alone, and its nine levels spanned 3 dB each from about -130 dBm to
+  about -106 dBm — the entire range below what a handheld a metre away delivers
+  into the adjacent channels, so every level opened on it. `EVID-K1-070`.
+- **Result — the range:** 8 dB a step, about -130 dBm to about -66 dBm. Level
+  one is unchanged for weak-signal work and the top now reaches above a strong
+  local signal. The steps are coarser and that is the trade: an operator who
+  cannot shut the squelch at all has no useful resolution anywhere. Each squelch
+  row now names the carrier strength it opens at, because the operator is
+  choosing a threshold against a signal and a bare level number has no scale.
+  These were already AFIK's own values rather than the unit's, which is what
+  makes re-ranging them honest.
+- **Not the fix, and recorded as such:** noise-gated squelch is what
+  distinguishes a signal on this channel from a strong one beside it. Its
+  thresholds are per-unit calibration data, the pinned firmware reads them from
+  the vendor block, and AFIK must not invent them. The remaining work is to read
+  this unit's own squelch calibration exactly as its battery calibration is
+  read; `RISK-008` carries it.
+- **Fourth image:** `AFIK-K1-5.4`, 90,304 bytes, SHA-256
+  `126db4efddd3115fff7602dc502933ce2b1813d411e9d9f6bee2bcd03623f861`, `353/353`
+  pages acknowledged.
 - **Open, and only observable by hand:** that the channel the radio is left on
-  is the channel it comes back to after a power cycle, and where in 60 to 100
-  the floor actually lies. Neither can be established from the host.
+  is the channel it comes back to after a power cycle; where in 60 to 100 the
+  dwell floor lies; and whether a raised squelch level now stops the scan on the
+  transmitted channel. None can be established from the host.
 - **Not confirmed over serial:** the `ARENA-038` serial dead end recurred
   immediately after the `5.2` write and did not clear, so `info` and `list` have
   not questioned this image the way they questioned `5.1`. The handset is its

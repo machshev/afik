@@ -235,10 +235,25 @@ pub enum AfOutput {
 }
 
 /// RSSI count at which squelch level one opens, about -130 dBm.
-const SQUELCH_BASE_RSSI: u8 = 54;
+///
+/// This is the offset the per-level count is built from, so the constant itself
+/// is one step below level one.
+const SQUELCH_BASE_RSSI: u8 = 44;
 
-/// RSSI counts each further squelch level adds, which is 3 dB.
-const SQUELCH_RSSI_STEP: u8 = 6;
+/// RSSI counts each further squelch level adds, which is 8 dB.
+///
+/// The nine levels used to span 3 dB each, so the whole range was -130 dBm to
+/// -106 dBm. That is entirely at the sensitive end, and it made the radio
+/// unusable near a transmitter: a handheld a metre away delivers far more than
+/// -106 dBm into adjacent channels, so every level opened on it and a scan
+/// stopped on whichever channel it reached first rather than on the one being
+/// transmitted on. `EVID-K1-070` is that observation.
+///
+/// Eight decibels a step spans -130 dBm to -66 dBm instead, which reaches above
+/// a strong local signal while keeping level one where it was for weak-signal
+/// work. The steps are coarser and deliberately so: an operator who cannot shut
+/// the squelch at all has no useful resolution anywhere.
+const SQUELCH_RSSI_STEP: u8 = 16;
 
 /// RSSI counts between the open and close thresholds, which is 1 dB.
 const SQUELCH_RSSI_HYSTERESIS: u8 = 2;
@@ -313,9 +328,15 @@ impl SquelchThresholds {
     /// interacting ones whose units AFIK cannot justify.
     ///
     /// RSSI counts are 0.5 dB per step with `dBm = count / 2 - 160`, so level
-    /// one opens at about -130 dBm and level nine at about -106 dBm, in 3 dB
+    /// one opens at about -130 dBm and level nine at about -66 dBm, in 8 dB
     /// increments with 1 dB of hysteresis. Level zero is
     /// [`SquelchThresholds::squelch_off`] and never shuts.
+    ///
+    /// Carrier strength alone cannot tell a signal on this channel from a
+    /// strong one on the next, which is what noise-gated squelch is for. The
+    /// noise thresholds are per-unit calibration this radio cannot yet read —
+    /// `RISK-008` — so the range above is what an operator has to work with,
+    /// and it is wide enough to place the threshold above the interferer.
     #[must_use]
     pub const fn for_level(level: SquelchLevel) -> Self {
         if level.is_open() {
@@ -332,6 +353,21 @@ impl SquelchThresholds {
             open_glitch: 0xFE,
             close_glitch: 0xFF,
         }
+    }
+
+    /// Returns the carrier strength one level opens at, in whole dBm.
+    ///
+    /// `EVID-BK4819-053` records the chip's own mapping as `dBm = count / 2 -
+    /// 160` over 0.5 dB steps. A level is otherwise a number with no scale, and
+    /// an operator setting a threshold against a signal they can measure needs
+    /// the scale. Level zero never shuts and has no threshold.
+    #[must_use]
+    pub const fn open_dbm(level: SquelchLevel) -> Option<i16> {
+        if level.is_open() {
+            return None;
+        }
+        let count = SQUELCH_BASE_RSSI as i16 + SQUELCH_RSSI_STEP as i16 * level.get() as i16;
+        Some(count / 2 - 160)
     }
 
     /// Validates one complete calibration-supplied threshold set.
@@ -907,8 +943,26 @@ mod tests {
         );
         assert_eq!(
             SquelchThresholds::for_level(SquelchLevel::new(MAX_SQUELCH_LEVEL).unwrap()).open_rssi,
-            108,
-            "level nine opens at about -106 dBm"
+            188,
+            "level nine opens at about -66 dBm"
+        );
+
+        // The range has to reach above a strong local signal, which is the
+        // whole reason it is this wide: a handheld transmitting a metre away
+        // delivers far more than -106 dBm into the channels either side of the
+        // one it is on, and every level used to open on it.
+        assert_eq!(
+            SquelchThresholds::open_dbm(SquelchLevel::new(1).unwrap()),
+            Some(-130)
+        );
+        assert_eq!(
+            SquelchThresholds::open_dbm(SquelchLevel::new(MAX_SQUELCH_LEVEL).unwrap()),
+            Some(-66)
+        );
+        assert_eq!(
+            SquelchThresholds::open_dbm(SquelchLevel::OPEN),
+            None,
+            "a level which never shuts has no threshold to name"
         );
     }
 

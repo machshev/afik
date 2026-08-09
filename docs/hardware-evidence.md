@@ -732,6 +732,35 @@ performance, and target integration remain unknown under `RISK-008`.
 - **Next:** `AFIK-K1-5.3` re-ranges the handset dwell list to 60, 70, 80, 90,
   100 and 150 ms to bisect this bracket in ten-millisecond steps.
 
+### EVID-K1-070 — Carrier squelch alone stops a scan on the wrong channel
+
+- **Source:** operator observation on the exact K1 unit running `AFIK-K1-5.3`,
+  2026-08-09.
+- **Observed:** with a handheld transmitting on PMR channel 4 close to the
+  radio, the scan stopped two positions early. Frequency and channel numbering
+  were checked and were correct, and when the scan did land on the transmitted
+  channel the audio was the transmission, so the stop was a squelch decision
+  and not an indexing fault.
+- **Mechanism, and its confidence:** AFIK gates the squelch on carrier strength
+  alone, which cannot distinguish a signal on this channel from a strong one a
+  channel or two away. A transmitter at close range delivers far more into the
+  adjacent channels than the highest threshold AFIK offered, so every level
+  opened on it. This is consistent with the observation and with ordinary
+  receiver behaviour; it is not a measurement of this board's selectivity, and
+  no adjacent-channel rejection figure is claimed.
+- **What the range was:** the nine levels spanned 3 dB each from about -130 dBm
+  to about -106 dBm — all of it at the sensitive end, and all of it below a
+  close transmitter's adjacent-channel leakage. AFIK's own note already recorded
+  these as AFIK's values rather than the unit's.
+- **What it is now:** 8 dB a step, about -130 dBm to about -66 dBm. Level one is
+  unchanged for weak-signal work and the top of the range now reaches above a
+  strong local signal. The steps are coarser, which is the trade: an operator
+  who cannot shut the squelch at all has no useful resolution anywhere.
+- **What this does not establish:** any per-unit calibration value, any noise or
+  glitch threshold, and any figure for this board's selectivity or front-end
+  overload behaviour. The proper fix is noise-gated squelch, which needs the
+  per-unit calibration this radio cannot yet read; `RISK-008` carries that.
+
 ## Sources used by FREQ-010
 
 ### FCC-filed Quansheng UV-K5 user manual

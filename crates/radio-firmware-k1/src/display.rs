@@ -1,6 +1,8 @@
 //! Hardware-independent ST7565-compatible display commands and fixed witness.
 
 use crate::keypad::Key;
+use radio_bk4819::SquelchThresholds;
+use radio_domain::SquelchLevel;
 
 /// Visible display width in columns.
 pub const WIDTH: usize = 128;
@@ -331,13 +333,23 @@ impl SelectorRow {
     ///
     /// Level zero is named rather than numbered, because "no squelch at all" is
     /// a different kind of choice from "one step quieter than four".
+    ///
+    /// Every other row carries the carrier strength it opens at. A level is
+    /// otherwise a number with no scale, and the operator setting this is
+    /// choosing a threshold against a signal — an interfering one they want
+    /// shut out, or a weak one they want through — which they can only do if
+    /// the row says what it is in the units the meter uses.
     #[must_use]
     pub fn squelch_level(level: u8, active: bool) -> Self {
-        if level == 0 {
+        let Ok(squelch) = SquelchLevel::new(level) else {
+            return Self::with_label(b"?", active);
+        };
+        let Some(dbm) = SquelchThresholds::open_dbm(squelch) else {
             return Self::with_label(b"0  OPEN", active);
-        }
-        let mut label = *b"0";
+        };
+        let mut label = [b' '; LIST_NAME_BYTES];
         label[0] = b'0' + level.min(9);
+        label[3..11].copy_from_slice(&dbm_label(dbm));
         Self::with_label(&label, active)
     }
 
@@ -459,6 +471,28 @@ pub fn render_operating_screen(frame: &mut [u8; FRAME_BYTES], view: &OperatingVi
     if view.monitoring {
         draw_text(frame, WIDTH - 3 * 6, 55, b"MON");
     }
+}
+
+/// Columns one carrier-strength label occupies.
+pub const DBM_LABEL_BYTES: usize = 8;
+
+/// Renders one carrier strength as signed whole dBm.
+///
+/// `EVID-BK4819-053` records the chip's meter as `dBm = count / 2 - 160`, so
+/// every threshold in this radio is a negative number between about -130 and
+/// -66. The sign is always drawn, because a threshold shown without one reads
+/// as a positive power level.
+#[must_use]
+pub fn dbm_label(dbm: i16) -> [u8; DBM_LABEL_BYTES] {
+    let mut label = *b"-000 DBM";
+    let magnitude = dbm.unsigned_abs().min(999);
+    if dbm >= 0 {
+        label[0] = b'+';
+    }
+    label[1] = b'0' + u8::try_from(magnitude / 100).unwrap_or(0);
+    label[2] = b'0' + u8::try_from(magnitude / 10 % 10).unwrap_or(0);
+    label[3] = b'0' + u8::try_from(magnitude % 10).unwrap_or(0);
+    label
 }
 
 /// Columns one scan-dwell label occupies.
@@ -1289,6 +1323,36 @@ mod operating_screen_tests {
             ..view()
         });
         assert_ne!(typed, bank);
+    }
+
+    /// A threshold the operator cannot read is a threshold they cannot set.
+    #[test]
+    fn a_squelch_row_names_the_carrier_strength_it_opens_at() {
+        use super::dbm_label;
+
+        assert_eq!(&dbm_label(-130), b"-130 DBM");
+        assert_eq!(&dbm_label(-66), b"-066 DBM");
+        assert_eq!(&dbm_label(0), b"+000 DBM");
+
+        // Every level renders as its own row: an operator stepping the list has
+        // to be able to see that something changed.
+        let mut seen = [[0_u8; FRAME_BYTES]; 10];
+        for level in 0..=9_u8 {
+            let mut frame = [0_u8; FRAME_BYTES];
+            render_selector_list(
+                &mut frame,
+                b"SQUELCH",
+                &[SelectorRow::squelch_level(level, false)],
+                0,
+            );
+            for (other, earlier) in seen.iter().enumerate().take(usize::from(level)) {
+                assert!(
+                    *earlier != frame,
+                    "level {level} draws the same row as level {other}"
+                );
+            }
+            seen[usize::from(level)] = frame;
+        }
     }
 
     #[test]
