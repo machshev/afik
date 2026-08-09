@@ -10,6 +10,7 @@ description = "Thin command-line front end for the AFIK programmer library"
 [dependencies]
 radio-channel-plan = { path = "../radio-channel-plan" }
 radio-domain = { path = "../radio-domain" }
+radio-protocol = { path = "../radio-protocol" }
 radio-programmer = { path = "../radio-programmer" }
 radio-programmer-serial = { path = "../radio-programmer-serial" }
 radio-sim = { path = "../radio-sim" }

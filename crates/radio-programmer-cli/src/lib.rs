@@ -10,8 +10,12 @@ use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, Offset, PowerLevel,
     RadioConfig, SquelchLevel, Tone, TxClass,
 };
-use radio_programmer::{Programmer, ProtocolTransport, RadioProject};
+use radio_programmer::{ControlOutcome, Programmer, ProtocolTransport, RadioProject};
 use radio_programmer_serial::{is_supported_baud, LinuxSerialTransport};
+use radio_protocol::{
+    ControlRequest, ReceiveMetricsReport, ReceiveMode as ProtocolReceiveMode, ReceiveStateReport,
+    ScanActivity,
+};
 use radio_sim::{SimDevice, SimTransport};
 use radio_storage::ObjectKind;
 use std::{
@@ -31,6 +35,20 @@ pub const EXIT_USAGE: i32 = 2;
 /// Maximum canonical image bytes accepted from one input file.
 pub const MAX_CLI_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
 
+/// Settled readings taken at each swept frequency unless asked otherwise.
+const DEFAULT_SWEEP_READINGS: u16 = 3;
+
+/// Milliseconds waited before each attempt to read a sample.
+///
+/// The radio holds its bit-banged radio bus idle for a quarter second after the
+/// last serial byte, so a host polling faster than that prevents the sampling
+/// it is waiting for. This is that window with a margin, and it is the floor on
+/// what one swept reading costs.
+const DEFAULT_SWEEP_SETTLE_MILLISECONDS: u64 = 300;
+
+/// Attempts made to obtain one fresh sample before giving up.
+const SWEEP_SAMPLE_ATTEMPTS: u32 = 20;
+
 /// Stable command help text.
 pub const HELP: &str = "AFIK programmer CLI\n\
 \n\
@@ -41,6 +59,14 @@ Usage:\n\
   afik-programmer (--sim | --device PATH --baud BAUD) write PROJECT...\n\
   afik-programmer (--sim | --device PATH --baud BAUD) backup OUTPUT [--force]\n\
   afik-programmer (--sim | --device PATH --baud BAUD) restore INPUT\n\
+  afik-programmer (--sim | --device PATH --baud BAUD) rf-state\n\
+  afik-programmer (--sim | --device PATH --baud BAUD) rf-metrics\n\
+  afik-programmer (--sim | --device PATH --baud BAUD) rf-vfo|rf-memory\n\
+  afik-programmer (--sim | --device PATH --baud BAUD) rf-scan-start|rf-scan-stop\n\
+  afik-programmer (--sim | --device PATH --baud BAUD) rf-tune HZ\n\
+  afik-programmer (--sim | --device PATH --baud BAUD) rf-select INDEX\n\
+  afik-programmer (--sim | --device PATH --baud BAUD) rf-sweep START_HZ END_HZ STEP_HZ\n\
+    [--readings N] [--settle-ms MS]\n\
   afik-programmer --help\n\
   afik-programmer --version\n\
 \n\
@@ -59,6 +85,16 @@ Config SPEC: SQUELCH:SCAN_DWELL_MS, either field - to keep its default\n\
   A radio which needs neither changed does not need this option at all.\n\
 TX_CLASS: never, licence-free, amateur, marine, aeronautical, business, experimental\n\
 Supported BAUD: 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200\n\
+\n\
+The rf- commands drive the receiver exactly as the handset does. They change\n\
+live receive state and never write configuration, so nothing they do survives\n\
+a power cycle and the operator's keypad keeps working throughout.\n\
+\n\
+rf-sweep tunes across a range and prints one CSV row per reading. Reading 0 at\n\
+each frequency is the first sample after the retune, taken while the receiver\n\
+is still settling, and is marked settled=false rather than dropped. Each\n\
+reading costs at least --settle-ms because the radio keeps its internal bus\n\
+idle while the serial link is busy.\n\
 \n\
 Exit codes: 0 success, 1 operation failure, 2 usage failure.\n";
 
@@ -123,6 +159,19 @@ enum Command {
     Restore {
         input: PathBuf,
     },
+    /// One runtime-control operation, reported as the resulting state.
+    Control(ControlRequest),
+    Sweep(Sweep),
+}
+
+/// One host-driven sweep across a frequency range.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Sweep {
+    start_hz: u32,
+    end_hz: u32,
+    step_hz: u32,
+    readings: u16,
+    settle_ms: u64,
 }
 
 #[derive(Debug)]
@@ -249,6 +298,7 @@ fn parse(arguments: &[String]) -> Result<Parsed, CliError> {
             require_no_arguments(command_arguments, "list")?;
             Command::List
         }
+        name if name.starts_with("rf-") => parse_rf(name, command_arguments)?,
         "compile" => parse_compile(command_arguments)?,
         "write" => Command::Write {
             project: parse_banks(command_arguments)?,
@@ -589,6 +639,108 @@ fn parse_class(value: &str) -> Result<TxClass, CliError> {
     }
 }
 
+/// Parses the runtime-control commands, which all share the `rf-` prefix.
+///
+/// These drive the receiver rather than the configuration store, so they are
+/// grouped rather than scattered through the configuration commands.
+fn parse_rf(command_name: &str, command_arguments: &[String]) -> Result<Command, CliError> {
+    Ok(match command_name {
+        "rf-state" => {
+            require_no_arguments(command_arguments, "rf-state")?;
+            Command::Control(ControlRequest::GetState)
+        }
+        "rf-metrics" => {
+            require_no_arguments(command_arguments, "rf-metrics")?;
+            Command::Control(ControlRequest::GetMetrics)
+        }
+        "rf-vfo" => {
+            require_no_arguments(command_arguments, "rf-vfo")?;
+            Command::Control(ControlRequest::EnterVfo)
+        }
+        "rf-memory" => {
+            require_no_arguments(command_arguments, "rf-memory")?;
+            Command::Control(ControlRequest::EnterMemory)
+        }
+        "rf-scan-start" => {
+            require_no_arguments(command_arguments, "rf-scan-start")?;
+            Command::Control(ControlRequest::StartScan)
+        }
+        "rf-scan-stop" => {
+            require_no_arguments(command_arguments, "rf-scan-stop")?;
+            Command::Control(ControlRequest::StopScan)
+        }
+        "rf-tune" => {
+            if command_arguments.len() != 1 {
+                return Err(CliError::Usage("rf-tune requires exactly one HZ".into()));
+            }
+            Command::Control(ControlRequest::TuneTo {
+                frequency_hz: parse_integer(&command_arguments[0], "frequency")?,
+            })
+        }
+        "rf-select" => {
+            if command_arguments.len() != 1 {
+                return Err(CliError::Usage(
+                    "rf-select requires exactly one INDEX".into(),
+                ));
+            }
+            Command::Control(ControlRequest::SelectChannel {
+                index: parse_integer(&command_arguments[0], "channel index")?,
+            })
+        }
+        "rf-sweep" => parse_sweep(command_arguments)?,
+        other => return Err(CliError::Usage(format!("unknown command: {other}"))),
+    })
+}
+
+/// Parses `rf-sweep START_HZ END_HZ STEP_HZ [--readings N] [--settle-ms MS]`.
+fn parse_sweep(arguments: &[String]) -> Result<Command, CliError> {
+    if arguments.len() < 3 {
+        return Err(CliError::Usage(
+            "rf-sweep requires START_HZ END_HZ STEP_HZ".into(),
+        ));
+    }
+    let start_hz = parse_integer(&arguments[0], "sweep start")?;
+    let end_hz = parse_integer(&arguments[1], "sweep end")?;
+    let step_hz: u32 = parse_integer(&arguments[2], "sweep step")?;
+    if step_hz == 0 {
+        return Err(CliError::Usage(
+            "sweep step must be greater than zero".into(),
+        ));
+    }
+    if end_hz < start_hz {
+        return Err(CliError::Usage(
+            "sweep end must not be below sweep start".into(),
+        ));
+    }
+
+    let mut readings = DEFAULT_SWEEP_READINGS;
+    let mut settle_ms = DEFAULT_SWEEP_SETTLE_MILLISECONDS;
+    let mut index = 3;
+    while index < arguments.len() {
+        let value = arguments
+            .get(index + 1)
+            .ok_or_else(|| CliError::Usage(format!("{} requires a value", arguments[index])))?;
+        match arguments[index].as_str() {
+            "--readings" => readings = parse_integer(value, "readings")?,
+            "--settle-ms" => settle_ms = parse_integer(value, "settle milliseconds")?,
+            other => return Err(CliError::Usage(format!("unknown rf-sweep option: {other}"))),
+        }
+        index += 2;
+    }
+    if readings == 0 {
+        return Err(CliError::Usage(
+            "rf-sweep needs at least one settled reading".into(),
+        ));
+    }
+    Ok(Command::Sweep(Sweep {
+        start_hz,
+        end_hz,
+        step_hz,
+        readings,
+        settle_ms,
+    }))
+}
+
 fn execute(backend: Backend, command: Command) -> Result<String, CliError> {
     let transport = match backend {
         Backend::Simulator => {
@@ -610,7 +762,151 @@ fn execute(backend: Backend, command: Command) -> Result<String, CliError> {
         Command::Write { project } => execute_write(&mut programmer, &project, "written"),
         Command::Backup { output, force } => execute_backup(&mut programmer, &output, force),
         Command::Restore { input } => execute_restore(&mut programmer, &input),
+        Command::Control(request) => execute_control(&mut programmer, request),
+        Command::Sweep(sweep) => execute_sweep(&mut programmer, sweep),
     }
+}
+
+/// Renders one receive-state report as stable key/value lines.
+fn render_state(state: &ReceiveStateReport) -> String {
+    let mut output = String::new();
+    let _ = writeln!(
+        output,
+        "mode={}",
+        match state.mode {
+            ProtocolReceiveMode::Memory => "memory",
+            ProtocolReceiveMode::Vfo => "vfo",
+        }
+    );
+    let _ = writeln!(
+        output,
+        "scan={}",
+        match state.scan {
+            ScanActivity::Idle => "idle",
+            ScanActivity::Dwell => "dwell",
+            ScanActivity::Hold => "hold",
+        }
+    );
+    match state.bank {
+        Some(bank) => {
+            let _ = writeln!(output, "bank={bank}");
+        }
+        None => {
+            let _ = writeln!(output, "bank=all");
+        }
+    }
+    let _ = writeln!(output, "index={}", state.index);
+    let _ = writeln!(output, "channel_id={}", state.channel_id);
+    let _ = writeln!(output, "visible_channels={}", state.visible_channels);
+    let _ = writeln!(output, "frequency_hz={}", state.frequency_hz);
+    output
+}
+
+fn execute_control(
+    programmer: &mut Programmer<CliTransport>,
+    request: ControlRequest,
+) -> Result<String, CliError> {
+    match programmer.control(request).map_err(CliError::operation)? {
+        ControlOutcome::State(state) => Ok(render_state(&state)),
+        ControlOutcome::Metrics(metrics) => {
+            let mut output = String::new();
+            let _ = writeln!(output, "frequency_hz={}", metrics.frequency_hz);
+            let _ = writeln!(output, "samples={}", metrics.samples);
+            let _ = writeln!(output, "rssi_dbm_x2={}", metrics.rssi_dbm_x2);
+            let _ = writeln!(output, "glitch={}", metrics.glitch);
+            let _ = writeln!(output, "noise={}", metrics.noise);
+            let _ = writeln!(output, "squelch_open={}", metrics.squelch_open);
+            Ok(output)
+        }
+    }
+}
+
+/// Reads samples until one was taken at `frequency_hz` after `after`.
+///
+/// The radio holds its bit-banged bus idle for a quarter second after the last
+/// serial byte, so polling faster than that starves the very sampling this is
+/// waiting for. Each attempt therefore waits first, and a caller which wants a
+/// settled reading is spending that wait either way.
+fn next_sample(
+    programmer: &mut Programmer<CliTransport>,
+    frequency_hz: u32,
+    after: u16,
+    settle_ms: u64,
+) -> Result<ReceiveMetricsReport, CliError> {
+    for _ in 0..SWEEP_SAMPLE_ATTEMPTS {
+        std::thread::sleep(std::time::Duration::from_millis(settle_ms));
+        let metrics = programmer.receive_metrics().map_err(CliError::operation)?;
+        if metrics.frequency_hz == frequency_hz && metrics.samples != after {
+            return Ok(metrics);
+        }
+    }
+    Err(CliError::Operation(format!(
+        "no fresh sample at {frequency_hz} Hz after {SWEEP_SAMPLE_ATTEMPTS} attempts"
+    )))
+}
+
+fn execute_sweep(
+    programmer: &mut Programmer<CliTransport>,
+    sweep: Sweep,
+) -> Result<String, CliError> {
+    // Tuning requires the tunable receiver, exactly as it does from the keypad.
+    programmer
+        .control(ControlRequest::StopScan)
+        .or_else(|_| programmer.control(ControlRequest::GetState))
+        .map_err(CliError::operation)?;
+    programmer
+        .control(ControlRequest::EnterVfo)
+        .map_err(CliError::operation)?;
+
+    let mut output = String::new();
+    let _ = writeln!(
+        output,
+        "frequency_hz,reading,samples,rssi_dbm_x2,glitch,noise,squelch_open,settled"
+    );
+
+    let mut frequency = sweep.start_hz;
+    while frequency <= sweep.end_hz {
+        let state = programmer
+            .control(ControlRequest::TuneTo {
+                frequency_hz: frequency,
+            })
+            .map_err(CliError::operation)?;
+        if let ControlOutcome::State(state) = state {
+            if state.frequency_hz != frequency {
+                return Err(CliError::Operation(format!(
+                    "radio reports {} Hz after being tuned to {frequency} Hz",
+                    state.frequency_hz
+                )));
+            }
+        }
+
+        // The first sample after a retune is taken while the synthesiser is
+        // still settling, and how long that takes on this board is unmeasured.
+        // It is reported rather than dropped, marked as what it is, because
+        // what it looks like is part of what SWEEP-040 is asking.
+        let mut last = 0;
+        for reading in 0..=sweep.readings {
+            let metrics = next_sample(programmer, frequency, last, sweep.settle_ms)?;
+            last = metrics.samples;
+            let _ = writeln!(
+                output,
+                "{},{reading},{},{},{},{},{},{}",
+                metrics.frequency_hz,
+                metrics.samples,
+                metrics.rssi_dbm_x2,
+                metrics.glitch,
+                metrics.noise,
+                metrics.squelch_open,
+                reading > 0
+            );
+        }
+
+        let Some(next) = frequency.checked_add(sweep.step_hz) else {
+            break;
+        };
+        frequency = next;
+    }
+    Ok(output)
 }
 
 fn execute_list(programmer: &mut Programmer<CliTransport>) -> Result<String, CliError> {
@@ -1162,5 +1458,74 @@ mod tests {
             invoke(&["--device", "/definitely/missing", "--baud", "9600", "info"]).exit_code,
             EXIT_OPERATION
         );
+    }
+
+    #[test]
+    fn the_runtime_control_commands_parse_to_their_requests() {
+        use radio_protocol::ControlRequest;
+
+        let cases = [
+            ("rf-state", vec![], ControlRequest::GetState),
+            ("rf-metrics", vec![], ControlRequest::GetMetrics),
+            ("rf-vfo", vec![], ControlRequest::EnterVfo),
+            ("rf-memory", vec![], ControlRequest::EnterMemory),
+            ("rf-scan-start", vec![], ControlRequest::StartScan),
+            ("rf-scan-stop", vec![], ControlRequest::StopScan),
+            (
+                "rf-tune",
+                vec!["145512500".to_owned()],
+                ControlRequest::TuneTo {
+                    frequency_hz: 145_512_500,
+                },
+            ),
+            (
+                "rf-select",
+                vec!["7".to_owned()],
+                ControlRequest::SelectChannel { index: 7 },
+            ),
+        ];
+        for (name, arguments, expected) in cases {
+            let parsed = super::parse_rf(name, &arguments).expect("command parses");
+            assert_eq!(parsed, super::Command::Control(expected));
+        }
+    }
+
+    #[test]
+    fn a_sweep_takes_its_range_and_defaults_the_rest() {
+        let arguments: Vec<String> = ["145000000", "146000000", "12500"]
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect();
+        let super::Command::Sweep(sweep) = super::parse_sweep(&arguments).expect("sweep parses")
+        else {
+            panic!("a sweep parses to a sweep");
+        };
+        assert_eq!(sweep.start_hz, 145_000_000);
+        assert_eq!(sweep.end_hz, 146_000_000);
+        assert_eq!(sweep.step_hz, 12_500);
+        assert_eq!(sweep.readings, super::DEFAULT_SWEEP_READINGS);
+        assert_eq!(sweep.settle_ms, super::DEFAULT_SWEEP_SETTLE_MILLISECONDS);
+    }
+
+    #[test]
+    fn a_sweep_which_could_never_finish_or_never_read_is_refused() {
+        let refused = [
+            // A zero step never advances.
+            vec!["145000000", "146000000", "0"],
+            // An end below the start sweeps nothing.
+            vec!["146000000", "145000000", "12500"],
+            // A sweep with no settled reading measures nothing.
+            vec!["145000000", "146000000", "12500", "--readings", "0"],
+        ];
+        for arguments in refused {
+            let arguments: Vec<String> =
+                arguments.iter().map(|value| (*value).to_owned()).collect();
+            assert!(super::parse_sweep(&arguments).is_err());
+        }
+    }
+
+    #[test]
+    fn an_unknown_rf_command_is_a_usage_error() {
+        assert!(super::parse_rf("rf-transmit", &[]).is_err());
     }
 }

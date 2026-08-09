@@ -7,9 +7,10 @@ use radio_channel_plan::{ChannelBank, ChannelRecord, GeneratedBank, PlanEncoding
 use radio_domain::{BankId, RadioConfig};
 pub use radio_protocol::DeviceCapabilities;
 use radio_protocol::{
-    encode_frame, encode_list_objects_request, Command, DeviceErrorCode, Frame, ObjectListPage,
-    PayloadReader, PayloadWriter, ProtocolError, Service, StreamDecoder, FLAG_ERROR, FLAG_RESPONSE,
-    MAX_ENCODED_FRAME, MAX_PAYLOAD, PROTOCOL_VERSION,
+    encode_frame, encode_list_objects_request, Command, ControlRequest, DeviceErrorCode, Frame,
+    ObjectListPage, PayloadReader, PayloadWriter, ProtocolError, ReceiveMetricsReport,
+    ReceiveStateReport, Service, StreamDecoder, FLAG_ERROR, FLAG_RESPONSE, MAX_ENCODED_FRAME,
+    MAX_PAYLOAD, PROTOCOL_VERSION,
 };
 use radio_storage::{
     configuration_image_len, decode_channel, decode_channel_bank, decode_configuration_image,
@@ -564,6 +565,15 @@ impl ConfigurationSnapshot {
     }
 }
 
+/// What one runtime-control request answered with.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ControlOutcome {
+    /// What the receiver is doing, after any requested change.
+    State(ReceiveStateReport),
+    /// One raw metrics sample.
+    Metrics(ReceiveMetricsReport),
+}
+
 /// Connected synchronous programmer over an arbitrary byte transport.
 pub struct Programmer<T: ProtocolTransport> {
     transport: T,
@@ -618,6 +628,59 @@ impl<T: ProtocolTransport> Programmer<T> {
     /// Returns a compiler bound to the negotiated target capabilities.
     pub const fn compiler(&self) -> ConfigurationCompiler {
         ConfigurationCompiler::new(self.capabilities)
+    }
+
+    /// Performs one runtime-control request against the connected radio.
+    ///
+    /// The radio is driven exactly as its keypad drives it: this changes live
+    /// receive state and never writes configuration. An operation the radio
+    /// cannot perform from where it is — tuning while a memory channel is
+    /// selected — is reported as a device rejection rather than forced.
+    pub fn control(
+        &mut self,
+        request: ControlRequest,
+    ) -> Result<ControlOutcome, ProgrammerError<T::Error>> {
+        let mut payload = [0_u8; ControlRequest::MAX_PAYLOAD_LEN];
+        let length = request.encode_payload(&mut payload)?;
+        let response = self.exchange(
+            Service::RuntimeControl,
+            request.command(),
+            &payload[..length],
+        )?;
+        match request {
+            ControlRequest::GetMetrics => Ok(ControlOutcome::Metrics(
+                ReceiveMetricsReport::decode(response.payload())?,
+            )),
+            _ => Ok(ControlOutcome::State(ReceiveStateReport::decode(
+                response.payload(),
+            )?)),
+        }
+    }
+
+    /// Asks what the receiver is currently doing.
+    pub fn receive_state(&mut self) -> Result<ReceiveStateReport, ProgrammerError<T::Error>> {
+        match self.control(ControlRequest::GetState)? {
+            ControlOutcome::State(state) => Ok(state),
+            ControlOutcome::Metrics(_) => {
+                Err(ProgrammerError::Protocol(ProtocolError::MalformedPayload))
+            }
+        }
+    }
+
+    /// Reads one raw metrics sample from the receiver.
+    ///
+    /// The sample carries the frequency it was taken at and a counter which
+    /// advances once per completed sample. A caller which has just retuned and
+    /// wants a settled reading waits for that counter to pass what it last saw:
+    /// the receiver needs a settling time this project has not measured, and a
+    /// reading taken too soon describes the settling rather than the signal.
+    pub fn receive_metrics(&mut self) -> Result<ReceiveMetricsReport, ProgrammerError<T::Error>> {
+        match self.control(ControlRequest::GetMetrics)? {
+            ControlOutcome::Metrics(metrics) => Ok(metrics),
+            ControlOutcome::State(_) => {
+                Err(ProgrammerError::Protocol(ProtocolError::MalformedPayload))
+            }
+        }
     }
 
     /// Atomically writes every object in a compiled configuration.

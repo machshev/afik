@@ -2481,6 +2481,7 @@ dependencies = [
  "radio-domain",
  "radio-programmer",
  "radio-programmer-serial",
+ "radio-protocol",
  "radio-sim",
  "radio-storage",
 ]
