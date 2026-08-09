@@ -79,7 +79,7 @@
 
 ## RISK-008 — Physical scan timing and signal inputs are unverified
 
-- **State:** open
+- **State:** open, first bracket taken
 - **Impact:** a deterministic logical scan policy does not establish how long
   the fitted receiver needs to tune or settle, how often status can be sampled,
   whether squelch is reliable, or how scan behavior performs on physical RF.
@@ -88,6 +88,12 @@
   inputs. Do not encode target timer rates, polling cadence, receiver settle
   time, RSSI thresholds, tone detection, or physical scan claims until the
   relevant chip/board behavior is sourced and measured safely.
+- **First measurement, 2026-08-09:** `EVID-K1-069` brackets the usable dwell on
+  the exact unit between 60 and 100 milliseconds — the scan stops on a signal at
+  100 and not at 60. This is one pass against one signal and measures the whole
+  retune-settle-sample loop rather than any chip behaviour, so it is an upper
+  bound on the floor and remains an operator-facing control rather than a
+  constant. Nothing in the firmware encodes it.
 
 ## RISK-009 — Host serial interoperability is unverified
 

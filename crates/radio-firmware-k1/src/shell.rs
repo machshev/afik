@@ -13,7 +13,7 @@
 //! No intent can transmit. The set deliberately contains selection, bank
 //! filtering, VFO tuning, and monitoring only.
 
-use radio_domain::{BankId, SquelchLevel, MAX_SQUELCH_LEVEL};
+use radio_domain::{BankId, RadioConfig, SquelchLevel, MAX_SQUELCH_LEVEL};
 
 use crate::keypad::Key;
 use radio_channel_plan::MAX_BANKS;
@@ -42,14 +42,30 @@ pub const VFO_DEFAULT_HZ: u32 = 145_500_000;
 
 /// Selectable scan dwell values, in milliseconds.
 ///
-/// How long a scan listens to a channel before moving on. The floor here is not
-/// a number this firmware knows: it is however long the fitted receiver needs
-/// to retune and then produce a squelch reading which means anything, and
-/// `RISK-008` records that settling time as unmeasured on this board. The list
-/// therefore reaches well below the conservative default, so the operator can
-/// find that floor on the unit, and well above it, so a radio which turns out
-/// to need longer can be given it.
-pub const SCAN_DWELLS_MS: [u32; 6] = [20, 40, 60, 100, 150, 300];
+/// How long a scan listens to a channel before moving on. The floor is not a
+/// number this firmware knows: it is however long the fitted receiver needs to
+/// retune and then produce a squelch reading which means anything, and
+/// `RISK-008` records that as unmeasured. The list is therefore an instrument
+/// for finding it on the unit rather than a menu of supported speeds, and it is
+/// expected to be re-ranged as the bracket closes.
+///
+/// The first pass on the exact unit put the floor between 60 and 100: at 100 ms
+/// the scan stops on a signal and at 60 ms it does not. These rows bisect that
+/// bracket in ten-millisecond steps and keep 150 — the conservative default —
+/// as the row to return to. `EVID-K1-069` records the observation.
+pub const SCAN_DWELLS_MS: [u32; 6] = [60, 70, 80, 90, 100, 150];
+
+/// Row an unprogrammed radio starts on.
+///
+/// A radio nobody has programmed scans at the same dwell the domain calls
+/// conservative, so the menu and `RadioConfig` cannot disagree about what the
+/// default is.
+const DEFAULT_DWELL_ROW: usize = 5;
+
+// A list which no longer contains the conservative default would leave an
+// unprogrammed radio scanning at a dwell its own menu could not name.
+const _: () =
+    assert!(SCAN_DWELLS_MS[DEFAULT_DWELL_ROW] == RadioConfig::conservative().scan_dwell_ms);
 
 /// Selectable VFO tuning steps in hertz.
 pub const VFO_STEPS_HZ: [u32; 6] = [6_250, 12_500, 25_000, 50_000, 100_000, 1_000_000];
@@ -258,8 +274,8 @@ impl Shell {
             squelch_cursor: SquelchLevel::CONSERVATIVE.get(),
             // Replaced by the programmed configuration the moment one arrives;
             // this is only what an unprogrammed radio scans at.
-            scan_dwell_ms: SCAN_DWELLS_MS[4],
-            scan_dwell_cursor: 4,
+            scan_dwell_ms: SCAN_DWELLS_MS[DEFAULT_DWELL_ROW],
+            scan_dwell_cursor: DEFAULT_DWELL_ROW,
             star_pending: false,
         }
     }
@@ -1540,7 +1556,7 @@ mod tests {
         );
         assert_eq!(
             SCAN_DWELLS_MS[shell.scan_dwell_cursor()],
-            40,
+            SCAN_DWELLS_MS[0],
             "and the list highlights the row nearest to it"
         );
     }

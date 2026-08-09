@@ -42,12 +42,23 @@ and retained exactly like squelch. The floor is not a number this firmware can
 honestly state, so the list reaches well below the conservative default and the
 operator finds it on the unit.
 
-`AFIK-K1-5.2` is built, gated, packaged and flashed, and the operator interface
-runs. **Three claims remain open and only a hand can close them: that holding
-star walks the bank and stops on a busy channel, that the channel the radio is
-left on is the channel it comes back to after a power cycle, and what the lowest
-dwell is at which the scan still stops on a signal — which is the `RISK-008`
-measurement this firmware has been built to take.**
+**The scan works, and the first `RISK-008` measurement has been taken on the
+exact unit: at a 100 ms dwell the scan stops on a signal, and at 60 ms it does
+not.** `EVID-K1-069` records it, with the confidence it deserves — one pass,
+one signal, measuring the whole retune-settle-sample loop rather than any chip
+behaviour, so 100 ms is an upper bound on the floor rather than the floor.
+Nothing in the firmware encodes it.
+
+`AFIK-K1-5.3` re-ranges the handset dwell list to 60, 70, 80, 90, 100 and 150 ms
+to bisect that bracket in ten-millisecond steps. The list is an instrument for
+finding the floor rather than a menu of supported speeds, and it is expected to
+be re-ranged again as the bracket closes. 150 ms stays as the row to return to,
+and a compile-time assertion ties it to `RadioConfig::conservative()` so the
+menu and the domain cannot disagree about what an unprogrammed radio scans at.
+
+**Two claims remain open and only a hand can close them: that the channel the
+radio is left on is the channel it comes back to after a power cycle, and where
+in 60 to 100 the floor actually lies.**
 
 ## ARENA-038
 
@@ -132,6 +143,11 @@ The image grew 4,600 bytes over `5.0`. The controller's scan half had never been
 reachable from this image and was being stripped; it is reachable now.
 
 ### Physical write, 2026-08-09
+
+`AFIK-K1-5.3`, 90,200 bytes, SHA-256
+`ad3dd476cd471c719d64b7bb28b4759a5674f1ec7988542af9e6c7d065b69454`, static RAM
+8,356 bytes with 8,028 bytes of stack headroom, was written over `/dev/ttyUSB0`
+at K1 bootloader `7.03.01`: `353/353` pages acknowledged.
 
 `AFIK-K1-5.2`, 90,064 bytes, SHA-256
 `cc349e3a062957e94ba68f919c2528d11d4961d8e259e486c8729dc262327776`, static RAM

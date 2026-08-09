@@ -1948,11 +1948,24 @@
   `cc349e3a062957e94ba68f919c2528d11d4961d8e259e486c8729dc262327776`. Static RAM
   8,356 bytes, 8,028 bytes of stack headroom. `352/352` pages acknowledged and
   the operator interface runs.
-- **Open, and only observable by hand:** that holding star walks the bank and
-  stops on a busy channel; that the channel the radio is left on is the channel
-  it comes back to after a power cycle; and the lowest dwell at which the scan
-  still stops on a signal, which is the `RISK-008` measurement this work package
-  exists to make takeable. None can be established from the host.
+- **Confirmed on the exact unit:** holding star walks the bank and the scan
+  stops on a signal. The first dwell measurement came with it: 100 ms stops, 60
+  ms does not, so the floor is between them. `EVID-K1-069` records it and
+  `RISK-008` is narrowed rather than closed — one pass against one signal,
+  measuring the whole retune-settle-sample loop rather than any chip behaviour,
+  so 100 ms bounds the floor from above rather than being it.
+- **Third image:** `AFIK-K1-5.3`, 90,200 bytes, SHA-256
+  `ad3dd476cd471c719d64b7bb28b4759a5674f1ec7988542af9e6c7d065b69454`, static RAM
+  8,356 bytes with 8,028 bytes of stack headroom, `353/353` pages acknowledged.
+  It re-ranges the handset dwell list to 60, 70, 80, 90, 100 and 150 ms. The
+  list is an instrument for bisecting the bracket rather than a menu of
+  supported speeds, and re-ranging it again as the bracket closes is expected
+  rather than a change of design. A compile-time assertion ties the default row
+  to `RadioConfig::conservative()`, so a future re-range cannot silently leave
+  an unprogrammed radio scanning at a dwell its own menu cannot name.
+- **Open, and only observable by hand:** that the channel the radio is left on
+  is the channel it comes back to after a power cycle, and where in 60 to 100
+  the floor actually lies. Neither can be established from the host.
 - **Not confirmed over serial:** the `ARENA-038` serial dead end recurred
   immediately after the `5.2` write and did not clear, so `info` and `list` have
   not questioned this image the way they questioned `5.1`. The handset is its

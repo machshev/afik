@@ -709,6 +709,29 @@ logical RF command ordering, and TX-policy composition against declared inputs.
 Physical scan cadence, receiver settling, status sampling, tone detection, RF
 performance, and target integration remain unknown under `RISK-008`.
 
+### EVID-K1-069 — First bracket on the scan dwell this board needs
+
+- **Source:** operator observation on the exact K1 unit running `AFIK-K1-5.2`,
+  2026-08-09. Not a datasheet fact and not a chip fact.
+- **Observed:** holding star scans, and the scan stops on a signal at a dwell of
+  100 ms. At 60 ms it does not stop. The floor therefore lies between them.
+- **What this measures:** the whole loop, not the synthesiser. A dwell has to
+  cover the retune over the bit-banged three-wire bus, whatever the BK4819 needs
+  to settle on the new frequency, and at least one squelch reading taken after
+  that settling — the firmware discards the first reading after a retune
+  deliberately, so a usable dwell must span two samples at the 5 ms scanning
+  cadence as well. Any of those could be the binding term and this observation
+  does not separate them.
+- **Confidence:** moderate for the bracket, none for the mechanism. One pass, on
+  one unit, against whatever signal was present at the time; a weak or
+  intermittent signal would move the apparent floor upwards, so 100 ms is an
+  upper bound on the floor rather than the floor.
+- **What it does not establish:** any BK4819 settling time, any register-level
+  timing requirement, or any figure that may be encoded as a constant. It
+  narrows `RISK-008`; it does not close it.
+- **Next:** `AFIK-K1-5.3` re-ranges the handset dwell list to 60, 70, 80, 90,
+  100 and 150 ms to bisect this bracket in ten-millisecond steps.
+
 ## Sources used by FREQ-010
 
 ### FCC-filed Quansheng UV-K5 user manual
