@@ -2004,6 +2004,34 @@
 - **Fifth image:** `AFIK-K1-5.5`, 90,384 bytes, SHA-256
   `9e20abd35b31adf07732b60ace375f281302884414017f61cca0695e057b2bd5`, static RAM
   8,364 bytes with 8,020 bytes of stack headroom, `354/354` pages acknowledged.
+- **Result — the settings the unit wanted:** squelch level 3 and a 90 ms dwell.
+  `RadioConfig::conservative()` now carries 90 ms where it carried 150;
+  `SquelchLevel::CONSERVATIVE` was already 3. `EVID-K1-071` records these as a
+  working setting found by trying rather than a measured floor — 90 ms sits
+  inside the 60-to-100 bracket rather than at its edge — which is why the dwell
+  stays programmable instead of becoming a constant.
+- **Result — the handset dwell menu is gone:** it existed to find that number on
+  the unit and had done it. A compiled list can only offer the rows it was built
+  with; the store already held the value at full resolution. `ADR-069` records
+  the rule the menu failed: a settings row has to be something an operator
+  changes in the field, with no host in reach.
+- **Result — and the CLI can now write it:** the editor already exposed the
+  whole `RadioConfig` at whole-millisecond resolution, but the CLI could not set
+  it at all, so removing the handset control would have left the dwell reachable
+  from one front end only. `--config SQUELCH:SCAN_DWELL_MS` closes that, either
+  field `-` to keep its default. Nothing is rounded to a list and nothing is
+  clamped: a unit which wants 84 ms is given 84, and a device reads back what
+  was written to it. A zero dwell is refused by the domain's own validation
+  rather than silently written as a scan which can never advance.
+- **Sixth image:** `AFIK-K1-5.6`, 88,104 bytes, SHA-256
+  `249b3704f4a963306e7b4595983f2a647cc1f6d08fb36a12169bc94e210129e3`, static RAM
+  8,356 bytes with 8,028 bytes of stack headroom, `345/345` pages acknowledged.
+  Removing the menu returned 2,280 bytes of image and 8 bytes of RAM.
+- **One thing the workspace gate does not cover:** the K1 async binary builds
+  only for the embedded target, so `cargo clippy --workspace --all-targets` does
+  not compile it. A `match` arm deleted from its render function passed the
+  whole host gate and failed only under `tool/build-k1-async.sh`. Run that
+  before believing a green workspace.
 - **Open, and only observable by hand:** that the channel the radio is left on
   is the channel it comes back to after a power cycle; where in 60 to 100 the
   dwell floor lies; and whether a raised squelch level now stops the scan on the

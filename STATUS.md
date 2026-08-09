@@ -80,7 +80,21 @@ restoring where the operator was, and the controller gained
 still holds it. A radio which had no channels and gains some still leaves the
 VFO for them; one which is merely told about a changed setting does not move.
 
-`AFIK-K1-5.5` is flashed. **Three claims remain open and only a hand can close
+The bisection then settled: **squelch level 3 and a 90 ms dwell are what this
+unit wants**, and both are now what a radio arrives with —
+`RadioConfig::conservative()` carries 90 ms where it carried 150, and
+`SquelchLevel::CONSERVATIVE` was already 3. `EVID-K1-071` records them as a
+working setting found by trying, not as a measured floor.
+
+The handset scan-dwell menu is gone with it. It had done its job, which was to
+find the number on the unit; a list can only offer the rows it was compiled
+with, and a host offers whole milliseconds. The dwell stays fully configurable
+and retained in external memory — the editor already exposed it, and the CLI
+gained `--config SQUELCH:SCAN_DWELL_MS`, because removing the handset control
+must not leave a setting reachable from only one front end. `ADR-069` records
+where the line between the two now sits.
+
+`AFIK-K1-5.6` is flashed. **Three claims remain open and only a hand can close
 them: that the channel the radio is left on is the channel it comes back to
 after a power cycle, where in 60 to 100 the dwell floor lies, and whether a
 raised squelch level stops the scan on the transmitted channel.**
@@ -156,7 +170,8 @@ Run on the pinned environment, 2026-08-09:
 
 - `cargo fmt --all --check`: clean.
 - `cargo clippy --workspace --all-targets -- -D warnings`: clean.
-- `cargo test --workspace`: 384 tests pass, 0 failures.
+- `cargo test --workspace`: 382 tests pass, 0 failures. The count falls by two
+  because the handset dwell menu and its tests are gone and the CLI gained one.
 - `tool/build-k1-async.sh --release`: builds.
 - `tool/verify-k1-async-image.sh`: 192 vector bytes, initial SP `0x20004000`,
   Reset `0x080028c1`, required IRQ handlers present, static RAM 8,348 bytes with
@@ -168,6 +183,11 @@ The image grew 4,600 bytes over `5.0`. The controller's scan half had never been
 reachable from this image and was being stripped; it is reachable now.
 
 ### Physical write, 2026-08-09
+
+`AFIK-K1-5.6`, 88,104 bytes, SHA-256
+`249b3704f4a963306e7b4595983f2a647cc1f6d08fb36a12169bc94e210129e3`, `345/345`
+pages acknowledged. Static RAM 8,356 bytes with 8,028 bytes of stack headroom.
+Removing the dwell menu returned 2,280 bytes of image and 8 bytes of RAM.
 
 `AFIK-K1-5.5`, 90,384 bytes, SHA-256
 `9e20abd35b31adf07732b60ace375f281302884414017f61cca0695e057b2bd5`, `354/354`

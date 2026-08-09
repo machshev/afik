@@ -64,8 +64,8 @@ use radio_firmware_k1::py32f071_eeprom::{RetainError, RetainedConfiguration};
 use radio_firmware_k1::py32f071_runtime::{compose, K1RuntimePeripherals};
 use radio_firmware_k1::py32f071_runtime_init::init;
 use radio_firmware_k1::shell::{
-    Context, Intent, Mode, Screen, Setting, Shell, Source, HOLD_MILLISECONDS, SCAN_DWELLS_MS,
-    SETTINGS, SQUELCH_LEVELS, VFO_STEPS_HZ,
+    Context, Intent, Mode, Screen, Setting, Shell, Source, HOLD_MILLISECONDS, SETTINGS,
+    SQUELCH_LEVELS, VFO_STEPS_HZ,
 };
 use radio_protocol::MAX_ENCODED_FRAME;
 use radio_storage::ObjectArena;
@@ -74,7 +74,7 @@ const _: [(); 8] = [(); PAGES];
 const K1_VECTOR_TABLE_ORIGIN: u32 = 0x0800_2800;
 
 /// Identity this image reports on the information screen.
-const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-5.5";
+const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-5.6";
 
 /// Interval between receive samples while audio is routed.
 ///
@@ -903,7 +903,6 @@ fn adopt_settings(shell: &mut Shell, programmed: &Programmed) {
     let (banks, bank_count) = programmed.populated_banks();
     shell.set_banks(banks, bank_count);
     shell.set_squelch(programmed.config().squelch);
-    shell.set_scan_dwell(programmed.config().scan_dwell_ms);
 }
 
 /// Points the shell at the source the operator was last listening to.
@@ -1173,13 +1172,6 @@ async fn ui_task(
                 }
                 redraw = true;
             }
-            // The dwell reaches the controller through the store, like every
-            // other programmed setting: it is written, republished, and adopted
-            // when the next activation is built. There is nothing to retune.
-            Intent::SetScanDwell(milliseconds) => {
-                SETTING_CHOICE.signal(SettingChange::ScanDwellMs(milliseconds));
-                redraw = true;
-            }
             _ if activation.is_none() => redraw = true,
             Intent::ToggleMonitor => {
                 if let Some((controller, _)) = activation.as_mut() {
@@ -1439,7 +1431,6 @@ fn render(
             for (offset, setting) in SETTINGS.iter().take(LIST_ROWS).enumerate() {
                 rows[offset] = match setting {
                     Setting::Squelch => SelectorRow::squelch_setting(shell.squelch().get()),
-                    Setting::ScanDwell => SelectorRow::scan_dwell_setting(shell.scan_dwell_ms()),
                 };
                 count += 1;
             }
@@ -1461,24 +1452,6 @@ fn render(
                 count += 1;
             }
             render_selector_list(frame, b"SQUELCH", &rows[..count], cursor - first);
-        }
-        Screen::ScanDwellList => {
-            let mut rows = [SelectorRow::default(); LIST_ROWS];
-            let first = shell.scan_dwell_cursor() / LIST_ROWS * LIST_ROWS;
-            let mut count = 0;
-            for offset in 0..LIST_ROWS {
-                let Some(dwell) = SCAN_DWELLS_MS.get(first + offset) else {
-                    break;
-                };
-                rows[offset] = SelectorRow::scan_dwell(*dwell, *dwell == shell.scan_dwell_ms());
-                count += 1;
-            }
-            render_selector_list(
-                frame,
-                b"SCAN",
-                &rows[..count],
-                shell.scan_dwell_cursor() - first,
-            );
         }
         Screen::StepList => {
             let mut rows = [SelectorRow::default(); LIST_ROWS];

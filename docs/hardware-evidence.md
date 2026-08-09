@@ -761,6 +761,25 @@ performance, and target integration remain unknown under `RISK-008`.
   overload behaviour. The proper fix is noise-gated squelch, which needs the
   per-unit calibration this radio cannot yet read; `RISK-008` carries that.
 
+### EVID-K1-071 — Scan dwell and squelch level settled on the exact unit
+
+- **Source:** operator observation on the exact K1 unit, 2026-08-09, bisecting
+  the bracket `EVID-K1-069` opened.
+- **Observed:** squelch level 3 and a 90 ms scan dwell are the settings at which
+  this unit scans and stops on a transmission reliably. Level 3 is about
+  -114 dBm under the widened range `EVID-K1-070` records.
+- **Confidence:** good for this unit and this antenna, as a working setting
+  found by trying them. It is not a measured floor: 90 ms is inside the 60-to-100
+  bracket rather than at its edge, and no attempt was made to find the exact
+  point between 80 and 90 at which it fails.
+- **What it changed:** `RadioConfig::conservative()` now carries a 90 ms dwell
+  rather than 150 ms, so a radio arrives configured the way this one wanted.
+  `SquelchLevel::CONSERVATIVE` was already 3 and is unchanged.
+- **What it does not establish:** anything about another unit. A radio with a
+  different antenna, a different board, or a noisier environment may need
+  longer, which is why the dwell stays host-programmable in whole milliseconds
+  rather than becoming a constant.
+
 ## Sources used by FREQ-010
 
 ### FCC-filed Quansheng UV-K5 user manual

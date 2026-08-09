@@ -1105,3 +1105,23 @@ meaning.
 - This is a cost rule, not a memory rule: nothing was ever materialised, and the
   record a walk does build is still dropped again. What it buys is that a scan
   over a band-sized plan costs a decode per channel it lands on.
+
+## ADR-069 — The handset carries what the field changes, the programmer the rest
+
+- **Date:** 2026-08-09
+- **Status:** accepted
+- A settings row on the radio has to earn its place by being something an
+  operator changes with the radio in their hand and no host in reach. Squelch
+  qualifies: the right level depends on where they are standing. The scan dwell
+  does not: it is set once for a unit and then left.
+- Everything else a radio holds is programmed. The configuration store already
+  carries the whole `RadioConfig`, so a setting without a menu is not a setting
+  without a control — it is one reached from the programmer, at full
+  resolution, and retained in external memory like any other.
+- This is why the scan-dwell menu was removed after one release rather than
+  kept: it had done its job, which was to find the number on the unit. The
+  handset list could only offer the rows it was compiled with; a host offers
+  whole milliseconds.
+- The cost of a menu is not only code. It is a screen the operator has to walk
+  past, and a second place a value can be changed from, which is a second thing
+  that can disagree with the store.

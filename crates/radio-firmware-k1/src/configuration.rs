@@ -69,8 +69,6 @@ pub fn device_service() -> K1DeviceService {
 pub enum SettingChange {
     /// The squelch level applied when no channel overrides it.
     Squelch(SquelchLevel),
-    /// How long a scan listens to a channel before it moves on.
-    ScanDwellMs(u32),
 }
 
 /// Applies one handset setting to the stored radio-wide configuration.
@@ -99,7 +97,6 @@ pub fn store_setting<const BYTES: usize>(
         )?;
     match change {
         SettingChange::Squelch(squelch) => config.squelch = squelch,
-        SettingChange::ScanDwellMs(milliseconds) => config.scan_dwell_ms = milliseconds,
     }
     let replacement = encode_radio_config(config)?;
     service.store_object(&replacement)
@@ -651,12 +648,8 @@ mod tests {
         .expect("store");
         assert_ne!(service.generation(), before, "the change is a new snapshot");
 
-        // A second setting changes its own field and leaves the first alone.
-        store_setting(&mut service, SettingChange::ScanDwellMs(40)).expect("store");
-
         let programmed = Programmed::index(service.active_objects()).expect("programmed");
         assert_eq!(programmed.config().squelch, SquelchLevel::new(8).unwrap());
-        assert_eq!(programmed.config().scan_dwell_ms, 40);
         assert_eq!(
             programmed.config().backlight_seconds,
             30,

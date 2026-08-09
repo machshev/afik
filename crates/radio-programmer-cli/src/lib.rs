@@ -8,7 +8,7 @@ use radio_channel_plan::{
 };
 use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, Offset, PowerLevel,
-    SquelchLevel, Tone, TxClass,
+    RadioConfig, SquelchLevel, Tone, TxClass,
 };
 use radio_programmer::{Programmer, ProtocolTransport, RadioProject};
 use radio_programmer_serial::{is_supported_baud, LinuxSerialTransport};
@@ -45,7 +45,7 @@ Usage:\n\
   afik-programmer --version\n\
 \n\
 PROJECT is one or more of --bank SPEC, --channel SPEC, and\n\
---channel-bank SPEC.\n\
+--channel-bank SPEC, with at most one --config SPEC.\n\
 Bank SPEC: ID:NAME:BASE_HZ:SPACING_HZ:COUNT:TX_CLASS\n\
   optionally :DESIGNATOR:FIRST_NUMBER[:CALLING[:OFFSET_HZ]]\n\
   DESIGNATOR is up to four characters the radio names channels with, and a\n\
@@ -53,6 +53,10 @@ Bank SPEC: ID:NAME:BASE_HZ:SPACING_HZ:COUNT:TX_CLASS\n\
   OFFSET_HZ is 0 for simplex or the signed transmit offset of a repeater.\n\
 Channel SPEC: ID:NAME:RECEIVE_HZ:BANK:TX_CLASS, where BANK is - for none\n\
 Channel bank SPEC: ID:NAME:scan|noscan\n\
+Config SPEC: SQUELCH:SCAN_DWELL_MS, either field - to keep its default\n\
+  SQUELCH is 0 to 9, where 0 disables carrier squelch entirely.\n\
+  SCAN_DWELL_MS is whole milliseconds a scan listens to a channel for.\n\
+  A radio which needs neither changed does not need this option at all.\n\
 TX_CLASS: never, licence-free, amateur, marine, aeronautical, business, experimental\n\
 Supported BAUD: 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200\n\
 \n\
@@ -355,6 +359,19 @@ fn parse_force_and_banks(
                 object_count += 1;
                 offset += 2;
             }
+            "--config" if project.config().is_none() => {
+                let spec = require_value(arguments, offset, "--config")?;
+                project.set_config(parse_config(spec)?);
+                object_count += 1;
+                offset += 2;
+            }
+            "--config" => {
+                return Err(CliError::Usage(
+                    "a project holds one --config SPEC, so the second is refused rather \
+                     than silently replacing the first"
+                        .into(),
+                ));
+            }
             argument => {
                 return Err(CliError::Usage(format!(
                     "unexpected project argument: {argument}"
@@ -423,6 +440,43 @@ fn parse_channel(spec: &str) -> Result<ChannelRecord, CliError> {
         tx_class: class,
     })
     .map_err(|error| CliError::Usage(format!("invalid channel: {error}")))
+}
+
+/// Parses the radio-wide configuration.
+///
+/// A radio's settings are host-programmed like everything else it holds, and
+/// this is the CLI's way in. Only the two an operator actually tunes per unit
+/// are exposed — the squelch level and the scan dwell — and either may be `-`
+/// to keep the validated default. Everything else in a `RadioConfig` keeps that
+/// default here; the editor exposes the rest.
+///
+/// The dwell is whole milliseconds and is not rounded to any list, so a unit
+/// which wants 84 ms is given 84. It is also not clamped: a device reads back
+/// what was written to it. A dwell too short for a radio to retune, settle and
+/// take a reading inside simply never stops on anything, which is a property of
+/// that radio rather than of this number — `EVID-K1-071` records where the
+/// floor was found on the K1.
+fn parse_config(spec: &str) -> Result<RadioConfig, CliError> {
+    let fields = spec.split(':').collect::<Vec<_>>();
+    if fields.len() != 2 {
+        return Err(CliError::Usage(format!(
+            "config spec requires two colon-separated fields: {spec}"
+        )));
+    }
+    let mut config = RadioConfig::conservative();
+    if fields[0] != "-" {
+        let level = parse_integer::<u8>(fields[0], "squelch")?;
+        config.squelch = SquelchLevel::new(level)
+            .map_err(|error| CliError::Usage(format!("invalid squelch: {error}")))?;
+    }
+    if fields[1] != "-" {
+        config.scan_dwell_ms = parse_integer::<u32>(fields[1], "scan dwell")?;
+    }
+    // The compiler validates this again on the way into an image; refusing here
+    // means the operator is told which field they got wrong.
+    config
+        .validate()
+        .map_err(|error| CliError::Usage(format!("invalid configuration: {error}")))
 }
 
 /// Parses one generated plan.
@@ -831,7 +885,8 @@ mod tests {
         assert!(super::parse_bank("1:S:145200000:25000:4:amateur:S:8:9").is_err());
         assert!(super::parse_bank("1:S:145200000:25000:4:amateur:S").is_err());
     }
-    use super::{run, CliOutcome, EXIT_OPERATION, EXIT_SUCCESS, EXIT_USAGE, HELP};
+    use super::{parse_config, run, CliOutcome, EXIT_OPERATION, EXIT_SUCCESS, EXIT_USAGE, HELP};
+    use radio_domain::{RadioConfig, SquelchLevel};
     use radio_storage::decode_configuration_image;
     use std::{
         fs,
@@ -1042,6 +1097,59 @@ mod tests {
         assert_eq!(outcome.exit_code, EXIT_OPERATION);
         assert!(outcome.stderr.contains("exceeds"));
         fs::remove_file(oversized).unwrap();
+    }
+
+    /// The handset carries no scan-dwell menu, so this is how a unit gets one.
+    #[test]
+    fn the_configuration_is_host_programmable_at_whole_milliseconds() {
+        let written = run(&arguments(&[
+            "--sim",
+            "write",
+            "--bank",
+            "0:PMR446:446006250:12500:16:licence-free",
+            "--config",
+            "3:84",
+        ]));
+        assert_eq!(written.exit_code, EXIT_SUCCESS, "{}", written.stderr);
+
+        // The dwell is not rounded to any list: a unit which wants 84 gets 84.
+        let config = parse_config("3:84").expect("config");
+        assert_eq!(config.scan_dwell_ms, 84);
+        assert_eq!(config.squelch, SquelchLevel::new(3).unwrap());
+
+        // Either field may be left at the default it already had.
+        let defaults = RadioConfig::conservative();
+        let kept = parse_config("-:-").expect("config");
+        assert_eq!(kept, defaults);
+        assert_eq!(parse_config("-:95").expect("config").scan_dwell_ms, 95);
+        assert_eq!(
+            parse_config("7:-").expect("config").scan_dwell_ms,
+            defaults.scan_dwell_ms
+        );
+
+        // A dwell of zero is refused rather than written as a scan which can
+        // never advance, and the operator is told which field was wrong.
+        assert!(parse_config("3:0")
+            .expect_err("a zero dwell is invalid")
+            .to_string()
+            .contains("configuration"));
+        assert!(parse_config("10:90").is_err(), "squelch is bounded");
+        assert!(parse_config("3").is_err(), "both fields are required");
+        assert!(parse_config("3:90:5").is_err(), "and only those two");
+
+        // One project holds one configuration, so a second is refused rather
+        // than silently replacing the first.
+        let twice = invoke(&[
+            "--sim",
+            "write",
+            "--bank",
+            "0:PMR446:446006250:12500:16:licence-free",
+            "--config",
+            "3:90",
+            "--config",
+            "4:90",
+        ]);
+        assert_eq!(twice.exit_code, EXIT_USAGE);
     }
 
     #[test]

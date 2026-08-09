@@ -311,24 +311,6 @@ impl SelectorRow {
         Self::with_label(&label, false)
     }
 
-    /// Builds the settings-menu row for the scan dwell.
-    ///
-    /// Like the squelch row, it carries its own value so the operator can read
-    /// how fast the radio scans without opening the list.
-    #[must_use]
-    pub fn scan_dwell_setting(milliseconds: u32) -> Self {
-        let mut label = [b' '; LIST_NAME_BYTES];
-        label[..4].copy_from_slice(b"SCAN");
-        label[9..14].copy_from_slice(&dwell_label(milliseconds));
-        Self::with_label(&label, false)
-    }
-
-    /// Builds one scan-dwell row.
-    #[must_use]
-    pub fn scan_dwell(milliseconds: u32, active: bool) -> Self {
-        Self::with_label(&dwell_label(milliseconds), active)
-    }
-
     /// Builds one squelch-level row.
     ///
     /// Level zero is named rather than numbered, because "no squelch at all" is
@@ -492,28 +474,6 @@ pub fn dbm_label(dbm: i16) -> [u8; DBM_LABEL_BYTES] {
     label[1] = b'0' + u8::try_from(magnitude / 100).unwrap_or(0);
     label[2] = b'0' + u8::try_from(magnitude / 10 % 10).unwrap_or(0);
     label[3] = b'0' + u8::try_from(magnitude % 10).unwrap_or(0);
-    label
-}
-
-/// Columns one scan-dwell label occupies.
-pub const DWELL_LABEL_BYTES: usize = 5;
-
-/// Renders one scan dwell as right-aligned milliseconds.
-///
-/// The unit is spelled out because the number alone would be read as a channel
-/// count or a level, and the digits are right aligned so they do not shuffle
-/// sideways as the operator steps down the list.
-#[must_use]
-pub fn dwell_label(milliseconds: u32) -> [u8; DWELL_LABEL_BYTES] {
-    let mut label = *b"  0MS";
-    let value = milliseconds.min(999);
-    if value >= 100 {
-        label[0] = b'0' + u8::try_from(value / 100).unwrap_or(0);
-    }
-    if value >= 10 {
-        label[1] = b'0' + u8::try_from(value / 10 % 10).unwrap_or(0);
-    }
-    label[2] = b'0' + u8::try_from(value % 10).unwrap_or(0);
     label
 }
 

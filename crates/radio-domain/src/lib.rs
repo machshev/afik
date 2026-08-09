@@ -348,6 +348,13 @@ pub struct RadioConfig {
     /// Behaviour after a scan stops on an occupied channel.
     pub scan_resume: ScanResume,
     /// Non-zero no-signal scan dwell in milliseconds.
+    ///
+    /// How long a scan listens to a channel before moving on. The useful floor
+    /// is a property of the radio rather than of this type: an image has to
+    /// retune, let its receiver settle, and take a reading that means something
+    /// before the dwell expires. `EVID-K1-069` and `EVID-K1-071` record where
+    /// that floor was found on the K1. Nothing is clamped here, so a device
+    /// reads back exactly what a host wrote to it.
     pub scan_dwell_ms: u32,
     /// Non-zero open-squelch scan hold in milliseconds.
     pub scan_hold_ms: u32,
@@ -366,7 +373,11 @@ impl RadioConfig {
             squelch: SquelchLevel::CONSERVATIVE,
             backlight_seconds: 10,
             scan_resume: ScanResume::TimeOut,
-            scan_dwell_ms: 150,
+            // Measured on the exact K1 unit rather than chosen: 100 ms stopped
+            // on a signal and 60 ms did not, and bisecting that bracket landed
+            // here. `EVID-K1-071`. A radio which needs longer is programmed
+            // with longer; this is only what one arrives with.
+            scan_dwell_ms: 90,
             scan_hold_ms: 5_000,
             dual_watch: false,
             battery_save_ratio: 0,
