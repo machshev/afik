@@ -2040,3 +2040,97 @@
   immediately after the `5.2` write and did not clear, so `info` and `list` have
   not questioned this image the way they questioned `5.1`. The handset is its
   only witness so far.
+
+## SWEEP-040 — What an off-tune probe can see
+
+- **Status:** not started
+- **Objective:** measure how a received signal's indicated strength falls off as
+  the receiver is tuned away from it, on the exact unit, and decide from that
+  measurement alone whether an off-tune probe can stand in for visiting a
+  channel. This task produces evidence and a go/no-go. It authorises no scan
+  behaviour and encodes no threshold.
+- **Why now:** `EVID-K1-070` recorded a strong local transmitter opening the
+  squelch on channels beside its own. That is a defect for the linear scan and a
+  gradient for a faster one: a generated bank is a contiguous arithmetic range,
+  so if off-tune strength falls off monotonically, the bank can be searched
+  rather than walked. Whether that is true, and over what span, is unmeasured.
+- **Scope:** bench measurement, `docs/hardware-evidence.md`, `RISKS.md`,
+  `STATUS.md`. No crate changes, no firmware image, no new scan mode.
+- **Dependencies:** `SCAN-039`. Requires a controllable transmitter, the exact
+  unit, and a generated bank whose span is wider than the expected falloff.
+- **Assumptions:** the existing `ReceiveMetrics` surface — `rssi_dbm_x2`,
+  `glitch`, `noise` — is what a probe would have to decide on, so the
+  measurement records those and nothing the firmware cannot read. Squelch levels
+  are AFIK's own numbers rather than the unit's calibration, so a level is
+  recorded as context and never as a measured quantity.
+- **Likely files:** `docs/hardware-evidence.md` (new `EVID-K1-072` onward),
+  `RISKS.md` under `RISK-008`, `STATUS.md`.
+- **Safety:** the DUT does not transmit for any part of this task. The
+  transmitter under test is a separate unit on a known frequency and power, and
+  its identity, power setting and distance are recorded with every reading.
+
+### Questions it has to answer
+
+1. **Detection width.** How far off-tune can the receiver be and still separate
+   a present signal from an absent one, as a function of the signal's
+   on-channel indicated strength? This number sets probe spacing. If it is not
+   comfortably larger than the bank's channel step, the whole idea is dead and
+   the task ends there.
+2. **Shape.** Is the falloff monotone either side of the signal, or are there
+   shoulders, plateaus, images or spurious peaks? A hill-climbing search needs
+   a single hill; anything else changes the search or rules it out.
+3. **The blind band.** What on-channel strength is required before any off-tune
+   probe registers at all? Everything between that and the squelch threshold is
+   a signal the linear scan finds and a probing scan cannot. Record the size of
+   that band in dB — it is the honest cost of the fast path.
+4. **Which indicator.** Does `glitch` or `noise` separate on-channel from
+   off-channel more sharply than `rssi_dbm_x2`? This also feeds the noise-gated
+   squelch work `RISK-008` already carries.
+5. **Steadiness.** How much does the indicated strength of an unchanged signal
+   move between readings taken over the span of a whole search? A search
+   compares readings taken at different times, so this sets whether that
+   comparison means anything, and whether re-reading the starting point can
+   detect a transmission that changed underneath it.
+6. **Probe cost.** How long does a reading that only has to be compared need,
+   against the 90 ms a dwell needs to make a squelch decision? A probe may be
+   cheaper than a dwell, and if it is, that multiplies any structural saving.
+7. **Two signals.** With two transmitters in the same bank, what does the
+   falloff look like between them? This is where a single-hill search converges
+   on the wrong answer, and the failure needs to be seen rather than assumed.
+
+### Method
+
+- Record equipment identity, both radios' board and chip markings, the bank
+  under test, ambient conditions, and the raw readings themselves. Sweep the
+  receiver across the bank in single channel steps with the transmitter on a
+  fixed channel, at several transmitter powers and distances, and repeat each
+  sweep enough times to show spread rather than one pass.
+- Take a no-signal sweep of the same bank first. Every claim about detecting a
+  signal is a claim about a difference from that baseline.
+- Vary one thing at a time and say which. A falloff curve that mixes changed
+  power with changed distance measures neither.
+
+### Acceptance criteria
+
+- Every question above is answered with recorded readings, or explicitly
+  recorded as unanswered and why.
+- Results land in `docs/hardware-evidence.md` as numbered evidence carrying the
+  confidence they have earned — one unit, one board, one afternoon — and
+  `RISK-008` is updated with what is now known and what still is not.
+- A stated go/no-go on probe spacing against the channel step, with the number
+  behind it.
+- No threshold, spacing, width or timing from this task is written into any
+  crate. A later task may propose them; this one establishes them.
+
+### Follow-on sequence, if the measurement says go
+
+1. `SWEEP-041` — the search as a manually selected scan mode, chosen by the
+   operator, with the linear scan untouched beside it. The point is to find out
+   whether it is useful in the field at all before it earns any automatic
+   behaviour or any more image space.
+2. `SWEEP-042` — automatic fallback to the linear scan when no probe registers,
+   so the operator stops having to know which mode to be in.
+3. `SWEEP-043` — the interleaved sweep order, if the measurement supports it:
+   passes strided by the probe spacing whose union is every channel, so full
+   coverage costs what the linear scan already costs and strong signals are
+   found in the first pass. This may make step 2 structural rather than a mode.
