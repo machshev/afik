@@ -2134,3 +2134,79 @@
    passes strided by the probe spacing whose union is every channel, so full
    coverage costs what the linear scan already costs and strong signals are
    found in the first pass. This may make step 2 structural rather than a mode.
+
+## CTRL-044 — Host control of the receiver over serial
+
+- **Status:** not started
+- **Objective:** implement the reserved `Service::RuntimeControl` as a bounded,
+  receive-only host control surface: take control, set the receive frequency,
+  read the raw metrics, release control. Enough to drive `SWEEP-040` from a
+  host, shaped so that later PC remote control extends it rather than replaces
+  it.
+- **Why this way:** `SWEEP-040` needs hundreds of readings across channels,
+  powers and repeats, which is not a handset measurement. The diagnostic image
+  could carry a throwaway tune command, but the operator wants full radio
+  control over serial eventually, so the first tune request should be the first
+  piece of that surface. `Service::RuntimeControl = 2` has been reserved since
+  `FOUND-001` with no commands defined; this fills it.
+- **Scope:** `radio-protocol` (commands in the runtime-control range),
+  `radio-device` (service dispatch), `radio-firmware-k1` (serial task and the
+  interface/scan boundary), `radio-flasher-cli` or `radio-programmer-cli` (a
+  sweep command), `radio-sim` (deterministic coverage), docs.
+- **Dependencies:** `SCAN-039`, `ARENA-038`.
+- **Assumptions:** the existing framing, CRC, sequence and capability
+  negotiation are unchanged. Capability negotiation must advertise runtime
+  control so a host can discover it rather than probe for it.
+
+### The boundary that makes it safe
+
+- **Receive only.** No runtime-control command mints, implies, or enables
+  transmit authority. `radio-tx-policy` is not consulted because nothing in
+  this service can ask for transmission; a command that would need it is not
+  added to this service.
+- **Ownership is explicit.** The interface task retunes the radio for channel
+  selection and scanning. A host that tunes while a scan is running is fighting
+  it, and the readings would be meaningless. So control is taken and released
+  as an explicit transition: taking it stops any scan and suspends interface
+  retuning, releasing it returns the radio to the operator's selection.
+- **Control is not configuration.** A host-set frequency is live state and is
+  never written to the store, never becomes the retained place, and does not
+  survive a power cycle. Turning the radio off returns an operator's radio.
+- **The handset wins.** A key press releases host control, exactly as any key
+  stops a scan today. The operator is never locked out of the radio in their
+  hand by something a host said.
+- **It fails closed.** Loss of the link, a malformed command, or a timeout
+  releases control and restores the operator's selection rather than leaving
+  the receiver parked wherever a host left it.
+
+### First slice
+
+- `TakeControl` / `ReleaseControl`, `SetReceiveFrequency(hz)`,
+  `ReadMetrics` returning the raw `ReceiveMetrics` fields already defined —
+  `rssi_dbm_x2`, `glitch`, `noise`, `squelch_open` — plus the frequency
+  actually tuned and a sample counter, so a host can tell a fresh reading from
+  a repeated one.
+- A host-side sweep that walks a range and emits one row per reading in a form
+  that can be plotted without further parsing.
+- Nothing else. Channel selection, squelch, scan start/stop, monitor and audio
+  routing are the obvious next commands and are deliberately not in this slice.
+
+### Tests required
+
+- Command matrix over the new service: unsupported command, malformed payload,
+  out-of-range frequency, and commands sent without control held.
+- Control transitions: take while scanning stops the scan; release restores the
+  operator's selection; a key press releases; link loss releases.
+- No store mutation and no retained-place write from any runtime-control
+  command, proven against the arena.
+- Deterministic simulator coverage of the whole slice, and identical scripts
+  producing identical traces.
+
+### Acceptance criteria
+
+- A host can tune the receiver and read metrics over serial, and the radio
+  returns to the operator's selection afterwards by every exit path.
+- Capability negotiation advertises the service.
+- The workspace gate passes and `tool/build-k1-async.sh` builds the image;
+  image and RAM cost recorded in `STATUS.md`.
+- `SWEEP-040` can be run from a host against the resulting image.
