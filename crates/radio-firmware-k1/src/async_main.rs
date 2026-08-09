@@ -77,7 +77,7 @@ const _: [(); 8] = [(); PAGES];
 const K1_VECTOR_TABLE_ORIGIN: u32 = 0x0800_2800;
 
 /// Identity this image reports on the information screen.
-const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-6.0";
+const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-6.1";
 
 /// Interval between receive samples while audio is routed.
 ///
@@ -225,6 +225,14 @@ static SERIAL_DISCARDED: AtomicU32 = AtomicU32::new(0);
 /// Reset flags from `RCC_CSR`, bits 24 to 31, read once at boot.
 static RESET_CAUSE: AtomicU32 = AtomicU32::new(0);
 
+/// Boots since this radio last lost its memory, as one digit.
+static BOOTS: AtomicU32 = AtomicU32::new(0);
+
+/// Returns the boot count digit.
+fn boots() -> u8 {
+    u8::try_from(BOOTS.load(Ordering::Relaxed) % 10).unwrap_or(0)
+}
+
 /// Returns the reset cause this boot began with.
 fn reset_cause() -> ResetCause {
     ResetCause(u8::try_from(RESET_CAUSE.load(Ordering::Relaxed) & 0xff).unwrap_or(0))
@@ -275,6 +283,11 @@ fn main() -> ! {
     let csr = RCC.csr().read();
     RESET_CAUSE.store((csr.0 >> 24) & 0xff, Ordering::Relaxed);
     RCC.csr().modify(|register| register.set_rmvf(true));
+
+    // Counted here, beside the reset cause, and before any peripheral is
+    // touched. A counter which reads one after a reset says this memory did not
+    // survive it, and the panic report cannot be carried this way.
+    BOOTS.store(u32::from(count_boot()), Ordering::Relaxed);
     let p = runtime_init.peripherals;
     let Ok(runtime) = compose(K1RuntimePeripherals {
         usart: p.USART1,
@@ -1121,6 +1134,7 @@ async fn ui_task(
         serial_counters(),
         PERIPHERAL_CLOCK_KHZ.load(Ordering::Relaxed),
         reset_cause(),
+        boots(),
         // A radio which panicked says so on the first frame it draws, before
         // the operator has to know to go looking for it.
         recorded_panic(),
@@ -1649,6 +1663,7 @@ fn render(
             serial_counters(),
             PERIPHERAL_CLOCK_KHZ.load(Ordering::Relaxed),
             reset_cause(),
+            boots(),
             recorded_panic(),
         ),
     }
@@ -1673,6 +1688,40 @@ const PANIC_REPORT_MAGIC: u32 = 0x4B31_DEAD;
 
 /// Bytes of the panicking file's name kept, after the last path separator.
 const PANIC_FILE_BYTES: usize = 8;
+
+/// Marks the boot counter as this image's rather than leftover SRAM.
+const BOOT_COUNT_MAGIC: u32 = 0x4B31_B007;
+
+/// Set when the boot counter below is this image's.
+#[allow(unsafe_code)]
+#[unsafe(link_section = ".uninit.afik_panic_report")]
+static BOOT_MAGIC: AtomicU32 = AtomicU32::new(0);
+
+/// Boots since the last time this memory was lost.
+///
+/// This exists to test the panic report rather than to be useful in itself.
+/// The report is written by the panic handler and read by the next boot, and
+/// `RISK-036` has it arriving empty after a reset the flags say was software —
+/// which the handler is the only caller of. Either this memory does not survive
+/// a reset at all, in which case this counter reads one every time, or it does
+/// and something is destroying the report specifically.
+#[allow(unsafe_code)]
+#[unsafe(link_section = ".uninit.afik_panic_report")]
+static BOOT_COUNT: AtomicU32 = AtomicU32::new(0);
+
+/// Counts this boot and returns the total, saturating at a single digit.
+///
+/// Called once, before anything else can reset the radio.
+fn count_boot() -> u8 {
+    let counted = if BOOT_MAGIC.load(Ordering::Relaxed) == BOOT_COUNT_MAGIC {
+        BOOT_COUNT.load(Ordering::Relaxed).saturating_add(1)
+    } else {
+        1
+    };
+    BOOT_COUNT.store(counted, Ordering::Relaxed);
+    BOOT_MAGIC.store(BOOT_COUNT_MAGIC, Ordering::Relaxed);
+    u8::try_from(counted % 10).unwrap_or(0)
+}
 
 /// Set when the fields below describe a real panic.
 ///

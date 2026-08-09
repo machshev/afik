@@ -591,6 +591,7 @@ pub fn render_info_screen(
     serial: SerialCounters,
     peripheral_clock_khz: u32,
     reset: ResetCause,
+    boots: u8,
     panic: Option<PanicReport>,
 ) {
     frame.fill(0);
@@ -602,7 +603,10 @@ pub fn render_info_screen(
     // baud rate is derived from this number, so a serial link which hears bytes
     // and rejects every packet is asking to be told what the radio thinks its
     // clock is.
-    let mut generation_label = *b"GEN000000 CLK00000";
+    // `B` is boots since this radio last lost its memory. It is here to say
+    // whether the memory the panic report uses survives a reset at all: a
+    // counter which reads one after every reset means it does not.
+    let mut generation_label = *b"GEN000000 CLK00000 B0";
     let mut value = generation;
     for index in (3..9).rev() {
         generation_label[index] = b'0' + u8::try_from(value % 10).unwrap_or(0);
@@ -613,6 +617,7 @@ pub fn render_info_screen(
         generation_label[index] = b'0' + u8::try_from(clock % 10).unwrap_or(0);
         clock /= 10;
     }
+    generation_label[20] = b'0' + boots % 10;
     draw_text(frame, 0, 18, &generation_label);
 
     let mut channel_label = *b"CHANNELS 00 RST ....";
@@ -1571,6 +1576,7 @@ mod operating_screen_tests {
             },
             24_000,
             ResetCause::default(),
+            1,
             None,
         );
         let mut unstored = [0_u8; FRAME_BYTES];
@@ -1584,6 +1590,7 @@ mod operating_screen_tests {
             SerialCounters::default(),
             24_000,
             ResetCause::default(),
+            1,
             None,
         );
         assert_ne!(retained, unstored);
@@ -1632,6 +1639,7 @@ mod operating_screen_tests {
             SerialCounters::default(),
             48_000,
             ResetCause::default(),
+            1,
             Some(panic),
         );
         let mut without_panic = [0_u8; FRAME_BYTES];
@@ -1645,6 +1653,7 @@ mod operating_screen_tests {
             SerialCounters::default(),
             48_000,
             ResetCause::default(),
+            1,
             None,
         );
         assert_ne!(with_panic, without_panic);
@@ -1693,6 +1702,7 @@ mod operating_screen_tests {
             SerialCounters::default(),
             48_000,
             ResetCause::default(),
+            1,
             None,
         );
         let mut erroring = [0_u8; FRAME_BYTES];
@@ -1711,6 +1721,7 @@ mod operating_screen_tests {
             },
             48_000,
             ResetCause::default(),
+            1,
             None,
         );
         assert_ne!(silent, erroring);
@@ -1755,6 +1766,7 @@ mod operating_screen_tests {
             SerialCounters::default(),
             48_000,
             ResetCause(0b0000_1000),
+            1,
             None,
         );
         let mut software = [0_u8; FRAME_BYTES];
@@ -1768,8 +1780,63 @@ mod operating_screen_tests {
             SerialCounters::default(),
             48_000,
             ResetCause(0b0001_0000),
+            1,
             None,
         );
         assert_ne!(power, software);
+    }
+
+    #[test]
+    fn the_boot_count_reaches_the_screen_and_stays_one_digit() {
+        let mut first = [0_u8; FRAME_BYTES];
+        let mut third = [0_u8; FRAME_BYTES];
+        for (frame, boots) in [(&mut first, 1_u8), (&mut third, 3)] {
+            render_info_screen(
+                frame,
+                b"AFIK-K1-6.1",
+                0,
+                0,
+                false,
+                MemoryState::Absent,
+                SerialCounters::default(),
+                48_000,
+                ResetCause::default(),
+                boots,
+                None,
+            );
+        }
+        assert_ne!(first, third);
+
+        // The field is one character, so a count past nine wraps rather than
+        // running into the row beside it.
+        let mut wrapped = [0_u8; FRAME_BYTES];
+        render_info_screen(
+            &mut wrapped,
+            b"AFIK-K1-6.1",
+            0,
+            0,
+            false,
+            MemoryState::Absent,
+            SerialCounters::default(),
+            48_000,
+            ResetCause::default(),
+            13,
+            None,
+        );
+        let mut three = [0_u8; FRAME_BYTES];
+        render_info_screen(
+            &mut three,
+            b"AFIK-K1-6.1",
+            0,
+            0,
+            false,
+            MemoryState::Absent,
+            SerialCounters::default(),
+            48_000,
+            ResetCause::default(),
+            3,
+            None,
+        );
+        assert_eq!(wrapped, three);
     }
 }
