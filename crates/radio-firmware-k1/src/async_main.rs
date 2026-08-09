@@ -76,7 +76,7 @@ const _: [(); 8] = [(); PAGES];
 const K1_VECTOR_TABLE_ORIGIN: u32 = 0x0800_2800;
 
 /// Identity this image reports on the information screen.
-const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-5.8";
+const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-5.9";
 
 /// Interval between receive samples while audio is routed.
 ///
@@ -221,12 +221,21 @@ static PERIPHERAL_CLOCK_KHZ: AtomicU32 = AtomicU32::new(0);
 /// what tells those apart without a host.
 static SERIAL_DISCARDED: AtomicU32 = AtomicU32::new(0);
 
+/// Receiver errors: bytes which arrived and could not be framed.
+///
+/// A byte the UART cannot frame is never delivered, so it cannot be counted as
+/// received. Without this, a link running at the wrong baud rate looks exactly
+/// like a link with nothing on it: `RISK-036` records a whole evening spent
+/// unable to tell those apart.
+static SERIAL_ERRORS: AtomicU32 = AtomicU32::new(0);
+
 /// Returns the current serial counters.
 fn serial_counters() -> SerialCounters {
     SerialCounters {
-        received: u16::try_from(SERIAL_RECEIVED.load(Ordering::Relaxed) % 10_000).unwrap_or(0),
-        answered: u16::try_from(SERIAL_ANSWERED.load(Ordering::Relaxed) % 10_000).unwrap_or(0),
-        discarded: u16::try_from(SERIAL_DISCARDED.load(Ordering::Relaxed) % 10_000).unwrap_or(0),
+        received: u16::try_from(SERIAL_RECEIVED.load(Ordering::Relaxed) % 1_000).unwrap_or(0),
+        answered: u16::try_from(SERIAL_ANSWERED.load(Ordering::Relaxed) % 1_000).unwrap_or(0),
+        discarded: u16::try_from(SERIAL_DISCARDED.load(Ordering::Relaxed) % 1_000).unwrap_or(0),
+        errors: u16::try_from(SERIAL_ERRORS.load(Ordering::Relaxed) % 1_000).unwrap_or(0),
     }
 }
 
@@ -733,6 +742,15 @@ async fn serial_task(mut uart: Uart<'static, Async>, memory: EepromPins) {
         {
             Either3::First(Ok(count)) => count,
             Either3::First(Err(_)) => {
+                // Counted before yielding. This arm firing while nothing is
+                // received is what a wrong baud rate looks like, and it was
+                // previously discarded without trace.
+                //
+                // Only this task writes this, so a load and store is sufficient.
+                SERIAL_ERRORS.store(
+                    SERIAL_ERRORS.load(Ordering::Relaxed).wrapping_add(1),
+                    Ordering::Relaxed,
+                );
                 // Yield before retrying so a persistent receiver error can never
                 // starve the interface task.
                 Timer::after_millis(1).await;

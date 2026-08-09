@@ -646,10 +646,17 @@ pub fn render_info_screen(
     // `D` is packets which arrived complete and failed to decode. Without it,
     // a frame the radio heard and rejected is indistinguishable from one it
     // never received: both read as bytes in and nothing answered.
-    let mut link = *b"RX0000 TX0000 D0000";
-    write_four_digits(&mut link[2..6], serial.received);
-    write_four_digits(&mut link[9..13], serial.answered);
-    write_four_digits(&mut link[15..19], serial.discarded);
+    // `E` is receiver errors: bytes the UART could not frame at the configured
+    // baud. Without it, a link running at the wrong rate is indistinguishable
+    // from a silent one, because both leave `RX` at zero — the receive path
+    // only counts bytes it framed. Three digits each is what fits four fields
+    // across this display; they wrap at a thousand, which is enough to tell
+    // moving from not moving.
+    let mut link = *b"RX000 TX000 D000 E000";
+    write_three_digits(&mut link[2..5], serial.received);
+    write_three_digits(&mut link[8..11], serial.answered);
+    write_three_digits(&mut link[13..16], serial.discarded);
+    write_three_digits(&mut link[18..21], serial.errors);
     draw_text(frame, 0, 8, &link);
 }
 
@@ -693,12 +700,22 @@ pub struct SerialCounters {
     pub answered: u16,
     /// Complete packets the radio rejected as malformed, which wraps.
     pub discarded: u16,
+    /// Receiver errors: bytes which arrived and could not be framed, which
+    /// wraps.
+    ///
+    /// This separates a link at the wrong baud rate from a link with nothing on
+    /// it. Both leave `received` at zero, because a byte which does not frame is
+    /// never delivered to be counted.
+    pub errors: u16,
 }
 
-/// Writes one four-digit decimal field.
-fn write_four_digits(field: &mut [u8], value: u16) {
-    let mut remaining = value % 10_000;
-    for index in (0..4).rev() {
+/// Writes one three-digit decimal field.
+fn write_three_digits(field: &mut [u8], value: u16) {
+    if field.len() < 3 {
+        return;
+    }
+    let mut remaining = value % 1_000;
+    for index in (0..3).rev() {
         field[index] = b'0' + u8::try_from(remaining % 10).unwrap_or(0);
         remaining /= 10;
     }
@@ -1496,6 +1513,7 @@ mod operating_screen_tests {
                 received: 12,
                 answered: 3,
                 discarded: 2,
+                errors: 0,
             },
             24_000,
             None,
@@ -1599,5 +1617,42 @@ mod operating_screen_tests {
             line: 123_456,
         };
         assert_eq!(&panic.label()[15..], b"23456");
+    }
+
+    #[test]
+    fn a_receiver_error_is_visible_even_when_nothing_was_received() {
+        // The case RISK-036 could not distinguish: a link at the wrong baud
+        // rate delivers no bytes to count, so `RX` stays at zero whether or not
+        // anything is on the wire. `E` is what separates them.
+        let mut silent = [0_u8; FRAME_BYTES];
+        render_info_screen(
+            &mut silent,
+            b"AFIK-K1-5.9",
+            0,
+            0,
+            false,
+            MemoryState::Absent,
+            SerialCounters::default(),
+            48_000,
+            None,
+        );
+        let mut erroring = [0_u8; FRAME_BYTES];
+        render_info_screen(
+            &mut erroring,
+            b"AFIK-K1-5.9",
+            0,
+            0,
+            false,
+            MemoryState::Absent,
+            SerialCounters {
+                received: 0,
+                answered: 0,
+                discarded: 0,
+                errors: 42,
+            },
+            48_000,
+            None,
+        );
+        assert_ne!(silent, erroring);
     }
 }
