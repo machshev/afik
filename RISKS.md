@@ -679,5 +679,28 @@
   radio stopped, not what the link did. `RX0000 TX0000 D0000` observed on
   2026-08-09 was read this way and cannot be used as evidence that no bytes
   arrived.
-- **Required next:** a counter reading taken while the radio is confirmed
-  responsive, and a panic or hard-fault location from a reproduction.
+- **Observed 2026-08-09, `AFIK-K1-5.9`:** with the radio confirmed responsive
+  and the operator watching the information screen, ten host frames produced a
+  screen which repeatedly blanked and returned to the operating screen on a
+  channel with a live meter — a reboot each time. The bottom row read `MEM`, not
+  `PANIC`, so the panic handler did not run and these resets are not panics.
+- **What that explains:** every counter reading ever taken from this screen. The
+  counters are zeroed by the reboot, so `RX000 TX000 D000 E000` describes a
+  radio which has just restarted rather than a link with nothing on it. The
+  `ARENA-038` dead end is therefore not known to be a protocol, framing, baud or
+  clock fault: the radio resets when the host sends to it, and so can never
+  answer.
+- **Ruled out, same session:** the host's modem control lines. Opening and
+  closing the port twice with no data sent produced no visible effect, so DTR
+  and RTS toggling — two open/close cycles per CLI invocation, `hupcl` never
+  disabled — is not the trigger. Data on the wire is.
+- **Required next:** the reset cause, read from `RCC_CSR` at boot and shown on
+  the information screen. It distinguishes a pin reset, a watchdog, a brown-out
+  and a software reset from each other, and it is the one measurement which says
+  what kind of fault this is rather than narrowing what it is not. A `HardFault`
+  handler recording as the panic handler now does would separate a fault from an
+  external or supply-side reset.
+- **Not established:** that the reset is caused by the data rather than
+  correlated with it, whether it depends on frame content or merely on activity,
+  and whether RAM survives it — a brown-out would clear the panic report, which
+  would make `MEM` mean nothing about whether a panic occurred.
