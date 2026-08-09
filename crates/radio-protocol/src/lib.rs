@@ -815,6 +815,112 @@ fn cobs_decode(input: &[u8], output: &mut [u8]) -> Result<usize, ProtocolError> 
     Ok(write_index)
 }
 
+/// One decoded runtime-control request.
+///
+/// Every variant names an operation the receive controller already performs for
+/// a decoded key press. Nothing here can ask for transmission, so there is no
+/// transmit request to refuse.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ControlRequest {
+    /// Report what the receiver is currently doing.
+    GetState,
+    /// Report one raw metrics sample.
+    GetMetrics,
+    /// Stop a running scan.
+    StopScan,
+    /// Start scanning the current source.
+    StartScan,
+    /// Leave memory channels for the tunable receiver.
+    EnterVfo,
+    /// Leave the tunable receiver for memory channels.
+    EnterMemory,
+    /// Tune the receiver to an exact frequency.
+    TuneTo {
+        /// Requested frequency in hertz.
+        frequency_hz: u32,
+    },
+    /// Select one memory channel by storage index.
+    SelectChannel {
+        /// Zero-based storage index.
+        index: u16,
+    },
+}
+
+impl ControlRequest {
+    /// Largest encoded request payload.
+    pub const MAX_PAYLOAD_LEN: usize = 4;
+
+    /// Returns the command byte which carries this request.
+    pub const fn command(&self) -> Command {
+        match self {
+            Self::GetState => Command::GetReceiveState,
+            Self::GetMetrics => Command::GetReceiveMetrics,
+            Self::StopScan => Command::StopScan,
+            Self::StartScan => Command::StartScan,
+            Self::EnterVfo => Command::EnterVfo,
+            Self::EnterMemory => Command::EnterMemory,
+            Self::TuneTo { .. } => Command::TuneTo,
+            Self::SelectChannel { .. } => Command::SelectChannel,
+        }
+    }
+
+    /// Writes this request's payload, which is empty for most requests.
+    pub fn encode_payload(&self, output: &mut [u8]) -> Result<usize, ProtocolError> {
+        match self {
+            Self::TuneTo { frequency_hz } => {
+                let buffer = output.get_mut(..4).ok_or(ProtocolError::OutputTooSmall)?;
+                buffer.copy_from_slice(&frequency_hz.to_le_bytes());
+                Ok(4)
+            }
+            Self::SelectChannel { index } => {
+                let buffer = output.get_mut(..2).ok_or(ProtocolError::OutputTooSmall)?;
+                buffer.copy_from_slice(&index.to_le_bytes());
+                Ok(2)
+            }
+            _ => Ok(0),
+        }
+    }
+
+    /// Reads one request from a command byte and exactly its payload bytes.
+    ///
+    /// A command outside the runtime-control range is not this service's, and a
+    /// payload of the wrong length is refused rather than padded or truncated.
+    pub fn decode(command: Command, payload: &[u8]) -> Result<Self, ProtocolError> {
+        let empty = |request| {
+            if payload.is_empty() {
+                Ok(request)
+            } else {
+                Err(ProtocolError::TrailingPayload)
+            }
+        };
+        match command {
+            Command::GetReceiveState => empty(Self::GetState),
+            Command::GetReceiveMetrics => empty(Self::GetMetrics),
+            Command::StopScan => empty(Self::StopScan),
+            Command::StartScan => empty(Self::StartScan),
+            Command::EnterVfo => empty(Self::EnterVfo),
+            Command::EnterMemory => empty(Self::EnterMemory),
+            Command::TuneTo => {
+                let bytes: [u8; 4] = payload
+                    .try_into()
+                    .map_err(|_| ProtocolError::MalformedPayload)?;
+                Ok(Self::TuneTo {
+                    frequency_hz: u32::from_le_bytes(bytes),
+                })
+            }
+            Command::SelectChannel => {
+                let bytes: [u8; 2] = payload
+                    .try_into()
+                    .map_err(|_| ProtocolError::MalformedPayload)?;
+                Ok(Self::SelectChannel {
+                    index: u16::from_le_bytes(bytes),
+                })
+            }
+            _ => Err(ProtocolError::UnknownCommand),
+        }
+    }
+}
+
 /// Which source the receiver is currently listening to.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
@@ -1005,10 +1111,11 @@ const _: () = assert!(ReceiveMetricsReport::ENCODED_LEN <= MAX_PAYLOAD);
 mod tests {
     use super::{
         cobs_encode, crc16_ccitt_false, decode_list_objects_request, decode_packet, encode_frame,
-        encode_list_objects_request, Command, DeviceCapabilities, Frame, ObjectDescriptor,
-        ObjectListPage, ProtocolError, ReceiveMetricsReport, ReceiveMode, ReceiveStateReport,
-        ScanActivity, Service, StreamDecoder, CRC_LEN, FLAG_RESPONSE, HEADER_LEN, MAGIC,
-        MAX_ENCODED_FRAME, MAX_LIST_OBJECTS_PER_PAGE, MAX_PAYLOAD, PROTOCOL_VERSION,
+        encode_list_objects_request, Command, ControlRequest, DeviceCapabilities, Frame,
+        ObjectDescriptor, ObjectListPage, ProtocolError, ReceiveMetricsReport, ReceiveMode,
+        ReceiveStateReport, ScanActivity, Service, StreamDecoder, CRC_LEN, FLAG_RESPONSE,
+        HEADER_LEN, MAGIC, MAX_ENCODED_FRAME, MAX_LIST_OBJECTS_PER_PAGE, MAX_PAYLOAD,
+        PROTOCOL_VERSION,
     };
 
     fn encode_raw_frame(service: u8, command: u8) -> ([u8; MAX_ENCODED_FRAME], usize) {
@@ -1200,6 +1307,66 @@ mod tests {
             assert_eq!(command as u8, byte);
         }
         assert_eq!(Command::try_from(0x18), Err(ProtocolError::UnknownCommand));
+    }
+
+    #[test]
+    fn every_control_request_round_trips_through_its_command_and_payload() {
+        let requests = [
+            ControlRequest::GetState,
+            ControlRequest::GetMetrics,
+            ControlRequest::StopScan,
+            ControlRequest::StartScan,
+            ControlRequest::EnterVfo,
+            ControlRequest::EnterMemory,
+            ControlRequest::TuneTo {
+                frequency_hz: 145_512_500,
+            },
+            ControlRequest::SelectChannel { index: 399 },
+        ];
+        for request in requests {
+            let mut payload = [0_u8; ControlRequest::MAX_PAYLOAD_LEN];
+            let length = request
+                .encode_payload(&mut payload)
+                .expect("the payload encodes");
+            assert_eq!(
+                ControlRequest::decode(request.command(), &payload[..length]),
+                Ok(request)
+            );
+        }
+    }
+
+    #[test]
+    fn a_control_request_refuses_a_payload_of_the_wrong_length() {
+        // An operation which takes no argument is not given one.
+        assert_eq!(
+            ControlRequest::decode(Command::StopScan, &[0]),
+            Err(ProtocolError::TrailingPayload)
+        );
+        // A frequency is four bytes or it is not a frequency.
+        assert_eq!(
+            ControlRequest::decode(Command::TuneTo, &[0, 0, 0]),
+            Err(ProtocolError::MalformedPayload)
+        );
+        assert_eq!(
+            ControlRequest::decode(Command::TuneTo, &[0, 0, 0, 0, 0]),
+            Err(ProtocolError::MalformedPayload)
+        );
+        assert_eq!(
+            ControlRequest::decode(Command::SelectChannel, &[0]),
+            Err(ProtocolError::MalformedPayload)
+        );
+    }
+
+    #[test]
+    fn a_configuration_command_is_not_a_control_request() {
+        assert_eq!(
+            ControlRequest::decode(Command::ListObjects, &[]),
+            Err(ProtocolError::UnknownCommand)
+        );
+        assert_eq!(
+            ControlRequest::decode(Command::Hello, &[1]),
+            Err(ProtocolError::UnknownCommand)
+        );
     }
 
     #[test]
