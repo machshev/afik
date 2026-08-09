@@ -716,9 +716,26 @@
 - **What still works from that change:** the radio recovers instead of freezing,
   and the reset cause is readable. Those are why `5.8` through `6.1` are worth
   keeping despite the report itself being dead on this hardware.
+- **Bisection attempt, `AFIK-K1-6.2D`, inconclusive and partly contradictory:**
+  an image which counts each received byte and drops it without parsing did not
+  reset under the same host traffic which resets a parsing image. But its
+  counters afterwards read `RX000 TX000 D000 E000` — no bytes received and no
+  receiver errors either. If nothing arrived, the parsing code never ran in
+  either build, and the difference between them cannot be what stopped the
+  panic. One of those two observations is wrong, or the link is intermittent
+  between runs.
+- **Withdrawn:** an earlier note in this file's history claimed bytes were shown
+  arriving. That came from misreading a screen report and is not supported.
+  Whether any byte has ever reached this radio's UART in application mode
+  remains unestablished.
 - **Not established:** that the reset is caused by the data rather than
-  correlated with it, whether it depends on frame content or merely on activity,
-  and where the panic is. The `.uninit` route to the location is closed; the
-  remaining routes are a RAM region the bootloader does not touch, a blocking
-  display write from the handler, or bisection using the reset itself as the
-  signal.
+  correlated with it, whether any byte arrives at all, and where the panic is.
+  The `.uninit` route to the panic location is closed; the remaining routes are
+  a RAM region the bootloader does not touch, a blocking display write from the
+  handler, or further bisection.
+- **Required before more bisection:** a repeatable physical setup. Results
+  across one evening included a freeze, a reboot, and neither, under nominally
+  identical traffic, which is the signature of an intermittent connection rather
+  than of firmware. The cable, its seating, and whether the radio is on battery
+  or otherwise powered should be fixed and recorded before another cut is taken,
+  or each cut will measure the setup instead of the code.
