@@ -700,7 +700,25 @@
   what kind of fault this is rather than narrowing what it is not. A `HardFault`
   handler recording as the panic handler now does would separate a fault from an
   external or supply-side reset.
+- **Established 2026-08-09, `AFIK-K1-6.0`:** `RCC_CSR` reads `SFT` after a
+  reboot provoked by host frames. The panic handler is the only caller of
+  `sys_reset` in the image and `sys_reset` is its last statement, so the handler
+  ran to completion. **These resets are panics**, not brown-outs, not watchdogs,
+  and not the reset pin. A cold boot reads `PWR` as expected, and the flags are
+  cleared each boot, so neither reading is inherited.
+- **Established 2026-08-09, `AFIK-K1-6.1`:** a boot counter in the same
+  `.uninit` section reads one after every software reset. **That memory does not
+  survive a reset on this radio** — the vendor bootloader runs before the
+  application and uses it. The panic reporter added in `5.8` therefore cannot
+  work here: the handler writes the file and line correctly and the next boot
+  can never read them. `MEM` on the information screen has never meant "no panic
+  occurred"; it means the report was gone before it could be read.
+- **What still works from that change:** the radio recovers instead of freezing,
+  and the reset cause is readable. Those are why `5.8` through `6.1` are worth
+  keeping despite the report itself being dead on this hardware.
 - **Not established:** that the reset is caused by the data rather than
   correlated with it, whether it depends on frame content or merely on activity,
-  and whether RAM survives it — a brown-out would clear the panic report, which
-  would make `MEM` mean nothing about whether a panic occurred.
+  and where the panic is. The `.uninit` route to the location is closed; the
+  remaining routes are a RAM region the bootloader does not touch, a blocking
+  display write from the handler, or bisection using the reset itself as the
+  signal.
