@@ -31,6 +31,12 @@ pub const VFO_ENTRY_DIGITS: usize = 6;
 /// Milliseconds an incomplete channel-number entry waits before it commits.
 pub const ENTRY_TIMEOUT_MILLISECONDS: u32 = 1_200;
 
+/// Milliseconds the star key must be held before it starts a scan.
+///
+/// Long enough that an operator reaching for the source list never trips it,
+/// short enough that holding a key for it does not feel like a stuck radio.
+pub const HOLD_MILLISECONDS: u32 = 600;
+
 /// Frequency the VFO starts on.
 pub const VFO_DEFAULT_HZ: u32 = 145_500_000;
 
@@ -155,6 +161,10 @@ pub enum Intent {
     ToggleMonitor,
     /// Apply and store a new radio-wide squelch level.
     SetSquelch(SquelchLevel),
+    /// Walk the channels of the active view, stopping on a busy one.
+    StartScan,
+    /// Stop walking and stay on the channel the scan reached.
+    StopScan,
 }
 
 /// The receive state the shell needs to bound its own decisions.
@@ -164,6 +174,8 @@ pub struct Context {
     pub visible_channels: u16,
     /// Zero-based index of the active channel in that view.
     pub active_index: u16,
+    /// Whether the receive controller is currently scanning.
+    pub scanning: bool,
 }
 
 /// A pending channel-number entry.
@@ -192,6 +204,8 @@ pub struct Shell {
     settings_cursor: usize,
     squelch: SquelchLevel,
     squelch_cursor: u8,
+    /// Whether a star press is still waiting to become a hold or a release.
+    star_pending: bool,
 }
 
 impl Default for Shell {
@@ -221,6 +235,7 @@ impl Shell {
             settings_cursor: 0,
             squelch: SquelchLevel::CONSERVATIVE,
             squelch_cursor: SquelchLevel::CONSERVATIVE.get(),
+            star_pending: false,
         }
     }
 
@@ -358,6 +373,36 @@ impl Shell {
         self.source_cursor = self.source_row();
     }
 
+    /// Restores the source and bank filter the operator last listened to.
+    ///
+    /// [`Shell::set_banks`] must have run first: a bank the current
+    /// configuration does not populate is dropped rather than restored, so a
+    /// radio reprogrammed since it was last switched off cannot come back
+    /// filtered to a view with nothing in it.
+    pub fn restore_source(&mut self, memory_mode: bool, bank: Option<BankId>) {
+        self.screen = Screen::Operating;
+        self.entry = None;
+        self.cursor = 0;
+        self.mode = if memory_mode { Mode::Memory } else { Mode::Vfo };
+        self.bank_filter = bank.filter(|bank| self.banks[..self.bank_count].contains(&Some(*bank)));
+        self.source_cursor = self.source_row();
+    }
+
+    /// Restores the VFO frequency and tuning step the operator last used.
+    ///
+    /// Both are checked rather than trusted: this comes from external memory,
+    /// and a record from another image or a damaged one must leave the radio on
+    /// its defaults instead of on a frequency it cannot represent.
+    pub fn restore_vfo(&mut self, vfo_hz: u32, step_index: usize) {
+        if (VFO_MINIMUM_HZ..=VFO_MAXIMUM_HZ).contains(&vfo_hz) {
+            self.vfo_hz = vfo_hz;
+        }
+        if step_index < VFO_STEPS_HZ.len() {
+            self.step_index = step_index;
+            self.step_cursor = step_index;
+        }
+    }
+
     /// Replaces the selectable banks after a configuration is programmed.
     ///
     /// A filter which the new configuration does not populate is cleared, so
@@ -394,7 +439,21 @@ impl Shell {
     }
 
     /// Applies one debounced key press.
+    ///
+    /// A running scan is what the operator stops first: while one is scanning
+    /// every key stops it and does nothing else, so there is no key which both
+    /// abandons the scan and acts on the channel it happened to be sitting on.
     pub fn press(&mut self, key: Key, now_ms: u32, context: Context) -> Intent {
+        if key != Key::Star {
+            // A second key press supersedes an unreleased star, and the
+            // debouncer reports it without a release edge in between.
+            self.star_pending = false;
+        }
+        if context.scanning {
+            self.entry = None;
+            self.star_pending = false;
+            return Intent::StopScan;
+        }
         match key {
             // Audio is not a mode the operator has to find, so side key one
             // opens the settings menu instead of routing it.
@@ -412,7 +471,19 @@ impl Shell {
                 };
                 Intent::Redraw
             }
-            Key::Star => self.open_sources(),
+            // The star key does two things, so it commits on release rather
+            // than on the way down: a tap opens the source list and a hold
+            // scans it. Deciding on the press would either open a list the
+            // hold then has to close again, or lose the tap altogether.
+            Key::Star => {
+                if self.can_scan() {
+                    self.entry = None;
+                    self.star_pending = true;
+                    Intent::Idle
+                } else {
+                    self.open_sources()
+                }
+            }
             Key::Menu => self.confirm(context),
             Key::Exit => self.cancel(),
             Key::Up => self.step(Direction::Up, context),
@@ -428,6 +499,43 @@ impl Shell {
             Key::Digit8 => self.digit(8, now_ms, context),
             Key::Digit9 => self.digit(9, now_ms, context),
         }
+    }
+
+    /// Applies one key which has now been held past [`HOLD_MILLISECONDS`].
+    ///
+    /// Holding star starts a scan of whatever the operator is already listening
+    /// to: every channel of the active bank, or every programmed channel when
+    /// no bank filters the view.
+    pub fn hold(&mut self, key: Key, context: Context) -> Intent {
+        if key != Key::Star || !self.star_pending || context.scanning {
+            return Intent::Idle;
+        }
+        self.star_pending = false;
+        if !self.can_scan() {
+            return Intent::Idle;
+        }
+        Intent::StartScan
+    }
+
+    /// Applies one debounced key release.
+    ///
+    /// Only a star press held for less than [`HOLD_MILLISECONDS`] reaches this
+    /// with anything to do; every other key has already acted on the way down.
+    pub fn release(&mut self, key: Key) -> Intent {
+        if key != Key::Star || !self.star_pending {
+            return Intent::Idle;
+        }
+        self.star_pending = false;
+        self.open_sources()
+    }
+
+    /// Reports whether a hold here would start a scan.
+    ///
+    /// Only the operating screen scans, and only over programmed channels: the
+    /// VFO is one frequency and a list screen is a choice the operator is in
+    /// the middle of making.
+    const fn can_scan(&self) -> bool {
+        matches!(self.screen, Screen::Operating) && matches!(self.mode, Mode::Memory)
     }
 
     /// Commits or discards a timed-out channel-number entry.
@@ -772,6 +880,26 @@ mod tests {
         Context {
             visible_channels: visible,
             active_index: active,
+            scanning: false,
+        }
+    }
+
+    /// Presses and releases star before the hold deadline.
+    ///
+    /// Star commits on release where a hold would scan instead, so a test which
+    /// means "the operator tapped star" has to release it. Whichever half of
+    /// the tap acted is what it returns.
+    fn tap_star(shell: &mut Shell, now_ms: u32, context: Context) -> Intent {
+        match shell.press(Key::Star, now_ms, context) {
+            Intent::Idle => shell.release(Key::Star),
+            acted => acted,
+        }
+    }
+
+    fn scanning(visible: u16, active: u16) -> Context {
+        Context {
+            scanning: true,
+            ..context(visible, active)
         }
     }
 
@@ -789,7 +917,7 @@ mod tests {
         let mut shell = Shell::new();
         let (banks, count) = bank_table(ids);
         shell.set_banks(banks, count);
-        shell.press(Key::Star, 0, context(8, 0));
+        tap_star(&mut shell, 0, context(8, 0));
         shell.press(Key::Down, 1, context(8, 0));
         assert_eq!(
             shell.press(Key::Menu, 2, context(8, 0)),
@@ -919,7 +1047,7 @@ mod tests {
         let (banks, count) = bank_table(&[1, 3]);
         assert!(!shell.set_banks(banks, count));
 
-        assert_eq!(shell.press(Key::Star, 0, context(8, 0)), Intent::Redraw);
+        assert_eq!(tap_star(&mut shell, 0, context(8, 0)), Intent::Redraw);
         assert_eq!(shell.screen(), Screen::SourceList);
         assert_eq!(shell.source_rows(), 4);
         assert_eq!(shell.source_at(0), Some(Source::Vfo));
@@ -939,7 +1067,7 @@ mod tests {
         assert_eq!(shell.bank_filter(), Some(BankId::new(1)));
 
         // Reopening shows the bank in force rather than the first row.
-        shell.press(Key::Star, 30, context(4, 0));
+        tap_star(&mut shell, 30, context(4, 0));
         assert_eq!(shell.source_cursor(), 2);
         assert!(shell.is_active_source(2));
         assert_eq!(
@@ -949,7 +1077,7 @@ mod tests {
         );
 
         // Returning to the VFO is one selection, not a mode key.
-        shell.press(Key::Star, 50, context(4, 0));
+        tap_star(&mut shell, 50, context(4, 0));
         shell.press(Key::Up, 60, context(4, 0));
         shell.press(Key::Up, 61, context(4, 0));
         assert_eq!(
@@ -976,7 +1104,7 @@ mod tests {
         shell.set_banks(banks, count);
 
         // Source list: four rows, opening on the VFO.
-        shell.press(Key::Star, 0, context(8, 0));
+        tap_star(&mut shell, 0, context(8, 0));
         assert_eq!(shell.source_cursor(), 0);
         shell.press(Key::Up, 10, context(8, 0));
         assert_eq!(shell.source_cursor(), 3, "up wraps to the last row");
@@ -1096,16 +1224,16 @@ mod tests {
     #[test]
     fn the_source_list_closes_without_changing_the_source() {
         let mut shell = memory_shell(&[2, 5]);
-        shell.press(Key::Star, 0, context(8, 0));
+        tap_star(&mut shell, 0, context(8, 0));
         shell.press(Key::Up, 10, context(8, 0));
         assert_eq!(shell.press(Key::Exit, 20, context(8, 0)), Intent::Redraw);
         assert_eq!(shell.screen(), Screen::Operating);
         assert_eq!(shell.bank_filter(), None, "exit applies nothing");
         assert_eq!(shell.mode(), Mode::Memory);
 
-        shell.press(Key::Star, 30, context(8, 0));
+        tap_star(&mut shell, 30, context(8, 0));
         assert_eq!(
-            shell.press(Key::Star, 40, context(8, 0)),
+            tap_star(&mut shell, 40, context(8, 0)),
             Intent::Redraw,
             "star closes the list it opened"
         );
@@ -1115,7 +1243,7 @@ mod tests {
     #[test]
     fn an_unprogrammed_radio_offers_the_vfo_and_an_empty_memory() {
         let mut shell = Shell::new();
-        shell.press(Key::Star, 0, context(0, 0));
+        tap_star(&mut shell, 0, context(0, 0));
         assert_eq!(shell.screen(), Screen::SourceList);
         assert_eq!(shell.source_rows(), 2, "the VFO and every channel");
         assert!(shell.banks().is_empty());
@@ -1236,7 +1364,7 @@ mod tests {
         let mut shell = Shell::new();
         let (banks, count) = bank_table(&[1, 3]);
         shell.set_banks(banks, count);
-        shell.press(Key::Star, 0, context(8, 0));
+        tap_star(&mut shell, 0, context(8, 0));
         shell.press(Key::Down, 5, context(8, 0));
         shell.press(Key::Down, 6, context(8, 0));
         shell.press(Key::Menu, 8, context(8, 0));
@@ -1253,20 +1381,7 @@ mod tests {
     #[test]
     fn no_key_can_produce_a_transmit_intent() {
         for mut shell in [Shell::new(), memory_shell(&[1])] {
-            for key in [
-                Key::Side1,
-                Key::Side2,
-                Key::Ptt,
-                Key::Menu,
-                Key::Up,
-                Key::Down,
-                Key::Exit,
-                Key::Star,
-                Key::Function,
-                Key::Digit0,
-                Key::Digit1,
-                Key::Digit9,
-            ] {
+            for key in Key::ALL {
                 let intent = shell.press(key, 100, context(4, 0));
                 assert!(matches!(
                     intent,
@@ -1279,6 +1394,8 @@ mod tests {
                         | Intent::TuneVfo
                         | Intent::ToggleMonitor
                         | Intent::SetSquelch(_)
+                        | Intent::StartScan
+                        | Intent::StopScan
                 ));
             }
         }
@@ -1295,5 +1412,84 @@ mod tests {
         );
         assert_eq!(shell.screen(), Screen::Operating);
         assert_eq!(shell.vfo_hz(), VFO_DEFAULT_HZ);
+    }
+
+    #[test]
+    fn a_star_tap_opens_the_sources_and_a_star_hold_scans_them() {
+        let mut shell = Shell::new();
+        shell.select_memory();
+
+        // The press itself commits to neither, so nothing has happened yet.
+        assert_eq!(shell.press(Key::Star, 0, context(4, 0)), Intent::Idle);
+        assert_eq!(shell.screen(), Screen::Operating);
+
+        // Released early, it is a tap and opens the source list.
+        assert_eq!(shell.release(Key::Star), Intent::Redraw);
+        assert_eq!(shell.screen(), Screen::SourceList);
+        // A second press closes the list again, and there is nothing pending to
+        // turn into a scan of a screen the operator has left.
+        assert_eq!(shell.press(Key::Star, 100, context(4, 0)), Intent::Redraw);
+        assert_eq!(shell.screen(), Screen::Operating);
+        assert_eq!(shell.hold(Key::Star, context(4, 0)), Intent::Idle);
+
+        // Held instead, the same press scans, and the release that follows it
+        // does not then open the list underneath the running scan.
+        assert_eq!(shell.press(Key::Star, 200, context(4, 0)), Intent::Idle);
+        assert_eq!(shell.hold(Key::Star, context(4, 0)), Intent::StartScan);
+        assert_eq!(shell.screen(), Screen::Operating);
+        assert_eq!(shell.release(Key::Star), Intent::Idle);
+        // Holding it twice starts one scan, not two.
+        assert_eq!(shell.hold(Key::Star, context(4, 0)), Intent::Idle);
+    }
+
+    #[test]
+    fn scanning_is_only_offered_where_there_are_channels_to_walk() {
+        // The VFO is one frequency, so a hold there is not a scan.
+        let mut shell = Shell::new();
+        assert_eq!(shell.press(Key::Star, 0, context(1, 0)), Intent::Redraw);
+        assert_eq!(shell.screen(), Screen::SourceList);
+        assert_eq!(shell.hold(Key::Star, context(1, 0)), Intent::Idle);
+
+        // Neither is a hold on a list the operator is part way through.
+        let mut shell = Shell::new();
+        shell.select_memory();
+        assert_eq!(shell.press(Key::Menu, 0, context(4, 0)), Intent::Redraw);
+        assert_eq!(shell.screen(), Screen::ChannelList);
+        assert_eq!(shell.press(Key::Star, 10, context(4, 0)), Intent::Redraw);
+        assert_eq!(shell.hold(Key::Star, context(4, 0)), Intent::Idle);
+    }
+
+    #[test]
+    fn every_key_stops_a_running_scan_and_does_nothing_else() {
+        for key in Key::ALL {
+            let mut shell = Shell::new();
+            shell.select_memory();
+            assert_eq!(
+                shell.press(key, 0, scanning(4, 2)),
+                Intent::StopScan,
+                "{key:?} did not stop the scan"
+            );
+            // The key that stopped the scan did not also change the screen out
+            // from under the channel the scan settled on.
+            assert_eq!(shell.screen(), Screen::Operating);
+            assert_eq!(shell.hold(key, scanning(4, 2)), Intent::Idle);
+        }
+    }
+
+    #[test]
+    fn a_half_typed_number_does_not_survive_a_scan_starting_or_stopping() {
+        let mut shell = Shell::new();
+        shell.select_memory();
+        assert_eq!(shell.press(Key::Digit1, 0, context(20, 0)), Intent::Redraw);
+        assert_eq!(shell.entry(), Some(1));
+        assert_eq!(shell.press(Key::Star, 10, context(20, 0)), Intent::Idle);
+        assert_eq!(shell.entry(), None);
+
+        assert_eq!(shell.hold(Key::Star, context(20, 0)), Intent::StartScan);
+        assert_eq!(
+            shell.press(Key::Digit9, 20, scanning(20, 0)),
+            Intent::StopScan
+        );
+        assert_eq!(shell.entry(), None);
     }
 }

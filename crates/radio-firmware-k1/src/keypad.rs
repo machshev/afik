@@ -166,6 +166,29 @@ pub enum Key {
 }
 
 impl Key {
+    /// Every key the radio has, so a test over all of them stays complete.
+    pub const ALL: [Self; 19] = [
+        Self::Side1,
+        Self::Side2,
+        Self::Ptt,
+        Self::Menu,
+        Self::Up,
+        Self::Down,
+        Self::Exit,
+        Self::Digit0,
+        Self::Digit1,
+        Self::Digit2,
+        Self::Digit3,
+        Self::Digit4,
+        Self::Digit5,
+        Self::Digit6,
+        Self::Digit7,
+        Self::Digit8,
+        Self::Digit9,
+        Self::Star,
+        Self::Function,
+    ];
+
     /// Fixed ASCII label used by the display-only witness.
     #[must_use]
     pub const fn label(self) -> &'static [u8] {

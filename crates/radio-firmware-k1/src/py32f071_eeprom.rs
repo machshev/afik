@@ -21,6 +21,7 @@ use radio_storage::{configuration_image_len_from_header, CONFIGURATION_IMAGE_HEA
 use crate::battery::{Calibration, CALIBRATION_ADDRESS, CALIBRATION_BYTES};
 use crate::configuration::RETAINED_IMAGE_BYTES;
 use crate::eeprom_bus::{EepromPort, SpiEepromBus};
+use crate::operator_state::{is_erased, OperatorState, OPERATOR_STATE_BYTES};
 
 /// First address of the region AFIK claims for its configuration.
 ///
@@ -33,6 +34,33 @@ use crate::eeprom_bus::{EepromPort, SpiEepromBus};
 pub const CONFIGURATION_ORIGIN: u32 = 0x10_0000;
 /// Bytes claimed for the configuration, one erase sector.
 pub const CONFIGURATION_BYTES: u32 = 4_096;
+
+/// First address of the region holding where the operator left the radio.
+///
+/// This is the erase sector immediately above the configuration and it is kept
+/// separate on purpose. The configuration is a whole canonical image which is
+/// erased and rewritten as one thing; the operator's place changes every time
+/// they turn the channel knob. Sharing a sector would mean spending the
+/// channel list's erase cycles on a channel change, and would put the channels
+/// at risk in the window a place is being written.
+pub const OPERATOR_STATE_ORIGIN: u32 = 0x10_1000;
+/// Bytes claimed for the operator's place, one erase sector.
+pub const OPERATOR_STATE_REGION_BYTES: u32 = 4_096;
+
+/// Records the operator-state sector holds before it has to be erased.
+///
+/// A record is programmed into the next erased slot rather than over the last
+/// one, because programming clears bits and only an erase sets them. The sector
+/// is therefore erased once every this many saves rather than once per save,
+/// which is what keeps a setting the operator changes constantly off the
+/// memory's endurance budget.
+const OPERATOR_STATE_SLOTS: u32 = OPERATOR_STATE_REGION_BYTES / OPERATOR_STATE_SLOT_BYTES;
+
+/// One record's slot size as the memory addresses it.
+const OPERATOR_STATE_SLOT_BYTES: u32 = 16;
+
+// A slot which did not hold a whole record would silently truncate one.
+const _: () = assert!(OPERATOR_STATE_SLOT_BYTES as usize == OPERATOR_STATE_BYTES);
 
 // A region which cannot hold the largest programmable configuration would fail
 // only after the operator had already programmed the radio.
@@ -57,6 +85,8 @@ pub enum RetainError {
     Absent(JedecId),
     /// The memory stayed busy for longer than the bounded wait allows.
     Busy,
+    /// The claimed region could not be read, so nothing may be written over it.
+    Unreadable,
 }
 
 /// Polls before a memory which never finishes is called failed.
@@ -100,6 +130,9 @@ impl EepromPort for K1EepromPort {
 pub struct RetainedConfiguration {
     eeprom: Eeprom<SpiEepromBus<K1EepromPort>>,
     region: Region,
+    place: Region,
+    /// Next erased operator-state slot, once the sector has been walked.
+    next_slot: Option<u32>,
 }
 
 impl RetainedConfiguration {
@@ -110,6 +143,8 @@ impl RetainedConfiguration {
     pub fn new(spi: SPI2, sck: PA0, mosi: PA1, miso: PA2, cs: PA3) -> Result<Self, RetainError> {
         let region =
             Region::new(CONFIGURATION_ORIGIN, CONFIGURATION_BYTES).map_err(RetainError::Region)?;
+        let place = Region::new(OPERATOR_STATE_ORIGIN, OPERATOR_STATE_REGION_BYTES)
+            .map_err(RetainError::Region)?;
         let port = K1EepromPort {
             spi: Spi::new(spi, sck, mosi, miso, CLOCK_DIVIDER),
             // Deselected until a transfer asserts it.
@@ -118,6 +153,11 @@ impl RetainedConfiguration {
         Ok(Self {
             eeprom: Eeprom::new(SpiEepromBus::new(port)),
             region,
+            place,
+            // Nothing has been walked yet, so the first read or save discovers
+            // the free slot rather than assuming the sector is erased and
+            // programming over a record already in it.
+            next_slot: None,
         })
     }
 
@@ -219,6 +259,84 @@ impl RetainedConfiguration {
             offset += span;
         }
         Ok(())
+    }
+
+    /// Reads back where the operator left the radio.
+    ///
+    /// Records are programmed into ascending slots, so the last one holding a
+    /// complete record is the current place. The whole sector is walked rather
+    /// than only the slot after the last valid one, because a record cut short
+    /// by a flat battery leaves a slot which is neither erased nor readable,
+    /// and walking past it recovers the last good place instead of stopping at
+    /// the damage. Nothing is written here, so a radio which cannot read its
+    /// memory simply starts where an unprogrammed one does.
+    ///
+    /// One record is sixteen bytes and there are two hundred and fifty-six
+    /// slots, so this costs a bounded set of short reads at start-up and no
+    /// buffer larger than one record.
+    pub fn read_operator_state(&mut self) -> Option<OperatorState> {
+        let mut latest = None;
+        let mut free = 0;
+        for slot in 0..OPERATOR_STATE_SLOTS {
+            let mut bytes = [0_u8; OPERATOR_STATE_BYTES];
+            if self
+                .eeprom
+                .read(self.place, slot * OPERATOR_STATE_SLOT_BYTES, &mut bytes)
+                .is_err()
+            {
+                // A bus which stopped answering says nothing about the slots
+                // beyond it, so the walk stops and keeps what it already read.
+                self.next_slot = None;
+                return latest;
+            }
+            if is_erased(&bytes) {
+                continue;
+            }
+            free = slot + 1;
+            if let Some(state) = OperatorState::decode(&bytes) {
+                latest = Some(state);
+            }
+        }
+        self.next_slot = Some(free);
+        latest
+    }
+
+    /// Records where the operator has left the radio.
+    ///
+    /// This programs one erased slot and touches nothing else, so the ordinary
+    /// cost of remembering a channel change is a single page program. The
+    /// sector is erased only when its last slot has been used, and the record
+    /// being saved is then written first into the fresh sector, so there is no
+    /// moment at which the radio holds no place at all beyond the erase itself.
+    pub async fn write_operator_state(&mut self, state: OperatorState) -> Result<(), RetainError> {
+        let mut slot = match self.next_slot {
+            Some(slot) => slot,
+            // The sector has not been walked, so find the free slot before
+            // programming rather than over a record already held.
+            None => {
+                self.read_operator_state();
+                self.next_slot.ok_or(RetainError::Unreadable)?
+            }
+        };
+        if slot >= OPERATOR_STATE_SLOTS {
+            self.eeprom
+                .issue_erase(self.place, 0)
+                .map_err(RetainError::Memory)?;
+            self.await_ready().await?;
+            slot = 0;
+        }
+        // A failed program leaves this slot spent either way: the next save
+        // takes the one after it rather than trying to reuse a slot whose bits
+        // may already be partly cleared.
+        self.next_slot = Some(slot + 1);
+        self.eeprom
+            .issue_program(
+                self.place,
+                slot * OPERATOR_STATE_SLOT_BYTES,
+                &state.encode(),
+            )
+            .map_err(RetainError::Memory)?;
+        self.await_ready().await
     }
 
     /// Waits for the memory to finish, yielding between bounded polls.

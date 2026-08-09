@@ -18,6 +18,7 @@ pub mod eeprom_bus;
 #[cfg(feature = "embassy-runtime")]
 pub mod embassy_runtime;
 pub mod keypad;
+pub mod operator_state;
 pub mod protocol;
 #[cfg(feature = "py32f071-battery")]
 pub mod py32f071_battery;

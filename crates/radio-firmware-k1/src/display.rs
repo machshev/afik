@@ -217,6 +217,8 @@ pub struct OperatingView<'a> {
     pub battery_percent: Option<u8>,
     /// Whether the squelch override is held open.
     pub monitoring: bool,
+    /// Whether a scan is walking the channels of the active view.
+    pub scanning: bool,
     /// Active bank filter, if any.
     pub bank: Option<BankIndicator<'a>>,
     /// Number being typed, if any: a channel position, or VFO kilohertz.
@@ -428,6 +430,13 @@ pub fn render_operating_screen(frame: &mut [u8; FRAME_BYTES], view: &OperatingVi
             Some(bank) => draw_text(frame, 0, 55, &bank.label()),
             None => draw_text(frame, 0, 55, b"ALL  "),
         }
+    }
+    // A scan moves the channel under the operator without them touching a key,
+    // so the screen has to say that is what is happening. It sits beside the
+    // monitor marker rather than replacing it: both can be true at once, and a
+    // radio which hid one behind the other would be lying about the other.
+    if view.scanning {
+        draw_text(frame, WIDTH - 8 * 6, 55, b"SCAN");
     }
     if view.monitoring {
         draw_text(frame, WIDTH - 3 * 6, 55, b"MON");
@@ -1078,6 +1087,7 @@ mod operating_screen_tests {
             squelch_open: false,
             battery_percent: Some(87),
             monitoring: false,
+            scanning: false,
             bank: None,
             entry: None,
             vfo_step_hz: None,
@@ -1187,6 +1197,15 @@ mod operating_screen_tests {
                 ..view()
             },
             OperatingView {
+                monitoring: true,
+                ..view()
+            },
+            OperatingView {
+                scanning: true,
+                ..view()
+            },
+            OperatingView {
+                scanning: true,
                 monitoring: true,
                 ..view()
             },

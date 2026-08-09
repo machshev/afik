@@ -19,7 +19,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use core::cell::RefCell;
 use cortex_m_rt::entry;
 use embassy_executor::Executor;
-use embassy_futures::select::{select, Either};
+use embassy_futures::select::{select3, Either3};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 
 use embassy_sync::blocking_mutex::Mutex;
@@ -34,7 +34,8 @@ use radio_bk4819::{
     AfOutput, Bk4819, ReadbackRegister, ReceiveSetup, SquelchThresholds, BK4829_PROFILE,
 };
 use radio_channel_control::{
-    BankedReceiveController, ChannelReceiveSetup, ChannelSource, ReceiveObservation,
+    BankedReceiveController, ChannelReceiveSetup, ChannelSource, ReceiveObservation, ReceiveState,
+    ReceiveUpdate, TimerDirective, TimerToken,
 };
 use radio_channel_plan::{
     BankMask, BankName, ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord,
@@ -55,13 +56,15 @@ use radio_firmware_k1::display::{
     FRAME_BYTES, LIST_ROWS, PAGES, SETUP_COMMANDS, WIDTH,
 };
 use radio_firmware_k1::keypad::{decode, Debouncer, Edge, KeypadScan, Sample};
+use radio_firmware_k1::operator_state::OperatorState;
 use radio_firmware_k1::py32f071_battery::BatterySense;
 use radio_firmware_k1::py32f071_bk4819::Bk4819Pins;
 use radio_firmware_k1::py32f071_eeprom::{RetainError, RetainedConfiguration};
 use radio_firmware_k1::py32f071_runtime::{compose, K1RuntimePeripherals};
 use radio_firmware_k1::py32f071_runtime_init::init;
 use radio_firmware_k1::shell::{
-    Context, Intent, Mode, Screen, Setting, Shell, Source, SETTINGS, SQUELCH_LEVELS, VFO_STEPS_HZ,
+    Context, Intent, Mode, Screen, Setting, Shell, Source, HOLD_MILLISECONDS, SETTINGS,
+    SQUELCH_LEVELS, VFO_STEPS_HZ,
 };
 use radio_protocol::MAX_ENCODED_FRAME;
 use radio_storage::ObjectArena;
@@ -70,7 +73,7 @@ const _: [(); 8] = [(); PAGES];
 const K1_VECTOR_TABLE_ORIGIN: u32 = 0x0800_2800;
 
 /// Identity this image reports on the information screen.
-const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-5.0";
+const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-5.1";
 
 /// Interval between receive samples while audio is routed.
 ///
@@ -118,6 +121,20 @@ static BATTERY_CALIBRATION: Signal<CriticalSectionRawMutex, Option<Calibration>>
 /// mid-exchange waits its turn instead of racing it.
 static SQUELCH_CHOICE: Signal<CriticalSectionRawMutex, SquelchLevel> = Signal::new();
 
+/// Where the operator has left the radio, for the task which owns the memory.
+///
+/// The interface knows the place and the serial task owns the bus, so the
+/// interface says where it is and the serial task writes it down. A place
+/// arriving while a host is mid-exchange waits its turn rather than racing it.
+static OPERATOR_PLACE: Signal<CriticalSectionRawMutex, OperatorState> = Signal::new();
+
+/// Milliseconds a new place must hold still before it is worth writing down.
+///
+/// An operator walking to a channel passes through every channel in between,
+/// and none of those is where they left the radio. Waiting for the selection to
+/// settle turns a walk across a bank into one record instead of thirty.
+const PLACE_SETTLE_MILLISECONDS: u64 = 3_000;
+
 /// One activated configuration handed to the user interface task.
 #[derive(Clone, Copy)]
 struct Publication {
@@ -125,6 +142,13 @@ struct Publication {
     generation: u32,
     retained: bool,
     memory: MemoryState,
+    /// Where the operator left this radio, on the one publication which knows.
+    ///
+    /// The place is read once, beside the configuration it refers to, and
+    /// travels with it. Carrying it here rather than signalling it separately
+    /// is what stops the interface from restoring a place into a configuration
+    /// it has not adopted yet.
+    place: Option<OperatorState>,
 }
 
 fn now_ms() -> u32 {
@@ -558,7 +582,7 @@ async fn serial_task(mut uart: Uart<'static, Async>, memory: EepromPins) {
     // in the memory path would otherwise leave the operator with a frozen
     // screen and no way out. An empty configuration is the honest state until
     // a restore succeeds.
-    publish(&service, false, MemoryState::Unknown);
+    publish(&service, false, MemoryState::Unknown, None);
 
     // The external memory is opened read-only first. Its device and wiring come
     // from the pinned reference firmware and have not been observed on this
@@ -607,7 +631,13 @@ async fn serial_task(mut uart: Uart<'static, Async>, memory: EepromPins) {
             .read(&mut image)
             .is_some_and(|length| service.load_image(&image[..length]).is_ok())
     });
-    publish(&service, restored, memory_state);
+    // The place is read beside the configuration it refers to and published
+    // with it, so the interface never restores a channel into a channel list it
+    // has not adopted. A radio which has never been used simply has none.
+    let place = retained
+        .as_mut()
+        .and_then(RetainedConfiguration::read_operator_state);
+    publish(&service, restored, memory_state, place);
 
     let mut response = [0_u8; MAX_ENCODED_FRAME];
     // A whole frame at a time, collected by DMA and delimited by the idle line.
@@ -624,15 +654,21 @@ async fn serial_task(mut uart: Uart<'static, Async>, memory: EepromPins) {
         // this task waits on both and serves whichever arrives. Nothing here
         // interrupts a frame in progress: `read_until_idle` has already returned
         // by the time a handset choice can be taken.
-        let count = match select(uart.read_until_idle(&mut received), SQUELCH_CHOICE.wait()).await {
-            Either::First(Ok(count)) => count,
-            Either::First(Err(_)) => {
+        let count = match select3(
+            uart.read_until_idle(&mut received),
+            SQUELCH_CHOICE.wait(),
+            OPERATOR_PLACE.wait(),
+        )
+        .await
+        {
+            Either3::First(Ok(count)) => count,
+            Either3::First(Err(_)) => {
                 // Yield before retrying so a persistent receiver error can never
                 // starve the interface task.
                 Timer::after_millis(1).await;
                 continue;
             }
-            Either::Second(level) => {
+            Either3::Second(level) => {
                 // A handset setting which did not survive a battery change would
                 // not be worth the menu, so it is stored exactly like a host
                 // write and republished from the store rather than assumed.
@@ -643,7 +679,17 @@ async fn serial_task(mut uart: Uart<'static, Async>, memory: EepromPins) {
                             retained_now = configuration.write(&image, length).await.is_ok();
                         }
                     }
-                    publish(&service, retained_now, memory_state);
+                    publish(&service, retained_now, memory_state, None);
+                }
+                continue;
+            }
+            Either3::Third(place) => {
+                // One page program into an erased slot, which is why this can
+                // be written every time the operator settles somewhere new
+                // rather than only when they turn the radio off — and a radio
+                // is rarely turned off deliberately enough to be asked.
+                if let Some(configuration) = retained.as_mut() {
+                    let _ = configuration.write_operator_state(place).await;
                 }
                 continue;
             }
@@ -679,7 +725,7 @@ async fn serial_task(mut uart: Uart<'static, Async>, memory: EepromPins) {
                         retained_now = configuration.write(&image, length).await.is_ok();
                     }
                 }
-                publish(&service, retained_now, memory_state);
+                publish(&service, retained_now, memory_state, None);
             }
             SERIAL_ANSWERED.store(
                 SERIAL_ANSWERED.load(Ordering::Relaxed).wrapping_add(1),
@@ -700,6 +746,7 @@ fn publish<const BYTES: usize>(
     service: &DeviceService<BYTES>,
     retained: bool,
     memory: MemoryState,
+    place: Option<OperatorState>,
 ) {
     store_objects(service.active_payload());
     let programmed = Programmed::index(service.active_objects()).unwrap_or_default();
@@ -708,6 +755,7 @@ fn publish<const BYTES: usize>(
         generation: service.generation(),
         retained: retained && !programmed.is_empty(),
         memory,
+        place,
     });
 }
 
@@ -775,6 +823,99 @@ impl ChannelSource for Listening {
             }
         }
     }
+}
+
+/// The memory channel the operator last selected.
+///
+/// The index is how selection addresses it and the identifier is how a restore
+/// checks the index still names the same channel, so both are kept.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct Selected {
+    index: u16,
+    channel_id: u16,
+}
+
+/// Applies one controller update: the tuning it asks for, and the timer it arms.
+///
+/// The controller owns every deadline a scan has and expresses them as
+/// directives rather than as waits, so this is the whole of the scan's clock:
+/// arm what it asked for, cancel what it cancelled, and leave the rest alone.
+fn apply(
+    update: ReceiveUpdate,
+    pending: &mut Option<ChannelReceiveSetup>,
+    timer: &mut Option<(TimerToken, Instant)>,
+) {
+    if let Some(activation) = update.activation {
+        *pending = Some(activation.setup);
+    }
+    match update.timer {
+        TimerDirective::Unchanged => {}
+        TimerDirective::Cancel => *timer = None,
+        TimerDirective::Arm { token, after_ms } => {
+            *timer = Some((
+                token,
+                Instant::now() + Duration::from_millis(u64::from(after_ms)),
+            ));
+        }
+    }
+}
+
+/// Points the shell at one configuration, and at the place it was left in.
+///
+/// A radio which has been used before comes back to the source, bank, and
+/// frequency the operator chose. One which has not starts on its channels,
+/// because a programmed radio which opened in the VFO would look unprogrammed.
+fn adopt(shell: &mut Shell, programmed: &Programmed, place: Option<OperatorState>) {
+    let (banks, bank_count) = programmed.populated_banks();
+    shell.set_banks(banks, bank_count);
+    shell.set_squelch(programmed.config().squelch);
+    if let Some(place) = place {
+        shell.restore_vfo(place.vfo_hz, usize::from(place.step_index));
+    }
+    if programmed.is_empty() {
+        // The VFO is the only source this radio has, whatever it was left on.
+        return;
+    }
+    match place {
+        Some(place) => shell.restore_source(place.memory_mode, place.bank),
+        None => shell.select_memory(),
+    }
+}
+
+/// Returns the radio to the exact channel the operator left it on.
+///
+/// The index is checked against the identifier recorded beside it, because a
+/// host may have reprogrammed the radio since: an index which no longer names
+/// the same channel is not the operator's place, and the activated first
+/// channel of the view is a better answer than a channel nobody chose.
+fn reselect(
+    activation: &mut Option<(
+        BankedReceiveController<Listening>,
+        Option<ChannelReceiveSetup>,
+    )>,
+    programmed: &Programmed,
+    selected: &mut Selected,
+    place: Option<OperatorState>,
+) -> Option<ChannelReceiveSetup> {
+    let place = place?;
+    let (controller, _) = activation.as_mut()?;
+    *selected = Selected {
+        index: controller.index(),
+        channel_id: controller.channel().id().get(),
+    };
+    if !place.memory_mode {
+        return None;
+    }
+    let stored = ACTIVE.lock(|cell| programmed.channel_at(&*cell.borrow(), place.index))?;
+    if stored.id().get() != place.channel_id {
+        return None;
+    }
+    let update = controller.select(place.index).ok()?;
+    *selected = Selected {
+        index: place.index,
+        channel_id: place.channel_id,
+    };
+    update.activation.map(|activation| activation.setup)
 }
 
 fn activate(
@@ -866,27 +1007,33 @@ async fn ui_task(
     let mut memory_state = publication
         .as_ref()
         .map_or(MemoryState::Unknown, |value| value.memory);
+    let place = publication.as_ref().and_then(|value| value.place);
     let mut programmed = publication.map_or_else(Programmed::empty, |value| value.programmed);
 
     let mut shell = Shell::new();
-    let (banks, bank_count) = programmed.populated_banks();
-    shell.set_banks(banks, bank_count);
-    shell.set_squelch(programmed.config().squelch);
-    // A programmed radio starts on its channels; only an empty one stays in the
-    // VFO, which is the source it can always use.
-    if !programmed.is_empty() {
-        shell.select_memory();
-    }
+    let mut selected = Selected::default();
+    adopt(&mut shell, &programmed, place);
     let mut activation = activate(&programmed, &shell);
+    let mut pending = activation.as_mut().and_then(|(_, setup)| setup.take());
+    if let Some(setup) = reselect(&mut activation, &programmed, &mut selected, place) {
+        pending = Some(setup);
+    }
 
     let mut receiver = Receiver::new(radio_pins, speaker_pin);
-    let mut pending = activation.as_mut().and_then(|(_, setup)| setup.take());
     let mut debounce = Debouncer::new();
+    // When the key currently held down went down, so a hold can be told from a
+    // press. Cleared once the hold has acted, so one press acts once.
+    let mut held_since: Option<u32> = None;
+    // The scan timer the controller asked for, and when it expires.
+    let mut scan_timer: Option<(TimerToken, Instant)> = None;
     let mut next_sample = Instant::now();
     let mut next_meter_redraw = Instant::now();
     let mut battery = Battery::new();
     let mut next_battery_sample = Instant::now();
     let mut redraw = true;
+    // The place already written down, and the one waiting to settle into it.
+    let mut saved_place = place;
+    let mut settling: Option<(OperatorState, Instant)> = None;
 
     loop {
         let context = activation
@@ -894,7 +1041,22 @@ async fn ui_task(
             .map_or(Context::default(), |(controller, _)| Context {
                 visible_channels: controller.visible_channels(),
                 active_index: controller.visible_position(),
+                scanning: matches!(controller.state(), ReceiveState::Scanning(_)),
             });
+
+        // The scan's own clock. The controller decides what a dwell or a hold
+        // expiring means; this only tells it that one has.
+        if let Some((token, deadline)) = scan_timer {
+            if Instant::now() >= deadline {
+                scan_timer = None;
+                if let Some((controller, _)) = activation.as_mut() {
+                    if let Ok(update) = controller.timer_elapsed(token) {
+                        apply(update, &mut pending, &mut scan_timer);
+                    }
+                }
+                redraw = true;
+            }
+        }
 
         if let Some(calibration) = BATTERY_CALIBRATION.try_take() {
             battery.calibrate(calibration);
@@ -918,14 +1080,19 @@ async fn ui_task(
             retained = publication.retained;
             memory_state = publication.memory;
             programmed = publication.programmed;
-            let (banks, bank_count) = programmed.populated_banks();
-            shell.set_banks(banks, bank_count);
-            shell.set_squelch(programmed.config().squelch);
-            if !programmed.is_empty() {
-                shell.select_memory();
-            }
+            adopt(&mut shell, &programmed, publication.place);
             activation = activate(&programmed, &shell);
             pending = activation.as_mut().and_then(|(_, setup)| setup.take());
+            if let Some(setup) = reselect(
+                &mut activation,
+                &programmed,
+                &mut selected,
+                publication.place,
+            ) {
+                pending = Some(setup);
+            }
+            // A configuration arriving replaces what a scan was walking.
+            scan_timer = None;
             redraw = true;
         }
 
@@ -937,8 +1104,23 @@ async fn ui_task(
         let now = now_ms();
 
         let intent = match debounce.update(now, sample) {
-            Edge::Pressed(key) => shell.press(key, now, context),
-            _ => shell.tick(now, context),
+            Edge::Pressed(key) => {
+                held_since = Some(now);
+                shell.press(key, now, context)
+            }
+            Edge::Released(key) => {
+                held_since = None;
+                shell.release(key)
+            }
+            // A key still down past the hold interval is a second, different
+            // input from the press which started it, and it acts once.
+            Edge::None => match (debounce.held_key(), held_since) {
+                (Some(key), Some(since)) if now.wrapping_sub(since) >= HOLD_MILLISECONDS => {
+                    held_since = None;
+                    shell.hold(key, context)
+                }
+                _ => shell.tick(now, context),
+            },
         };
         match intent {
             Intent::Idle => {}
@@ -972,8 +1154,21 @@ async fn ui_task(
             Intent::ToggleMonitor => {
                 if let Some((controller, _)) = activation.as_mut() {
                     let update = controller.set_monitor(!controller.is_monitoring());
-                    if let Some(activation) = update.activation {
-                        pending = Some(activation.setup);
+                    apply(update, &mut pending, &mut scan_timer);
+                }
+                redraw = true;
+            }
+            Intent::StartScan | Intent::StopScan => {
+                if let Some((controller, _)) = activation.as_mut() {
+                    let update = if matches!(intent, Intent::StartScan) {
+                        controller.start_scanning()
+                    } else {
+                        controller.stop_scanning()
+                    };
+                    // A scan of one channel, or of none, is refused by the
+                    // controller and leaves the radio exactly where it was.
+                    if let Ok(update) = update {
+                        apply(update, &mut pending, &mut scan_timer);
                     }
                 }
                 redraw = true;
@@ -986,11 +1181,55 @@ async fn ui_task(
                         Intent::SelectIndex(position) => controller.select_visible(position),
                         _ => unreachable!(),
                     };
-                    if let Some(activation) = update.ok().and_then(|update| update.activation) {
-                        pending = Some(activation.setup);
+                    if let Ok(update) = update {
+                        apply(update, &mut pending, &mut scan_timer);
                     }
                 }
                 redraw = true;
+            }
+        }
+
+        // What the operator is listening to, in the form the radio would have to
+        // restore it from. A memory selection is remembered even while the VFO
+        // is in use, so leaving the VFO returns to the channel rather than to
+        // the top of the list.
+        if let Some((controller, _)) = activation.as_ref() {
+            if matches!(shell.mode(), Mode::Memory) {
+                selected = Selected {
+                    index: controller.index(),
+                    channel_id: controller.channel().id().get(),
+                };
+            }
+        }
+        let place = OperatorState {
+            memory_mode: matches!(shell.mode(), Mode::Memory),
+            bank: shell.bank_filter(),
+            index: selected.index,
+            channel_id: selected.channel_id,
+            vfo_hz: shell.vfo_hz(),
+            step_index: u8::try_from(shell.step_index()).unwrap_or(0),
+        };
+        if context.scanning {
+            // A scan moves the selection several times a second and none of
+            // those is a place the operator chose. Where it stops is.
+            settling = None;
+        } else if saved_place == Some(place) {
+            settling = None;
+        } else {
+            match settling {
+                Some((candidate, deadline)) if candidate == place => {
+                    if Instant::now() >= deadline {
+                        OPERATOR_PLACE.signal(place);
+                        saved_place = Some(place);
+                        settling = None;
+                    }
+                }
+                _ => {
+                    settling = Some((
+                        place,
+                        Instant::now() + Duration::from_millis(PLACE_SETTLE_MILLISECONDS),
+                    ));
+                }
             }
         }
 
@@ -1005,7 +1244,11 @@ async fn ui_task(
             if let (Some(observation), Some((controller, _))) =
                 (receiver.observe(), activation.as_mut())
             {
-                controller.observe(observation).ok();
+                // While scanning this is what decides whether the channel is
+                // busy, so the hold it asks for has to reach the scan's clock.
+                if let Ok(update) = controller.observe(observation) {
+                    apply(update, &mut pending, &mut scan_timer);
+                }
             }
             next_sample = Instant::now() + Duration::from_millis(RF_SAMPLE_MILLISECONDS);
             // The squelch is sampled far faster than a screen needs redrawing.
@@ -1082,6 +1325,9 @@ fn render(
                 squelch_open: receiver.squelch_open,
                 battery_percent,
                 monitoring: controller.is_some_and(BankedReceiveController::is_monitoring),
+                scanning: controller.is_some_and(|controller| {
+                    matches!(controller.state(), ReceiveState::Scanning(_))
+                }),
                 bank: filter.map(|bank| BankIndicator {
                     id: bank.get(),
                     name: filter_name
