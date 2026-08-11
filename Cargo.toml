@@ -4,6 +4,7 @@ members = [
     "crates/radio-domain",
     "crates/radio-aprs",
     "crates/radio-bk4819",
+    "crates/radio-dp32g030",
     "crates/radio-firmware-dp32g030",
     "crates/radio-firmware-k1",
     "crates/radio-flasher",

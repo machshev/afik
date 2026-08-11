@@ -2422,6 +2422,10 @@ name = "radio-domain"
 version = "0.1.0"
 
 [[package]]
+name = "radio-dp32g030"
+version = "0.1.0"
+
+[[package]]
 name = "radio-eeprom"
 version = "0.1.0"
 
