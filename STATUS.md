@@ -2,6 +2,21 @@
 
 ## Current work package
 
+**`DOC-045` is active: reconcile the project ledger after the `RISK-036`
+investigation and remove the panic-report mechanism the exact unit proved
+cannot survive its bootloader.** This package changes no radio behaviour except
+removing that unreachable report: panic recovery still resets, reset cause and
+serial counters remain visible, and it does not authorise a flash or another
+physical experiment.
+
+The first milestone is the task boundary itself. Next, reconcile stable evidence
+identifiers and stale task/risk state in one documentation commit. Then remove
+the dead `.uninit` report and boot-counter path with focused tests and the full
+K1 image gates. Only after `DOC-045` closes does the bench task below become
+current.
+
+## Previous handoff: RISK-036
+
 **`RISK-036` is the blocker, and the bench is the blocker before it.** The exact
 unit stops when a host sends to it. `AFIK-K1-6.2` is flashed and working as a
 handset; nothing about the radio's operator behaviour changed tonight.

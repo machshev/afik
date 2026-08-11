@@ -2259,3 +2259,31 @@
 - **Recorded, not fixed:** nothing in the control path knows the fitted
   receiver's band, so a host may tune outside it, be answered successfully, and
   have the tune fail later at the driver.
+
+## DOC-045 — Reconcile the investigation ledger and remove the dead panic report
+
+- **Status:** active (2026-08-11)
+- **Objective:** leave one coherent account of the `RISK-036` investigation,
+  restore unique stable evidence identifiers and accurate task states, and
+  remove the `.uninit` panic-report mechanism which the exact K1 proved cannot
+  carry information across its bootloader.
+- **Scope:** `STATUS.md`, `TASKS.md`, `RISKS.md`, evidence references in existing
+  documentation, and the K1 panic-report/boot-counter display and firmware path.
+  Retain panic recovery by software reset, reset-cause display, serial counters,
+  and the host-side fuzz regressions.
+- **Exclusions:** flashing hardware, taking new physical observations, changing
+  runtime-control semantics, adding a replacement persistent panic reporter, or
+  continuing the inconclusive serial bisection.
+- **Tests required:** focused display tests for the retained reset-cause and
+  serial-counter contract; the pinned formatting, warning-denied Clippy,
+  workspace-test, K1 release-build, package, and image-verification gates.
+- **Acceptance criteria:** exactly one current task is named in `STATUS.md`;
+  superseded `RISK-036` conclusions are not presented as current facts; evidence
+  headings are unique and their references unambiguous; stale task states are
+  reconciled from their recorded completion evidence; no dead panic-report or
+  boot-counter path remains; the K1 still resets on panic and reports its reset
+  cause; all required gates pass and their exact results are recorded.
+- **Next after completion:** define a separate bench-only task which fixes and
+  records cable, seating, and power, then observes `RX` and `E` on a confirmed
+  responsive radio while a host sends. No firmware bisection precedes that
+  observation.
