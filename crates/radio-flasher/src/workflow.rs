@@ -1,7 +1,9 @@
 use std::{error::Error, fmt, io, io::Read, io::Write};
 
 use crate::{
-    codec::{receive_packet, receive_packet_with_response_crc, send_packet, Packet},
+    codec::{
+        is_device_marker, receive_packet, receive_packet_with_response_crc, send_packet, Packet,
+    },
     image::{ApplicationImage, EepromBackup, ImageError, EEPROM_BYTES, FLASH_PAGE_BYTES},
 };
 
@@ -577,11 +579,10 @@ pub fn probe_bootloader_v2<T: Read>(transport: &mut T) -> Result<BootloaderInfo,
 /// Reads one beacon and classifies only the pinned K1 or qualified K5 protocol.
 pub fn detect_bootloader<T: Read>(transport: &mut T) -> Result<BootloaderFamily, FlashError> {
     let (packet, response_crc) = receive_packet_with_response_crc(transport)?;
-    let family = parse_bootloader_family(&packet)?;
-    if response_crc != 0xFFFF && !matches!(family, BootloaderFamily::K1(_)) {
+    if !is_device_marker(response_crc, packet.as_slice().len()) {
         return Err(FlashError::InvalidResponseCrc(response_crc));
     }
-    Ok(family)
+    parse_bootloader_family(&packet)
 }
 
 /// Writes all 240 application pages after validating every prerequisite.

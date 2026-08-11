@@ -61,10 +61,34 @@ pub fn send_packet<T: Write>(transport: &mut T, payload: &[u8]) -> Result<(), Fl
     Ok(())
 }
 
+/// Decoded trailer produced by a literal on-wire `FF FF` at this payload length.
+///
+/// A radio in bootloader mode does not include its trailer in the obfuscation
+/// stream, so the marker arrives as two literal `0xFF` bytes and deobfuscation
+/// turns them into this length-dependent value. `EVID-K5-013` records the
+/// observation on two units and two bootloader versions, and K5TOOL derives the
+/// same value from the same key table.
+fn literal_marker(length: usize) -> u16 {
+    let low = XOR_KEY[length % XOR_KEY.len()] ^ 0xFF;
+    let high = XOR_KEY[(length + 1) % XOR_KEY.len()] ^ 0xFF;
+    u16::from_le_bytes([low, high])
+}
+
+/// Whether a decoded trailer is one of the two observed device markers.
+///
+/// The trailer is a marker rather than a checksum, and which form arrives
+/// depends on the mode the radio is in: normal firmware obfuscates it, so it
+/// decodes to `0xFFFF`, while a bootloader sends it literally. Both are
+/// accepted because a caller reading a frame does not always know the mode, and
+/// neither form carries information a checksum would.
+pub(crate) fn is_device_marker(decoded: u16, length: usize) -> bool {
+    decoded == 0xFFFF || decoded == literal_marker(length)
+}
+
 /// Reads and decodes one complete legacy packet with bounded resynchronisation.
 pub fn receive_packet<T: Read>(transport: &mut T) -> Result<Packet, FlashError> {
     let (packet, response_crc) = receive_packet_with_response_crc(transport)?;
-    if response_crc != 0xFFFF {
+    if !is_device_marker(response_crc, packet.as_slice().len()) {
         return Err(FlashError::InvalidResponseCrc(response_crc));
     }
     Ok(packet)
@@ -72,9 +96,11 @@ pub fn receive_packet<T: Read>(transport: &mut T) -> Result<Packet, FlashError> 
 
 /// Reads a device packet without interpreting its decoded trailer.
 ///
-/// The K1 bootloader emits a bounded frame whose device-side trailer is not
-/// the K5 response marker. K1 callers still validate the complete envelope and
-/// payload structure, then apply their command-specific checks.
+/// The K1 command paths validate the complete envelope and payload structure and
+/// then apply their own command-specific checks, so they have no use for the
+/// marker. This is not a K1 peculiarity: `EVID-K5-013` records that every
+/// observed bootloader sends the literal form, and that the exemption here
+/// happened to be the only reason the K1 path worked.
 pub(crate) fn receive_packet_without_response_crc<T: Read>(
     transport: &mut T,
 ) -> Result<Packet, FlashError> {
@@ -206,10 +232,70 @@ mod tests {
         0x00, 0x00, 0x00, 0x00, 0x00, 0x20,
     ];
 
+    /// Exact wire frame captured from the `EVID-K5-013` UV-K6, bootloader
+    /// `2.00.06`, with the identity field at offsets 4..20 zeroed because
+    /// `EVID-K5-014` redacts it. Command, lengths, version, trailer and footer
+    /// are as observed.
+    const CAPTURED_K6_BEACON: [u8; 44] = [
+        0xAB, 0xCD, 0x24, 0x00, 0x0E, 0x69, 0x34, 0xE6, 0x2E, 0x91, 0x0D, 0x40, 0x21, 0x35, 0xD5,
+        0x40, 0x13, 0x03, 0xE9, 0x80, 0x16, 0x6C, 0x14, 0xE6, 0x1C, 0xBF, 0x3D, 0x70, 0x0F, 0x05,
+        0xE3, 0x40, 0x27, 0x09, 0xE9, 0x80, 0x16, 0x6C, 0x14, 0xC6, 0xFF, 0xFF, 0xDC, 0xBA,
+    ];
+
+    /// The same, captured from the `EVID-K5-012` UV-5R Plus, bootloader
+    /// `4.00.01`, identically redacted.
+    const CAPTURED_UV5R_BEACON: [u8; 44] = [
+        0xAB, 0xCD, 0x24, 0x00, 0x0E, 0x69, 0x34, 0xE6, 0x2E, 0x91, 0x0D, 0x40, 0x21, 0x35, 0xD5,
+        0x40, 0x13, 0x03, 0xE9, 0x80, 0x16, 0x6C, 0x14, 0xE6, 0x1A, 0xBF, 0x3D, 0x70, 0x0F, 0x05,
+        0xE4, 0x40, 0x27, 0x09, 0xE9, 0x80, 0x16, 0x6C, 0x14, 0xC6, 0xFF, 0xFF, 0xDC, 0xBA,
+    ];
+
     #[test]
     fn sourced_beacon_vector_decodes_exactly() {
         let packet = receive_packet(&mut Cursor::new(SOURCED_V2_BEACON)).unwrap();
         assert_eq!(packet.as_slice(), CLEAR_V2_BEACON);
+    }
+
+    #[test]
+    fn a_literal_trailer_from_a_bootloader_is_accepted() {
+        // Both units send `FF FF` unobfuscated, so the decoded value is
+        // length-dependent rather than the running-mode marker. The frames
+        // differ only in their version string.
+        for frame in [CAPTURED_K6_BEACON, CAPTURED_UV5R_BEACON] {
+            let packet = receive_packet(&mut Cursor::new(frame)).unwrap();
+            assert_eq!(packet.as_slice().len(), 36);
+            assert_eq!(&packet.as_slice()[0..2], &[0x18, 0x05]);
+        }
+
+        let versions = [CAPTURED_K6_BEACON, CAPTURED_UV5R_BEACON].map(|frame| {
+            let packet = receive_packet(&mut Cursor::new(frame)).unwrap();
+            packet.as_slice()[20..27].to_vec()
+        });
+        assert_eq!(versions[0], b"2.00.06");
+        assert_eq!(versions[1], b"4.00.01");
+    }
+
+    #[test]
+    fn the_literal_marker_is_the_value_measured_on_hardware() {
+        // `EVID-K5-013`: a 36-byte payload puts the trailer at key offsets 4
+        // and 5, which is the 0x6ED1 both radios produced and the value K5TOOL
+        // derives from the same table.
+        assert_eq!(super::literal_marker(36), 0x6ED1);
+        assert!(super::is_device_marker(0x6ED1, 36));
+        assert!(super::is_device_marker(0xFFFF, 36));
+    }
+
+    #[test]
+    fn accepting_both_markers_does_not_accept_any_trailer() {
+        assert!(!super::is_device_marker(0x1234, 36));
+        // The literal marker is only valid at the length that produces it.
+        assert!(!super::is_device_marker(0x6ED1, 34));
+
+        let frame = encode_response_with_trailer(&CLEAR_V2_BEACON, 0x1234);
+        assert!(matches!(
+            receive_packet(&mut Cursor::new(frame)),
+            Err(FlashError::InvalidResponseCrc(0x1234))
+        ));
     }
 
     #[test]
@@ -255,12 +341,18 @@ mod tests {
     }
 
     #[test]
-    fn explicit_k1_path_decodes_non_marker_device_trailer() {
+    fn explicit_k1_path_decodes_a_frame_the_marker_check_now_also_accepts() {
+        // This test previously asserted that 0x6ED1 was a non-marker trailer
+        // only the K1 path would tolerate. `EVID-K5-013` shows it is what every
+        // observed bootloader sends at this length, so the ordinary path accepts
+        // it too and the explicit path remains equivalent for these frames.
         let frame = encode_response_with_trailer(&CLEAR_V2_BEACON, 0x6ED1);
-        assert!(matches!(
-            receive_packet(&mut Cursor::new(frame.clone())),
-            Err(FlashError::InvalidResponseCrc(0x6ED1))
-        ));
+        assert_eq!(
+            receive_packet(&mut Cursor::new(frame.clone()))
+                .unwrap()
+                .as_slice(),
+            CLEAR_V2_BEACON
+        );
         assert_eq!(
             receive_packet_without_response_crc(&mut Cursor::new(frame))
                 .unwrap()
