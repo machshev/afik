@@ -1207,6 +1207,204 @@ explicitly bounded.
   transcript, flash a known-good recovery image first, power-cycle, and prove
   stock boot. Only then may an AFIK application image be attempted.
 
+### EVID-K5-012 — A `4.00.01` bootloader beacon on a V1-generation unit
+
+- **Observation:** on 2026-08-11 a Quansheng UV-5R Plus supplied by the user was
+  placed in bootloader mode and connected through a CH340/CH341 `1a86:7523`
+  adapter on `/dev/ttyUSB0`. At 38,400 8-N-1 it unsolicitedly and repeatedly
+  emitted one frame: `AB CD` header, declared frame length 36, payload command
+  `0x0518` with inner length 32, `DC BA` footer. The printable bootloader
+  version is `4.00.01`. Two passive captures several minutes apart produced
+  byte-identical frames.
+- **Method:** receive only. No byte was transmitted to the radio in either
+  capture. The payload was deobfuscated with the recorded 16-byte key applied
+  from the first payload byte.
+- **Observation:** the 16-byte field between the command header and the version
+  string is populated and differs in shape from a version. It is treated as
+  per-unit identity, redacted, and not stored in repository content.
+- **Observation:** the frame trailer is `FF FF` on the wire. Deobfuscated as the
+  K5 path does, it reads `0x6ED1` rather than the `0xFFFF` response marker.
+  XMODEM CRC over the payload at both 32 and 36 bytes, in plaintext and
+  obfuscated form, matches none of these values.
+- **Inference:** this bootloader emits the `0xFFFF` marker outside the XOR
+  stream, so the trailer must be compared before deobfuscation. Confidence is
+  high, and this is **not** specific to `4.00.*`: `EVID-K5-013` observes the same
+  literal `FF FF` trailer from a `2.00.06` unit. An earlier revision of this
+  entry attributed it to this bootloader and is corrected.
+- **Observation:** the user reports that one `armel/uv-k5-firmware-custom`
+  build, which targets DP32G030, runs correctly on this unit and on their UV-K5
+  and UV-K6, and that all three are V1-generation radios.
+- **Inference:** the fitted MCU is DP32G030, since that image would not run
+  otherwise. Confidence medium-high, and this does **not** satisfy
+  `EVID-K5-008`: no marking on this unit has been read or photographed.
+- **Confidence:** high for this unit, adapter, frame shape, and version string,
+  which are direct reads rather than inference. Nothing here establishes the
+  flash geometry, the page-write protocol, or the meaning of the identity field.
+- **Permitted use:** reject a `4.00.*` beacon from the qualified V1 path instead
+  of assuming `EVID-K5-011` applies to it, and require a distinct classification
+  and target-confirmation phrase. `UV-K5-V1-DP32G030` asserts a bootloader-v2
+  unit and must not be reused for this radio.
+- **Required experiment:** return the unit to normal mode and record the
+  application identity from one read-only hello; photograph the model, revision
+  and MCU markings per `EVID-K5-008`; and establish the page protocol read-only
+  before any write is considered.
+
+### EVID-K5-013 — The qualified path rejects a genuine `2.00.06` unit
+
+- **Observation:** on 2026-08-11 a Quansheng UV-K6 supplied by the user, from the
+  same set of three V1-generation radios as `EVID-K5-012` and running the same
+  DP32G030 build, was placed in bootloader mode on the same adapter. It emitted
+  the identical frame shape — `AB CD`, declared length 36, command `0x0518`,
+  inner length 32, `DC BA` — with printable bootloader version `2.00.06`, which
+  is the exact version `EVID-K5-011` is written against.
+- **Observation:** its frame trailer is also `FF FF` on the wire.
+- **Observation:** `afik-flasher identify` against this unit fails with
+  `unexpected decoded radio CRC trailer: 0x6ed1`. The qualified V1 workflow
+  therefore rejects its own qualified target, on the bootloader version it was
+  designed for, before any operation is selected.
+- **Cause:** the inbound trailer is deobfuscated with the payload
+  (`crates/radio-flasher/src/codec.rs:101`) and the resulting value is required
+  to equal `0xFFFF` (`workflow.rs:581`). Real devices send the marker literally,
+  so `FF FF` decodes to `0x6ED1` at those key offsets and the check can never
+  pass. The correct comparison is against the raw trailer.
+- **Consequence for the K1 exemption:** `codec.rs` attributes the K1's skipped
+  trailer check to a K1 peculiarity. That attribution is wrong. Both families
+  send a literal `FF FF`; the K5 assumption was never true on hardware, and the
+  K1 path works only because it happens to ignore the field. The general
+  behaviour is the K1's, not the exemption.
+- **Why this was not caught:** `EVID-K5-011` was derived from third-party tool
+  reports rather than a physical unit, and the host encoder obfuscates its own
+  outbound trailer, so the round-trip tests agree with themselves. This is the
+  first AFIK observation of a K5-family bootloader on real hardware.
+- **Independent corroboration:** `qrp73/K5TOOL`, `main` at
+  `03cb33aef88fc17f9e6b71d9e6c4f0ac9b0dc436` (2025-12-18, GPL-3.0), computes the
+  expected decoded trailer from a radio as
+  `xorTable[len % 16] ^ 0xFF | (xorTable[(len + 1) % 16] ^ 0xFF) << 8`
+  (`Packets/Envelope.cs`, `CheckCrc`). For `len = 36` and AFIK's recorded key
+  that is `0x2E ^ 0xFF = 0xD1` and `0x91 ^ 0xFF = 0x6E`, giving exactly the
+  `0x6ED1` measured here. An independent implementation therefore derives the
+  same value from the same key, which also confirms the two projects' key tables
+  agree.
+- **Refinement this forces:** K5TOOL accepts *both* trailers. It treats a decoded
+  `0xFFFF` as running mode and the deobfuscated-literal value as the other case,
+  and only warns on mismatch. The rule is mode-dependent: a radio in normal mode
+  sends a trailer that decodes to `0xFFFF`, and a radio in bootloader mode sends a
+  literal `FF FF`. That is why AFIK's normal-mode hello succeeded on the K1 while
+  bootloader classification fails here — the same code path is correct for one
+  mode and wrong for the other.
+- **Confidence:** high. Two units, two bootloader versions, one adapter, a
+  reproduced failure from the shipped classifier, and an independent
+  implementation that derives the measured value arithmetically.
+- **Permitted use:** accept both trailer forms, keyed by mode rather than by
+  family, instead of adding a per-family exemption. This says nothing about the
+  **outbound** trailer: K5TOOL's `Envelope.Encode` obfuscates a real CRC-16 over
+  the payload, which is what AFIK already sends, so the send path is corroborated
+  and must not be changed.
+- **Required experiment:** capture the third unit's beacon, then confirm the
+  corrected classifier accepts `2.00.06` and `4.00.01` and still rejects a
+  malformed frame.
+
+### EVID-K5-014 — Per-unit identity field in the `0x0518` beacon
+
+- **Observation:** the 16-byte field between the command header and the version
+  string, from the two units above:
+
+  | Unit | Bootloader | Field |
+  | --- | --- | --- |
+  | UV-5R Plus | `4.00.01` | `01 02 02 0b 0c` · 5 ASCII · `ff 01 aa 00 31 00` |
+  | UV-K6 | `2.00.06` | `01 02 03 02 0c` · 5 ASCII · `ff 14 38 00 9f 00` |
+
+  The five ASCII characters differ per unit and are redacted as identity. The
+  leading `01 02`, the `0c` at offset 4, the `ff` separator and the two `00`
+  bytes are common to both.
+- **Observation:** the eight bytes following the version string are byte-identical
+  on both units (`34 0A 00 00 00 00 00 20`), so they are not per-unit and are
+  probably a separate field rather than version padding.
+- **External sample and the split it proves:** `K5TOOL` commits two beacons in
+  `Packets/V2/Packet2FlashBeaconAck.cs` and `Packets/V5/Packet5FlashBeaconAck.cs`
+  at the revision pinned in `EVID-K5-013`. Both carry the same leading
+  `01 02 02 06 1c` and the same five ASCII characters, but one reports bootloader
+  `2.00.06` and the other `5.00.01`, and only offsets 11..15 differ between them.
+  That is one unit observed under two bootloaders.
+- **Inference:** offsets 0..9, including the ASCII characters, are unit or
+  hardware properties that survive a bootloader change, and offsets 11..15 are
+  bootloader-linked. The eight bytes after the version string are also
+  bootloader-linked, not per-unit: `34 0A 00 00 00 00 00 20` appears on K5TOOL's
+  `2.00.06` sample and on both units here, while its `5.00.01` sample reads
+  `28 0C 00 00 00 00 00 20`. Confidence medium — one external unit supports the
+  split and no unit has been observed across a bootloader change here.
+- **Hypothesis, not a fact:** offsets 2..4 are `02 06 1c`, `02 0b 0c` and
+  `03 02 0c` across the three known units. Every middle byte is a valid month and
+  every last byte a valid day, so a date code fits all three samples. So would
+  several other encodings. This is recorded to be tested, not relied upon.
+- **Not established:** whether offsets 2..4 encode a date, a model, or a hardware
+  revision. Three same-generation samples cannot separate these.
+- **Confidence:** high for the bytes; medium for the unit-versus-bootloader
+  split; none for the meaning of any individual field.
+- **Permitted use:** none beyond recording. No workflow may branch on this field
+  until its meaning is established.
+- **Required experiment:** capture the third unit here; compare offsets 2..4
+  against physically read markings and, if available, a manufacture date; and
+  capture one unit before and after a bootloader change to test the split
+  directly.
+
+### EVID-K5-015 — The beacon command identifies the protocol, the version does not
+
+- **Observation:** at the revision pinned in `EVID-K5-013`, K5TOOL selects its
+  bootloader protocol by beacon command: `Packet2FlashBeaconAck.ID = 0x0518` for
+  the V2 protocol and `Packet5FlashBeaconAck.ID = 0x057A` for the V5 protocol,
+  which its documentation describes as using AES internally. Its committed
+  samples pair `0x0518` with version `2.00.06` and `0x057A` with `5.00.01`.
+- **Observation:** the `4.00.01` unit in `EVID-K5-012` beacons on `0x0518`.
+- **Inference:** the protocol family is signalled by the beacon command, and the
+  printable version is metadata about the build rather than the protocol
+  selector. A `4.00.01` bootloader announcing itself on `0x0518` is V2-shaped and
+  is not the AES-bearing V5 path. Confidence medium-high: it follows from the
+  external protocol split plus a direct observation, but no `4.00.01` page write
+  has been attempted or observed anywhere.
+- **Consequence for AFIK:** `parse_bootloader_family` gates on the version string
+  prefix, `starts_with("2.")`, having already special-cased `0x057A`. That makes
+  the version the discriminator and the command a special case, which is
+  backwards, and it is why a protocol-compatible unit is refused.
+- **Confidence:** high for what K5TOOL implements and for the observed command;
+  medium-high for the inference.
+- **Permitted use:** classify on the beacon command, treat `0x057A` as an
+  unsupported AES path, and record the version string as evidence rather than
+  using it as a gate. This does not authorise a write to a `4.00.*` unit: the
+  page protocol still has to be established for it.
+- **Required experiment:** establish the `4.00.01` page-write exchange read-only,
+  and confirm no challenge or authentication step precedes it.
+
+### EVID-K5-016 — No reviewed project can query the processor
+
+- **Observation:** K5TOOL's documentation, at the revision pinned in
+  `EVID-K5-013`, distinguishes generations by physical marking: V1 as processor
+  DP32G030 with bootloader v2 or v5, V2 as PCB version V1.8 with processor
+  PY32F030, and V3 as processor PY32F071. Its hello acknowledgement carries a
+  version string, AES and password-lock flags, padding and a challenge, and no
+  processor or board identifier.
+- **Observation:** `armel/uvtools2`, the browser flasher for V3 and K1, documents
+  which radios it supports and describes no processor detection. The `muzkr/ichi`
+  bootloader updater likewise names the variants it targets without describing
+  detection.
+- **Inference:** across the projects reviewed, the processor is established by
+  physical inspection or by whether a firmware runs, not by a query. AFIK should
+  not expect a pre-flash MCU identification to exist.
+- **Also observed:** none of these sources records a `4.00.*` bootloader. K5TOOL
+  lists v2 or v5 for a V1 radio. The `EVID-K5-012` unit is therefore not covered
+  by the external taxonomy, and the taxonomy should be treated as incomplete
+  rather than as evidence that the unit is not V1.
+- **Confidence:** medium-low for the taxonomy, which is a maintained
+  implementation report rather than a Quansheng board matrix, consistent with
+  `EVID-K5-008`. High for the absence of a documented processor query, which is a
+  reviewable property of the sources.
+- **Permitted use:** keep the physical-marking gate in `EVID-K5-008`, and place
+  any processor identification in a running AFIK image rather than in a host
+  pre-flash step. The Arm-defined `SCB CPUID` distinguishes Cortex-M0 from M0+
+  and is the citable primary fact for that check.
+- **Required experiment:** read `SCB CPUID` from a running image once one exists
+  on this generation, and photograph the markings on all three units.
+
 ## FLASH-012 physical evidence boundary
 
 The serial protocol can prove only that a qualified bootloader acknowledged

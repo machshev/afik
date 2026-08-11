@@ -1125,3 +1125,49 @@ meaning.
 - The cost of a menu is not only code. It is a screen the operator has to walk
   past, and a second place a value can be changed from, which is a second thing
   that can disagree with the store.
+
+## ADR-070 — The operator says what the radio is; the beacon may only contradict
+
+- **Date:** 2026-08-11
+- **Status:** accepted
+- AFIK does not classify Quansheng hardware from its bootloader beacon. The
+  operator declares the target, and the observed beacon is recorded and used only
+  to refuse a declaration it positively contradicts.
+- The attempt to classify failed on contact with three radios. `EVID-K5-012` and
+  `EVID-K5-013` record one generation, one working vendor firmware, and two
+  bootloader versions — `2.00.06` and `4.00.01`. `EVID-K5-016` records that no
+  reviewed external project can query the processor either: K5TOOL separates V1,
+  V2 and V3 by physical marking, its hello carries no processor identifier, and
+  the browser flashers ask the operator which radio they have. A `4.00.*`
+  bootloader appears in none of those sources, so the published tables cannot
+  settle what this unit is in either direction.
+- A version-prefix gate is also the wrong test even where a taxonomy exists.
+  `EVID-K5-015` establishes that the protocol is announced by the beacon command
+  — `0x0518` against `0x057A` for the AES path — and that the printable version
+  describes the build. AFIK gated on the version and special-cased the command,
+  which is why a protocol-compatible radio was refused.
+- So the beacon becomes data. `detect_bootloader` reports the command, the
+  version and the identity field as observed, and a separate step compares that
+  observation against the declared target. The comparison may fail only on a
+  known incompatibility, never on an unfamiliar one: if an unrecognised version
+  blocks an operation, the taxonomy has been rebuilt implicitly and the next
+  radio Quansheng ships is refused for no reason anyone can defend.
+- Unknown is therefore not mismatch. This is the whole discipline of the
+  decision, and it is what makes the design survive hardware nobody has seen.
+- A declaration is cheap to assert and may be wrong, so it settles what the radio
+  is and never whether it may be written to. The recovery rehearsal, the EEPROM
+  backup and the exact confirmation phrases stay as they are. `ADR-067` already
+  states this shape for operator state: it names something, and nothing
+  downstream may treat it as authority.
+- The confirmation phrase is derived from the declared target rather than
+  compiled in. `RISK-037` recorded the real defect in the old arrangement: a
+  constant describing one bootloader on one unit read as a claim about a family.
+  A claim belongs to the operator, per unit, per session, where it can be
+  corroborated or contradicted.
+- What the operator declares is one profile, and it is the same profile that
+  parameterises a build. Geometry and memory capacity are per-unit facts, so a
+  hand-fitted memory part is a supported case rather than an exception.
+- Because a declaration can be wrong, the image verifies what it can reach:
+  `SCB CPUID` for the core, and address aliasing for the fitted memory. A
+  declared capacity larger than the part destroys calibration on the first
+  erase, which is precisely the failure a host-side gate cannot catch.

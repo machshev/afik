@@ -686,3 +686,50 @@
   `E` reading while the host sends. One evening produced a freeze, a reboot,
   and neither under nominally identical traffic; another firmware cut before a
   repeatable bench would measure the setup rather than the code.
+
+## RISK-037 — "V1" names a generation, not a bootloader or a memory part
+
+- **State:** open, not scheduled
+- **Current facts:** `EVID-K5-012` records a V1-generation UV-5R Plus, running a
+  DP32G030 build, whose bootloader beacon is `4.00.01`. `EVID-K5-013` records a
+  UV-K6 from the same set, running the same build, whose beacon is `2.00.06`. Two
+  bootloader versions, one generation, one working firmware. The qualified
+  flasher path accepts only `2.*` and encodes one target as inlined constants:
+  the confirmation phrase in `radio-flasher`, its duplicate in the CLI parser and
+  help, and a hardcoded 240-page write loop.
+- **Open defect:** per `EVID-K5-013`, that path currently rejects **both** units,
+  including the `2.00.06` one it was written for, because it deobfuscates a
+  trailer that a radio in bootloader mode sends literally. It fails closed, so
+  nothing is at risk, but no V1 unit can be classified until it is fixed. The fix
+  accepts both trailer forms keyed by mode, per the corroborated rule in that
+  entry, and tests with real captured frames rather than host-encoded ones.
+- **Wrong discriminator:** per `EVID-K5-015`, the family is signalled by the
+  beacon command and AFIK gates on the version-string prefix instead. Fixing the
+  trailer alone still leaves `4.00.01` refused.
+- **Taxonomy is incomplete:** per `EVID-K5-016`, no reviewed external project
+  records a `4.00.*` bootloader, and none can query the processor. The published
+  V1/V2/V3 tables cannot be used to decide what this unit is, in either
+  direction.
+- **Why it matters:** the existing constants describe one bootloader on one
+  generation while reading as a claim about the family. A radio that is V1 by
+  marking and DP32G030 by silicon can still refuse, or worse silently accept,
+  a workflow qualified against `2.*`. Supporting a second bootloader means
+  making the target a descriptor rather than adding a constant beside the
+  existing ones.
+- **Also unresolved:** the fitted configuration memory is not identifiable. The
+  V1 store is I²C 24Cxx, which has no identification command, so capacity can
+  only be inferred behaviourally from address aliasing and the addressing class
+  from which device addresses acknowledge. `radio-eeprom` is a SPI NOR driver
+  for the K1's PY25Q16 and does not apply; no I²C driver exists. The user
+  reports a V1 unit with a different same-family part fitted by hand, so
+  capacity is a real variable and not a constant.
+- **Not established:** whether `4.00.*` shares the `EVID-K5-011` page protocol,
+  the application origin and length on this unit, the fitted memory part on any
+  V1 unit, and whether the beacon's per-unit identity field distinguishes
+  generations.
+- **Required before any V1 write path:** classify `4.00.*` read-only, establish
+  the page protocol and geometry independently of the `2.*` inference, and give
+  the target its own confirmation phrase. Any per-unit sizing must be verified
+  by the running image against the hardware, because a profile claiming more
+  memory than is fitted writes past the end of the calibration a resoldered
+  unit cannot restore.
