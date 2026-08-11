@@ -6,9 +6,10 @@ use std::{
 };
 
 use radio_flasher::{
-    backup_eeprom, crc32, detect_bootloader, flash_application, probe_clock_control,
-    probe_clock_register, probe_clock_snapshot, probe_keypad_matrix, probe_normal_firmware,
-    probe_rf, set_rf_audio, ApplicationImage, EepromBackup, FlashPrerequisites, FlashPurpose,
+    backup_eeprom, crc32, detect_bootloader, flash_application, observe_bootloader,
+    probe_clock_control, probe_clock_register, probe_clock_snapshot, probe_keypad_matrix,
+    probe_normal_firmware, probe_rf, set_rf_audio, ApplicationImage, EepromBackup,
+    FlashPrerequisites, FlashPurpose,
 };
 use radio_programmer_serial::{discover_usb_serial_devices, LinuxSerialTransport};
 
@@ -44,9 +45,12 @@ Usage:\n\
   afik-flasher --version\n\
 \n\
 The default device selector is auto. One USB serial candidate is used, and\n\
-several are offered as a choice on a terminal or fail closed without one. It\n\
-then classifies the bootloader protocol: K5 V1 2.* or the pinned K1 7.03.*\n\
-family.\n\
+several are offered as a choice on a terminal or fail closed without one.\n\
+identify then reports the beacon as observed: its command, the protocol that\n\
+command announces, and the printable bootloader version, whatever that version\n\
+is. It makes no claim about which radio or processor this is, and an unfamiliar\n\
+version is reported rather than refused. Write paths remain separately gated to\n\
+the qualified K5 V1 2.* and pinned K1 7.03.* targets.\n\
 Recovery flashing remains separately gated. The K1 AFIK application command\n\
 takes the image and nothing else. It cannot reach the bootloader: the protocol\n\
 addresses a page index, not an address, and the image is bounded to the\n\
@@ -432,11 +436,12 @@ fn select_auto_device<C: Confirm>(
 
 fn identify<W: Write>(device: &Path, stdout: &mut W) -> Result<(), CliError> {
     let mut serial = open_serial(device)?;
-    let family = detect_bootloader(&mut serial).map_err(CliError::operation)?;
+    let beacon = observe_bootloader(&mut serial).map_err(CliError::operation)?;
     writeln!(stdout, "device={}", device.display()).map_err(CliError::operation)?;
     writeln!(stdout, "baud={K5_BAUD}").map_err(CliError::operation)?;
-    writeln!(stdout, "protocol_family={}", family.label()).map_err(CliError::operation)?;
-    writeln!(stdout, "bootloader={}", family.info().version()).map_err(CliError::operation)?;
+    writeln!(stdout, "beacon_command=0x{:04x}", beacon.command()).map_err(CliError::operation)?;
+    writeln!(stdout, "protocol={}", beacon.protocol().label()).map_err(CliError::operation)?;
+    writeln!(stdout, "bootloader={}", beacon.version()).map_err(CliError::operation)?;
     writeln!(stdout, "hardware_identity=not_proven_by_beacon").map_err(CliError::operation)
 }
 

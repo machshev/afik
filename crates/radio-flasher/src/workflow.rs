@@ -49,7 +49,8 @@ pub enum FlashError {
     PacketTooLarge(usize),
     /// An otherwise bounded packet did not end with the exact footer.
     InvalidFooter([u8; 2]),
-    /// A radio response did not contain the observed decoded `0xFFFF` trailer.
+    /// A radio response carried neither observed marker: the obfuscated `0xFFFF`
+    /// normal firmware sends nor the literal one a bootloader sends.
     InvalidResponseCrc(u16),
     /// No packet header was found within the bounded resynchronisation window.
     SyncLimit,
@@ -576,6 +577,79 @@ pub fn probe_bootloader_v2<T: Read>(transport: &mut T) -> Result<BootloaderInfo,
     parse_bootloader_beacon(&receive_packet(transport)?)
 }
 
+/// Protocol shape announced by a beacon command, per `EVID-K5-015`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BeaconProtocol {
+    /// `0x0518`: the page-index protocol the K1 and qualified K5 paths implement.
+    PageWrite,
+    /// `0x057A`: the bootloader K5TOOL records as using AES internally.
+    AesEncrypted,
+    /// A command no evidence covers.
+    Unrecognised,
+}
+
+impl BeaconProtocol {
+    /// Returns the stable printable label.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::PageWrite => "page-write",
+            Self::AesEncrypted => "aes-encrypted",
+            Self::Unrecognised => "unrecognised",
+        }
+    }
+}
+
+/// One bootloader beacon as observed, carrying no hardware claim.
+///
+/// `ADR-070` makes the beacon evidence rather than a classifier: the command
+/// says which protocol the bootloader speaks, and the version describes its
+/// build. Neither identifies the radio, so an unfamiliar version is recorded
+/// rather than refused.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BeaconObservation {
+    command: u16,
+    version: String,
+}
+
+impl BeaconObservation {
+    /// Returns the exact beacon command.
+    pub const fn command(&self) -> u16 {
+        self.command
+    }
+
+    /// Returns the protocol shape the command announces.
+    pub const fn protocol(&self) -> BeaconProtocol {
+        match self.command {
+            COMMAND_V2_BEACON => BeaconProtocol::PageWrite,
+            COMMAND_V5_BEACON => BeaconProtocol::AesEncrypted,
+            _ => BeaconProtocol::Unrecognised,
+        }
+    }
+
+    /// Returns the printable bootloader version exactly as reported.
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+}
+
+/// Reads one beacon and reports it without judging what the radio is.
+///
+/// This is the read-only observation `ADR-070` requires. It validates the
+/// envelope, the marker and the beacon layout, and it accepts any printable
+/// version, including one no evidence covers. It selects no workflow and
+/// authorises nothing.
+pub fn observe_bootloader<T: Read>(transport: &mut T) -> Result<BeaconObservation, FlashError> {
+    let (packet, response_crc) = receive_packet_with_response_crc(transport)?;
+    let payload = packet.as_slice();
+    if !is_device_marker(response_crc, payload.len()) {
+        return Err(FlashError::InvalidResponseCrc(response_crc));
+    }
+    let command = packet_command(payload).unwrap_or(0);
+    require_packet(payload, command, 32, 36, "bootloader beacon")?;
+    let version = parse_text(&payload[20..36], "bootloader version")?;
+    Ok(BeaconObservation { command, version })
+}
+
 /// Reads one beacon and classifies only the pinned K1 or qualified K5 protocol.
 pub fn detect_bootloader<T: Read>(transport: &mut T) -> Result<BootloaderFamily, FlashError> {
     let (packet, response_crc) = receive_packet_with_response_crc(transport)?;
@@ -1005,10 +1079,11 @@ mod tests {
     };
 
     use super::{
-        backup_eeprom, detect_bootloader, flash_application, probe_bootloader_v2,
-        probe_clock_control, probe_clock_registers, probe_clock_snapshot, probe_keypad_matrix,
-        probe_normal_firmware, BootloaderFamily, FirmwareVersion, FlashError, FlashPrerequisites,
-        FlashPurpose, QUALIFIED_TARGET_CONFIRMATION, RECOVERY_REHEARSED_CONFIRMATION,
+        backup_eeprom, detect_bootloader, flash_application, observe_bootloader,
+        probe_bootloader_v2, probe_clock_control, probe_clock_registers, probe_clock_snapshot,
+        probe_keypad_matrix, probe_normal_firmware, BeaconProtocol, BootloaderFamily,
+        FirmwareVersion, FlashError, FlashPrerequisites, FlashPurpose,
+        QUALIFIED_TARGET_CONFIRMATION, RECOVERY_REHEARSED_CONFIRMATION,
     };
 
     const TEST_TRANSACTION_ID: u32 = 0xA55A_1234;
@@ -1258,6 +1333,62 @@ mod tests {
         assert!(matches!(
             detect_bootloader(&mut unknown),
             Err(FlashError::InvalidText("supported bootloader version"))
+        ));
+    }
+
+    #[test]
+    fn observation_reports_an_unfamiliar_version_instead_of_refusing_it() {
+        // The UV-5R Plus of `EVID-K5-012`. `detect_bootloader` refuses it,
+        // which is `RISK-037`'s wrong discriminator; observation must not.
+        let mut payload = vec![0_u8; 36];
+        payload[0..4].copy_from_slice(&[0x18, 0x05, 0x20, 0x00]);
+        payload[20..27].copy_from_slice(b"4.00.01");
+        let frame = encode_response_with_trailer(&payload, 0x6ED1);
+
+        let beacon = observe_bootloader(&mut ScriptedTransport::new(frame, 1)).unwrap();
+        assert_eq!(beacon.version(), "4.00.01");
+        assert_eq!(beacon.command(), 0x0518);
+        assert_eq!(beacon.protocol(), BeaconProtocol::PageWrite);
+        assert_eq!(beacon.protocol().label(), "page-write");
+    }
+
+    #[test]
+    fn observation_separates_the_aes_bootloader_by_command_not_version() {
+        // `EVID-K5-015`: the command announces the protocol. A `5.*` version on
+        // `0x057A` is the AES path, and it stays distinguishable without any
+        // version test.
+        let mut payload = vec![0_u8; 36];
+        payload[0..4].copy_from_slice(&[0x7A, 0x05, 0x20, 0x00]);
+        payload[20..27].copy_from_slice(b"5.00.01");
+        let frame = encode_response_with_trailer(&payload, 0x6ED1);
+
+        let beacon = observe_bootloader(&mut ScriptedTransport::new(frame, 1)).unwrap();
+        assert_eq!(beacon.command(), 0x057A);
+        assert_eq!(beacon.protocol(), BeaconProtocol::AesEncrypted);
+        assert_eq!(beacon.version(), "5.00.01");
+    }
+
+    #[test]
+    fn observation_still_refuses_a_frame_that_is_not_a_beacon() {
+        let mut short = vec![0_u8; 20];
+        short[0..4].copy_from_slice(&[0x18, 0x05, 0x20, 0x00]);
+        assert!(matches!(
+            observe_bootloader(&mut ScriptedTransport::new(
+                encode_response_with_trailer(&short, 0x6ED1),
+                1
+            )),
+            Err(FlashError::UnexpectedPacket { .. })
+        ));
+
+        let mut unprintable = vec![0_u8; 36];
+        unprintable[0..4].copy_from_slice(&[0x18, 0x05, 0x20, 0x00]);
+        unprintable[20..27].copy_from_slice(&[0x01; 7]);
+        assert!(matches!(
+            observe_bootloader(&mut ScriptedTransport::new(
+                encode_response_with_trailer(&unprintable, 0x6ED1),
+                1
+            )),
+            Err(FlashError::InvalidText("bootloader version"))
         ));
     }
 

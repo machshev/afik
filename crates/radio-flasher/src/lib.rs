@@ -18,10 +18,10 @@ pub use image::{
     FLASH_PAGE_BYTES, FLASH_PAGE_COUNT,
 };
 pub use workflow::{
-    backup_eeprom, detect_bootloader, flash_application, probe_bootloader_v2, probe_clock_control,
-    probe_clock_register, probe_clock_registers, probe_clock_snapshot, probe_keypad_matrix,
-    probe_normal_firmware, probe_rf, set_rf_audio, BootloaderFamily, BootloaderInfo,
-    ClockSnapshotReport, FirmwareVersion, FlashError, FlashPrerequisites, FlashPurpose,
-    FlashReport, KeypadMatrixReport, NormalFirmwareInfo, RfReport, QUALIFIED_TARGET_CONFIRMATION,
-    RECOVERY_REHEARSED_CONFIRMATION,
+    backup_eeprom, detect_bootloader, flash_application, observe_bootloader, probe_bootloader_v2,
+    probe_clock_control, probe_clock_register, probe_clock_registers, probe_clock_snapshot,
+    probe_keypad_matrix, probe_normal_firmware, probe_rf, set_rf_audio, BeaconObservation,
+    BeaconProtocol, BootloaderFamily, BootloaderInfo, ClockSnapshotReport, FirmwareVersion,
+    FlashError, FlashPrerequisites, FlashPurpose, FlashReport, KeypadMatrixReport,
+    NormalFirmwareInfo, RfReport, QUALIFIED_TARGET_CONFIRMATION, RECOVERY_REHEARSED_CONFIRMATION,
 };
