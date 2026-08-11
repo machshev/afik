@@ -2266,7 +2266,7 @@
 
 ## DOC-045 — Reconcile the investigation ledger and remove the dead panic report
 
-- **Status:** active (2026-08-11)
+- **Status:** complete (2026-08-11)
 - **Objective:** leave one coherent account of the `RISK-036` investigation,
   restore unique stable evidence identifiers and accurate task states, and
   remove the `.uninit` panic-report mechanism which the exact K1 proved cannot
@@ -2291,3 +2291,33 @@
   records cable, seating, and power, then observes `RX` and `E` on a confirmed
   responsive radio while a host sends. No firmware bisection precedes that
   observation.
+- **Completion notes:** reconciled the duplicate `EVID-K1-060` by assigning the
+  external-memory observation `EVID-K1-061` and updating all references;
+  resolved the stale `STORE-004`, `K1SIDE-025`, and `RFK1-030` states from their
+  own completion or supersession evidence; and rewrote `RISK-036` so withdrawn
+  claims are not current conclusions. Removed the disproven `.uninit` panic
+  report and boot counter while retaining panic-to-reset recovery, reset-cause
+  reporting, serial counters, and fuzz regressions. `AFIK-K1-6.3` is 92,072
+  bytes with 8,456 bytes static RAM and 7,928 bytes stack headroom. All pinned
+  workspace and K1 package gates pass as recorded in `STATUS.md`; no hardware
+  was flashed or observed.
+
+## BENCH-046 — Establish a repeatable K1 serial bench before more bisection
+
+- **Status:** ready; not active
+- **Objective:** determine whether any application-mode UART byte reaches a
+  responsive exact K1 under one recorded, repeatable physical setup.
+- **Scope:** record cable identity and seating, radio power source, host serial
+  path and baud, flashed image identity, the handset responsiveness check, the
+  exact host operation, and the `RX` and `E` values before and after it. Update
+  `docs/hardware-evidence.md`, `RISKS.md`, and `STATUS.md` with that one result.
+- **Exclusions:** firmware changes, a new diagnostic image, flashing, protocol
+  conclusions beyond the observed counters, RF transmission, or continuing
+  the earlier bisection.
+- **Dependencies:** `DOC-045`; access to the exact unit and its programming
+  cable.
+- **Acceptance criteria:** the setup is specific enough to repeat; the radio is
+  responsive immediately before and after the host operation or the loss of
+  responsiveness is recorded; exact before/after `RX` and `E` values are
+  captured without interpreting a reset-cleared row as a pre-reset count; and
+  the result chooses only the next diagnostic branch, not its answer.

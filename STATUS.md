@@ -2,18 +2,42 @@
 
 ## Current work package
 
-**`DOC-045` is active: reconcile the project ledger after the `RISK-036`
-investigation and remove the panic-report mechanism the exact unit proved
-cannot survive its bootloader.** This package changes no radio behaviour except
-removing that unreachable report: panic recovery still resets, reset cause and
-serial counters remain visible, and it does not authorise a flash or another
-physical experiment.
+**No work package is active. `DOC-045` is complete.** The project ledger now has
+one account of `RISK-036`: current facts, withdrawn observations, the
+inconclusive bisection, and the bench condition required before another one.
+The external-memory evidence is uniquely `EVID-K1-061`; the earlier audio
+evidence remains `EVID-K1-060`; and stale task states no longer compete with the
+current-work-package heading.
 
-The first milestone is the task boundary itself. Next, reconcile stable evidence
-identifiers and stale task/risk state in one documentation commit. Then remove
-the dead `.uninit` report and boot-counter path with focused tests and the full
-K1 image gates. Only after `DOC-045` closes does the bench task below become
-current.
+The `.uninit` panic file, line, boot counter, display path, and tests are gone.
+The exact unit proved its bootloader destroys that memory before the application
+can read it. Panic recovery still requests a software reset, and the useful
+`RCC_CSR` reset cause and serial counters remain on the information screen.
+
+Commands run in the pinned environment on 2026-08-11:
+
+- `nix flake check path:. --no-build` — passed; the incompatible
+  `aarch64-linux` output was omitted as reported by Nix.
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
+  — passed.
+- `nix develop path:. -c cargo test --workspace` — passed; 50 test binaries,
+  including 120 K1 library tests.
+- `nix develop path:. -c ./tool/build-k1-async.sh --release` — passed.
+- `nix develop path:. -c tool/package-k1-async-image.sh --force` — passed.
+- `nix develop path:. -c tool/test-k1-async-image.sh` — positive and negative
+  checks passed.
+- `git diff --check` — passed.
+
+**Image:** `AFIK-K1-6.3`, 92,072 bytes, SHA-256
+`781d354916dfeb5956e4774673728856f0189be0dd553774c737feaca156b1de`,
+static RAM 8,456 bytes with 7,928 bytes of stack headroom. It is built and
+packaged, not flashed or physically confirmed. Removing the dead reporter saves
+1,648 image bytes against `6.2`.
+
+**Next smallest actionable task:** activate `BENCH-046`, fix and record the
+physical setup, then take the single pre-bisection `RX`/`E` observation it
+defines. No firmware cut comes first.
 
 ## Previous handoff: RISK-036
 
