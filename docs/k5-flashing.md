@@ -104,12 +104,28 @@ destructive confirmation argument; this guards against selecting a different
 file but is not a signature. Re-enter programming mode, probe again, and write
 all pages without interruption.
 
-The current Reset image only writes a RAM sentinel used by Renode and then
-spins. It has no evidenced display, keypad, UART, RF, or GPIO adapter, so a
-successful write is not yet a useful or independently observable hardware boot.
-`FLASH-012` remains incomplete until a safe read-only debug observation or a
-separately evidenced physical output proves Reset reached AFIK code, followed
-by successful stock recovery.
+Two AFIK images exist for this target. `radio-firmware-dp32g030` is the original
+`DP32-003` Reset image: it writes a RAM sentinel that only Renode can read and
+then spins, so writing it proves nothing about a physical boot.
+`radio-firmware-k5` is the `K5DRV-048` application, built with
+`tool/build-k5.sh --release` and packaged with `tool/package-k5-image.sh`. It
+configures the clock, drives UART1 on the programming connector, sends
+`AFIK-K5-1.0 booted` in plain text once at power-on, and then answers the
+read-only hello. It drives no display, keypad, memory or radio.
+
+That makes the boot observable for the first time. After a write and a
+power-cycle, either watch the port for the banner, or ask the running image who
+it is:
+
+```sh
+nix develop path:. -c cargo run --package radio-flasher-cli --bin afik-flasher -- \
+  --device /dev/ttyUSB0 probe-normal
+```
+
+`firmware=AFIK-K5-1.0` is the witness `FLASH-012` has been waiting for: an
+acknowledged page write says only that a bootloader accepted bytes, while this
+says AFIK code is running on the part. `FLASH-012` remains incomplete until that
+observation is followed by a successful stock recovery on the same unit.
 
 The AFIK attempt additionally requires the exact same-unit recovery phrase and
 the separately validated recovery file:
@@ -123,8 +139,10 @@ nix develop path:. -c cargo run --package radio-flasher-cli --bin afik-k5 -- \
   --confirm-recovery-rehearsed RECOVERY-REHEARSED-ON-THIS-UNIT
 ```
 
-Again, the CRC is a placeholder. Do not run this AFIK command merely because
-the host and Renode checks pass; the current image has no physical boot witness.
+Again, the CRC is a placeholder, and `--version` is the negotiation value for
+the exact unit's bootloader. Do not run this command merely because the host
+checks pass: nothing on the host can prove that the image boots, which is the
+whole reason the image now says so itself.
 
 ## Deliberate exclusions
 

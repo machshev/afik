@@ -2949,3 +2949,58 @@ Complete, with the physical confirmations below observed on the exact unit.
   under power loss, which remains `RISK-004`. A power cut during a retain leaves
   the region erased and the previous configuration lost; two alternating regions
   with a commit pointer would fix it.
+
+## K5DRV-048 — DP32G030 drivers and a K5 application, 2026-08-12
+
+The V1 target had a linker script, a two-word vector table and a spin loop. It
+now has drivers and an application, and the reason that matters is narrow: an
+acknowledged page write proves a bootloader accepted bytes, and nothing more.
+`FLASH-012` has been blocked on that gap since it was written.
+
+- **Drivers, from the manual.** `radio-dp32g030` holds the clock, peripheral
+  gating, pin function selection, GPIO and a polled UART. Every address and
+  field is copied from the DP32G030 reference manual, cited to a printed page,
+  and recorded as `EVID-DP32-004` to `EVID-DP32-009`. The manual was downloaded
+  again and its SHA-256 matches the hash `DP32-003` recorded in 2026-08-05, so
+  both work packages read the same document.
+- **What the manual could not say.** Which pin the programming connector is on
+  is a board fact, not a part fact. `EVID-K5-019` takes it, and only it, from the
+  `uv-k5-firmware-custom` checkout the operator runs on all three V1 units: UART1
+  on PA7 and PA8, and an initial stack sixteen bytes below the top of RAM. No
+  driver code was read across; the registers those bindings are written to come
+  from the manual.
+- **The clock is stated, not inherited.** A bootloader runs before the
+  application, so the reset defaults describe nothing an image can rely on. The
+  image selects 48 MHz RCHF and RCHF as the system clock, then corrects the
+  nominal frequency by the part's own `RC_FREQ_DELTA` measurement before
+  computing the UART divider. At nominal that divider is exactly 1250 for 38,400
+  baud.
+- **One exchange, read-only.** `AFIK-K5-1.0` sends `AFIK-K5-1.0 booted` in plain
+  text once at power-on and then answers the legacy hello with its identity. It
+  answers nothing else, holds no configuration, and drives no display, keypad,
+  memory or radio.
+- **Tested against the host that will meet it.** The image's framing is a
+  byte-fed reader, and its test drives `radio-flasher`'s own `probe_normal`
+  against it rather than a fixture written beside it. `EVID-K5-013` is what that
+  precaution is for: the K1 trailer defect survived because the host encoded a
+  value it then expected back.
+- **Image:** `AFIK-K5-1.0`, `text=7940 data=0 bss=0`, Reset `0x0000001f`, initial
+  SP `0x20003ff0`. Packaged raw image is exactly `0xF000` bytes, SHA-256
+  `040a95f94f3e210f520227f2e376f1a85c7afc5cdf026f3ecb390abd961368c2`, CRC-32
+  `123feb59`. It occupies 7,940 of the 61,440 bytes below the stock bootloader,
+  which is never linked, packaged or written.
+- **Verification:** `nix develop path:. -c cargo fmt --all -- --check`,
+  `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`,
+  `nix develop path:. -c cargo test --workspace` (55 test binaries, zero
+  failures), `tool/build-k5.sh --release`, `tool/verify-k5-image.sh`,
+  `tool/package-k5-image.sh --force`, and `afik-k5 inspect` on the packaged
+  image all pass.
+- **Not established:** nothing here has run on hardware. The divider, the
+  corrected frequency, the pin bindings and the stack choice are all
+  manual-sourced or evidence-sourced, and the first power-on is what tests them.
+  A radio which answers `probe-normal` settles all four at once; a radio which
+  says nothing distinguishes none of them, which is why the plain-text banner
+  exists beside the framed answer.
+- **Next smallest task:** write `AFIK-K5-1.0` to the attached UV-K6 through the
+  qualified V1 path, after a recovery rehearsal with an operator-supplied
+  known-good image, and record whether it answers.

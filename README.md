@@ -12,11 +12,13 @@ reset-path proof. They also provide an allocation-free boot-only TX-permission
 UI, an evidence-bounded post-initialization BK4819 command driver, explicit-input
 channel activation/scanning, and complete CLI and local-GUI programmer front
 ends. Frequency Copy research defines a receive-only candidate and
-experiment-gated design while deferring unverified BK4819 scan commands. No
-target hardware-register adapter exists yet. Work Package 12 is adding a
-recovery-gated UV-K5 V1 image and host flashing boundary while physical proof
-is still pending. Display, keypad, timer, bus, board-RF, and on-air hardware
-remain unimplemented.
+experiment-gated design while deferring unverified BK4819 scan commands. The
+UV-K1 target runs a complete application on hardware. The UV-K5 V1/DP32G030
+target now has manual-sourced clock, gating, pin and UART drivers and an
+application which answers the read-only hello over the programming connector, so
+a write to a V1 radio can be observed rather than only acknowledged. On that
+target the display, keypad, timer, configuration memory, board RF and every
+on-air path remain unimplemented.
 
 ## Programmer CLI
 
