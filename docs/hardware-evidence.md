@@ -1311,12 +1311,17 @@ explicitly bounded.
 
   | Unit | Bootloader | Field |
   | --- | --- | --- |
-  | UV-5R Plus | `4.00.01` | `01 02 02 0b 0c` · 5 ASCII · `ff 01 aa 00 31 00` |
-  | UV-K6 | `2.00.06` | `01 02 03 02 0c` · 5 ASCII · `ff 14 38 00 9f 00` |
+  | UV-K5 | `2.00.06` | `01 02` · `02 0b 0d` · block A · `ff 0e 2a 00 46 00` |
+  | UV-5R Plus | `4.00.01` | `01 02` · `02 0b 0c` · block A · `ff 01 aa 00 31 00` |
+  | UV-K6 | `2.00.06` | `01 02` · `03 02 0c` · block B · `ff 14 38 00 9f 00` |
 
-  The five ASCII characters differ per unit and are redacted as identity. The
-  leading `01 02`, the `0c` at offset 4, the `ff` separator and the two `00`
-  bytes are common to both.
+  The five-byte block at offsets 9..14 is printable and is redacted. The leading
+  `01 02`, the `ff` separator and the two `00` bytes are common to all three.
+- **Correction:** an earlier revision of this entry called that block per-unit
+  identity, on two samples. The third unit refutes it. The UV-K5 and the UV-5R
+  Plus are two distinct radios — they report different bootloader versions in the
+  same capture session — and they carry a **byte-identical** block. It is
+  therefore a production property, not a serial number.
 - **Observation:** the eight bytes following the version string are byte-identical
   on both units (`34 0A 00 00 00 00 00 20`), so they are not per-unit and are
   probably a separate field rather than version padding.
@@ -1333,20 +1338,76 @@ explicitly bounded.
   `2.00.06` sample and on both units here, while its `5.00.01` sample reads
   `28 0C 00 00 00 00 00 20`. Confidence medium — one external unit supports the
   split and no unit has been observed across a bootloader change here.
-- **Hypothesis, not a fact:** offsets 2..4 are `02 06 1c`, `02 0b 0c` and
-  `03 02 0c` across the three known units. Every middle byte is a valid month and
-  every last byte a valid day, so a date code fits all three samples. So would
-  several other encodings. This is recorded to be tested, not relied upon.
+- **Hypothesis, now better supported:** offsets 2..4 are `02 06 1c`, `02 0b 0c`,
+  `02 0b 0d` and `03 02 0c` across the four known units. Every middle byte is a
+  valid month and every last byte a valid day. The two units sharing a block
+  differ only in the last byte, by one, which a date reads as consecutive days
+  from one batch. Confidence medium: four samples fit, a same-batch pair fits
+  particularly well, and no sample contradicts it, but other encodings would also
+  fit and no marking or purchase record has been compared against it.
 - **Not established:** whether offsets 2..4 encode a date, a model, or a hardware
-  revision. Three same-generation samples cannot separate these.
-- **Confidence:** high for the bytes; medium for the unit-versus-bootloader
-  split; none for the meaning of any individual field.
+  revision, and what the block identifies — batch, production line, or something
+  else. No sample distinguishes a UV-K5 from a UV-5R Plus, which is expected if
+  the field describes production rather than model.
+- **Confidence:** high for the bytes; high for the block being production-linked
+  rather than per-unit, since two radios share it; medium for the
+  unit-versus-bootloader split and for the date reading; none for what any
+  individual field names.
 - **Permitted use:** none beyond recording. No workflow may branch on this field
   until its meaning is established.
-- **Required experiment:** capture the third unit here; compare offsets 2..4
-  against physically read markings and, if available, a manufacture date; and
-  capture one unit before and after a bootloader change to test the split
-  directly.
+- **Required experiment:** compare offsets 2..4 against physically read markings
+  and, if available, a purchase or manufacture date; and capture one unit before
+  and after a bootloader change to test the split directly.
+
+### EVID-K5-017 — One production batch shipped two bootloader versions
+
+- **Observation:** on 2026-08-11 the third unit, a UV-K5 with a broken display and
+  a hand-fitted configuration memory, beaconed bootloader `2.00.06` on `0x0518`
+  with a literal `FF FF` trailer. It carries the same production block as the
+  UV-5R Plus of `EVID-K5-012`, whose bootloader is `4.00.01`, and a triple
+  differing from it by one in the last byte.
+- **Inference:** the bootloader version is not a property of the hardware. Two
+  radios from what the beacon presents as one production batch, of two different
+  model names, shipped `2.00.06` and `4.00.01`. Confidence high for the
+  observation and medium-high for the inference, which depends on reading the
+  shared block as a batch.
+- **Consequence:** `4.00.01` is an ordinary vendor bootloader on this generation,
+  not an anomaly and not a marker of different silicon. Any scheme that infers
+  the processor, the geometry or the model from a bootloader version is refuted by
+  these three radios directly, which is `ADR-070`'s premise and `RISK-037`'s open
+  item stated from hardware rather than from reasoning.
+- **Also observed:** all three units are `0x0518` page-write bootloaders, all
+  three send the literal trailer, and the constant eight bytes after the version
+  string are identical across all three despite two different versions.
+- **Permitted use:** cite as the reason AFIK requires a declared target and reads
+  a version only as a build description. This authorises no write to any of these
+  units.
+- **Required experiment:** read the physical markings of the pair sharing a block
+  and confirm they are the two different models the operator reports.
+
+### EVID-K5-018 — The bootloader cannot report the fitted memory
+
+- **Observation:** the `EVID-K5-017` unit has a different same-family memory part
+  fitted by hand, and its display is broken, so neither the operator nor a screen
+  can report what is fitted. Its beacon carries no memory field, and the
+  bootloader surface AFIK implements is beacon, version negotiation and page
+  write, none of which reads the configuration memory.
+- **Consequence:** the fitted capacity cannot be established in bootloader mode at
+  all. The vendor configuration read is a normal-firmware command, so it requires
+  the radio to be running its application, and `EVID-K5-016` already establishes
+  that no processor or board query exists either.
+- **Bearing on capacity probing:** the I²C 24Cxx family has no identification
+  command, so capacity can only be inferred from address aliasing, and AFIK's
+  backup path reads a fixed 8 KiB and cannot address beyond it. An
+  explicit-offset read-only read is therefore a prerequisite for probing a larger
+  fitted part.
+- **Confidence:** high. This is a property of the implemented command surface.
+- **Permitted use:** require normal firmware and an explicit-offset read before
+  any capacity claim, and treat a hand-fitted part's capacity as declared and
+  then verified rather than assumed.
+- **Required experiment:** return the unit to normal mode, record its application
+  identity by hello, then read the same distinct non-uniform region at offset 0
+  and at each candidate capacity boundary and compare. Nothing is written.
 
 ### EVID-K5-015 — The beacon command identifies the protocol, the version does not
 

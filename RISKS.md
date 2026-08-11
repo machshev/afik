@@ -710,6 +710,15 @@
   records a `4.00.*` bootloader, and none can query the processor. The published
   V1/V2/V3 tables cannot be used to decide what this unit is, in either
   direction.
+- **Settled by hardware:** `EVID-K5-017` closes the question of whether a version
+  could stand in for a hardware fact. Two of these radios share a production
+  block and ship `2.00.06` and `4.00.01`. The version is a build description, and
+  no taxonomy built on it can be correct.
+- **Memory capacity is unreachable where it is most needed:** per `EVID-K5-018`,
+  the unit with a hand-fitted part has a broken display and cannot be asked in
+  bootloader mode what is fitted. An explicit-offset read-only read against normal
+  firmware is the prerequisite for probing it, and until then no build may assume
+  a capacity for that unit.
 - **Why it matters:** the existing constants describe one bootloader on one
   generation while reading as a claim about the family. A radio that is V1 by
   marking and DP32G030 by silicon can still refuse, or worse silently accept,
