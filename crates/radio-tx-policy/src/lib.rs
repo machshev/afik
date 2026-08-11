@@ -6,6 +6,8 @@
 use core::fmt;
 use radio_domain::TxClass;
 
+pub mod regional;
+
 /// Current persisted permission encoding version.
 pub const PERMISSION_FORMAT_VERSION: u8 = 1;
 /// Exact byte length of a persisted permission record.
