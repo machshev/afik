@@ -2321,3 +2321,38 @@
   responsiveness is recorded; exact before/after `RX` and `E` values are
   captured without interpreting a reset-cleared row as a pre-reset count; and
   the result chooses only the next diagnostic branch, not its answer.
+
+## V1FAM-047 — What three V1 radios said, and what the operator declares
+
+- **Status:** partially complete; the observation half is done and committed
+- **Objective:** stop classifying Quansheng hardware from its bootloader beacon,
+  per `ADR-070`, and make the beacon evidence that may contradict an operator's
+  declaration but never substitute for it.
+- **Completed:** `EVID-K5-012` to `EVID-K5-016` record two units, two bootloader
+  versions, the identity field and its unit-versus-bootloader split, the beacon
+  command as the protocol discriminator, and the absence of any processor query
+  in the reviewed projects. `ADR-070` records the decision. The literal-marker
+  defect is fixed and verified against the UV-K6 over serial, which is the first
+  AFIK classification of a physical Quansheng radio. `observe_bootloader` reports
+  a beacon without judging it, and `identify` uses it.
+- **Remaining, and deliberately not started:** the declared-target comparison on
+  the write paths. `EVID-K5-015` establishes that a `4.00.01` unit speaks the
+  page-write protocol; it does not establish that unit's page exchange or
+  geometry. Wiring a declaration into `flash_application` without that evidence
+  would let an operator's phrase authorise a write nothing has qualified, which
+  is the opposite of what `ADR-070` decided. The declaration and the per-target
+  descriptor land together, after the experiment below.
+- **Scope of the remainder:** a declared target carrying protocol shape,
+  application origin and length, page size and count, and memory addressing
+  class and capacity; a comparison that fails only on positive contradiction; a
+  confirmation phrase derived from the declared target rather than compiled in;
+  and the boot-time verification `ADR-070` requires of the image.
+- **Exclusions:** widening any write path on the strength of a beacon; branching
+  on the identity field while `EVID-K5-014` records its meaning as unknown; a
+  `4.00.*` write of any kind.
+- **Dependencies:** a read-only establishment of the `4.00.01` page exchange, and
+  a physical marking record per `EVID-K5-008` for all three units.
+- **Acceptance criteria:** an unfamiliar bootloader version never blocks an
+  observation and never authorises a write; the qualified paths behave exactly as
+  before for the targets they already covered; and every per-unit number a build
+  depends on is verified by the running image against the hardware.

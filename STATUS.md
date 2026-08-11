@@ -2,7 +2,56 @@
 
 ## Current work package
 
-**No work package is active. `DOC-045` is complete.** The project ledger now has
+**`V1FAM-047` is partially complete and paused at a deliberate boundary.** Three
+V1-generation Quansheng radios were connected read-only. Nothing was written to
+any of them and no write path was widened.
+
+What they established:
+
+- The UV-5R Plus beacons bootloader `4.00.01` and the UV-K6 beacons `2.00.06`,
+  on the same generation, running one vendor firmware. `EVID-K5-012`,
+  `EVID-K5-013`.
+- The qualified V1 path rejected **both**, including the `2.00.06` unit it was
+  written for, because a radio in bootloader mode sends its trailer literally.
+  K5TOOL derives the same value from the same key and accepts both forms. Fixed,
+  and `afik-flasher identify` now reports `protocol=page-write` and
+  `bootloader=2.00.06` from the UV-K6 — the first AFIK classification of a
+  physical Quansheng radio.
+- The protocol is announced by the beacon command, not the version string.
+  `EVID-K5-015`. AFIK gated on the version, which is why a protocol-compatible
+  radio was refused.
+- No reviewed external project can query the processor, and none records a
+  `4.00.*` bootloader at all. `EVID-K5-016`.
+- The beacon's identity field splits into unit-stable and bootloader-linked
+  halves, established from K5TOOL's two published samples of one unit.
+  `EVID-K5-014`. Its meaning is unknown and nothing may branch on it.
+
+`ADR-070` draws the conclusion: the operator declares what the radio is, the
+beacon may only contradict a declaration, and an unfamiliar version is not a
+mismatch. `observe_bootloader` implements the observation half.
+
+**Why it is paused:** the declared-target comparison on the write paths is the
+remaining half, and wiring it in now would let an operator's phrase authorise a
+write to a `4.00.01` unit whose page exchange and geometry no evidence covers.
+`RISK-037` holds the open items. The declaration and the per-target descriptor
+land together, after the read-only `4.00.01` page-exchange experiment.
+
+Commands run in the pinned environment on 2026-08-11:
+
+- `nix develop --command cargo fmt --all --check` — passed.
+- `nix develop --command cargo clippy --workspace --all-targets -- -D warnings`
+  — passed.
+- `nix develop --command cargo test --workspace` — passed; 50 test binaries.
+- `afik-flasher --device /dev/ttyUSB0 identify` against the UV-K6 — reported
+  `beacon_command=0x0518`, `protocol=page-write`, `bootloader=2.00.06`.
+
+**Next smallest actionable task:** capture the third unit's beacon and record the
+physical markings of all three per `EVID-K5-008`. Neither writes to a radio, and
+the marking record is what `EVID-K5-012`'s DP32G030 inference still lacks.
+
+## Previous handoff: DOC-045
+
+**`DOC-045` is complete.** The project ledger now has
 one account of `RISK-036`: current facts, withdrawn observations, the
 inconclusive bisection, and the bench condition required before another one.
 The external-memory evidence is uniquely `EVID-K1-061`; the earlier audio
