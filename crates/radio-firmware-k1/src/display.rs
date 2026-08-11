@@ -591,8 +591,6 @@ pub fn render_info_screen(
     serial: SerialCounters,
     peripheral_clock_khz: u32,
     reset: ResetCause,
-    boots: u8,
-    panic: Option<PanicReport>,
 ) {
     frame.fill(0);
     let width = identity.len() * 6;
@@ -603,10 +601,7 @@ pub fn render_info_screen(
     // baud rate is derived from this number, so a serial link which hears bytes
     // and rejects every packet is asking to be told what the radio thinks its
     // clock is.
-    // `B` is boots since this radio last lost its memory. It is here to say
-    // whether the memory the panic report uses survives a reset at all: a
-    // counter which reads one after every reset means it does not.
-    let mut generation_label = *b"GEN000000 CLK00000 B0";
+    let mut generation_label = *b"GEN000000 CLK00000";
     let mut value = generation;
     for index in (3..9).rev() {
         generation_label[index] = b'0' + u8::try_from(value % 10).unwrap_or(0);
@@ -617,7 +612,6 @@ pub fn render_info_screen(
         generation_label[index] = b'0' + u8::try_from(clock % 10).unwrap_or(0);
         clock /= 10;
     }
-    generation_label[20] = b'0' + boots % 10;
     draw_text(frame, 0, 18, &generation_label);
 
     let mut channel_label = *b"CHANNELS 00 RST ....";
@@ -636,19 +630,12 @@ pub fn render_info_screen(
         },
     );
 
-    // A recorded panic takes this row from the memory state. A radio which
-    // stopped and restarted has something more urgent to say than where its
-    // configuration lives, and the row returns as soon as the battery does.
-    if let Some(panic) = panic {
-        draw_text(frame, 0, 56, &panic.label());
-    } else {
-        // The external memory is where a configuration lives, so its state
-        // belongs on the screen the operator can reach without a host.
-        draw_text(frame, 0, 56, &memory.label());
-    }
+    // The external memory is where a configuration lives, so its state belongs
+    // on the screen the operator can reach without a host.
+    draw_text(frame, 0, 56, &memory.label());
 
     // Serial counters, so an operator with no host can see whether the radio is
-    // hearing anything at all. `EVID-K1-061` is what these are for: a silent
+    // hearing anything at all. `RISK-036` is what these are for: a silent
     // host exchange is otherwise indistinguishable from a dead interface.
     // `D` is packets which arrived complete and failed to decode. Without it,
     // a frame the radio heard and rejected is indistinguishable from one it
@@ -716,37 +703,6 @@ impl ResetCause {
                 name
             }
         }
-    }
-}
-
-/// Where a panic which restarted the radio came from.
-///
-/// The file is the basename's first bytes, which is what identifies it; every
-/// source in this crate shares the path in front of it.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PanicReport {
-    /// First bytes of the panicking file's name, zero padded.
-    pub file: [u8; 8],
-    /// Source line the panic came from.
-    pub line: u32,
-}
-
-impl PanicReport {
-    /// Renders the report as one fixed-width screen row.
-    #[must_use]
-    pub fn label(&self) -> [u8; 20] {
-        let mut label = *b"PANIC ........:00000";
-        for (slot, byte) in label[6..14].iter_mut().zip(self.file.iter()) {
-            // A zero pad is not a character the display can draw, and a name
-            // shorter than the field is common.
-            *slot = if byte.is_ascii_graphic() { *byte } else { b' ' };
-        }
-        let mut value = self.line;
-        for index in (15..20).rev() {
-            label[index] = b'0' + u8::try_from(value % 10).unwrap_or(0);
-            value /= 10;
-        }
-        label
     }
 }
 
@@ -1222,8 +1178,8 @@ mod tests {
 mod operating_screen_tests {
     use super::{
         render_channel_list, render_info_screen, render_operating_screen, render_selector_list,
-        step_label, BankIndicator, ListRow, MemoryState, OperatingView, PanicReport, ResetCause,
-        SelectorRow, SerialCounters, FRAME_BYTES, LIST_NAME_BYTES, MEMORY_LABEL_BYTES,
+        step_label, BankIndicator, ListRow, MemoryState, OperatingView, ResetCause, SelectorRow,
+        SerialCounters, FRAME_BYTES, LIST_NAME_BYTES, MEMORY_LABEL_BYTES,
     };
 
     fn view() -> OperatingView<'static> {
@@ -1576,8 +1532,6 @@ mod operating_screen_tests {
             },
             24_000,
             ResetCause::default(),
-            1,
-            None,
         );
         let mut unstored = [0_u8; FRAME_BYTES];
         render_info_screen(
@@ -1590,8 +1544,6 @@ mod operating_screen_tests {
             SerialCounters::default(),
             24_000,
             ResetCause::default(),
-            1,
-            None,
         );
         assert_ne!(retained, unstored);
         assert!(retained.iter().any(|byte| *byte != 0));
@@ -1611,79 +1563,13 @@ mod operating_screen_tests {
         // The identification is what distinguishes a working memory from a
         // plausible-looking failure, so it is shown exactly.
         // The exact unit answers with this identification: a 16 Mbit serial NOR
-        // memory, manufacturer 0x68, recorded by `EVID-K1-060`.
+        // memory, manufacturer 0x68, recorded by `EVID-K1-061`.
         assert_eq!(
             &MemoryState::Present([0x68, 0x40, 0x15]).label(),
             b"MEM ID 68 40 15"
         );
         assert_eq!(&MemoryState::Absent.label(), b"MEM NONE       ");
         assert_ne!(MemoryState::Unknown.label(), MemoryState::Failed.label());
-    }
-
-    #[test]
-    fn a_recorded_panic_takes_the_memory_row_and_names_where_it_came_from() {
-        let panic = PanicReport {
-            file: *b"async_ma",
-            line: 1274,
-        };
-        assert_eq!(&panic.label(), b"PANIC async_ma:01274");
-
-        let mut with_panic = [0_u8; FRAME_BYTES];
-        render_info_screen(
-            &mut with_panic,
-            b"AFIK-K1-5.7",
-            7,
-            16,
-            true,
-            MemoryState::Present([0x68, 0x40, 0x15]),
-            SerialCounters::default(),
-            48_000,
-            ResetCause::default(),
-            1,
-            Some(panic),
-        );
-        let mut without_panic = [0_u8; FRAME_BYTES];
-        render_info_screen(
-            &mut without_panic,
-            b"AFIK-K1-5.7",
-            7,
-            16,
-            true,
-            MemoryState::Present([0x68, 0x40, 0x15]),
-            SerialCounters::default(),
-            48_000,
-            ResetCause::default(),
-            1,
-            None,
-        );
-        assert_ne!(with_panic, without_panic);
-    }
-
-    #[test]
-    fn a_short_file_name_pads_rather_than_drawing_its_zero_bytes() {
-        let panic = PanicReport {
-            file: *b"shell.rs",
-            line: 7,
-        };
-        assert_eq!(&panic.label(), b"PANIC shell.rs:00007");
-
-        // Eight bytes is the field, and a shorter name leaves zeroes behind it.
-        let short = PanicReport {
-            file: [b'k', b'e', b'y', 0, 0, 0, 0, 0],
-            line: 99_999,
-        };
-        assert_eq!(&short.label(), b"PANIC key     :99999");
-    }
-
-    #[test]
-    fn a_line_beyond_the_field_still_renders_five_digits() {
-        // The field cannot grow, so a very large line wraps rather than
-        // overflowing the row. No source file in this crate reaches it.
-        let panic = PanicReport {
-            file: *b"async_ma",
-            line: 123_456,
-        };
-        assert_eq!(&panic.label()[15..], b"23456");
     }
 
     #[test]
@@ -1702,8 +1588,6 @@ mod operating_screen_tests {
             SerialCounters::default(),
             48_000,
             ResetCause::default(),
-            1,
-            None,
         );
         let mut erroring = [0_u8; FRAME_BYTES];
         render_info_screen(
@@ -1721,8 +1605,6 @@ mod operating_screen_tests {
             },
             48_000,
             ResetCause::default(),
-            1,
-            None,
         );
         assert_ne!(silent, erroring);
     }
@@ -1766,8 +1648,6 @@ mod operating_screen_tests {
             SerialCounters::default(),
             48_000,
             ResetCause(0b0000_1000),
-            1,
-            None,
         );
         let mut software = [0_u8; FRAME_BYTES];
         render_info_screen(
@@ -1780,63 +1660,7 @@ mod operating_screen_tests {
             SerialCounters::default(),
             48_000,
             ResetCause(0b0001_0000),
-            1,
-            None,
         );
         assert_ne!(power, software);
-    }
-
-    #[test]
-    fn the_boot_count_reaches_the_screen_and_stays_one_digit() {
-        let mut first = [0_u8; FRAME_BYTES];
-        let mut third = [0_u8; FRAME_BYTES];
-        for (frame, boots) in [(&mut first, 1_u8), (&mut third, 3)] {
-            render_info_screen(
-                frame,
-                b"AFIK-K1-6.1",
-                0,
-                0,
-                false,
-                MemoryState::Absent,
-                SerialCounters::default(),
-                48_000,
-                ResetCause::default(),
-                boots,
-                None,
-            );
-        }
-        assert_ne!(first, third);
-
-        // The field is one character, so a count past nine wraps rather than
-        // running into the row beside it.
-        let mut wrapped = [0_u8; FRAME_BYTES];
-        render_info_screen(
-            &mut wrapped,
-            b"AFIK-K1-6.1",
-            0,
-            0,
-            false,
-            MemoryState::Absent,
-            SerialCounters::default(),
-            48_000,
-            ResetCause::default(),
-            13,
-            None,
-        );
-        let mut three = [0_u8; FRAME_BYTES];
-        render_info_screen(
-            &mut three,
-            b"AFIK-K1-6.1",
-            0,
-            0,
-            false,
-            MemoryState::Absent,
-            SerialCounters::default(),
-            48_000,
-            ResetCause::default(),
-            3,
-            None,
-        );
-        assert_eq!(wrapped, three);
     }
 }

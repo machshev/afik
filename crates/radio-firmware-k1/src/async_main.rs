@@ -55,8 +55,8 @@ use radio_firmware_k1::configuration::{
 };
 use radio_firmware_k1::display::{
     render_channel_list, render_info_screen, render_operating_screen, render_selector_list,
-    BankIndicator, ListRow, MemoryState, OperatingView, PanicReport, ResetCause, SelectorRow,
-    SerialCounters, COLUMN_OFFSET, FRAME_BYTES, LIST_ROWS, PAGES, SETUP_COMMANDS, WIDTH,
+    BankIndicator, ListRow, MemoryState, OperatingView, ResetCause, SelectorRow, SerialCounters,
+    COLUMN_OFFSET, FRAME_BYTES, LIST_ROWS, PAGES, SETUP_COMMANDS, WIDTH,
 };
 use radio_firmware_k1::host_control;
 use radio_firmware_k1::keypad::{decode, Debouncer, Edge, KeypadScan, Sample};
@@ -81,10 +81,10 @@ const K1_VECTOR_TABLE_ORIGIN: u32 = 0x0800_2800;
 /// A diagnostic build says so on the screen. An image which drops every byte
 /// it receives must not be mistaken for one which answers.
 #[cfg(feature = "serial-drop-bytes")]
-const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-6.2D";
+const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-6.3D";
 /// Identity this image reports on the information screen.
 #[cfg(not(feature = "serial-drop-bytes"))]
-const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-6.2";
+const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-6.3";
 
 /// Interval between receive samples while audio is routed.
 ///
@@ -232,14 +232,6 @@ static SERIAL_DISCARDED: AtomicU32 = AtomicU32::new(0);
 /// Reset flags from `RCC_CSR`, bits 24 to 31, read once at boot.
 static RESET_CAUSE: AtomicU32 = AtomicU32::new(0);
 
-/// Boots since this radio last lost its memory, as one digit.
-static BOOTS: AtomicU32 = AtomicU32::new(0);
-
-/// Returns the boot count digit.
-fn boots() -> u8 {
-    u8::try_from(BOOTS.load(Ordering::Relaxed) % 10).unwrap_or(0)
-}
-
 /// Returns the reset cause this boot began with.
 fn reset_cause() -> ResetCause {
     ResetCause(u8::try_from(RESET_CAUSE.load(Ordering::Relaxed) & 0xff).unwrap_or(0))
@@ -291,10 +283,6 @@ fn main() -> ! {
     RESET_CAUSE.store((csr.0 >> 24) & 0xff, Ordering::Relaxed);
     RCC.csr().modify(|register| register.set_rmvf(true));
 
-    // Counted here, beside the reset cause, and before any peripheral is
-    // touched. A counter which reads one after a reset says this memory did not
-    // survive it, and the panic report cannot be carried this way.
-    BOOTS.store(u32::from(count_boot()), Ordering::Relaxed);
     let p = runtime_init.peripherals;
     let Ok(runtime) = compose(K1RuntimePeripherals {
         usart: p.USART1,
@@ -1148,10 +1136,6 @@ async fn ui_task(
         serial_counters(),
         PERIPHERAL_CLOCK_KHZ.load(Ordering::Relaxed),
         reset_cause(),
-        boots(),
-        // A radio which panicked says so on the first frame it draws, before
-        // the operator has to know to go looking for it.
-        recorded_panic(),
     );
     if !display.initialise().await || !display.frame(&frame).await {
         fail_closed();
@@ -1677,8 +1661,6 @@ fn render(
             serial_counters(),
             PERIPHERAL_CLOCK_KHZ.load(Ordering::Relaxed),
             reset_cause(),
-            boots(),
-            recorded_panic(),
         ),
     }
 }
@@ -1694,134 +1676,18 @@ fn fail_closed() -> ! {
     }
 }
 
-/// Marks the panic report as written by this image rather than left in RAM.
-///
-/// The report lives in memory startup does not clear, so a cold boot reads
-/// whatever the SRAM happened to hold. Only this word says the rest is real.
-const PANIC_REPORT_MAGIC: u32 = 0x4B31_DEAD;
-
-/// Bytes of the panicking file's name kept, after the last path separator.
-const PANIC_FILE_BYTES: usize = 8;
-
-/// Marks the boot counter as this image's rather than leftover SRAM.
-const BOOT_COUNT_MAGIC: u32 = 0x4B31_B007;
-
-/// Set when the boot counter below is this image's.
-#[allow(unsafe_code)]
-#[unsafe(link_section = ".uninit.afik_panic_report")]
-static BOOT_MAGIC: AtomicU32 = AtomicU32::new(0);
-
-/// Boots since the last time this memory was lost.
-///
-/// This exists to test the panic report rather than to be useful in itself.
-/// The report is written by the panic handler and read by the next boot, and
-/// `RISK-036` has it arriving empty after a reset the flags say was software —
-/// which the handler is the only caller of. Either this memory does not survive
-/// a reset at all, in which case this counter reads one every time, or it does
-/// and something is destroying the report specifically.
-#[allow(unsafe_code)]
-#[unsafe(link_section = ".uninit.afik_panic_report")]
-static BOOT_COUNT: AtomicU32 = AtomicU32::new(0);
-
-/// Counts this boot and returns the total, saturating at a single digit.
-///
-/// Called once, before anything else can reset the radio.
-fn count_boot() -> u8 {
-    let counted = if BOOT_MAGIC.load(Ordering::Relaxed) == BOOT_COUNT_MAGIC {
-        BOOT_COUNT.load(Ordering::Relaxed).saturating_add(1)
-    } else {
-        1
-    };
-    BOOT_COUNT.store(counted, Ordering::Relaxed);
-    BOOT_MAGIC.store(BOOT_COUNT_MAGIC, Ordering::Relaxed);
-    u8::try_from(counted % 10).unwrap_or(0)
-}
-
-/// Set when the fields below describe a real panic.
-///
-/// The three statics below are placed by hand in the section `cortex-m-rt`
-/// leaves untouched at startup, which is the whole mechanism: anything in
-/// `.bss` is zeroed before the next boot could read it. Placement is the only
-/// thing being overridden, the type stays an ordinary atomic, and a cold boot
-/// is told apart from a real report by the magic word rather than by trusting
-/// the contents.
-#[allow(unsafe_code)]
-#[unsafe(link_section = ".uninit.afik_panic_report")]
-static PANIC_MAGIC: AtomicU32 = AtomicU32::new(0);
-
-/// Source line the panic came from.
-#[allow(unsafe_code)]
-#[unsafe(link_section = ".uninit.afik_panic_report")]
-static PANIC_LINE: AtomicU32 = AtomicU32::new(0);
-
-/// First [`PANIC_FILE_BYTES`] of the panicking file's name, packed little-endian.
-#[allow(unsafe_code)]
-#[unsafe(link_section = ".uninit.afik_panic_report")]
-static PANIC_FILE: [AtomicU32; PANIC_FILE_BYTES / 4] = [AtomicU32::new(0), AtomicU32::new(0)];
-
-/// Returns the panic which reset this radio, if the last stop was one.
-///
-/// The report is deliberately not cleared. It describes the run before this
-/// one and stays readable until the next panic replaces it or the battery
-/// comes out, because an operator who was not watching the screen at the
-/// moment of the reset is exactly who needs to read it.
-fn recorded_panic() -> Option<PanicReport> {
-    if PANIC_MAGIC.load(Ordering::Relaxed) != PANIC_REPORT_MAGIC {
-        return None;
-    }
-    let mut file = [0_u8; PANIC_FILE_BYTES];
-    for (index, word) in PANIC_FILE.iter().enumerate() {
-        let bytes = word.load(Ordering::Relaxed).to_le_bytes();
-        let start = index * 4;
-        file[start..start + 4].copy_from_slice(&bytes);
-    }
-    Some(PanicReport {
-        file,
-        line: PANIC_LINE.load(Ordering::Relaxed),
-    })
-}
-
-/// Records where a panic happened and restarts, rather than stopping silently.
+/// Restarts on panic rather than stopping silently.
 ///
 /// A spin loop here is what an unexplainable radio looks like: the display
-/// holds its last frame, the keypad is dead, and the link is silent, with the
-/// one thing that knows what went wrong holding it. `PanicInfo` carries the
-/// file and line; this keeps them somewhere startup does not clear and resets,
-/// so the next boot can say so on the information screen.
+/// holds its last frame, the keypad is dead, and the link is silent. Resetting
+/// restores receive-only operation, and the next boot reports the software
+/// reset flag from `RCC_CSR`.
 ///
 /// This is a deliberate change from stopping forever. Nothing here can
 /// transmit — the image constructs no transmit path at all — so a restart
-/// risks no emission, and a radio which reboots and explains itself is more
-/// use than one which stops and does not.
+/// risks no emission. The exact unit proved its bootloader destroys `.uninit`,
+/// so no file-and-line report is attempted here.
 #[panic_handler]
-fn panic(info: &PanicInfo<'_>) -> ! {
-    let mut file = [0_u8; PANIC_FILE_BYTES];
-    let mut line = 0;
-    if let Some(location) = info.location() {
-        line = location.line();
-        let bytes = location.file().as_bytes();
-        // The basename identifies the file; the path in front of it is the same
-        // for every source in this crate.
-        let start = bytes
-            .iter()
-            .rposition(|byte| *byte == b'/' || *byte == b'\\')
-            .map_or(0, |index| index.saturating_add(1));
-        // Indexing is avoided throughout: a panic raised inside the panic
-        // handler cannot be reported by it.
-        for (slot, byte) in file.iter_mut().zip(bytes.get(start..).unwrap_or(&[])) {
-            *slot = *byte;
-        }
-    }
-    for (index, word) in PANIC_FILE.iter().enumerate() {
-        let start = index * 4;
-        let mut packed = [0_u8; 4];
-        for (slot, byte) in packed.iter_mut().zip(file.get(start..).unwrap_or(&[])) {
-            *slot = *byte;
-        }
-        word.store(u32::from_le_bytes(packed), Ordering::Relaxed);
-    }
-    PANIC_LINE.store(line, Ordering::Relaxed);
-    // Written last: the fields are only claimed once they are all in place.
-    PANIC_MAGIC.store(PANIC_REPORT_MAGIC, Ordering::Relaxed);
+fn panic(_info: &PanicInfo<'_>) -> ! {
     SCB::sys_reset()
 }
