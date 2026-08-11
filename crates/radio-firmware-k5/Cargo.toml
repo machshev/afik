@@ -1,0 +1,38 @@
+[package]
+name = "radio-firmware-k5"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Evidence-backed UV-K5 V1 serial-witness application"
+autobins = false
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+firmware = []
+
+[dependencies]
+radio-dp32g030 = { path = "../radio-dp32g030" }
+
+[dev-dependencies]
+radio-flasher = { path = "../radio-flasher" }
+
+[[bin]]
+name = "radio-firmware-k5"
+path = "src/main.rs"
+required-features = ["firmware"]
+test = false
+bench = false
+
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+missing_errors_doc = "allow"
+must_use_candidate = "allow"
