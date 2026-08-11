@@ -653,89 +653,36 @@
 ## RISK-036 — The radio stops dead and does not say why
 
 - **State:** open, mechanism identified, cause unknown
-- **Impact:** the exact unit has been seen to freeze with its last frame on the
-  display, a completely unresponsive keypad, and a silent serial link. It has
-  happened on the information screen more than once, and it reproduces on
-  `AFIK-K1-5.6` as well as on `5.7`, so it predates the `CTRL-044` work rather
-  than being caused by it.
-- **Mechanism, established by reading the image:** `fail_closed` is an infinite
-  spin loop and the panic handler called it, discarding `PanicInfo`. Any panic
-  therefore produced exactly this signature, and the radio held the one piece
-  of evidence that would explain it.
-- **What is not established:** whether these freezes are panics at all. A hard
-  fault, a stack overflow which faults, or a stalled bit-banged bus would look
-  the same from outside. `RISK-033` already records that stack headroom is
-  bounded by inspection rather than measurement, which makes an overflow a live
-  candidate.
-- **Mitigation, `AFIK-K1-5.8`:** the panic handler records the panicking file
-  and line into the section startup does not clear and resets. The next boot
-  draws `PANIC <file>:<line>` on its first frame and on the information screen.
-  A freeze which now still freezes is evidence in itself: it means the fault is
-  reached without the panic handler running, and a `HardFault` handler doing the
-  same thing is the next instrument.
-- **Consequence for `ARENA-038`:** the serial dead end has always been witnessed
-  through the information screen, which is the screen the radio has been seen to
-  freeze on. Counter readings taken from a frozen display describe when the
-  radio stopped, not what the link did. `RX0000 TX0000 D0000` observed on
-  2026-08-09 was read this way and cannot be used as evidence that no bytes
-  arrived.
-- **Observed 2026-08-09, `AFIK-K1-5.9`:** with the radio confirmed responsive
-  and the operator watching the information screen, ten host frames produced a
-  screen which repeatedly blanked and returned to the operating screen on a
-  channel with a live meter — a reboot each time. The bottom row read `MEM`, not
-  `PANIC`, so the panic handler did not run and these resets are not panics.
-- **What that explains:** every counter reading ever taken from this screen. The
-  counters are zeroed by the reboot, so `RX000 TX000 D000 E000` describes a
-  radio which has just restarted rather than a link with nothing on it. The
-  `ARENA-038` dead end is therefore not known to be a protocol, framing, baud or
-  clock fault: the radio resets when the host sends to it, and so can never
-  answer.
-- **Ruled out, same session:** the host's modem control lines. Opening and
-  closing the port twice with no data sent produced no visible effect, so DTR
-  and RTS toggling — two open/close cycles per CLI invocation, `hupcl` never
-  disabled — is not the trigger. Data on the wire is.
-- **Required next:** the reset cause, read from `RCC_CSR` at boot and shown on
-  the information screen. It distinguishes a pin reset, a watchdog, a brown-out
-  and a software reset from each other, and it is the one measurement which says
-  what kind of fault this is rather than narrowing what it is not. A `HardFault`
-  handler recording as the panic handler now does would separate a fault from an
-  external or supply-side reset.
-- **Established 2026-08-09, `AFIK-K1-6.0`:** `RCC_CSR` reads `SFT` after a
-  reboot provoked by host frames. The panic handler is the only caller of
-  `sys_reset` in the image and `sys_reset` is its last statement, so the handler
-  ran to completion. **These resets are panics**, not brown-outs, not watchdogs,
-  and not the reset pin. A cold boot reads `PWR` as expected, and the flags are
-  cleared each boot, so neither reading is inherited.
-- **Established 2026-08-09, `AFIK-K1-6.1`:** a boot counter in the same
-  `.uninit` section reads one after every software reset. **That memory does not
-  survive a reset on this radio** — the vendor bootloader runs before the
-  application and uses it. The panic reporter added in `5.8` therefore cannot
-  work here: the handler writes the file and line correctly and the next boot
-  can never read them. `MEM` on the information screen has never meant "no panic
-  occurred"; it means the report was gone before it could be read.
-- **What still works from that change:** the radio recovers instead of freezing,
-  and the reset cause is readable. Those are why `5.8` through `6.1` are worth
-  keeping despite the report itself being dead on this hardware.
-- **Bisection attempt, `AFIK-K1-6.2D`, inconclusive and partly contradictory:**
-  an image which counts each received byte and drops it without parsing did not
-  reset under the same host traffic which resets a parsing image. But its
-  counters afterwards read `RX000 TX000 D000 E000` — no bytes received and no
-  receiver errors either. If nothing arrived, the parsing code never ran in
-  either build, and the difference between them cannot be what stopped the
-  panic. One of those two observations is wrong, or the link is intermittent
-  between runs.
-- **Withdrawn:** an earlier note in this file's history claimed bytes were shown
-  arriving. That came from misreading a screen report and is not supported.
-  Whether any byte has ever reached this radio's UART in application mode
-  remains unestablished.
-- **Not established:** that the reset is caused by the data rather than
-  correlated with it, whether any byte arrives at all, and where the panic is.
-  The `.uninit` route to the panic location is closed; the remaining routes are
-  a RAM region the bootloader does not touch, a blocking display write from the
-  handler, or further bisection.
-- **Required before more bisection:** a repeatable physical setup. Results
-  across one evening included a freeze, a reboot, and neither, under nominally
-  identical traffic, which is the signature of an intermittent connection rather
-  than of firmware. The cable, its seating, and whether the radio is on battery
-  or otherwise powered should be fixed and recorded before another cut is taken,
-  or each cut will measure the setup instead of the code.
+- **Current facts:** the exact unit has frozen and has rebooted while a host was
+  sending. The behaviour also occurs on `AFIK-K1-5.6`, so it predates
+  `CTRL-044`. A host-provoked reboot on `AFIK-K1-6.0` reported the `RCC_CSR`
+  software-reset flag; the panic handler was the image's only caller of
+  `sys_reset`, so that reboot completed the panic handler. A cold boot reported
+  the power-reset flag, and the flags were cleared after every read.
+- **Reporter result:** `AFIK-K1-6.1` showed that `.uninit` reads as newly
+  initialised after every application reset because the vendor bootloader runs
+  first and uses that RAM. The file-and-line reporter added in `5.8` therefore
+  cannot work on this unit. `DOC-045` removes that dead path while retaining the
+  useful panic-to-reset recovery and reset-cause display.
+- **Protocol evidence:** host tests pass two million arbitrary bytes and six
+  hundred thousand well-formed frames through the decoder, every service and
+  command, and both the ordinary and two-phase control paths without a panic.
+  This is strong negative evidence for those pure paths, not proof about the
+  target UART, executor, DMA, or task interaction.
+- **Withdrawn observations:** `MEM` after a reboot did not show that the panic
+  handler had been skipped; the bootloader had destroyed the report. A display
+  row was also misread as nine received bytes when it actually said
+  `RX000 TX000 D000 E000`. No observation currently establishes that an
+  application-mode UART byte reached the firmware.
+- **Inconclusive bisection:** `AFIK-K1-6.2D` dropped bytes before parsing and did
+  not reset, but its counters also showed no received bytes or receiver errors.
+  If no byte arrived, neither variant exercised the code at the cut, so the
+  result does not locate the panic.
+- **Not established:** whether host traffic causes the panic rather than merely
+  correlating with it, whether any byte arrives, where the panic occurs, or
+  whether every observed freeze has the same mechanism as the proven reboot.
+- **Required before more bisection:** fix and record the cable, seating, and
+  power supply, confirm the handset remains responsive, then take one `RX` and
+  `E` reading while the host sends. One evening produced a freeze, a reboot,
+  and neither under nominally identical traffic; another firmware cut before a
+  repeatable bench would measure the setup rather than the code.

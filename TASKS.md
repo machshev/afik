@@ -101,7 +101,7 @@
 
 ## STORE-004 — Canonical configuration image and compiler round trip
 
-- **Status:** active (2026-08-06); first physical keypad-label observation failed
+- **Status:** complete (2026-08-06)
 - **Objective:** define a canonical, versioned, checksummed configuration image
   and make the authoritative host compiler emit and consume it without device
   mutation.
@@ -1312,7 +1312,8 @@
 
 ## K1SIDE-025 — Receive-only unselected-column side-key observation
 
-- **Status:** ready (2026-08-06)
+- **Status:** superseded (2026-08-06); its raw observation was folded into the
+  completed semantic `K1SIDE-024` evidence
 - **Objective:** physically observe SIDE1 and SIDE2 on the exact unit as raw
   active-low row bits read while no keypad column is selected, without creating
   any semantic side-key action.
@@ -1347,8 +1348,9 @@
   binaries, target build/package/negative fixtures, embedded warning-denied
   target check, flake evaluation, formatting, Clippy, and `git diff --check`
   passed. Raw image 26,072 bytes, CRC-32 `85387ce8`.
-- **Remaining:** the guarded physical write and the power-cycle observation of
-  each side key, PTT, and an `AFIK-K1-0.3` hello.
+- **Resolution:** the guarded physical observations and semantic decode were
+  completed and recorded under `K1SIDE-024`; this narrower duplicate task has
+  no remaining action.
 
 ## STORE-026 — Banked explicit-channel storage
 
@@ -1466,7 +1468,8 @@
 
 ## RFK1-030 — Audible receive and keypad-operated channel selection
 
-- **Status:** in progress (2026-08-07)
+- **Status:** superseded (2026-08-07); audible receive was confirmed here and
+  later channel-selection work continued under `RFK1-031` and `K1VFO-033`
 - **Objective:** make the K1 application usable as a receiver: audible
   demodulated audio, operator channel selection, and a display which reports
   what the receiver is doing.
@@ -1485,9 +1488,10 @@
   145.500 MHz when side key one was pressed with the cable unplugged; see
   `EVID-K1-060`. The shared-jack constraint is recorded as `EVID-K1-059` and
   `ADR-055`.
-- **Remaining:** flash `AFIK-K1-1.2` and confirm that Up and Down retune the
-  receiver across the five built-in channels with the display and the serial
-  observation agreeing.
+- **Resolution:** the built-in-channel image was superseded before that exact
+  observation. Host-programmable selection continued under `RFK1-031`, and the
+  later VFO and generated-plan images were confirmed on the unit under
+  `K1VFO-033`, `PLAN-037`, and `ARENA-038`.
 
 ## RFK1-031 — Host-programmable channels, retained configuration, and the operator shell
 
@@ -1636,7 +1640,7 @@
   host, workspace Clippy, format, and embedded gates stay green.
 - **Result:** complete. `radio-eeprom` is the driver, `eeprom_bus` frames the
   transfers over the peripheral, and `py32f071_eeprom` claims one four-kilobyte
-  region at one megabyte. `EVID-K1-060` identifies the fitted device as a 2 MiB
+  region at one megabyte. `EVID-K1-061` identifies the fitted device as a 2 MiB
   Boya-family part answering `68 40 15`, correcting the pinned source's Puya
   part. `EVID-K1-062` records a PMR446 plan written as one 46-byte object,
   retained across a power cycle, and restored as sixteen channels.

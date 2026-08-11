@@ -1759,7 +1759,7 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   with the pinned squelch-off thresholds, so open-squelch noise is the expected
   sound. `RISK-030` and `RISK-031` remain open.
 
-### EVID-K1-060 — External configuration memory identified on the exact unit
+### EVID-K1-061 — External configuration memory identified on the exact unit
 
 - **Source of the expectation:** pinned `armel/uv-k1-k5v3-firmware-custom` commit
   `fe9c4e9432694b50aea651084a043aae0b58673d`. `App/driver/py25q16.c` drives a

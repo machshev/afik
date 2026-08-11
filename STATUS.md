@@ -2838,7 +2838,7 @@ Complete, with the physical confirmations below observed on the exact unit.
   reserved and into the external serial NOR memory the radio already carries.
   `py32f071_retained` and its sector are gone, and the raw-image and ELF gates
   give the application the whole region through `0x08020000`.
-- `EVID-K1-060`: the fitted device answers `68 40 15` on `SPI2` with `SCK` on
+- `EVID-K1-061`: the fitted device answers `68 40 15` on `SPI2` with `SCK` on
   `PA0`, `MOSI` on `PA1`, `MISO` on `PA2`, and chip select on `PA3`. Capacity
   code `0x15` is 2 MiB. Manufacturer `0x68` is Boya, not the Puya `0x85` the
   pinned source drives, so the fitted part is a `BY25Q16`-family device; AFIK

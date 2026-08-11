@@ -436,7 +436,7 @@ firmware and nothing else: no sector is reserved, and the raw-image and ELF
 gates give the application the whole region through `0x08020000`. ADR-060
 records the move and why the earlier reserved sector was wrong.
 
-`EVID-K1-060` identifies the fitted device on the exact unit: a 2 MiB serial NOR
+`EVID-K1-061` identifies the fitted device on the exact unit: a 2 MiB serial NOR
 memory answering `68 40 15` on `SPI2`, with `SCK` on `PA0`, `MOSI` on `PA1`,
 `MISO` on `PA2`, and chip select on `PA3`. That is a Boya-family part rather than
 the Puya one the pinned source drives; AFIK issues only the standard read, page

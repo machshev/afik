@@ -35,7 +35,7 @@ and in an image. It is no longer what an object costs a device to keep.
 
 A radio retains one canonical configuration image in the external serial memory
 it already carries, not in the internal flash which holds its firmware. ADR-060
-records why, and `EVID-K1-060` and `EVID-K1-062` record the device and the
+records why, and `EVID-K1-061` and `EVID-K1-062` record the device and the
 observed retention.
 
 `radio-eeprom` drives that memory and bounds every access twice, by the device

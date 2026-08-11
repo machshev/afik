@@ -907,7 +907,7 @@ meaning.
   because the external memory was unread. That put the operator's data inside
   the region the firmware occupies: programming a radio competed with the
   space its own code needed, 1,280 bytes bounded the whole configuration, and
-  reflashing risked what the operator had entered. `EVID-K1-060` removed the
+  reflashing risked what the operator had entered. `EVID-K1-061` removed the
   reason for it by identifying the fitted device.
 - Configuration now lives in the external serial NOR memory the radio already
   carries, and internal flash holds firmware and nothing else. The reserved
