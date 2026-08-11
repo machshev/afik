@@ -2356,3 +2356,36 @@
   observation and never authorises a write; the qualified paths behave exactly as
   before for the targets they already covered; and every per-unit number a build
   depends on is verified by the running image against the hardware.
+
+## K5DRV-048 — DP32G030 drivers and a flashable K5 application
+
+- **Status:** active
+- **Objective:** give the V1/DP32G030 target the drivers it has never had —
+  clock, peripheral gating, pin function selection, general-purpose IO and a
+  polled UART — and use them to build a K5 application image which the qualified
+  bootloader path can write and which the host can then observe running.
+- **Scope:** a `radio-dp32g030` driver crate holding every DP32G030 register
+  address and field this image needs, with the unsafe memory-mapped access
+  contained in one module; a `radio-firmware-k5` image which starts up its own
+  `.data` and `.bss`, selects 48 MHz RCHF, binds UART1 to PA7/PA8 and answers the
+  read-only normal-mode hello with its own printable identity; the build,
+  packaging and verification tools for that image; and the host command which
+  writes it to a qualified V1 bootloader.
+- **Exclusions:** display, keypad, BK4819, configuration memory, battery, audio,
+  interrupts, DMA, any transmit path, and any write to a `4.00.*` bootloader.
+  The image serves one read-only request and holds no configuration.
+- **Dependencies:** `EVID-DP32-004` to `EVID-DP32-009` and `EVID-K5-019`; the
+  corrected bootloader classifier from `V1FAM-047`; an operator-supplied
+  recovery application and EEPROM backup for the exact unit.
+- **Tests required:** host tests for the baud divider, the corrected-frequency
+  arithmetic, the register field encodings, and the hello framing; the pinned
+  formatting, warning-denied Clippy and workspace-test gates; and static
+  verification of the emitted image's vectors, section placement and length.
+- **Acceptance criteria:** the driver crate builds for `thumbv6m-none-eabi` and
+  its pure logic is tested on the host; the packaged image is exactly `0xF000`
+  bytes with a Thumb reset vector inside the application region; no AFIK write
+  reaches the stock bootloader region; and the image, once written to the exact
+  unit, answers `afik-flasher probe-normal` with its own identity.
+- **Next after completion:** the drivers the operator interface needs — the
+  ST7565 display bus, the keypad matrix, and a timer — each with its own board
+  evidence, followed by the BK4819 three-wire bus.

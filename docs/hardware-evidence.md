@@ -2152,3 +2152,182 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
 - **Permitted use:** cite as the reason AFIK claims no external-memory region
   below `0x020000` and as the source of the battery calibration address. AFIK
   reads the battery calibration and writes nothing in this range.
+
+## Sources used by K5DRV-048
+
+### DP32G030 reference manual v1.23, retrieved copy
+
+- **Document:** the manual already recorded under *Sources used by DP32-003*.
+- **Retrieved again:** 2026-08-11 from the same mirror. The downloaded file's
+  SHA-256 is `d1923c0a1830dada46706515ced53978f9a5086e04ce178deaf28d2928c62573`,
+  which matches the hash recorded for `DP32-003` exactly, so the two work
+  packages read the same bytes.
+- **Method:** text extracted with `pdftotext -layout`. Every register fact below
+  cites the printed page it was copied from.
+
+### `machshev/uv-k5-firmware-custom` working checkout
+
+- **Repository:** local clone at `~/base/uv-k5-firmware-custom`, remote
+  `machshev/uv-k5-firmware-custom` with upstream `egzumer/uv-k5-firmware-custom`,
+  commit `7f959e8d09b435845753182b329e3a88490ebe32`, resolved 2026-08-11.
+- **Standing:** this is the build `EVID-K5-012` records the operator running
+  correctly on all three V1-generation units, including the exact UV-K6 attached
+  for this work package. It is therefore hardware-tested board evidence for the
+  V1 board, in the same standing as the pinned K1 project.
+- **Permitted use:** cite exact source locations as evidence for board bindings
+  which the reference manual cannot supply, such as which pin a peripheral is
+  wired to on this board.
+- **Prohibited use:** copying, linking, porting, or incrementally translating its
+  application or driver implementation into AFIK source. Every register fact
+  below is taken from the reference manual; this project is cited only for board
+  wiring and for corroboration.
+
+## Accepted K5DRV-048 facts
+
+### EVID-DP32-004 — Peripheral base addresses
+
+- **Fact:** SYSCON is based at `0x4000_0000`, PMU at `0x4000_0800`, GPIOA at
+  `0x4006_0000`, GPIOB at `0x4006_0800`, GPIOC at `0x4006_1000`, UART0 at
+  `0x4006_B000`, UART1 at `0x4006_B800`, UART2 at `0x4006_C000`, and PORTCON at
+  `0x400B_0000`.
+- **Source:** DP32G030 manual section 5.1 address map, and the base line printed
+  in each module's own register map: PMU printed page 62, SYSCON page 80,
+  PORTCON page 94, UART page 263.
+- **Method:** copied. The address map and each module's own register map agree.
+- **Confidence:** high; not yet confirmed by a read on a physical unit.
+- **Permitted use:** address these modules from a DP32G030 driver.
+- **Required experiment:** observe the UART1 base working on the exact unit by
+  receiving a frame the image sent.
+
+### EVID-DP32-005 — Clock sources and their reset state
+
+- **Fact:** the internal high-frequency RC oscillator RCHF is nominally 48 MHz.
+  `PMU_SRC_CFG` at offset `0x10` resets to `0x03`; its bit 0 `RCHF_EN` enables
+  RCHF and its bit 1 `RCHF_FSEL` selects 48 MHz when clear and 24 MHz when set.
+  After reset the system clock is RCHF. `SYSCON_CLK_SEL` at offset `0x00` resets
+  to `0x02`; its bit 0 `SYS_CLK_SEL` selects RCHF when clear and the divided
+  clock when set, and bits 3:1 `DIV_CLK_SEL` divide the source clock.
+  `SYSCON_RC_FREQ_DELTA` at offset `0x78` reports the measured deviation of the
+  real RCHF frequency from 48 MHz: bit 31 `RCHF_SIG` is the sign, positive when
+  set, and bits 30:11 `RCHF_DELTA` the magnitude in hertz.
+- **Source:** DP32G030 manual printed pages 62 and 66 for `SRC_CFG`, 74 and 81
+  for the clock network and `CLK_SEL`, 84 for `RC_FREQ_DELTA`, and section 5.6.4
+  page 73 for the statement that the system clock starts on RCHF.
+- **Method:** copied.
+- **Confidence:** high for the register fields. The reset default is therefore
+  RCHF at 24 MHz, which an image must not assume is still the case: a bootloader
+  runs before it.
+- **Permitted use:** select 48 MHz RCHF explicitly, select RCHF as the system
+  clock explicitly, and correct the nominal frequency by `RC_FREQ_DELTA` before
+  deriving any timing from it.
+- **Required experiment:** confirm the derived frequency indirectly by whether a
+  baud rate computed from it is received correctly by the host.
+
+### EVID-DP32-006 — Peripheral clock gating
+
+- **Fact:** `SYSCON_DEV_CLK_GATE` at offset `0x08` resets to `0x00` and gates
+  each peripheral's clock with one bit, set to enable: bit 0 GPIOA, bit 1 GPIOB,
+  bit 2 GPIOC, bit 4 IIC0, bit 5 IIC1, bit 6 UART0, bit 7 UART1, bit 8 UART2,
+  bit 10 SPI0, bit 11 SPI1, bits 12 to 14 TIMER_BASE0 to 2, bits 15 and 16
+  TIMER_PLUS0 and 1, bits 17 and 18 PWM_BASE0 and 1, bits 20 and 21 PWM_PLUS0
+  and 1, bit 22 RTC, bit 23 IWDT, bit 24 WWDT, bit 25 SARADC, bit 27 CRC, and
+  bit 28 AES.
+- **Source:** DP32G030 manual `DEV_CLK_GATE` description, printed pages 82 to 83.
+- **Method:** copied.
+- **Confidence:** high.
+- **Permitted use:** enable exactly the peripherals a driver uses, and no others.
+- **Required experiment:** none beyond observing that a gated peripheral works.
+
+### EVID-DP32-007 — Pin function selection
+
+- **Fact:** PORTCON holds `PORTA_SEL0` at `0x00` and `PORTA_SEL1` at `0x04`,
+  `PORTB_SEL0` at `0x08`, `PORTB_SEL1` at `0x0C`, `PORTC_SEL0` at `0x10`, the
+  input-enable registers `PORTA_IE`, `PORTB_IE` and `PORTC_IE` at `0x100`,
+  `0x104` and `0x108`, pull-up at `0x200`/`0x204`/`0x208`, pull-down at
+  `0x300`/`0x304`/`0x308`, and open-drain at `0x400`/`0x404`/`0x408`. Each
+  `SELn` register holds one four-bit field per pin, pin `n` of the low eight in
+  `SEL0` at bits `4n+3:4n` and pin `n+8` in `SEL1` at the same position. Field
+  value `0` selects the digital GPIO function on every pin. On PA7 value `1`
+  selects `UART1_TX`, and on PA8 value `1` selects `UART1_RX`.
+- **Source:** DP32G030 manual PORTCON register map printed page 94, `PORTA_SEL0`
+  pages 95 to 96, `PORTA_SEL1` pages 97 to 98, and the pin-function table in
+  section 3, printed pages 20 to 22, which lists `UART1_TX` on PA7 and
+  `UART1_RX` on PA8.
+- **Method:** copied.
+- **Confidence:** high.
+- **Permitted use:** select a pin's peripheral function, and enable the input
+  buffer for a pin a peripheral or a scan must read.
+- **Required experiment:** none beyond observing the selected function working.
+
+### EVID-DP32-008 — General-purpose IO
+
+- **Fact:** each GPIO port exposes `GPIODATA` at offset `0x00` and `GPIODIR` at
+  offset `0x04`, one bit per pin, with `GPIODIR` set for output and clear for
+  input, and both reset to zero. The GPIO module's clock is enabled through
+  `SYSCON_DEV_CLK_GATE`.
+- **Source:** DP32G030 manual GPIO register descriptions, printed page 119, and
+  section 5.8.3, printed page 110.
+- **Method:** copied.
+- **Confidence:** high.
+- **Permitted use:** drive and read board pins whose function is GPIO.
+- **Required experiment:** none for this work package, which drives no GPIO.
+
+### EVID-DP32-009 — UART controller
+
+- **Fact:** each UART exposes `UART_CTRL` at `0x00`, `UART_BAUD` at `0x04`,
+  `UART_TDR` at `0x08`, `UART_RDR` at `0x0C`, `UART_IE` at `0x10`, `UART_IF` at
+  `0x14`, `UART_FIFO` at `0x18`, `UART_FC` at `0x1C` and `UART_RXTO` at `0x20`.
+  In `UART_CTRL`, bit 0 `UARTEN` enables the module, bit 1 `RXEN` receive, bit 2
+  `TXEN` transmit, bit 3 `RXDMAEN` and bit 4 `TXDMAEN` select DMA rather than CPU
+  access to the data registers, bit 5 `NINEBIT` selects nine-bit data, and bit 6
+  `PAREN` enables parity; all reset to zero, so an eight-bit, no-parity,
+  CPU-driven configuration is the register's own default once the enable,
+  receive and transmit bits are set. `UART_BAUD` bits 15:0 hold the divider. In
+  `UART_IF`, bit 10 `RXFIFO_EMPTY` and bit 13 `TXFIFO_EMPTY` report the two FIFO
+  empty states and reset set, bit 14 `TXFIFO_FULL` reports the transmit FIFO
+  full, and bit 16 `TXBUSY` reports the transmitter busy. `UART_FIFO` bit 6
+  `RF_CLR` and bit 7 `TF_CLR` clear the receive and transmit FIFOs and
+  self-clear. Both FIFOs are eight bytes deep.
+- **Source:** DP32G030 manual UART register map printed page 263, `UART_CTRL`
+  pages 264 to 265, `UART_BAUD` and the data registers pages 265 to 266,
+  `UART_IF` pages 267 to 268, `UART_FIFO` page 269, and the module description
+  page 255 for the FIFO depth.
+- **Fact:** the divider is the module clock frequency divided by the wanted baud
+  rate, rounded. The manual gives no formula in text; it prints one as an image
+  and then works the example `48 MHz / 115200 = 416.6`, choosing 417.
+- **Source:** DP32G030 manual section 5.16.4, printed page 257.
+- **Method:** copied for the register fields; the divider rule is read off the
+  manual's own worked example rather than from the formula image.
+- **Confidence:** high for the fields. Medium-high for the divider rule, which
+  rests on one worked example; it is corroborated by the pinned V1 firmware,
+  which divides a `RC_FREQ_DELTA`-corrected frequency by a constant of the same
+  order (`driver/uart.c`, `UART1->BAUD = Frequency / 39053U`).
+- **Permitted use:** drive UART1 by polling `UART_IF`, at a divider computed from
+  the corrected RCHF frequency.
+- **Required experiment:** send a frame the host can decode, which settles both
+  the divider rule and the corrected frequency at once.
+
+### EVID-K5-019 — V1 board bindings the manual cannot supply
+
+- **Observation:** in the pinned `uv-k5-firmware-custom` checkout, `board.c`
+  selects `PORTCON_PORTA_SEL0_A7_BITS_UART1_TX` and
+  `PORTCON_PORTA_SEL1_A8_BITS_UART1_RX`, and its comments record that both pins
+  are already left in that state by the stock bootloader. `main.c` enables
+  GPIOA, GPIOB, GPIOC, UART1, SPI0, SARADC, CRC, AES and PWM_PLUS0 in
+  `SYSCON_DEV_CLK_GATE`, and `driver/system.c` selects 48 MHz RCHF and leaves the
+  system clock on RCHF.
+- **Inference:** on the V1 board the programming connector is UART1 on PA7/PA8.
+  Confidence high: this build runs on all three units per `EVID-K5-012`, the
+  stock bootloader talks to a host over that same connector at 38,400 baud, and
+  no other UART is configured for it.
+- **Observation:** `start.S` sets the initial stack pointer to `0x2000_3FF0`,
+  sixteen bytes below the top of the evidenced RAM, and its vector table carries
+  the full Cortex-M0 and DP32G030 interrupt list rather than two entries.
+- **Not established:** why the top sixteen bytes are avoided. It is not
+  documented in that project, and nothing here shows the bootloader uses them.
+  AFIK follows it because the cost is sixteen bytes and the alternative is an
+  assumption about what a bootloader left behind.
+- **Permitted use:** bind UART1 to PA7/PA8 in the K5 image, gate only the clocks
+  the image uses, and start the stack at `0x2000_3FF0`.
+- **Required experiment:** confirm the binding by receiving, on the host, a frame
+  the AFIK image sent through UART1 on the exact unit.
