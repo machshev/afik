@@ -2546,3 +2546,12 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
 - **Required experiment:** after a normal power-cycle, compare the visible
   baseline and one normal probe. A complete response proves the sequence;
   another failure remains a negative result rather than register evidence.
+- **Physical result:** the Armel-matched startup image showed baseline `RX 0`,
+  `UART_IF 0x00002484`. One normal probe timed out and changed the display to
+  `RX 0`, sticky `UART_IF 0x000e3de4`, exactly matching the preceding image.
+  Start ordering and the pre-start `RXTO` acknowledgement therefore do not fix
+  the burst receive failure.
+- **Next isolation:** retain these receive registers but remove every UART
+  transmit-data write from the diagnostic. Only its screen reports state. This
+  performs the silent-listener experiment required by `EVID-K5-021` without
+  changing the UART or DMA configuration again.

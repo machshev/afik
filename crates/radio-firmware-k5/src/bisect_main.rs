@@ -14,12 +14,10 @@
 //!    the clock and the RC correction are all confirmed on the unit. It never
 //!    answers a hello, so the fault is now on the receive side alone.
 //!
-//! Transmit is known good, so this image uses it to report on the receiver: a
-//! byte counter, the last bytes seen, and the raw `UART_IF` status. A counter
-//! that stays at zero while the host sends means nothing reaches the receive
-//! FIFO, and the question is the pin or the peripheral. A counter that climbs
-//! means bytes arrive and the fault is above the driver — which would be
-//! surprising, since the frame reader is tested against the host's own encoder.
+//! The display reports a byte counter and raw `UART_IF` status. This image never
+//! writes UART1 after configuration, because local transmission is the one
+//! remaining physical difference which can be removed without changing the
+//! receive registers proven by Armel v4.3 on this exact unit.
 
 #![no_std]
 #![no_main]
@@ -44,20 +42,9 @@ const INITIAL_STACK_POINTER: u32 = 0x2000_3FF0;
 /// The UART bound to the programming connector, per `EVID-K5-019`.
 const UART1: Uart = Uart::new(UART1_BASE);
 
-/// Roughly fifteen seconds of polling between reports at 48 MHz.
-///
-/// The interval is long because the image's own transmission is a suspect: a
-/// host frame is fourteen back-to-back bytes and this radio has been observed
-/// receiving them corrupted at the tail while the same bytes sent with gaps
-/// arrive perfectly. A listener which stays quiet almost all the time cannot
-/// be the thing corrupting what it hears.
+/// Roughly fifteen seconds of polling between display reports at 48 MHz.
 const REPORT_INTERVAL_POLLS: u32 = 30_000_000;
 
-/// How many received bytes are kept verbatim for the report.
-///
-/// A frame the host sends is fourteen bytes, so this holds two complete frames
-/// and can be compared against what the host is known to have sent.
-const FIRST_BYTES: usize = 28;
 const DMA_BYTES: usize = 256;
 
 static mut DMA_BUFFER: [u8; DMA_BYTES] = [0; DMA_BYTES];
@@ -134,22 +121,13 @@ fn main() -> ! {
 
     let _ = display.show(BootStage::SerialReady);
 
-    UART1.write(b"AFIK-K5-RXDIAG\r\n");
-    UART1.flush();
-
     let mut received: u32 = 0;
-    let mut first = [0_u8; FIRST_BYTES];
-    let mut first_len = 0_usize;
     let mut sticky_status: u32 = 0;
     let mut polls: u32 = 0;
     loop {
         sticky_status |= UART1.status_bits();
-        if let Some(byte) = receiver.read_byte() {
+        if receiver.read_byte().is_some() {
             received = received.wrapping_add(1);
-            if first_len < first.len() {
-                first[first_len] = byte;
-                first_len += 1;
-            }
         }
 
         polls = polls.wrapping_add(1);
@@ -159,60 +137,8 @@ fn main() -> ! {
                 bytes: received,
                 status: sticky_status,
             });
-            UART1.write(b"rx=");
-            write_decimal(received);
-            UART1.write(b" sticky=");
-            write_hexadecimal(sticky_status);
-            UART1.write(b" pa8=");
-            UART1.write(if gpio::read_pin(Port::A, 8) {
-                b"1"
-            } else {
-                b"0"
-            });
-            UART1.write(b" first=");
-            for byte in &first[..first_len] {
-                write_byte_hexadecimal(*byte);
-            }
-            UART1.write(b"\r\n");
-            UART1.flush();
         }
     }
-}
-
-/// Sends one byte as two hexadecimal digits.
-fn write_byte_hexadecimal(byte: u8) {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    UART1.write(&[
-        DIGITS[usize::from(byte >> 4)],
-        DIGITS[usize::from(byte & 0xF)],
-    ]);
-}
-
-/// Sends one unsigned number as decimal digits, most significant first.
-fn write_decimal(mut value: u32) {
-    let mut digits = [b'0'; 10];
-    let mut index = digits.len();
-    loop {
-        index -= 1;
-        digits[index] = b'0' + u8::try_from(value % 10).unwrap_or(0);
-        value /= 10;
-        if value == 0 || index == 0 {
-            break;
-        }
-    }
-    UART1.write(&digits[index..]);
-}
-
-/// Sends one unsigned number as eight hexadecimal digits.
-fn write_hexadecimal(value: u32) {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut text = [b'0'; 8];
-    for (index, character) in text.iter_mut().enumerate() {
-        let shift = 28 - 4 * index;
-        let nibble = (value >> shift) & 0xF;
-        *character = DIGITS[nibble as usize];
-    }
-    UART1.write(&text);
 }
 
 #[panic_handler]
