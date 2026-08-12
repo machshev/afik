@@ -2,6 +2,18 @@
 
 ## Current work package
 
+**`K5RX-049` is active.** The exact UV-K6 is connected in DFU mode and the
+operator has authorised guarded AFIK writes. The first step is unchanged: prove
+whether `AFIK-K5-1.2` boots with a clean wire capture, then bound and repair the
+back-to-back receive failure before sharing application code with K1.
+
+`K5DRV-048` is partially complete: the DP32G030 drivers boot and transmit on the
+exact unit, but the application cannot satisfy its host-exchange acceptance
+criterion until `K5RX-049` completes. `V1FAM-047` remains paused at its declared
+target boundary.
+
+## Paused work package: V1FAM-047
+
 **`V1FAM-047` is partially complete and paused at a deliberate boundary.** Three
 V1-generation Quansheng radios were connected read-only. Nothing was written to
 any of them and no write path was widened.

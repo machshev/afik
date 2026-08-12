@@ -2359,7 +2359,7 @@
 
 ## K5DRV-048 — DP32G030 drivers and a flashable K5 application
 
-- **Status:** active
+- **Status:** partially complete; blocked on `K5RX-049`
 - **Objective:** give the V1/DP32G030 target the drivers it has never had —
   clock, peripheral gating, pin function selection, general-purpose IO and a
   polled UART — and use them to build a K5 application image which the qualified
@@ -2392,7 +2392,7 @@
 
 ## K5RX-049 — Receive a complete frame on a V1 radio
 
-- **Status:** ready; not active
+- **Status:** active
 - **Objective:** make a V1 image receive fourteen back-to-back bytes intact, so
   the host exchange `K5DRV-048` built can complete.
 - **Current facts:** `EVID-K5-021`. Bytes with 20 ms gaps arrive perfectly.
