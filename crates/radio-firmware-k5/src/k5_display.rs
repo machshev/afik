@@ -5,7 +5,7 @@ use radio_dp32g030::portcon;
 use radio_dp32g030::pwm_plus::PwmPlus;
 use radio_dp32g030::syscon::{self, Peripheral};
 use radio_dp32g030::PWM_PLUS0_BASE;
-use radio_firmware_k5::boot_display::{BootDisplay, BootStage};
+use radio_firmware_k5::boot_display::{BootDisplay, BootStage, ReceiveDiagnostic};
 
 const BACKLIGHT: PwmPlus = PwmPlus::new(PWM_PLUS0_BASE);
 const SELECT_PIN: u8 = 7;
@@ -74,6 +74,22 @@ impl BootDisplay for K5BootDisplay {
         select_display(false);
         Ok(())
     }
+
+    fn show_receive(&mut self, diagnostic: ReceiveDiagnostic) -> Result<(), Self::Error> {
+        let mut count = *b"000000";
+        decimal_text(diagnostic.bytes, &mut count);
+        let mut status = *b"00000000";
+        hexadecimal_text(diagnostic.status, &mut status);
+        select_display(true);
+        clear();
+        draw_text(1, 20, b"AFIK");
+        draw_text(3, 10, b"RX");
+        draw_text(3, 34, &count);
+        draw_text(5, 10, b"ERR");
+        draw_text(5, 34, &status);
+        select_display(false);
+        Ok(())
+    }
 }
 
 fn clear() {
@@ -135,6 +151,7 @@ fn glyph(character: u8) -> [u8; 5] {
     match character {
         b'A' => [0x7E, 0x11, 0x11, 0x11, 0x7E],
         b'B' => [0x7F, 0x49, 0x49, 0x49, 0x36],
+        b'C' => [0x3E, 0x41, 0x41, 0x41, 0x22],
         b'D' => [0x7F, 0x41, 0x41, 0x22, 0x1C],
         b'E' => [0x7F, 0x49, 0x49, 0x49, 0x41],
         b'F' => [0x7F, 0x09, 0x09, 0x09, 0x01],
@@ -146,7 +163,31 @@ fn glyph(character: u8) -> [u8; 5] {
         b'S' => [0x46, 0x49, 0x49, 0x49, 0x31],
         b'T' => [0x01, 0x01, 0x7F, 0x01, 0x01],
         b'5' => [0x4F, 0x49, 0x49, 0x49, 0x31],
+        b'0' => [0x3E, 0x51, 0x49, 0x45, 0x3E],
+        b'1' => [0x00, 0x42, 0x7F, 0x40, 0x00],
+        b'2' => [0x42, 0x61, 0x51, 0x49, 0x46],
+        b'3' => [0x21, 0x41, 0x45, 0x4B, 0x31],
+        b'4' => [0x18, 0x14, 0x12, 0x7F, 0x10],
+        b'6' => [0x3C, 0x4A, 0x49, 0x49, 0x30],
+        b'7' => [0x01, 0x71, 0x09, 0x05, 0x03],
+        b'8' => [0x36, 0x49, 0x49, 0x49, 0x36],
+        b'9' => [0x06, 0x49, 0x49, 0x29, 0x1E],
         _ => [0; 5],
+    }
+}
+
+fn decimal_text(mut value: u32, text: &mut [u8]) {
+    for character in text.iter_mut().rev() {
+        *character = b'0' + u8::try_from(value % 10).unwrap_or(0);
+        value /= 10;
+    }
+}
+
+fn hexadecimal_text(mut value: u32, text: &mut [u8]) {
+    const DIGITS: &[u8; 16] = b"0123456789ABCDEF";
+    for character in text.iter_mut().rev() {
+        *character = DIGITS[usize::try_from(value & 0xF).unwrap_or(0)];
+        value >>= 4;
     }
 }
 

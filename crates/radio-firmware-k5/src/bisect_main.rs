@@ -33,7 +33,7 @@ use radio_dp32g030::portcon;
 use radio_dp32g030::syscon::{self, Peripheral};
 use radio_dp32g030::uart::Uart;
 use radio_dp32g030::UART1_BASE;
-use radio_firmware_k5::boot_display::{BootDisplay, BootStage};
+use radio_firmware_k5::boot_display::{BootDisplay, BootStage, ReceiveDiagnostic};
 
 mod k5_display;
 use k5_display::K5BootDisplay;
@@ -158,6 +158,10 @@ fn main() -> ! {
         polls = polls.wrapping_add(1);
         if polls >= REPORT_INTERVAL_POLLS {
             polls = 0;
+            let _ = display.show_receive(ReceiveDiagnostic {
+                bytes: received,
+                status: sticky_status,
+            });
             UART1.write(b"rx=");
             write_decimal(received);
             UART1.write(b" sticky=");
