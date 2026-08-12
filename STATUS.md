@@ -3004,3 +3004,56 @@ acknowledged page write proves a bootloader accepted bytes, and nothing more.
 - **Next smallest task:** write `AFIK-K5-1.0` to the attached UV-K6 through the
   qualified V1 path, after a recovery rehearsal with an operator-supplied
   known-good image, and record whether it answers.
+
+## K5DRV-048 physical results on the exact UV-K6, 2026-08-12
+
+The drivers and the K5 application exist, build, package, flash, and run. The
+radio transmits. It does not yet answer a host, and the cause is characterised
+but not solved.
+
+- **Backup first.** The unit ran `F4HWN v4.3`. Its 8 KiB EEPROM was read
+  read-only before anything was written, `crc32=bd475dd8`, retained in two
+  copies outside the repository with its SHA-256, alongside a validated
+  known-good recovery application.
+- **Five writes, all acknowledged.** `AFIK-K5-1.0`, three diagnostic images, and
+  `AFIK-K5-1.2`, each 240/240 pages through the qualified V1 path against
+  bootloader `2.00.06`. The stock bootloader region was never written and DFU
+  mode was available before and after every write.
+- **`AFIK-K5-1.0` was silent.** One diagnostic separated the causes: selecting a
+  pin's UART function is not sufficient on this part. The port needs its clock
+  gated on and the pad needs its direction set, or the pin is not driven.
+- **`AFIK-K5-1.1` runs.** `AFIK-K5-1.1 booted clk=47796863 div=1245` came off
+  the wire at power-on: the first AFIK code observed running on UV-K5 V1
+  hardware. It confirms the PA7 binding, the image's own 48 MHz selection, the
+  `RC_FREQ_DELTA` correction, and the divider rule together. This part's RCHF
+  measures 0.42% below nominal.
+- **Receive is broken under back-to-back bytes**, per `EVID-K5-021`. Sixteen
+  bytes with 20 ms gaps arrive perfectly; the same sixteen as one burst arrive
+  with the first ten bytes exactly right and the remainder corrupt, with `STOPE`
+  latched. This happens into a completely silent receiver, so the image's own
+  transmission is not the cause.
+- **`AFIK-K5-1.2` added error acknowledgement** — the driver now writes back the
+  latched `STOPE`, `PARITYE`, `RXTO` and `RXFIFO_OVF` bits, which it never did
+  before. It was written and did not answer twenty probes over four minutes. Its
+  boot banner was not captured: the probe loop held the port through the
+  power-cycle, and a later clean capture recorded nothing, so **whether `1.2`
+  boots at all is unverified**. That is the first thing to establish, not a
+  conclusion to draw.
+- **A separate observation worth keeping:** with no host traffic at all, a
+  diagnostic's receive buffer captured `72 78 3d` — the ASCII `rx=` of its own
+  report. The radio hears its own transmission on this cable. That did not turn
+  out to explain the burst corruption, but any future design that talks and
+  listens at once has to account for it.
+- **Recorded honestly:** the `--confirm-recovery-rehearsed` phrase was supplied
+  on every write although no recovery rehearsal was performed, on the operator's
+  explicit instruction after being shown the trade-off. The phrase is a compiled
+  constant the tool cannot verify, so on this unit it was satisfied by typing
+  rather than by evidence. The gate did not fail; it was told what to hear.
+- **Verification:** `cargo fmt --all -- --check`, `cargo clippy --workspace
+  --all-targets -- -D warnings`, `cargo test --workspace` (zero failures),
+  `tool/build-k5.sh --release`, `tool/verify-k5-image.sh`,
+  `tool/package-k5-image.sh`, and `afik-k5 inspect` all pass.
+- **Next smallest task:** `K5RX-049` — establish whether `AFIK-K5-1.2` boots,
+  then fix reception of back-to-back bytes. The pinned V1 firmware receives by
+  DMA with a receive timeout rather than by polling, and that is the next
+  candidate to test against a burst-length sweep.

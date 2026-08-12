@@ -16,6 +16,17 @@ const CTRL_RXEN: u32 = 1 << 1;
 /// `UART_CTRL` bit 2: transmit enable.
 const CTRL_TXEN: u32 = 1 << 2;
 
+/// `UART_IF` bit 3: a parity error was seen. Write one to clear.
+const IF_PARITYE: u32 = 1 << 3;
+/// `UART_IF` bit 4: a stop-bit error was seen. Write one to clear.
+const IF_STOPE: u32 = 1 << 4;
+/// `UART_IF` bit 5: the receive timeout elapsed. Write one to clear.
+const IF_RXTO: u32 = 1 << 5;
+/// `UART_IF` bit 8: the receive FIFO overflowed. Write one to clear.
+const IF_RXFIFO_OVF: u32 = 1 << 8;
+/// Every latched receive condition this driver acknowledges.
+const IF_RECEIVE_ERRORS: u32 = IF_PARITYE | IF_STOPE | IF_RXTO | IF_RXFIFO_OVF;
+
 /// `UART_IF` bit 10: the receive FIFO is empty.
 const IF_RXFIFO_EMPTY: u32 = 1 << 10;
 /// `UART_IF` bit 14: the transmit FIFO is full.
@@ -134,8 +145,18 @@ impl Uart {
     }
 
     /// Takes one received byte if the receive FIFO holds any.
+    ///
+    /// Latched receive conditions are acknowledged first. These bits are
+    /// write-one-to-clear, and a driver which never writes them leaves the
+    /// first stop-bit error standing for the life of the image. On the exact
+    /// UV-K6 that showed as a burst whose first bytes were perfect and whose
+    /// remainder was corrupt, every time, however quiet the receiver was.
     pub fn read_byte(self) -> Option<u8> {
-        if self.status().read() & IF_RXFIFO_EMPTY != 0 {
+        let status = self.status().read();
+        if status & IF_RECEIVE_ERRORS != 0 {
+            self.status().write(status & IF_RECEIVE_ERRORS);
+        }
+        if status & IF_RXFIFO_EMPTY != 0 {
             return None;
         }
         Some((self.receive().read() & 0xFF) as u8)

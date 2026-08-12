@@ -2389,3 +2389,28 @@
 - **Next after completion:** the drivers the operator interface needs — the
   ST7565 display bus, the keypad matrix, and a timer — each with its own board
   evidence, followed by the BK4819 three-wire bus.
+
+## K5RX-049 — Receive a complete frame on a V1 radio
+
+- **Status:** ready; not active
+- **Objective:** make a V1 image receive fourteen back-to-back bytes intact, so
+  the host exchange `K5DRV-048` built can complete.
+- **Current facts:** `EVID-K5-021`. Bytes with 20 ms gaps arrive perfectly.
+  Bytes back-to-back arrive with a correct prefix — ten bytes, repeatedly — and
+  a corrupt remainder, with `STOPE` latched, into a receiver that is otherwise
+  silent. `AFIK-K5-1.2` added acknowledgement of the latched error bits and has
+  not been shown to boot, let alone to fix it.
+- **First step, before any theory:** confirm whether `AFIK-K5-1.2` boots, by
+  capturing the wire across a power-cycle with nothing else holding the port.
+  A silent `1.2` is a regression in the driver change and is a different
+  question from the receive defect.
+- **Scope:** a burst-length sweep from the host, which costs no flash cycle and
+  bounds where reception breaks; then, if the break is at the FIFO boundary, the
+  DMA receive path the pinned V1 firmware uses, with its receive timeout, as the
+  candidate fix. Any DMA registers used must be recorded from the reference
+  manual first.
+- **Exclusions:** guessing at register values, and any change to the qualified
+  flashing path.
+- **Acceptance criteria:** a host `probe-normal` reports the image's identity
+  from the exact unit, repeatably, and the burst-length sweep is recorded
+  whatever the outcome.

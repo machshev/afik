@@ -12,14 +12,14 @@ pub const REQUEST_BODY_BYTES: usize = 10;
 pub const RESPONSE_FRAME_BYTES: usize = 48;
 
 /// Printable identity returned by the first AFIK K5 application.
-pub const APPLICATION_VERSION: &[u8] = b"AFIK-K5-1.1";
+pub const APPLICATION_VERSION: &[u8] = b"AFIK-K5-1.2";
 
 /// Plain-text banner sent once at boot, before any host has spoken.
 ///
 /// The stock application sends nothing unprompted, so this is the only witness
 /// available to an operator who has just power-cycled the radio and is only
 /// watching the wire.
-pub const BOOT_BANNER: &[u8] = b"AFIK-K5-1.1 booted";
+pub const BOOT_BANNER: &[u8] = b"AFIK-K5-1.2 booted";
 
 const COMMAND_HELLO_REQUEST: u16 = 0x0514;
 const COMMAND_HELLO_RESPONSE: u16 = 0x0515;
