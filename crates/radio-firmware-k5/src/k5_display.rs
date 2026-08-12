@@ -5,7 +5,7 @@ use radio_dp32g030::portcon;
 use radio_dp32g030::pwm_plus::PwmPlus;
 use radio_dp32g030::syscon::{self, Peripheral};
 use radio_dp32g030::PWM_PLUS0_BASE;
-use radio_firmware_k5::boot_display::{BootDisplay, BootStage, ReceiveDiagnostic};
+use radio_platform::display::{BootDisplay, BootStage, ReceiveDiagnostic};
 
 const BACKLIGHT: PwmPlus = PwmPlus::new(PWM_PLUS0_BASE);
 const SELECT_PIN: u8 = 7;

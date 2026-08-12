@@ -31,10 +31,9 @@ use radio_dp32g030::portcon;
 use radio_dp32g030::syscon::{self, Peripheral};
 use radio_dp32g030::uart::{k5_programming_divider, Uart};
 use radio_dp32g030::UART1_BASE;
-use radio_firmware_k5::boot_display::{BootDisplay, BootStage, ReceiveDiagnostic};
+use radio_platform::display::{BootDisplay, BootStage, ReceiveDiagnostic};
 
-mod k5_display;
-use k5_display::K5BootDisplay;
+use radio_firmware_k5::k5_display::K5BootDisplay;
 
 /// Initial stack pointer, per `EVID-K5-019`.
 const INITIAL_STACK_POINTER: u32 = 0x2000_3FF0;

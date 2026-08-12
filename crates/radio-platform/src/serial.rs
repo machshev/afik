@@ -11,6 +11,8 @@ const COMMAND_HELLO_REQUEST: u16 = 0x0514;
 const COMMAND_HELLO_RESPONSE: u16 = 0x0515;
 const REQUEST_DECLARED_BYTES: u16 = 4;
 const RESPONSE_PAYLOAD_BYTES: usize = 40;
+const RESPONSE_PAYLOAD_LENGTH: u16 = 40;
+const _: () = assert!(RESPONSE_PAYLOAD_LENGTH as usize == RESPONSE_PAYLOAD_BYTES);
 const RESPONSE_DECLARED_BYTES: u16 = 36;
 const RESPONSE_TRAILER: u16 = 0xFFFF;
 const SESSION_WORD: u32 = 0x6457_396A;
@@ -74,7 +76,7 @@ pub fn encode_hello_response(
 ) {
     frame.fill(0);
     frame[0..2].copy_from_slice(&[0xAB, 0xCD]);
-    frame[2..4].copy_from_slice(&(RESPONSE_PAYLOAD_BYTES as u16).to_le_bytes());
+    frame[2..4].copy_from_slice(&RESPONSE_PAYLOAD_LENGTH.to_le_bytes());
     let payload = &mut frame[4..4 + RESPONSE_PAYLOAD_BYTES];
     payload[0..2].copy_from_slice(&COMMAND_HELLO_RESPONSE.to_le_bytes());
     payload[2..4].copy_from_slice(&RESPONSE_DECLARED_BYTES.to_le_bytes());

@@ -1,4 +1,4 @@
-//! Application-facing boot diagnostics, independent of either target MCU.
+//! Application-facing display contract shared by target adapters.
 
 /// A milestone the application can expose before its normal interface exists.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -20,10 +20,7 @@ pub struct ReceiveDiagnostic {
     pub status: u32,
 }
 
-/// The only display operation the bring-up application depends on.
-///
-/// A K1 or K5 board adapter may implement this without exposing its GPIO, SPI,
-/// controller commands, framebuffer layout, or timing to application code.
+/// The display operations shared application behavior may request.
 pub trait BootDisplay {
     /// Board-specific display failure.
     type Error;
@@ -35,15 +32,21 @@ pub trait BootDisplay {
     fn show_receive(&mut self, diagnostic: ReceiveDiagnostic) -> Result<(), Self::Error>;
 }
 
+/// Runs the target-independent boot presentation in its fixed order.
+pub fn show_boot_sequence<D: BootDisplay>(display: &mut D) -> Result<(), D::Error> {
+    display.show(BootStage::Reset)?;
+    display.show(BootStage::BoardReady)?;
+    display.show(BootStage::SerialReady)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{BootDisplay, BootStage, ReceiveDiagnostic};
+    use super::{show_boot_sequence, BootDisplay, BootStage, ReceiveDiagnostic};
 
     #[derive(Default)]
     struct RecordingDisplay {
         stages: [Option<BootStage>; 3],
         length: usize,
-        diagnostic: Option<ReceiveDiagnostic>,
     }
 
     impl BootDisplay for RecordingDisplay {
@@ -55,31 +58,22 @@ mod tests {
             Ok(())
         }
 
-        fn show_receive(&mut self, diagnostic: ReceiveDiagnostic) -> Result<(), Self::Error> {
-            self.diagnostic = Some(diagnostic);
+        fn show_receive(&mut self, _diagnostic: ReceiveDiagnostic) -> Result<(), Self::Error> {
             Ok(())
         }
     }
 
     #[test]
-    fn one_interface_carries_the_whole_boot_sequence() {
+    fn application_boot_behavior_has_one_order() {
         let mut display = RecordingDisplay::default();
-        display.show(BootStage::Reset).unwrap();
-        display.show(BootStage::BoardReady).unwrap();
-        display.show(BootStage::SerialReady).unwrap();
+        show_boot_sequence(&mut display).unwrap();
         assert_eq!(
             display.stages,
             [
                 Some(BootStage::Reset),
                 Some(BootStage::BoardReady),
-                Some(BootStage::SerialReady)
+                Some(BootStage::SerialReady),
             ]
         );
-        let diagnostic = ReceiveDiagnostic {
-            bytes: 14,
-            status: 0x410,
-        };
-        display.show_receive(diagnostic).unwrap();
-        assert_eq!(display.diagnostic, Some(diagnostic));
     }
 }

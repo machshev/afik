@@ -20,6 +20,7 @@ pub mod embassy_runtime;
 pub mod host_control;
 pub mod keypad;
 pub mod operator_state;
+pub mod platform_display;
 pub mod protocol;
 #[cfg(feature = "py32f071-battery")]
 pub mod py32f071_battery;

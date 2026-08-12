@@ -3,6 +3,7 @@
 use crate::keypad::Key;
 use radio_bk4819::SquelchThresholds;
 use radio_domain::SquelchLevel;
+use radio_platform::display::{BootStage, ReceiveDiagnostic};
 
 /// Visible display width in columns.
 pub const WIDTH: usize = 128;
@@ -85,6 +86,45 @@ pub fn render_witness(frame: &mut [u8; FRAME_BYTES]) {
     frame.fill(0);
     draw_text(frame, 51, 20, b"AFIK");
     draw_text(frame, 43, 36, b"K1 0.2");
+}
+
+/// Renders one shared application boot stage using the K1 framebuffer layout.
+pub fn render_boot_stage(frame: &mut [u8; FRAME_BYTES], stage: BootStage) {
+    frame.fill(0);
+    draw_text(frame, 51, 20, b"AFIK");
+    let text: &[u8] = match stage {
+        BootStage::Reset => b"RESET",
+        BootStage::BoardReady => b"BOARD",
+        BootStage::SerialReady => b"SERIAL",
+    };
+    draw_text(frame, (WIDTH - (text.len() * 6 - 1)) / 2, 36, text);
+}
+
+/// Renders shared serial receive evidence using the K1 framebuffer layout.
+pub fn render_receive_diagnostic(frame: &mut [u8; FRAME_BYTES], diagnostic: ReceiveDiagnostic) {
+    frame.fill(0);
+    draw_text(frame, 51, 12, b"AFIK");
+    let mut count = *b"RX 000000";
+    write_decimal(&mut count[3..], diagnostic.bytes);
+    draw_text(frame, 37, 28, &count);
+    let mut status = *b"E 00000000";
+    write_hexadecimal(&mut status[2..], diagnostic.status);
+    draw_text(frame, 34, 44, &status);
+}
+
+fn write_decimal(bytes: &mut [u8], mut value: u32) {
+    for byte in bytes.iter_mut().rev() {
+        *byte = b'0' + u8::try_from(value % 10).unwrap_or(0);
+        value /= 10;
+    }
+}
+
+fn write_hexadecimal(bytes: &mut [u8], mut value: u32) {
+    const DIGITS: &[u8; 16] = b"0123456789ABCDEF";
+    for byte in bytes.iter_mut().rev() {
+        *byte = DIGITS[usize::try_from(value & 0xF).unwrap_or(0)];
+        value >>= 4;
+    }
 }
 
 /// Produces the fixed witness plus one centered debounced main-key label.
