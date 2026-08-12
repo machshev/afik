@@ -15,6 +15,7 @@ path = "src/lib.rs"
 firmware = []
 
 [dependencies]
+radio-bk4819 = { path = "../radio-bk4819" }
 radio-dp32g030 = { path = "../radio-dp32g030" }
 radio-platform = { path = "../radio-platform" }
 

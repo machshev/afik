@@ -2606,3 +2606,19 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   claim follows.
 - **Required experiment:** read a small non-sensitive range and compare it with
   the same offsets in the retained pre-flash backup before consuming any value.
+
+### EVID-K5-027 — V1 BK4819 bus and speaker gate bindings
+
+- **Source:** pinned `machshev/uv-k5-firmware-custom` commit
+  `7f959e8d09b435845753182b329e3a88490ebe32`, `driver/gpio.h`,
+  `driver/bk4819.c`, `audio.h`, and `board.c`.
+- **Binding:** PC0 is active-low BK4819 select, PC1 is clock, and PC2 is
+  bidirectional data. Commands and values shift most-significant bit first;
+  reads set address bit seven before switching PC2 to input for sixteen bits.
+  PC4 independently gates the speaker audio path high-on and is initialized off.
+- **Permitted use:** connect the existing evidence-bounded `radio-bk4819`
+  receive driver to this three-wire adapter and expose a separately muted PC4
+  speaker gate. The first physical operation must be a known-register read.
+- **Not established:** fitted silicon revision, safe initialization on this
+  exact unit, demodulated audio, sensitivity, RF switching, calibration, or TX.
+  No PA control or transmit path is permitted.

@@ -2453,8 +2453,8 @@
 
 ## K5APP-051 — K5 receive-only operator hardware bring-up
 
-- **Status:** active; keypad and read-only EEPROM adapters complete, receiver
-  steps pending
+- **Status:** software adapter milestone complete; physical read-back and
+  receive/audio experiments pending
 - **Objective:** add the K5 V1 keypad, read-only configuration-memory access,
   BK4819 receive control, and demodulated-audio enablement as separately tested
   and committed steps.
@@ -2472,3 +2472,8 @@
 - **Second result:** the PA10/PA11 EEPROM adapter exposes only bounded random
   reads, checks every address acknowledgement, uses released-high lines, and
   has exact transaction and capacity tests. It is not yet physically confirmed.
+- **Third result:** the PC0/PC1/PC2 target adapter implements the existing
+  `radio-bk4819::RegisterBus` contract, including MSB-first write/read framing
+  and bidirectional data. PC4 is a separately initialized-muted speaker gate.
+  Host framing tests and the embedded build pass; neither is called by the K5
+  boot image until known-register read-back is physically approved and observed.

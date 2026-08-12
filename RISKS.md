@@ -83,6 +83,10 @@
   physical bus, board switching, external PA control, flashing, or on-air tests
   until chip/board identity, original register documentation, safe dummy-load
   test equipment, calibration backup, and recovery procedures are established.
+- **K5 adapter narrowing, 2026-08-12:** `EVID-K5-027` establishes the V1
+  three-wire and speaker-gate bindings in source and implements them below the
+  existing register contract. No operation has run on physical K5 silicon;
+  read-back, initialization, receive, and audio remain required experiments.
 
 ## RISK-008 — Physical scan timing and signal inputs are unverified
 

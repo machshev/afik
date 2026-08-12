@@ -7,8 +7,11 @@ keypad matrix adapter. All sixteen labels are mapped, unstable or multiple-key
 samples are rejected, and every scan restores the EEPROM/I2C and voice-chip
 shared row pins. Host tests pass; this is not yet integrated into the image or
 physically confirmed. The second step adds an 8 KiB-bounded, acknowledgement-
-checked read-only EEPROM adapter with no write API. BK4819 register read-back is
-the next step.
+checked read-only EEPROM adapter with no write API. The third step adds the V1
+BK4819 three-wire `RegisterBus` adapter and an independently muted PC4 speaker
+gate. They compile into the K5 target but are deliberately not invoked by the
+boot image: a known-register read-back is the next physical gate before any
+receiver initialization or audio enablement.
 
 Commands run in the pinned environment on 2026-08-12:
 
@@ -18,6 +21,8 @@ Commands run in the pinned environment on 2026-08-12:
 - After the EEPROM step, `nix develop path:. -c bash -c 'cargo fmt --all
   --check && cargo test -q -p radio-firmware-k5 && cargo clippy -q -p
   radio-firmware-k5 --all-targets -- -D warnings'` — passed.
+- After the BK4819/audio adapter step, the same focused format/test/Clippy gate
+  passed with six K5 library tests, and `./tool/build-k5.sh --release` passed.
 
 ## Previous handoff: PLAT-050
 
