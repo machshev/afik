@@ -2436,3 +2436,26 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   exact UV-K6 remain the required physical confirmation.
 - **Permitted use:** fixed receive-inert boot diagnostics. No keypad, RF, audio,
   storage, or transmit authority follows from display output.
+- **First physical result:** the first display image was acknowledged 240/240
+  pages and left DFU, but the operator observed no backlight and no obvious
+  writing. Since that image deliberately did not configure the independently
+  wired backlight, darkness is expected and does not by itself settle whether
+  pixels were present.
+
+### EVID-DP32-011 — PWM_PLUS0 subset for the V1 backlight
+
+- **Fact:** PWM_PLUS0 is based at `0x400B4000`, with configuration at `0x00`,
+  generation at `0x04`, clock source at `0x08`, period at `0x1C`, and channel
+  zero compare at `0x20`. Configuration bit 0 enables counting and bit 2 repeats
+  it. Generation bit 24 enables channel-zero output and bit 16 inverts it. The
+  clock-source high halfword is a pclk predivider minus one; period and compare
+  are sixteen-bit values.
+- **Source:** DP32G030 reference manual section 5.14, printed pages 220 to 229,
+  from the same verified PDF as `EVID-DP32-010`.
+- **Observation:** the pinned V1 board source maps the backlight to PB6 and
+  selects PWM_PLUS0 channel zero there. Its known-running build uses an inverted
+  1 kHz waveform with period 1023.
+- **Method:** MCU fields copied from the manual; only the PB6 binding and the
+  board-proven fixed waveform are taken from the pinned V1 source.
+- **Permitted use:** constant diagnostic illumination while the fixed boot
+  witness is displayed. Brightness policy and power management remain deferred.

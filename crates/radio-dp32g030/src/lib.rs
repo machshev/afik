@@ -19,6 +19,7 @@ pub mod clock;
 pub mod gpio;
 pub mod mmio;
 pub mod portcon;
+pub mod pwm_plus;
 pub mod spi;
 pub mod syscon;
 pub mod uart;
@@ -41,5 +42,7 @@ pub const UART1_BASE: u32 = 0x4006_B800;
 pub const UART2_BASE: u32 = 0x4006_C000;
 /// PORTCON base address, per `EVID-DP32-004`.
 pub const PORTCON_BASE: u32 = 0x400B_0000;
+/// `PWM_PLUS0` base address, per `EVID-DP32-011`.
+pub const PWM_PLUS0_BASE: u32 = 0x400B_4000;
 /// SPI0 base address, per `EVID-DP32-010`.
 pub const SPI0_BASE: u32 = 0x400B_8000;

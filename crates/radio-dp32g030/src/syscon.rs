@@ -27,6 +27,8 @@ pub enum Peripheral {
     Uart2,
     /// SPI controller 0, which drives the V1 display per `EVID-K5-022`.
     Spi0,
+    /// `PWM_PLUS` controller 0, which drives the V1 backlight.
+    PwmPlus0,
 }
 
 impl Peripheral {
@@ -40,6 +42,7 @@ impl Peripheral {
             Self::Uart1 => 1 << 7,
             Self::Uart2 => 1 << 8,
             Self::Spi0 => 1 << 10,
+            Self::PwmPlus0 => 1 << 20,
         }
     }
 }
@@ -66,6 +69,7 @@ mod tests {
         assert_eq!(Peripheral::Uart1.gate_bit(), 0x0000_0080);
         assert_eq!(Peripheral::Uart2.gate_bit(), 0x0000_0100);
         assert_eq!(Peripheral::Spi0.gate_bit(), 0x0000_0400);
+        assert_eq!(Peripheral::PwmPlus0.gate_bit(), 0x0010_0000);
     }
 
     #[test]
@@ -78,6 +82,7 @@ mod tests {
             Peripheral::Uart1,
             Peripheral::Uart2,
             Peripheral::Spi0,
+            Peripheral::PwmPlus0,
         ];
         let mut seen = 0_u32;
         for peripheral in peripherals {

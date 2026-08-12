@@ -76,6 +76,11 @@ pub fn select_k5_display_spi0() {
     }
 }
 
+/// Selects `PWM_PLUS0` channel zero on the V1 backlight's PB6 pin.
+pub fn select_k5_backlight_pwm() {
+    select_register(Port::B, 6).modify(|value| with_function(value, 6, FUNCTION_PORT_B_SPI0));
+}
+
 /// Enables the input buffer of one pin, which a pin that is read requires.
 pub fn enable_input(port: Port, pin: u8) {
     input_enable_register(port).modify(|value| value | (1 << u32::from(pin)));

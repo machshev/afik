@@ -2,12 +2,14 @@
 
 use radio_dp32g030::gpio::{self, Port};
 use radio_dp32g030::portcon;
+use radio_dp32g030::pwm_plus::PwmPlus;
 use radio_dp32g030::spi::Spi;
 use radio_dp32g030::syscon::{self, Peripheral};
-use radio_dp32g030::SPI0_BASE;
+use radio_dp32g030::{PWM_PLUS0_BASE, SPI0_BASE};
 use radio_firmware_k5::boot_display::{BootDisplay, BootStage};
 
 const SPI0: Spi = Spi::new(SPI0_BASE);
+const BACKLIGHT: PwmPlus = PwmPlus::new(PWM_PLUS0_BASE);
 const A0_PIN: u8 = 9;
 const RESET_PIN: u8 = 11;
 
@@ -17,16 +19,18 @@ pub struct K5BootDisplay;
 impl K5BootDisplay {
     /// Configures only the evidenced display pins and SPI0 controller.
     pub fn initialise() -> Self {
-        syscon::enable(&[Peripheral::GpioB, Peripheral::Spi0]);
+        syscon::enable(&[Peripheral::GpioB, Peripheral::Spi0, Peripheral::PwmPlus0]);
         for pin in [7, 8, A0_PIN, 10, RESET_PIN] {
             gpio::set_output(Port::B, pin);
         }
         portcon::select_k5_display_spi0();
+        portcon::select_k5_backlight_pwm();
         portcon::select_gpio(Port::B, A0_PIN);
         portcon::select_gpio(Port::B, RESET_PIN);
         gpio::write_pin(Port::B, A0_PIN, false);
         gpio::write_pin(Port::B, RESET_PIN, true);
         SPI0.configure_display();
+        BACKLIGHT.enable_diagnostic_backlight();
 
         delay(50_000);
         gpio::write_pin(Port::B, RESET_PIN, false);
