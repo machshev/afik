@@ -2404,13 +2404,18 @@
   capturing the wire across a power-cycle with nothing else holding the port.
   A silent `1.2` is a regression in the driver change and is a different
   question from the receive defect.
-- **Scope:** a burst-length sweep from the host, which costs no flash cycle and
-  bounds where reception breaks; then, if the break is at the FIFO boundary, the
-  DMA receive path the pinned V1 firmware uses, with its receive timeout, as the
-  candidate fix. Any DMA registers used must be recorded from the reference
-  manual first.
-- **Exclusions:** guessing at register values, and any change to the qualified
-  flashing path.
+- **Scope:** first add a fixed on-screen boot/stage witness through the evidenced
+  V1 ST7565-compatible display wiring, because three acknowledged images have
+  produced no repeatable serial output and serial alone cannot distinguish Reset
+  from UART failure. Keep the application-facing display contract independent of
+  DP32G030 registers. Then run a burst-length sweep from the host, which costs no
+  flash cycle and bounds where reception breaks; if the break is at the FIFO
+  boundary, use the DMA receive path the pinned V1 firmware uses, with its receive
+  timeout, as the candidate fix. Any SPI or DMA registers used must be recorded
+  from the reference manual first.
+- **Exclusions:** guessing at register values, changing the qualified flashing
+  path, keypad, storage, audio, RF, or TX. The display is a fixed diagnostic,
+  not yet the operator interface.
 - **Acceptance criteria:** a host `probe-normal` reports the image's identity
   from the exact unit, repeatably, and the burst-length sweep is recorded
   whatever the outcome.

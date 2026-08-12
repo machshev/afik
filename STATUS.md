@@ -7,6 +7,14 @@ operator has authorised guarded AFIK writes. The first step is unchanged: prove
 whether `AFIK-K5-1.2` boots with a clean wire capture, then bound and repair the
 back-to-back receive failure before sharing application code with K1.
 
+That first step has now failed more narrowly. `AFIK-K5-1.2`, the conservative
+`1.3` baseline, and the repeating RX diagnostic were each acknowledged 240/240
+pages, left DFU after a normal power-cycle, and produced no serial output during
+captures held long enough for repeated diagnostic reports. Serial is therefore
+not an adequate boot witness. The bounded next step is an evidenced fixed
+ST7565-compatible display diagnostic with a hardware-independent application
+contract; it adds no keypad, storage, audio, RF, or TX behavior.
+
 `K5DRV-048` is partially complete: the DP32G030 drivers boot and transmit on the
 exact unit, but the application cannot satisfy its host-exchange acceptance
 criterion until `K5RX-049` completes. `V1FAM-047` remains paused at its declared
