@@ -2450,3 +2450,21 @@
   adapters implement the same application contract, with the K5 synchronous
   GPIO implementation retained. Focused host tests cover both adapters and both
   embedded images build; no radio was flashed.
+
+## K5APP-051 — K5 receive-only operator hardware bring-up
+
+- **Status:** active; keypad adapter complete, EEPROM and receiver steps pending
+- **Objective:** add the K5 V1 keypad, read-only configuration-memory access,
+  BK4819 receive control, and demodulated-audio enablement as separately tested
+  and committed steps.
+- **Scope order:** main keypad matrix; EEPROM identification/read only; BK4819
+  three-wire read-back then receive initialization/metering; speaker audio only
+  after receive is established.
+- **Exclusions:** EEPROM writes, PTT semantics, TX register values, PA/RF switch
+  control, RF emission, calibration claims, side keys, and voice-chip behavior.
+- **Safety boundary:** each physical bus begins with an identity or known-register
+  read; ambiguous results stop the package. Shared keypad/I2C/voice pins are
+  restored after every keypad scan. No physical image write is implied.
+- **First result:** the source-pinned PA3..PA6 by PA10..PA13 main matrix is a
+  bounded adapter with all sixteen mappings, stable-sample rejection, and an
+  explicit shared-pin restore contract covered by host tests.

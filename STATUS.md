@@ -2,6 +2,20 @@
 
 ## Current work package
 
+**`K5APP-051` is active.** Its first step adds the source-backed K5 V1 main
+keypad matrix adapter. All sixteen labels are mapped, unstable or multiple-key
+samples are rejected, and every scan restores the EEPROM/I2C and voice-chip
+shared row pins. Host tests pass; this is not yet integrated into the image or
+physically confirmed. EEPROM read-only access is the next step.
+
+Commands run in the pinned environment on 2026-08-12:
+
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c cargo test -q -p radio-firmware-k5` — passed.
+- `nix develop path:. -c cargo clippy -q -p radio-firmware-k5 --all-targets -- -D warnings` — passed.
+
+## Previous handoff: PLAT-050
+
 **`PLAT-050` is complete.** K1 and K5 now compile their common normal-mode hello
 behavior and application-facing boot display contract from the new `no_std`,
 heap-free `radio-platform` crate. K1 retains its additional diagnostic and

@@ -2574,3 +2574,20 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   FIFO overflowed with valid bytes while DMA moved none. This ruled out local
   transmission as the framing fault and exposed the DMA request-selection
   error recorded in `EVID-DP32-012`.
+
+### EVID-K5-025 — V1 main-keypad matrix and shared pins
+
+- **Source:** pinned `machshev/uv-k5-firmware-custom` commit
+  `7f959e8d09b435845753182b329e3a88490ebe32`, `driver/gpio.h`,
+  `driver/keyboard.c`, and `board.c`.
+- **Binding:** PA3..PA6 are pulled-up active-low sense columns. PA10..PA13 are
+  row outputs. Rows map respectively to `MENU/1/4/7`, `UP/2/5/8`,
+  `DOWN/3/6/9`, and `EXIT/STAR/0/F`.
+- **Sharing:** PA10/PA11 are the EEPROM I2C clock/data pins; PA12/PA13 are voice
+  chip pins. The pinned implementation restores PA10/PA11 high and PA12 low,
+  PA13 high after scanning.
+- **Permitted use:** a bounded main-matrix adapter which accepts only stable,
+  single-key samples and restores the shared pins. This does not establish
+  side keys, PTT, debounce timing, EEPROM access, or voice-chip behavior.
+- **Required experiment:** display each decoded label while pressing every main
+  key on the exact unit, with no EEPROM or RF operation.

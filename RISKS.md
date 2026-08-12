@@ -64,6 +64,9 @@
   now support one fixed, receive-inert V1 display witness. It proves only the
   visible stage reached; the keypad and the full K5 operator interface remain
   unverified.
+- **K5 keypad narrowing, 2026-08-12:** `EVID-K5-025` supports the V1 main-matrix
+  adapter and its shared-pin restore state. Physical label mapping, settling,
+  debounce, side keys, and PTT remain unverified until the stated experiment.
 
 ## RISK-007 — BK4819 register applicability and board RF control are unverified
 

@@ -6,4 +6,5 @@
 extern crate std;
 
 pub mod k5_display;
+pub mod keypad;
 pub mod protocol;
