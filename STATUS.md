@@ -23,6 +23,10 @@ Commands run in the pinned environment on 2026-08-12:
   radio-firmware-k5 --all-targets -- -D warnings'` — passed.
 - After the BK4819/audio adapter step, the same focused format/test/Clippy gate
   passed with six K5 library tests, and `./tool/build-k5.sh --release` passed.
+- `nix develop path:. -c bash -c 'cargo fmt --all --check && cargo clippy
+  --workspace --all-targets -- -D warnings && cargo test --workspace'` — passed;
+  the workspace suite includes six K5 library tests.
+- `git diff --check` — passed.
 
 ## Previous handoff: PLAT-050
 
