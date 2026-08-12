@@ -17,9 +17,7 @@ use radio_dp32g030::portcon;
 use radio_dp32g030::syscon::{self, Peripheral};
 use radio_dp32g030::uart::{k5_programming_divider, Uart};
 use radio_dp32g030::UART1_BASE;
-use radio_firmware_k5::protocol::{
-    encode_hello_response, Request, RequestReader, RESPONSE_FRAME_BYTES,
-};
+use radio_firmware_k5::protocol::{HelloService, APPLICATION_IDENTITY, RESPONSE_FRAME_BYTES};
 
 /// Initial stack pointer, per `EVID-K5-019`: the top of the evidenced RAM less
 /// the sixteen bytes the firmware running on these units leaves alone.
@@ -99,12 +97,11 @@ fn main() -> ! {
     };
     UART1.start_receive_dma();
 
-    let mut reader = RequestReader::new();
+    let mut service = HelloService::new(APPLICATION_IDENTITY);
+    let mut response = [0_u8; RESPONSE_FRAME_BYTES];
     loop {
-        if reader.push(receive_byte(&mut receiver)) == Some(Request::Hello) {
-            let mut frame = [0_u8; RESPONSE_FRAME_BYTES];
-            encode_hello_response(&mut frame);
-            UART1.write(&frame);
+        if let Some(length) = service.push(receive_byte(&mut receiver), &mut response) {
+            UART1.write(&response[..length]);
             UART1.flush();
         }
     }

@@ -16,6 +16,7 @@ firmware = []
 
 [dependencies]
 radio-dp32g030 = { path = "../radio-dp32g030" }
+radio-platform = { path = "../radio-platform" }
 
 [dev-dependencies]
 radio-flasher = { path = "../radio-flasher" }

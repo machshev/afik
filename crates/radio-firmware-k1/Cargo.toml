@@ -72,6 +72,7 @@ radio-protocol = { path = "../radio-protocol" }
 radio-eeprom = { path = "../radio-eeprom" }
 radio-storage = { path = "../radio-storage" }
 radio-domain = { path = "../radio-domain" }
+radio-platform = { path = "../radio-platform" }
 embassy-executor = { version = "=0.10.0", default-features = false, features = ["executor-thread", "platform-cortex-m"], optional = true }
 py32-hal = { version = "=0.4.1", default-features = false, features = ["py32f071r1b"], optional = true }
 embassy-time = { version = "=0.5.1", default-features = false, optional = true }

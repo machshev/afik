@@ -2450,6 +2450,7 @@ dependencies = [
  "radio-device",
  "radio-domain",
  "radio-eeprom",
+ "radio-platform",
  "radio-programmer",
  "radio-protocol",
  "radio-storage",
@@ -2461,6 +2462,7 @@ version = "0.1.0"
 dependencies = [
  "radio-dp32g030",
  "radio-flasher",
+ "radio-platform",
 ]
 
 [[package]]
@@ -2474,6 +2476,10 @@ dependencies = [
  "radio-flasher",
  "radio-programmer-serial",
 ]
+
+[[package]]
+name = "radio-platform"
+version = "0.1.0"
 
 [[package]]
 name = "radio-programmer"

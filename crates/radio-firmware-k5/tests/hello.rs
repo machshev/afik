@@ -7,27 +7,36 @@
 //! framing rather than testing either against a fixture written beside it.
 
 use radio_firmware_k5::protocol::{
-    encode_hello_response, Request, RequestReader, APPLICATION_VERSION, RESPONSE_FRAME_BYTES,
+    HelloService, APPLICATION_IDENTITY, APPLICATION_VERSION, RESPONSE_FRAME_BYTES,
 };
 use radio_flasher::probe_normal_firmware;
 use std::io::{Read, Write};
 
 /// A radio which runs the image's own protocol code over an in-memory wire.
-#[derive(Default)]
 struct SimulatedRadio {
-    reader: RequestReader,
+    service: HelloService<'static>,
     outbound: Vec<u8>,
     read_position: usize,
     answered: usize,
 }
 
+impl Default for SimulatedRadio {
+    fn default() -> Self {
+        Self {
+            service: HelloService::new(APPLICATION_IDENTITY),
+            outbound: Vec::new(),
+            read_position: 0,
+            answered: 0,
+        }
+    }
+}
+
 impl Write for SimulatedRadio {
     fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
         for byte in buffer {
-            if self.reader.push(*byte) == Some(Request::Hello) {
-                let mut frame = [0_u8; RESPONSE_FRAME_BYTES];
-                encode_hello_response(&mut frame);
-                self.outbound.extend_from_slice(&frame);
+            let mut response = [0_u8; RESPONSE_FRAME_BYTES];
+            if let Some(length) = self.service.push(*byte, &mut response) {
+                self.outbound.extend_from_slice(&response[..length]);
                 self.answered += 1;
             }
         }

@@ -2,10 +2,10 @@
 
 #![allow(clippy::identity_op)]
 
-/// Encoded request body size: eight payload bytes plus two CRC bytes.
-pub const REQUEST_BODY_BYTES: usize = 10;
-/// Complete encoded response size for the fixed 40-byte hello payload.
-pub const RESPONSE_FRAME_BYTES: usize = 48;
+use radio_platform::serial::{
+    decode_command, encode_hello_response as encode_shared_hello_response, ApplicationIdentity,
+};
+pub use radio_platform::serial::{REQUEST_BODY_BYTES, RESPONSE_FRAME_BYTES};
 /// Complete encoded response size for the 16-byte keypad diagnostic payload.
 pub const KEYPAD_RESPONSE_FRAME_BYTES: usize = 24;
 /// Complete encoded response size for the 24-byte clock diagnostic payload.
@@ -16,7 +16,6 @@ pub const CLOCK_REGISTER_RESPONSE_FRAME_BYTES: usize = 20;
 pub const RF_RESPONSE_FRAME_BYTES: usize = 28;
 
 const COMMAND_HELLO_REQUEST: u16 = 0x0514;
-const COMMAND_HELLO_RESPONSE: u16 = 0x0515;
 const COMMAND_KEYPAD_REQUEST: u16 = 0x7F10;
 const COMMAND_KEYPAD_RESPONSE: u16 = 0x7F11;
 const COMMAND_CLOCK_REQUEST: u16 = 0x7F12;
@@ -31,9 +30,6 @@ const COMMAND_RF_AUDIO_ON_REQUEST: u16 = 0x7F20;
 const COMMAND_RF_AUDIO_OFF_REQUEST: u16 = 0x7F22;
 /// Fixed no-MMIO marker returned by the clock-path control request.
 pub const CLOCK_CONTROL_MARKER: u32 = 0x4B31_434C;
-const SESSION_WORD: u32 = 0x6457_396A;
-const RESPONSE_PAYLOAD_BYTES: usize = 40;
-const RESPONSE_DECLARED_BYTES: u16 = 36;
 const RESPONSE_TRAILER: u16 = 0xFFFF;
 const XOR_KEY: [u8; 16] = [
     0x16, 0x6C, 0x14, 0xE6, 0x2E, 0x91, 0x0D, 0x40, 0x21, 0x35, 0xD5, 0x40, 0x13, 0x03, 0xE9, 0x80,
@@ -41,6 +37,8 @@ const XOR_KEY: [u8; 16] = [
 
 /// Printable identity returned by the first AFIK K1 application.
 pub const APPLICATION_VERSION: &[u8] = b"AFIK-K1-1.2";
+const APPLICATION_IDENTITY: ApplicationIdentity<'static> =
+    ApplicationIdentity::new(APPLICATION_VERSION).expect("K1 identity is printable and bounded");
 
 /// One accepted read-only normal-mode request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -105,15 +103,7 @@ pub const RF_STAGE_FAULTED: u8 = 0xFF;
 
 /// Decodes one bounded normal-mode request body.
 pub fn decode_request(encoded_body: &mut [u8; REQUEST_BODY_BYTES]) -> Option<Request> {
-    xor(encoded_body);
-    let payload = &encoded_body[..8];
-    let expected_crc = u16::from_le_bytes([encoded_body[8], encoded_body[9]]);
-    let command = u16::from_le_bytes([payload[0], payload[1]]);
-    let declared = u16::from_le_bytes([payload[2], payload[3]]);
-    let session = u32::from_le_bytes([payload[4], payload[5], payload[6], payload[7]]);
-    if declared != 4 || session != SESSION_WORD || crc16_xmodem(payload) != expected_crc {
-        return None;
-    }
+    let command = decode_command(encoded_body)?;
     match command {
         COMMAND_HELLO_REQUEST => Some(Request::Hello),
         COMMAND_KEYPAD_REQUEST => Some(Request::KeypadMatrix),
@@ -240,27 +230,12 @@ pub fn encode_keypad_response(
     frame[22..24].copy_from_slice(&[0xDC, 0xBA]);
 }
 
-/// Encodes one normal-mode hello response into a caller-provided frame.
-///
-/// # Panics
-///
-/// This cannot panic because the fixed response payload length fits in `u16`.
+/// Encodes one normal-mode hello response through the shared application service.
 pub fn encode_hello_response(frame: &mut [u8; RESPONSE_FRAME_BYTES]) {
-    frame.fill(0);
-    frame[0..2].copy_from_slice(&[0xAB, 0xCD]);
-    let payload_length = u16::try_from(RESPONSE_PAYLOAD_BYTES).expect("bounded response");
-    frame[2..4].copy_from_slice(&payload_length.to_le_bytes());
-
-    let payload = &mut frame[4..4 + RESPONSE_PAYLOAD_BYTES];
-    payload[0..2].copy_from_slice(&COMMAND_HELLO_RESPONSE.to_le_bytes());
-    payload[2..4].copy_from_slice(&RESPONSE_DECLARED_BYTES.to_le_bytes());
-    payload[4..4 + APPLICATION_VERSION.len()].copy_from_slice(APPLICATION_VERSION);
-    frame[4 + RESPONSE_PAYLOAD_BYTES..6 + RESPONSE_PAYLOAD_BYTES]
-        .copy_from_slice(&RESPONSE_TRAILER.to_le_bytes());
-    xor(&mut frame[4..6 + RESPONSE_PAYLOAD_BYTES]);
-    frame[6 + RESPONSE_PAYLOAD_BYTES..].copy_from_slice(&[0xDC, 0xBA]);
+    encode_shared_hello_response(APPLICATION_IDENTITY, frame);
 }
 
+#[cfg(test)]
 fn crc16_xmodem(bytes: &[u8]) -> u16 {
     let mut crc = 0_u16;
     for byte in bytes {
