@@ -2395,3 +2395,9 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   frame which arrives intact into a quiet receiver attributes the corruption to
   the image's own transmission; one which is still corrupted moves the question
   to the receive path and its DMA alternative.
+- **Follow-up, 2026-08-12:** `AFIK-K5-1.2` was written again, with 240/240 pages
+  acknowledged. A passive capture held across a normal power-cycle received no
+  boot banner, and a read-only normal probe timed out. This establishes that
+  `1.2` does not reach its observable banner on this attempt. It does not
+  attribute the failure to its `UART_IF` acknowledgement, because `read_byte`
+  is called only after the banner has been sent and flushed.
