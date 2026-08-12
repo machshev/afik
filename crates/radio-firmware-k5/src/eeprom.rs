@@ -1,10 +1,15 @@
-//! Read-only access to the K5 V1's 8 KiB configuration EEPROM.
+//! Guarded access to the K5 V1's 8 KiB configuration EEPROM.
 
 use radio_dp32g030::gpio::{self, Port};
 use radio_dp32g030::portcon;
 
 /// Capacity established by the retained complete K5 backup.
 pub const CAPACITY: usize = 8 * 1024;
+/// Only write size evidenced by the pinned V1 firmware.
+pub const WRITE_BLOCK_BYTES: usize = 8;
+// The pinned firmware waits 8 ms. Polling remains bounded but permits at least
+// that interval at the sourced one-microsecond bit timing.
+const READY_POLLS: usize = 512;
 const WRITE_ADDRESS: u8 = 0xA0;
 const READ_ADDRESS: u8 = 0xA1;
 
@@ -20,13 +25,21 @@ pub trait Bus {
     fn read(&mut self, final_byte: bool) -> u8;
 }
 
-/// Why a read-only EEPROM operation was refused.
+/// Why an EEPROM operation was refused.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
     /// The requested range is empty or crosses the evidenced capacity.
     OutOfRange,
     /// The EEPROM did not acknowledge an address-phase byte.
     NotAcknowledged,
+    /// A write address was not aligned to the evidenced eight-byte block.
+    Unaligned,
+    /// Current EEPROM bytes did not match the caller's expected old bytes.
+    PreconditionMismatch,
+    /// The device did not become ready within the bounded polling window.
+    Busy,
+    /// Mandatory read-back did not equal the requested replacement.
+    VerificationFailed,
 }
 
 /// Reads exactly `output.len()` bytes without exposing any write operation.
@@ -55,6 +68,64 @@ pub fn read<B: Bus>(bus: &mut B, address: u16, output: &mut [u8]) -> Result<(), 
         *byte = bus.read(index == last);
     }
     bus.stop();
+    Ok(())
+}
+
+/// Replaces one aligned eight-byte block after compare and verifies read-back.
+///
+/// Supplying the expected current bytes makes stale configuration state fail
+/// before programming. The fixed block size is the only write shape evidenced
+/// on this board; no arbitrary or cross-block write API is exposed.
+pub fn write_verified<B: Bus>(
+    bus: &mut B,
+    address: u16,
+    expected: &[u8; WRITE_BLOCK_BYTES],
+    replacement: &[u8; WRITE_BLOCK_BYTES],
+) -> Result<(), Error> {
+    if usize::from(address) % WRITE_BLOCK_BYTES != 0 {
+        return Err(Error::Unaligned);
+    }
+    let mut current = [0_u8; WRITE_BLOCK_BYTES];
+    read(bus, address, &mut current)?;
+    if current != *expected {
+        return Err(Error::PreconditionMismatch);
+    }
+    if current == *replacement {
+        return Ok(());
+    }
+
+    bus.start();
+    let address_bytes = address.to_be_bytes();
+    if !bus.write(WRITE_ADDRESS) || !bus.write(address_bytes[0]) || !bus.write(address_bytes[1]) {
+        bus.stop();
+        return Err(Error::NotAcknowledged);
+    }
+    for byte in replacement {
+        if !bus.write(*byte) {
+            bus.stop();
+            return Err(Error::NotAcknowledged);
+        }
+    }
+    bus.stop();
+
+    let mut ready = false;
+    for _ in 0..READY_POLLS {
+        bus.start();
+        ready = bus.write(WRITE_ADDRESS);
+        bus.stop();
+        if ready {
+            break;
+        }
+    }
+    if !ready {
+        return Err(Error::Busy);
+    }
+
+    let mut verified = [0_u8; WRITE_BLOCK_BYTES];
+    read(bus, address, &mut verified)?;
+    if verified != *replacement {
+        return Err(Error::VerificationFailed);
+    }
     Ok(())
 }
 
@@ -157,13 +228,16 @@ fn delay() {
 
 #[cfg(test)]
 mod tests {
-    use super::{read, Bus, Error, CAPACITY};
+    use super::{read, write_verified, Bus, Error, CAPACITY, READY_POLLS};
+
     #[derive(Default)]
     struct Fake {
         writes: std::vec::Vec<u8>,
         starts: usize,
         stops: usize,
         reads: std::vec::Vec<bool>,
+        read_bytes: std::collections::VecDeque<u8>,
+        acknowledgements: std::collections::VecDeque<bool>,
     }
     impl Bus for Fake {
         fn start(&mut self) {
@@ -174,11 +248,13 @@ mod tests {
         }
         fn write(&mut self, byte: u8) -> bool {
             self.writes.push(byte);
-            true
+            self.acknowledgements.pop_front().unwrap_or(true)
         }
         fn read(&mut self, final_byte: bool) -> u8 {
             self.reads.push(final_byte);
-            u8::try_from(self.reads.len()).unwrap()
+            self.read_bytes
+                .pop_front()
+                .unwrap_or_else(|| u8::try_from(self.reads.len()).unwrap())
         }
     }
     #[test]
@@ -200,5 +276,82 @@ mod tests {
             Err(Error::OutOfRange)
         );
         assert_eq!((bus.starts, bus.stops), (0, 0));
+    }
+
+    #[test]
+    fn verified_write_compares_programs_polls_and_reads_back() {
+        let old = [1, 2, 3, 4, 5, 6, 7, 8];
+        let new = [8, 7, 6, 5, 4, 3, 2, 1];
+        let mut bus = Fake::default();
+        bus.read_bytes.extend(old.into_iter().chain(new));
+        assert_eq!(write_verified(&mut bus, 0x0120, &old, &new), Ok(()));
+        assert!(bus
+            .writes
+            .windows(11)
+            .any(|bytes| bytes == [0xa0, 0x01, 0x20, 8, 7, 6, 5, 4, 3, 2, 1]));
+        assert_eq!(bus.starts, 6);
+        assert_eq!(bus.stops, 4);
+    }
+
+    #[test]
+    fn stale_precondition_and_unaligned_address_write_nothing() {
+        let expected = [0; 8];
+        let replacement = [1; 8];
+        let mut bus = Fake::default();
+        bus.read_bytes.extend([2; 8]);
+        assert_eq!(
+            write_verified(&mut bus, 0x0100, &expected, &replacement),
+            Err(Error::PreconditionMismatch)
+        );
+        assert_eq!(bus.writes, [0xa0, 0x01, 0x00, 0xa1]);
+
+        let mut bus = Fake::default();
+        assert_eq!(
+            write_verified(&mut bus, 0x0101, &expected, &replacement),
+            Err(Error::Unaligned)
+        );
+        assert!(bus.writes.is_empty());
+    }
+
+    #[test]
+    fn read_back_mismatch_is_never_reported_as_success() {
+        let old = [0; 8];
+        let replacement = [1; 8];
+        let mut bus = Fake::default();
+        bus.read_bytes.extend(old.into_iter().chain([2; 8]));
+        assert_eq!(
+            write_verified(&mut bus, 0x0100, &old, &replacement),
+            Err(Error::VerificationFailed)
+        );
+    }
+
+    #[test]
+    fn ambiguous_program_acknowledgement_stops_without_retry() {
+        let old = [0; 8];
+        let replacement = [1; 8];
+        let mut bus = Fake::default();
+        bus.read_bytes.extend(old);
+        bus.acknowledgements.extend([true; 7]);
+        bus.acknowledgements.push_back(false);
+        assert_eq!(
+            write_verified(&mut bus, 0x0100, &old, &replacement),
+            Err(Error::NotAcknowledged)
+        );
+        assert_eq!(bus.writes, [0xa0, 0x01, 0x00, 0xa1, 0xa0, 0x01, 0x00, 1]);
+        assert_eq!(bus.stops, 2);
+    }
+
+    #[test]
+    fn device_which_never_becomes_ready_times_out() {
+        let old = [0; 8];
+        let replacement = [1; 8];
+        let mut bus = Fake::default();
+        bus.read_bytes.extend(old);
+        bus.acknowledgements.extend([true; 15]);
+        bus.acknowledgements.extend([false; READY_POLLS]);
+        assert_eq!(
+            write_verified(&mut bus, 0x0100, &old, &replacement),
+            Err(Error::Busy)
+        );
     }
 }

@@ -20,6 +20,11 @@
   identified, its complete read-only EEPROM backup is retained and validated,
   a known-good raw recovery image is recorded, and rewriting/rebooting that
   recovery image has succeeded on the same unit.
+- **K5 configuration-memory narrowing, 2026-08-13:** `EVID-K5-028` adds a
+  software-only compare/write/poll/read-back operation for one evidenced
+  eight-byte block. No disposable address, power-loss behavior, or physical
+  restore has been established, so the boot image has no call site and no
+  physical EEPROM write is authorized by this implementation.
 
 ## RISK-003 — Protocol wire format may change during bring-up
 

@@ -2622,3 +2622,21 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
 - **Not established:** fitted silicon revision, safe initialization on this
   exact unit, demodulated audio, sensitivity, RF switching, calibration, or TX.
   No PA control or transmit path is permitted.
+
+### EVID-K5-028 — V1 EEPROM eight-byte programming boundary
+
+- **Source:** pinned `machshev/uv-k5-firmware-custom` commit
+  `7f959e8d09b435845753182b329e3a88490ebe32`, `driver/eeprom.c` and
+  `driver/i2c.c`.
+- **Write shape:** the source programs exactly eight bytes after `A0` and a
+  big-endian 16-bit address, stops, then waits 8 ms. It refuses addresses at or
+  above `0x2000`. No larger page geometry is inferred.
+- **AFIK boundary:** `write_verified` accepts one aligned eight-byte block only.
+  It first reads and compares caller-supplied expected bytes, performs one
+  program transaction without retrying an ambiguous data acknowledgement,
+  boundedly acknowledgement-polls readiness, and requires exact read-back.
+- **Permitted use:** software construction and host testing. There is no boot
+  call site and no physical write authorization. A physical experiment requires
+  the retained complete backup, an explicitly chosen address/current value,
+  and an independently tested restore route because no disposable EEPROM range
+  has been established.

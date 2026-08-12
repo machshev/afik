@@ -7,13 +7,16 @@ keypad matrix adapter. All sixteen labels are mapped, unstable or multiple-key
 samples are rejected, and every scan restores the EEPROM/I2C and voice-chip
 shared row pins. Host tests pass; this is not yet integrated into the image or
 physically confirmed. The second step adds an 8 KiB-bounded, acknowledgement-
-checked read-only EEPROM adapter with no write API. The third step adds the V1
+checked EEPROM reader. Its fourth step now adds a guarded write API for exactly
+one aligned eight-byte block: compare expected old bytes, program once, poll
+readiness within a bound, and require exact read-back. The API remains
+unreachable from the boot image and has not run on hardware. The third step adds the V1
 BK4819 three-wire `RegisterBus` adapter and an independently muted PC4 speaker
 gate. They compile into the K5 target but are deliberately not invoked by the
 boot image: a known-register read-back is the next physical gate before any
 receiver initialization or audio enablement.
 
-Commands run in the pinned environment on 2026-08-12:
+Commands run in the pinned environment on 2026-08-12 and 2026-08-13:
 
 - `nix develop path:. -c cargo fmt --all --check` — passed.
 - `nix develop path:. -c cargo test -q -p radio-firmware-k5` — passed.
@@ -27,6 +30,14 @@ Commands run in the pinned environment on 2026-08-12:
   --workspace --all-targets -- -D warnings && cargo test --workspace'` — passed;
   the workspace suite includes six K5 library tests.
 - `git diff --check` — passed.
+- On 2026-08-13, `nix develop path:. -c bash -c 'cargo fmt --all --check &&
+  cargo test -q -p radio-firmware-k5 && cargo clippy -q -p
+  radio-firmware-k5 --all-targets -- -D warnings && ./tool/build-k5.sh
+  --release'` — passed during focused development.
+- Final 2026-08-13 handoff: `nix develop path:. -c bash -c 'cargo fmt --all
+  --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test
+  --workspace && ./tool/build-k5.sh --release'` — passed, including eleven K5
+  library tests; `git diff --check` also passed.
 
 ## Previous handoff: PLAT-050
 

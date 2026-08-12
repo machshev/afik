@@ -2477,3 +2477,8 @@
   and bidirectional data. PC4 is a separately initialized-muted speaker gate.
   Host framing tests and the embedded build pass; neither is called by the K5
   boot image until known-register read-back is physically approved and observed.
+- **Fourth result:** the K5 EEPROM adapter now supports one guarded, aligned
+  eight-byte replacement with compare-before-write, bounded ready polling, and
+  mandatory read-back. Stale state, bad acknowledgements, busy timeout, and
+  verification mismatch are errors. It remains unreachable from the boot image
+  and no physical EEPROM write was performed.
