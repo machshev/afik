@@ -29,6 +29,8 @@ const IF_TXBUSY: u32 = 1 << 16;
 const FIFO_RF_CLR: u32 = 1 << 6;
 /// `UART_FIFO` bit 7: clear the transmit FIFO.
 const FIFO_TF_CLR: u32 = 1 << 7;
+/// Receive FIFO trigger encoding `111`: eight bytes.
+const FIFO_RF_LEVEL_EIGHT: u32 = 0b111;
 
 /// One UART instance.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -87,6 +89,11 @@ impl Uart {
         Register::new(self.base, 0x1C)
     }
 
+    /// `UART_RXTO`, in received-character times.
+    const fn receive_timeout(self) -> Register {
+        Register::new(self.base, 0x20)
+    }
+
     /// Configures 8-N-1 at `baud`, with both FIFOs emptied and no interrupt.
     ///
     /// The module is disabled first so the divider never changes underneath a
@@ -106,12 +113,14 @@ impl Uart {
         self.interrupt_enable().write(0);
         self.flow_control().write(0);
         self.baud().write(u32::from(divider));
-        self.fifo().write(FIFO_RF_CLR | FIFO_TF_CLR);
+        self.fifo()
+            .write(FIFO_RF_LEVEL_EIGHT | FIFO_RF_CLR | FIFO_TF_CLR);
         self.control().write(CTRL_UARTEN | CTRL_RXEN | CTRL_TXEN);
     }
 
     /// Hands receive-data reads to DMA after ordinary UART configuration.
     pub fn enable_receive_dma(self) {
+        self.receive_timeout().write(4);
         self.control()
             .modify(|value| value | CTRL_UARTEN | CTRL_RXEN | CTRL_TXEN | CTRL_RXDMAEN);
     }

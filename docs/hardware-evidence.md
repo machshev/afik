@@ -2491,3 +2491,10 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   source for AFIK.
 - **Permitted use:** interrupt-free circular UART1 receive into one statically
   owned 256-byte buffer. No other DMA channel or peripheral is authorised.
+- **First physical result:** the visible DMA image showed `RX 0` before and
+  after one host probe. Sticky `UART_IF` changed from `0x00002484` to
+  `0x000e3df4`; its receive-level field reached seven bytes while DMA moved
+  none. AFIK had written only FIFO-clear bits during configuration and thereby
+  replaced the reset receive threshold. The manual-defined correction restores
+  threshold encoding `111` (eight bytes) and receive timeout 4, matching the
+  board-proven configuration so a short frame's residual FIFO can request DMA.
