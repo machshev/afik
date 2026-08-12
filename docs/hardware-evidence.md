@@ -2509,6 +2509,13 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   corrected mode field is therefore `010 << 3` (`0x10`). This explains the
   repeated `RX 0`: channel zero was enabled but listening to the wrong hardware
   request.
+- **Physical result:** after the corrected image's normal power-cycle, the
+  display showed baseline `RX 0`, `UART_IF 0x00002480`. One complete normal
+  hello then produced the intentionally expected host timeout and display
+  `RX 000016`, sticky `UART_IF 0x000224a0`. All sixteen wire bytes reached DMA;
+  `PARITYE`, `STOPE`, and `RXFIFO_OVF` remained clear. This proves channel zero,
+  `HSREQ_MS1`, the UART receive request, circular SRAM destination, and AFIK's
+  producer-index interpretation on the exact unit.
 
 ### EVID-K5-023 — V1 programming-port receive divider correction
 
