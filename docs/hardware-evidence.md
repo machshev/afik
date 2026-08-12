@@ -2518,3 +2518,31 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
 - **Permitted use:** configure only the V1 programming UART with the empirical
   39,053 target while retaining the generic manual-derived divider function for
   every other use. Physical acceptance still requires a complete host frame.
+- **Physical result:** after a normal power-cycle the corrected-divider image
+  showed baseline `RX 0`, `UART_IF 0x00002484`. One normal probe timed out and
+  changed the display to `RX 0`, sticky `UART_IF 0x000e3de4`. The empirical
+  divider therefore did not make a complete frame reach DMA. Bit 4 `STOPE`
+  remained set; the preceding run's bit 4 was also set, so this does not remove
+  the back-to-back stop-error defect.
+
+### EVID-K5-024 — Known-running V1 UART/DMA start ordering
+
+- **Observation:** the pinned working V1 firmware keeps `UARTEN` clear while
+  setting the corrected divider, `RXEN | TXEN | RXDMAEN`, timeout 4, FIFO
+  threshold 8, flow control zero, and interrupts disabled. It then configures
+  DMA channel zero, writes one to clear `UART_IF.RXTO`, enables DMA globally,
+  and only then sets `UARTEN`.
+- **Source:** `armel/uv-k5-firmware-custom` tag `v4.3`, commit
+  `fbcf26d8e9811b135b7e2d97bdefebaa4b3ed9e0`, `driver/uart.c`. This is the
+  firmware identity the exact unit reported before AFIK was written. A fresh
+  read-only temporary checkout was compared with the retained local V1 source;
+  their UART/DMA initialisation sequence is identical.
+- **Difference found:** AFIK enabled UART before configuring the DMA channel and
+  did not perform the sourced pre-start `RXTO` acknowledgement. The next image
+  reproduces the working firmware's peripheral start ordering behind the Rust
+  UART interface; its DMA register values already match.
+- **Armel boundary:** this source is Armel's DP32G030 V1 repository, not the
+  separate `armel/uv-k1-k5v3-firmware-custom` STM32/PY32 repository.
+- **Required experiment:** after a normal power-cycle, compare the visible
+  baseline and one normal probe. A complete response proves the sequence;
+  another failure remains a negative result rather than register evidence.

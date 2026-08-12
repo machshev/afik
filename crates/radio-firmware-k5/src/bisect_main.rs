@@ -123,14 +123,14 @@ fn main() -> ! {
     let clock = clock::configure();
     portcon::select_pa7_uart1_tx();
     portcon::select_pa8_uart1_rx();
-    UART1.configure_with_divider(k5_programming_divider(clock.hertz()));
+    UART1.prepare_receive_dma_with_divider(k5_programming_divider(clock.hertz()));
     // SAFETY: this image has one core and gives the static buffer exclusively
     // to this receiver for the rest of its lifetime.
     #[allow(unsafe_code)]
     let mut receiver = unsafe {
         CircularReceiver::<DMA_BYTES>::new(&raw mut DMA_BUFFER as *mut u8, UART1.receive_address())
     };
-    UART1.enable_receive_dma();
+    UART1.start_receive_dma();
 
     let _ = display.show(BootStage::SerialReady);
 

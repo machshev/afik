@@ -17,6 +17,7 @@ const CTRL_RXEN: u32 = 1 << 1;
 const CTRL_TXEN: u32 = 1 << 2;
 /// `UART_CTRL` bit 3: DMA owns receive-data reads.
 const CTRL_RXDMAEN: u32 = 1 << 3;
+const CTRL_RECEIVE_DMA_PREPARED: u32 = CTRL_RXEN | CTRL_TXEN | CTRL_RXDMAEN;
 
 /// `UART_IF` bit 10: the receive FIFO is empty.
 const IF_RXFIFO_EMPTY: u32 = 1 << 10;
@@ -24,6 +25,8 @@ const IF_RXFIFO_EMPTY: u32 = 1 << 10;
 const IF_TXFIFO_FULL: u32 = 1 << 14;
 /// `UART_IF` bit 16: the transmitter is busy.
 const IF_TXBUSY: u32 = 1 << 16;
+/// `UART_IF` bit 5: receive timeout; write one to clear before DMA starts.
+const IF_RXTO: u32 = 1 << 5;
 
 /// `UART_FIFO` bit 6: clear the receive FIFO.
 const FIFO_RF_CLR: u32 = 1 << 6;
@@ -118,11 +121,26 @@ impl Uart {
         self.control().write(CTRL_UARTEN | CTRL_RXEN | CTRL_TXEN);
     }
 
-    /// Hands receive-data reads to DMA after ordinary UART configuration.
-    pub fn enable_receive_dma(self) {
+    /// Prepares receive DMA while keeping the UART itself disabled.
+    ///
+    /// The known-running V1 firmware programs the DMA channel between this
+    /// preparation and [`Uart::start_receive_dma`]. Keeping that ordering here
+    /// avoids accepting bytes before DMA owns the receive-data register.
+    pub fn prepare_receive_dma_with_divider(self, divider: u16) {
+        self.control().write(0);
+        self.baud().write(u32::from(divider));
         self.receive_timeout().write(4);
-        self.control()
-            .modify(|value| value | CTRL_UARTEN | CTRL_RXEN | CTRL_TXEN | CTRL_RXDMAEN);
+        self.flow_control().write(0);
+        self.fifo()
+            .write(FIFO_RF_LEVEL_EIGHT | FIFO_RF_CLR | FIFO_TF_CLR);
+        self.interrupt_enable().write(0);
+        self.control().write(CTRL_RECEIVE_DMA_PREPARED);
+    }
+
+    /// Starts a prepared receive-DMA UART after its DMA channel is enabled.
+    pub fn start_receive_dma(self) {
+        self.status().write(IF_RXTO);
+        self.control().modify(|value| value | CTRL_UARTEN);
     }
 
     /// Sends one byte, waiting for room in the transmit FIFO.
@@ -206,7 +224,7 @@ pub const fn k5_programming_divider(clock_hz: u32) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use super::{divider, k5_programming_divider};
+    use super::{divider, k5_programming_divider, CTRL_RECEIVE_DMA_PREPARED, CTRL_UARTEN};
 
     #[test]
     fn the_manuals_worked_example_is_reproduced() {
@@ -237,5 +255,11 @@ mod tests {
     #[test]
     fn the_k5_programming_port_uses_its_board_proven_correction() {
         assert_eq!(k5_programming_divider(47_796_863), 1_224);
+    }
+
+    #[test]
+    fn receive_dma_is_prepared_before_the_uart_starts() {
+        assert_eq!(CTRL_RECEIVE_DMA_PREPARED, 0b1110);
+        assert_eq!(CTRL_RECEIVE_DMA_PREPARED | CTRL_UARTEN, 0b1111);
     }
 }
