@@ -71,6 +71,21 @@ pub fn enable_input(port: Port, pin: u8) {
     input_enable_register(port).modify(|value| value | (1 << u32::from(pin)));
 }
 
+/// Enables the internal pull-up of one pin.
+pub fn enable_pull_up(port: Port, pin: u8) {
+    pull_up_register(port).modify(|value| value | (1 << u32::from(pin)));
+}
+
+/// Returns the pull-up enable register of `port`.
+const fn pull_up_register(port: Port) -> Register {
+    let offset = match port {
+        Port::A => 0x200,
+        Port::B => 0x204,
+        Port::C => 0x208,
+    };
+    Register::new(PORTCON_BASE, offset)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{input_enable_register, select_register, with_function};

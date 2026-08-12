@@ -86,10 +86,19 @@ impl Uart {
     /// transfer, and every field this driver depends on is written rather than
     /// inherited: an image cannot see what a bootloader left behind.
     pub fn configure(self, clock: SystemClock, baud: u32) {
+        self.configure_with_divider(divider(clock.hertz(), baud));
+    }
+
+    /// Configures 8-N-1 at an explicitly supplied divider.
+    ///
+    /// A diagnostic which does not know the clock it is running at cannot
+    /// compute a divider, but it can try several. That is the only reason this
+    /// exists; an image which knows its clock should use [`Uart::configure`].
+    pub fn configure_with_divider(self, divider: u16) {
         self.control().write(0);
         self.interrupt_enable().write(0);
         self.flow_control().write(0);
-        self.baud().write(u32::from(divider(clock.hertz(), baud)));
+        self.baud().write(u32::from(divider));
         self.fifo().write(FIFO_RF_CLR | FIFO_TF_CLR);
         self.control().write(CTRL_UARTEN | CTRL_RXEN | CTRL_TXEN);
     }
@@ -114,6 +123,14 @@ impl Uart {
         while self.status().read() & IF_TXBUSY != 0 {
             core::hint::spin_loop();
         }
+    }
+
+    /// Returns the raw `UART_IF` status word.
+    ///
+    /// This is for diagnostics which have to report what the peripheral says
+    /// rather than what a driver concluded from it.
+    pub fn status_bits(self) -> u32 {
+        self.status().read()
     }
 
     /// Takes one received byte if the receive FIFO holds any.

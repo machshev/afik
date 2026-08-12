@@ -11,9 +11,10 @@
 
 use core::panic::PanicInfo;
 use radio_dp32g030::clock;
+use radio_dp32g030::gpio::{self, Port};
 use radio_dp32g030::portcon;
 use radio_dp32g030::syscon::{self, Peripheral};
-use radio_dp32g030::uart::Uart;
+use radio_dp32g030::uart::{divider, Uart};
 use radio_dp32g030::UART1_BASE;
 use radio_firmware_k5::protocol::{
     encode_hello_response, Request, RequestReader, BOOT_BANNER, RESPONSE_FRAME_BYTES,
@@ -70,13 +71,34 @@ extern "C" fn fault() -> ! {
 }
 
 fn main() -> ! {
+    // The ports are gated on beside the UART, and the two pins are given an
+    // explicit direction, because `AFIK-K5-1.0` did neither and was silent:
+    // this GPIO block takes its pad direction from `GPIODIR`, so a pin whose
+    // port has no clock is not driven however PORTCON selects it.
+    syscon::enable(&[
+        Peripheral::GpioA,
+        Peripheral::GpioB,
+        Peripheral::GpioC,
+        Peripheral::Uart1,
+    ]);
+    gpio::set_output(Port::A, 7);
+    gpio::set_input(Port::A, 8);
+    portcon::enable_input(Port::A, 8);
+
     let clock = clock::configure();
-    syscon::enable(&[Peripheral::Uart1]);
     portcon::select_pa7_uart1_tx();
     portcon::select_pa8_uart1_rx();
     UART1.configure(clock, PROGRAMMING_BAUD);
 
+    // The banner carries the two numbers that decide whether anything else
+    // works: the frequency the image believes it is running at, corrected by
+    // the part's own measurement, and the divider that follows from it.
     UART1.write(BOOT_BANNER);
+    UART1.write(b" clk=");
+    write_decimal(clock.hertz());
+    UART1.write(b" div=");
+    write_decimal(u32::from(divider(clock.hertz(), PROGRAMMING_BAUD)));
+    UART1.write(b"\r\n");
     UART1.flush();
 
     let mut reader = RequestReader::new();
@@ -88,6 +110,21 @@ fn main() -> ! {
             UART1.flush();
         }
     }
+}
+
+/// Sends one unsigned number as decimal digits, most significant first.
+fn write_decimal(mut value: u32) {
+    let mut digits = [b'0'; 10];
+    let mut index = digits.len();
+    loop {
+        index -= 1;
+        digits[index] = b'0' + u8::try_from(value % 10).unwrap_or(0);
+        value /= 10;
+        if value == 0 || index == 0 {
+            break;
+        }
+    }
+    UART1.write(&digits[index..]);
 }
 
 /// Waits for one received byte.
