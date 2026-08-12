@@ -2,25 +2,24 @@
 
 ## Current work package
 
-**`K5RX-049` is active.** The exact UV-K6 now visibly runs the diagnostic: its
-backlight is on and the screen reads `AFIK`, `K5`, `SERIAL`. A read-only normal
-probe still times out, so the remaining defect is receive/frame completion.
+**`PLAT-050` is active.** `K5RX-049` and `K5DRV-048` are complete. The exact
+UV-K6 received a complete sixteen-byte normal hello through DMA, and the real
+`AFIK-K5-1.4` application then answered three consecutive `probe-normal`
+exchanges with its identity.
 
-That first step has now failed more narrowly. `AFIK-K5-1.2`, the conservative
-`1.3` baseline, and the repeating RX diagnostic were each acknowledged 240/240
-pages, left DFU after a normal power-cycle, and produced no serial output during
-captures held long enough for repeated diagnostic reports. Serial is therefore
-not an adequate boot witness. The bounded next step is an evidenced fixed
-ST7565-compatible display diagnostic with a hardware-independent application
-contract. That witness now works physically through a synchronous-GPIO K5
-adapter. The preceding SPI0 adapter produced backlight but no text, isolating a
-separate lower-driver defect. Neither adapter adds keypad, storage, audio, RF,
-or TX behavior.
+The root cause was AFIK's DMA source selector: it encoded `HSREQ_MS0` (`0x08`)
+instead of UART1's `HSREQ_MS1` (`0x10`). The silent display diagnostic made the
+failure unambiguous: before the correction its UART FIFO overflowed with valid
+bytes while DMA remained at zero; afterwards the display read `RX 000016` with
+no parity, stop, or overflow error. The UART/DMA start sequence and empirical
+divider also now match the Armel F4HWN v4.3 firmware previously running on this
+unit.
 
-`K5DRV-048` is partially complete: the DP32G030 drivers boot and transmit on the
-exact unit, but the application cannot satisfy its host-exchange acceptance
-criterion until `K5RX-049` completes. `V1FAM-047` remains paused at its declared
-target boundary.
+The next bounded step is the original cross-target architecture goal: extract
+the smallest shared application-facing serial and display services, leaving K1
+and K5 MCU details in their adapters. The proven K5 synchronous-GPIO display
+remains available as a witness; its earlier SPI0 adapter is still unproven.
+`V1FAM-047` remains paused at its declared target boundary.
 
 ## Paused work package: V1FAM-047
 
@@ -3079,3 +3078,34 @@ but not solved.
   then fix reception of back-to-back bytes. The pinned V1 firmware receives by
   DMA with a receive timeout rather than by polling, and that is the next
   candidate to test against a burst-length sweep.
+
+## K5RX-049 completion and K5DRV-048 acceptance, 2026-08-12
+
+- The fixed synchronous-GPIO display witness established application boot and
+  made every receive experiment independently visible. The lower SPI0 display
+  adapter remains unproven; it produced backlight but no text.
+- Armel F4HWN v4.3 at commit `fbcf26d8e9811b135b7e2d97bdefebaa4b3ed9e0`
+  was confirmed as the DP32G030 firmware previously running on this exact unit.
+  AFIK now matches its corrected divider and UART/DMA start ordering.
+- The decisive silent-listener probe filled the UART FIFO with valid bytes but
+  moved none through DMA. AFIK had selected `HSREQ_MS0` rather than Armel's
+  UART1 `HSREQ_MS1`. Correcting the mode field from `0x08` to `0x10` produced
+  visible `RX 000016`, sticky `UART_IF 0x000224a0`: all sixteen wire bytes and
+  no parity, stop, or FIFO-overflow error.
+- `AFIK-K5-1.4` uses the same bounded circular DMA receiver behind the existing
+  hardware-independent `RequestReader`. Its 61,440-byte package has SHA-256
+  `ed32b22f450a6529030d002240beee3b1ba6636f8daa74747a4a5ac4d172c5b0`
+  and CRC-32 `6e4dd3ef`; Reset is `0x0000001f`, initial SP `0x20003ff0`, and
+  linked content ends at `0x00002004`.
+- The guarded write identified bootloader `2.00.06`, acknowledged 240/240 pages,
+  and reported `acknowledged_not_read_back`. After a normal operator power-cycle,
+  three consecutive independent `afik-flasher probe-normal` commands returned
+  `protocol=normal-firmware-hello`, `firmware=AFIK-K5-1.4`.
+- Final verification passed in the pinned shell: `cargo fmt --all --check`,
+  `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo test --workspace`, `tool/build-k5.sh --release`,
+  `tool/verify-k5-image.sh`, `tool/package-k5-image.sh --force`,
+  `afik-k5 inspect`, and `git diff --check`.
+- **Next smallest task:** `PLAT-050` — extract shared serial and display service
+  contracts so K1 and K5 compile the same application behavior above their
+  target-specific adapters.

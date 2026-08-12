@@ -2359,7 +2359,7 @@
 
 ## K5DRV-048 — DP32G030 drivers and a flashable K5 application
 
-- **Status:** partially complete; blocked on `K5RX-049`
+- **Status:** complete
 - **Objective:** give the V1/DP32G030 target the drivers it has never had —
   clock, peripheral gating, pin function selection, general-purpose IO and a
   polled UART — and use them to build a K5 application image which the qualified
@@ -2392,7 +2392,7 @@
 
 ## K5RX-049 — Receive a complete frame on a V1 radio
 
-- **Status:** active
+- **Status:** complete
 - **Objective:** make a V1 image receive fourteen back-to-back bytes intact, so
   the host exchange `K5DRV-048` built can complete.
 - **Current facts:** `EVID-K5-021`. Bytes with 20 ms gaps arrive perfectly.
@@ -2419,3 +2419,27 @@
 - **Acceptance criteria:** a host `probe-normal` reports the image's identity
   from the exact unit, repeatably, and the burst-length sweep is recorded
   whatever the outcome.
+- **Result:** the display-only sweep established that the host request is sixteen
+  wire bytes. The silent diagnostic received all sixteen through DMA after the
+  channel source selector was corrected from `HSREQ_MS0` to UART1's
+  `HSREQ_MS1`, with no parity, stop, or FIFO-overflow error. `AFIK-K5-1.4`
+  then used that same bounded DMA adapter behind the unchanged `RequestReader`;
+  three consecutive physical `probe-normal` exchanges returned its identity.
+
+## PLAT-050 — Shared K1/K5 application platform boundary
+
+- **Status:** active
+- **Objective:** make application behavior compile once against bounded serial
+  and display contracts while K1 and K5 supply target-specific adapters.
+- **First step:** inventory the K1 and K5 application loops and extract the
+  smallest shared serial request/response service without moving register,
+  interrupt, DMA, or pin behavior out of the hardware crates.
+- **Scope:** application-facing serial receive/transmit and display contracts,
+  shared protocol dispatch, target adapters, and host tests proving both targets
+  run the same service logic.
+- **Exclusions:** keypad, EEPROM, RF/audio, BK4819, TX, publishing dependencies,
+  or claiming the unproven K5 SPI0 adapter works. K5 may retain its physically
+  proven synchronous-GPIO display adapter behind the shared display contract.
+- **Acceptance criteria:** one hardware-independent service test suite covers
+  both target adapters; both embedded images build warning-free; and each target
+  keeps all MCU-specific types and registers below the application boundary.
