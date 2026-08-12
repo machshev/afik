@@ -6,13 +6,18 @@
 keypad matrix adapter. All sixteen labels are mapped, unstable or multiple-key
 samples are rejected, and every scan restores the EEPROM/I2C and voice-chip
 shared row pins. Host tests pass; this is not yet integrated into the image or
-physically confirmed. EEPROM read-only access is the next step.
+physically confirmed. The second step adds an 8 KiB-bounded, acknowledgement-
+checked read-only EEPROM adapter with no write API. BK4819 register read-back is
+the next step.
 
 Commands run in the pinned environment on 2026-08-12:
 
 - `nix develop path:. -c cargo fmt --all --check` — passed.
 - `nix develop path:. -c cargo test -q -p radio-firmware-k5` — passed.
 - `nix develop path:. -c cargo clippy -q -p radio-firmware-k5 --all-targets -- -D warnings` — passed.
+- After the EEPROM step, `nix develop path:. -c bash -c 'cargo fmt --all
+  --check && cargo test -q -p radio-firmware-k5 && cargo clippy -q -p
+  radio-firmware-k5 --all-targets -- -D warnings'` — passed.
 
 ## Previous handoff: PLAT-050
 

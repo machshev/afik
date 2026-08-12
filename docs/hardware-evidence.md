@@ -2591,3 +2591,18 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   side keys, PTT, debounce timing, EEPROM access, or voice-chip behavior.
 - **Required experiment:** display each decoded label while pressing every main
   key on the exact unit, with no EEPROM or RF operation.
+
+### EVID-K5-026 — V1 read-only configuration EEPROM framing
+
+- **Source:** the same pinned V1 commit as `EVID-K5-025`, `driver/eeprom.c`,
+  `driver/i2c.c`, and `driver/gpio.h`; complete retained physical backups in
+  `EVID-K5-020` independently establish an 8,192-byte reachable image.
+- **Binding and framing:** PA10 is clock and PA11 is bidirectional data. A random
+  read sends `A0`, the big-endian 16-bit address, a repeated start, then `A1`,
+  acknowledging every byte except the last before stop.
+- **Permitted use:** an 8 KiB-bounded read-only adapter which checks every
+  address-phase acknowledgement and releases high bus levels rather than
+  driving them. No EEPROM write API, data-layout interpretation, or persistence
+  claim follows.
+- **Required experiment:** read a small non-sensitive range and compare it with
+  the same offsets in the retained pre-flash backup before consuming any value.

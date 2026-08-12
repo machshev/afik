@@ -2453,7 +2453,8 @@
 
 ## K5APP-051 — K5 receive-only operator hardware bring-up
 
-- **Status:** active; keypad adapter complete, EEPROM and receiver steps pending
+- **Status:** active; keypad and read-only EEPROM adapters complete, receiver
+  steps pending
 - **Objective:** add the K5 V1 keypad, read-only configuration-memory access,
   BK4819 receive control, and demodulated-audio enablement as separately tested
   and committed steps.
@@ -2468,3 +2469,6 @@
 - **First result:** the source-pinned PA3..PA6 by PA10..PA13 main matrix is a
   bounded adapter with all sixteen mappings, stable-sample rejection, and an
   explicit shared-pin restore contract covered by host tests.
+- **Second result:** the PA10/PA11 EEPROM adapter exposes only bounded random
+  reads, checks every address acknowledgement, uses released-high lines, and
+  has exact transaction and capacity tests. It is not yet physically confirmed.
