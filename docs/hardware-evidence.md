@@ -2441,6 +2441,16 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   writing. Since that image deliberately did not configure the independently
   wired backlight, darkness is expected and does not by itself settle whether
   pixels were present.
+- **GPIO-isolation result:** replacing only AFIK's SPI0 adapter with synchronous
+  GPIO on the same evidenced pins produced an illuminated screen reading
+  `AFIK`, `K5`, and `SERIAL` after a 240/240-page acknowledged write and normal
+  power-cycle. This proves Reset, PB6 backlight, PB7/PB8/PB9/PB10/PB11 display
+  bindings, controller reset/commands, rendering, UART configuration, and the
+  application-facing `BootDisplay` path on the exact unit. It isolates the
+  earlier blank panel to AFIK's SPI0 adapter.
+- **Serial result beside the visible witness:** `probe-normal` still timed out
+  while `SERIAL` remained visible. The application and its receive loop are
+  running; the remaining defect is receive/frame completion, not startup.
 
 ### EVID-DP32-011 — PWM_PLUS0 subset for the V1 backlight
 
