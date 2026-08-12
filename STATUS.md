@@ -2,7 +2,39 @@
 
 ## Current work package
 
-**`PLAT-050` is active.** `K5RX-049` and `K5DRV-048` are complete. The exact
+**`PLAT-050` is complete.** K1 and K5 now compile their common normal-mode hello
+behavior and application-facing boot display contract from the new `no_std`,
+heap-free `radio-platform` crate. K1 retains its additional diagnostic and
+object-protocol behavior locally; K5 remains read-only. Each target still owns
+its DMA, interrupts, UART, pins, registers, display transport, and timing. The
+K5 adapter remains the physically proven synchronous-GPIO path; the SPI0 path
+is still unproven.
+
+Host tests exercise the same serial service and display sequence through both
+target adapters. Both embedded images build warning-free. The K5 remains on the
+verified `AFIK-K5-1.4`; nothing was flashed for this work package.
+
+Commands run in the pinned environment on 2026-08-12:
+
+- `nix develop path:. -c cargo test -q -p radio-platform -p radio-firmware-k1 -p radio-firmware-k5` — passed.
+- `nix develop path:. -c cargo clippy -q -p radio-platform -p radio-firmware-k1 -p radio-firmware-k5 --all-targets -- -D warnings` — passed.
+- `nix develop path:. -c ./tool/build-k1-async.sh --release` — passed.
+- `nix develop path:. -c ./tool/build-k5.sh --release` — passed.
+- `nix flake check path:. --no-build` — passed; the incompatible
+  `aarch64-linux` output was omitted as reported by Nix.
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings` — passed.
+- `nix develop path:. -c cargo test --workspace` — passed, including 121 K1
+  library tests, four K5 hello tests, and both target display contract tests.
+- `git diff --check` — passed.
+
+**Next smallest actionable task:** define a new bounded work package before
+extending shared application behavior; keypad, EEPROM, RF/audio, BK4819, TX,
+and the K5 SPI0 experiment remain outside `PLAT-050`.
+
+## Previous handoff: K5RX-049
+
+`K5RX-049` and `K5DRV-048` are complete. The exact
 UV-K6 received a complete sixteen-byte normal hello through DMA, and the real
 `AFIK-K5-1.4` application then answered three consecutive `probe-normal`
 exchanges with its identity.

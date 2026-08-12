@@ -1171,3 +1171,14 @@ meaning.
   `SCB CPUID` for the core, and address aliasing for the fitted memory. A
   declared capacity larger than the part destroys calibration on the first
   erase, which is precisely the failure a host-side gate cannot catch.
+## ADR-071 — K1 and K5 share application services above target adapters
+
+- **Date:** 2026-08-12
+- **Status:** accepted for `PLAT-050`
+- `radio-platform` is a `no_std`, heap-free leaf containing the bounded serial
+  hello service and application-facing boot-display contract. Target firmware
+  supplies identity and bytes, and owns all UART, DMA, interrupt, pin, register,
+  display-transport, and timing behavior.
+- K1-only diagnostic commands remain in K1; sharing the common hello does not
+  widen K5's read-only application protocol. The proven K5 synchronous-GPIO
+  display stays its adapter and the unproven SPI0 path gains no status.

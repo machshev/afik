@@ -2428,7 +2428,7 @@
 
 ## PLAT-050 — Shared K1/K5 application platform boundary
 
-- **Status:** active
+- **Status:** complete
 - **Objective:** make application behavior compile once against bounded serial
   and display contracts while K1 and K5 supply target-specific adapters.
 - **First step:** inventory the K1 and K5 application loops and extract the
@@ -2443,3 +2443,10 @@
 - **Acceptance criteria:** one hardware-independent service test suite covers
   both target adapters; both embedded images build warning-free; and each target
   keeps all MCU-specific types and registers below the application boundary.
+- **Result:** `radio-platform` now owns the common normal-mode hello stream
+  service and boot-display contract. K1 delegates common command validation and
+  response encoding while retaining its additional diagnostics; K5 runs the
+  same service over its proven circular-DMA receive adapter. K1 and K5 display
+  adapters implement the same application contract, with the K5 synchronous
+  GPIO implementation retained. Focused host tests cover both adapters and both
+  embedded images build; no radio was flashed.

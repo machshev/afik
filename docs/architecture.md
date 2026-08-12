@@ -182,6 +182,21 @@ protocol is the stock UV-K5 deployment protocol and does not enter
 `radio-protocol`, which remains AFIK's object-level runtime configuration
 protocol.
 
+## Shared K1/K5 application platform
+
+`PLAT-050` adds `radio-platform`, a `no_std`, heap-free application boundary
+above both MCUs. Its bounded serial service owns legacy normal-mode hello frame
+validation, stream resynchronisation, and identity response dispatch. K1 and K5
+supply only a validated printable identity and feed bytes received by their own
+UART adapters; K1's Embassy USART/DMA/idle-line behavior and K5's circular DMA
+and UART registers remain target-specific.
+
+The same crate owns the boot-display request vocabulary and ordering. The K1
+adapter renders those requests into its framebuffer and existing display bus;
+the K5 adapter retains the physically proven synchronous-GPIO implementation.
+Neither the K5 SPI0 experiment nor any DMA, interrupt, pin, register, timing, or
+framebuffer implementation is part of the shared contract.
+
 The DP32G030 target linker and package tools own the V1 application-region
 contract. They emit a full `0x0000..0xEFFF` raw image and never include the
 stock `0xF000..0xFFFF` bootloader region. Hardware-independent radio crates do
