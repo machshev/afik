@@ -3,14 +3,15 @@
 use radio_dp32g030::gpio::{self, Port};
 use radio_dp32g030::portcon;
 use radio_dp32g030::pwm_plus::PwmPlus;
-use radio_dp32g030::spi::Spi;
 use radio_dp32g030::syscon::{self, Peripheral};
-use radio_dp32g030::{PWM_PLUS0_BASE, SPI0_BASE};
+use radio_dp32g030::PWM_PLUS0_BASE;
 use radio_firmware_k5::boot_display::{BootDisplay, BootStage};
 
-const SPI0: Spi = Spi::new(SPI0_BASE);
 const BACKLIGHT: PwmPlus = PwmPlus::new(PWM_PLUS0_BASE);
+const SELECT_PIN: u8 = 7;
+const CLOCK_PIN: u8 = 8;
 const A0_PIN: u8 = 9;
+const DATA_PIN: u8 = 10;
 const RESET_PIN: u8 = 11;
 
 /// Infallible fixed display adapter; its controller has no return path.
@@ -19,17 +20,16 @@ pub struct K5BootDisplay;
 impl K5BootDisplay {
     /// Configures only the evidenced display pins and SPI0 controller.
     pub fn initialise() -> Self {
-        syscon::enable(&[Peripheral::GpioB, Peripheral::Spi0, Peripheral::PwmPlus0]);
-        for pin in [7, 8, A0_PIN, 10, RESET_PIN] {
+        syscon::enable(&[Peripheral::GpioB, Peripheral::PwmPlus0]);
+        for pin in [SELECT_PIN, CLOCK_PIN, A0_PIN, DATA_PIN, RESET_PIN] {
             gpio::set_output(Port::B, pin);
+            portcon::select_gpio(Port::B, pin);
         }
-        portcon::select_k5_display_spi0();
         portcon::select_k5_backlight_pwm();
-        portcon::select_gpio(Port::B, A0_PIN);
-        portcon::select_gpio(Port::B, RESET_PIN);
+        gpio::write_pin(Port::B, SELECT_PIN, true);
+        gpio::write_pin(Port::B, CLOCK_PIN, true);
         gpio::write_pin(Port::B, A0_PIN, false);
         gpio::write_pin(Port::B, RESET_PIN, true);
-        SPI0.configure_display();
         BACKLIGHT.enable_diagnostic_backlight();
 
         delay(50_000);
@@ -38,7 +38,7 @@ impl K5BootDisplay {
         gpio::write_pin(Port::B, RESET_PIN, true);
         delay(6_000_000);
 
-        SPI0.select(true);
+        select_display(true);
         for command in [0xE2, 0xA2, 0xC0, 0xA1, 0xA6, 0xA4, 0x24, 0x81, 31] {
             command_byte(command);
         }
@@ -52,8 +52,7 @@ impl K5BootDisplay {
         delay(2_000_000);
         command_byte(0x40);
         command_byte(0xAF);
-        SPI0.flush();
-        SPI0.select(false);
+        select_display(false);
         Self
     }
 }
@@ -67,13 +66,12 @@ impl BootDisplay for K5BootDisplay {
             BootStage::BoardReady => b"BOARD",
             BootStage::SerialReady => b"SERIAL",
         };
-        SPI0.select(true);
+        select_display(true);
         clear();
         draw_text(1, 20, b"AFIK");
         draw_text(3, 26, b"K5");
         draw_text(5, centered(stage_text), stage_text);
-        SPI0.flush();
-        SPI0.select(false);
+        select_display(false);
         Ok(())
     }
 }
@@ -83,7 +81,7 @@ fn clear() {
         select(page, 0);
         set_data_mode();
         for _ in 0..128 {
-            SPI0.write_byte(0);
+            write_byte(0);
         }
     }
 }
@@ -93,28 +91,40 @@ fn draw_text(page: u8, column: u8, text: &[u8]) {
     set_data_mode();
     for character in text {
         for byte in glyph(*character) {
-            SPI0.write_byte(byte);
+            write_byte(byte);
         }
-        SPI0.write_byte(0);
+        write_byte(0);
     }
 }
 
 fn select(page: u8, column: u8) {
-    SPI0.flush();
     gpio::write_pin(Port::B, A0_PIN, false);
-    SPI0.write_byte(0xB0 | (page & 7));
-    SPI0.write_byte(0x10 | ((column >> 4) & 0x0F));
-    SPI0.write_byte(column & 0x0F);
+    write_byte(0xB0 | (page & 7));
+    write_byte(0x10 | ((column >> 4) & 0x0F));
+    write_byte(column & 0x0F);
 }
 
 fn command_byte(byte: u8) {
     gpio::write_pin(Port::B, A0_PIN, false);
-    SPI0.write_byte(byte);
+    write_byte(byte);
 }
 
 fn set_data_mode() {
-    SPI0.flush();
     gpio::write_pin(Port::B, A0_PIN, true);
+}
+
+fn select_display(selected: bool) {
+    gpio::write_pin(Port::B, SELECT_PIN, !selected);
+}
+
+fn write_byte(byte: u8) {
+    for bit in (0..8).rev() {
+        gpio::write_pin(Port::B, DATA_PIN, byte & (1 << bit) != 0);
+        gpio::write_pin(Port::B, CLOCK_PIN, false);
+        core::hint::spin_loop();
+        gpio::write_pin(Port::B, CLOCK_PIN, true);
+        core::hint::spin_loop();
+    }
 }
 
 fn centered(text: &[u8]) -> u8 {

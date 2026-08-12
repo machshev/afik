@@ -2459,3 +2459,7 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   board-proven fixed waveform are taken from the pinned V1 source.
 - **Permitted use:** constant diagnostic illumination while the fixed boot
   witness is displayed. Brightness policy and power management remain deferred.
+- **Physical result:** after a 240/240-page acknowledged write and normal
+  power-cycle, the backlight illuminated but no text was visible. This proves
+  Reset reached the board adapter through `enable_diagnostic_backlight`; it
+  does not prove the subsequent SPI0/display path completed.
