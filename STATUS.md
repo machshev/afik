@@ -16,6 +16,22 @@ gate. They compile into the K5 target but are deliberately not invoked by the
 boot image: a known-register read-back is the next physical gate before any
 receiver initialization or audio enablement.
 
+`AFIK-K5-1.5V` is now the built read-only validation image for these adapters.
+It displays an EEPROM offset-zero byte sum, raw BK4819 `REG_00`, and the current
+main-key label while retaining the normal serial hello. It contains no EEPROM
+or BK4819 write and leaves audio/RF/TX inactive. Static packaging passed; it has
+not yet been flashed or observed.
+
+Pre-flash gates on 2026-08-13:
+
+- Focused warning-denied Clippy and K5 tests passed, including eleven library,
+  four hello, and one platform test.
+- `./tool/build-k5.sh --release` and `tool/package-k5-image.sh --force` passed.
+- Packaged image: exactly `0xF000` bytes, used flash ends at `0x4110`, static
+  RAM ends at `0x20000100`, SHA-256
+  `bf39d3726014346f71dfcf7d6fa2432b885ef471fe4c4303fbf24b253202df09`.
+- `git diff --check` passed.
+
 Commands run in the pinned environment on 2026-08-12 and 2026-08-13:
 
 - `nix develop path:. -c cargo fmt --all --check` — passed.

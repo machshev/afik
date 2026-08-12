@@ -7,6 +7,8 @@ use radio_dp32g030::syscon::{self, Peripheral};
 use radio_dp32g030::PWM_PLUS0_BASE;
 use radio_platform::display::{BootDisplay, BootStage, ReceiveDiagnostic};
 
+use crate::keypad::Key;
+
 const BACKLIGHT: PwmPlus = PwmPlus::new(PWM_PLUS0_BASE);
 const SELECT_PIN: u8 = 7;
 const CLOCK_PIN: u8 = 8;
@@ -54,6 +56,40 @@ impl K5BootDisplay {
         command_byte(0xAF);
         select_display(false);
         Self
+    }
+
+    /// Shows the read-only K5 operator-hardware validation state.
+    pub fn show_validation(&mut self, eeprom_sum: Option<u16>, bk_register: u16, key: Option<Key>) {
+        let mut eeprom = *b"----";
+        if let Some(value) = eeprom_sum {
+            hexadecimal_text(value.into(), &mut eeprom);
+        }
+        let mut bk = *b"0000";
+        hexadecimal_text(bk_register.into(), &mut bk);
+        let key = key_label(key);
+        select_display(true);
+        clear();
+        draw_text(0, 8, b"AFIK K5 1.5V");
+        draw_text(2, 8, b"EEP");
+        draw_text(2, 38, &eeprom);
+        draw_text(4, 8, b"BK");
+        draw_text(4, 38, &bk);
+        draw_text(6, 8, b"KEY");
+        draw_text(6, 38, &key);
+        select_display(false);
+    }
+}
+
+fn key_label(key: Option<Key>) -> [u8; 4] {
+    match key {
+        None => *b"----",
+        Some(Key::Menu) => *b"MENU",
+        Some(Key::Up) => *b"UP  ",
+        Some(Key::Down) => *b"DOWN",
+        Some(Key::Exit) => *b"EXIT",
+        Some(Key::Star) => *b"STAR",
+        Some(Key::Function) => *b"F   ",
+        Some(Key::Digit(value)) => [b'0' + value, b' ', b' ', b' '],
     }
 }
 
@@ -158,10 +194,18 @@ fn glyph(character: u8) -> [u8; 5] {
         b'I' => [0x00, 0x41, 0x7F, 0x41, 0x00],
         b'K' => [0x7F, 0x08, 0x14, 0x22, 0x41],
         b'L' => [0x7F, 0x40, 0x40, 0x40, 0x40],
+        b'M' => [0x7F, 0x02, 0x0C, 0x02, 0x7F],
+        b'N' => [0x7F, 0x04, 0x08, 0x10, 0x7F],
         b'O' => [0x3E, 0x41, 0x41, 0x41, 0x3E],
+        b'P' => [0x7F, 0x09, 0x09, 0x09, 0x06],
         b'R' => [0x7F, 0x09, 0x19, 0x29, 0x46],
         b'S' => [0x46, 0x49, 0x49, 0x49, 0x31],
         b'T' => [0x01, 0x01, 0x7F, 0x01, 0x01],
+        b'U' => [0x3F, 0x40, 0x40, 0x40, 0x3F],
+        b'V' => [0x1F, 0x20, 0x40, 0x20, 0x1F],
+        b'X' => [0x63, 0x14, 0x08, 0x14, 0x63],
+        b'Y' => [0x03, 0x04, 0x78, 0x04, 0x03],
+        b'-' => [0x08, 0x08, 0x08, 0x08, 0x08],
         b'5' => [0x4F, 0x49, 0x49, 0x49, 0x31],
         b'0' => [0x3E, 0x51, 0x49, 0x45, 0x3E],
         b'1' => [0x00, 0x42, 0x7F, 0x40, 0x00],

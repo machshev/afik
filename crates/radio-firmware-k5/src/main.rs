@@ -1,15 +1,15 @@
 //! The first UV-K5 V1 application AFIK can observe running.
 //!
 //! It configures the clock, binds UART1 to the programming connector, and then
-//! answers the read-only hello for as long as it is powered. It drives no
-//! display, keypad, radio, or memory, because
-//! `K5DRV-048` has evidence for none of those on this board yet.
+//! answers the read-only hello while validating the evidenced display, keypad,
+//! EEPROM-read, and BK4819-read adapters. It performs no EEPROM or radio write.
 
 #![no_std]
 #![no_main]
 #![deny(unsafe_code)]
 
 use core::panic::PanicInfo;
+use radio_bk4819::{RegisterAddress, RegisterBus};
 use radio_dp32g030::clock;
 use radio_dp32g030::dma::CircularReceiver;
 use radio_dp32g030::gpio::{self, Port};
@@ -17,7 +17,12 @@ use radio_dp32g030::portcon;
 use radio_dp32g030::syscon::{self, Peripheral};
 use radio_dp32g030::uart::{k5_programming_divider, Uart};
 use radio_dp32g030::UART1_BASE;
+use radio_firmware_k5::bk4819_bus::{K5Pins, K5RegisterBus};
+use radio_firmware_k5::eeprom::{self, K5Bus};
+use radio_firmware_k5::k5_display::K5BootDisplay;
+use radio_firmware_k5::keypad::{self, K5Matrix};
 use radio_firmware_k5::protocol::{HelloService, APPLICATION_IDENTITY, RESPONSE_FRAME_BYTES};
+use radio_platform::display::show_boot_sequence;
 
 /// Initial stack pointer, per `EVID-K5-019`: the top of the evidenced RAM less
 /// the sixteen bytes the firmware running on these units leaves alone.
@@ -97,23 +102,41 @@ fn main() -> ! {
     };
     UART1.start_receive_dma();
 
+    let mut display = K5BootDisplay::initialise();
+    let _ = show_boot_sequence(&mut display);
+
+    let mut eeprom_bytes = [0_u8; 8];
+    let eeprom_sum = if eeprom::read(&mut K5Bus::initialise(), 0, &mut eeprom_bytes).is_ok() {
+        Some(
+            eeprom_bytes
+                .iter()
+                .fold(0_u16, |sum, byte| sum.wrapping_add(u16::from(*byte))),
+        )
+    } else {
+        None
+    };
+    let bk_register = K5RegisterBus::new(K5Pins::initialise())
+        .read(RegisterAddress::new(0).expect("zero is a valid BK4819 register"))
+        .unwrap_or(0xffff);
+    let mut keypad = K5Matrix::initialise();
+    let mut shown_key = keypad::scan(&mut keypad);
+    display.show_validation(eeprom_sum, bk_register, shown_key);
+
     let mut service = HelloService::new(APPLICATION_IDENTITY);
     let mut response = [0_u8; RESPONSE_FRAME_BYTES];
     loop {
-        if let Some(length) = service.push(receive_byte(&mut receiver), &mut response) {
+        while let Some(byte) = receiver.read_byte() {
+            let Some(length) = service.push(byte, &mut response) else {
+                continue;
+            };
             UART1.write(&response[..length]);
             UART1.flush();
         }
-    }
-}
-
-/// Waits for one received byte.
-fn receive_byte(receiver: &mut CircularReceiver<DMA_BYTES>) -> u8 {
-    loop {
-        if let Some(byte) = receiver.read_byte() {
-            return byte;
+        let key = keypad::scan(&mut keypad);
+        if key != shown_key {
+            shown_key = key;
+            display.show_validation(eeprom_sum, bk_register, shown_key);
         }
-        core::hint::spin_loop();
     }
 }
 

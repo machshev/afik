@@ -2482,3 +2482,12 @@
   mandatory read-back. Stale state, bad acknowledgements, busy timeout, and
   verification mismatch are errors. It remains unreachable from the boot image
   and no physical EEPROM write was performed.
+- **Fifth step:** `AFIK-K5-1.5V` composes the proven serial/display paths with
+  read-only EEPROM offset-zero sampling, read-only BK4819 `REG_00` sampling,
+  and continuous main-keypad decoding. The display reports a bounded EEPROM
+  byte sum, raw BK register value, and decoded key label. It performs no EEPROM
+  write, BK4819 write, audio enable, RF switch, PA, PTT, or TX operation.
+- **Physical acceptance:** after guarded flashing and a normal power-cycle, the
+  screen must show `1.5V`, an EEPROM value other than failure dashes, a stable
+  BK value rather than an assumed interpretation, and all sixteen key labels;
+  three normal probes must return `AFIK-K5-1.5V`. Any ambiguous result stops.

@@ -2640,3 +2640,16 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   the retained complete backup, an explicitly chosen address/current value,
   and an independently tested restore route because no disposable EEPROM range
   has been established.
+
+### EVID-K5-029 — Read-only operator-adapter validation image contract
+
+- **Image contract:** `AFIK-K5-1.5V` retains the physically proven UART DMA and
+  synchronous-GPIO display. At boot it reads EEPROM bytes `0x0000..0x0007`,
+  displays their wrapping 16-bit sum, reads BK4819 `REG_00` once and displays
+  the raw word, then scans and displays the sixteen main-key labels.
+- **Safety boundary:** the image contains no call to `write_verified`, no
+  BK4819 register write or initialization, no speaker enable, and no RF/PA/PTT
+  operation. Raw read-back is an electrical witness, not register semantics.
+- **Required observation:** compare the displayed EEPROM sum with the retained
+  backup privately; record the raw BK word and every physical key label. Normal
+  hello must remain repeatable after a separate power-cycle.
