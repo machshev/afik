@@ -31,7 +31,7 @@ use radio_dp32g030::dma::CircularReceiver;
 use radio_dp32g030::gpio::{self, Port};
 use radio_dp32g030::portcon;
 use radio_dp32g030::syscon::{self, Peripheral};
-use radio_dp32g030::uart::Uart;
+use radio_dp32g030::uart::{k5_programming_divider, Uart};
 use radio_dp32g030::UART1_BASE;
 use radio_firmware_k5::boot_display::{BootDisplay, BootStage, ReceiveDiagnostic};
 
@@ -40,9 +40,6 @@ use k5_display::K5BootDisplay;
 
 /// Initial stack pointer, per `EVID-K5-019`.
 const INITIAL_STACK_POINTER: u32 = 0x2000_3FF0;
-
-/// The programming connector's speed, which the stock bootloader also uses.
-const PROGRAMMING_BAUD: u32 = 38_400;
 
 /// The UART bound to the programming connector, per `EVID-K5-019`.
 const UART1: Uart = Uart::new(UART1_BASE);
@@ -126,7 +123,7 @@ fn main() -> ! {
     let clock = clock::configure();
     portcon::select_pa7_uart1_tx();
     portcon::select_pa8_uart1_rx();
-    UART1.configure(clock, PROGRAMMING_BAUD);
+    UART1.configure_with_divider(k5_programming_divider(clock.hertz()));
     // SAFETY: this image has one core and gives the static buffer exclusively
     // to this receiver for the rest of its lifetime.
     #[allow(unsafe_code)]

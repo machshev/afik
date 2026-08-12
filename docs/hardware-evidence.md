@@ -2498,3 +2498,23 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   replaced the reset receive threshold. The manual-defined correction restores
   threshold encoding `111` (eight bytes) and receive timeout 4, matching the
   board-proven configuration so a short frame's residual FIFO can request DMA.
+- **Second physical result:** restoring threshold 8 and timeout 4 changed
+  nothing: baseline `RX 0`, `UART_IF 0x00002484`; after one probe, `RX 0`,
+  sticky `UART_IF 0x000e3df4`. Seven valid bytes again remained below the DMA
+  threshold while receive errors were latched. DMA cannot recover bytes UART
+  rejected before FIFO insertion.
+
+### EVID-K5-023 — V1 programming-port receive divider correction
+
+- **Observation:** the physically proven transmit divider derived directly
+  from the manual is 1245 on this unit, for corrected RCHF 47,796,863 Hz and
+  nominal 38,400 baud. Bytes with gaps receive correctly, but a burst latches
+  stop errors and leaves only seven valid bytes in the FIFO.
+- **Observation:** the pinned known-running V1 firmware deliberately divides
+  the corrected clock by 39,053 rather than 38,400, yielding 1224 on this unit.
+- **Inference:** this is a board/connector receive correction, not the generic
+  UART divider formula. Its 1.7% faster sampling is the next bounded candidate
+  for the back-to-back-only stop errors.
+- **Permitted use:** configure only the V1 programming UART with the empirical
+  39,053 target while retaining the generic manual-derived divider function for
+  every other use. Physical acceptance still requires a complete host frame.

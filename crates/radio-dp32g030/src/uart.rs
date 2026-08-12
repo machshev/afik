@@ -195,9 +195,18 @@ pub const fn divider(clock_hz: u32, baud: u32) -> u16 {
     rounded as u16
 }
 
+/// Returns the board-proven V1 programming-port divider.
+///
+/// The known-running V1 firmware uses 39,053 as the empirical divisor target
+/// for a nominal 38,400-baud link. `EVID-K5-023` keeps this board correction
+/// separate from the manual's generic divider arithmetic.
+pub const fn k5_programming_divider(clock_hz: u32) -> u16 {
+    divider(clock_hz, 39_053)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::divider;
+    use super::{divider, k5_programming_divider};
 
     #[test]
     fn the_manuals_worked_example_is_reproduced() {
@@ -223,5 +232,10 @@ mod tests {
         assert_eq!(divider(1_000, 100_000_000), 1);
         assert_eq!(divider(48_000_000, 1), u16::MAX);
         assert_eq!(divider(48_000_000, 0), u16::MAX);
+    }
+
+    #[test]
+    fn the_k5_programming_port_uses_its_board_proven_correction() {
+        assert_eq!(k5_programming_divider(47_796_863), 1_224);
     }
 }
