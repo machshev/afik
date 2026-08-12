@@ -1,8 +1,8 @@
 //! The first UV-K5 V1 application AFIK can observe running.
 //!
-//! It configures the clock, binds UART1 to the programming connector, says once
-//! that it booted, and then answers the read-only hello for as long as it is
-//! powered. It drives no display, no keypad, no radio, and no memory, because
+//! It configures the clock, binds UART1 to the programming connector, and then
+//! answers the read-only hello for as long as it is powered. It drives no
+//! display, keypad, radio, or memory, because
 //! `K5DRV-048` has evidence for none of those on this board yet.
 
 #![no_std]
@@ -11,24 +11,25 @@
 
 use core::panic::PanicInfo;
 use radio_dp32g030::clock;
+use radio_dp32g030::dma::CircularReceiver;
 use radio_dp32g030::gpio::{self, Port};
 use radio_dp32g030::portcon;
 use radio_dp32g030::syscon::{self, Peripheral};
-use radio_dp32g030::uart::{divider, Uart};
+use radio_dp32g030::uart::{k5_programming_divider, Uart};
 use radio_dp32g030::UART1_BASE;
 use radio_firmware_k5::protocol::{
-    encode_hello_response, Request, RequestReader, BOOT_BANNER, RESPONSE_FRAME_BYTES,
+    encode_hello_response, Request, RequestReader, RESPONSE_FRAME_BYTES,
 };
 
 /// Initial stack pointer, per `EVID-K5-019`: the top of the evidenced RAM less
 /// the sixteen bytes the firmware running on these units leaves alone.
 const INITIAL_STACK_POINTER: u32 = 0x2000_3FF0;
 
-/// The programming connector's speed, which the stock bootloader also uses.
-const PROGRAMMING_BAUD: u32 = 38_400;
-
 /// The UART bound to the programming connector, per `EVID-K5-019`.
 const UART1: Uart = Uart::new(UART1_BASE);
+const DMA_BYTES: usize = 256;
+
+static mut DMA_BUFFER: [u8; DMA_BYTES] = [0; DMA_BYTES];
 
 #[repr(C)]
 struct VectorTable {
@@ -84,26 +85,23 @@ fn main() -> ! {
     gpio::set_output(Port::A, 7);
     gpio::set_input(Port::A, 8);
     portcon::enable_input(Port::A, 8);
+    portcon::enable_pull_up(Port::A, 8);
 
     let clock = clock::configure();
     portcon::select_pa7_uart1_tx();
     portcon::select_pa8_uart1_rx();
-    UART1.configure(clock, PROGRAMMING_BAUD);
-
-    // The banner carries the two numbers that decide whether anything else
-    // works: the frequency the image believes it is running at, corrected by
-    // the part's own measurement, and the divider that follows from it.
-    UART1.write(BOOT_BANNER);
-    UART1.write(b" clk=");
-    write_decimal(clock.hertz());
-    UART1.write(b" div=");
-    write_decimal(u32::from(divider(clock.hertz(), PROGRAMMING_BAUD)));
-    UART1.write(b"\r\n");
-    UART1.flush();
+    UART1.prepare_receive_dma_with_divider(k5_programming_divider(clock.hertz()));
+    // SAFETY: this single-core image gives the static buffer exclusively to
+    // this receiver for the rest of its lifetime.
+    #[allow(unsafe_code)]
+    let mut receiver = unsafe {
+        CircularReceiver::<DMA_BYTES>::new(&raw mut DMA_BUFFER as *mut u8, UART1.receive_address())
+    };
+    UART1.start_receive_dma();
 
     let mut reader = RequestReader::new();
     loop {
-        if reader.push(receive_byte()) == Some(Request::Hello) {
+        if reader.push(receive_byte(&mut receiver)) == Some(Request::Hello) {
             let mut frame = [0_u8; RESPONSE_FRAME_BYTES];
             encode_hello_response(&mut frame);
             UART1.write(&frame);
@@ -112,25 +110,10 @@ fn main() -> ! {
     }
 }
 
-/// Sends one unsigned number as decimal digits, most significant first.
-fn write_decimal(mut value: u32) {
-    let mut digits = [b'0'; 10];
-    let mut index = digits.len();
-    loop {
-        index -= 1;
-        digits[index] = b'0' + u8::try_from(value % 10).unwrap_or(0);
-        value /= 10;
-        if value == 0 || index == 0 {
-            break;
-        }
-    }
-    UART1.write(&digits[index..]);
-}
-
 /// Waits for one received byte.
-fn receive_byte() -> u8 {
+fn receive_byte(receiver: &mut CircularReceiver<DMA_BYTES>) -> u8 {
     loop {
-        if let Some(byte) = UART1.read_byte() {
+        if let Some(byte) = receiver.read_byte() {
             return byte;
         }
         core::hint::spin_loop();
