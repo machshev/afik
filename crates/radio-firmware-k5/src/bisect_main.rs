@@ -32,6 +32,10 @@ use radio_dp32g030::portcon;
 use radio_dp32g030::syscon::{self, Peripheral};
 use radio_dp32g030::uart::Uart;
 use radio_dp32g030::UART1_BASE;
+use radio_firmware_k5::boot_display::{BootDisplay, BootStage};
+
+mod k5_display;
+use k5_display::K5BootDisplay;
 
 /// Initial stack pointer, per `EVID-K5-019`.
 const INITIAL_STACK_POINTER: u32 = 0x2000_3FF0;
@@ -97,6 +101,9 @@ extern "C" fn fault() -> ! {
 }
 
 fn main() -> ! {
+    let mut display = K5BootDisplay::initialise();
+    let _ = display.show(BootStage::Reset);
+
     syscon::enable(&[
         Peripheral::GpioA,
         Peripheral::GpioB,
@@ -116,6 +123,8 @@ fn main() -> ! {
     portcon::select_pa7_uart1_tx();
     portcon::select_pa8_uart1_rx();
     UART1.configure(clock, PROGRAMMING_BAUD);
+
+    let _ = display.show(BootStage::SerialReady);
 
     UART1.write(b"AFIK-K5-RXDIAG\r\n");
     UART1.flush();

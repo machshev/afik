@@ -22,6 +22,8 @@ const FUNCTION_GPIO: u32 = 0;
 const FUNCTION_PA7_UART1_TX: u32 = 1;
 /// Function field value selecting `UART1_RX` on PA8.
 const FUNCTION_PA8_UART1_RX: u32 = 1;
+/// Function field value selecting the K5 display's SPI0 pins on port B.
+const FUNCTION_PORT_B_SPI0: u32 = 1;
 
 /// Returns the function-select register holding `pin` of `port`.
 const fn select_register(port: Port, pin: u8) -> Register {
@@ -64,6 +66,14 @@ pub fn select_pa7_uart1_tx() {
 /// Selects `UART1_RX` on PA8, which is the V1 programming port's receive pin.
 pub fn select_pa8_uart1_rx() {
     select_register(Port::A, 8).modify(|value| with_function(value, 8, FUNCTION_PA8_UART1_RX));
+}
+
+/// Selects SPI0 SSN on PB7, clock on PB8, and MOSI on PB10.
+pub fn select_k5_display_spi0() {
+    for pin in [7, 8, 10] {
+        select_register(Port::B, pin)
+            .modify(|value| with_function(value, pin, FUNCTION_PORT_B_SPI0));
+    }
 }
 
 /// Enables the input buffer of one pin, which a pin that is read requires.

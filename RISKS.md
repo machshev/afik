@@ -60,6 +60,10 @@
   semantic views. Do not add a target adapter, pin mapping, scan timing, display
   geometry, or peripheral model until board-specific evidence and required
   experiments are recorded in `docs/hardware-evidence.md`.
+- **K5 diagnostic exception, 2026-08-12:** `EVID-DP32-010` and `EVID-K5-022`
+  now support one fixed, receive-inert V1 display witness. It proves only the
+  visible stage reached; the keypad and the full K5 operator interface remain
+  unverified.
 
 ## RISK-007 — BK4819 register applicability and board RF control are unverified
 

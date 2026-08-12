@@ -2401,3 +2401,38 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   `1.2` does not reach its observable banner on this attempt. It does not
   attribute the failure to its `UART_IF` acknowledgement, because `read_byte`
   is called only after the banner has been sent and flushed.
+
+### EVID-DP32-010 — SPI0 subset for the V1 display witness
+
+- **Fact:** SPI0 is based at `0x400B8000`. Its control register is at offset
+  `0x00`, write-data at `0x04`, interrupt enable at `0x10`, and FIFO status at
+  `0x18`. Control bit 3 enables SPI, bit 4 selects the second sampling edge,
+  bit 5 selects idle-high clock, bit 6 selects master mode, bit 7 selects
+  least-significant-bit first when set, bit 12 drives master SSN high when set,
+  and bits 2:0 select pclk divisors from 4 through 512. FIFO-status bit 4 says
+  transmit full and bit 3 says transmit empty. Both FIFOs are eight bytes deep.
+- **Source:** DP32G030 reference manual section 5.17, printed pages 272 to 291;
+  register map and fields on printed pages 286 to 290. The PDF is the same
+  `d1923c0a...c62573` artifact recorded for `K5DRV-048`.
+- **Method:** copied from the manual. The driver uses CPU writes only, disables
+  every interrupt, and selects pclk/16, CPOL=1, CPHA=1, MSB first.
+- **Confidence:** high for the MCU fields; physical display output remains the
+  required experiment.
+- **Permitted use:** a bounded SPI0 transmit-only display witness.
+
+### EVID-K5-022 — V1 ST7565-compatible display bindings
+
+- **Observation:** the pinned V1 firmware of `EVID-K5-019` binds SPI0 SSN to
+  PB7, clock to PB8, MOSI to PB10, display A0 to GPIO PB9, and display reset to
+  GPIO PB11. It uses a 128-by-64, eight-page ST7565-compatible command path.
+- **Source:** pinned `machshev/uv-k5-firmware-custom` commit
+  `7f959e8d09b435845753182b329e3a88490ebe32`, `board.c`, `driver/gpio.h`, and
+  `driver/st7565.c`.
+- **Method:** board wiring and controller command evidence only. No application
+  or register-driver code is copied; DP32G030 register behavior comes solely
+  from `EVID-DP32-010`.
+- **Confidence:** high for this exact V1-generation board family because the
+  pinned build runs on the three observed V1 units. Visible AFIK pixels on the
+  exact UV-K6 remain the required physical confirmation.
+- **Permitted use:** fixed receive-inert boot diagnostics. No keypad, RF, audio,
+  storage, or transmit authority follows from display output.
