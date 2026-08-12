@@ -69,7 +69,7 @@ impl K5BootDisplay {
         let key = key_label(key);
         select_display(true);
         clear();
-        draw_text(0, 8, b"AFIK K5 1.5V");
+        draw_text(0, 8, b"AFIK K5 1.5E");
         draw_text(2, 8, b"EEP");
         draw_text(2, 38, &eeprom);
         draw_text(4, 8, b"BK");
@@ -90,6 +90,9 @@ fn key_label(key: Option<Key>) -> [u8; 4] {
         Some(Key::Star) => *b"STAR",
         Some(Key::Function) => *b"F   ",
         Some(Key::Digit(value)) => [b'0' + value, b' ', b' ', b' '],
+        Some(Key::Side1) => *b"S1  ",
+        Some(Key::Side2) => *b"S2  ",
+        Some(Key::Ptt) => *b"PTT ",
     }
 }
 

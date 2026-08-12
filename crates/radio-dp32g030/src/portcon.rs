@@ -101,9 +101,24 @@ const fn pull_up_register(port: Port) -> Register {
     Register::new(PORTCON_BASE, offset)
 }
 
+/// Selects push-pull output behavior for one pin.
+pub fn disable_open_drain(port: Port, pin: u8) {
+    open_drain_register(port).modify(|value| value & !(1 << u32::from(pin)));
+}
+
+/// Returns the open-drain selection register of `port`.
+const fn open_drain_register(port: Port) -> Register {
+    let offset = match port {
+        Port::A => 0x400,
+        Port::B => 0x404,
+        Port::C => 0x408,
+    };
+    Register::new(PORTCON_BASE, offset)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{input_enable_register, select_register, with_function};
+    use super::{input_enable_register, open_drain_register, select_register, with_function};
     use crate::gpio::Port;
 
     #[test]
@@ -132,5 +147,12 @@ mod tests {
         assert_eq!(input_enable_register(Port::A).address(), 0x400B_0100);
         assert_eq!(input_enable_register(Port::B).address(), 0x400B_0104);
         assert_eq!(input_enable_register(Port::C).address(), 0x400B_0108);
+    }
+
+    #[test]
+    fn open_drain_registers_match_the_recorded_offsets() {
+        assert_eq!(open_drain_register(Port::A).address(), 0x400B_0400);
+        assert_eq!(open_drain_register(Port::B).address(), 0x400B_0404);
+        assert_eq!(open_drain_register(Port::C).address(), 0x400B_0408);
     }
 }

@@ -2491,3 +2491,8 @@
   screen must show `1.5V`, an EEPROM value other than failure dashes, a stable
   BK value rather than an assumed interpretation, and all sixteen key labels;
   three normal probes must return `AFIK-K5-1.5V`. Any ambiguous result stops.
+- **First observation:** `1.5V` booted, returned three normal hellos, displayed
+  raw BK `4819`, and decoded the implemented main keys. EEPROM did not
+  acknowledge because AFIK's high phase used input release instead of the
+  source-backed push-pull sequence. `1.5E` corrects that and adds read-only
+  side-key/PTT labels; it is built but not yet flashed.

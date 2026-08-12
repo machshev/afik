@@ -23,6 +23,12 @@ pub enum Key {
     Function,
     /// Decimal digit.
     Digit(u8),
+    /// Upper side key.
+    Side1,
+    /// Lower side key.
+    Side2,
+    /// Push-to-talk switch, exposed only as an input label in this image.
+    Ptt,
 }
 
 const MATRIX: [[Key; 4]; 4] = [
@@ -42,11 +48,28 @@ pub trait MatrixIo {
     fn settle(&mut self);
     /// Restores EEPROM/voice shared pins to their evidenced idle state.
     fn restore_shared_pins(&mut self);
+    /// Reports the separately wired active-low PTT input.
+    fn ptt_pressed(&mut self) -> bool;
 }
 
 /// Scans once, accepting only one stable key and rejecting noise/multiple keys.
 pub fn scan<I: MatrixIo>(io: &mut I) -> Option<Key> {
     let mut result = None;
+    // With every row high, PA3 and PA4 are the two directly wired side keys.
+    io.select_row(ROWS.len());
+    let Some(unselected) = stable_columns(io) else {
+        io.restore_shared_pins();
+        return None;
+    };
+    match !unselected & 0x0f {
+        0 => {}
+        1 => result = Some(Key::Side1),
+        2 => result = Some(Key::Side2),
+        _ => {
+            io.restore_shared_pins();
+            return None;
+        }
+    }
     for (row, keys) in MATRIX.iter().enumerate() {
         io.select_row(row);
         let Some(columns) = stable_columns(io) else {
@@ -62,6 +85,13 @@ pub fn scan<I: MatrixIo>(io: &mut I) -> Option<Key> {
             break;
         }
         result = Some(keys[held.trailing_zeros() as usize]);
+    }
+    if io.ptt_pressed() {
+        result = if result.is_none() {
+            Some(Key::Ptt)
+        } else {
+            None
+        };
     }
     io.restore_shared_pins();
     result
@@ -103,6 +133,10 @@ impl K5Matrix {
             portcon::select_gpio(Port::A, pin);
             gpio::write_pin(Port::A, pin, true);
         }
+        gpio::set_input(Port::C, 5);
+        portcon::select_gpio(Port::C, 5);
+        portcon::enable_input(Port::C, 5);
+        portcon::enable_pull_up(Port::C, 5);
         Self
     }
 }
@@ -112,7 +146,9 @@ impl MatrixIo for K5Matrix {
         for pin in ROWS {
             gpio::write_pin(Port::A, pin, true);
         }
-        gpio::write_pin(Port::A, ROWS[row], false);
+        if row < ROWS.len() {
+            gpio::write_pin(Port::A, ROWS[row], false);
+        }
     }
     fn columns(&mut self) -> u8 {
         COLUMNS.iter().enumerate().fold(0, |value, (bit, pin)| {
@@ -130,6 +166,9 @@ impl MatrixIo for K5Matrix {
         gpio::write_pin(Port::A, 12, false);
         gpio::write_pin(Port::A, 13, true);
     }
+    fn ptt_pressed(&mut self) -> bool {
+        !gpio::read_pin(Port::C, 5)
+    }
 }
 
 #[cfg(test)]
@@ -137,6 +176,8 @@ mod tests {
     use super::{scan, Key, MatrixIo};
     struct Fake {
         held: Option<(usize, usize)>,
+        side: Option<Key>,
+        ptt: bool,
         row: usize,
         restored: bool,
     }
@@ -145,6 +186,13 @@ mod tests {
             self.row = row;
         }
         fn columns(&mut self) -> u8 {
+            if self.row == 4 {
+                return match self.side {
+                    Some(Key::Side1) => 0x0e,
+                    Some(Key::Side2) => 0x0d,
+                    _ => 0x0f,
+                };
+            }
             self.held
                 .filter(|(r, _)| *r == self.row)
                 .map_or(0x0f, |(_, c)| 0x0f & !(1 << c))
@@ -152,6 +200,9 @@ mod tests {
         fn settle(&mut self) {}
         fn restore_shared_pins(&mut self) {
             self.restored = true;
+        }
+        fn ptt_pressed(&mut self) -> bool {
+            self.ptt
         }
     }
     #[test]
@@ -177,6 +228,8 @@ mod tests {
         for (index, key) in expected.into_iter().enumerate() {
             let mut io = Fake {
                 held: Some((index / 4, index % 4)),
+                side: None,
+                ptt: false,
                 row: 0,
                 restored: false,
             };
@@ -188,10 +241,42 @@ mod tests {
     fn no_key_restores_pins() {
         let mut io = Fake {
             held: None,
+            side: None,
+            ptt: false,
             row: 0,
             restored: false,
         };
         assert_eq!(scan(&mut io), None);
         assert!(io.restored);
+    }
+
+    #[test]
+    fn side_keys_and_ptt_decode_but_combinations_fail_closed() {
+        for key in [Key::Side1, Key::Side2] {
+            let mut io = Fake {
+                held: None,
+                side: Some(key),
+                ptt: false,
+                row: 0,
+                restored: false,
+            };
+            assert_eq!(scan(&mut io), Some(key));
+        }
+        let mut io = Fake {
+            held: None,
+            side: None,
+            ptt: true,
+            row: 0,
+            restored: false,
+        };
+        assert_eq!(scan(&mut io), Some(Key::Ptt));
+        let mut io = Fake {
+            held: Some((0, 0)),
+            side: None,
+            ptt: true,
+            row: 0,
+            restored: false,
+        };
+        assert_eq!(scan(&mut io), None);
     }
 }

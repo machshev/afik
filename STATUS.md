@@ -3,24 +3,30 @@
 ## Current work package
 
 **`K5APP-051` is active.** Its first step adds the source-backed K5 V1 main
-keypad matrix adapter. All sixteen labels are mapped, unstable or multiple-key
-samples are rejected, and every scan restores the EEPROM/I2C and voice-chip
-shared row pins. Host tests pass; this is not yet integrated into the image or
-physically confirmed. The second step adds an 8 KiB-bounded, acknowledgement-
+keypad matrix adapter. All sixteen main labels are mapped, unstable or
+multiple-key samples are rejected, and every scan restores the EEPROM/I2C and
+voice-chip shared row pins. Host tests and physical main-key observations pass.
+The second step adds an 8 KiB-bounded, acknowledgement-
 checked EEPROM reader. Its fourth step now adds a guarded write API for exactly
 one aligned eight-byte block: compare expected old bytes, program once, poll
 readiness within a bound, and require exact read-back. The API remains
 unreachable from the boot image and has not run on hardware. The third step adds the V1
 BK4819 three-wire `RegisterBus` adapter and an independently muted PC4 speaker
-gate. They compile into the K5 target but are deliberately not invoked by the
-boot image: a known-register read-back is the next physical gate before any
-receiver initialization or audio enablement.
+gate. The BK read adapter is now physically observed; receiver initialization
+and audio enablement remain gated.
 
 `AFIK-K5-1.5V` is now the built read-only validation image for these adapters.
 It displays an EEPROM offset-zero byte sum, raw BK4819 `REG_00`, and the current
 main-key label while retaining the normal serial hello. It contains no EEPROM
-or BK4819 write and leaves audio/RF/TX inactive. Static packaging passed; it has
-not yet been flashed or observed.
+or BK4819 write and leaves audio/RF/TX inactive.
+
+Physical result: `1.5V` was acknowledged `240/240`, booted after a normal
+power-cycle, answered three consecutive normal probes, displayed raw BK value
+`4819`, and decoded the implemented main keys. EEPROM displayed failure dashes.
+The exact cause is now corrected: K5 I2C driven-high phases must remain
+push-pull outputs, switching only PA11 to input for ACK/read. `AFIK-K5-1.5E`
+also adds the source-backed side-key and active-low PTT inputs as labels only;
+PTT has no radio or transmit behavior.
 
 Pre-flash gates on 2026-08-13:
 
@@ -31,6 +37,10 @@ Pre-flash gates on 2026-08-13:
   RAM ends at `0x20000100`, SHA-256
   `bf39d3726014346f71dfcf7d6fa2432b885ef471fe4c4303fbf24b253202df09`.
 - `git diff --check` passed.
+- Corrected `1.5E`: 12 K5 library tests and 25 DP32G030 tests passed with
+  warning-denied Clippy; target build/package passed, used flash ends at
+  `0x4318`, and packaged SHA-256 is
+  `4fb9d2c2f436f23945a3d6d93230302a015b5da357b2d086149050dc0ac20d3d`.
 
 Commands run in the pinned environment on 2026-08-12 and 2026-08-13:
 

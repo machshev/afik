@@ -133,13 +133,13 @@ pub fn write_verified<B: Bus>(
 pub struct K5Bus;
 
 impl K5Bus {
-    /// Leaves both bus lines released high.
+    /// Leaves both bus lines driven high in the board-proven push-pull mode.
     pub fn initialise() -> Self {
         for pin in [10, 11] {
             portcon::select_gpio(Port::A, pin);
             portcon::enable_input(Port::A, pin);
-            portcon::enable_pull_up(Port::A, pin);
-            release(pin);
+            portcon::disable_open_drain(Port::A, pin);
+            high(pin);
         }
         Self
     }
@@ -147,9 +147,9 @@ impl K5Bus {
 
 impl Bus for K5Bus {
     fn start(&mut self) {
-        release(11);
+        high(11);
         delay();
-        release(10);
+        high(10);
         delay();
         low(11);
         delay();
@@ -161,9 +161,9 @@ impl Bus for K5Bus {
         delay();
         low(10);
         delay();
-        release(10);
+        high(10);
         delay();
-        release(11);
+        high(11);
         delay();
     }
     fn write(&mut self, mut byte: u8) -> bool {
@@ -172,43 +172,45 @@ impl Bus for K5Bus {
             if byte & 0x80 == 0 {
                 low(11);
             } else {
-                release(11);
+                high(11);
             }
             delay();
-            release(10);
+            high(10);
             delay();
             low(10);
             byte <<= 1;
         }
-        release(11);
+        gpio::set_input(Port::A, 11);
         delay();
-        release(10);
+        high(10);
         delay();
         let acknowledged = !gpio::read_pin(Port::A, 11);
         low(10);
+        high(11);
         acknowledged
     }
     fn read(&mut self, final_byte: bool) -> u8 {
-        release(11);
+        gpio::set_input(Port::A, 11);
         let mut value = 0;
         for _ in 0..8 {
             low(10);
             delay();
-            release(10);
+            high(10);
             delay();
             value = (value << 1) | u8::from(gpio::read_pin(Port::A, 11));
         }
         low(10);
+        gpio::set_output(Port::A, 11);
         if final_byte {
-            release(11);
+            high(11);
         } else {
             low(11);
         }
         delay();
-        release(10);
+        high(10);
         delay();
         low(10);
-        release(11);
+        high(11);
         value
     }
 }
@@ -217,8 +219,9 @@ fn low(pin: u8) {
     gpio::write_pin(Port::A, pin, false);
     gpio::set_output(Port::A, pin);
 }
-fn release(pin: u8) {
-    gpio::set_input(Port::A, pin);
+fn high(pin: u8) {
+    gpio::write_pin(Port::A, pin, true);
+    gpio::set_output(Port::A, pin);
 }
 fn delay() {
     for _ in 0..48 {

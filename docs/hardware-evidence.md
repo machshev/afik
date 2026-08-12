@@ -2653,3 +2653,16 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
 - **Required observation:** compare the displayed EEPROM sum with the retained
   backup privately; record the raw BK word and every physical key label. Normal
   hello must remain repeatable after a separate power-cycle.
+- **First physical result:** `AFIK-K5-1.5V` was acknowledged `240/240` pages.
+  After a normal power-cycle it displayed `EEP ----`, `BK 4819`, and `KEY ----`;
+  all implemented main-key labels changed correctly when pressed. Three
+  consecutive normal probes returned `AFIK-K5-1.5V`. This proves application
+  boot, serial, display, main-matrix decode, and a complete BK read transaction;
+  it does not interpret `0x4819` or establish EEPROM access.
+- **EEPROM correction:** comparison with the same pinned source found AFIK
+  released both I2C lines as inputs, while the board-proven sequence keeps PA10
+  and PA11 push-pull outputs for driven phases and changes only PA11 to input
+  for ACK/read bits. `AFIK-K5-1.5E` reproduces that direction sequence.
+- **Input extension:** the pinned zero-row scan maps directly held PA3/PA4 to
+  side keys 1/2, and PC5 is separate active-low PTT. `1.5E` displays these as
+  inputs only; PTT creates no transmit intent or radio write.
