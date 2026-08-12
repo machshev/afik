@@ -8,7 +8,8 @@ const CHANNEL_ENABLE: u32 = 1 << 0;
 const CHANNEL_LOOP: u32 = 1 << 13;
 const CHANNEL_MEDIUM_PRIORITY: u32 = 1 << 14;
 const MODE_DESTINATION_INCREMENT: u32 = 1 << 8;
-const MODE_UART1_RX_SOURCE_REQUEST: u32 = 1 << 3;
+/// Source request `HSREQ_MS1`, field value two in mode bits 5:3.
+const MODE_UART1_RX_SOURCE_REQUEST: u32 = 2 << 3;
 
 /// A circular byte receiver backed by DMA channel zero.
 pub struct CircularReceiver<const BYTES: usize> {
@@ -102,6 +103,7 @@ const fn channel_status() -> Register {
 mod tests {
     use super::{
         channel_control, channel_destination, channel_mode, channel_source, channel_status,
+        MODE_UART1_RX_SOURCE_REQUEST,
     };
 
     #[test]
@@ -111,5 +113,10 @@ mod tests {
         assert_eq!(channel_source().address(), 0x4000_1108);
         assert_eq!(channel_destination().address(), 0x4000_110C);
         assert_eq!(channel_status().address(), 0x4000_1110);
+    }
+
+    #[test]
+    fn uart1_receive_uses_hardware_request_one() {
+        assert_eq!(MODE_UART1_RX_SOURCE_REQUEST, 0x10);
     }
 }

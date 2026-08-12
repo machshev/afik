@@ -2480,8 +2480,8 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   channel zero at `0x100`. A channel control word holds enable at bit 0, the
   transfer count minus one in bits 12:1, circular operation at bit 13, and
   priority at bits 15:14. The mode word selects an incrementing SRAM destination
-  with bit 8 and channel-zero UART1_RX source request 1 with source-select value
-  `001` in bits 5:3. Source and destination addresses are at channel offsets
+  with bit 8 and channel-zero UART1_RX hardware request `HSREQ_MS1` with
+  source-select value `010` in bits 5:3. Source and destination addresses are at channel offsets
   `0x08` and `0x0C`; current transfer count is the low twelve bits of `0x10`.
 - **Source:** DP32G030 reference manual section 5.24, printed pages 390 to 401,
   from the same verified PDF as the other DP32G030 driver evidence.
@@ -2503,6 +2503,12 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   sticky `UART_IF 0x000e3df4`. Seven valid bytes again remained below the DMA
   threshold while receive errors were latched. DMA cannot recover bytes UART
   rejected before FIFO insertion.
+- **Correction after silent-listener result:** AFIK had encoded the request as
+  `001 << 3`, which selects `HSREQ_MS0`, not Armel's `HSREQ_MS1`. The manual
+  enumerates SRAM as zero, `HSREQ_MS0` as one, and `HSREQ_MS1` as two. The
+  corrected mode field is therefore `010 << 3` (`0x10`). This explains the
+  repeated `RX 0`: channel zero was enabled but listening to the wrong hardware
+  request.
 
 ### EVID-K5-023 — V1 programming-port receive divider correction
 
@@ -2555,3 +2561,9 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   transmit-data write from the diagnostic. Only its screen reports state. This
   performs the silent-listener experiment required by `EVID-K5-021` without
   changing the UART or DMA configuration again.
+- **Silent-listener result:** baseline was `RX 0`, `UART_IF 0x00002484`. After
+  one probe the expected host timeout left `RX 0`, sticky `UART_IF 0x000e3de0`.
+  Unlike the transmitting images, neither `PARITYE` nor `STOPE` was set; the
+  FIFO overflowed with valid bytes while DMA moved none. This ruled out local
+  transmission as the framing fault and exposed the DMA request-selection
+  error recorded in `EVID-DP32-012`.
