@@ -16,6 +16,7 @@
 extern crate std;
 
 pub mod clock;
+pub mod dma;
 pub mod gpio;
 pub mod mmio;
 pub mod portcon;
@@ -28,6 +29,8 @@ pub mod uart;
 pub const SYSCON_BASE: u32 = 0x4000_0000;
 /// PMU base address, per `EVID-DP32-004`.
 pub const PMU_BASE: u32 = 0x4000_0800;
+/// DMA base address, per `EVID-DP32-012`.
+pub const DMA_BASE: u32 = 0x4000_1000;
 /// GPIOA base address, per `EVID-DP32-004`.
 pub const GPIOA_BASE: u32 = 0x4006_0000;
 /// GPIOB base address, per `EVID-DP32-004`.

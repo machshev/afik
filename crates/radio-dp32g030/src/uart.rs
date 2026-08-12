@@ -15,6 +15,8 @@ const CTRL_UARTEN: u32 = 1 << 0;
 const CTRL_RXEN: u32 = 1 << 1;
 /// `UART_CTRL` bit 2: transmit enable.
 const CTRL_TXEN: u32 = 1 << 2;
+/// `UART_CTRL` bit 3: DMA owns receive-data reads.
+const CTRL_RXDMAEN: u32 = 1 << 3;
 
 /// `UART_IF` bit 10: the receive FIFO is empty.
 const IF_RXFIFO_EMPTY: u32 = 1 << 10;
@@ -60,6 +62,11 @@ impl Uart {
         Register::new(self.base, 0x0C)
     }
 
+    /// Address DMA must use as its UART receive source.
+    pub const fn receive_address(self) -> u32 {
+        self.receive().address()
+    }
+
     /// `UART_IE`, the interrupt-enable register.
     const fn interrupt_enable(self) -> Register {
         Register::new(self.base, 0x10)
@@ -101,6 +108,12 @@ impl Uart {
         self.baud().write(u32::from(divider));
         self.fifo().write(FIFO_RF_CLR | FIFO_TF_CLR);
         self.control().write(CTRL_UARTEN | CTRL_RXEN | CTRL_TXEN);
+    }
+
+    /// Hands receive-data reads to DMA after ordinary UART configuration.
+    pub fn enable_receive_dma(self) {
+        self.control()
+            .modify(|value| value | CTRL_UARTEN | CTRL_RXEN | CTRL_TXEN | CTRL_RXDMAEN);
     }
 
     /// Sends one byte, waiting for room in the transmit FIFO.

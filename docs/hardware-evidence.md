@@ -2473,3 +2473,21 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   power-cycle, the backlight illuminated but no text was visible. This proves
   Reset reached the board adapter through `enable_diagnostic_backlight`; it
   does not prove the subsequent SPI0/display path completed.
+
+### EVID-DP32-012 — DMA channel zero for UART1 receive
+
+- **Fact:** DMA is based at `0x40001000`, with global enable at `0x00` and
+  channel zero at `0x100`. A channel control word holds enable at bit 0, the
+  transfer count minus one in bits 12:1, circular operation at bit 13, and
+  priority at bits 15:14. The mode word selects an incrementing SRAM destination
+  with bit 8 and channel-zero UART1_RX source request 1 with source-select value
+  `001` in bits 5:3. Source and destination addresses are at channel offsets
+  `0x08` and `0x0C`; current transfer count is the low twelve bits of `0x10`.
+- **Source:** DP32G030 reference manual section 5.24, printed pages 390 to 401,
+  from the same verified PDF as the other DP32G030 driver evidence.
+- **Observation:** the pinned V1 firmware uses this exact request, fixed UART1
+  receive-data source, incrementing 256-byte SRAM destination, and circular
+  channel-zero shape. It is corroboration of the manual mapping, not driver
+  source for AFIK.
+- **Permitted use:** interrupt-free circular UART1 receive into one statically
+  owned 256-byte buffer. No other DMA channel or peripheral is authorised.

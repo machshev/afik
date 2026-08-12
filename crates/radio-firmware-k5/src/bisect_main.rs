@@ -27,6 +27,7 @@
 
 use core::panic::PanicInfo;
 use radio_dp32g030::clock;
+use radio_dp32g030::dma::CircularReceiver;
 use radio_dp32g030::gpio::{self, Port};
 use radio_dp32g030::portcon;
 use radio_dp32g030::syscon::{self, Peripheral};
@@ -60,6 +61,9 @@ const REPORT_INTERVAL_POLLS: u32 = 30_000_000;
 /// A frame the host sends is fourteen bytes, so this holds two complete frames
 /// and can be compared against what the host is known to have sent.
 const FIRST_BYTES: usize = 28;
+const DMA_BYTES: usize = 256;
+
+static mut DMA_BUFFER: [u8; DMA_BYTES] = [0; DMA_BYTES];
 
 #[repr(C)]
 struct VectorTable {
@@ -123,6 +127,13 @@ fn main() -> ! {
     portcon::select_pa7_uart1_tx();
     portcon::select_pa8_uart1_rx();
     UART1.configure(clock, PROGRAMMING_BAUD);
+    // SAFETY: this image has one core and gives the static buffer exclusively
+    // to this receiver for the rest of its lifetime.
+    #[allow(unsafe_code)]
+    let mut receiver = unsafe {
+        CircularReceiver::<DMA_BYTES>::new(&raw mut DMA_BUFFER as *mut u8, UART1.receive_address())
+    };
+    UART1.enable_receive_dma();
 
     let _ = display.show(BootStage::SerialReady);
 
@@ -136,7 +147,7 @@ fn main() -> ! {
     let mut polls: u32 = 0;
     loop {
         sticky_status |= UART1.status_bits();
-        if let Some(byte) = UART1.read_byte() {
+        if let Some(byte) = receiver.read_byte() {
             received = received.wrapping_add(1);
             if first_len < first.len() {
                 first[first_len] = byte;
