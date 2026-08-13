@@ -2,14 +2,15 @@
 //!
 //! It configures the clock, binds UART1 to the programming connector, and then
 //! answers the read-only hello while validating the evidenced display, keypad,
-//! EEPROM-read, and BK4819-read adapters. It performs no EEPROM or radio write.
+//! EEPROM-read, keypad, and muted BK4819 receive adapters. It has no transmit
+//! path and never enables the speaker gate.
 
 #![no_std]
 #![no_main]
 #![deny(unsafe_code)]
 
 use core::panic::PanicInfo;
-use radio_bk4819::{RegisterAddress, RegisterBus};
+use radio_bk4819::{Bk4819, ReadbackRegister, ReceiveMetrics, RegisterBus};
 use radio_dp32g030::clock;
 use radio_dp32g030::dma::CircularReceiver;
 use radio_dp32g030::gpio::{self, Port};
@@ -17,11 +18,12 @@ use radio_dp32g030::portcon;
 use radio_dp32g030::syscon::{self, Peripheral};
 use radio_dp32g030::uart::{k5_programming_divider, Uart};
 use radio_dp32g030::UART1_BASE;
+use radio_firmware_k5::audio::SpeakerGate;
 use radio_firmware_k5::bk4819_bus::{K5Pins, K5RegisterBus};
-use radio_firmware_k5::eeprom::{self, K5Bus};
 use radio_firmware_k5::k5_display::K5BootDisplay;
 use radio_firmware_k5::keypad::{self, K5Matrix};
 use radio_firmware_k5::protocol::{HelloService, APPLICATION_IDENTITY, RESPONSE_FRAME_BYTES};
+use radio_firmware_k5::receive::Pmr446Channel;
 use radio_platform::display::show_boot_sequence;
 
 /// Initial stack pointer, per `EVID-K5-019`: the top of the evidenced RAM less
@@ -105,22 +107,21 @@ fn main() -> ! {
     let mut display = K5BootDisplay::initialise();
     let _ = show_boot_sequence(&mut display);
 
-    let mut eeprom_bytes = [0_u8; 8];
-    let eeprom_sum = if eeprom::read(&mut K5Bus::initialise(), 0, &mut eeprom_bytes).is_ok() {
-        Some(
-            eeprom_bytes
-                .iter()
-                .fold(0_u16, |sum, byte| sum.wrapping_add(u16::from(*byte))),
-        )
+    // PC4 is forced low before the first BK4819 write and remains owned by an
+    // unmodified gate for this whole image. Both board and chip audio paths are
+    // therefore independently muted during the receive/metering experiment.
+    let _speaker = SpeakerGate::initialise();
+    let mut radio = Bk4819::new(K5RegisterBus::new(K5Pins::initialise()));
+    let mut channel = Pmr446Channel::FIRST;
+    let initialised = radio.initialise().is_ok();
+    let (mut configured, mut metrics) = if initialised {
+        tune_and_sample(&mut radio, channel)
     } else {
-        None
+        (None, None)
     };
-    let bk_register = K5RegisterBus::new(K5Pins::initialise())
-        .read(RegisterAddress::new(0).expect("zero is a valid BK4819 register"))
-        .unwrap_or(0xffff);
     let mut keypad = K5Matrix::initialise();
     let mut shown_key = keypad::scan(&mut keypad);
-    display.show_validation(eeprom_sum, bk_register, shown_key);
+    display.show_pmr_receive(channel.number(), configured, metrics);
 
     let mut service = HelloService::new(APPLICATION_IDENTITY);
     let mut response = [0_u8; RESPONSE_FRAME_BYTES];
@@ -135,9 +136,33 @@ fn main() -> ! {
         let key = keypad::scan(&mut keypad);
         if key != shown_key {
             shown_key = key;
-            display.show_validation(eeprom_sum, bk_register, shown_key);
+            let selected = match key {
+                Some(keypad::Key::Up) => Some(channel.next()),
+                Some(keypad::Key::Down) => Some(channel.previous()),
+                Some(keypad::Key::Menu) => Some(channel),
+                _ => None,
+            };
+            if let Some(next) = selected {
+                channel = next;
+                (configured, metrics) = tune_and_sample(&mut radio, channel);
+                display.show_pmr_receive(channel.number(), configured, metrics);
+            }
         }
     }
+}
+
+/// Retunes and samples only on an explicit operator key edge. No target timing
+/// or receiver settling interval is inferred by this validation image.
+fn tune_and_sample<B: RegisterBus>(
+    radio: &mut Bk4819<B>,
+    channel: Pmr446Channel,
+) -> (Option<u16>, Option<ReceiveMetrics>) {
+    if radio.configure_receive(&channel.setup()).is_err() {
+        return (None, None);
+    }
+    let configured = radio.read_back(ReadbackRegister::FilterBandwidth).ok();
+    let metrics = radio.receive_metrics(radio_domain::Tone::None).ok();
+    (configured, metrics)
 }
 
 /// Startup work that has to touch memory the linker owns rather than Rust.

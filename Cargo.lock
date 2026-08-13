@@ -2461,6 +2461,7 @@ name = "radio-firmware-k5"
 version = "0.1.0"
 dependencies = [
  "radio-bk4819",
+ "radio-domain",
  "radio-dp32g030",
  "radio-flasher",
  "radio-platform",

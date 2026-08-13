@@ -16,6 +16,7 @@ firmware = []
 
 [dependencies]
 radio-bk4819 = { path = "../radio-bk4819" }
+radio-domain = { path = "../radio-domain" }
 radio-dp32g030 = { path = "../radio-dp32g030" }
 radio-platform = { path = "../radio-platform" }
 

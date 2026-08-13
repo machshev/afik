@@ -92,6 +92,11 @@
   three-wire and speaker-gate bindings in source and implements them below the
   existing register contract. No operation has run on physical K5 silicon;
   read-back, initialization, receive, and audio remain required experiments.
+- **K5 receive-image narrowing, 2026-08-13:** `EVID-K5-030` composes that bus
+  with the existing source-backed BK4819 profile in a built, unflashed image.
+  Both audio gates remain muted and the image has no TX path. Physical
+  initialization, register read-back, and RSSI movement are still the required
+  experiment; package success is not receiver evidence.
 
 ## RISK-008 — Physical scan timing and signal inputs are unverified
 

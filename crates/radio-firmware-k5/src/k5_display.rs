@@ -1,5 +1,6 @@
 //! V1 board adapter for the ST7565-compatible boot display.
 
+use radio_bk4819::ReceiveMetrics;
 use radio_dp32g030::gpio::{self, Port};
 use radio_dp32g030::portcon;
 use radio_dp32g030::pwm_plus::PwmPlus;
@@ -76,6 +77,53 @@ impl K5BootDisplay {
         draw_text(4, 38, &bk);
         draw_text(6, 8, b"KEY");
         draw_text(6, 38, &key);
+        select_display(false);
+    }
+
+    /// Shows the muted PMR446 receive-validation state and raw chip metrics.
+    pub fn show_pmr_receive(
+        &mut self,
+        channel: u8,
+        configured: Option<u16>,
+        metrics: Option<ReceiveMetrics>,
+    ) {
+        let mut channel_text = *b"00";
+        decimal_text(u32::from(channel), &mut channel_text);
+        let mut configured_text = *b"----";
+        if let Some(value) = configured {
+            hexadecimal_text(value.into(), &mut configured_text);
+        }
+        let mut rssi = *b"-----";
+        let mut glitch = *b"---";
+        let mut noise = *b"---";
+        let squelch = if let Some(sample) = metrics {
+            signed_decimal_text(sample.rssi_dbm_x2, &mut rssi);
+            decimal_text(u32::from(sample.glitch), &mut glitch);
+            decimal_text(u32::from(sample.noise), &mut noise);
+            if sample.squelch_open {
+                b'1'
+            } else {
+                b'0'
+            }
+        } else {
+            b'-'
+        };
+
+        select_display(true);
+        clear();
+        draw_text(0, 8, b"AFIK K5 1.6R");
+        draw_text(2, 8, b"PMR");
+        draw_text(2, 32, &channel_text);
+        draw_text(2, 50, b"CFG");
+        draw_text(2, 74, &configured_text);
+        draw_text(4, 8, b"R2");
+        draw_text(4, 26, &rssi);
+        draw_text(4, 62, b"S");
+        draw_text(4, 74, &[squelch]);
+        draw_text(6, 8, b"G");
+        draw_text(6, 20, &glitch);
+        draw_text(6, 50, b"N");
+        draw_text(6, 62, &noise);
         select_display(false);
     }
 }
@@ -194,6 +242,7 @@ fn glyph(character: u8) -> [u8; 5] {
         b'D' => [0x7F, 0x41, 0x41, 0x22, 0x1C],
         b'E' => [0x7F, 0x49, 0x49, 0x49, 0x41],
         b'F' => [0x7F, 0x09, 0x09, 0x09, 0x01],
+        b'G' => [0x3E, 0x41, 0x49, 0x49, 0x7A],
         b'I' => [0x00, 0x41, 0x7F, 0x41, 0x00],
         b'K' => [0x7F, 0x08, 0x14, 0x22, 0x41],
         b'L' => [0x7F, 0x40, 0x40, 0x40, 0x40],
@@ -227,6 +276,24 @@ fn decimal_text(mut value: u32, text: &mut [u8]) {
     for character in text.iter_mut().rev() {
         *character = b'0' + u8::try_from(value % 10).unwrap_or(0);
         value /= 10;
+    }
+}
+
+fn signed_decimal_text(value: i16, text: &mut [u8]) {
+    text.fill(b' ');
+    let negative = value.is_negative();
+    let mut magnitude = u32::from(value.unsigned_abs());
+    let mut index = text.len();
+    loop {
+        index -= 1;
+        text[index] = b'0' + u8::try_from(magnitude % 10).unwrap_or(0);
+        magnitude /= 10;
+        if magnitude == 0 || index == 0 {
+            break;
+        }
+    }
+    if negative && index > 0 {
+        text[index - 1] = b'-';
     }
 }
 

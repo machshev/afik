@@ -1182,3 +1182,18 @@ meaning.
 - K1-only diagnostic commands remain in K1; sharing the common hello does not
   widen K5's read-only application protocol. The proven K5 synchronous-GPIO
   display stays its adapter and the unproven SPI0 path gains no status.
+
+## ADR-072 — First K5 receive write remains muted and operator-sampled
+
+- **Date:** 2026-08-13
+- **Status:** accepted for `K5APP-051`
+- The first physical BK4819 write candidate initializes and meters receive only.
+  It independently mutes the chip AF route and the PC4 speaker gate, carries no
+  TX authority, and does not touch PTT, the PA, or an RF switch.
+- The sixteen analogue PMR446 centre frequencies are recognizable nearby-signal
+  examples, not transmit permission or equipment-compliance evidence. The image
+  uses narrow FM, no tone, and squelch-off thresholds solely to expose raw
+  metering before calibration is interpreted.
+- No receiver timing is invented. Up/Down retune and Menu resamples once on a
+  new key edge; an operator who wants a post-settling sample waits before
+  pressing Menu. Periodic polling and audible output require later evidence.

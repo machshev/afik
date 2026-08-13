@@ -46,7 +46,20 @@ The side-key correction was subsequently acknowledged `240/240`; after normal
 boot both buttons displayed `S1` and `S2`, and three consecutive normal probes
 again returned `AFIK-K5-1.5E`. K5 keypad parity is therefore physically
 complete: all sixteen main keys, both side keys, and input-only PTT. The next
-bounded step is BK4819 receive initialization and raw metering with PC4 muted.
+receive-only image, `AFIK-K5-1.6R`, is built but not flashed. It initializes
+the fitted BK4819 with the existing source-backed profile, tunes the sixteen
+analogue PMR446 centre frequencies as narrow-FM receive examples, and keeps
+both the chip AF output and PC4 speaker gate muted. Up/Down wraps through
+channels 1–16; Menu resamples the current channel. Each new key edge performs
+one retune/read-back/sample and the screen shows `REG_43`, RSSI in half-dBm
+units, raw glitch/noise, and the raw squelch link. There is no periodic polling,
+audio enable, PTT behavior, PA/RF-switch control, or transmit path.
+
+The packaged `1.6R` image is exactly `0xF000` bytes, used flash ends at
+`0x533c`, static RAM ends at `0x20000100`, and its SHA-256 is
+`b8a05332dc23f096c5896240a73e0e89300cbc816fc67d8a66e68aec016d51a3`.
+Physical BK4819 initialization and metering remain unverified until a separately
+guarded flash and normal-power-cycle observation.
 
 Pre-flash gates on 2026-08-13:
 
@@ -84,6 +97,18 @@ Commands run in the pinned environment on 2026-08-12 and 2026-08-13:
   --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test
   --workspace && ./tool/build-k5.sh --release'` — passed, including eleven K5
   library tests; `git diff --check` also passed.
+- For `AFIK-K5-1.6R`, `nix develop path:. -c bash -c 'cargo fmt --all --check
+  && cargo test -q -p radio-firmware-k5 && cargo clippy -q -p
+  radio-firmware-k5 --all-targets -- -D warnings && ./tool/build-k5.sh
+  --release'` — passed with fourteen K5 library tests, four hello tests, and
+  one platform test.
+- `nix develop path:. -c tool/package-k5-image.sh --force` — passed the ELF,
+  vector, flash, RAM, and fixed-size package checks for `AFIK-K5-1.6R`.
+- Final `AFIK-K5-1.6R` handoff: `nix develop path:. -c bash -c 'cargo fmt
+  --all --check && cargo clippy --workspace --all-targets -- -D warnings &&
+  cargo test --workspace && ./tool/build-k5.sh --release &&
+  tool/package-k5-image.sh --force'` — passed across the workspace and produced
+  the same bounded image and SHA-256 recorded above; `git diff --check` passed.
 
 ## Previous handoff: PLAT-050
 

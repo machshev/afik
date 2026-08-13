@@ -2453,8 +2453,8 @@
 
 ## K5APP-051 — K5 receive-only operator hardware bring-up
 
-- **Status:** software adapter milestone complete; physical read-back and
-  receive/audio experiments pending
+- **Status:** receive-only image built; physical initialization/metering and
+  later audio experiments pending
 - **Objective:** add the K5 V1 keypad, read-only configuration-memory access,
   BK4819 receive control, and demodulated-audio enablement as separately tested
   and committed steps.
@@ -2503,4 +2503,20 @@
 - **Input acceptance complete:** after the correction was flashed, S1 and S2
   displayed correctly and three normal probes returned `AFIK-K5-1.5E`. Main
   matrix, both side keys, and input-only PTT are now physically confirmed.
-  Next: BK4819 receive initialization and raw metering with speaker muted.
+  That result admitted the next BK4819 receive initialization and raw-metering
+  step with the speaker muted.
+- **Sixth step:** `AFIK-K5-1.6R` is a built, unflashed receive-only image. It
+  initializes the BK4819, starts on analogue PMR446 channel 1, and uses Up/Down
+  to wrap across all sixteen 12.5 kHz-spaced narrow-FM examples. Menu resamples
+  the selected channel. Every operator key edge performs one retune, reads back
+  `REG_43`, and samples RSSI, glitch, noise, and the squelch link. The chip AF
+  output and independent PC4 speaker gate both remain muted; no timer cadence,
+  audio, RF switch, PA, PTT, or TX behavior is added.
+- **Sixth-step acceptance:** after a guarded write and ordinary power-cycle,
+  the display must show `1.6R`, `CFG 3648`, a bounded PMR channel number, and
+  metrics rather than dashes. Up/Down must change the channel with wraparound,
+  Menu must take a fresh sample after the operator allows settling time, and a
+  known nearby PMR446 signal must cause repeatable RSSI movement on its channel.
+  Three normal probes must return `AFIK-K5-1.6R`. This would establish raw
+  tuning/metering only; audio, sensitivity, calibrated squelch, and TX remain
+  unproven.

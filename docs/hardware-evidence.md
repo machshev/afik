@@ -2682,3 +2682,34 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   `S2`, and three consecutive normal probes returned `AFIK-K5-1.5E`. Together
   with the preceding observations, all sixteen main keys, both side keys, and
   input-only PTT are physically confirmed on the exact unit.
+
+### EVID-K5-030 — Muted BK4819 receive-validation image contract
+
+- **Image contract:** `AFIK-K5-1.6R` composes the physically observed
+  PC0/PC1/PC2 read adapter with the existing `BK4819_PROFILE`. It performs the
+  pinned power-on table, tunes one of the sixteen analogue PMR446 centre
+  frequencies from 446.00625 MHz in 12.5 kHz steps, selects narrow FM with no
+  tone, disables calibrated squelch, and requests muted AF output.
+- **Independent mute:** PC4 is configured low before the first BK4819 write and
+  its `SpeakerGate` is never changed. The receive setup independently writes
+  muted chip AF output. The image contains no PA/RF-switch operation, PTT
+  behavior, transmit authorization, or call to a transmit API.
+- **Operator contract:** the image starts on channel 1. A new Up or Down key
+  edge retunes with wraparound; Menu resamples the current channel. Each such
+  action reads back filter-bandwidth `REG_43`, then reads RSSI, glitch, noise,
+  and the raw squelch link once. There is deliberately no invented polling or
+  settling interval; the operator waits and presses Menu for a later sample.
+- **Displayed units:** `CFG` is the raw `REG_43` word and must read `3648` for
+  the selected BK4819 narrow profile. `R2` is signed RSSI in half-dBm units;
+  `G`, `N`, and `S` are raw glitch, noise, and squelch-link observations.
+- **Software result:** fourteen K5 library tests, four hello tests, one platform
+  test, warning-denied focused Clippy, target build, ELF bounds, and fixed-size
+  packaging pass. The package is 0xF000 bytes, flash ends at 0x533c, static RAM
+  ends at 0x20000100, and SHA-256 is
+  `b8a05332dc23f096c5896240a73e0e89300cbc816fc67d8a66e68aec016d51a3`.
+- **Not established:** no `1.6R` image has been written or observed. Build and
+  package evidence do not establish that initialization completes, the
+  read-back matches, PMR446 tuning works, RSSI moves, or any audio is
+  demodulated. A guarded write, ordinary power-cycle, `CFG 3648`, repeatable
+  RSSI movement against a known signal, channel wrap, and three normal hellos
+  are the required receive-only experiment.
