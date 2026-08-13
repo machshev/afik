@@ -58,8 +58,18 @@ audio enable, PTT behavior, PA/RF-switch control, or transmit path.
 The packaged `1.6R` image is exactly `0xF000` bytes, used flash ends at
 `0x533c`, static RAM ends at `0x20000100`, and its SHA-256 is
 `b8a05332dc23f096c5896240a73e0e89300cbc816fc67d8a66e68aec016d51a3`.
-Physical BK4819 initialization and metering remain unverified until a separately
-guarded flash and normal-power-cycle observation.
+The physical step is now complete at the raw-metering boundary. `1.6R`
+received `240/240` page acknowledgements. After an ordinary power-cycle, the
+operator reported that a second radio transmitting on the selected PMR446
+channel made a Menu-triggered sample rise above baseline noise. Three
+consecutive normal probes returned `AFIK-K5-1.6R`. This establishes application
+boot and signal-correlated BK4819 initialization/tuning/metering on the exact
+unit. It does not establish demodulated audio, intelligibility, sensitivity,
+calibrated squelch, adjacent-channel rejection, or TX.
+
+**Next smallest actionable task:** add an explicit operator-controlled receive
+audio route which changes both BK4819 AF output and PC4 speaker gating, defaults
+muted, retains an immediate mute action, and contains no PTT or transmit path.
 
 Pre-flash gates on 2026-08-13:
 

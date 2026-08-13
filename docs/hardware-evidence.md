@@ -2713,3 +2713,16 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   demodulated. A guarded write, ordinary power-cycle, `CFG 3648`, repeatable
   RSSI movement against a known signal, channel wrap, and three normal hellos
   are the required receive-only experiment.
+- **Physical result:** `AFIK-K5-1.6R` was accepted with `240/240` page
+  acknowledgements. After an ordinary power-cycle the operator reported that
+  the image appeared to work: with a second radio transmitting on the selected
+  PMR446 channel, pressing Menu for a new sample produced a reading higher than
+  the baseline noise. Three consecutive normal-mode probes independently
+  returned `AFIK-K5-1.6R`.
+- **Established boundary:** the application boots after the write, completes
+  enough BK4819 initialization/tuning/metering to produce repeatable signal-
+  correlated raw movement, and remains responsive over normal serial. The
+  observation does not include exact displayed `CFG`, RSSI, glitch/noise, or
+  channel-wrap values, so those details remain unrecorded rather than inferred.
+  Audio was independently muted, so demodulation, intelligibility, sensitivity,
+  calibrated squelch, and adjacent-channel rejection remain unproven.

@@ -97,6 +97,12 @@
   Both audio gates remain muted and the image has no TX path. Physical
   initialization, register read-back, and RSSI movement are still the required
   experiment; package success is not receiver evidence.
+- **K5 raw-metering result, 2026-08-13:** the flashed `1.6R` image booted and a
+  second radio's selected-channel transmission produced a new sample higher
+  than baseline noise. This closes the absence of any K5 AFIK register-write
+  observation only as far as raw signal-correlated metering. Audio,
+  intelligibility, sensitivity, calibrated squelch, selectivity, and exact
+  meter values remain open.
 
 ## RISK-008 — Physical scan timing and signal inputs are unverified
 

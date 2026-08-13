@@ -2453,8 +2453,8 @@
 
 ## K5APP-051 — K5 receive-only operator hardware bring-up
 
-- **Status:** receive-only image built; physical initialization/metering and
-  later audio experiments pending
+- **Status:** raw receive metering physically observed; demodulated-audio
+  experiment pending
 - **Objective:** add the K5 V1 keypad, read-only configuration-memory access,
   BK4819 receive control, and demodulated-audio enablement as separately tested
   and committed steps.
@@ -2520,3 +2520,10 @@
   Three normal probes must return `AFIK-K5-1.6R`. This would establish raw
   tuning/metering only; audio, sensitivity, calibrated squelch, and TX remain
   unproven.
+- **Sixth-step physical result:** the guarded write received `240/240`
+  acknowledgements. After normal boot, a second radio transmitting on the
+  selected PMR446 channel produced a Menu-triggered sample higher than baseline
+  noise, and three consecutive probes returned `AFIK-K5-1.6R`. This closes raw
+  receive initialization/tuning/metering only. Next: independently route
+  demodulated receive audio and enable PC4 under an explicit operator control,
+  retaining a one-action mute and no TX path.
