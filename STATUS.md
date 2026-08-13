@@ -16,6 +16,14 @@ squelch-to-speaker rule, receiver-fault silence, semantic view, and ordered
 target effects. Identical K1 and K5 fixtures produce identical traces. Seven
 `radio-platform` tests and warning-denied Clippy pass.
 
+The K5 target now executes that shared core as `AFIK-K5-1.8U`. Its proven
+keypad and 50 ms `SysTick` emit shared events; ordered tune, chip-audio,
+speaker-gate, and redraw effects drive the existing K5 adapters. Adapter failure
+feeds the common fail-silent event. Focused tests, warning-denied Clippy, target
+build, and packaging pass; the unflashed package is `0xF000` bytes, flash ends
+at `0x5738`, static RAM ends at `0x20000100`, and SHA-256 is
+`d359c43e4d6bd9d72028d48f2acbb2b63f58affd75d579878750747ff27b216d`.
+
 `K5APP-051` is complete. Its first step added the source-backed K5 V1 main
 keypad matrix adapter. All sixteen main labels are mapped, unstable or
 multiple-key samples are rejected, and every scan restores the EEPROM/I2C and
@@ -105,9 +113,8 @@ cargo test --workspace && ./tool/build-k5.sh --release &&
 tool/package-k5-image.sh --force'`. It reproduced the same image bounds and
 SHA-256; `git diff --check` passed before the gate.
 
-**Next smallest actionable task:** make the K5 target execute the shared effects
-without changing its already observed peripheral sequence, then bind the K1
-receive path to the same contract.
+**Next smallest actionable task:** physically preserve K5 `1.7A` behavior under
+the shared `1.8U` core, then bind the K1 receive path to the same contract.
 
 Pre-flash gates on 2026-08-13:
 

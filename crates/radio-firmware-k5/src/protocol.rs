@@ -5,10 +5,10 @@ pub use radio_platform::serial::{
 };
 
 /// Printable identity returned by the verified AFIK K5 application.
-pub const APPLICATION_VERSION: &[u8] = b"AFIK-K5-1.7A";
+pub const APPLICATION_VERSION: &[u8] = b"AFIK-K5-1.8U";
 /// Validated identity consumed by the shared application service.
 pub const APPLICATION_IDENTITY: ApplicationIdentity<'static> =
     ApplicationIdentity::new(APPLICATION_VERSION).expect("K5 identity is printable and bounded");
 
 /// Plain-text banner retained for bounded serial diagnostics.
-pub const BOOT_BANNER: &[u8] = b"AFIK-K5-1.7A booted";
+pub const BOOT_BANNER: &[u8] = b"AFIK-K5-1.8U booted";

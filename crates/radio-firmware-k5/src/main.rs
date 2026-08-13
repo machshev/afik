@@ -25,6 +25,7 @@ use radio_firmware_k5::keypad::{self, K5Matrix};
 use radio_firmware_k5::protocol::{HelloService, APPLICATION_IDENTITY, RESPONSE_FRAME_BYTES};
 use radio_firmware_k5::receive::Pmr446Channel;
 use radio_platform::display::show_boot_sequence;
+use radio_platform::receive_app::{Effect, Event, ReceiveApp};
 
 /// Initial stack pointer, per `EVID-K5-019`: the top of the evidenced RAM less
 /// the sixteen bytes the firmware running on these units leaves alone.
@@ -114,18 +115,43 @@ fn main() -> ! {
     // opened only after the first complete sample says squelch is open.
     let mut speaker = SpeakerGate::initialise();
     let mut radio = Bk4819::new(K5RegisterBus::new(K5Pins::initialise()));
-    let mut channel = Pmr446Channel::FIRST;
-    let mut audio = true;
     let initialised = radio.initialise().is_ok();
-    let (mut configured, mut metrics) = if initialised {
-        tune_and_sample(&mut radio, channel, audio)
-    } else {
-        (None, None)
-    };
+    let mut app = ReceiveApp::new();
+    let mut configured = None;
+    let mut metrics = None;
     let mut keypad = K5Matrix::initialise();
     let mut shown_key = keypad::scan(&mut keypad);
-    gate_speaker(&mut speaker, audio, metrics);
-    display.show_pmr_receive(channel.number(), audio, configured, metrics);
+    if initialised {
+        let effects = app.apply(Event::Start);
+        if !apply_effects(
+            effects.iter(),
+            &mut radio,
+            &mut speaker,
+            &mut display,
+            &mut configured,
+            &mut metrics,
+        ) {
+            let fault = app.apply(Event::ReceiverFault);
+            let _ = apply_effects(
+                fault.iter(),
+                &mut radio,
+                &mut speaker,
+                &mut display,
+                &mut configured,
+                &mut metrics,
+            );
+        }
+    } else {
+        let fault = app.apply(Event::ReceiverFault);
+        let _ = apply_effects(
+            fault.iter(),
+            &mut radio,
+            &mut speaker,
+            &mut display,
+            &mut configured,
+            &mut metrics,
+        );
+    }
 
     let mut service = HelloService::new(APPLICATION_IDENTITY);
     let mut response = [0_u8; RESPONSE_FRAME_BYTES];
@@ -140,45 +166,48 @@ fn main() -> ! {
         let key = keypad::scan(&mut keypad);
         if key != shown_key {
             shown_key = key;
-            let selected = match key {
-                Some(keypad::Key::Up) => Some(channel.next()),
-                Some(keypad::Key::Down) => Some(channel.previous()),
-                Some(keypad::Key::Menu) => {
-                    audio = !audio;
-                    speaker.set_enabled(false);
-                    let output = if audio {
-                        AfOutput::Demodulated
-                    } else {
-                        AfOutput::Mute
-                    };
-                    if radio
-                        .set_af_output(radio_domain::Modulation::Fm, output)
-                        .is_err()
-                    {
-                        audio = false;
-                    }
-                    None
-                }
+            let event = match key {
+                Some(keypad::Key::Up) => Some(Event::NextChannel),
+                Some(keypad::Key::Down) => Some(Event::PreviousChannel),
+                Some(keypad::Key::Menu) => Some(Event::ToggleAudio),
                 _ => None,
             };
-            if let Some(next) = selected {
-                channel = next;
-                (configured, metrics) = tune_and_sample(&mut radio, channel, audio);
+            if let Some(event) = event {
+                let effects = app.apply(event);
+                let _ = apply_effects(
+                    effects.iter(),
+                    &mut radio,
+                    &mut speaker,
+                    &mut display,
+                    &mut configured,
+                    &mut metrics,
+                );
             }
-            gate_speaker(&mut speaker, audio, metrics);
-            display.show_pmr_receive(channel.number(), audio, configured, metrics);
         }
         sample_tick.wait();
         if let Ok(sample) = radio.receive_metrics(radio_domain::Tone::None) {
-            let changed = metrics.map(|old| old.squelch_open) != Some(sample.squelch_open);
             metrics = Some(sample);
-            gate_speaker(&mut speaker, audio, metrics);
-            if changed {
-                display.show_pmr_receive(channel.number(), audio, configured, metrics);
-            }
+            let effects = app.apply(Event::ReceiveSample {
+                squelch_open: sample.squelch_open,
+            });
+            let _ = apply_effects(
+                effects.iter(),
+                &mut radio,
+                &mut speaker,
+                &mut display,
+                &mut configured,
+                &mut metrics,
+            );
         } else {
-            audio = false;
-            speaker.set_enabled(false);
+            let effects = app.apply(Event::ReceiverFault);
+            let _ = apply_effects(
+                effects.iter(),
+                &mut radio,
+                &mut speaker,
+                &mut display,
+                &mut configured,
+                &mut metrics,
+            );
         }
     }
 }
@@ -198,8 +227,52 @@ fn tune_and_sample<B: RegisterBus>(
     (configured, metrics)
 }
 
-fn gate_speaker(speaker: &mut SpeakerGate, audio: bool, metrics: Option<ReceiveMetrics>) {
-    speaker.set_enabled(audio && metrics.is_some_and(|sample| sample.should_unmute()));
+fn apply_effects<B: RegisterBus>(
+    effects: impl Iterator<Item = Effect>,
+    radio: &mut Bk4819<B>,
+    speaker: &mut SpeakerGate,
+    display: &mut K5BootDisplay,
+    configured: &mut Option<u16>,
+    metrics: &mut Option<ReceiveMetrics>,
+) -> bool {
+    for effect in effects {
+        match effect {
+            Effect::Tune {
+                channel,
+                frequency_hz,
+                audio,
+            } => {
+                let Some(channel) = Pmr446Channel::new(channel) else {
+                    return false;
+                };
+                if channel.frequency().as_hz() != frequency_hz {
+                    return false;
+                }
+                (*configured, *metrics) = tune_and_sample(radio, channel, audio);
+                if configured.is_none() || metrics.is_none() {
+                    return false;
+                }
+            }
+            Effect::SetChipAudio(audio) => {
+                let output = if audio {
+                    AfOutput::Demodulated
+                } else {
+                    AfOutput::Mute
+                };
+                if radio
+                    .set_af_output(radio_domain::Modulation::Fm, output)
+                    .is_err()
+                {
+                    return false;
+                }
+            }
+            Effect::SetSpeaker(enabled) => speaker.set_enabled(enabled),
+            Effect::Redraw(view) => {
+                display.show_pmr_receive(view.channel, view.audio, *configured, *metrics)
+            }
+        }
+    }
+    true
 }
 
 /// Startup work that has to touch memory the linker owns rather than Rust.

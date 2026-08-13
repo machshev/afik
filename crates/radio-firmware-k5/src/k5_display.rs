@@ -112,7 +112,7 @@ impl K5BootDisplay {
 
         select_display(true);
         clear();
-        draw_text(0, 8, b"AFIK K5 1.7A");
+        draw_text(0, 8, b"AFIK K5 1.8U");
         draw_text(2, 8, b"PMR");
         draw_text(2, 32, &channel_text);
         draw_text(2, 50, b"CFG");

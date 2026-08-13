@@ -2567,6 +2567,11 @@
   Identical K1/K5 fixtures run the same event script and produce identical
   effects. The module is `no_std`, heap-free, and contains no target timing,
   register, bus, chip-profile, storage, rendering, or TX behavior.
+- **K5 adapter result:** `AFIK-K5-1.8U` executes those shared effects against
+  the already observed K5 adapters. Key edges become shared navigation/mute
+  events; the K5 `SysTick` supplies sample events; tune, chip-audio, speaker and
+  redraw effects drive the same BK4819, PC4 and display operations as `1.7A`.
+  Any adapter failure feeds the shared fail-silent receiver-fault event.
 - **Then:** move keypad semantics and semantic display state, then configuration
   activation/persistence and serial control. Keep MCU registers, interrupts,
   DMA, physical buses, chip profile selection, image layout, and recovery in
