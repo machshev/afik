@@ -2719,7 +2719,8 @@
   `ab4a2f8a7010b3233ce83816ea81b16ec2dabb226d4b37d8f15abc8fcc71b626`.
   This is preserved historical 1.9S/Menu evidence; ADR-085/ADR-086 supersede
   its mutation-boundary description for 2.0P.
-- **APP-052 shared-pixel correction (2026-08-13):** extracted the K1
+- **APP-052 shared-pixel correction (2026-08-13; historical, superseded by
+  ADR-087/`AFIK-K5-2.1D`):** extracted the K1
   hardware-independent 128x64 operator renderer into
   `radio-platform::operator_display`; K1 re-exports it and K5 now renders the
   same operating, channel-list, source-list, and Info frames before its
@@ -2731,8 +2732,10 @@
   again. Side2 now enters shared `ToggleMonitor`, with the K5 matrix and
   simulator traces covered; Menu remains the shared list-confirm key. Focused
   platform/K5 tests, K5 release build, image verification, and fixed package
-  pass. The unflashed image is `AFIK-K5-2.0P`; physical K5 UI and side-key
-  acceptance remain open.
+  pass. The historical unflashed image was `AFIK-K5-2.0P`; its later physical
+  boot/serial success and display failure are recorded in STATUS and hardware
+  evidence. The current unflashed corrective image is `AFIK-K5-2.1D`; physical
+  display and side-key acceptance remain open.
 - **APP-052 review corrections (2026-08-13):** shared operating views now carry
   receiver health and render `RX FAULT` distinctly from a healthy quiet frame;
   K1’s common PMR adapter synchronizes controller monitor state through the
@@ -2751,3 +2754,12 @@
   AUDIO mutations instead of leaving controller state behind. The explicit
   AUDIO operation remains available on K5, and bit 2 of the shared view flags
   is documented as monitoring.
+- **APP-052 K5 display transport correction (2026-08-13):** physical `2.0P`
+  booted and answered normal serial, but the operator reported a left-cropped
+  display with random right-edge pixels. The target trace found the existing
+  direct text path's controller-column `+4` offset while shared page clear/frame
+  writes used column `0`. K5 now transfers each visible page at columns
+  `4..=131`; a bounded host plan test proves all 128 columns across all eight
+  pages are covered once without wrap or stray RAM. The shared renderer is
+  unchanged. `2.1D` is the corrective identity; physical display acceptance
+  remains open.

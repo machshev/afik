@@ -24,10 +24,11 @@ minimal AFIK image a usable radio firmware.
 - A bootloader acknowledgement is not flash read-back and is not proof that the
   application booted.
 
-The final shared-application image identity for this software milestone is
-`AFIK-K5-2.0P`. This is a new software identity and must not be confused with
-the physically flashed intermediate `AFIK-K5-1.8U`; no physical result is
-implied by building or packaging `2.0P`. The shared operator screens use the K1
+The previous shared-application image identity was `AFIK-K5-2.0P`. It is now a
+historical physical witness: it booted and answered normal serial, but its
+shared framebuffer was visibly cropped on the left with stray pixels on the
+right. The corrective software identity is `AFIK-K5-2.1D`; no physical result
+is implied by building or packaging it. The shared operator screens use the K1
 128x64 layout for the K5-supported operating, channel-list, source-list, and
 Info views. K5 has no evidenced VFO, settings, scan, or persistent-memory
 adapter, so those choices remain visibly capability-gated.

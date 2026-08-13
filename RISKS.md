@@ -859,3 +859,11 @@
   view-only common serial access and refuses key/audio mutations; this avoids
   claiming that a serial request changed only the detached ReceiveApp. K1/K5
   physical serial interoperability and K1 controller forwarding remain open.
+- **K5 display transport correction, 2026-08-13:** physical `2.0P` application
+  boot and normal serial are now observed, but its shared framebuffer had a
+  left crop and random right-edge pixels. The traced cause was the K5 adapter
+  selecting controller column zero for shared page writes while its existing
+  direct text path used the evidenced four-column offset. `2.1D` shifts only
+  the target page transport to columns `4..=131`; host plan tests prove the
+  bounded mapping, but physical display legibility and absence of artifacts
+  still require acceptance. APP-052 remains open.

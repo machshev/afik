@@ -9,8 +9,8 @@ use radio_dp32g030::PWM_PLUS0_BASE;
 use radio_platform::display::{BootDisplay, BootStage, ReceiveDiagnostic};
 use radio_platform::operator_display::{
     render_channel_list, render_info_screen, render_operating_screen, render_selector_list,
-    ListRow, MemoryState, OperatingView, ResetCause, SelectorRow, SerialCounters, FRAME_BYTES,
-    LIST_ROWS,
+    ListRow, MemoryState, OperatingView, ResetCause, SelectorRow, SerialCounters, COLUMN_OFFSET,
+    FRAME_BYTES, LIST_ROWS, PAGES, WIDTH,
 };
 use radio_platform::operator_shell::{Screen, Shell, Source};
 use radio_platform::receive_app::View;
@@ -23,6 +23,71 @@ const CLOCK_PIN: u8 = 8;
 const A0_PIN: u8 = 9;
 const DATA_PIN: u8 = 10;
 const RESET_PIN: u8 = 11;
+
+/// The V1 controller exposes four RAM columns before the 128 visible columns.
+/// The existing direct-text path already used this offset; shared framebuffer
+/// writes must use it as well or the frame is cropped on the left and wraps
+/// stale RAM into the right edge.
+pub const DISPLAY_COLUMN_OFFSET: u8 = COLUMN_OFFSET;
+/// Number of visible columns in one controller page.
+#[allow(clippy::cast_possible_truncation)]
+pub const DISPLAY_VISIBLE_COLUMNS: u8 = WIDTH as u8;
+/// Number of visible pages in the 128x64 panel.
+#[allow(clippy::cast_possible_truncation)]
+pub const DISPLAY_PAGES: u8 = PAGES as u8;
+
+/// One bounded page transfer from the shared framebuffer to controller RAM.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VisiblePageWrite {
+    /// Controller page selected before the data bytes.
+    pub page: u8,
+    /// Controller RAM column corresponding to visible framebuffer column zero.
+    pub controller_column: u8,
+    /// Number of visible framebuffer bytes written on this page.
+    pub bytes: u8,
+}
+
+impl VisiblePageWrite {
+    const fn new(page: u8) -> Self {
+        Self {
+            page,
+            controller_column: DISPLAY_COLUMN_OFFSET,
+            bytes: DISPLAY_VISIBLE_COLUMNS,
+        }
+    }
+}
+
+/// Returns the exact bounded transfer plan for the visible framebuffer.
+pub const fn visible_page_write_plan() -> [VisiblePageWrite; DISPLAY_PAGES as usize] {
+    [
+        VisiblePageWrite::new(0),
+        VisiblePageWrite::new(1),
+        VisiblePageWrite::new(2),
+        VisiblePageWrite::new(3),
+        VisiblePageWrite::new(4),
+        VisiblePageWrite::new(5),
+        VisiblePageWrite::new(6),
+        VisiblePageWrite::new(7),
+    ]
+}
+
+/// Maps a visible framebuffer column to its controller RAM column.
+pub const fn controller_column_for_visible(visible_column: u8) -> Option<u8> {
+    if visible_column < DISPLAY_VISIBLE_COLUMNS {
+        Some(DISPLAY_COLUMN_OFFSET + visible_column)
+    } else {
+        None
+    }
+}
+
+/// Encodes the three controller address commands for one page transfer.
+pub const fn page_address_commands(page: u8, controller_column: u8) -> [u8; 3] {
+    [
+        0xB0 | (page & 7),
+        0x10 | ((controller_column >> 4) & 0x0F),
+        controller_column & 0x0F,
+    ]
+}
 
 /// Infallible fixed display adapter; its controller has no return path.
 pub struct K5BootDisplay {
@@ -281,10 +346,10 @@ impl BootDisplay for K5BootDisplay {
 }
 
 fn clear() {
-    for page in 0..8 {
-        select(page, 0);
+    for transfer in visible_page_write_plan() {
+        select(transfer.page, transfer.controller_column);
         set_data_mode();
-        for _ in 0..128 {
+        for _ in 0..DISPLAY_VISIBLE_COLUMNS {
             write_byte(0);
         }
     }
@@ -292,11 +357,12 @@ fn clear() {
 
 fn write_frame(frame: &[u8; FRAME_BYTES]) {
     select_display(true);
-    for page in 0_u8..8 {
-        select(page, 0);
+    for transfer in visible_page_write_plan() {
+        select(transfer.page, transfer.controller_column);
         set_data_mode();
-        let start = usize::from(page) * 128;
-        for byte in &frame[start..start + 128] {
+        let start = usize::from(transfer.page) * usize::from(DISPLAY_VISIBLE_COLUMNS);
+        let end = start + usize::from(transfer.bytes);
+        for byte in &frame[start..end] {
             write_byte(*byte);
         }
     }
@@ -304,7 +370,7 @@ fn write_frame(frame: &[u8; FRAME_BYTES]) {
 }
 
 fn draw_text(page: u8, column: u8, text: &[u8]) {
-    select(page, column + 4);
+    select(page, column.saturating_add(DISPLAY_COLUMN_OFFSET));
     set_data_mode();
     for character in text {
         for byte in glyph(*character) {
@@ -316,9 +382,9 @@ fn draw_text(page: u8, column: u8, text: &[u8]) {
 
 fn select(page: u8, column: u8) {
     gpio::write_pin(Port::B, A0_PIN, false);
-    write_byte(0xB0 | (page & 7));
-    write_byte(0x10 | ((column >> 4) & 0x0F));
-    write_byte(column & 0x0F);
+    for command in page_address_commands(page, column) {
+        write_byte(command);
+    }
 }
 
 fn command_byte(byte: u8) {

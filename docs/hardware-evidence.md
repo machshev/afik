@@ -2811,7 +2811,8 @@ and shell are owned by the UI task. Receiver-fault views remain diagnostic for
 queries, while the host treats a receiver-fault response to a state-changing
 request as an operation failure. These are static/simulator facts only: no
 2.0P image has been flashed and no physical UI, serial, side-key, or audio
-parity is claimed.
+parity is claimed. This statement predates the later physical 2.0P result
+recorded in EVID-K5-033 and is retained as historical evidence.
 
 ### EVID-K5-032 — Shared receive application preserves K5 behavior
 
@@ -2826,3 +2827,25 @@ parity is claimed.
   observed K5 receive behavior and coexists with the K5 circular-DMA serial
   adapter. This is K5 evidence only; it does not yet establish a K1 adapter or
   calibrated RF performance.
+
+### EVID-K5-033 — 2.0P booted and exposed a K5 shared-frame window defect
+
+- **Physical result:** after the guarded `AFIK-K5-2.0P` write, the operator
+  reported that the application booted and answered normal-mode serial. The
+  display was visibly cropped on the left and showed random/stale pixels at the
+  right edge. This preserves the earlier 2.0P boot and serial success while
+  rejecting physical display parity for that image.
+- **Software trace:** the K5 direct diagnostic text path selected each text
+  position with a four-column controller offset, while the shared framebuffer
+  `clear` and full-frame writes selected column zero and sent 128 bytes. The
+  resulting transfer omitted visible columns 0..3 and left controller columns
+  128..131 outside the written frame, matching the reported crop and right-edge
+  artifacts. The shared renderer pixels were not changed.
+- **Correction:** the K5 adapter now uses the evidenced shared
+  `COLUMN_OFFSET=4` and `WIDTH=128` for both clear and frame writes. Every page
+  selects `[0xB0|page, 0x10, 0x04]` and writes exactly 128 bytes, so visible
+  columns map to controller columns 4..131 without wrap. Host tests prove the
+  bounded eight-page plan and exact address commands.
+- **Next image:** the corrective unflashed identity is `AFIK-K5-2.1D`.
+  Building, packaging, or static plan tests do not establish physical display
+  legibility; a separate authorized write and observation remains required.

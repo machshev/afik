@@ -1,6 +1,9 @@
 //! Host contract proof for the K5 application-facing display adapter.
 
-use radio_firmware_k5::k5_display::{render_operator_frame, K5BootDisplay};
+use radio_firmware_k5::k5_display::{
+    controller_column_for_visible, page_address_commands, render_operator_frame,
+    visible_page_write_plan, K5BootDisplay, DISPLAY_COLUMN_OFFSET, DISPLAY_VISIBLE_COLUMNS,
+};
 use radio_platform::configuration::{Pmr446Channel, PMR446_CHANNELS};
 use radio_platform::display::{show_boot_sequence, BootDisplay, BootStage, ReceiveDiagnostic};
 use radio_platform::operator_display::{
@@ -168,4 +171,40 @@ fn k5_supported_shell_screens_are_deterministic_and_shared() {
         ResetCause::default(),
     );
     assert_eq!(info, expected_info);
+}
+
+#[test]
+fn k5_visible_page_plan_preserves_the_full_panel_without_edge_wrap() {
+    let plan = visible_page_write_plan();
+    assert_eq!(plan.len(), 8);
+
+    for (page, transfer) in plan.iter().enumerate() {
+        assert_eq!(usize::from(transfer.page), page);
+        assert_eq!(transfer.controller_column, DISPLAY_COLUMN_OFFSET);
+        assert_eq!(transfer.bytes, DISPLAY_VISIBLE_COLUMNS);
+        assert_eq!(
+            page_address_commands(transfer.page, transfer.controller_column),
+            [0xB0 | transfer.page, 0x10, 0x04]
+        );
+        let last = transfer.controller_column + transfer.bytes - 1;
+        assert_eq!(last, DISPLAY_COLUMN_OFFSET + DISPLAY_VISIBLE_COLUMNS - 1);
+    }
+
+    let mut controller_columns = [false; 132];
+    for visible in 0..DISPLAY_VISIBLE_COLUMNS {
+        let controller = controller_column_for_visible(visible).unwrap();
+        assert_eq!(controller, DISPLAY_COLUMN_OFFSET + visible);
+        let slot = usize::from(controller);
+        assert!(!controller_columns[slot]);
+        controller_columns[slot] = true;
+    }
+    assert!(controller_columns[..usize::from(DISPLAY_COLUMN_OFFSET)]
+        .iter()
+        .all(|used| !used));
+    assert!(
+        controller_columns[usize::from(DISPLAY_COLUMN_OFFSET + DISPLAY_VISIBLE_COLUMNS)..]
+            .iter()
+            .all(|used| !used)
+    );
+    assert_eq!(controller_column_for_visible(DISPLAY_VISIBLE_COLUMNS), None);
 }

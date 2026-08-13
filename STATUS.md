@@ -16,22 +16,22 @@ squelch-to-speaker rule, receiver-fault silence, semantic view, and ordered
 target effects. Identical K1 and K5 fixtures produce identical traces. Seven
 `radio-platform` tests and warning-denied Clippy pass.
 
-The K5 target now executes that shared core as the unflashed
-`AFIK-K5-2.0P` image. Its proven keypad and 50 ms `SysTick` emit shared events;
-ordered tune, chip-audio, speaker-gate, and redraw effects drive the existing
-K5 adapters. Adapter failure feeds the common fail-silent event. The latest
-shared operator frame is rendered by the hardware-independent K1 layout and
-only written by the K5 adapter when pixels change. Focused tests, warning-denied
-Clippy, target build, and packaging pass; the unflashed package is `0xF000`
-bytes, flash ends at `0x938c`, static RAM ends at `0x20000100`, and SHA-256 is
-`3097fa254b4922409184d50d2be102e678ce720f83117f6303cdb153667b3ad4`.
+The K5 target now executes that shared core as the current unflashed
+`AFIK-K5-2.1D` corrective image. Its proven keypad and 50 ms `SysTick` emit
+shared events; ordered tune, chip-audio, speaker-gate, and redraw effects drive
+the existing K5 adapters. Adapter failure feeds the common fail-silent event.
+The latest shared operator frame is rendered by the hardware-independent K1
+layout and only written by the K5 adapter when pixels change. The package is
+`0xF000` bytes, flash ends at `0x938c`, static RAM ends at `0x20000100`, and
+SHA-256 is
+`83e93887e51ebb99248ee485f190b117077d02ad8b17caee8dc18d6d7ef3e5b5`.
 
-Physical K5 parity passes. The guarded write received `240/240`
-acknowledgements; after ordinary boot the operator confirmed channel
-navigation, default audio, sampled squelch, and Menu `A1`/`A0` behavior all
-still worked. Three consecutive normal probes returned `AFIK-K5-1.8U`; no
-hardware was flashed for `2.0P`, so its physical identity and UI remain
-unproven.
+The earlier physical `AFIK-K5-2.0P` write established application boot and
+normal-mode serial response, but its display was cropped on the left with
+random/stale pixels on the right. The display transport correction is in
+unflashed `2.1D`; physical display acceptance remains open. The older `1.8U`
+receive witness and its channel/audio/squelch observations remain historical
+evidence.
 
 The first K1 adapter seam is implemented and now runs in the K1 runtime for
 complete shared PMR446 example setups.
@@ -3683,7 +3683,9 @@ unsupported shell keys before dispatch. A K5 state-changing response carrying
 diagnostic query. Focused tests cover these boundaries and K1 view-only refusal
 without semantic mutation.
 
-The final serialized cached-direnv gate passed after these corrections: format,
+The following final serialized cached-direnv gate is the historical `2.0P`
+record, superseded by the display correction below. It passed after those
+corrections: format,
 warning-denied workspace Clippy, full workspace tests, K1/K5 release builds,
 K5 image verification, fixed-size packaging, and diff checks. The unflashed
 `AFIK-K5-2.0P` package is `0xF000` bytes, flash ends at `0x938c`, static RAM
@@ -3691,3 +3693,25 @@ ends at `0x20000100`, and SHA-256 is
 `3097fa254b4922409184d50d2be102e678ce720f83117f6303cdb153667b3ad4`.
 No hardware was flashed; physical K5 display, Side2 audio, and serial
 interoperability remain acceptance work.
+
+## APP-052 K5 display transport correction, 2026-08-13
+
+The physical `AFIK-K5-2.0P` image booted and answered normal-mode serial, but
+the operator reported a screen cropped on the left with random/stale pixels on
+the right. The exact K5 trace found that the existing direct text path selected
+controller column `+4`, while shared framebuffer clear and frame writes started
+at column `0`. The shared renderer is unchanged. The K5 adapter now uses the
+shared `COLUMN_OFFSET=4` and `WIDTH=128` for both operations; every page emits
+`[0xB0|page, 0x10, 0x04]` and exactly 128 data bytes, mapping visible columns
+0..127 to controller columns 4..131 without wrap. Host tests cover the exact
+eight-page plan and address commands. The corrective unflashed identity is
+`AFIK-K5-2.1D`; physical display acceptance remains open and APP-052 is not
+complete.
+
+The single serialized final cached-direnv gate passed: format, warning-denied
+workspace Clippy, full workspace tests, K1/K5 release builds, K5 image
+verification, fixed-size packaging, and diff checks. The unflashed `2.1D`
+package is `0xF000` bytes, flash ends at `0x938c`, static RAM ends at
+`0x20000100`, and SHA-256 is
+`83e93887e51ebb99248ee485f190b117077d02ad8b17caee8dc18d6d7ef3e5b5`.
+No hardware was flashed for this correction.
