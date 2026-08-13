@@ -2586,6 +2586,15 @@
   target-owned BK4829 receiver profile without changing the live K1 loop.
   Formatting, 125 K1 tests, four programming tests, seven platform tests,
   warning-denied focused Clippy, and the release K1 firmware build pass.
+- **K1 live PMR path:** the K1 runtime now recognizes only complete narrow-FM,
+  no-tone, 12.5 kHz-step PMR446 example setups and selects them directly in
+  the shared state machine. Ordered shared tune, chip-audio, speaker-gate,
+  sample, fault, and redraw effects run through K1 adapters; arbitrary
+  programmed channels, VFO, scanning, shell screens, persistence, diagnostics,
+  and host control retain their existing paths. Direct selection never replays
+  or tunes intermediate channels. The focused gate passes 126 K1 tests, four
+  programming tests, eight platform tests, warning-denied Clippy, formatting,
+  and the release K1 firmware build. Physical K1 parity remains required.
 - **Then:** move keypad semantics and semantic display state, then configuration
   activation/persistence and serial control. Keep MCU registers, interrupts,
   DMA, physical buses, chip profile selection, image layout, and recovery in

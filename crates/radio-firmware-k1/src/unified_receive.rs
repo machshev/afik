@@ -4,6 +4,10 @@ use radio_channel_control::ChannelReceiveSetup;
 use radio_domain::{Bandwidth, Frequency, FrequencyStep, Modulation, SquelchLevel, Tone};
 use radio_platform::receive_app::{Effect, View};
 
+const PMR446_FIRST_HZ: u32 = 446_006_250;
+const PMR446_STEP_HZ: u32 = 12_500;
+const PMR446_CHANNELS: u8 = 16;
+
 /// One operation expressed in the K1 receiver/display adapter vocabulary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum K1Effect {
@@ -26,6 +30,29 @@ pub enum K1Effect {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AdapterError;
 
+/// Identifies the shared PMR446 example channel represented by a complete K1
+/// receive setup.
+///
+/// The K1 continues to accept arbitrary programmed channels and VFO settings;
+/// those do not silently become shared-example channels merely because their
+/// frequency happens to be nearby.
+#[must_use]
+pub fn shared_channel(setup: ChannelReceiveSetup) -> Option<u8> {
+    if setup.modulation != Modulation::Fm
+        || setup.bandwidth != Bandwidth::Narrow
+        || setup.tone != Tone::None
+        || setup.step.as_hz() != PMR446_STEP_HZ
+    {
+        return None;
+    }
+    let offset = setup.frequency.as_hz().checked_sub(PMR446_FIRST_HZ)?;
+    if offset % PMR446_STEP_HZ != 0 {
+        return None;
+    }
+    let channel = u8::try_from(offset / PMR446_STEP_HZ + 1).ok()?;
+    (channel <= PMR446_CHANNELS).then_some(channel)
+}
+
 /// Translates one shared effect without touching K1 hardware.
 pub fn translate(effect: Effect) -> Result<K1Effect, AdapterError> {
     match effect {
@@ -34,8 +61,8 @@ pub fn translate(effect: Effect) -> Result<K1Effect, AdapterError> {
             frequency_hz,
             audio,
         } => {
-            let expected = 446_006_250_u32
-                .checked_add(u32::from(channel.saturating_sub(1)) * 12_500)
+            let expected = PMR446_FIRST_HZ
+                .checked_add(u32::from(channel.saturating_sub(1)) * PMR446_STEP_HZ)
                 .ok_or(AdapterError)?;
             if !(1..=16).contains(&channel) || frequency_hz != expected {
                 return Err(AdapterError);
@@ -47,7 +74,7 @@ pub fn translate(effect: Effect) -> Result<K1Effect, AdapterError> {
                     bandwidth: Bandwidth::Narrow,
                     tone: Tone::None,
                     squelch: SquelchLevel::CONSERVATIVE,
-                    step: FrequencyStep::from_hz(12_500).map_err(|_| AdapterError)?,
+                    step: FrequencyStep::from_hz(PMR446_STEP_HZ).map_err(|_| AdapterError)?,
                 },
                 audio,
             })
@@ -60,8 +87,9 @@ pub fn translate(effect: Effect) -> Result<K1Effect, AdapterError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{translate, AdapterError, K1Effect};
-    use radio_domain::{Bandwidth, Modulation, SquelchLevel, Tone};
+    use super::{shared_channel, translate, AdapterError, K1Effect};
+    use radio_channel_control::ChannelReceiveSetup;
+    use radio_domain::{Bandwidth, Frequency, FrequencyStep, Modulation, SquelchLevel, Tone};
     use radio_platform::receive_app::{Effect, Event, ReceiveApp};
 
     #[test]
@@ -135,5 +163,32 @@ mod tests {
                 _ => panic!("adapter changed effect kind"),
             }
         }
+    }
+
+    #[test]
+    fn only_complete_shared_pmr_setups_enter_the_common_path() {
+        let setup = ChannelReceiveSetup {
+            frequency: Frequency::from_hz(446_093_750).unwrap(),
+            modulation: Modulation::Fm,
+            bandwidth: Bandwidth::Narrow,
+            tone: Tone::None,
+            squelch: SquelchLevel::new(8).unwrap(),
+            step: FrequencyStep::from_hz(12_500).unwrap(),
+        };
+        assert_eq!(shared_channel(setup), Some(8));
+        assert_eq!(
+            shared_channel(ChannelReceiveSetup {
+                bandwidth: Bandwidth::Wide,
+                ..setup
+            }),
+            None
+        );
+        assert_eq!(
+            shared_channel(ChannelReceiveSetup {
+                frequency: Frequency::from_hz(446_100_000).unwrap(),
+                ..setup
+            }),
+            None
+        );
     }
 }

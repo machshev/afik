@@ -70,6 +70,8 @@ use radio_firmware_k1::shell::{
     Context, Intent, Mode, Screen, Setting, Shell, Source, HOLD_MILLISECONDS, SETTINGS,
     SQUELCH_LEVELS, VFO_STEPS_HZ,
 };
+use radio_firmware_k1::unified_receive::{shared_channel, translate, K1Effect};
+use radio_platform::receive_app::{Effects as SharedEffects, Event as SharedEvent, ReceiveApp};
 use radio_protocol::{ControlRequest, DeviceErrorCode, ReceiveMetricsReport, MAX_ENCODED_FRAME};
 use radio_storage::ObjectArena;
 
@@ -561,6 +563,40 @@ impl Receiver {
         self.gate_audio();
     }
 
+    fn set_chip_audio(&mut self, enabled: bool) {
+        if self.faulted || !self.started {
+            return;
+        }
+        let output = if enabled {
+            AfOutput::Demodulated
+        } else {
+            AfOutput::Mute
+        };
+        if self.radio.set_af_output(Modulation::Fm, output).is_err() {
+            self.faulted = true;
+            return;
+        }
+        self.audio_routed = enabled;
+        if enabled && self.speaker.is_none() {
+            if let Some(pin) = self.speaker_pin.take() {
+                self.speaker = Some(Output::new(pin, Level::Low, Speed::Low));
+            }
+        }
+        if !enabled {
+            self.set_speaker(false);
+        }
+    }
+
+    fn set_speaker(&mut self, enabled: bool) {
+        if let Some(speaker) = self.speaker.as_mut() {
+            if enabled {
+                speaker.set_high();
+            } else {
+                speaker.set_low();
+            }
+        }
+    }
+
     /// Drives the speaker amplifier from the squelch link.
     ///
     /// The chip's carrier squelch is the decision and this is the consequence,
@@ -616,7 +652,7 @@ impl Receiver {
     }
 
     /// Samples metrics from the tuned receiver.
-    fn observe(&mut self) -> Option<ReceiveObservation> {
+    fn observe(&mut self, gate_locally: bool) -> Option<ReceiveObservation> {
         if self.faulted || !self.started {
             return None;
         }
@@ -638,7 +674,9 @@ impl Receiver {
                     noise: metrics.noise,
                     squelch_open: metrics.squelch_open,
                 });
-                self.gate_audio();
+                if gate_locally {
+                    self.gate_audio();
+                }
                 Some(ReceiveObservation {
                     squelch_open: metrics.squelch_open,
                     tone_matched: None,
@@ -658,6 +696,38 @@ impl Receiver {
         }
         self.started = true;
     }
+}
+
+/// Applies the common receive application's ordered effects to K1 adapters.
+///
+/// Rendering remains the richer K1 shell renderer: the shared redraw effect
+/// marks it dirty rather than replacing its semantic screens with K5 pixels.
+fn apply_shared_effects(
+    effects: SharedEffects,
+    receiver: &mut Receiver,
+    radio_wide_squelch: SquelchLevel,
+) -> bool {
+    let mut redraw = false;
+    for effect in effects.iter() {
+        let Ok(effect) = translate(effect) else {
+            receiver.set_speaker(false);
+            return true;
+        };
+        match effect {
+            K1Effect::Tune { setup, audio } => {
+                receiver.tune(setup, radio_wide_squelch);
+                receiver.set_chip_audio(audio);
+            }
+            K1Effect::SetChipAudio(enabled) => receiver.set_chip_audio(enabled),
+            K1Effect::SetSpeaker(enabled) => receiver.set_speaker(enabled),
+            K1Effect::Redraw(_) => redraw = true,
+        }
+        if receiver.faulted {
+            receiver.set_speaker(false);
+            return true;
+        }
+    }
+    redraw
 }
 
 /// The external configuration memory's peripheral and pins.
@@ -1166,6 +1236,10 @@ async fn ui_task(
     let mut pending = activation.as_mut().and_then(|(_, setup)| setup.take());
 
     let mut receiver = Receiver::new(radio_pins, speaker_pin);
+    // Present only while the selected complete setup is one of the common
+    // PMR446 examples. Arbitrary programmed channels and the VFO retain the
+    // existing K1 controller path.
+    let mut shared_receive: Option<ReceiveApp> = None;
     let mut debounce = Debouncer::new();
     // When the key currently held down went down, so a hold can be told from a
     // press. Cleared once the hold has acted, so one press acts once.
@@ -1413,7 +1487,24 @@ async fn ui_task(
         // The bit-banged radio bus blocks the executor, so it only runs while
         // the serial link is quiet. Bus work is deferred, never dropped.
         if let Some(setup) = pending.filter(|_| bus_available()) {
-            receiver.tune(setup, shell.squelch());
+            if let Some(channel) = shared_channel(setup) {
+                let app = shared_receive.get_or_insert_with(ReceiveApp::new);
+                let _ = apply_shared_effects(
+                    app.apply(SharedEvent::SelectChannel(channel)),
+                    &mut receiver,
+                    shell.squelch(),
+                );
+                if receiver.faulted {
+                    let _ = apply_shared_effects(
+                        app.apply(SharedEvent::ReceiverFault),
+                        &mut receiver,
+                        shell.squelch(),
+                    );
+                }
+            } else {
+                shared_receive = None;
+                receiver.tune(setup, shell.squelch());
+            }
             pending = None;
             // Sample this channel from now rather than on whatever grid the
             // last one left behind. A free-running interval meant the first
@@ -1427,9 +1518,19 @@ async fn ui_task(
             let scanning = activation.as_ref().is_some_and(|(controller, _)| {
                 matches!(controller.state(), ReceiveState::Scanning(_))
             });
-            if let (Some(observation), Some((controller, _))) =
-                (receiver.observe(), activation.as_mut())
-            {
+            if let (Some(observation), Some((controller, _))) = (
+                receiver.observe(shared_receive.is_none()),
+                activation.as_mut(),
+            ) {
+                if let Some(app) = shared_receive.as_mut() {
+                    redraw |= apply_shared_effects(
+                        app.apply(SharedEvent::ReceiveSample {
+                            squelch_open: observation.squelch_open,
+                        }),
+                        &mut receiver,
+                        shell.squelch(),
+                    );
+                }
                 // While scanning this is what decides whether the channel is
                 // busy, so the hold it asks for has to reach the scan's clock.
                 //
@@ -1446,6 +1547,14 @@ async fn ui_task(
                     }
                 }
                 settled = true;
+            } else if receiver.faulted {
+                if let Some(app) = shared_receive.as_mut() {
+                    redraw |= apply_shared_effects(
+                        app.apply(SharedEvent::ReceiverFault),
+                        &mut receiver,
+                        shell.squelch(),
+                    );
+                }
             }
             next_sample = Instant::now()
                 + Duration::from_millis(if scanning {

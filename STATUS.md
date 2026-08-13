@@ -29,7 +29,8 @@ acknowledgements; after ordinary boot the operator confirmed channel
 navigation, default audio, sampled squelch, and Menu `A1`/`A0` behavior all
 still worked. Three consecutive normal probes returned `AFIK-K5-1.8U`.
 
-The first K1 adapter seam is also implemented without changing its runtime.
+The first K1 adapter seam is implemented and now runs in the K1 runtime for
+complete shared PMR446 example setups.
 Shared tune effects are validated against the PMR446 channel identity and
 translated into the existing complete `ChannelReceiveSetup`; audio, speaker,
 and semantic redraw effects remain lossless. The tune translation also carries
@@ -37,11 +38,30 @@ the shared audio preference, so navigation cannot unmute chip audio. The adapter
 no tone, the conservative provisional squelch level, and the K1 runtime's
 target-owned BK4829 profile. The focused gate passed 125 K1 tests, four
 programming tests, seven platform tests, warning-denied Clippy, formatting,
-and the release K1 firmware build.
+and the release K1 firmware build. Direct shared selection avoids tuning
+intermediate channels. Arbitrary programmed channels, VFO, scanning, the full
+K1 shell and screens, persistence, diagnostics, and host control remain on
+their existing paths, so this step does not reduce K1 behavior. Shared receive
+samples now own the K1 speaker gate on those exact PMR setups; receiver faults
+feed the common fail-silent event. Physical K1 parity is not yet established.
 
-Next smallest actionable task: run the K1 PMR receive/operator path through the
-shared state machine and this adapter while preserving K1-only shell,
-persistence, diagnostics, chip profile, and recovery behavior.
+Next smallest actionable task: physically validate the K1 PMR shared path,
+then move keypad semantics and semantic display state into the shared
+application without changing the retained K1-only persistence, diagnostics,
+chip profile, or recovery behavior.
+
+K1 live-path verification on 2026-08-13:
+
+- `nix flake check path:. --no-build` — passed; Nix reported the incompatible
+  `aarch64-linux` output was omitted.
+- `nix develop path:. -c cargo fmt --all --check` — passed.
+- `nix develop path:. -c cargo clippy --workspace --all-targets -- -D warnings`
+  — passed.
+- `nix develop path:. -c cargo test --workspace` — passed, including 126 K1
+  library tests, four K1 programming tests, and eight platform tests.
+- `nix develop path:. -c ./tool/build-k1-async.sh --release` — passed without
+  warnings.
+- `git diff --check` — passed.
 
 `K5APP-051` is complete. Its first step added the source-backed K5 V1 main
 keypad matrix adapter. All sixteen main labels are mapped, unstable or

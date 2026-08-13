@@ -15,6 +15,13 @@ pub enum Event {
     NextChannel,
     /// Select the preceding channel with wraparound.
     PreviousChannel,
+    /// Select one PMR446 example channel directly.
+    ///
+    /// Target shells and programmer-controlled channel lists already know the
+    /// selected position.  This event lets them enter the common receive path
+    /// without replaying intermediate button presses and tuning those
+    /// intermediate channels on hardware.
+    SelectChannel(u8),
     /// Toggle the operator audio preference.
     ToggleAudio,
     /// One complete receiver-status sample.
@@ -151,6 +158,13 @@ impl ReceiveApp {
                 };
                 self.retune()
             }
+            Event::SelectChannel(channel) => {
+                if !(1..=PMR446_CHANNELS).contains(&channel) {
+                    return Effects::none();
+                }
+                self.channel = channel;
+                self.retune()
+            }
             Event::ToggleAudio => {
                 self.audio = !self.audio;
                 self.squelch_open = false;
@@ -196,7 +210,7 @@ impl ReceiveApp {
 
 #[cfg(test)]
 mod tests {
-    use super::{Effect, Event, ReceiveApp};
+    use super::{Effect, Effects, Event, ReceiveApp};
 
     fn trace(events: &[Event]) -> std::vec::Vec<Effect> {
         let mut app = ReceiveApp::new();
@@ -240,6 +254,28 @@ mod tests {
         assert_eq!(app.view().channel, 16);
         app.apply(Event::NextChannel);
         assert_eq!(app.view().channel, 1);
+    }
+
+    #[test]
+    fn direct_selection_tunes_only_the_requested_channel() {
+        let mut app = ReceiveApp::new();
+        let effects = app.apply(Event::SelectChannel(8));
+        assert_eq!(app.view().channel, 8);
+        assert_eq!(
+            effects.iter().collect::<std::vec::Vec<_>>(),
+            std::vec![
+                Effect::SetSpeaker(false),
+                Effect::Tune {
+                    channel: 8,
+                    frequency_hz: 446_093_750,
+                    audio: true,
+                },
+                Effect::Redraw(app.view()),
+            ]
+        );
+
+        assert_eq!(app.apply(Event::SelectChannel(0)), Effects::none());
+        assert_eq!(app.view().channel, 8);
     }
 
     #[test]
