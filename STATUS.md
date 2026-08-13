@@ -3497,3 +3497,39 @@ but not solved.
 - **Next smallest task:** `PLAT-050` — extract shared serial and display service
   contracts so K1 and K5 compile the same application behavior above their
   target-specific adapters.
+
+## APP-052 common serial payload mapping, 2026-08-13
+
+Commit `d495869` adds `radio-platform::serial_control::wire`, a bounded
+transport-free payload seam above the existing target-owned framing. Requests
+are exactly two bytes: `01 00` semantic view, `02 00` capabilities, and
+`03 key` for the canonical logical-key vocabulary. Responses are bounded view
+or capability payloads. Reserved state bits, invalid lengths, unknown keys,
+out-of-range digits, and unknown capability bits are rejected. Configuration
+candidates are intentionally excluded because exact acknowledgement, K1
+persistence, and K5 volatile generation-zero behavior are not common.
+
+K1 and K5 protocol adapters decode, dispatch through `ReceiveApp`, and encode
+the common payload while retaining their COBS/object/runtime and normal-mode
+hello framing. Deterministic target and `radio-sim` tests prove exact bytes,
+capability divergence, and shared key effects. This is host/static evidence;
+physical serial interoperability remains open and no hardware was flashed.
+
+Focused checks passed through cached direnv with `CARGO_BUILD_JOBS=2`,
+`ionice -c 3`, and `nice -n 10`: platform serial-control tests, K1 protocol
+tests, K5 hello tests, simulator wire parity, and warning-denied focused
+Clippy. The one completed serialized final gate was:
+
+`direnv exec . env CARGO_BUILD_JOBS=2 ionice -c 3 nice -n 10 bash -c 'cargo
+fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings &&
+cargo test --workspace && ./tool/build-k1-async.sh --release &&
+./tool/build-k5.sh --release && ./tool/verify-k5-image.sh &&
+./tool/package-k5-image.sh --force && git diff --check'` — passed.
+
+K5 verification reports flash end `0x5BD8`, static RAM end `0x20000100`, and
+application bound `0xF000`; packaging is exactly `0xF000` bytes with SHA-256
+`c9930ebd919c64583ba45312cb40b42f9acbcac4881b48d48409d994cf12ea52`.
+Disk was 30% used (`270G/944G`, `659G` available) after the gate. Next
+smallest task: decide and document a target-owned envelope command assignment
+for carrying these common payloads; do not imply K5 persistence or physical
+serial support until that wire and bench evidence exists.
