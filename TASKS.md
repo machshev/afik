@@ -2496,3 +2496,7 @@
   acknowledge because AFIK's high phase used input release instead of the
   source-backed push-pull sequence. `1.5E` corrects that and adds read-only
   side-key/PTT labels; it is built but not yet flashed.
+- **Second observation:** `1.5E` established EEPROM read sum `0343` and PC5 PTT.
+  Side inputs exposed a scan-control bug: AFIK continued into matrix passes
+  after the zero-row match. The scanner now returns the side key immediately,
+  matching the pinned first-key behavior and restoring shared pins first.

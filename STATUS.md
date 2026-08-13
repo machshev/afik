@@ -28,6 +28,15 @@ push-pull outputs, switching only PA11 to input for ACK/read. `AFIK-K5-1.5E`
 also adds the source-backed side-key and active-low PTT inputs as labels only;
 PTT has no radio or transmit behavior.
 
+`1.5E` was then acknowledged `240/240`. EEPROM read succeeded and displayed
+`0343`; raw BK remained `4819`; PTT displayed correctly. S1/S2 exposed an AFIK
+control-flow defect: after detecting a zero-row side key, the scan continued
+and treated that still-low line as ambiguity in a matrix pass. The source exits
+on the first key, and the corrected scanner now does likewise after restoring
+the shared pins. Two serial probes made while the unit was subsequently in DFU
+received bootloader beacon `0x0518`, not an application hello; these are not
+application-boot evidence.
+
 Pre-flash gates on 2026-08-13:
 
 - Focused warning-denied Clippy and K5 tests passed, including eleven library,

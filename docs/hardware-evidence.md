@@ -2666,3 +2666,10 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
 - **Input extension:** the pinned zero-row scan maps directly held PA3/PA4 to
   side keys 1/2, and PC5 is separate active-low PTT. `1.5E` displays these as
   inputs only; PTT creates no transmit intent or radio write.
+- **Second physical result:** `AFIK-K5-1.5E` was acknowledged `240/240` pages.
+  After normal execution it displayed EEPROM sum `0343`, repeatable raw BK
+  `4819`, and input-only PTT correctly. S1/S2 did not display because AFIK
+  continued scanning after detecting the zero-row key, then mistook the same
+  held line during a matrix row for ambiguity. The pinned implementation exits
+  on the first decoded key; AFIK now does the same and tests restoration on that
+  early return.

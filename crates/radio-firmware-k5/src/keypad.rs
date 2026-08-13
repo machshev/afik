@@ -63,8 +63,14 @@ pub fn scan<I: MatrixIo>(io: &mut I) -> Option<Key> {
     };
     match !unselected & 0x0f {
         0 => {}
-        1 => result = Some(Key::Side1),
-        2 => result = Some(Key::Side2),
+        1 => {
+            io.restore_shared_pins();
+            return Some(Key::Side1);
+        }
+        2 => {
+            io.restore_shared_pins();
+            return Some(Key::Side2);
+        }
         _ => {
             io.restore_shared_pins();
             return None;
@@ -261,6 +267,7 @@ mod tests {
                 restored: false,
             };
             assert_eq!(scan(&mut io), Some(key));
+            assert!(io.restored);
         }
         let mut io = Fake {
             held: None,
