@@ -71,6 +71,7 @@ use radio_firmware_k1::shell::{
     SQUELCH_LEVELS, VFO_STEPS_HZ,
 };
 use radio_firmware_k1::unified_receive::{shared_channel, translate, K1Effect};
+use radio_platform::configuration::ActivatedConfiguration;
 use radio_platform::receive_app::{Effects as SharedEffects, Event as SharedEvent, ReceiveApp};
 use radio_protocol::{ControlRequest, DeviceErrorCode, ReceiveMetricsReport, MAX_ENCODED_FRAME};
 use radio_storage::ObjectArena;
@@ -1240,6 +1241,11 @@ async fn ui_task(
     // PMR446 examples. Arbitrary programmed channels and the VFO retain the
     // existing K1 controller path.
     let mut shared_receive: Option<ReceiveApp> = None;
+    // The shared app owns this semantic preference. Keep it across a K1
+    // configuration publication while replacing the activation generation;
+    // receiver hardware state is not a valid source because a first tune
+    // deliberately starts with the chip audio route closed.
+    let mut shared_audio = true;
     let mut debounce = Debouncer::new();
     // When the key currently held down went down, so a hold can be told from a
     // press. Cleared once the hold has acted, so one press acts once.
@@ -1303,6 +1309,12 @@ async fn ui_task(
             memory_state = publication.memory;
             let was_empty = programmed.is_empty();
             programmed = publication.programmed;
+            // A new active snapshot gets a fresh shared activation. K1's
+            // retained object/index machinery remains target-owned, while
+            // the shared app cannot accidentally carry semantic state from a
+            // prior generation into the replacement.
+            shared_audio = shared_receive.as_ref().map_or(true, |app| app.view().audio);
+            shared_receive = None;
             adopt_settings(&mut shell, &programmed);
             // A radio which had no channels and now has some is being given
             // them, so it leaves the VFO for them. One which already had them
@@ -1488,7 +1500,12 @@ async fn ui_task(
         // the serial link is quiet. Bus work is deferred, never dropped.
         if let Some(setup) = pending.filter(|_| bus_available()) {
             if let Some(channel) = shared_channel(setup) {
-                let app = shared_receive.get_or_insert_with(ReceiveApp::new);
+                let app = shared_receive.get_or_insert_with(|| {
+                    ReceiveApp::from_configuration(
+                        ActivatedConfiguration::from_channel(generation, channel, shared_audio)
+                            .expect("shared channel was validated"),
+                    )
+                });
                 let _ = apply_shared_effects(
                     app.apply(SharedEvent::SelectChannel(channel)),
                     &mut receiver,

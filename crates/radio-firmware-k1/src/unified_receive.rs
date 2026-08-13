@@ -2,11 +2,8 @@
 
 use radio_channel_control::ChannelReceiveSetup;
 use radio_domain::{Bandwidth, Frequency, FrequencyStep, Modulation, SquelchLevel, Tone};
+use radio_platform::configuration::Pmr446Channel;
 use radio_platform::receive_app::{Effect, View};
-
-const PMR446_FIRST_HZ: u32 = 446_006_250;
-const PMR446_STEP_HZ: u32 = 12_500;
-const PMR446_CHANNELS: u8 = 16;
 
 /// One operation expressed in the K1 receiver/display adapter vocabulary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -41,16 +38,11 @@ pub fn shared_channel(setup: ChannelReceiveSetup) -> Option<u8> {
     if setup.modulation != Modulation::Fm
         || setup.bandwidth != Bandwidth::Narrow
         || setup.tone != Tone::None
-        || setup.step.as_hz() != PMR446_STEP_HZ
+        || setup.step.as_hz() != 12_500
     {
         return None;
     }
-    let offset = setup.frequency.as_hz().checked_sub(PMR446_FIRST_HZ)?;
-    if offset % PMR446_STEP_HZ != 0 {
-        return None;
-    }
-    let channel = u8::try_from(offset / PMR446_STEP_HZ + 1).ok()?;
-    (channel <= PMR446_CHANNELS).then_some(channel)
+    Some(Pmr446Channel::from_frequency_hz(setup.frequency.as_hz())?.number())
 }
 
 /// Translates one shared effect without touching K1 hardware.
@@ -61,10 +53,8 @@ pub fn translate(effect: Effect) -> Result<K1Effect, AdapterError> {
             frequency_hz,
             audio,
         } => {
-            let expected = PMR446_FIRST_HZ
-                .checked_add(u32::from(channel.saturating_sub(1)) * PMR446_STEP_HZ)
-                .ok_or(AdapterError)?;
-            if !(1..=16).contains(&channel) || frequency_hz != expected {
+            let selected = Pmr446Channel::new(channel).ok_or(AdapterError)?;
+            if frequency_hz != selected.frequency_hz() {
                 return Err(AdapterError);
             }
             Ok(K1Effect::Tune {
@@ -74,7 +64,7 @@ pub fn translate(effect: Effect) -> Result<K1Effect, AdapterError> {
                     bandwidth: Bandwidth::Narrow,
                     tone: Tone::None,
                     squelch: SquelchLevel::CONSERVATIVE,
-                    step: FrequencyStep::from_hz(PMR446_STEP_HZ).map_err(|_| AdapterError)?,
+                    step: FrequencyStep::from_hz(12_500).map_err(|_| AdapterError)?,
                 },
                 audio,
             })

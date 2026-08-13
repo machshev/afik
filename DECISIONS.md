@@ -1249,3 +1249,26 @@ meaning.
   existing `0xF000` region. Adapter failures are routed back through the
   shared receiver-fault event so the semantic view and speaker gate fail
   silent even when a target operation fails during a key or sample event.
+
+## ADR-076 — Configuration activation shares values, not persistence
+
+- **Date:** 2026-08-13
+- **Status:** accepted for `APP-052`
+- `radio-platform::configuration` owns only the bounded common PMR446 channel
+  identity/raster and `ActivatedConfiguration`, a copyable value carrying an
+  opaque active generation, selected channel, and operator audio preference.
+  It is `no_std`, heap-free, and has no storage, serial, EEPROM, or target
+  dependency.
+- K1 constructs the value from its retained `Programmed` publication and
+  generation. K1 continues to own object decoding, external-memory writes,
+  operator-place restore, arbitrary channels, VFO, scanning, and host protocol.
+  Replacing a K1 publication drops the old shared activation so semantic state
+  cannot cross generations.
+- K5 constructs generation zero from its built-in PMR446 receive fixture. This
+  is an explicit absence of persistence behavior, not a claim that K5 EEPROM
+  stores AFIK configuration. K5 gains no `radio-device`, storage, or EEPROM
+  import from this step.
+- Shared activation fixtures compare ordered application effects and semantic
+  views while separately asserting K1 and K5 generation identity. This keeps
+  the common behavior identical without treating unlike persistence systems as
+  interchangeable.

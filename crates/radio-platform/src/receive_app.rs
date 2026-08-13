@@ -1,9 +1,7 @@
 //! Hardware-independent receive application state and effects.
 
-/// Number of channels in the first shared PMR446 example plan.
-pub const PMR446_CHANNELS: u8 = 16;
-const PMR446_FIRST_HZ: u32 = 446_006_250;
-const PMR446_STEP_HZ: u32 = 12_500;
+pub use super::configuration::PMR446_CHANNELS;
+use super::configuration::{ActivatedConfiguration, Pmr446Channel};
 const MAX_EFFECTS: usize = 3;
 
 /// One logical key exposed by a target keypad adapter.
@@ -157,8 +155,7 @@ impl Effects {
 
 /// Shared receive-only operator application.
 pub struct ReceiveApp {
-    channel: u8,
-    audio: bool,
+    configuration: ActivatedConfiguration,
     squelch_open: bool,
     receiver_ok: bool,
 }
@@ -172,9 +169,17 @@ impl Default for ReceiveApp {
 impl ReceiveApp {
     /// Creates the common operator defaults without touching hardware.
     pub const fn new() -> Self {
+        Self::from_configuration(ActivatedConfiguration::new(0, Pmr446Channel::FIRST, true))
+    }
+
+    /// Creates the receive application from one target-adapted activation.
+    ///
+    /// K1 may supply a retained configuration generation and K5 may supply
+    /// generation zero while it has no persistence. The generation is carried
+    /// through the app but never written or interpreted here.
+    pub const fn from_configuration(configuration: ActivatedConfiguration) -> Self {
         Self {
-            channel: 1,
-            audio: true,
+            configuration,
             squelch_open: false,
             receiver_ok: true,
         }
@@ -183,8 +188,8 @@ impl ReceiveApp {
     /// Returns the current semantic view.
     pub const fn view(&self) -> View {
         View {
-            channel: self.channel,
-            audio: self.audio,
+            channel: self.configuration.channel_number(),
+            audio: self.configuration.audio(),
             squelch_open: self.squelch_open,
             receiver_ok: self.receiver_ok,
         }
@@ -195,34 +200,30 @@ impl ReceiveApp {
         match event {
             Event::Start => self.retune(),
             Event::NextChannel => {
-                self.channel = if self.channel == PMR446_CHANNELS {
-                    1
-                } else {
-                    self.channel + 1
-                };
+                self.configuration = self
+                    .configuration
+                    .select(self.configuration.channel().next());
                 self.retune()
             }
             Event::PreviousChannel => {
-                self.channel = if self.channel == 1 {
-                    PMR446_CHANNELS
-                } else {
-                    self.channel - 1
-                };
+                self.configuration = self
+                    .configuration
+                    .select(self.configuration.channel().previous());
                 self.retune()
             }
             Event::SelectChannel(channel) => {
-                if !(1..=PMR446_CHANNELS).contains(&channel) {
+                let Some(channel) = Pmr446Channel::new(channel) else {
                     return Effects::none();
-                }
-                self.channel = channel;
+                };
+                self.configuration = self.configuration.select(channel);
                 self.retune()
             }
             Event::ToggleAudio => {
-                self.audio = !self.audio;
+                self.configuration = self.configuration.with_audio(!self.configuration.audio());
                 self.squelch_open = false;
                 Effects::three(
                     Effect::SetSpeaker(false),
-                    Effect::SetChipAudio(self.audio),
+                    Effect::SetChipAudio(self.configuration.audio()),
                     Effect::Redraw(self.view()),
                 )
             }
@@ -233,7 +234,7 @@ impl ReceiveApp {
                 if !self.receiver_ok {
                     return Effects::none();
                 }
-                let speaker = self.audio && squelch_open;
+                let speaker = self.configuration.audio() && squelch_open;
                 if self.squelch_open == squelch_open {
                     Effects::one(Effect::SetSpeaker(speaker))
                 } else {
@@ -254,9 +255,9 @@ impl ReceiveApp {
         Effects::three(
             Effect::SetSpeaker(false),
             Effect::Tune {
-                channel: self.channel,
-                frequency_hz: PMR446_FIRST_HZ + u32::from(self.channel - 1) * PMR446_STEP_HZ,
-                audio: self.audio,
+                channel: self.configuration.channel_number(),
+                frequency_hz: self.configuration.frequency_hz(),
+                audio: self.configuration.audio(),
             },
             Effect::Redraw(self.view()),
         )
@@ -265,6 +266,7 @@ impl ReceiveApp {
 
 #[cfg(test)]
 mod tests {
+    use super::super::configuration::ActivatedConfiguration;
     use super::{Effect, Effects, Event, Key, ReceiveApp};
 
     fn trace(events: &[Event]) -> std::vec::Vec<Effect> {
@@ -373,6 +375,28 @@ mod tests {
             );
             assert_eq!(k1.view(), k5.view());
         }
+    }
+
+    #[test]
+    fn k1_retained_and_k5_nonpersistent_activations_share_the_same_trace() {
+        let k1 = ActivatedConfiguration::from_channel(7, 8, true).expect("K1 activation");
+        let k5 = ActivatedConfiguration::from_channel(0, 8, true).expect("K5 activation");
+        let mut k1_app = ReceiveApp::from_configuration(k1);
+        let mut k5_app = ReceiveApp::from_configuration(k5);
+        let events = [
+            Event::Start,
+            Event::ReceiveSample { squelch_open: true },
+            Event::KeyPress(Key::Menu),
+            Event::KeyPress(Key::Up),
+        ];
+        for event in events {
+            assert_eq!(
+                k1_app.apply(event).iter().collect::<std::vec::Vec<_>>(),
+                k5_app.apply(event).iter().collect::<std::vec::Vec<_>>()
+            );
+            assert_eq!(k1_app.view(), k5_app.view());
+        }
+        assert_ne!(k1.generation(), k5.generation());
     }
 
     #[test]

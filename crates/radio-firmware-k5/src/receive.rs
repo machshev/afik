@@ -2,11 +2,10 @@
 
 use radio_bk4819::{AfOutput, ReceiveSetup, SquelchThresholds};
 use radio_domain::{Bandwidth, Frequency, Modulation, SquelchLevel, Tone};
+use radio_platform::configuration::Pmr446Channel as SharedPmr446Channel;
 
 /// Number of analogue PMR446 channels in the example raster.
-pub const PMR446_CHANNELS: u8 = 16;
-const PMR446_FIRST_HZ: u32 = 446_006_250;
-const PMR446_STEP_HZ: u32 = 12_500;
+pub use radio_platform::configuration::PMR446_CHANNELS;
 
 /// One bounded one-based PMR446 channel number.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -18,10 +17,9 @@ impl Pmr446Channel {
 
     /// Validates a one-based channel number.
     pub const fn new(number: u8) -> Option<Self> {
-        if number == 0 || number > PMR446_CHANNELS {
-            None
-        } else {
-            Some(Self(number))
+        match SharedPmr446Channel::new(number) {
+            Some(_) => Some(Self(number)),
+            None => None,
         }
     }
 
@@ -38,8 +36,12 @@ impl Pmr446Channel {
     /// frequency. The assertion keeps that invariant local to this module.
     #[must_use]
     pub fn frequency(self) -> Frequency {
-        let offset = u32::from(self.0 - 1) * PMR446_STEP_HZ;
-        Frequency::from_hz(PMR446_FIRST_HZ + offset).expect("PMR446 frequencies are non-zero")
+        Frequency::from_hz(
+            SharedPmr446Channel::new(self.0)
+                .expect("validated PMR446 channel")
+                .frequency_hz(),
+        )
+        .expect("PMR446 frequencies are non-zero")
     }
 
     /// Selects the following channel, wrapping after channel 16.

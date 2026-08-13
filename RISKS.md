@@ -77,6 +77,12 @@
   physical scan timing, electrical behavior, display rendering, and PTT/TX
   behavior remain target-specific and are not newly claimed by host tests or
   the unflashed K5 package.
+- **Shared activation narrowing, 2026-08-13:** the new
+  `radio-platform::configuration::ActivatedConfiguration` shares only the
+  common PMR446 identity, audio preference, and opaque generation value. K1
+  persistence/object activation remains target-owned; K5 generation zero is a
+  no-persistence fixture, not EEPROM evidence. K5 configuration retention,
+  restore, power-loss behavior, and host configuration control remain open.
 
 ## RISK-007 — BK4819 register applicability and board RF control are unverified
 

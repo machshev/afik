@@ -24,6 +24,7 @@ use radio_firmware_k5::k5_display::K5BootDisplay;
 use radio_firmware_k5::keypad::{self, K5Matrix};
 use radio_firmware_k5::protocol::{HelloService, APPLICATION_IDENTITY, RESPONSE_FRAME_BYTES};
 use radio_firmware_k5::receive::Pmr446Channel;
+use radio_platform::configuration::ActivatedConfiguration;
 use radio_platform::display::show_boot_sequence;
 use radio_platform::receive_app::{Effect, Event, ReceiveApp};
 
@@ -116,7 +117,13 @@ fn main() -> ! {
     let mut speaker = SpeakerGate::initialise();
     let mut radio = Bk4819::new(K5RegisterBus::new(K5Pins::initialise()));
     let initialised = radio.initialise().is_ok();
-    let mut app = ReceiveApp::new();
+    // K5 has no AFIK persistence adapter yet. Generation zero is explicit at
+    // this boundary; the target still enters the same shared activation and
+    // receive state machine as K1 without inventing EEPROM semantics.
+    let mut app = ReceiveApp::from_configuration(
+        ActivatedConfiguration::from_channel(0, Pmr446Channel::FIRST.number(), true)
+            .expect("first PMR446 channel is valid"),
+    );
     let mut configured = None;
     let mut metrics = None;
     let mut keypad = K5Matrix::initialise();

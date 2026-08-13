@@ -2615,8 +2615,23 @@
   `f8cfcde89db90534ae8a33c8fd1bce2267948059f684bb9eb5c97f7512393c55`.
   This is simulator/host and static package evidence only; no hardware was
   flashed.
-- **Then:** move keypad semantics and semantic display state, then configuration
-  activation/persistence and serial control. Keep MCU registers, interrupts,
+- **Configuration activation step:** `radio-platform::configuration` now owns
+  the bounded PMR446 channel identity/raster and the heap-free
+  `ActivatedConfiguration` value used by both targets. K1 adapts its
+  target-owned retained `Programmed` generation into this value; its object
+  decoding, persistence, operator-place restore, arbitrary programmed
+  channels, VFO, scanning, and serial protocol remain unchanged. K5 supplies
+  explicit generation zero and adds no EEPROM or `radio-device` dependency.
+  A host fixture proves identical shared activation effects for K1 generation
+  7 and K5 generation 0 while proving generation identity is not conflated.
+  The K5 release/package gate remains bounded at `0xF000`, flash end `0x599C`,
+  RAM end `0x20000100`, SHA-256
+  `00761d035a6bcf43483bf3eb535004282bc12254a2fd31cf4c12fb552f64f40d`.
+  Formatting, warning-denied focused Clippy, 14 platform tests, 127 K1 tests,
+  16 K5 tests, and both target release builds pass; no hardware was flashed.
+- **Then:** extract the shared configuration-change event and acknowledgement
+  boundary, then serial control. Keep K1 persistence and serial protocol, K5
+  persistence (until evidenced), MCU registers, interrupts,
   DMA, physical buses, chip profile selection, image layout, and recovery in
   their target crates.
 - **Initial exclusions:** TX/PTT behavior, calibrated squelch/sensitivity,

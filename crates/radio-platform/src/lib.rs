@@ -5,6 +5,7 @@
 #[cfg(test)]
 extern crate std;
 
+pub mod configuration;
 pub mod display;
 pub mod receive_app;
 pub mod serial;

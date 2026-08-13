@@ -79,8 +79,36 @@ No hardware was flashed for this step.
 The pinned K1 release build `nix develop path:. -c
 ./tool/build-k1-async.sh --release` also passes after the shared API change.
 
-Next smallest actionable task: extract the shared configuration activation
-boundary while retaining K1 persistence and serial protocol ownership.
+The configuration-activation step is now implemented in
+`radio-platform::configuration`. It owns only the bounded PMR446 channel
+identity/raster and an `ActivatedConfiguration` value carrying channel, audio
+preference, and an opaque generation. K1 creates it from its target-owned
+retained `Programmed` publication and keeps all object decoding, persistence,
+operator-place restoration, serial control, arbitrary channels, VFO, and scan
+behavior in K1. K5 creates it with explicit generation zero because it has no
+AFIK persistence adapter; no EEPROM or `radio-device` code was added to K5.
+Both target paths now feed the same `ReceiveApp` activation semantics, and a
+host fixture proves identical ordered effects for K1 generation 7 and K5
+generation 0 while proving the generations remain distinct.
+
+Pinned gates for this step pass: `cargo fmt --all --check`, warning-denied
+focused Clippy, 14 `radio-platform` tests, 127 K1 library tests, 16 K5
+library tests, K1 release build, and K5 release/package build. The K5 package
+is exactly `0xF000` bytes, flash ends at `0x599C`, static RAM ends at
+`0x20000100`, and SHA-256 is
+`00761d035a6bcf43483bf3eb535004282bc12254a2fd31cf4c12fb552f64f40d`.
+No hardware was flashed.
+
+The final workspace gate for this step, run in the pinned Nix environment,
+passed: `nix develop path:. -c bash -c 'cargo fmt --all --check && cargo
+clippy --workspace --all-targets -- -D warnings && cargo test --workspace'`
+and `git diff --check`. The complete workspace suite passed, including the
+deterministic `radio-sim` tests.
+
+Next smallest actionable task: extract the shared configuration-change event
+and acknowledgement boundary while retaining K1 serial protocol and EEPROM
+transport ownership; K5 remains receive-only until its persistence behavior is
+evidenced.
 
 K1 live-path verification on 2026-08-13:
 

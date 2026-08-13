@@ -204,6 +204,17 @@ semantic-redraw effects. PMR446 example selection and the squelch/audio rule
 therefore compile once; timing, metric acquisition, BK4819/BK4829 selection,
 GPIO, keypad scanning, and rendering remain target adapters.
 
+The configuration-activation portion of this boundary is deliberately a value
+boundary rather than a persistence abstraction. `radio-platform::configuration`
+owns the exact bounded PMR446 raster and `ActivatedConfiguration`, carrying an
+opaque active generation, selected channel, and audio preference. K1 adapts its
+retained object index into that value while keeping EEPROM, object decoding,
+operator-place restore, arbitrary channels, VFO, scanning, and serial control
+local. K5 supplies generation zero from its receive fixture and has no invented
+AFIK persistence behavior. Thus both targets execute one activation/receive
+state machine without importing unlike storage or transport dependencies into
+the K5 image.
+
 The DP32G030 target linker and package tools own the V1 application-region
 contract. They emit a full `0x0000..0xEFFF` raw image and never include the
 stock `0xF000..0xFFFF` bootloader region. Hardware-independent radio crates do
