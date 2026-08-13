@@ -197,6 +197,13 @@ the K5 adapter retains the physically proven synchronous-GPIO implementation.
 Neither the K5 SPI0 experiment nor any DMA, interrupt, pin, register, timing, or
 framebuffer implementation is part of the shared contract.
 
+`APP-052` extends this boundary with a receive application state machine. It
+accepts target-neutral start, navigation, mute, receiver-sample, and fault
+events and emits a bounded ordered list of tune, chip-audio, speaker-gate, and
+semantic-redraw effects. PMR446 example selection and the squelch/audio rule
+therefore compile once; timing, metric acquisition, BK4819/BK4829 selection,
+GPIO, keypad scanning, and rendering remain target adapters.
+
 The DP32G030 target linker and package tools own the V1 application-region
 contract. They emit a full `0x0000..0xEFFF` raw image and never include the
 stock `0xF000..0xFFFF` bootloader region. Hardware-independent radio crates do

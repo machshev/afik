@@ -10,6 +10,12 @@ squelch/audio gating, and operator mute. `RISK-036` is deferred by operator
 decision and is not a prerequisite for extracting behavior which K5 can expose
 independently.
 
+That first step is implemented in `radio-platform::receive_app`. One heap-free
+state machine now owns the PMR446 example selection, audio-on default, mute,
+squelch-to-speaker rule, receiver-fault silence, semantic view, and ordered
+target effects. Identical K1 and K5 fixtures produce identical traces. Seven
+`radio-platform` tests and warning-denied Clippy pass.
+
 `K5APP-051` is complete. Its first step added the source-backed K5 V1 main
 keypad matrix adapter. All sixteen main labels are mapped, unstable or
 multiple-key samples are rejected, and every scan restores the EEPROM/I2C and
@@ -99,9 +105,9 @@ cargo test --workspace && ./tool/build-k5.sh --release &&
 tool/package-k5-image.sh --force'`. It reproduced the same image bounds and
 SHA-256; `git diff --check` passed before the gate.
 
-**Next smallest actionable task:** implement and test the first `APP-052`
-hardware-independent event/effect contract, then adapt both target loops to it
-without moving target-specific register or recovery behavior.
+**Next smallest actionable task:** make the K5 target execute the shared effects
+without changing its already observed peripheral sequence, then bind the K1
+receive path to the same contract.
 
 Pre-flash gates on 2026-08-13:
 

@@ -2561,6 +2561,12 @@
   for channel selection, retune, receive samples, squelch audio gating, and
   operator mute. Prove identical deterministic behavior for K1 and K5 adapter
   fixtures before replacing either target loop.
+- **First-step result:** `radio-platform::receive_app` now owns the PMR446
+  example selection, audio-on default, operator mute, sampled squelch gate,
+  fail-silent receiver fault, semantic view, and ordered fixed-capacity effects.
+  Identical K1/K5 fixtures run the same event script and produce identical
+  effects. The module is `no_std`, heap-free, and contains no target timing,
+  register, bus, chip-profile, storage, rendering, or TX behavior.
 - **Then:** move keypad semantics and semantic display state, then configuration
   activation/persistence and serial control. Keep MCU registers, interrupts,
   DMA, physical buses, chip profile selection, image layout, and recovery in
