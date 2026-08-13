@@ -2779,3 +2779,17 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
 - **Still open:** exact open/close timing, Menu mute/unmute, clean retuning,
   sensitivity, calibration, and adjacent-channel rejection were not reported
   and remain unproven.
+
+### EVID-K5-032 — Shared receive application preserves K5 behavior
+
+- **Image:** `AFIK-K5-1.8U`, the first physical target image whose channel,
+  audio preference, sampled-squelch gate, fault silence, and semantic view are
+  owned by `radio-platform::receive_app` rather than its target loop.
+- **Physical result:** all 240 pages were acknowledged. After ordinary boot the
+  operator confirmed that channel navigation, default audio, squelch, and Menu
+  `A1`/`A0` behavior all still worked. Three consecutive normal-mode probes
+  returned `AFIK-K5-1.8U`.
+- **Established:** the shared event/effect ordering preserves the already
+  observed K5 receive behavior and coexists with the K5 circular-DMA serial
+  adapter. This is K5 evidence only; it does not yet establish a K1 adapter or
+  calibrated RF performance.

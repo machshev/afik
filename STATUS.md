@@ -24,6 +24,11 @@ build, and packaging pass; the unflashed package is `0xF000` bytes, flash ends
 at `0x5738`, static RAM ends at `0x20000100`, and SHA-256 is
 `d359c43e4d6bd9d72028d48f2acbb2b63f58affd75d579878750747ff27b216d`.
 
+Physical K5 parity passes. The guarded write received `240/240`
+acknowledgements; after ordinary boot the operator confirmed channel
+navigation, default audio, sampled squelch, and Menu `A1`/`A0` behavior all
+still worked. Three consecutive normal probes returned `AFIK-K5-1.8U`.
+
 `K5APP-051` is complete. Its first step added the source-backed K5 V1 main
 keypad matrix adapter. All sixteen main labels are mapped, unstable or
 multiple-key samples are rejected, and every scan restores the EEPROM/I2C and
@@ -113,8 +118,8 @@ cargo test --workspace && ./tool/build-k5.sh --release &&
 tool/package-k5-image.sh --force'`. It reproduced the same image bounds and
 SHA-256; `git diff --check` passed before the gate.
 
-**Next smallest actionable task:** physically preserve K5 `1.7A` behavior under
-the shared `1.8U` core, then bind the K1 receive path to the same contract.
+**Next smallest actionable task:** bind the K1 receive path to the same contract
+while retaining its BK4829 profile and target-specific Embassy scheduling.
 
 Pre-flash gates on 2026-08-13:
 

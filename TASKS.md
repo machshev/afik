@@ -2572,6 +2572,12 @@
   events; the K5 `SysTick` supplies sample events; tune, chip-audio, speaker and
   redraw effects drive the same BK4819, PC4 and display operations as `1.7A`.
   Any adapter failure feeds the shared fail-silent receiver-fault event.
+- **K5 physical parity:** `1.8U` received `240/240` acknowledgements. After
+  ordinary boot the operator confirmed channel navigation, default audio,
+  sampled squelch, and Menu `A1`/`A0` behavior all still worked. Three
+  consecutive normal probes returned `AFIK-K5-1.8U`. The first physical target
+  therefore runs the shared receive core without a behavior or serial
+  regression.
 - **Then:** move keypad semantics and semantic display state, then configuration
   activation/persistence and serial control. Keep MCU registers, interrupts,
   DMA, physical buses, chip profile selection, image layout, and recovery in
