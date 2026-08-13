@@ -57,9 +57,30 @@ audio, squelch opening/closing, menus, channel list, VFO, and Info all work.
 This independently establishes application boot and preservation of the K1
 operator/programmer behavior through the shared PMR receive path.
 
-Next smallest actionable task: move keypad semantics and semantic display
-state into the shared application without changing the retained K1-only
-persistence, diagnostics, chip profile, or recovery behavior.
+The keypad/display step is now implemented in the shared application boundary.
+`radio-platform::receive_app` owns the canonical logical key vocabulary and
+maps `Up`, `Down`, and `Menu` to receive events; digits, side keys, `Exit`,
+`Star`, `Function`, and input-only `Ptt` remain no-op receive events for the
+retained target shells. Both target keypad adapters translate their physical
+key enums into that vocabulary, and host tests prove the K1/K5 mappings and
+identical semantic traces. K5 redraws now take the shared `View` as
+authoritative for channel, audio, squelch, and receiver health; raw chip
+metrics and filter read-back remain K5-local. Retune and receiver fault
+therefore cannot leave stale K5 semantic state visible. K1's richer shell,
+display renderer, persistence, diagnostics, BK4829 profile, and recovery remain
+target-owned and unchanged.
+
+Pinned host and target gates pass: formatting, 127 platform/K1 tests, 16 K5
+library tests, warning-denied focused Clippy, and `git diff --check`. The K5
+release/package gate passes with a `0xF000` image, flash end `0x58EC`, static
+RAM end `0x20000100`, and SHA-256
+`f8cfcde89db90534ae8a33c8fd1bce2267948059f684bb9eb5c97f7512393c55`.
+No hardware was flashed for this step.
+The pinned K1 release build `nix develop path:. -c
+./tool/build-k1-async.sh --release` also passes after the shared API change.
+
+Next smallest actionable task: extract the shared configuration activation
+boundary while retaining K1 persistence and serial protocol ownership.
 
 K1 live-path verification on 2026-08-13:
 

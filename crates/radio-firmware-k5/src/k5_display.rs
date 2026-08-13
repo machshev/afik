@@ -7,6 +7,7 @@ use radio_dp32g030::pwm_plus::PwmPlus;
 use radio_dp32g030::syscon::{self, Peripheral};
 use radio_dp32g030::PWM_PLUS0_BASE;
 use radio_platform::display::{BootDisplay, BootStage, ReceiveDiagnostic};
+use radio_platform::receive_app::View;
 
 use crate::keypad::Key;
 
@@ -83,13 +84,12 @@ impl K5BootDisplay {
     /// Shows the muted PMR446 receive-validation state and raw chip metrics.
     pub fn show_pmr_receive(
         &mut self,
-        channel: u8,
-        audio: bool,
+        view: View,
         configured: Option<u16>,
         metrics: Option<ReceiveMetrics>,
     ) {
         let mut channel_text = *b"00";
-        decimal_text(u32::from(channel), &mut channel_text);
+        decimal_text(u32::from(view.channel), &mut channel_text);
         let mut configured_text = *b"----";
         if let Some(value) = configured {
             hexadecimal_text(value.into(), &mut configured_text);
@@ -97,11 +97,13 @@ impl K5BootDisplay {
         let mut rssi = *b"-----";
         let mut glitch = *b"---";
         let mut noise = *b"---";
-        let squelch = if let Some(sample) = metrics {
-            signed_decimal_text(sample.rssi_dbm_x2, &mut rssi);
-            decimal_text(u32::from(sample.glitch), &mut glitch);
-            decimal_text(u32::from(sample.noise), &mut noise);
-            if sample.squelch_open {
+        let squelch = if view.receiver_ok {
+            if let Some(sample) = metrics {
+                signed_decimal_text(sample.rssi_dbm_x2, &mut rssi);
+                decimal_text(u32::from(sample.glitch), &mut glitch);
+                decimal_text(u32::from(sample.noise), &mut noise);
+            }
+            if view.squelch_open {
                 b'1'
             } else {
                 b'0'
@@ -117,7 +119,7 @@ impl K5BootDisplay {
         draw_text(2, 32, &channel_text);
         draw_text(2, 50, b"CFG");
         draw_text(2, 74, &configured_text);
-        draw_text(2, 104, if audio { b"A1" } else { b"A0" });
+        draw_text(2, 104, if view.audio { b"A1" } else { b"A0" });
         draw_text(4, 8, b"R2");
         draw_text(4, 26, &rssi);
         draw_text(4, 62, b"S");

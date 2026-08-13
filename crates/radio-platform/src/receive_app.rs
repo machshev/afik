@@ -6,6 +6,56 @@ const PMR446_FIRST_HZ: u32 = 446_006_250;
 const PMR446_STEP_HZ: u32 = 12_500;
 const MAX_EFFECTS: usize = 3;
 
+/// One logical key exposed by a target keypad adapter.
+///
+/// Target crates retain matrix scanning, settling, debounce, and GPIO
+/// ownership. Once a scan has become a stable edge, both targets use this
+/// vocabulary so operator meaning is not duplicated beside the receive app.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Key {
+    /// The upper side key.
+    Side1,
+    /// The lower side key.
+    Side2,
+    /// The input-only push-to-talk switch.
+    Ptt,
+    /// The menu/confirm key.
+    Menu,
+    /// The channel-up key.
+    Up,
+    /// The channel-down key.
+    Down,
+    /// The exit/back key.
+    Exit,
+    /// A decimal digit, if the target reports one.
+    Digit(u8),
+    /// The star key.
+    Star,
+    /// The function/hash key.
+    Function,
+}
+
+impl Key {
+    /// Returns the receive-app action for a pressed key.
+    ///
+    /// Keys which belong to a retained target shell, such as digits and side
+    /// keys, intentionally have no action in this receive-only slice.
+    pub const fn receive_event(self) -> Option<Event> {
+        match self {
+            Self::Up => Some(Event::NextChannel),
+            Self::Down => Some(Event::PreviousChannel),
+            Self::Menu => Some(Event::ToggleAudio),
+            Self::Side1
+            | Self::Side2
+            | Self::Ptt
+            | Self::Exit
+            | Self::Digit(_)
+            | Self::Star
+            | Self::Function => None,
+        }
+    }
+}
+
 /// One event delivered by a target adapter.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Event {
@@ -24,6 +74,8 @@ pub enum Event {
     SelectChannel(u8),
     /// Toggle the operator audio preference.
     ToggleAudio,
+    /// Apply the receive meaning of one stable pressed key.
+    KeyPress(Key),
     /// One complete receiver-status sample.
     ReceiveSample {
         /// Whether the receiver's current squelch criterion is open.
@@ -174,6 +226,9 @@ impl ReceiveApp {
                     Effect::Redraw(self.view()),
                 )
             }
+            Event::KeyPress(key) => key
+                .receive_event()
+                .map_or_else(Effects::none, |event| self.apply(event)),
             Event::ReceiveSample { squelch_open } => {
                 if !self.receiver_ok {
                     return Effects::none();
@@ -210,7 +265,7 @@ impl ReceiveApp {
 
 #[cfg(test)]
 mod tests {
-    use super::{Effect, Effects, Event, ReceiveApp};
+    use super::{Effect, Effects, Event, Key, ReceiveApp};
 
     fn trace(events: &[Event]) -> std::vec::Vec<Effect> {
         let mut app = ReceiveApp::new();
@@ -304,5 +359,33 @@ mod tests {
             app.apply(Event::ReceiveSample { squelch_open: true }),
             super::Effects::none()
         );
+    }
+
+    #[test]
+    fn target_keyboards_share_receive_semantics() {
+        let mut k1 = ReceiveApp::new();
+        let mut k5 = ReceiveApp::new();
+        let keys = [Key::Up, Key::Menu, Key::Down, Key::Digit(4), Key::Side1];
+        for key in keys {
+            assert_eq!(
+                k1.apply(Event::KeyPress(key)),
+                k5.apply(Event::KeyPress(key))
+            );
+            assert_eq!(k1.view(), k5.view());
+        }
+    }
+
+    #[test]
+    fn retune_and_fault_clear_shared_display_gate_state() {
+        let mut app = ReceiveApp::new();
+        app.apply(Event::Start);
+        app.apply(Event::ReceiveSample { squelch_open: true });
+        assert!(app.view().squelch_open);
+        app.apply(Event::NextChannel);
+        assert!(!app.view().squelch_open);
+        app.apply(Event::ReceiveSample { squelch_open: true });
+        app.apply(Event::ReceiverFault);
+        assert!(!app.view().squelch_open);
+        assert!(!app.view().receiver_ok);
     }
 }

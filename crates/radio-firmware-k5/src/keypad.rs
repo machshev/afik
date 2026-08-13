@@ -2,6 +2,7 @@
 
 use radio_dp32g030::gpio::{self, Port};
 use radio_dp32g030::portcon;
+use radio_platform::receive_app::Key as SharedKey;
 
 const COLUMNS: [u8; 4] = [3, 4, 5, 6];
 const ROWS: [u8; 4] = [10, 11, 12, 13];
@@ -29,6 +30,25 @@ pub enum Key {
     Side2,
     /// Push-to-talk switch, exposed only as an input label in this image.
     Ptt,
+}
+
+impl Key {
+    /// Converts a decoded physical key to the shared application vocabulary.
+    #[must_use]
+    pub const fn shared(self) -> SharedKey {
+        match self {
+            Self::Menu => SharedKey::Menu,
+            Self::Up => SharedKey::Up,
+            Self::Down => SharedKey::Down,
+            Self::Exit => SharedKey::Exit,
+            Self::Star => SharedKey::Star,
+            Self::Function => SharedKey::Function,
+            Self::Digit(value) => SharedKey::Digit(value),
+            Self::Side1 => SharedKey::Side1,
+            Self::Side2 => SharedKey::Side2,
+            Self::Ptt => SharedKey::Ptt,
+        }
+    }
 }
 
 const MATRIX: [[Key; 4]; 4] = [
@@ -180,6 +200,7 @@ impl MatrixIo for K5Matrix {
 #[cfg(test)]
 mod tests {
     use super::{scan, Key, MatrixIo};
+    use radio_platform::receive_app::{Event, Key as SharedKey, ReceiveApp};
     struct Fake {
         held: Option<(usize, usize)>,
         side: Option<Key>,
@@ -285,5 +306,20 @@ mod tests {
             restored: false,
         };
         assert_eq!(scan(&mut io), None);
+    }
+
+    #[test]
+    fn shared_key_mapping_matches_receive_application_meaning() {
+        let mut app = ReceiveApp::new();
+        for (key, expected) in [
+            (Key::Up, SharedKey::Up),
+            (Key::Menu, SharedKey::Menu),
+            (Key::Down, SharedKey::Down),
+            (Key::Digit(4), SharedKey::Digit(4)),
+            (Key::Side1, SharedKey::Side1),
+        ] {
+            assert_eq!(key.shared(), expected);
+            let _ = app.apply(Event::KeyPress(key.shared()));
+        }
     }
 }

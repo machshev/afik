@@ -72,6 +72,11 @@
 - **K5 keypad narrowing, 2026-08-12:** `EVID-K5-025` supports the V1 main-matrix
   adapter and its shared-pin restore state. Physical label mapping, settling,
   debounce, side keys, and PTT remain unverified until the stated experiment.
+- **Shared semantic narrowing, 2026-08-13:** `APP-052` now shares only
+  post-debounce logical key meaning and the receive semantic view. K1/K5
+  physical scan timing, electrical behavior, display rendering, and PTT/TX
+  behavior remain target-specific and are not newly claimed by host tests or
+  the unflashed K5 package.
 
 ## RISK-007 — BK4819 register applicability and board RF control are unverified
 

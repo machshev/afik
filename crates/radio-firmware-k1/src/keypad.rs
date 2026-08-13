@@ -1,5 +1,7 @@
 //! Hardware-independent K1 main-key matrix decoding and debounce.
 
+use radio_platform::receive_app::Key as SharedKey;
+
 /// Stable interval required before accepting a press or release.
 pub const DEBOUNCE_MILLISECONDS: u32 = 20;
 
@@ -163,6 +165,34 @@ pub enum Key {
     Star,
     /// Function/hash key.
     Function,
+}
+
+impl Key {
+    /// Converts a decoded physical key to the shared application vocabulary.
+    #[must_use]
+    pub const fn shared(self) -> SharedKey {
+        match self {
+            Self::Side1 => SharedKey::Side1,
+            Self::Side2 => SharedKey::Side2,
+            Self::Ptt => SharedKey::Ptt,
+            Self::Menu => SharedKey::Menu,
+            Self::Up => SharedKey::Up,
+            Self::Down => SharedKey::Down,
+            Self::Exit => SharedKey::Exit,
+            Self::Digit0 => SharedKey::Digit(0),
+            Self::Digit1 => SharedKey::Digit(1),
+            Self::Digit2 => SharedKey::Digit(2),
+            Self::Digit3 => SharedKey::Digit(3),
+            Self::Digit4 => SharedKey::Digit(4),
+            Self::Digit5 => SharedKey::Digit(5),
+            Self::Digit6 => SharedKey::Digit(6),
+            Self::Digit7 => SharedKey::Digit(7),
+            Self::Digit8 => SharedKey::Digit(8),
+            Self::Digit9 => SharedKey::Digit(9),
+            Self::Star => SharedKey::Star,
+            Self::Function => SharedKey::Function,
+        }
+    }
 }
 
 impl Key {
@@ -495,6 +525,7 @@ mod tests {
         KeypadScan, MatrixBus, RawGpioLatch, Sample, ScanError, DEBOUNCE_MILLISECONDS,
         SIDE1_ROW_BIT, SIDE2_ROW_BIT,
     };
+    use radio_platform::receive_app::Key as SharedKey;
     use std::vec::Vec;
 
     const EXPECTED: [[Key; 4]; 4] = [
@@ -913,5 +944,20 @@ mod tests {
             debounce.update(88, Sample::Key(Key::Down)),
             Edge::Pressed(Key::Down)
         );
+    }
+
+    #[test]
+    fn shared_key_mapping_matches_k5_vocabulary() {
+        let expected = [
+            (Key::Menu, SharedKey::Menu),
+            (Key::Up, SharedKey::Up),
+            (Key::Down, SharedKey::Down),
+            (Key::Digit4, SharedKey::Digit(4)),
+            (Key::Side1, SharedKey::Side1),
+            (Key::Ptt, SharedKey::Ptt),
+        ];
+        for (key, shared) in expected {
+            assert_eq!(key.shared(), shared);
+        }
     }
 }

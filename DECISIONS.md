@@ -1227,3 +1227,25 @@ meaning.
   and recovery.
 - The first unified milestone is receive-only. TX, calibrated RF claims, battery
   parity, and nonessential peripheral parity do not delay it.
+
+## ADR-075 — Keypad meaning and receive semantic view are shared, scanning and rendering are not
+
+- **Date:** 2026-08-13
+- **Status:** accepted for `APP-052`
+- `radio-platform::receive_app::Key` is the canonical post-debounce logical
+  key vocabulary for K1 and K5. `Up`, `Down`, and `Menu` map to the shared
+  receive application; other keys remain available to target-owned shells and
+  have no receive-only action. Physical matrix scans, timing, debounce, GPIO,
+  and PTT input handling remain below the boundary in each target adapter.
+- The shared `View` remains authoritative for channel, operator audio,
+  sampled squelch, and receiver health. Target adapters retain raw RSSI,
+  glitch/noise, filter read-back, chip profiles, and pixel rendering. K5 must
+  clear or suppress those raw fields when the shared view retunes or latches a
+  receiver fault, so stale hardware observations cannot contradict semantic
+  state.
+- This step does not import the K1 shell into K5, alter K1 persistence,
+  diagnostics, serial control, BK4829 profile, image layout, or recovery, and
+  does not authorize a hardware flash. The K5 package remains bounded by the
+  existing `0xF000` region. Adapter failures are routed back through the
+  shared receiver-fault event so the semantic view and speaker gate fail
+  silent even when a target operation fails during a key or sample event.

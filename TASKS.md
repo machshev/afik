@@ -2602,6 +2602,19 @@
   PMR446 receive audio, squelch opening/closing, menus, channel list, VFO, and
   Info. Application boot and preservation of the existing K1 UI/programmer
   behavior are therefore physically established for this step.
+- **Keypad/display semantics step:** `radio-platform::receive_app` now owns a
+  canonical logical key vocabulary and the receive meaning of stable key
+  presses. K1 and K5 adapters map their target-owned physical key enums into
+  it; matrix scanning, settling, debounce, and full K1 shell semantics remain
+  local. K5 redraw consumes the shared semantic `View` for channel, audio,
+  squelch, and receiver health while retaining raw metrics and filter
+  read-back in the adapter. Host tests prove both mappings, identical K1/K5
+  event traces, and stale-state clearing on retune/fault. The pinned K5
+  release/package gate passes with image end `0x58EC`, RAM end `0x20000100`,
+  fixed package size `0xF000`, and SHA-256
+  `f8cfcde89db90534ae8a33c8fd1bce2267948059f684bb9eb5c97f7512393c55`.
+  This is simulator/host and static package evidence only; no hardware was
+  flashed.
 - **Then:** move keypad semantics and semantic display state, then configuration
   activation/persistence and serial control. Keep MCU registers, interrupts,
   DMA, physical buses, chip profile selection, image layout, and recovery in

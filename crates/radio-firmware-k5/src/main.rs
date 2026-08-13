@@ -122,29 +122,19 @@ fn main() -> ! {
     let mut keypad = K5Matrix::initialise();
     let mut shown_key = keypad::scan(&mut keypad);
     if initialised {
-        let effects = app.apply(Event::Start);
-        if !apply_effects(
-            effects.iter(),
+        apply_event(
+            &mut app,
+            Event::Start,
             &mut radio,
             &mut speaker,
             &mut display,
             &mut configured,
             &mut metrics,
-        ) {
-            let fault = app.apply(Event::ReceiverFault);
-            let _ = apply_effects(
-                fault.iter(),
-                &mut radio,
-                &mut speaker,
-                &mut display,
-                &mut configured,
-                &mut metrics,
-            );
-        }
+        );
     } else {
-        let fault = app.apply(Event::ReceiverFault);
-        let _ = apply_effects(
-            fault.iter(),
+        apply_event(
+            &mut app,
+            Event::ReceiverFault,
             &mut radio,
             &mut speaker,
             &mut display,
@@ -166,16 +156,10 @@ fn main() -> ! {
         let key = keypad::scan(&mut keypad);
         if key != shown_key {
             shown_key = key;
-            let event = match key {
-                Some(keypad::Key::Up) => Some(Event::NextChannel),
-                Some(keypad::Key::Down) => Some(Event::PreviousChannel),
-                Some(keypad::Key::Menu) => Some(Event::ToggleAudio),
-                _ => None,
-            };
-            if let Some(event) = event {
-                let effects = app.apply(event);
-                let _ = apply_effects(
-                    effects.iter(),
+            if let Some(key) = key {
+                apply_event(
+                    &mut app,
+                    Event::KeyPress(key.shared()),
                     &mut radio,
                     &mut speaker,
                     &mut display,
@@ -187,11 +171,11 @@ fn main() -> ! {
         sample_tick.wait();
         if let Ok(sample) = radio.receive_metrics(radio_domain::Tone::None) {
             metrics = Some(sample);
-            let effects = app.apply(Event::ReceiveSample {
-                squelch_open: sample.squelch_open,
-            });
-            let _ = apply_effects(
-                effects.iter(),
+            apply_event(
+                &mut app,
+                Event::ReceiveSample {
+                    squelch_open: sample.squelch_open,
+                },
                 &mut radio,
                 &mut speaker,
                 &mut display,
@@ -199,9 +183,9 @@ fn main() -> ! {
                 &mut metrics,
             );
         } else {
-            let effects = app.apply(Event::ReceiverFault);
-            let _ = apply_effects(
-                effects.iter(),
+            apply_event(
+                &mut app,
+                Event::ReceiverFault,
                 &mut radio,
                 &mut speaker,
                 &mut display,
@@ -209,6 +193,34 @@ fn main() -> ! {
                 &mut metrics,
             );
         }
+    }
+}
+
+fn apply_event<B: RegisterBus>(
+    app: &mut ReceiveApp,
+    event: Event,
+    radio: &mut Bk4819<B>,
+    speaker: &mut SpeakerGate,
+    display: &mut K5BootDisplay,
+    configured: &mut Option<u16>,
+    metrics: &mut Option<ReceiveMetrics>,
+) {
+    if !apply_effects(
+        app.apply(event).iter(),
+        radio,
+        speaker,
+        display,
+        configured,
+        metrics,
+    ) {
+        let _ = apply_effects(
+            app.apply(Event::ReceiverFault).iter(),
+            radio,
+            speaker,
+            display,
+            configured,
+            metrics,
+        );
     }
 }
 
@@ -268,7 +280,11 @@ fn apply_effects<B: RegisterBus>(
             }
             Effect::SetSpeaker(enabled) => speaker.set_enabled(enabled),
             Effect::Redraw(view) => {
-                display.show_pmr_receive(view.channel, view.audio, *configured, *metrics)
+                if !view.receiver_ok {
+                    *configured = None;
+                    *metrics = None;
+                }
+                display.show_pmr_receive(view, *configured, *metrics)
             }
         }
     }
