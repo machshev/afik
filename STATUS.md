@@ -37,6 +37,11 @@ the shared pins. Two serial probes made while the unit was subsequently in DFU
 received bootloader beacon `0x0518`, not an application hello; these are not
 application-boot evidence.
 
+After an explicit ordinary power-cycle, three consecutive `probe-normal`
+exchanges returned `AFIK-K5-1.5E`. This independently confirms application boot
+for the EEPROM `0343`, BK `4819`, main-key and PTT observations. The side-key
+early-return correction is built and committed but not yet flashed.
+
 Pre-flash gates on 2026-08-13:
 
 - Focused warning-denied Clippy and K5 tests passed, including eleven library,

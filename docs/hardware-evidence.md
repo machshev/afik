@@ -2673,3 +2673,7 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   held line during a matrix row for ambiguity. The pinned implementation exits
   on the first decoded key; AFIK now does the same and tests restoration on that
   early return.
+- **Independent boot result:** after an ordinary power-cycle, three consecutive
+  normal-mode probes returned `AFIK-K5-1.5E`. The two preceding `0x0518`
+  responses were correctly treated as bootloader beacons while the unit was
+  still in DFU, not as failed application responses.
