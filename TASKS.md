@@ -2726,7 +2726,7 @@
   same operating, channel-list, source-list, and Info frames before its
   target-owned page writes. K5 derives the sixteen PMR names and frequencies
   from `PMR446_CHANNELS`, shows generation-zero/no-memory honestly, and keeps
-  VFO/settings/scan visibly capability-gated. Deterministic K5 frame snapshots
+  VFO/settings/scan visibly capability-gated at that historical step. Deterministic K5 frame snapshots
   compare each supported frame directly to the shared renderer. The old
   `show_pmr_receive` redraw path is removed and unchanged frames are not sent
   again. Side2 now enters shared `ToggleMonitor`, with the K5 matrix and
@@ -2734,8 +2734,10 @@
   platform/K5 tests, K5 release build, image verification, and fixed package
   pass. The historical unflashed image was `AFIK-K5-2.0P`; its later physical
   boot/serial success and display failure are recorded in STATUS and hardware
-  evidence. The current unflashed corrective image is `AFIK-K5-2.1D`; physical
-  display and side-key acceptance remain open.
+  evidence. At that historical point the corrective image was the unflashed
+  `AFIK-K5-2.1D`; the later physical `2.1D` observation and the separately
+  unflashed volatile-settings `2.2Q` package are recorded below. This
+  historical record is superseded by those later records.
 - **APP-052 review corrections (2026-08-13):** shared operating views now carry
   receiver health and render `RX FAULT` distinctly from a healthy quiet frame;
   K1’s common PMR adapter synchronizes controller monitor state through the
@@ -2761,5 +2763,26 @@
   writes used column `0`. K5 now transfers each visible page at columns
   `4..=131`; a bounded host plan test proves all 128 columns across all eight
   pages are covered once without wrap or stray RAM. The shared renderer is
-  unchanged. `2.1D` is the corrective identity; physical display acceptance
-  remains open.
+  unchanged. `2.1D` is the corrective identity; its guarded physical write and
+  clean-edge/operator observation are recorded separately in STATUS. This does
+  not establish `2.2Q`.
+- **APP-052 volatile squelch/settings correction (2026-08-13):** K5 now enables
+  the shared K1 Settings/SquelchList shell for its fixed PMR receive fixture.
+  `ReceiveApp` stages a selected level, K5 applies the exact
+  `SquelchThresholds::for_level` setup through the shared target seam, and only
+  a successful target acknowledgement commits the shared state and shell
+  display; explicit applied/rejected/faulted outcomes keep same-level,
+  pending, and faulted choices fail-silent. K1 cancels staged squelch before
+  publication/source/selection replacement and signals its
+  existing persistence path only after successful physical application. K5
+  production keypad edge dispatch is shared with the host seam test; K5
+  remains volatile generation zero and claims no EEPROM or persistence
+  capability. Behavioral, simulator, exact-pixel, K1, K5 keypad/threshold, and
+  BK4819 register-plan tests pass. The unflashed `AFIK-K5-2.2Q` package is
+  exactly `0xF000` bytes, flash end `0x97f4`, static RAM end `0x20000100`, and
+  SHA-256
+  `49f4a27dabd338e51e27c37db83a82dd5d0f602570dd17e88cdd87d54ecea8a4`.
+  Physical evidence remains the separately guarded `AFIK-K5-2.1D` transaction
+  `ec0c8580`, `240/240 acknowledged_not_read_back`, three normal probes, and
+  the user's clean-edge/menu/channel/source/Info/Side2/Up/Down confirmation;
+  it is not `2.2Q` read-back or boot evidence. APP-052 remains active.

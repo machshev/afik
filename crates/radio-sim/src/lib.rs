@@ -1237,6 +1237,44 @@ mod tests {
     }
 
     #[test]
+    fn deterministic_simulator_carries_squelch_across_retune_and_monitor() {
+        let mut app = ReceiveApp::new();
+        let level = radio_domain::SquelchLevel::new(6).expect("bounded level");
+        assert_eq!(app.squelch(), radio_domain::SquelchLevel::CONSERVATIVE);
+
+        let applied = app.apply(SharedEvent::SetSquelch(level));
+        assert!(applied.iter().any(|effect| {
+            matches!(
+                effect,
+                radio_platform::receive_app::Effect::Tune { squelch, .. }
+                    if squelch == level
+            )
+        }));
+        assert_eq!(app.squelch(), radio_domain::SquelchLevel::CONSERVATIVE);
+        app.apply(SharedEvent::SquelchAcknowledged {
+            level,
+            applied: true,
+        });
+        assert_eq!(app.squelch(), level);
+
+        let monitored = app.apply(SharedEvent::ToggleMonitor);
+        assert!(monitored.iter().any(|effect| {
+            matches!(
+                effect,
+                radio_platform::receive_app::Effect::SetSpeaker(true)
+            )
+        }));
+        let retuned = app.apply(SharedEvent::NextChannel);
+        assert!(retuned.iter().any(|effect| {
+            matches!(
+                effect,
+                radio_platform::receive_app::Effect::Tune { squelch, .. }
+                    if squelch == level
+            )
+        }));
+    }
+
+    #[test]
     fn deterministic_simulator_decodes_common_wire_and_returns_shared_view() {
         use radio_platform::serial_control::wire::{
             decode_request, decode_response, encode_key_response, KeyCode, Request as WireRequest,

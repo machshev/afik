@@ -198,11 +198,17 @@ Neither the K5 SPI0 experiment nor any DMA, interrupt, pin, register, timing, or
 framebuffer implementation is part of the shared contract.
 
 `APP-052` extends this boundary with a receive application state machine. It
-accepts target-neutral start, navigation, mute, receiver-sample, and fault
-events and emits a bounded ordered list of tune, chip-audio, speaker-gate, and
-semantic-redraw effects. PMR446 example selection and the squelch/audio rule
-therefore compile once; timing, metric acquisition, BK4819/BK4829 selection,
-GPIO, keypad scanning, and rendering remain target adapters.
+accepts target-neutral start, navigation, mute, volatile squelch selection,
+target acknowledgements, receiver-sample, and fault events and emits a bounded
+ordered list of tune, chip-audio, speaker-gate, and semantic-redraw effects.
+PMR446 example selection and the squelch/audio rule therefore compile once;
+timing, metric acquisition, BK4819/BK4829 selection, GPIO, keypad scanning,
+and rendering remain target adapters. A squelch choice is staged until the
+target acknowledges the exact threshold operation, so the shell, semantic
+state, physical threshold, and K1 persistence signal cannot diverge on a
+fault. Target replacement cancels the staged choice, and the adapter reports
+applied, rejected/no-effect, or faulted outcomes explicitly. K5's setting is
+volatile generation-zero behavior, not persistence.
 
 The configuration-activation portion of this boundary is deliberately a value
 boundary rather than a persistence abstraction. `radio-platform::configuration`

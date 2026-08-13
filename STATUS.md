@@ -17,19 +17,37 @@ target effects. Identical K1 and K5 fixtures produce identical traces. Seven
 `radio-platform` tests and warning-denied Clippy pass.
 
 The K5 target now executes that shared core as the current unflashed
-`AFIK-K5-2.1D` corrective image. Its proven keypad and 50 ms `SysTick` emit
+`AFIK-K5-2.2Q` volatile-settings image. Its proven keypad and 50 ms `SysTick` emit
 shared events; ordered tune, chip-audio, speaker-gate, and redraw effects drive
 the existing K5 adapters. Adapter failure feeds the common fail-silent event.
 The latest shared operator frame is rendered by the hardware-independent K1
-layout and only written by the K5 adapter when pixels change. The package is
-`0xF000` bytes, flash ends at `0x938c`, static RAM ends at `0x20000100`, and
-SHA-256 is
+layout and only written by the K5 adapter when pixels change. The prior
+unflashed 2.1D software package was `0xF000` bytes, ended at `0x938c`, used
+static RAM through `0x20000100`, and had SHA-256
 `83e93887e51ebb99248ee485f190b117077d02ad8b17caee8dc18d6d7ef3e5b5`.
+The correction-pass 2.2Q gate passed with `cargo fmt --all --check`, warning-denied
+workspace Clippy, the full workspace suite, K1 and K5 release builds, K5 image
+verification, fixed-size packaging, and `git diff --check`, run one process at
+a time through the cached direnv shell. Exact commands were
+`direnv exec . env CARGO_BUILD_JOBS=2 ionice -c 3 nice -n 10 cargo fmt
+--all --check`, the same prefix with `cargo clippy --workspace --all-targets
+-- -D warnings`, `cargo test --workspace`, `./tool/build-k1-async.sh --release`,
+`./tool/build-k5.sh --release`, `./tool/verify-k5-image.sh`,
+`./tool/package-k5-image.sh --force`, and `git diff --check`. The current 2.2Q image
+ends at `0x97f4`, uses static RAM through `0x20000100`, and the package is
+exactly `0xF000` bytes with SHA-256
+`49f4a27dabd338e51e27c37db83a82dd5d0f602570dd17e88cdd87d54ecea8a4`.
+No hardware was flashed for 2.2Q.
 
-The earlier physical `AFIK-K5-2.0P` write established application boot and
-normal-mode serial response, but its display was cropped on the left with
-random/stale pixels on the right. The display transport correction is in
-unflashed `2.1D`; physical display acceptance remains open. The older `1.8U`
+The guarded physical `AFIK-K5-2.1D` write used transaction `ec0c8580` and
+received `240/240 acknowledged_not_read_back`; three normal probes returned
+`AFIK-K5-2.1D`. The user confirmed clean display edges and the requested
+Menu/channel/source/Info/Side2/physical Up/Down screens and controls; bounded
+serial Down moved channel 1 to 2 and Up returned to 1, with receiver OK. This
+is physical evidence for 2.1D only, not read-back or 2.2Q proof. The earlier
+physical `AFIK-K5-2.0P` write established application boot and normal-mode
+serial response, but its display was cropped on the left with random/stale
+pixels on the right. The older `1.8U`
 receive witness and its channel/audio/squelch observations remain historical
 evidence.
 
@@ -3704,9 +3722,10 @@ at column `0`. The shared renderer is unchanged. The K5 adapter now uses the
 shared `COLUMN_OFFSET=4` and `WIDTH=128` for both operations; every page emits
 `[0xB0|page, 0x10, 0x04]` and exactly 128 data bytes, mapping visible columns
 0..127 to controller columns 4..131 without wrap. Host tests cover the exact
-eight-page plan and address commands. The corrective unflashed identity is
-`AFIK-K5-2.1D`; physical display acceptance remains open and APP-052 is not
-complete.
+eight-page plan and address commands. The corrective unflashed identity was
+`AFIK-K5-2.1D`; the later guarded physical 2.1D observation is recorded in the
+current-work-package section above, while the separately packaged 2.2Q image
+remains unflashed. APP-052 is still active.
 
 The single serialized final cached-direnv gate passed: format, warning-denied
 workspace Clippy, full workspace tests, K1/K5 release builds, K5 image

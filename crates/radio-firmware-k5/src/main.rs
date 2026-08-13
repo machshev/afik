@@ -9,7 +9,7 @@
 #![deny(unsafe_code)]
 
 use core::panic::PanicInfo;
-use radio_bk4819::{AfOutput, Bk4819, ReadbackRegister, ReceiveMetrics, RegisterBus};
+use radio_bk4819::Bk4819;
 use radio_dp32g030::clock;
 use radio_dp32g030::dma::CircularReceiver;
 use radio_dp32g030::gpio::{self, Port};
@@ -18,6 +18,7 @@ use radio_dp32g030::syscon::{self, Peripheral};
 use radio_dp32g030::systick::PeriodicTick;
 use radio_dp32g030::uart::{k5_programming_divider, Uart};
 use radio_dp32g030::UART1_BASE;
+use radio_firmware_k5::application::{apply_effects, apply_event, UiDispatcher};
 use radio_firmware_k5::audio::SpeakerGate;
 use radio_firmware_k5::bk4819_bus::{K5Pins, K5RegisterBus};
 use radio_firmware_k5::k5_display::K5BootDisplay;
@@ -27,10 +28,10 @@ use radio_firmware_k5::protocol::{
     NormalService, RESPONSE_FRAME_BYTES,
 };
 use radio_firmware_k5::receive::Pmr446Channel;
-use radio_platform::configuration_change::{ConfigurationAcknowledgement, ConfigurationCandidate};
+use radio_platform::configuration_change::ConfigurationCandidate;
 use radio_platform::display::show_boot_sequence;
-use radio_platform::operator_shell::{Capabilities, Context, Intent, Shell};
-use radio_platform::receive_app::{Effect, Event, ReceiveApp};
+use radio_platform::operator_shell::{Capabilities, Context, Shell};
+use radio_platform::receive_app::{Event, ReceiveApp};
 
 /// Initial stack pointer, per `EVID-K5-019`: the top of the evidenced RAM less
 /// the sixteen bytes the firmware running on these units leaves alone.
@@ -131,7 +132,7 @@ fn main() -> ! {
     let mut shell = Shell::new();
     shell.set_capabilities(Capabilities::K5);
     shell.select_memory();
-    let mut shown_key = keypad::scan(&mut keypad);
+    let mut ui_dispatch = UiDispatcher::new(keypad::scan(&mut keypad));
     let mut ui_now = 0_u32;
     if initialised {
         apply_event(
@@ -213,41 +214,21 @@ fn main() -> ! {
             UART1.flush();
         }
         let key = keypad::scan(&mut keypad);
-        if key != shown_key {
-            let previous = shown_key;
-            shown_key = key;
-            if let Some(key) = key {
-                let intent = shell.press(
-                    key.shared(),
-                    ui_now,
-                    Context {
-                        visible_channels: radio_platform::configuration::PMR446_CHANNELS as u16,
-                        active_index: u16::from(app.view().channel.saturating_sub(1)),
-                        scanning: false,
-                    },
-                );
-                apply_ui_intent(
-                    intent,
-                    &mut app,
-                    &mut radio,
-                    &mut speaker,
-                    &mut configured,
-                    &mut metrics,
-                );
-            } else if let Some(previous) = previous {
-                let intent = shell.release(previous.shared());
-                if !matches!(intent, Intent::Idle) {
-                    apply_ui_intent(
-                        intent,
-                        &mut app,
-                        &mut radio,
-                        &mut speaker,
-                        &mut configured,
-                        &mut metrics,
-                    );
-                }
-            }
-        }
+        let _ = ui_dispatch.dispatch_scan(
+            key,
+            ui_now,
+            Context {
+                visible_channels: radio_platform::configuration::PMR446_CHANNELS as u16,
+                active_index: u16::from(app.view().channel.saturating_sub(1)),
+                scanning: false,
+            },
+            &mut shell,
+            &mut app,
+            &mut radio,
+            &mut speaker,
+            &mut configured,
+            &mut metrics,
+        );
         ui_now = ui_now.wrapping_add(SAMPLE_MILLISECONDS);
         sample_tick.wait();
         if let Ok(sample) = radio.receive_metrics(radio_domain::Tone::None) {
@@ -274,151 +255,6 @@ fn main() -> ! {
         }
         let _ = display.show_operator(&shell, app.view(), metrics);
     }
-}
-
-fn apply_ui_intent<B: RegisterBus>(
-    intent: Intent,
-    app: &mut ReceiveApp,
-    radio: &mut Bk4819<B>,
-    speaker: &mut SpeakerGate,
-    configured: &mut Option<u16>,
-    metrics: &mut Option<ReceiveMetrics>,
-) {
-    let event = match intent {
-        Intent::SelectNext => Some(Event::NextChannel),
-        Intent::SelectPrevious => Some(Event::PreviousChannel),
-        Intent::SelectIndex(index) => Some(Event::SelectChannel(
-            u8::try_from(index.saturating_add(1)).unwrap_or(0),
-        )),
-        // Menu remains the K1-compatible list confirm key. Side2's monitor
-        // intent enters the same shared ReceiveApp effect path as serial and
-        // simulator commands; VFO/source changes remain capability-gated.
-        Intent::ToggleMonitor => Some(Event::ToggleMonitor),
-        Intent::SetSource(_)
-        | Intent::TuneVfo
-        | Intent::SetSquelch(_)
-        | Intent::StartScan
-        | Intent::StopScan
-        | Intent::Redraw
-        | Intent::Idle => None,
-    };
-    if let Some(event) = event {
-        apply_event(app, event, radio, speaker, configured, metrics);
-    }
-}
-
-fn apply_event<B: RegisterBus>(
-    app: &mut ReceiveApp,
-    event: Event,
-    radio: &mut Bk4819<B>,
-    speaker: &mut SpeakerGate,
-    configured: &mut Option<u16>,
-    metrics: &mut Option<ReceiveMetrics>,
-) {
-    let effects = app.apply(event);
-    let change = effects.iter().find_map(|effect| match effect {
-        Effect::ConfigurationChange(change) => Some(change),
-        _ => None,
-    });
-    let applied = apply_effects(effects.iter(), radio, speaker, configured, metrics);
-    if let Some(change) = change {
-        let acknowledgement = if applied {
-            ConfigurationAcknowledgement::applied(change)
-        } else {
-            ConfigurationAcknowledgement::rejected(change)
-        };
-        let _ = apply_effects(
-            app.apply(Event::ConfigurationAcknowledged(acknowledgement))
-                .iter(),
-            radio,
-            speaker,
-            configured,
-            metrics,
-        );
-    } else if !applied {
-        let _ = apply_effects(
-            app.apply(Event::ReceiverFault).iter(),
-            radio,
-            speaker,
-            configured,
-            metrics,
-        );
-    }
-}
-
-/// Retunes and samples only on an explicit operator key edge. No target timing
-/// or receiver settling interval is inferred by this validation image.
-fn tune_and_sample<B: RegisterBus>(
-    radio: &mut Bk4819<B>,
-    channel: Pmr446Channel,
-    audio: bool,
-) -> (Option<u16>, Option<ReceiveMetrics>) {
-    if radio.configure_receive(&channel.setup(audio)).is_err() {
-        return (None, None);
-    }
-    let configured = radio.read_back(ReadbackRegister::FilterBandwidth).ok();
-    let metrics = radio.receive_metrics(radio_domain::Tone::None).ok();
-    (configured, metrics)
-}
-
-fn apply_effects<B: RegisterBus>(
-    effects: impl Iterator<Item = Effect>,
-    radio: &mut Bk4819<B>,
-    speaker: &mut SpeakerGate,
-    configured: &mut Option<u16>,
-    metrics: &mut Option<ReceiveMetrics>,
-) -> bool {
-    let mut complete = true;
-    for effect in effects {
-        match effect {
-            Effect::Tune {
-                channel,
-                frequency_hz,
-                audio,
-            } => {
-                let Some(channel) = Pmr446Channel::new(channel) else {
-                    complete = false;
-                    continue;
-                };
-                if channel.frequency().as_hz() != frequency_hz {
-                    complete = false;
-                    continue;
-                }
-                (*configured, *metrics) = tune_and_sample(radio, channel, audio);
-                if configured.is_none() || metrics.is_none() {
-                    complete = false;
-                }
-            }
-            Effect::SetChipAudio(audio) => {
-                let output = if audio {
-                    AfOutput::Demodulated
-                } else {
-                    AfOutput::Mute
-                };
-                if radio
-                    .set_af_output(radio_domain::Modulation::Fm, output)
-                    .is_err()
-                {
-                    complete = false;
-                }
-            }
-            Effect::SetSpeaker(enabled) => speaker.set_enabled(enabled),
-            Effect::ConfigurationChange(_) => {}
-            Effect::Redraw(view) => {
-                if !view.receiver_ok {
-                    *configured = None;
-                    *metrics = None;
-                }
-            }
-            Effect::ConfigurationAcknowledged(_) => {}
-        }
-    }
-    if !complete {
-        // A rejected/faulted change cannot leave the amplifier open even when
-        // a preceding chip operation or redraw failed.
-        speaker.set_enabled(false);
-    }
-    complete
 }
 
 /// Startup work that has to touch memory the linker owns rather than Rust.

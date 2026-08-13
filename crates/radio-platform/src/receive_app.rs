@@ -6,6 +6,7 @@ use super::configuration_change::{
     ConfigurationAcknowledgement, ConfigurationCandidate, ConfigurationChange,
     ConfigurationChangeResult,
 };
+use radio_domain::SquelchLevel;
 const MAX_EFFECTS: usize = 4;
 
 /// One logical key exposed by a target keypad adapter.
@@ -136,6 +137,20 @@ pub enum Event {
     ConfigurationAcknowledged(ConfigurationAcknowledgement),
     /// Toggle the operator audio preference.
     ToggleAudio,
+    /// Apply one volatile radio-wide squelch threshold.
+    SetSquelch(SquelchLevel),
+    /// A target adapter reports whether a staged squelch threshold applied.
+    SquelchAcknowledged {
+        /// The exact staged level being acknowledged.
+        level: SquelchLevel,
+        /// Whether the target applied the threshold and completed its reads.
+        applied: bool,
+    },
+    /// Cancel a staged squelch before replacing its target activation.
+    ///
+    /// This is an adapter-local rollback: it does not fault the receiver or
+    /// change the accepted level.
+    CancelSquelch,
     /// Toggle the operator monitor override, which opens squelch deliberately.
     ToggleMonitor,
     /// Set the monitor override to a target-owned desired state.
@@ -169,6 +184,8 @@ pub enum Effect {
         frequency_hz: u32,
         /// Whether demodulated chip AF should be selected.
         audio: bool,
+        /// The shared volatile squelch threshold to apply with the tune.
+        squelch: SquelchLevel,
     },
     /// Change chip AF routing without retuning.
     SetChipAudio(bool),
@@ -252,6 +269,8 @@ pub struct ReceiveApp {
     squelch_open: bool,
     receiver_ok: bool,
     monitoring: bool,
+    squelch: SquelchLevel,
+    pending_squelch: Option<SquelchLevel>,
 }
 
 impl Default for ReceiveApp {
@@ -284,6 +303,22 @@ impl ReceiveApp {
         configuration: ActivatedConfiguration,
         instance_id: u16,
     ) -> Self {
+        Self::from_configuration_with_identity_and_squelch(
+            configuration,
+            instance_id,
+            SquelchLevel::CONSERVATIVE,
+        )
+    }
+
+    /// Creates the receive application with a target-adapted volatile
+    /// squelch setting. This is for activation boundaries which already own a
+    /// live operator setting (K1); a fresh application still defaults to the
+    /// conservative level above.
+    pub const fn from_configuration_with_identity_and_squelch(
+        configuration: ActivatedConfiguration,
+        instance_id: u16,
+        squelch: SquelchLevel,
+    ) -> Self {
         Self {
             configuration,
             pending_configuration: None,
@@ -292,6 +327,8 @@ impl ReceiveApp {
             squelch_open: false,
             receiver_ok: true,
             monitoring: false,
+            squelch,
+            pending_squelch: None,
         }
     }
 
@@ -301,6 +338,16 @@ impl ReceiveApp {
         Self::from_configuration_with_identity(
             ActivatedConfiguration::new(0, Pmr446Channel::FIRST, true),
             instance_id,
+        )
+    }
+
+    /// Creates a fresh application while adopting a target-owned volatile
+    /// setting at the activation boundary.
+    pub const fn new_with_identity_and_squelch(instance_id: u16, squelch: SquelchLevel) -> Self {
+        Self::from_configuration_with_identity_and_squelch(
+            ActivatedConfiguration::new(0, Pmr446Channel::FIRST, true),
+            instance_id,
+            squelch,
         )
     }
 
@@ -315,7 +362,14 @@ impl ReceiveApp {
         }
     }
 
+    /// Returns the shared volatile squelch level in force.
+    #[must_use]
+    pub const fn squelch(&self) -> SquelchLevel {
+        self.squelch
+    }
+
     /// Applies one target-neutral event and returns ordered target effects.
+    #[allow(clippy::too_many_lines)]
     pub fn apply(&mut self, event: Event) -> Effects {
         match event {
             Event::Start
@@ -324,6 +378,7 @@ impl ReceiveApp {
             | Event::SelectChannel(_)
             | Event::ToggleAudio
             | Event::ToggleMonitor
+            | Event::SetSquelch(_)
                 if self.pending_configuration.is_some() =>
             {
                 Effects::none()
@@ -334,6 +389,18 @@ impl ReceiveApp {
             | Event::SelectChannel(_)
             | Event::ToggleAudio
             | Event::ToggleMonitor
+            | Event::SetSquelch(_)
+                if self.pending_squelch.is_some() =>
+            {
+                Effects::none()
+            }
+            Event::Start
+            | Event::NextChannel
+            | Event::PreviousChannel
+            | Event::SelectChannel(_)
+            | Event::ToggleAudio
+            | Event::ToggleMonitor
+            | Event::SetSquelch(_)
             | Event::SetMonitor(_)
             | Event::KeyPress(_)
                 if !self.receiver_ok =>
@@ -373,6 +440,35 @@ impl ReceiveApp {
                     Effect::Redraw(self.view()),
                 )
             }
+            Event::SetSquelch(level) => {
+                if self.squelch == level {
+                    return Effects::none();
+                }
+                self.pending_squelch = Some(level);
+                self.retune_with_squelch(level)
+            }
+            Event::SquelchAcknowledged { level, applied } => {
+                if self.pending_squelch != Some(level) {
+                    return Effects::none();
+                }
+                self.pending_squelch = None;
+                if applied {
+                    self.squelch = level;
+                    Effects::one(Effect::Redraw(self.view()))
+                } else {
+                    self.receiver_ok = false;
+                    self.squelch_open = false;
+                    Effects::three(
+                        Effect::SetChipAudio(false),
+                        Effect::SetSpeaker(false),
+                        Effect::Redraw(self.view()),
+                    )
+                }
+            }
+            Event::CancelSquelch => {
+                self.pending_squelch = None;
+                Effects::none()
+            }
             Event::ToggleMonitor => {
                 self.monitoring = !self.monitoring;
                 Effects::two(
@@ -406,6 +502,7 @@ impl ReceiveApp {
                 // A fault invalidates the in-flight adapter operation. Its
                 // later acknowledgement must not resurrect the candidate.
                 self.pending_configuration = None;
+                self.pending_squelch = None;
                 self.receiver_ok = false;
                 self.squelch_open = false;
                 self.monitoring = false;
@@ -461,11 +558,16 @@ impl ReceiveApp {
     }
 
     fn retune(&mut self) -> Effects {
+        self.retune_with_squelch(self.squelch)
+    }
+
+    fn retune_with_squelch(&mut self, squelch: SquelchLevel) -> Effects {
         self.squelch_open = false;
         let tune = Effect::Tune {
             channel: self.configuration.channel_number(),
             frequency_hz: self.configuration.frequency_hz(),
             audio: self.configuration.audio(),
+            squelch,
         };
         if self.monitoring {
             Effects::four(
@@ -504,6 +606,7 @@ impl ReceiveApp {
                 channel: configuration.channel_number(),
                 frequency_hz: configuration.frequency_hz(),
                 audio: configuration.audio(),
+                squelch: self.squelch,
             },
             Effect::Redraw(self.view()),
             Effect::ConfigurationChange(change),
@@ -517,7 +620,7 @@ mod tests {
     use super::super::configuration_change::{
         ConfigurationAcknowledgement, ConfigurationCandidate, ConfigurationChangeResult,
     };
-    use super::{Effect, Effects, Event, Key, ReceiveApp};
+    use super::{Effect, Effects, Event, Key, ReceiveApp, SquelchLevel};
 
     fn trace(events: &[Event]) -> std::vec::Vec<Effect> {
         let mut app = ReceiveApp::new();
@@ -553,6 +656,7 @@ mod tests {
                     channel: 1,
                     frequency_hz: 446_006_250,
                     audio: true,
+                    squelch: SquelchLevel::CONSERVATIVE,
                 },
                 Effect::Redraw(app.view()),
             ]
@@ -576,6 +680,7 @@ mod tests {
                     channel: 8,
                     frequency_hz: 446_093_750,
                     audio: true,
+                    squelch: SquelchLevel::CONSERVATIVE,
                 },
                 Effect::Redraw(app.view()),
             ]
@@ -599,6 +704,84 @@ mod tests {
         assert!(still_muted
             .iter()
             .any(|effect| effect == Effect::SetSpeaker(false)));
+    }
+
+    #[test]
+    fn squelch_setting_is_shared_volatile_and_retunes_with_the_selected_level() {
+        let mut app = ReceiveApp::new();
+        let level = SquelchLevel::new(5).expect("level");
+        let effects = app.apply(Event::SetSquelch(level));
+        assert_eq!(app.squelch(), SquelchLevel::CONSERVATIVE);
+        assert!(effects.iter().any(|effect| matches!(
+            effect,
+            Effect::Tune {
+                squelch,
+                channel: 1,
+                ..
+            } if squelch == level
+        )));
+        assert_eq!(app.apply(Event::NextChannel), Effects::none());
+        app.apply(Event::SquelchAcknowledged {
+            level,
+            applied: true,
+        });
+        assert_eq!(app.squelch(), level);
+        let retuned = app.apply(Event::NextChannel);
+        assert!(retuned.iter().any(|effect| matches!(
+            effect,
+            Effect::Tune { squelch, .. } if squelch == level
+        )));
+        app.apply(Event::ReceiverFault);
+        assert!(app
+            .apply(Event::SetSquelch(SquelchLevel::OPEN))
+            .iter()
+            .next()
+            .is_none());
+        assert_eq!(app.squelch(), level);
+    }
+
+    #[test]
+    fn rejected_or_faulted_squelch_change_never_commits_or_reopens_controls() {
+        let level = SquelchLevel::new(6).expect("level");
+        let mut rejected = ReceiveApp::new();
+        assert!(rejected
+            .apply(Event::SetSquelch(level))
+            .iter()
+            .any(|effect| matches!(effect, Effect::Tune { squelch, .. } if squelch == level)));
+        rejected.apply(Event::SquelchAcknowledged {
+            level,
+            applied: false,
+        });
+        assert_eq!(rejected.squelch(), SquelchLevel::CONSERVATIVE);
+        assert!(!rejected.view().receiver_ok);
+
+        let mut faulted = ReceiveApp::new();
+        faulted.apply(Event::SetSquelch(level));
+        faulted.apply(Event::ReceiverFault);
+        assert_eq!(faulted.squelch(), SquelchLevel::CONSERVATIVE);
+        assert_eq!(
+            faulted.apply(Event::SquelchAcknowledged {
+                level,
+                applied: true,
+            }),
+            Effects::none()
+        );
+    }
+
+    #[test]
+    fn activation_replacement_cancels_squelch_before_a_late_target_ack() {
+        let level = SquelchLevel::new(6).expect("level");
+        let mut app = ReceiveApp::new();
+        app.apply(Event::SetSquelch(level));
+        assert_eq!(app.apply(Event::CancelSquelch), Effects::none());
+        assert_eq!(
+            app.apply(Event::SquelchAcknowledged {
+                level,
+                applied: true,
+            }),
+            Effects::none()
+        );
+        assert_eq!(app.squelch(), SquelchLevel::CONSERVATIVE);
     }
 
     #[test]

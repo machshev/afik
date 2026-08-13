@@ -205,7 +205,7 @@ impl Capabilities {
     /// The currently evidenced K5 receive-only capability set.
     pub const K5: Self = Self {
         vfo: false,
-        settings: false,
+        settings: true,
         sources: true,
         scan: false,
         info: true,
@@ -767,7 +767,6 @@ impl Shell {
                 if level == self.squelch {
                     return Intent::Redraw;
                 }
-                self.squelch = level;
                 Intent::SetSquelch(level)
             }
             Screen::Operating => {
@@ -798,6 +797,21 @@ impl Shell {
                 Intent::Redraw
             }
         }
+    }
+
+    /// Commits a squelch choice after the receive application and target
+    /// adapter have acknowledged the physical threshold change.
+    pub fn accept_squelch(&mut self, level: SquelchLevel) -> bool {
+        if self.squelch_cursor != level.get() || level == self.squelch {
+            return false;
+        }
+        self.squelch = level;
+        true
+    }
+
+    /// Discards a rejected or unavailable squelch choice.
+    pub fn reject_squelch(&mut self) {
+        self.squelch_cursor = self.squelch.get();
     }
 
     fn cancel(&mut self) -> Intent {
@@ -1252,6 +1266,8 @@ mod tests {
             shell.press(Key::Menu, 30, context(0, 0)),
             Intent::SetSquelch(SquelchLevel::new(5).expect("level"))
         );
+        assert_eq!(shell.squelch(), SquelchLevel::CONSERVATIVE);
+        assert!(shell.accept_squelch(SquelchLevel::new(5).expect("level")));
         assert_eq!(shell.squelch(), SquelchLevel::new(5).expect("level"));
         assert_eq!(
             shell.screen(),
@@ -1272,6 +1288,8 @@ mod tests {
             shell.press(Key::Digit(0), 52, context(0, 0)),
             Intent::SetSquelch(SquelchLevel::OPEN)
         );
+        assert_eq!(shell.squelch(), SquelchLevel::new(5).expect("level"));
+        assert!(shell.accept_squelch(SquelchLevel::OPEN));
         assert_eq!(shell.squelch(), SquelchLevel::OPEN);
         assert_eq!(shell.entry(), None, "no channel number was ever started");
     }
@@ -1591,13 +1609,15 @@ mod tests {
         assert_eq!(shell.screen(), Screen::Info);
         assert_eq!(shell.press(Key::Exit, 3, context), Intent::Redraw);
         assert_eq!(shell.screen(), Screen::Operating);
-        assert_eq!(shell.press(Key::Side1, 4, context), Intent::Idle);
+        assert_eq!(shell.press(Key::Side1, 4, context), Intent::Redraw);
+        assert_eq!(shell.screen(), Screen::Settings);
+        assert_eq!(shell.press(Key::Exit, 5, context), Intent::Redraw);
         assert_eq!(shell.screen(), Screen::Operating);
-        assert_eq!(shell.press(Key::Star, 5, context), Intent::Redraw);
+        assert_eq!(shell.press(Key::Star, 6, context), Intent::Redraw);
         assert_eq!(shell.screen(), Screen::SourceList);
-        assert_eq!(shell.press(Key::Up, 6, context), Intent::Redraw);
-        assert_eq!(shell.press(Key::Menu, 7, context), Intent::Redraw);
-        assert_eq!(shell.press(Key::Up, 8, context), Intent::SelectPrevious);
+        assert_eq!(shell.press(Key::Up, 7, context), Intent::Redraw);
+        assert_eq!(shell.press(Key::Menu, 8, context), Intent::Redraw);
+        assert_eq!(shell.press(Key::Up, 9, context), Intent::SelectPrevious);
     }
 
     #[test]
@@ -1618,5 +1638,23 @@ mod tests {
             Intent::StopScan
         );
         assert_eq!(shell.entry(), None);
+    }
+
+    #[test]
+    fn a_rejected_squelch_intent_leaves_the_displayed_setting_unchanged() {
+        let mut shell = Shell::new();
+        shell.press(Key::Side1, 0, context(0, 0));
+        shell.press(Key::Menu, 1, context(0, 0));
+        shell.press(Key::Down, 2, context(0, 0));
+        let level = SquelchLevel::new(4).expect("level");
+        assert_eq!(shell.squelch_cursor(), level.get());
+        assert_eq!(
+            shell.press(Key::Menu, 3, context(0, 0)),
+            Intent::SetSquelch(level)
+        );
+        assert_eq!(shell.squelch(), SquelchLevel::CONSERVATIVE);
+        shell.reject_squelch();
+        assert_eq!(shell.squelch_cursor(), SquelchLevel::CONSERVATIVE.get());
+        assert_eq!(shell.squelch(), SquelchLevel::CONSERVATIVE);
     }
 }

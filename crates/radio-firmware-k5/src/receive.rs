@@ -67,12 +67,18 @@ impl Pmr446Channel {
     /// Builds the receive-only setup used by the validation image.
     #[must_use]
     pub fn setup(self, audio: bool) -> ReceiveSetup {
+        self.setup_with_squelch(audio, SquelchLevel::CONSERVATIVE)
+    }
+
+    /// Builds the receive-only setup with the shared volatile squelch level.
+    #[must_use]
+    pub fn setup_with_squelch(self, audio: bool, squelch: SquelchLevel) -> ReceiveSetup {
         ReceiveSetup {
             frequency: self.frequency(),
             modulation: Modulation::Fm,
             bandwidth: Bandwidth::Narrow,
             tone: Tone::None,
-            squelch: SquelchThresholds::for_level(SquelchLevel::CONSERVATIVE),
+            squelch: SquelchThresholds::for_level(squelch),
             af: if audio {
                 AfOutput::Demodulated
             } else {
@@ -86,6 +92,7 @@ impl Pmr446Channel {
 mod tests {
     use super::{Pmr446Channel, PMR446_CHANNELS};
     use radio_bk4819::{Bk4819, DriverState, RegisterAddress, RegisterBus};
+    use radio_domain::SquelchLevel;
 
     #[derive(Default)]
     struct Bus {
@@ -142,10 +149,38 @@ mod tests {
     #[test]
     fn operator_mute_keeps_the_same_squelch_but_disables_chip_audio() {
         let channel = Pmr446Channel::FIRST;
-        let audible = channel.setup(true);
-        let muted = channel.setup(false);
+        let audible = channel.setup_with_squelch(true, SquelchLevel::new(5).unwrap());
+        let muted = channel.setup_with_squelch(false, SquelchLevel::new(5).unwrap());
         assert_eq!(audible.squelch, muted.squelch);
         assert_eq!(muted.af, radio_bk4819::AfOutput::Mute);
         assert_eq!(audible.af, radio_bk4819::AfOutput::Demodulated);
+    }
+
+    #[test]
+    fn selected_squelch_level_changes_the_threshold_registers() {
+        let channel = Pmr446Channel::FIRST;
+        let mut low = Bk4819::new(Bus::default());
+        low.initialise().unwrap();
+        low.configure_receive(&channel.setup_with_squelch(true, SquelchLevel::new(2).unwrap()))
+            .unwrap();
+        let low_threshold = low
+            .bus()
+            .writes
+            .iter()
+            .find(|(address, _)| *address == 0x78);
+
+        let mut high = Bk4819::new(Bus::default());
+        high.initialise().unwrap();
+        high.configure_receive(&channel.setup_with_squelch(true, SquelchLevel::new(6).unwrap()))
+            .unwrap();
+        let high_threshold = high
+            .bus()
+            .writes
+            .iter()
+            .find(|(address, _)| *address == 0x78);
+
+        assert!(low_threshold.is_some());
+        assert!(high_threshold.is_some());
+        assert_ne!(low_threshold, high_threshold);
     }
 }

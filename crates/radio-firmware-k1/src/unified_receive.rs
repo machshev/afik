@@ -1,7 +1,7 @@
 //! K1 translation of shared receive-application effects.
 
 use radio_channel_control::ChannelReceiveSetup;
-use radio_domain::{Bandwidth, Frequency, FrequencyStep, Modulation, SquelchLevel, Tone};
+use radio_domain::{Bandwidth, Frequency, FrequencyStep, Modulation, Tone};
 use radio_platform::configuration::Pmr446Channel;
 use radio_platform::configuration_change::{ConfigurationAcknowledgement, ConfigurationChange};
 use radio_platform::receive_app::{Effect, View};
@@ -58,6 +58,7 @@ pub fn translate(effect: Effect) -> Result<K1Effect, AdapterError> {
             channel,
             frequency_hz,
             audio,
+            squelch,
         } => {
             let selected = Pmr446Channel::new(channel).ok_or(AdapterError)?;
             if frequency_hz != selected.frequency_hz() {
@@ -69,7 +70,7 @@ pub fn translate(effect: Effect) -> Result<K1Effect, AdapterError> {
                     modulation: Modulation::Fm,
                     bandwidth: Bandwidth::Narrow,
                     tone: Tone::None,
-                    squelch: SquelchLevel::CONSERVATIVE,
+                    squelch,
                     step: FrequencyStep::from_hz(12_500).map_err(|_| AdapterError)?,
                 },
                 audio,
@@ -123,6 +124,44 @@ mod tests {
             .collect::<Result<_, _>>()
             .unwrap();
         assert!(matches!(translated[1], K1Effect::Tune { audio: false, .. }));
+    }
+
+    #[test]
+    fn shared_squelch_level_reaches_the_k1_receive_setup() {
+        let level = radio_domain::SquelchLevel::new(6).unwrap();
+        let mut app = ReceiveApp::new();
+        let translated: std::vec::Vec<_> = app
+            .apply(Event::SetSquelch(level))
+            .iter()
+            .map(translate)
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let K1Effect::Tune { setup, .. } = translated[1] else {
+            panic!("squelch setting must retune");
+        };
+        assert_eq!(setup.squelch, level);
+        // The K1 adapter has only staged the target operation at this point;
+        // its shared setting remains conservative until the target reports
+        // that this exact threshold was applied.
+        assert_eq!(app.squelch(), SquelchLevel::CONSERVATIVE);
+        app.apply(Event::SquelchAcknowledged {
+            level,
+            applied: true,
+        });
+        assert_eq!(app.squelch(), level);
+    }
+
+    #[test]
+    fn k1_rejected_squelch_does_not_signal_or_commit_a_setting() {
+        let level = radio_domain::SquelchLevel::new(6).unwrap();
+        let mut app = ReceiveApp::new();
+        app.apply(Event::SetSquelch(level));
+        app.apply(Event::SquelchAcknowledged {
+            level,
+            applied: false,
+        });
+        assert_eq!(app.squelch(), SquelchLevel::CONSERVATIVE);
+        assert!(!app.view().receiver_ok);
     }
 
     #[test]
@@ -183,6 +222,7 @@ mod tests {
                 channel: 1,
                 frequency_hz: 446_018_750,
                 audio: true,
+                squelch: radio_domain::SquelchLevel::CONSERVATIVE,
             }),
             Err(AdapterError)
         );
@@ -191,6 +231,7 @@ mod tests {
                 channel: 0,
                 frequency_hz: 446_006_250,
                 audio: true,
+                squelch: radio_domain::SquelchLevel::CONSERVATIVE,
             }),
             Err(AdapterError)
         );

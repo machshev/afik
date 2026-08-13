@@ -837,14 +837,16 @@
   by the running image against the hardware, because a profile claiming more
   memory than is fitted writes past the end of the calibration a resoldered
   unit cannot restore.
-- **Shared operator UI narrowing, 2026-08-13:** the pure shell state machine and logical screen navigation now live in `radio-platform::operator_shell`. K5 uses the same operating/channel/source/Info navigation with explicit capability gates for its fixed PMR bank; VFO, handset squelch settings, and scan remain unavailable rather than inferred. K1/K5 share deterministic display pixels, glyphs, and layout; framebuffer storage, page writes, physical key scanning/debounce, and board timing remain target-owned. Host tests and an unflashed image do not establish physical K5 UI appearance, key ergonomics, persistence, or display parity.
+- **Shared operator UI narrowing, 2026-08-13:** the pure shell state machine and logical screen navigation now live in `radio-platform::operator_shell`. K5 uses the same operating/channel/source/Info/Settings/SquelchList navigation with explicit capability gates for its fixed PMR bank; VFO and scan remain unavailable rather than inferred. Handset squelch is a volatile acknowledged target effect, not persistence. K1/K5 share deterministic display pixels, glyphs, and layout; framebuffer storage, page writes, physical key scanning/debounce, and board timing remain target-owned. Host tests and an unflashed image do not establish physical K5 UI appearance, key ergonomics, persistence, or display parity.
 - **Shared-pixel and monitor boundary, 2026-08-13:** the K5 adapter now emits
   the shared K1-layout frame and skips unchanged framebuffer writes, and the
-  K5 matrix maps Side2 to the shared monitor effect. This removes the old
-  target-specific PMR redraw approximation and proves only deterministic
-  software behavior. Physical K5 pixel appearance, Side2 electrical decoding,
-  audio audibility, and Menu/list ergonomics still require a separately
-  authorized acceptance run; Side1/settings remains capability-gated.
+  K5 matrix maps Side2 to the shared monitor effect. The same target now exposes
+  Side1 Settings/SquelchList through the acknowledged shared application path;
+  rejected or faulted choices leave both displayed and semantic settings
+  unchanged. This removes the old target-specific PMR redraw approximation and
+  proves only deterministic software behavior. Physical K5 pixel appearance,
+  Side2 electrical decoding, audio audibility, and Menu/list ergonomics still
+  require a separately authorized acceptance run; no K5 persistence is claimed.
 - **APP-052 review corrections, 2026-08-13:** shared frames now distinguish a
   receiver fault from a healthy quiet channel, and K1 common PMR monitor state
   is synchronized through `SetMonitor`; arbitrary K1 channels remain outside
@@ -860,10 +862,10 @@
   claiming that a serial request changed only the detached ReceiveApp. K1/K5
   physical serial interoperability and K1 controller forwarding remain open.
 - **K5 display transport correction, 2026-08-13:** physical `2.0P` application
-  boot and normal serial are now observed, but its shared framebuffer had a
-  left crop and random right-edge pixels. The traced cause was the K5 adapter
-  selecting controller column zero for shared page writes while its existing
-  direct text path used the evidenced four-column offset. `2.1D` shifts only
-  the target page transport to columns `4..=131`; host plan tests prove the
-  bounded mapping, but physical display legibility and absence of artifacts
-  still require acceptance. APP-052 remains open.
+  boot and normal serial were observed with a left crop and random right-edge
+  pixels. `2.1D` shifts only the target page transport to columns `4..=131`;
+  the user then confirmed clean display edges and the requested normal screens
+  and controls after the guarded `2.1D` write. This is acknowledged page-write
+  and operator-observation evidence, not read-back or `2.2Q` evidence. The
+  unflashed `2.2Q` package has only static/simulator proof; APP-052 remains
+  open.

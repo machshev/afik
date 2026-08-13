@@ -1,9 +1,15 @@
 //! Host contract proof for the K5 application-facing display adapter.
 
+use radio_bk4819::{Bk4819, RegisterAddress, RegisterBus};
+use radio_firmware_k5::application::{
+    apply_event, apply_ui_intent, ApplyOutcome, SpeakerOutput, UiDispatcher,
+};
 use radio_firmware_k5::k5_display::{
     controller_column_for_visible, page_address_commands, render_operator_frame,
     visible_page_write_plan, K5BootDisplay, DISPLAY_COLUMN_OFFSET, DISPLAY_VISIBLE_COLUMNS,
 };
+use radio_firmware_k5::keypad::{scan, Key as PhysicalKey, MatrixIo};
+use radio_firmware_k5::receive::Pmr446Channel as Pmr446ReceiveChannel;
 use radio_platform::configuration::{Pmr446Channel, PMR446_CHANNELS};
 use radio_platform::display::{show_boot_sequence, BootDisplay, BootStage, ReceiveDiagnostic};
 use radio_platform::operator_display::{
@@ -11,7 +17,7 @@ use radio_platform::operator_display::{
     ListRow, MemoryState, OperatingView, ResetCause, SelectorRow, SerialCounters, FRAME_BYTES,
     LIST_ROWS,
 };
-use radio_platform::operator_shell::{Capabilities, Context, Screen, Shell};
+use radio_platform::operator_shell::{Capabilities, Context, Intent, Screen, Shell};
 use radio_platform::receive_app::View;
 
 #[derive(Default)]
@@ -207,4 +213,437 @@ fn k5_visible_page_plan_preserves_the_full_panel_without_edge_wrap() {
             .all(|used| !used)
     );
     assert_eq!(controller_column_for_visible(DISPLAY_VISIBLE_COLUMNS), None);
+}
+
+#[test]
+fn k5_settings_and_squelch_frames_use_the_shared_k1_layout() {
+    let mut shell = Shell::new();
+    shell.set_capabilities(Capabilities::K5);
+    shell.select_memory();
+    let context = Context {
+        visible_channels: 16,
+        active_index: 0,
+        scanning: false,
+    };
+    assert_eq!(
+        shell.press(radio_platform::receive_app::Key::Side1, 0, context),
+        Intent::Redraw
+    );
+    let settings = render_operator_frame(
+        &shell,
+        View {
+            channel: 1,
+            audio: true,
+            monitoring: false,
+            squelch_open: false,
+            receiver_ok: true,
+        },
+        None,
+    );
+    assert_eq!(shell.screen(), Screen::Settings);
+    let mut expected_settings = [0_u8; FRAME_BYTES];
+    render_selector_list(
+        &mut expected_settings,
+        b"SETTINGS",
+        &[SelectorRow::squelch_setting(
+            radio_domain::SquelchLevel::CONSERVATIVE.get(),
+        )],
+        0,
+    );
+    assert_eq!(settings, expected_settings);
+    assert_eq!(
+        shell.press(radio_platform::receive_app::Key::Menu, 1, context),
+        Intent::Redraw
+    );
+    let squelch = render_operator_frame(
+        &shell,
+        View {
+            channel: 1,
+            audio: true,
+            monitoring: false,
+            squelch_open: false,
+            receiver_ok: true,
+        },
+        None,
+    );
+    assert_eq!(shell.screen(), Screen::SquelchList);
+    let mut expected_squelch = [0_u8; FRAME_BYTES];
+    let mut rows = [SelectorRow::default(); LIST_ROWS];
+    for (level, row) in rows.iter_mut().enumerate() {
+        let level = u8::try_from(level).expect("bounded row");
+        *row = SelectorRow::squelch_level(
+            level,
+            level == radio_domain::SquelchLevel::CONSERVATIVE.get(),
+        );
+    }
+    render_selector_list(&mut expected_squelch, b"SQUELCH", &rows, 3);
+    assert_eq!(squelch, expected_squelch);
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn k5_physical_side1_settings_apply_the_selected_threshold_after_ack() {
+    #[derive(Default)]
+    struct Matrix {
+        ptt: bool,
+        held: Option<(usize, usize)>,
+        side: Option<PhysicalKey>,
+        row: usize,
+        restored: bool,
+    }
+
+    impl MatrixIo for Matrix {
+        fn select_row(&mut self, row: usize) {
+            self.row = row;
+        }
+
+        fn columns(&mut self) -> u8 {
+            if self.row == 4 {
+                match self.side {
+                    Some(PhysicalKey::Side1) => 0x0e,
+                    Some(PhysicalKey::Side2) => 0x0d,
+                    _ => 0x0f,
+                }
+            } else {
+                self.held
+                    .filter(|(row, _)| *row == self.row)
+                    .map_or(0x0f, |(_, column)| 0x0f & !(1 << column))
+            }
+        }
+
+        fn settle(&mut self) {}
+
+        fn restore_shared_pins(&mut self) {
+            self.restored = true;
+        }
+
+        fn ptt_pressed(&mut self) -> bool {
+            self.ptt
+        }
+    }
+
+    #[derive(Default)]
+    struct Bus {
+        writes: std::vec::Vec<(u8, u16)>,
+    }
+
+    impl RegisterBus for Bus {
+        type Error = core::convert::Infallible;
+
+        fn write(&mut self, address: RegisterAddress, value: u16) -> Result<(), Self::Error> {
+            self.writes.push((address.get(), value));
+            Ok(())
+        }
+
+        fn read(&mut self, _: RegisterAddress) -> Result<u16, Self::Error> {
+            Ok(0)
+        }
+    }
+
+    #[derive(Default)]
+    struct Speaker {
+        enabled: bool,
+    }
+
+    impl SpeakerOutput for Speaker {
+        fn set_enabled(&mut self, enabled: bool) {
+            self.enabled = enabled;
+        }
+    }
+
+    let mut matrix = Matrix {
+        side: Some(PhysicalKey::Side1),
+        ..Matrix::default()
+    };
+    let side_scan = scan(&mut matrix);
+    assert_eq!(side_scan, Some(PhysicalKey::Side1));
+    assert!(matrix.restored);
+
+    let context = Context {
+        visible_channels: 16,
+        active_index: 0,
+        scanning: false,
+    };
+    let mut shell = Shell::new();
+    shell.set_capabilities(Capabilities::K5);
+    shell.select_memory();
+    let mut app = radio_platform::receive_app::ReceiveApp::new();
+    let mut radio = Bk4819::new(Bus::default());
+    radio.initialise().unwrap();
+    let mut speaker = Speaker::default();
+    let mut configured = None;
+    let mut metrics = None;
+    let mut dispatcher = UiDispatcher::new(None);
+    assert!(dispatcher
+        .dispatch_scan(
+            side_scan,
+            0,
+            context,
+            &mut shell,
+            &mut app,
+            &mut radio,
+            &mut speaker,
+            &mut configured,
+            &mut metrics,
+        )
+        .is_some());
+    // K5 has no hold/scan capability in this slice: an identical physical
+    // sample is deliberately not a second edge or a hold action.
+    assert_eq!(
+        dispatcher.dispatch_scan(
+            scan(&mut matrix),
+            1,
+            context,
+            &mut shell,
+            &mut app,
+            &mut radio,
+            &mut speaker,
+            &mut configured,
+            &mut metrics,
+        ),
+        None
+    );
+    matrix.side = None;
+    dispatcher.dispatch_scan(
+        scan(&mut matrix),
+        2,
+        context,
+        &mut shell,
+        &mut app,
+        &mut radio,
+        &mut speaker,
+        &mut configured,
+        &mut metrics,
+    );
+    matrix.held = Some((0, 0));
+    dispatcher.dispatch_scan(
+        scan(&mut matrix),
+        3,
+        context,
+        &mut shell,
+        &mut app,
+        &mut radio,
+        &mut speaker,
+        &mut configured,
+        &mut metrics,
+    );
+    matrix.held = None;
+    dispatcher.dispatch_scan(
+        scan(&mut matrix),
+        4,
+        context,
+        &mut shell,
+        &mut app,
+        &mut radio,
+        &mut speaker,
+        &mut configured,
+        &mut metrics,
+    );
+    matrix.held = Some((2, 0));
+    dispatcher.dispatch_scan(
+        scan(&mut matrix),
+        5,
+        context,
+        &mut shell,
+        &mut app,
+        &mut radio,
+        &mut speaker,
+        &mut configured,
+        &mut metrics,
+    );
+    matrix.held = None;
+    dispatcher.dispatch_scan(
+        scan(&mut matrix),
+        6,
+        context,
+        &mut shell,
+        &mut app,
+        &mut radio,
+        &mut speaker,
+        &mut configured,
+        &mut metrics,
+    );
+    matrix.held = Some((2, 0));
+    dispatcher.dispatch_scan(
+        scan(&mut matrix),
+        7,
+        context,
+        &mut shell,
+        &mut app,
+        &mut radio,
+        &mut speaker,
+        &mut configured,
+        &mut metrics,
+    );
+    matrix.held = None;
+    dispatcher.dispatch_scan(
+        scan(&mut matrix),
+        8,
+        context,
+        &mut shell,
+        &mut app,
+        &mut radio,
+        &mut speaker,
+        &mut configured,
+        &mut metrics,
+    );
+    let level = radio_domain::SquelchLevel::new(5).expect("level");
+    let outcome = dispatcher.dispatch_scan(
+        {
+            matrix.held = Some((0, 0));
+            scan(&mut matrix)
+        },
+        9,
+        context,
+        &mut shell,
+        &mut app,
+        &mut radio,
+        &mut speaker,
+        &mut configured,
+        &mut metrics,
+    );
+    assert_eq!(outcome, Some(ApplyOutcome::Applied));
+    assert_eq!(app.squelch(), level);
+    assert_eq!(shell.squelch(), level);
+    let threshold = radio
+        .bus()
+        .writes
+        .iter()
+        .find(|(address, _)| *address == 0x78)
+        .copied();
+    assert!(threshold.is_some());
+    let mut conservative = Bk4819::new(Bus::default());
+    conservative.initialise().unwrap();
+    conservative
+        .configure_receive(&Pmr446ReceiveChannel::FIRST.setup(true))
+        .unwrap();
+    let conservative_threshold = conservative
+        .bus()
+        .writes
+        .iter()
+        .find(|(address, _)| *address == 0x78)
+        .copied();
+    assert_ne!(threshold, conservative_threshold);
+
+    let writes_before_rejection = radio.bus().writes.len();
+    assert_eq!(
+        apply_ui_intent(
+            Intent::SetSquelch(level),
+            &mut shell,
+            &mut app,
+            &mut radio,
+            &mut speaker,
+            &mut configured,
+            &mut metrics,
+        ),
+        ApplyOutcome::Rejected
+    );
+    assert_eq!(radio.bus().writes.len(), writes_before_rejection);
+    app.apply(radio_platform::receive_app::Event::ReceiverFault);
+    assert_eq!(
+        apply_ui_intent(
+            Intent::SetSquelch(radio_domain::SquelchLevel::OPEN),
+            &mut shell,
+            &mut app,
+            &mut radio,
+            &mut speaker,
+            &mut configured,
+            &mut metrics,
+        ),
+        ApplyOutcome::Rejected
+    );
+    assert_eq!(shell.squelch(), level);
+}
+
+#[test]
+fn k5_empty_or_unmatched_application_batches_are_rejected_without_target_mutation() {
+    #[derive(Default)]
+    struct Bus {
+        writes: std::vec::Vec<(u8, u16)>,
+    }
+
+    impl RegisterBus for Bus {
+        type Error = core::convert::Infallible;
+
+        fn write(&mut self, address: RegisterAddress, value: u16) -> Result<(), Self::Error> {
+            self.writes.push((address.get(), value));
+            Ok(())
+        }
+
+        fn read(&mut self, _: RegisterAddress) -> Result<u16, Self::Error> {
+            Ok(0)
+        }
+    }
+
+    #[derive(Default)]
+    struct Speaker;
+
+    impl SpeakerOutput for Speaker {
+        fn set_enabled(&mut self, _: bool) {}
+    }
+
+    let mut app = radio_platform::receive_app::ReceiveApp::new();
+    let mut shell = Shell::new();
+    shell.set_capabilities(Capabilities::K5);
+    let mut radio = Bk4819::new(Bus::default());
+    radio.initialise().unwrap();
+    let mut speaker = Speaker;
+    let mut configured = None;
+    let mut metrics = None;
+    let level = radio_domain::SquelchLevel::new(6).unwrap();
+    app.apply(radio_platform::receive_app::Event::SetSquelch(level));
+    let writes = radio.bus().writes.len();
+    assert_eq!(
+        apply_ui_intent(
+            Intent::SelectNext,
+            &mut shell,
+            &mut app,
+            &mut radio,
+            &mut speaker,
+            &mut configured,
+            &mut metrics,
+        ),
+        ApplyOutcome::Rejected
+    );
+    assert_eq!(radio.bus().writes.len(), writes);
+
+    assert_eq!(
+        apply_ui_intent(
+            Intent::SelectNext,
+            &mut shell,
+            &mut app,
+            &mut radio,
+            &mut speaker,
+            &mut configured,
+            &mut metrics,
+        ),
+        ApplyOutcome::Rejected
+    );
+    app.apply(radio_platform::receive_app::Event::ReceiverFault);
+    assert_eq!(
+        apply_ui_intent(
+            Intent::ToggleMonitor,
+            &mut shell,
+            &mut app,
+            &mut radio,
+            &mut speaker,
+            &mut configured,
+            &mut metrics,
+        ),
+        ApplyOutcome::Rejected
+    );
+    assert_eq!(
+        apply_event(
+            &mut app,
+            radio_platform::receive_app::Event::SquelchAcknowledged {
+                level,
+                applied: true,
+            },
+            &mut radio,
+            &mut speaker,
+            &mut configured,
+            &mut metrics,
+        ),
+        ApplyOutcome::Rejected
+    );
 }

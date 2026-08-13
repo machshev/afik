@@ -713,11 +713,7 @@ struct SharedApplyOutcome {
     complete: bool,
 }
 
-fn apply_shared_effects(
-    effects: SharedEffects,
-    receiver: &mut Receiver,
-    radio_wide_squelch: SquelchLevel,
-) -> SharedApplyOutcome {
+fn apply_shared_effects(effects: SharedEffects, receiver: &mut Receiver) -> SharedApplyOutcome {
     let mut redraw = false;
     let mut complete = !receiver.faulted;
     for effect in effects.iter() {
@@ -729,7 +725,11 @@ fn apply_shared_effects(
         match effect {
             K1Effect::ConfigurationChange(_) => {}
             K1Effect::Tune { setup, audio } => {
-                receiver.tune(setup, radio_wide_squelch);
+                // The shared effect carries the selected radio-wide level in
+                // the complete setup. Do not read the shell's independent
+                // setting here: doing so could silently apply a stale K1
+                // value after a shared K5/K1 retune.
+                receiver.tune(setup, setup.squelch);
                 receiver.set_chip_audio(audio);
             }
             K1Effect::SetChipAudio(enabled) => receiver.set_chip_audio(enabled),
@@ -1179,6 +1179,24 @@ fn apply(
     }
 }
 
+/// Rolls back the adapter-local squelch staging before replacing its receive
+/// activation. The shared app is cancelled before its instance is dropped,
+/// so no later target operation can acknowledge the wrong generation.
+fn cancel_pending_squelch(
+    shell: &mut Shell,
+    shared_receive: &mut Option<ReceiveApp>,
+    pending_shared_squelch: &mut Option<SharedEffects>,
+    pending_operator_squelch: &mut Option<SquelchLevel>,
+) {
+    *pending_shared_squelch = None;
+    if pending_operator_squelch.take().is_some() {
+        if let Some(app) = shared_receive.as_mut() {
+            let _ = app.apply(SharedEvent::CancelSquelch);
+        }
+        shell.reject_squelch();
+    }
+}
+
 /// Points the shell at one configuration, and at the place it was left in.
 ///
 /// A radio which has been used before comes back to the source, bank, and
@@ -1325,6 +1343,11 @@ async fn ui_task(
     // PMR446 examples. Arbitrary programmed channels and the VFO retain the
     // existing K1 controller path.
     let mut shared_receive: Option<ReceiveApp> = None;
+    // A handset squelch choice is staged until the target tune succeeds. The
+    // effects are retained here because the bit-banged bus runs below the UI
+    // task's scheduling boundary.
+    let mut pending_shared_squelch: Option<SharedEffects> = None;
+    let mut pending_operator_squelch: Option<SquelchLevel> = None;
     // Fresh token for each shared-app replacement, so queued adapter effects
     // cannot cross a publication boundary even when storage generation wraps.
     let mut shared_instance_id = 1_u16;
@@ -1363,10 +1386,12 @@ async fn ui_task(
         // expiring means; this only tells it that one has.
         if let Some((token, deadline)) = scan_timer {
             if Instant::now() >= deadline {
-                scan_timer = None;
-                if let Some((controller, _)) = activation.as_mut() {
-                    if let Ok(update) = controller.timer_elapsed(token) {
-                        apply(update, &mut pending, &mut scan_timer);
+                if pending_operator_squelch.is_none() {
+                    scan_timer = None;
+                    if let Some((controller, _)) = activation.as_mut() {
+                        if let Ok(update) = controller.timer_elapsed(token) {
+                            apply(update, &mut pending, &mut scan_timer);
+                        }
                     }
                 }
                 redraw = true;
@@ -1405,6 +1430,12 @@ async fn ui_task(
             if shared_instance_id == 0 {
                 shared_instance_id = 1;
             }
+            cancel_pending_squelch(
+                &mut shell,
+                &mut shared_receive,
+                &mut pending_shared_squelch,
+                &mut pending_operator_squelch,
+            );
             shared_receive = None;
             adopt_settings(&mut shell, &programmed);
             // A radio which had no channels and now has some is being given
@@ -1427,27 +1458,31 @@ async fn ui_task(
         // while this happens and nothing here is suspended: both peers drive
         // one controller, and whichever arrives first is served first.
         if let Some(request) = CONTROL_REQUEST.try_take() {
-            let answer = match request {
-                ControlRequest::CommonApplication { payload } => {
-                    let (answer, dirty) = answer_common_serial(payload, &mut shared_receive);
-                    redraw |= dirty;
-                    answer
-                }
-                request => match activation.as_mut() {
-                    Some((controller, _)) => {
-                        let performed =
-                            host_control::perform(controller, request, receiver.last_metrics);
-                        if let Some(update) = performed.update {
-                            apply(update, &mut pending, &mut scan_timer);
-                            redraw = true;
-                        }
-                        performed.answer
+            let answer = if pending_operator_squelch.is_some() {
+                ControlAnswer::Refused(DeviceErrorCode::InvalidState)
+            } else {
+                match request {
+                    ControlRequest::CommonApplication { payload } => {
+                        let (answer, dirty) = answer_common_serial(payload, &mut shared_receive);
+                        redraw |= dirty;
+                        answer
                     }
-                    // No controller yet means no channels and no VFO: the radio has
-                    // not finished starting. That is a state the request cannot be
-                    // performed from, not a fault.
-                    None => ControlAnswer::Refused(DeviceErrorCode::InvalidState),
-                },
+                    request => match activation.as_mut() {
+                        Some((controller, _)) => {
+                            let performed =
+                                host_control::perform(controller, request, receiver.last_metrics);
+                            if let Some(update) = performed.update {
+                                apply(update, &mut pending, &mut scan_timer);
+                                redraw = true;
+                            }
+                            performed.answer
+                        }
+                        // No controller yet means no channels and no VFO: the radio has
+                        // not finished starting. That is a state the request cannot be
+                        // performed from, not a fault.
+                        None => ControlAnswer::Refused(DeviceErrorCode::InvalidState),
+                    },
+                }
             };
             CONTROL_ANSWER.signal(answer);
         }
@@ -1486,14 +1521,19 @@ async fn ui_task(
             // before the guard below because selecting the VFO is exactly how an
             // operator leaves an empty memory.
             Intent::SetSource(_) | Intent::TuneVfo => {
+                cancel_pending_squelch(
+                    &mut shell,
+                    &mut shared_receive,
+                    &mut pending_shared_squelch,
+                    &mut pending_operator_squelch,
+                );
                 // Choosing a source is the one rebuild the operator did ask
                 // for, so a bank change lands on that bank's first channel
                 // rather than dragging the old selection into it.
                 selected = None;
+                let _ = pending.take();
                 activation = activate(&programmed, &shell, None);
-                if let Some(setup) = activation.as_mut().and_then(|(_, setup)| setup.take()) {
-                    pending = Some(setup);
-                }
+                pending = activation.as_mut().and_then(|(_, setup)| setup.take());
                 redraw = true;
             }
             // Every remaining intent acts on a channel. An empty memory has
@@ -1502,14 +1542,53 @@ async fn ui_task(
             // Squelch is a radio-wide setting, so it applies with or without a
             // channel to hear it on and is handled before the guard below.
             Intent::SetSquelch(level) => {
-                SETTING_CHOICE.signal(SettingChange::Squelch(level));
-                // Retune so the new level reaches the chip now rather than at
-                // the next channel change.
-                if let Some((controller, _)) = activation.as_ref() {
-                    pending = Some(controller.setup());
+                // Stage only when the target is available and no earlier bus
+                // operation is pending. In particular, do not ask the shared
+                // app to stage a change that this adapter cannot immediately
+                // acknowledge: that would leave its pending state behind a
+                // rejected handset choice.
+                let mut staged = pending.is_none()
+                    && pending_operator_squelch.is_none()
+                    && pending_shared_squelch.is_none()
+                    && activation.is_some()
+                    && shared_receive.is_some();
+                if staged {
+                    if let Some(app) = shared_receive.as_mut() {
+                        let effects = app.apply(SharedEvent::SetSquelch(level));
+                        if effects.iter().any(|effect| {
+                            matches!(
+                                effect,
+                                SharedEffect::Tune { squelch, .. } if squelch == level
+                            )
+                        }) {
+                            pending_shared_squelch = Some(effects);
+                        } else {
+                            staged = false;
+                        }
+                    } else {
+                        staged = false;
+                    }
+                }
+                if staged {
+                    pending_operator_squelch = Some(level);
+                    if let Some((controller, _)) = activation.as_ref() {
+                        let mut setup = controller.setup();
+                        setup.squelch = level;
+                        pending = Some(setup);
+                    } else {
+                        pending_operator_squelch = None;
+                        pending_shared_squelch = None;
+                        if let Some(app) = shared_receive.as_mut() {
+                            let _ = app.apply(SharedEvent::CancelSquelch);
+                        }
+                        staged = false;
+                    }
+                } else {
+                    shell.reject_squelch();
                 }
                 redraw = true;
             }
+            _ if pending_operator_squelch.is_some() => redraw = true,
             _ if activation.is_none() => redraw = true,
             Intent::ToggleMonitor => {
                 if let Some((controller, _)) = activation.as_mut() {
@@ -1523,7 +1602,6 @@ async fn ui_task(
                         let _ = apply_shared_effects(
                             app.apply(SharedEvent::SetMonitor(monitoring)),
                             &mut receiver,
-                            shell.squelch(),
                         )
                         .redraw;
                     }
@@ -1610,11 +1688,22 @@ async fn ui_task(
 
         // The bit-banged radio bus blocks the executor, so it only runs while
         // the serial link is quiet. Bus work is deferred, never dropped.
+        if receiver.faulted {
+            pending = None;
+            cancel_pending_squelch(
+                &mut shell,
+                &mut shared_receive,
+                &mut pending_shared_squelch,
+                &mut pending_operator_squelch,
+            );
+        }
         if let Some(setup) = pending.filter(|_| bus_available()) {
             if let Some(channel) = shared_channel(setup) {
                 let had_shared = shared_receive.is_some();
-                let app = shared_receive
-                    .get_or_insert_with(|| ReceiveApp::new_with_identity(shared_instance_id));
+                let initial_squelch = pending_operator_squelch.unwrap_or(setup.squelch);
+                let app = shared_receive.get_or_insert_with(|| {
+                    ReceiveApp::new_with_identity_and_squelch(shared_instance_id, initial_squelch)
+                });
                 if !had_shared {
                     let monitoring = activation
                         .as_ref()
@@ -1622,54 +1711,84 @@ async fn ui_task(
                     let _ = apply_shared_effects(
                         app.apply(SharedEvent::SetMonitor(monitoring)),
                         &mut receiver,
-                        shell.squelch(),
                     );
                 }
-                let candidate = ConfigurationCandidate::from_channel(
-                    generation,
-                    channel,
-                    if had_shared {
-                        app.view().audio
-                    } else {
-                        shared_audio
-                    },
-                )
-                .expect("shared channel was validated");
-                let candidate_effects = app.apply(SharedEvent::ConfigurationCandidate(candidate));
-                let change = candidate_effects.iter().find_map(|effect| match effect {
-                    SharedEffect::ConfigurationChange(change) => Some(change),
-                    _ => None,
-                });
-                let outcome =
-                    apply_shared_effects(candidate_effects, &mut receiver, shell.squelch());
-                if let Some(change) = change {
-                    let acknowledgement = if outcome.complete {
-                        ConfigurationAcknowledgement::applied(change)
-                    } else {
-                        ConfigurationAcknowledgement::rejected(change)
+                let operator_squelch = pending_operator_squelch.take();
+                if let Some(squelch_effects) = pending_shared_squelch.take() {
+                    let outcome = apply_shared_effects(squelch_effects, &mut receiver);
+                    let level = operator_squelch.expect("staged squelch level");
+                    let acknowledgement = SharedEvent::SquelchAcknowledged {
+                        level,
+                        applied: outcome.complete,
                     };
-                    let _ = apply_shared_effects(
-                        app.apply(SharedEvent::ConfigurationAcknowledged(acknowledgement)),
-                        &mut receiver,
-                        shell.squelch(),
-                    );
-                    // The banked controller owns the physical monitor intent;
-                    // after an applied tune/recovery, make the shared view
-                    // agree with that owner. A failed adapter path never
-                    // reaches this synchronization and remains fail-silent.
-                    if outcome.complete {
-                        if let Some((controller, _)) = activation.as_ref() {
-                            let _ = apply_shared_effects(
-                                app.apply(SharedEvent::SetMonitor(controller.is_monitoring())),
-                                &mut receiver,
-                                shell.squelch(),
-                            );
+                    let _ = apply_shared_effects(app.apply(acknowledgement), &mut receiver);
+                    if outcome.complete && app.squelch() == level {
+                        let _ = shell.accept_squelch(level);
+                        SETTING_CHOICE.signal(SettingChange::Squelch(level));
+                    } else {
+                        shell.reject_squelch();
+                    }
+                } else {
+                    let candidate = ConfigurationCandidate::from_channel(
+                        generation,
+                        channel,
+                        if had_shared {
+                            app.view().audio
+                        } else {
+                            shared_audio
+                        },
+                    )
+                    .expect("shared channel was validated");
+                    let candidate_effects =
+                        app.apply(SharedEvent::ConfigurationCandidate(candidate));
+                    let change = candidate_effects.iter().find_map(|effect| match effect {
+                        SharedEffect::ConfigurationChange(change) => Some(change),
+                        _ => None,
+                    });
+                    let outcome = apply_shared_effects(candidate_effects, &mut receiver);
+                    if let Some(change) = change {
+                        let acknowledgement = if outcome.complete {
+                            ConfigurationAcknowledgement::applied(change)
+                        } else {
+                            ConfigurationAcknowledgement::rejected(change)
+                        };
+                        let _ = apply_shared_effects(
+                            app.apply(SharedEvent::ConfigurationAcknowledged(acknowledgement)),
+                            &mut receiver,
+                        );
+                        // The banked controller owns the physical monitor intent;
+                        // after an applied tune/recovery, make the shared view
+                        // agree with that owner. A failed adapter path never
+                        // reaches this synchronization and remains fail-silent.
+                        if outcome.complete {
+                            if let Some((controller, _)) = activation.as_ref() {
+                                let _ = apply_shared_effects(
+                                    app.apply(SharedEvent::SetMonitor(controller.is_monitoring())),
+                                    &mut receiver,
+                                );
+                            }
+                        }
+                    }
+                    if let Some(level) = operator_squelch {
+                        if outcome.complete && app.squelch() == level {
+                            let _ = shell.accept_squelch(level);
+                            SETTING_CHOICE.signal(SettingChange::Squelch(level));
+                        } else {
+                            shell.reject_squelch();
                         }
                     }
                 }
             } else {
                 shared_receive = None;
-                receiver.tune(setup, shell.squelch());
+                receiver.tune(setup, setup.squelch);
+                if let Some(level) = pending_operator_squelch.take() {
+                    if !receiver.faulted {
+                        let _ = shell.accept_squelch(level);
+                        SETTING_CHOICE.signal(SettingChange::Squelch(level));
+                    } else {
+                        shell.reject_squelch();
+                    }
+                }
             }
             pending = None;
             // Sample this channel from now rather than on whatever grid the
@@ -1694,7 +1813,6 @@ async fn ui_task(
                             squelch_open: observation.squelch_open,
                         }),
                         &mut receiver,
-                        shell.squelch(),
                     )
                     .redraw;
                 }
@@ -1708,20 +1826,23 @@ async fn ui_task(
                 // but it does not get to tell a scan a channel is busy: a false
                 // stop costs the whole hold, which is the one failure an
                 // operator would notice and could not explain.
-                if settled || !scanning {
+                if pending_operator_squelch.is_none() && (settled || !scanning) {
                     if let Ok(update) = controller.observe(observation) {
                         apply(update, &mut pending, &mut scan_timer);
                     }
                 }
                 settled = true;
             } else if receiver.faulted {
+                cancel_pending_squelch(
+                    &mut shell,
+                    &mut shared_receive,
+                    &mut pending_shared_squelch,
+                    &mut pending_operator_squelch,
+                );
                 if let Some(app) = shared_receive.as_mut() {
-                    redraw |= apply_shared_effects(
-                        app.apply(SharedEvent::ReceiverFault),
-                        &mut receiver,
-                        shell.squelch(),
-                    )
-                    .redraw;
+                    redraw |=
+                        apply_shared_effects(app.apply(SharedEvent::ReceiverFault), &mut receiver)
+                            .redraw;
                 }
             }
             next_sample = Instant::now()

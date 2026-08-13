@@ -81,20 +81,19 @@ pub fn scan<I: MatrixIo>(io: &mut I) -> Option<Key> {
         io.restore_shared_pins();
         return None;
     };
-    match !unselected & 0x0f {
-        0 => {}
-        1 => {
-            io.restore_shared_pins();
-            return Some(Key::Side1);
-        }
-        2 => {
-            io.restore_shared_pins();
-            return Some(Key::Side2);
-        }
+    let side = match !unselected & 0x0f {
+        0 => None,
+        1 => Some(Key::Side1),
+        2 => Some(Key::Side2),
         _ => {
             io.restore_shared_pins();
             return None;
         }
+    };
+    if let Some(side) = side {
+        let result = if io.ptt_pressed() { None } else { Some(side) };
+        io.restore_shared_pins();
+        return result;
     }
     for (row, keys) in MATRIX.iter().enumerate() {
         io.select_row(row);
@@ -306,6 +305,18 @@ mod tests {
             restored: false,
         };
         assert_eq!(scan(&mut io), None);
+
+        for side in [Key::Side1, Key::Side2] {
+            let mut io = Fake {
+                held: None,
+                side: Some(side),
+                ptt: true,
+                row: 0,
+                restored: false,
+            };
+            assert_eq!(scan(&mut io), None);
+            assert!(io.restored);
+        }
     }
 
     #[test]

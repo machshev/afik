@@ -5,6 +5,7 @@
 #[cfg(test)]
 extern crate std;
 
+pub mod application;
 pub mod audio;
 pub mod bk4819_bus;
 pub mod eeprom;

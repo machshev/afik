@@ -12,7 +12,7 @@ use radio_platform::operator_display::{
     ListRow, MemoryState, OperatingView, ResetCause, SelectorRow, SerialCounters, COLUMN_OFFSET,
     FRAME_BYTES, LIST_ROWS, PAGES, WIDTH,
 };
-use radio_platform::operator_shell::{Screen, Shell, Source};
+use radio_platform::operator_shell::{Screen, Shell, Source, SETTINGS, SQUELCH_LEVELS};
 use radio_platform::receive_app::View;
 
 use crate::keypad::Key;
@@ -283,11 +283,42 @@ pub fn render_operator_frame(
                 ResetCause::default(),
             );
         }
-        // K5's current capability set keeps these screens unreachable;
-        // retaining explicit frames makes a future adapter fail closed.
-        Screen::Settings | Screen::SquelchList | Screen::StepList => {
-            render_selector_list(&mut frame, b"NO CAP", &[], 0);
+        Screen::Settings => {
+            let mut rows = [SelectorRow::default(); LIST_ROWS];
+            let mut count = 0;
+            for (offset, setting) in SETTINGS.iter().take(LIST_ROWS).enumerate() {
+                rows[offset] = match setting {
+                    radio_platform::operator_shell::Setting::Squelch => {
+                        SelectorRow::squelch_setting(shell.squelch().get())
+                    }
+                };
+                count += 1;
+            }
+            render_selector_list(
+                &mut frame,
+                b"SETTINGS",
+                &rows[..count],
+                shell.settings_cursor(),
+            );
         }
+        Screen::SquelchList => {
+            let mut rows = [SelectorRow::default(); LIST_ROWS];
+            let cursor = usize::from(shell.squelch_cursor());
+            let first = cursor / LIST_ROWS * LIST_ROWS;
+            let mut count = 0;
+            for (offset, row) in rows.iter_mut().enumerate() {
+                let Ok(level) = u8::try_from(first + offset) else {
+                    break;
+                };
+                if level >= SQUELCH_LEVELS {
+                    break;
+                }
+                *row = SelectorRow::squelch_level(level, level == shell.squelch().get());
+                count += 1;
+            }
+            render_selector_list(&mut frame, b"SQUELCH", &rows[..count], cursor - first);
+        }
+        Screen::StepList => render_selector_list(&mut frame, b"NO CAP", &[], 0),
     }
     frame
 }
