@@ -8,7 +8,12 @@ use radio_platform::receive_app::{Effect, View};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum K1Effect {
     /// Apply the existing complete K1 receive setup.
-    Tune(ChannelReceiveSetup),
+    Tune {
+        /// Complete validated receive setup.
+        setup: ChannelReceiveSetup,
+        /// Whether demodulated chip audio should be routed after tuning.
+        audio: bool,
+    },
     /// Route or mute demodulated BK4829 audio.
     SetChipAudio(bool),
     /// Drive the K1 receive speaker amplifier.
@@ -27,7 +32,7 @@ pub fn translate(effect: Effect) -> Result<K1Effect, AdapterError> {
         Effect::Tune {
             channel,
             frequency_hz,
-            audio: _,
+            audio,
         } => {
             let expected = 446_006_250_u32
                 .checked_add(u32::from(channel.saturating_sub(1)) * 12_500)
@@ -35,14 +40,17 @@ pub fn translate(effect: Effect) -> Result<K1Effect, AdapterError> {
             if !(1..=16).contains(&channel) || frequency_hz != expected {
                 return Err(AdapterError);
             }
-            Ok(K1Effect::Tune(ChannelReceiveSetup {
-                frequency: Frequency::from_hz(frequency_hz).map_err(|_| AdapterError)?,
-                modulation: Modulation::Fm,
-                bandwidth: Bandwidth::Narrow,
-                tone: Tone::None,
-                squelch: SquelchLevel::CONSERVATIVE,
-                step: FrequencyStep::from_hz(12_500).map_err(|_| AdapterError)?,
-            }))
+            Ok(K1Effect::Tune {
+                setup: ChannelReceiveSetup {
+                    frequency: Frequency::from_hz(frequency_hz).map_err(|_| AdapterError)?,
+                    modulation: Modulation::Fm,
+                    bandwidth: Bandwidth::Narrow,
+                    tone: Tone::None,
+                    squelch: SquelchLevel::CONSERVATIVE,
+                    step: FrequencyStep::from_hz(12_500).map_err(|_| AdapterError)?,
+                },
+                audio,
+            })
         }
         Effect::SetChipAudio(enabled) => Ok(K1Effect::SetChipAudio(enabled)),
         Effect::SetSpeaker(enabled) => Ok(K1Effect::SetSpeaker(enabled)),
@@ -66,14 +74,29 @@ mod tests {
             .collect::<Result<_, _>>()
             .unwrap();
         assert_eq!(translated[0], K1Effect::SetSpeaker(false));
-        let K1Effect::Tune(setup) = translated[1] else {
+        let K1Effect::Tune { setup, audio } = translated[1] else {
             panic!("second effect must tune");
         };
+        assert!(audio);
         assert_eq!(setup.frequency.as_hz(), 446_006_250);
         assert_eq!(setup.modulation, Modulation::Fm);
         assert_eq!(setup.bandwidth, Bandwidth::Narrow);
         assert_eq!(setup.tone, Tone::None);
         assert_eq!(setup.squelch, SquelchLevel::CONSERVATIVE);
+    }
+
+    #[test]
+    fn muted_navigation_keeps_chip_audio_muted_across_tune() {
+        let mut app = ReceiveApp::new();
+        app.apply(Event::Start);
+        app.apply(Event::ToggleAudio);
+        let translated: std::vec::Vec<_> = app
+            .apply(Event::NextChannel)
+            .iter()
+            .map(translate)
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(matches!(translated[1], K1Effect::Tune { audio: false, .. }));
     }
 
     #[test]

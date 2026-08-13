@@ -32,9 +32,10 @@ still worked. Three consecutive normal probes returned `AFIK-K5-1.8U`.
 The first K1 adapter seam is also implemented without changing its runtime.
 Shared tune effects are validated against the PMR446 channel identity and
 translated into the existing complete `ChannelReceiveSetup`; audio, speaker,
-and semantic redraw effects remain lossless. The adapter retains narrow FM,
+and semantic redraw effects remain lossless. The tune translation also carries
+the shared audio preference, so navigation cannot unmute chip audio. The adapter retains narrow FM,
 no tone, the conservative provisional squelch level, and the K1 runtime's
-target-owned BK4829 profile. The focused gate passed 124 K1 tests, four
+target-owned BK4829 profile. The focused gate passed 125 K1 tests, four
 programming tests, seven platform tests, warning-denied Clippy, formatting,
 and the release K1 firmware build.
 
