@@ -44,3 +44,4 @@ pub mod py32f071_spi1;
 #[cfg(feature = "py32f071-usart1")]
 pub mod py32f071_usart1;
 pub mod shell;
+pub mod unified_receive;

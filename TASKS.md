@@ -2578,6 +2578,13 @@
   consecutive normal probes returned `AFIK-K5-1.8U`. The first physical target
   therefore runs the shared receive core without a behavior or serial
   regression.
+- **K1 adapter seam:** shared tune effects now fail closed unless their channel
+  and frequency identify the same PMR446 example channel, then translate into
+  the existing complete K1 `ChannelReceiveSetup`. Chip-audio, speaker, and
+  semantic redraw effects translate losslessly. This compiles above the K1's
+  target-owned BK4829 receiver profile without changing the live K1 loop.
+  Formatting, 124 K1 tests, four programming tests, seven platform tests,
+  warning-denied focused Clippy, and the release K1 firmware build pass.
 - **Then:** move keypad semantics and semantic display state, then configuration
   activation/persistence and serial control. Keep MCU registers, interrupts,
   DMA, physical buses, chip profile selection, image layout, and recovery in

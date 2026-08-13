@@ -29,6 +29,19 @@ acknowledgements; after ordinary boot the operator confirmed channel
 navigation, default audio, sampled squelch, and Menu `A1`/`A0` behavior all
 still worked. Three consecutive normal probes returned `AFIK-K5-1.8U`.
 
+The first K1 adapter seam is also implemented without changing its runtime.
+Shared tune effects are validated against the PMR446 channel identity and
+translated into the existing complete `ChannelReceiveSetup`; audio, speaker,
+and semantic redraw effects remain lossless. The adapter retains narrow FM,
+no tone, the conservative provisional squelch level, and the K1 runtime's
+target-owned BK4829 profile. The focused gate passed 124 K1 tests, four
+programming tests, seven platform tests, warning-denied Clippy, formatting,
+and the release K1 firmware build.
+
+Next smallest actionable task: run the K1 PMR receive/operator path through the
+shared state machine and this adapter while preserving K1-only shell,
+persistence, diagnostics, chip profile, and recovery behavior.
+
 `K5APP-051` is complete. Its first step added the source-backed K5 V1 main
 keypad matrix adapter. All sixteen main labels are mapped, unstable or
 multiple-key samples are rejected, and every scan restores the EEPROM/I2C and
