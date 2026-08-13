@@ -2699,3 +2699,16 @@
   effects for both target fixtures; both embedded images compile that core;
   physical K1 and K5 builds independently boot, tune, gate audio, navigate the
   same PMR446 example channels, and answer the shared normal identity service.
+
+- **Release-prep host witness:** the next unflashed K5 image uses the distinct
+  printable identity `AFIK-K5-1.9S`; the physically flashed `1.8U` identity and
+  K1 identity remain unchanged. The K5 flasher library and CLI now send one
+  bounded normal-mode request for View `0x0600`, Capabilities `0x0601`, or
+  logical Menu/Up/Down `0x0605`/`0x0606`/`0x0607`, and validate the fixed session,
+  CRC/footer/marker, exact `0x0620` response, inner length, reserved bytes, and
+  response payload before rendering. Fake-transport and parser tests cover
+  malformed-response nonmutation. This is software/simulator readiness only;
+  no hardware was flashed. The serialized workspace/K1/K5/verification/package
+  gate passed with K5 flash end `0x60D4`, static RAM end `0x20000100`, fixed
+  `0xF000` package, and SHA-256
+  `ab4a2f8a7010b3233ce83816ea81b16ec2dabb226d4b37d8f15abc8fcc71b626`.

@@ -1375,3 +1375,20 @@ meaning.
   fails in either target adapter, the target feeds `ReceiverFault` back into
   `ReceiveApp` before refusing the request, preserving fail-silent semantic
   state as well as the physical speaker gate.
+
+## ADR-082 — K5 host control is one bounded normal-mode exchange
+
+- **Date:** 2026-08-13
+- **Status:** accepted for `APP-052` release preparation
+- The host flasher reuses the existing K5 envelope codec for exactly one
+  fixed-session request and one response. It exposes only View `0x0600`,
+  Capabilities `0x0601`, and the common Menu/Up/Down commands
+  `0x0605`/`0x0606`/`0x0607`.
+- A response is accepted only when the existing footer/marker and response
+  CRC checks pass, the command is exactly `0x0620`, the inner length matches the
+  requested result, reserved bytes are zero, and common view/capability flags
+  are bounded. There is no retry or sequence cache because the observed K5
+  envelope has no sequence field.
+- The command is read/control-only: it has no EEPROM, persistence, TX, or flash
+  path. Fake-transport and parser tests are software readiness evidence, not
+  physical serial interoperability or normal-mode proof.

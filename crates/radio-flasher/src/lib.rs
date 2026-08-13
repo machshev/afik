@@ -10,6 +10,7 @@
 mod codec;
 mod image;
 pub mod k1;
+pub mod k5;
 mod workflow;
 
 pub use codec::{receive_packet, send_packet, Packet};

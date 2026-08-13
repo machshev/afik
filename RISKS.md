@@ -200,6 +200,12 @@
   makes no hardware-success claim. Establish target UART/boot behavior,
   recovery, timeout/retry requirements, and hardware-in-loop fixtures before
   documenting any device/baud default or physical programming workflow.
+- **APP-052 software narrowing, 2026-08-13:** the K5 host control witness is
+  one fixed-session request followed by one bounded response. It validates the
+  existing CRC/footer/marker, exact `0x0620` response command and lengths, and
+  bounded payload fields. It has no retry, EEPROM, persistence, TX, or flash
+  path. Fake-transport and parser tests do not establish physical serial
+  interoperability, target timing, or normal-mode boot.
 
 ## RISK-010 — Local web GUI is not an authenticated service
 

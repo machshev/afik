@@ -63,6 +63,8 @@ pub enum FlashError {
         /// Actual decoded payload length.
         length: usize,
     },
+    /// A K5 common-application response failed its bounded payload contract.
+    InvalidK5Response(&'static str),
     /// A bounded text field was empty, malformed, or unsupported.
     InvalidText(&'static str),
     /// Normal firmware reported a custom key or password lock.
@@ -134,6 +136,9 @@ impl fmt::Display for FlashError {
                 formatter,
                 "unexpected response for {expected}: command={command:?}, length={length}"
             ),
+            Self::InvalidK5Response(field) => {
+                write!(formatter, "invalid K5 common response: {field}")
+            }
             Self::InvalidText(field) => write!(formatter, "invalid {field}"),
             Self::ProtectedFirmware => {
                 formatter.write_str("custom-key or password-protected firmware is unsupported")

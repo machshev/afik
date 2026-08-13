@@ -3584,3 +3584,25 @@ all passed. K5 flash end is `0x60D4`, static RAM end is `0x20000100`, and the
 `0xF000` package SHA-256 is
 `fb386bffe7fdc72c7a1409cbb4dde7885470ce4a7b09333b127d5a18e004759d`.
 Disk remained at 30% (`270G/944G`, `659G` available). No hardware was flashed.
+
+## APP-052 release-prep control witness, 2026-08-13
+
+The next unflashed K5 image has the new bounded printable identity
+`AFIK-K5-1.9S`; the physically flashed shared image remains `AFIK-K5-1.8U`.
+K1 identity is unchanged. The host `radio-flasher` library and `afik-k5` CLI
+now provide one-at-a-time normal-mode commands for View (`0x0600`),
+Capabilities (`0x0601`), and logical Menu/Up/Down (`0x0605`/`0x0606`/`0x0607`).
+They reuse the K5 envelope codec, fixed session word, CRC, footer, and bounded
+response marker, and validate exact response command `0x0620`, inner length,
+reserved bytes, and common view/capability payloads before rendering output.
+Malformed responses fail without another request or application mutation.
+Fake-transport and strict parser tests pass. No EEPROM write, persistence,
+TX, flash, or hardware serial command was used. The final serialized gate and
+the new packaged image gate passed with K5 flash end `0x60D4`, static RAM end
+`0x20000100`, fixed package size `0xF000`, and SHA-256
+`ab4a2f8a7010b3233ce83816ea81b16ec2dabb226d4b37d8f15abc8fcc71b626`. The
+workspace, K1 release, K5 release, verification, packaging, and diff checks
+were run sequentially through the cached direnv shell. Disk remained at 30%
+used (`270G/944G`, about `658G` available). No hardware was flashed. Next
+smallest task: obtain separately authorized physical normal-mode evidence for
+`1.9S`; do not flash this release-prep image implicitly.

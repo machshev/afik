@@ -6,6 +6,7 @@ mod auto;
 mod parse;
 
 use parse::{parse, Command, FlashArguments, Parsed, Purpose};
+use radio_flasher::k5::{control as k5_control, ControlRequest, ControlResponse, LogicalKey, View};
 use radio_flasher::{
     backup_eeprom, flash_application, probe_bootloader_v2, ApplicationImage, EepromBackup,
     FirmwareVersion, FlashPrerequisites, FlashPurpose, APPLICATION_BYTES, EEPROM_BYTES,
@@ -39,6 +40,7 @@ pub const HELP: &str = "AFIK UV-K5 V1 recovery-gated flasher\n\
 Usage:\n\
   afik-k5 inspect IMAGE\n\
   afik-k5 --device PATH probe\n\
+  afik-k5 --device PATH control view|capabilities|key MENU|UP|DOWN\n\
   afik-k5 --device PATH backup-eeprom OUTPUT [--force]\n\
   afik-k5 --device PATH flash-recovery IMAGE --backup EEPROM --version VERSION \\\n    --confirm-target UV-K5-V1-DP32G030 --confirm-image-crc32 CRC32\n\
   afik-k5 --device PATH flash-afik IMAGE --recovery RAW --backup EEPROM \\\n    --version VERSION --confirm-target UV-K5-V1-DP32G030 \\\n    --confirm-image-crc32 CRC32 \\\n    --confirm-recovery-rehearsed RECOVERY-REHEARSED-ON-THIS-UNIT\n\
@@ -46,8 +48,11 @@ Usage:\n\
   afik-k5 --version\n\
 \n\
 Only an inspected UV-K5 V1 with DP32G030 and bootloader v2 is supported.\n\
-Serial is fixed at 38400 8-N-1. Flashing writes all 240 application pages,\n\
-never the stock bootloader, and reports acknowledgements rather than read-back.\n\
+Serial is fixed at 38400 8-N-1. The normal-mode control command sends one\n\
+bounded read/control request and validates one exact response; it never writes\n\
+EEPROM, persists configuration, transmits, or flashes. Flashing writes all 240\n\
+application pages, never the stock bootloader, and reports acknowledgements\n\
+rather than read-back.\n\
 Exit codes: 0 success, 1 operation failure, 2 usage failure.\n";
 
 /// Runs one CLI invocation against supplied output streams.
@@ -71,6 +76,7 @@ fn execute<W: Write>(parsed: Parsed, stdout: &mut W) -> Result<(), CliError> {
         Parsed::Hardware { device, command } => match command {
             Command::Probe => probe(&device, stdout),
             Command::Backup { output, force } => backup(&device, &output, force, stdout),
+            Command::Control(request) => control(&device, request, stdout),
             Command::Flash(arguments) => flash(&device, &arguments, stdout),
         },
         Parsed::Help | Parsed::Version => unreachable!("handled before execution"),
@@ -95,6 +101,85 @@ fn probe<W: Write>(device: &Path, stdout: &mut W) -> Result<(), CliError> {
     writeln!(stdout, "baud={K5_BAUD}").map_err(CliError::operation)?;
     writeln!(stdout, "bootloader={}", info.version()).map_err(CliError::operation)?;
     writeln!(stdout, "hardware_identity=not_proven_by_beacon").map_err(CliError::operation)
+}
+
+fn control<W: Write>(
+    device: &Path,
+    request: ControlRequest,
+    stdout: &mut W,
+) -> Result<(), CliError> {
+    let mut serial = open_serial(device)?;
+    let response = k5_control(&mut serial, request).map_err(CliError::operation)?;
+    writeln!(stdout, "device={}", device.display()).map_err(CliError::operation)?;
+    writeln!(stdout, "baud={K5_BAUD}").map_err(CliError::operation)?;
+    writeln!(stdout, "request={}", request_label(request)).map_err(CliError::operation)?;
+    render_control_response(response, stdout)
+}
+
+fn request_label(request: ControlRequest) -> &'static str {
+    match request {
+        ControlRequest::View => "view command=0x0600",
+        ControlRequest::Capabilities => "capabilities command=0x0601",
+        ControlRequest::Key(LogicalKey::Menu) => "key MENU command=0x0605",
+        ControlRequest::Key(LogicalKey::Up) => "key UP command=0x0606",
+        ControlRequest::Key(LogicalKey::Down) => "key DOWN command=0x0607",
+    }
+}
+
+fn render_control_response<W: Write>(
+    response: ControlResponse,
+    stdout: &mut W,
+) -> Result<(), CliError> {
+    match response {
+        ControlResponse::View(view) => render_view(view, stdout),
+        ControlResponse::Capabilities(bits) => {
+            writeln!(stdout, "response=capabilities command=0x0620")
+                .map_err(CliError::operation)?;
+            writeln!(stdout, "capability_bits=0x{bits:04x}").map_err(CliError::operation)?;
+            writeln!(stdout, "capabilities={}", capability_labels(bits))
+                .map_err(CliError::operation)
+        }
+    }
+}
+
+fn render_view<W: Write>(view: View, stdout: &mut W) -> Result<(), CliError> {
+    writeln!(stdout, "response=view command=0x0620").map_err(CliError::operation)?;
+    writeln!(stdout, "channel={}", view.channel).map_err(CliError::operation)?;
+    writeln!(stdout, "audio={}", if view.audio { "on" } else { "off" })
+        .map_err(CliError::operation)?;
+    writeln!(
+        stdout,
+        "squelch={}",
+        if view.squelch_open { "open" } else { "closed" }
+    )
+    .map_err(CliError::operation)?;
+    writeln!(
+        stdout,
+        "receiver={}",
+        if view.receiver_ok { "ok" } else { "fault" }
+    )
+    .map_err(CliError::operation)
+}
+
+fn capability_labels(bits: u16) -> String {
+    const LABELS: [&str; 9] = [
+        "shared-receive",
+        "view",
+        "keys",
+        "persistent-configuration",
+        "object-configuration",
+        "arbitrary-channels",
+        "vfo",
+        "scanning",
+        "raw-metrics",
+    ];
+    let mut labels = Vec::new();
+    for (index, label) in LABELS.iter().enumerate() {
+        if bits & (1_u16 << index) != 0 {
+            labels.push(*label);
+        }
+    }
+    labels.join(",")
 }
 
 fn backup<W: Write>(

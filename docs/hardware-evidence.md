@@ -2780,6 +2780,26 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   sensitivity, calibration, and adjacent-channel rejection were not reported
   and remain unproven.
 
+### EVID-SW-APP052-001 — K5 common host-control readiness
+
+- **Software observation:** the next unflashed K5 image identifies as the
+  bounded printable string `AFIK-K5-1.9S`; the physically flashed shared image
+  is `AFIK-K5-1.8U`, and K1 identity is unchanged.
+- **Host contract:** `radio-flasher` and `afik-k5` encode one fixed-session
+  normal-mode request for View `0x0600`, Capabilities `0x0601`, or logical
+  Menu/Up/Down `0x0605`/`0x0606`/`0x0607`. They accept only a validated exact
+  `0x0620` response with the expected inner length, zero reserved bytes, and
+  bounded common payload. Malformed CRC/footer/command/payload tests fail
+  closed without another request.
+- **Boundary:** this is fake-transport/simulator and static host evidence. It
+  proves neither physical serial interoperability nor that `1.9S` boots on a
+  radio. No hardware serial command, EEPROM write, persistence operation, TX,
+  or flash operation was performed for this entry.
+- **Build record:** the serialized workspace/K1/K5/verification/package gate
+  passed. The unflashed K5 image ends at `0x60D4`, static RAM ends at
+  `0x20000100`, the package is exactly `0xF000`, and its SHA-256 is
+  `ab4a2f8a7010b3233ce83816ea81b16ec2dabb226d4b37d8f15abc8fcc71b626`.
+
 ### EVID-K5-032 — Shared receive application preserves K5 behavior
 
 - **Image:** `AFIK-K5-1.8U`, the first physical target image whose channel,

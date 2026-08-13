@@ -24,6 +24,28 @@ minimal AFIK image a usable radio firmware.
 - A bootloader acknowledgement is not flash read-back and is not proof that the
   application booted.
 
+The final shared-application image identity is `AFIK-K5-1.9S`. This is a new
+software identity and must not be confused with the physically flashed
+`AFIK-K5-1.8U`; no physical result is implied by building or packaging `1.9S`.
+
+For a running AFIK normal-mode image, the host flasher also has bounded,
+read/control-only commands:
+
+```sh
+afik-k5 --device /dev/ttyUSB0 control view
+afik-k5 --device /dev/ttyUSB0 control capabilities
+afik-k5 --device /dev/ttyUSB0 control key MENU
+afik-k5 --device /dev/ttyUSB0 control key UP
+afik-k5 --device /dev/ttyUSB0 control key DOWN
+```
+
+Each command sends one fixed-session request and waits for one validated
+`0x0620` response. It does not retry, write EEPROM, persist configuration,
+transmit, or flash. A malformed CRC/footer, wrong command/session/length, or
+invalid payload is reported as an operation failure. These commands are
+software/simulator-ready only; do not treat a successful host exchange as
+physical proof until the separate normal-mode experiment is authorized.
+
 ## Required physical record
 
 Before any destructive command, record all of the following for the exact test

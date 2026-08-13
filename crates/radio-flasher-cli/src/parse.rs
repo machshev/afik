@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use radio_flasher::k5::{ControlRequest, LogicalKey};
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Parsed {
     Help,
@@ -12,6 +14,7 @@ pub(crate) enum Parsed {
 pub(crate) enum Command {
     Probe,
     Backup { output: PathBuf, force: bool },
+    Control(ControlRequest),
     Flash(FlashArguments),
 }
 
@@ -66,11 +69,27 @@ pub(crate) fn parse(arguments: &[String]) -> Result<Parsed, String> {
             Command::Probe
         }
         "backup-eeprom" => parse_backup(&arguments[3..])?,
+        "control" => parse_control(&arguments[3..])?,
         "flash-recovery" => Command::Flash(parse_flash(Purpose::Recovery, &arguments[3..])?),
         "flash-afik" => Command::Flash(parse_flash(Purpose::Afik, &arguments[3..])?),
         command => return Err(format!("unknown command: {command}")),
     };
     Ok(Parsed::Hardware { device, command })
+}
+
+fn parse_control(arguments: &[String]) -> Result<Command, String> {
+    let request = match arguments {
+        [operation] if operation == "view" => ControlRequest::View,
+        [operation] if operation == "capabilities" => ControlRequest::Capabilities,
+        [operation, key] if operation == "key" => match key.as_str() {
+            "MENU" => ControlRequest::Key(LogicalKey::Menu),
+            "UP" => ControlRequest::Key(LogicalKey::Up),
+            "DOWN" => ControlRequest::Key(LogicalKey::Down),
+            _ => return Err("control key requires MENU, UP, or DOWN".into()),
+        },
+        _ => return Err("control requires view, capabilities, or key MENU|UP|DOWN".into()),
+    };
+    Ok(Command::Control(request))
 }
 
 fn parse_backup(arguments: &[String]) -> Result<Command, String> {
@@ -168,7 +187,7 @@ fn set_once<T>(slot: &mut Option<T>, value: T, option: &str) -> Result<(), Strin
 
 #[cfg(test)]
 mod tests {
-    use super::{parse, Command, Parsed, Purpose};
+    use super::{parse, Command, ControlRequest, LogicalKey, Parsed, Purpose};
 
     fn strings(arguments: &[&str]) -> Vec<String> {
         arguments.iter().map(ToString::to_string).collect()
@@ -190,6 +209,14 @@ mod tests {
         ));
         assert!(parse(&strings(&["probe"])).is_err());
         assert!(parse(&strings(&["--device", "/dev/x", "backup-eeprom"])).is_err());
+        assert!(matches!(
+            parse(&strings(&["--device", "/dev/x", "control", "key", "MENU"])).unwrap(),
+            Parsed::Hardware {
+                command: Command::Control(ControlRequest::Key(LogicalKey::Menu)),
+                ..
+            }
+        ));
+        assert!(parse(&strings(&["--device", "/dev/x", "control", "key", "PTT"])).is_err());
     }
 
     #[test]

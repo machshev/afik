@@ -136,3 +136,24 @@ observed normal-mode frame.
 These assignments are target-owned adapters rather than a claim that K1 and K5
 have interoperable physical serial links. Candidate configuration activation,
 K5 persistence, and target-only K1 object/runtime operations remain excluded.
+
+## K5 host control witness
+
+The recovery flasher exposes one-at-a-time, normal-mode-only control requests:
+
+```text
+afik-k5 --device PATH control view
+afik-k5 --device PATH control capabilities
+afik-k5 --device PATH control key MENU|UP|DOWN
+```
+
+The host always sends the fixed session word and request CRC through the
+existing K5 envelope encoder, then accepts only one bounded response. It
+requires the exact `0x0620` response command, the expected inner length (four
+bytes for a view/key response or three for capabilities), zero reserved bytes,
+valid response footer/marker, and valid view/capability payload bits. A bad
+frame is an operation failure and cannot trigger another request. The command
+does not write EEPROM, persist configuration, transmit, or flash. Its output is
+line-oriented and identifies the request, response, channel/audio/squelch/
+receiver state, or capability labels. This is simulator/fake-transport and
+static host evidence only; physical serial interoperability remains open.
