@@ -19,8 +19,17 @@ use radio_channel_plan::{GeneratedBank, PlanEncoding};
 use radio_device::{DeviceEvent, DeviceService};
 use radio_domain::{ActiveChannel, Frequency, SignalMeasurement, TxClass};
 use radio_programmer::ProtocolTransport;
-use radio_protocol::{Command, DeviceCapabilities, ProtocolError, Service, MAX_ENCODED_FRAME};
-use radio_storage::ObjectKey;
+use radio_protocol::k5_extended::{
+    decode_k5_extended, encode_k5_extended, K5_EXTENDED_MAX_BYTES, K5_EXTENDED_SESSION,
+};
+use radio_protocol::{
+    decode_packet, encode_frame, Command, DeviceCapabilities, DeviceErrorCode, Frame,
+    ProtocolError, Service, FLAG_ERROR, FLAG_RESPONSE, MAX_ENCODED_FRAME,
+};
+use radio_storage::{
+    dual_slot::{self, BlockBackend, BLOCK_BYTES},
+    ObjectKey,
+};
 use radio_tx_policy::{LoadStatus, TxAuthorisation, TxPolicy, PERMISSION_RECORD_LEN};
 use radio_ui::{BootUi, KeyEvent, KeySet, UiAction, UiView};
 use std::{
@@ -1177,18 +1186,415 @@ impl ProtocolTransport for SimTransport {
     }
 }
 
+/// K1-parity object-store capacity used by the explicit K5 simulator adapter.
+pub const K5_SIM_CONFIGURATION_BYTES: usize = 1_264;
+
+/// Faults exposed by the deterministic simulator EEPROM model.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum K5SimStorageError {
+    /// The injected operation interruption occurred.
+    Fault,
+    /// The atomic expected bytes did not match.
+    Stale,
+    /// A requested simulator byte was outside the relative model.
+    OutOfRange,
+}
+
+/// Failure returned by the explicit K5 object transport.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum K5TransportError {
+    /// The bounded envelope or inner protocol frame was invalid.
+    Protocol(ProtocolError),
+}
+
+impl core::fmt::Display for K5TransportError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Protocol(error) => write!(formatter, "K5 protocol error: {error}"),
+        }
+    }
+}
+
+/// Relative eight-byte backend retained by the K5 simulator.
+#[derive(Clone)]
+pub struct K5SimStorage {
+    bytes: [u8; dual_slot::TOTAL_BYTES],
+    operation: usize,
+    fault_at: Option<usize>,
+    writes: usize,
+}
+
+impl Default for K5SimStorage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl K5SimStorage {
+    /// Constructs an erased relative persistence region.
+    pub const fn new() -> Self {
+        Self {
+            bytes: [0xFF; dual_slot::TOTAL_BYTES],
+            operation: 0,
+            fault_at: None,
+            writes: 0,
+        }
+    }
+
+    /// Arms one deterministic backend operation interruption.
+    pub fn set_fault_at(&mut self, operation: Option<usize>) {
+        self.fault_at = operation;
+        self.operation = 0;
+    }
+
+    /// Returns the number of successful atomic writes.
+    pub const fn writes(&self) -> usize {
+        self.writes
+    }
+
+    /// Corrupts one simulator byte for reboot/fallback tests.
+    pub fn corrupt_byte(&mut self, offset: usize) -> Result<(), K5SimStorageError> {
+        let byte = self
+            .bytes
+            .get_mut(offset)
+            .ok_or(K5SimStorageError::OutOfRange)?;
+        *byte ^= 0x01;
+        Ok(())
+    }
+}
+
+impl BlockBackend for K5SimStorage {
+    type Error = K5SimStorageError;
+
+    fn read_block(
+        &mut self,
+        block: u16,
+        output: &mut [u8; BLOCK_BYTES],
+    ) -> Result<(), Self::Error> {
+        let operation = self.operation;
+        self.operation += 1;
+        if self.fault_at == Some(operation) {
+            return Err(K5SimStorageError::Fault);
+        }
+        let start = usize::from(block)
+            .checked_mul(BLOCK_BYTES)
+            .ok_or(K5SimStorageError::OutOfRange)?;
+        let end = start
+            .checked_add(BLOCK_BYTES)
+            .ok_or(K5SimStorageError::OutOfRange)?;
+        let source = self
+            .bytes
+            .get(start..end)
+            .ok_or(K5SimStorageError::OutOfRange)?;
+        output.copy_from_slice(source);
+        Ok(())
+    }
+
+    fn write_verified(
+        &mut self,
+        block: u16,
+        expected: &[u8; BLOCK_BYTES],
+        replacement: &[u8; BLOCK_BYTES],
+    ) -> Result<(), Self::Error> {
+        let operation = self.operation;
+        self.operation += 1;
+        let start = usize::from(block)
+            .checked_mul(BLOCK_BYTES)
+            .ok_or(K5SimStorageError::OutOfRange)?;
+        let end = start
+            .checked_add(BLOCK_BYTES)
+            .ok_or(K5SimStorageError::OutOfRange)?;
+        if self.bytes.get(start..end).is_none() {
+            return Err(K5SimStorageError::OutOfRange);
+        }
+        if self.fault_at == Some(operation) {
+            self.bytes[start..start + 3].copy_from_slice(&replacement[..3]);
+            self.bytes[start + 3..end].fill(0xFF);
+            return Err(K5SimStorageError::Fault);
+        }
+        if self.bytes[start..end] != expected[..] {
+            return Err(K5SimStorageError::Stale);
+        }
+        self.bytes[start..end].copy_from_slice(replacement);
+        self.writes += 1;
+        Ok(())
+    }
+}
+
+/// Explicit K5 extended-envelope simulator device.
+pub struct K5ObjectDevice {
+    clock: SimClock,
+    service: DeviceService<K5_SIM_CONFIGURATION_BYTES>,
+    storage: K5SimStorage,
+    durability_error: Option<(Frame, Frame)>,
+}
+
+impl Default for K5ObjectDevice {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl K5ObjectDevice {
+    /// Constructs an empty generation-zero K5 object device.
+    pub fn new() -> Self {
+        Self {
+            clock: SimClock::new(),
+            service: DeviceService::with_plan_encodings(
+                PlanEncoding::LinearSimplex.capability_bit(),
+            ),
+            storage: K5SimStorage::new(),
+            durability_error: None,
+        }
+    }
+
+    /// Returns the active service generation.
+    pub const fn generation(&self) -> u32 {
+        self.service.generation()
+    }
+
+    /// Returns the explicit simulator capability profile used by the host
+    /// compiler; this is not a target capability advertisement.
+    pub const fn capabilities(&self) -> DeviceCapabilities {
+        self.service.capabilities()
+    }
+
+    /// Returns the deterministic virtual clock.
+    pub const fn clock(&self) -> SimClock {
+        self.clock
+    }
+
+    /// Advances virtual time without implicit device work.
+    pub fn advance_ms(&mut self, duration_ms: u64) {
+        self.clock.advance_ms(duration_ms);
+    }
+
+    /// Gives tests access to the simulator-only persistence fault injector.
+    pub fn storage_mut(&mut self) -> &mut K5SimStorage {
+        &mut self.storage
+    }
+
+    /// Reconstructs the service from the newest valid dual-slot image.
+    pub fn reboot(&mut self) -> Result<bool, dual_slot::PersistenceError<K5SimStorageError>> {
+        let mut slot = dual_slot::empty_slot();
+        let mut image = [0; dual_slot::MAX_CANONICAL_IMAGE_BYTES];
+        let loaded = dual_slot::load(&mut self.storage, &mut slot, &mut image)?;
+        let mut replacement =
+            DeviceService::with_plan_encodings(PlanEncoding::LinearSimplex.capability_bit());
+        if let Some(snapshot) = loaded {
+            replacement
+                .load_image_at_generation(snapshot.bytes, snapshot.generation)
+                .map_err(|_| dual_slot::PersistenceError::InvalidImage)?;
+            self.service = replacement;
+            self.durability_error = None;
+            Ok(true)
+        } else {
+            self.service = replacement;
+            self.durability_error = None;
+            Ok(false)
+        }
+    }
+
+    fn error_frame(request: &Frame, code: DeviceErrorCode) -> Frame {
+        Frame::new(
+            request.service(),
+            FLAG_RESPONSE | FLAG_ERROR,
+            request.sequence(),
+            Command::Error,
+            &[request.command() as u8, code as u8],
+        )
+        .expect("bounded protocol error frame")
+    }
+
+    fn wrap_frame(frame: Frame) -> Vec<u8> {
+        let mut encoded = [0; MAX_ENCODED_FRAME];
+        let Ok(length) = encode_frame(&frame, &mut encoded) else {
+            return Vec::new();
+        };
+        Self::wrap_encoded(&encoded[..length])
+    }
+
+    fn wrap_encoded(encoded: &[u8]) -> Vec<u8> {
+        let mut wrapped = [0; K5_EXTENDED_MAX_BYTES];
+        let Ok(length) = encode_k5_extended(K5_EXTENDED_SESSION, encoded, &mut wrapped) else {
+            return Vec::new();
+        };
+        wrapped[..length].to_vec()
+    }
+
+    /// Processes one strict K5 envelope and returns one strict response
+    /// envelope. Malformed input is discarded without reaching the service.
+    pub fn ingest(&mut self, envelope: &[u8]) -> Vec<u8> {
+        let Ok(decoded) = decode_k5_extended(envelope, K5_EXTENDED_SESSION) else {
+            return Vec::new();
+        };
+        let Some(request_bytes) = decoded.payload.strip_suffix(&[0]) else {
+            return Vec::new();
+        };
+        let Ok(request) = decode_packet(request_bytes) else {
+            return Vec::new();
+        };
+        if let Some((cached_request, cached_response)) = self.durability_error {
+            if cached_request.sequence() == request.sequence() {
+                if cached_request == request {
+                    return Self::wrap_frame(cached_response);
+                }
+                return Self::wrap_frame(Self::error_frame(
+                    &request,
+                    DeviceErrorCode::SequenceConflict,
+                ));
+            }
+        }
+        self.durability_error = None;
+        let prior_service = if request.command() == Command::CommitTransaction {
+            Some(self.service.clone())
+        } else {
+            None
+        };
+        let mut encoded = [0; MAX_ENCODED_FRAME];
+        let mut response_len = None;
+        let mut fresh_commit = false;
+        let mut observer = |event: DeviceEvent| {
+            if matches!(event, DeviceEvent::TransactionCommitted { .. }) {
+                fresh_commit = true;
+            }
+        };
+        for byte in decoded.payload {
+            if let Some(length) = self.service.push(*byte, &mut encoded, &mut observer) {
+                response_len = Some(length);
+            }
+        }
+        let Some(mut response_len) = response_len else {
+            return Vec::new();
+        };
+        if request.command() == Command::CommitTransaction && fresh_commit {
+            // The service has already committed in RAM. The simulator's
+            // authoritative durable boundary is the dual-slot update; a
+            // failed update must not be reported as a successful commit.
+            if let Some(response_bytes) = encoded[..response_len].strip_suffix(&[0]) {
+                if let Ok(response) = decode_packet(response_bytes) {
+                    if response.flags() & radio_protocol::FLAG_ERROR == 0 {
+                        let mut image = [0; dual_slot::MAX_CANONICAL_IMAGE_BYTES];
+                        if let Ok(length) = self.service.encode_active_image(&mut image) {
+                            let mut slot = dual_slot::empty_slot();
+                            let mut image_scratch = [0; dual_slot::MAX_CANONICAL_IMAGE_BYTES];
+                            let persisted = dual_slot::update(
+                                &mut self.storage,
+                                &image[..length],
+                                &mut slot,
+                                &mut image_scratch,
+                            )
+                            .and_then(|generation| {
+                                if generation == self.service.generation() {
+                                    Ok(generation)
+                                } else {
+                                    Err(dual_slot::PersistenceError::InvalidImage)
+                                }
+                            });
+                            if persisted.is_err() {
+                                let Some(restored) = prior_service else {
+                                    return Vec::new();
+                                };
+                                self.service = restored;
+                                let error = Self::error_frame(&request, DeviceErrorCode::Internal);
+                                self.durability_error = Some((request, error));
+                                let Some(error_length) = encode_frame(&error, &mut encoded).ok()
+                                else {
+                                    return Vec::new();
+                                };
+                                response_len = error_length;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Self::wrap_encoded(&encoded[..response_len])
+    }
+}
+
+/// Explicit transport selecting the K5 extended object envelope.
+pub struct K5ObjectTransport {
+    device: K5ObjectDevice,
+    receive_queue: VecDeque<u8>,
+    max_read_size: usize,
+}
+
+impl K5ObjectTransport {
+    /// Constructs the K5 object transport; no target auto-detection exists.
+    pub fn new(device: K5ObjectDevice) -> Self {
+        Self {
+            device,
+            receive_queue: VecDeque::new(),
+            max_read_size: MAX_ENCODED_FRAME,
+        }
+    }
+
+    /// Limits each receive call to exercise deterministic fragmentation.
+    #[must_use]
+    pub fn with_max_read_size(mut self, max_read_size: usize) -> Self {
+        self.max_read_size = max_read_size.max(1);
+        self
+    }
+
+    /// Returns the simulated K5 device.
+    pub const fn device(&self) -> &K5ObjectDevice {
+        &self.device
+    }
+
+    /// Returns the mutable simulated K5 device.
+    pub fn device_mut(&mut self) -> &mut K5ObjectDevice {
+        &mut self.device
+    }
+}
+
+impl ProtocolTransport for K5ObjectTransport {
+    type Error = K5TransportError;
+
+    fn send(&mut self, frame: &[u8]) -> Result<(), Self::Error> {
+        let mut wrapped = [0; K5_EXTENDED_MAX_BYTES];
+        let length = encode_k5_extended(K5_EXTENDED_SESSION, frame, &mut wrapped)
+            .map_err(K5TransportError::Protocol)?;
+        let response = self.device.ingest(&wrapped[..length]);
+        let decoded = decode_k5_extended(&response, K5_EXTENDED_SESSION)
+            .map_err(K5TransportError::Protocol)?;
+        self.receive_queue.extend(decoded.payload);
+        Ok(())
+    }
+
+    fn receive(&mut self, buffer: &mut [u8]) -> Result<usize, Self::Error> {
+        let count = cmp::min(
+            cmp::min(buffer.len(), self.max_read_size),
+            self.receive_queue.len(),
+        );
+        for destination in &mut buffer[..count] {
+            if let Some(byte) = self.receive_queue.pop_front() {
+                *destination = byte;
+            }
+        }
+        Ok(count)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         AprsSimError, AprsSimulator, AprsTraceEvent, AprsTraceKind, ChannelSimError,
-        ChannelSimulator, ChannelTraceEvent, ChannelTraceKind, RfBusOperation, RfSimulator,
-        RfTraceEvent, RfTraceKind, SimDevice, SimTransport, TraceKind, UiSimulator, UiTraceKind,
+        ChannelSimulator, ChannelTraceEvent, ChannelTraceKind, K5ObjectDevice, K5ObjectTransport,
+        RfBusOperation, RfSimulator, RfTraceEvent, RfTraceKind, SimDevice, SimTransport, TraceKind,
+        UiSimulator, UiTraceKind,
     };
     use radio_aprs::{AprsError, DiscoveryError, DiscoveryUpdate};
     use radio_channel_control::{ChannelTxError, ControlState, ScanConfig};
-    use radio_channel_plan::{BankName, GeneratedBank, PlanEncoding};
+    use radio_channel_plan::{
+        BankFlags, BankName, ChannelBank, ChannelDefinition, ChannelName, ChannelRecord,
+        GeneratedBank, PlanEncoding,
+    };
     use radio_device::map_storage_error;
-    use radio_domain::{ActiveChannel, BankId, Frequency, FrequencyStep, TxClass};
+    use radio_domain::{
+        ActiveChannel, Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation,
+        PowerLevel, RadioConfig, SquelchLevel, Tone, TxClass,
+    };
     use radio_platform::receive_app::{Event as SharedEvent, Key as SharedKey, ReceiveApp};
     use radio_platform::serial_control::{
         dispatch as dispatch_shared, Capabilities as SharedCapabilities,
@@ -1202,6 +1608,7 @@ mod tests {
         decode_packet, encode_frame, Command, DeviceErrorCode, Frame, PayloadWriter, ProtocolError,
         Service, FLAG_ERROR, FLAG_RESPONSE, MAX_ENCODED_FRAME, MAX_PAYLOAD,
     };
+    use radio_storage::dual_slot::{self, BlockBackend};
     use radio_storage::{
         decode_configuration_image, decode_generated_bank, encode_generated_bank, ObjectKey,
         ObjectKind, StorageError, StorageObject, GENERATED_BANK_CORE_LEN, OBJECT_ENTRY_HEADER_LEN,
@@ -1308,6 +1715,334 @@ mod tests {
             TxClass::LicenceFreePlan,
         )
         .unwrap()
+    }
+
+    fn k5_project() -> RadioProject {
+        let mut project = RadioProject::new();
+        project.add_generated_bank(bank(6, "PMR446"));
+        project.add_bank(
+            ChannelBank::new(
+                BankId::new(1),
+                BankName::new("Named").unwrap(),
+                BankFlags::default(),
+            )
+            .unwrap(),
+        );
+        project.add_channel(
+            ChannelRecord::new(ChannelDefinition {
+                id: ChannelId::new(42),
+                name: ChannelName::new("Explicit").unwrap(),
+                receive: Frequency::from_hz(145_725_000).unwrap(),
+                transmit: Frequency::from_hz(145_125_000).unwrap(),
+                rx_tone: Tone::Ctcss(1_000),
+                tx_tone: Tone::Ctcss(1_000),
+                modulation: Modulation::Fm,
+                bandwidth: Bandwidth::Wide,
+                power: PowerLevel::Medium,
+                step: FrequencyStep::from_hz(12_500).unwrap(),
+                squelch: SquelchLevel::new(6).unwrap(),
+                flags: radio_channel_plan::ChannelFlags::default(),
+                banks: radio_channel_plan::BankMask::from_bits(1 << 1),
+                tx_class: TxClass::Amateur,
+            })
+            .unwrap(),
+        );
+        project.set_config(RadioConfig {
+            squelch: SquelchLevel::new(7).unwrap(),
+            ..RadioConfig::conservative()
+        });
+        project
+    }
+
+    #[test]
+    fn k5_extended_programmer_round_trip_reboot_and_generation_are_exact() {
+        let device = K5ObjectDevice::new();
+        let mut programmer =
+            Programmer::connect(K5ObjectTransport::new(device).with_max_read_size(1)).unwrap();
+        let compiled = programmer.compiler().compile(&k5_project()).unwrap();
+        assert_eq!(compiled.report().generated_channels, 16);
+        assert_eq!(compiled.report().explicit_channels, 1);
+        assert_eq!(compiled.report().banks, 1);
+        assert!(compiled.report().has_radio_config);
+
+        let mut expected_image = vec![0; compiled.image_len().unwrap()];
+        let expected_len = compiled.encode_image(&mut expected_image).unwrap();
+        let first = programmer.write_configuration_verified(&compiled).unwrap();
+        assert_eq!(first.generation, 1);
+        assert_eq!(
+            programmer.backup_configuration().unwrap().image,
+            expected_image
+        );
+        programmer.transport_mut().device_mut().advance_ms(37);
+        assert_eq!(programmer.transport().device().clock().now_ms(), 37);
+
+        let mut transport = programmer.into_transport();
+        let mut slot = dual_slot::empty_slot();
+        let mut persisted = [0; dual_slot::MAX_CANONICAL_IMAGE_BYTES];
+        let loaded = dual_slot::load(
+            transport.device_mut().storage_mut(),
+            &mut slot,
+            &mut persisted,
+        )
+        .unwrap();
+        assert_eq!(loaded.map(|image| image.generation), Some(1));
+        assert!(transport.device_mut().reboot().unwrap());
+        let mut rebooted = Programmer::connect(transport).unwrap();
+        let restored = rebooted.backup_configuration().unwrap();
+        assert_eq!(restored.generation, 1);
+        assert_eq!(restored.image, expected_image[..expected_len]);
+        let second = rebooted.write_configuration_verified(&compiled).unwrap();
+        assert_eq!(second.generation, 2);
+        assert_eq!(
+            rebooted.backup_configuration().unwrap().image,
+            expected_image
+        );
+    }
+
+    #[test]
+    fn k5_interrupted_or_corrupt_newest_persistence_keeps_previous_generation() {
+        let mut programmer =
+            Programmer::connect(K5ObjectTransport::new(K5ObjectDevice::new())).unwrap();
+        let compiled = programmer.compiler().compile(&k5_project()).unwrap();
+        assert_eq!(
+            programmer
+                .write_configuration_verified(&compiled)
+                .unwrap()
+                .generation,
+            1
+        );
+
+        programmer
+            .transport_mut()
+            .device_mut()
+            .storage_mut()
+            .set_fault_at(Some(0));
+        assert!(programmer.transport_mut().device_mut().reboot().is_err());
+        assert_eq!(programmer.transport().device().generation(), 1);
+        programmer
+            .transport_mut()
+            .device_mut()
+            .storage_mut()
+            .set_fault_at(None);
+
+        programmer
+            .transport_mut()
+            .device_mut()
+            .storage_mut()
+            .set_fault_at(Some(0));
+        assert!(matches!(
+            programmer.write_configuration_verified(&compiled),
+            Err(ProgrammerError::Device {
+                code: DeviceErrorCode::Internal,
+                ..
+            })
+        ));
+        assert_eq!(programmer.backup_configuration().unwrap().generation, 1);
+        programmer
+            .transport_mut()
+            .device_mut()
+            .storage_mut()
+            .set_fault_at(None);
+        let mut transport = programmer.into_transport();
+        assert!(transport.device_mut().reboot().unwrap());
+        let mut rebooted = Programmer::connect(transport).unwrap();
+        assert_eq!(rebooted.backup_configuration().unwrap().generation, 1);
+
+        assert_eq!(
+            rebooted
+                .write_configuration_verified(&compiled)
+                .unwrap()
+                .generation,
+            2
+        );
+        let mut transport = rebooted.into_transport();
+        // The corruption is in the newest slot's header; the prior slot must
+        // remain loadable.
+        transport
+            .device_mut()
+            .storage_mut()
+            .corrupt_byte(dual_slot::SLOT_BYTES)
+            .unwrap();
+        assert!(transport.device_mut().reboot().unwrap());
+        let rebooted = Programmer::connect(transport).unwrap();
+        assert_eq!(rebooted.transport().device().generation(), 1);
+    }
+
+    #[test]
+    fn k5_replayed_commit_does_not_repeat_persistence_or_change_generation() {
+        let mut device = K5ObjectDevice::new();
+        let compiled = radio_programmer::ConfigurationCompiler::new(device.capabilities())
+            .compile(&k5_project())
+            .unwrap();
+        let transaction = 21_u32;
+        let packet = |sequence: u16, command: Command, payload: &[u8]| {
+            let frame = Frame::new(Service::Configuration, 0, sequence, command, payload).unwrap();
+            let mut inner = [0; MAX_ENCODED_FRAME];
+            let inner_len = encode_frame(&frame, &mut inner).unwrap();
+            let mut outer = [0; radio_protocol::k5_extended::K5_EXTENDED_MAX_BYTES];
+            let outer_len = radio_protocol::k5_extended::encode_k5_extended(
+                radio_protocol::k5_extended::K5_EXTENDED_SESSION,
+                &inner[..inner_len],
+                &mut outer,
+            )
+            .unwrap();
+            outer[..outer_len].to_vec()
+        };
+        let transaction_bytes = transaction.to_le_bytes();
+        let _ = device.ingest(&packet(1, Command::BeginTransaction, &transaction_bytes));
+        for (index, object) in compiled.objects().iter().enumerate() {
+            let mut payload = [0; MAX_PAYLOAD];
+            let length = {
+                let mut writer = PayloadWriter::new(&mut payload);
+                writer.write_u32(transaction).unwrap();
+                writer.write_u8(object.key().kind as u8).unwrap();
+                writer.write_u16(object.key().id).unwrap();
+                writer
+                    .write_u16(u16::try_from(object.len()).unwrap())
+                    .unwrap();
+                writer.write_bytes(object.data()).unwrap();
+                writer.len()
+            };
+            let sequence = u16::try_from(index + 2).unwrap();
+            let _ = device.ingest(&packet(sequence, Command::WriteObject, &payload[..length]));
+        }
+        let _ = device.ingest(&packet(
+            100,
+            Command::ValidateTransaction,
+            &transaction_bytes,
+        ));
+        let commit = packet(101, Command::CommitTransaction, &transaction_bytes);
+        let first_response = device.ingest(&commit);
+        let writes = device.storage.writes();
+        assert_eq!(device.generation(), 1);
+        let replay_response = device.ingest(&commit);
+        assert_eq!(replay_response, first_response);
+        assert_eq!(device.storage.writes(), writes);
+        assert_eq!(device.generation(), 1);
+        assert!(device.reboot().unwrap());
+        assert_eq!(device.generation(), 1);
+    }
+
+    #[test]
+    fn k5_storage_rejects_out_of_range_relative_blocks_without_panicking() {
+        let mut storage = super::K5SimStorage::new();
+        let mut block = [0; radio_storage::dual_slot::BLOCK_BYTES];
+        let expected = block;
+        assert_eq!(
+            storage.read_block(u16::MAX, &mut block),
+            Err(super::K5SimStorageError::OutOfRange)
+        );
+        assert_eq!(
+            storage.write_verified(u16::MAX, &expected, &block),
+            Err(super::K5SimStorageError::OutOfRange)
+        );
+        assert_eq!(
+            storage.corrupt_byte(radio_storage::dual_slot::TOTAL_BYTES),
+            Err(super::K5SimStorageError::OutOfRange)
+        );
+    }
+
+    #[test]
+    fn k5_transport_rejects_malformed_or_oversized_frames_without_mutation() {
+        let mut transport = K5ObjectTransport::new(K5ObjectDevice::new());
+        assert!(matches!(
+            transport.send(&[1, 2, 3]),
+            Err(super::K5TransportError::Protocol(_))
+        ));
+        let oversized = [0; MAX_ENCODED_FRAME + 1];
+        assert!(matches!(
+            transport.send(&oversized),
+            Err(super::K5TransportError::Protocol(
+                ProtocolError::PayloadTooLarge
+            ))
+        ));
+        assert_eq!(transport.device().generation(), 0);
+    }
+
+    #[test]
+    fn k5_envelope_rejects_session_command_crc_and_trailing_input_without_mutation() {
+        let mut device = K5ObjectDevice::new();
+        let mut inner = [0; MAX_ENCODED_FRAME];
+        let frame = Frame::new(Service::DeviceInfo, 0, 1, Command::Hello, &[1]).unwrap();
+        let inner_len = encode_frame(&frame, &mut inner).unwrap();
+        let mut outer = [0; radio_protocol::k5_extended::K5_EXTENDED_MAX_BYTES];
+        let length = radio_protocol::k5_extended::encode_k5_extended(
+            radio_protocol::k5_extended::K5_EXTENDED_SESSION,
+            &inner[..inner_len],
+            &mut outer,
+        )
+        .unwrap();
+        let valid = outer[..length].to_vec();
+        assert!(!device.ingest(&valid).is_empty());
+        assert_eq!(device.generation(), 0);
+
+        let mut wrong_session = valid.clone();
+        wrong_session[5] ^= 1;
+        assert!(device.ingest(&wrong_session).is_empty());
+        let mut wrong_command = valid.clone();
+        wrong_command[3] ^= 1;
+        assert!(device.ingest(&wrong_command).is_empty());
+        let mut wrong_crc = valid.clone();
+        let last = wrong_crc.len() - 1;
+        wrong_crc[last] ^= 1;
+        assert!(device.ingest(&wrong_crc).is_empty());
+        let mut trailing = valid;
+        trailing.push(0);
+        assert!(device.ingest(&trailing).is_empty());
+        assert_eq!(device.generation(), 0);
+    }
+
+    #[test]
+    fn k5_aborted_and_validation_failed_transactions_never_persist() {
+        fn send(
+            device: &mut K5ObjectDevice,
+            sequence: u16,
+            command: Command,
+            payload: &[u8],
+        ) -> Vec<u8> {
+            let frame = Frame::new(Service::Configuration, 0, sequence, command, payload).unwrap();
+            let mut inner = [0; MAX_ENCODED_FRAME];
+            let inner_len = encode_frame(&frame, &mut inner).unwrap();
+            let mut outer = [0; radio_protocol::k5_extended::K5_EXTENDED_MAX_BYTES];
+            let outer_len = radio_protocol::k5_extended::encode_k5_extended(
+                radio_protocol::k5_extended::K5_EXTENDED_SESSION,
+                &inner[..inner_len],
+                &mut outer,
+            )
+            .unwrap();
+            device.ingest(&outer[..outer_len])
+        }
+
+        let mut device = K5ObjectDevice::new();
+        let transaction = 11_u32.to_le_bytes();
+        assert!(!send(&mut device, 1, Command::BeginTransaction, &transaction).is_empty());
+        assert!(!send(&mut device, 2, Command::AbortTransaction, &transaction).is_empty());
+        assert_eq!(device.generation(), 0);
+        assert!(!device.reboot().unwrap());
+
+        let transaction = 12_u32.to_le_bytes();
+        assert!(!send(&mut device, 3, Command::BeginTransaction, &transaction).is_empty());
+        let mut malformed = [0; MAX_PAYLOAD];
+        let malformed_len = {
+            let mut writer = PayloadWriter::new(&mut malformed);
+            writer.write_u32(12).unwrap();
+            writer.write_u8(ObjectKind::GeneratedBank as u8).unwrap();
+            writer.write_u16(1).unwrap();
+            writer.write_u16(1).unwrap();
+            writer.write_u8(0).unwrap();
+            writer.len()
+        };
+        assert!(!send(
+            &mut device,
+            4,
+            Command::WriteObject,
+            &malformed[..malformed_len],
+        )
+        .is_empty());
+        assert!(!send(&mut device, 5, Command::ValidateTransaction, &transaction).is_empty());
+        assert!(!send(&mut device, 6, Command::AbortTransaction, &transaction).is_empty());
+        assert_eq!(device.generation(), 0);
+        assert!(!device.reboot().unwrap());
     }
 
     fn aprs_fcs_accumulator(bytes: &[u8]) -> u16 {

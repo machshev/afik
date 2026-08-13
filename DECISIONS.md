@@ -1436,3 +1436,37 @@ meaning.
   restore route. Therefore K5 capabilities remain volatile generation zero,
   no firmware identity is bumped, and no physical write is authorized. The
   next task is simulator object transport, not physical allocation.
+
+## ADR-090 — K5 object transport is an explicit simulator boundary
+
+- **Date:** 2026-08-14
+- **Status:** accepted for APP-052 Milestone 3 simulator/host evidence only
+- `radio-protocol::k5_extended` wraps one complete existing COBS/CRC frame in
+  a bounded envelope with generic magic/version, explicit command/session,
+  exact length, and CRC32. It is deliberately not advertised, wired into a
+  target main loop, or assigned over the existing `Hello` and common
+  `0x0600..` controls.
+- `radio-sim::K5ObjectTransport` is selected explicitly by its constructor;
+  it does not auto-detect a target. It unwraps into the existing
+  `DeviceService<1264>` and fragments responses deterministically so the
+  existing `radio-programmer` transaction, listing, and read-back code is the
+  exercised path.
+- A successful simulated commit serializes the exact canonical
+  `radio-storage` image into the relative dual-slot model. Reboot validates
+  the newest image and restores its generation. The fake backend demonstrates
+  interruption and corruption fallback only; it is not evidence of a K5
+  EEPROM allocation, normal-mode transport, persistence capability, or
+  physical restore route. TX remains absent and default-deny policy is not
+  widened.
+- Persistence is triggered only by a fresh `TransactionCommitted` event, not
+  by inspecting a successful response, so service replay cannot repeat a
+  durable write. If the dual-slot update fails, the simulator restores the
+  complete pre-commit `DeviceService` snapshot and returns the existing
+  protocol `Internal` error. That error is cached as a bounded frame for exact
+  same-request replay; conflicting sequence bytes receive `SequenceConflict`,
+  while a new-sequence Abort can close the restored transaction. Reboot
+  exposes typed persistence errors and does not replace the service on a
+  backend read failure. Relative block range errors and malformed direct
+  transport input are explicit failures, never panics.
+- The next decision gate is safe allocation evidence and target-adapter
+  sizing/static analysis, not a flash or physical persistence operation.

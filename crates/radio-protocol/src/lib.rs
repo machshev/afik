@@ -3,6 +3,10 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+/// Unadvertised K5 extended normal-mode envelope shared by host/simulator
+/// preparation code. It does not alter the current target command set.
+pub mod k5_extended;
+
 use core::fmt;
 
 /// Current protocol version.

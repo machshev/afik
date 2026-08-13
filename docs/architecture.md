@@ -270,6 +270,25 @@ scan, and raw metrics, while K5 declares only shared receive/view/key behavior
 and volatile generation-zero activation. No UART, DMA, framing, EEPROM,
 storage, or target controller type crosses this seam.
 
+APP-052 Milestone 3 adds a separate simulator-only preparation seam in
+`radio-protocol::k5_extended`. It wraps one existing bounded COBS/CRC frame
+with explicit magic/version/session/command/length/CRC fields and rejects
+malformed, oversized, trailing, wrong-session, and wrong-command input before
+the object service. The envelope is generic host/future-firmware codec code;
+it is not advertised or wired into either target's normal-mode loop and does
+not alter `Hello` or the common `0x0600..` controls.
+
+`radio-sim::K5ObjectTransport` explicitly selects that envelope and drives the
+existing `DeviceService<1264>` and `radio-programmer` transaction/list/read
+workflow. A simulated commit writes the exact canonical image to the relative
+`radio-storage::dual_slot` model, and reboot restores the newest validated
+generation. This proves protocol/service/storage composition only. It does
+not provide a K5 EEPROM address, target persistence capability, hardware
+power-loss result, physical normal-mode transport, or TX path. A failed
+durable commit restores the complete bounded service snapshot and caches its
+protocol error for replay; allocation evidence and target adapter sizing
+remain separate gates.
+
 The DP32G030 target linker and package tools own the V1 application-region
 contract. They emit a full `0x0000..0xEFFF` raw image and never include the
 stock `0xF000..0xFFFF` bootloader region. Hardware-independent radio crates do

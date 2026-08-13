@@ -2808,3 +2808,21 @@
   rejection at generation maximum, old-marker invalidation, and the complete
   fault/corruption/round-trip matrix. Next smallest task is simulator object
   transport; no physical allocation is implied.
+
+- **APP-052 Milestone 3 — K5 simulator object transport (2026-08-14):** add
+  the unadvertised, generic K5 extended envelope in `radio-protocol`, with
+  strict bounded session/command/length/CRC validation and no change to
+  existing `Hello` or common `0x0600..` controls. Add the explicit
+  `K5ObjectTransport` around the real `DeviceService<1264>` and
+  `radio-programmer` begin/write/validate/commit/list/read workflow. Persist
+  successful commits as exact canonical images through the relative dual-slot
+  model and test deterministic reboot, repeated generations, corruption and
+  interrupted-update fallback, malformed/replay/session failures, and TX
+  absence. This is simulator-only: no target wiring, capability, firmware
+  identity, real EEPROM, physical transport, or persistence claim. APP-052
+  persistence is fresh-commit-only; replay does not rewrite, and a failed
+  durable update returns an error while restoring the complete prior service
+  snapshot; the exact error replays without another write and Abort/new
+  transactions remain usable.
+  APP-052 remains open. Next smallest task: safe allocation evidence plus K5 target
+  adapter sizing/static checks, not flashing.

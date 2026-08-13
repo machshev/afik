@@ -880,3 +880,15 @@
   capability, or hardware write is claimed. The model is 2,624 bytes total
   with caller-owned bounded scratch; it is ready for simulator object
   transport, while physical allocation and restore evidence remain open.
+
+- **APP-052 Milestone 3 simulator boundary, 2026-08-14:** the K5 extended
+  envelope, explicit object transport, canonical-image commit, deterministic
+  reboot, and dual-slot fault tests are host/simulator evidence. They do not
+  establish the K5 normal-mode envelope, an EEPROM address or disposable
+  allocation, target timing, power-loss behaviour on hardware, persistence or
+  restore capability, or a safe flash route. The target main and capability
+  bits remain unchanged. Simulator durability failures now fail the protocol
+  commit and restore the complete prior service snapshot; the exact durable
+  error is replayed without another write, and typed reboot errors preserve
+  service on backend read failure. Before any target adapter, obtain safe allocation
+  evidence and complete bounded sizing/static checks. APP-052 remains open.

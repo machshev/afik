@@ -667,6 +667,35 @@ impl<const BYTES: usize> TransactionalStore<BYTES> {
         Ok(generation)
     }
 
+    /// Restores a validated snapshot with an externally persisted generation.
+    ///
+    /// The caller must have obtained the generation from a validated retained
+    /// image envelope; zero is reserved for the empty store.
+    pub fn load_at_generation<O: Object, I: IntoIterator<Item = O>>(
+        &mut self,
+        objects: I,
+        generation: u32,
+    ) -> Result<u32, StorageError> {
+        if generation == 0 {
+            return Err(StorageError::GenerationOverflow);
+        }
+        self.begin()?;
+        for object in objects {
+            if let Err(error) = self.write(&object) {
+                let _ = self.abort();
+                return Err(error);
+            }
+        }
+        if let Err(error) = self.validate(|object| validate_object(&object)) {
+            let _ = self.abort();
+            return Err(error);
+        }
+        self.active = self.candidate.take().ok_or(StorageError::NoTransaction)?;
+        self.candidate_validated = false;
+        self.generation = generation;
+        Ok(generation)
+    }
+
     /// Discards an open candidate without affecting active data.
     pub fn abort(&mut self) -> Result<(), StorageError> {
         if self.candidate.take().is_none() {

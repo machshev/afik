@@ -3778,3 +3778,50 @@ The focused `radio-storage` suite is 27/27. K5 verification reports flash end
 package is `0xF000` bytes with SHA-256
 `49f4a27dabd338e51e27c37db83a82dd5d0f602570dd17e88cdd87d54ecea8a4`.
 No Nix command, hardware, flash, or commit was used.
+
+## APP-052 Milestone 3 — K5 simulator object transport, 2026-08-14
+
+`radio-protocol::k5_extended` defines an unadvertised, bounded K5 extended
+normal-mode envelope around one existing COBS/CRC frame. It has explicit
+magic/version/session/command/length/CRC fields and rejects wrong sessions,
+commands, lengths, trailing bytes, CRCs, and oversize payloads before the
+existing service sees a byte. It does not change `Hello`, the common
+`0x0600..` controls, target capability bits, or target firmware wiring.
+
+`radio-sim::K5ObjectTransport` is an explicit target/backend selection. It
+wraps the existing `radio-programmer` exchange and feeds it through the real
+`DeviceService<1264>` with deterministic fragmented reads and virtual time.
+Successful protocol commits encode the exact canonical `radio-storage` image
+and update the relative `dual_slot` model; reboot reconstructs the service
+from the newest valid image and persisted generation. Focused tests cover an
+explicit receive channel, generated and named banks, RadioConfig/squelch,
+programmer begin/write/validate/commit/list/read verification, repeated
+generations, reboot restoration, interrupted/corrupt-newest fallback, and
+strict envelope failures. Commit persistence is a fresh-commit event only;
+replays do not write again, and a dual-slot failure restores the prior active
+service and returns a protocol `Internal` error. Reboot has a typed persistence
+result and preserves the current service on backend read failure. The full
+bounded service snapshot restores decoder, candidate, replay, and transaction
+state; the durable error is cached for exact replay and conflicting sequences
+receive `SequenceConflict`. Relative backend block ranges and direct transport
+malformed/oversized input fail without panics. No target main, K5 capability, firmware identity,
+real EEPROM, physical transport, TX path, or persistence claim was added.
+
+This is simulator and host protocol evidence only. The next smallest task is
+safe K5 allocation evidence plus target-adapter sizing/static checks; it is
+not a flash or physical persistence task.
+
+The serialized cached-direnv gate passed with
+`CARGO_BUILD_JOBS=2 ionice -c 3 nice -n 10`: `cargo fmt --all --check`,
+`cargo clippy --workspace --all-targets -- -D warnings`,
+`cargo test --workspace` (including 31 `radio-sim` tests and 16
+`radio-protocol` tests), `./tool/build-k1-async.sh --release`,
+`./tool/build-k5.sh --release`, `./tool/verify-k5-image.sh
+target/thumbv6m-none-eabi/release/radio-firmware-k5`,
+`./tool/package-k5-image.sh --force
+target/thumbv6m-none-eabi/release/radio-firmware-k5
+target/thumbv6m-none-eabi/release/afik-k5-2.2Q.bin`, and `git diff --check`.
+The unchanged unflashed K5 package remains `0xF000` bytes, flash end
+`0x97f4`, static RAM end `0x20000100`, application end `0xF000`, and
+SHA-256 `49f4a27dabd338e51e27c37db83a82dd5d0f602570dd17e88cdd87d54ecea8a4`.
+No Nix command, hardware, flash, real EEPROM, or commit was used.

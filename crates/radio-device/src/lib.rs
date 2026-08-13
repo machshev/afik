@@ -118,6 +118,7 @@ pub enum DeviceEvent {
 /// `BYTES` is the packed configuration store this device has, and it is the
 /// only capacity there is. What the device advertises is derived from it, so a
 /// device cannot claim room it does not have or refuse a project which fits.
+#[derive(Clone)]
 pub struct DeviceService<const BYTES: usize> {
     decoder: StreamDecoder,
     store: TransactionalStore<BYTES>,
@@ -269,6 +270,17 @@ impl<const BYTES: usize> DeviceService<BYTES> {
     /// snapshot untouched.
     pub fn load_image(&mut self, bytes: &[u8]) -> Result<u32, StorageError> {
         self.load(decode_configuration_image(bytes)?.objects())
+    }
+
+    /// Restores a validated retained image while preserving its persisted
+    /// generation. Generation zero remains the empty/unprogrammed state.
+    pub fn load_image_at_generation(
+        &mut self,
+        bytes: &[u8],
+        generation: u32,
+    ) -> Result<u32, StorageError> {
+        self.store
+            .load_at_generation(decode_configuration_image(bytes)?.objects(), generation)
     }
 
     /// Encodes the active snapshot as a canonical configuration image.
