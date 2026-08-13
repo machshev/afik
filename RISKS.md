@@ -91,6 +91,13 @@
   tune/read-back observation. K1 object commit/read-back and K5's lack of AFIK
   persistence remain separate target concerns; K5 generation zero remains a
   volatile capability.
+- **Shared change atomicity correction, 2026-08-13:** pending candidates now
+  block intervening start/navigation/audio mutations, receiver faults clear
+  pending state, and a bounded application-instance token prevents queued
+  acknowledgements crossing app replacement. K1/K5 acknowledgement results
+  now require complete adapter-effect success and failure cleanup keeps the
+  speaker muted. These are deterministic software guarantees only; they do
+  not add serial, EEPROM, power-loss, or physical receiver evidence.
 
 ## RISK-007 — BK4819 register applicability and board RF control are unverified
 

@@ -1293,3 +1293,23 @@ meaning.
   read-back, and metric operations succeed. The contract does not own K1
   object transactions, EEPROM persistence, serial framing, or any K5 EEPROM
   behavior.
+
+## ADR-078 — Pending shared changes are isolated and adapter completion is explicit
+
+- **Date:** 2026-08-13
+- **Status:** accepted for `APP-052`
+- While a `ReceiveApp` configuration candidate is pending, `Start`, channel
+  navigation, direct selection, and audio toggles are ignored. The old active
+  semantic snapshot therefore cannot be overwritten before the adapter has
+  acknowledged the exact candidate. A receiver fault clears the pending
+  change, so a delayed applied acknowledgement cannot resurrect it.
+- Change identities retain a bounded application-instance token in addition to
+  their per-instance sequence. Target adapters supply only an opaque token;
+  no MCU, storage, or transport type crosses the boundary. Host tests prove
+  that acknowledgements from two live app instances with the same candidate do
+  not cross-commit.
+- K1 adapter application returns an explicit complete-success result and
+  treats translation failure, pre-existing fault, and any operation fault as
+  rejection. It continues safe speaker-off and redraw effects after a failure.
+  K5 checks its display result and drains all safe effects before returning its
+  acknowledgement result; both adapters force the speaker closed on failure.

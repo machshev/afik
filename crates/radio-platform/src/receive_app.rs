@@ -179,10 +179,14 @@ impl Effects {
 pub struct ReceiveApp {
     configuration: ActivatedConfiguration,
     pending_configuration: Option<ConfigurationChange>,
+    // This is an application token, not a target identity. Callers which can
+    // queue effects across app replacement must supply a fresh value so an
+    // old acknowledgement cannot be accepted by a new instance.
+    instance_id: u16,
     // Zero is reserved as the exhausted/synthetic rejection identity. IDs
     // are never reused, so a delayed acknowledgement cannot apply to a later
     // request carrying the same candidate.
-    next_change_id: u32,
+    next_change_id: u16,
     squelch_open: bool,
     receiver_ok: bool,
 }
@@ -196,7 +200,10 @@ impl Default for ReceiveApp {
 impl ReceiveApp {
     /// Creates the common operator defaults without touching hardware.
     pub const fn new() -> Self {
-        Self::from_configuration(ActivatedConfiguration::new(0, Pmr446Channel::FIRST, true))
+        Self::from_configuration_with_identity(
+            ActivatedConfiguration::new(0, Pmr446Channel::FIRST, true),
+            0,
+        )
     }
 
     /// Creates the receive application from one target-adapted activation.
@@ -205,13 +212,32 @@ impl ReceiveApp {
     /// generation zero while it has no persistence. The generation is carried
     /// through the app but never written or interpreted here.
     pub const fn from_configuration(configuration: ActivatedConfiguration) -> Self {
+        Self::from_configuration_with_identity(configuration, 0)
+    }
+
+    /// Creates the receive application with an explicit bounded instance
+    /// token. The token is needed only when effects may outlive this value.
+    pub const fn from_configuration_with_identity(
+        configuration: ActivatedConfiguration,
+        instance_id: u16,
+    ) -> Self {
         Self {
             configuration,
             pending_configuration: None,
+            instance_id,
             next_change_id: 1,
             squelch_open: false,
             receiver_ok: true,
         }
+    }
+
+    /// Creates the default receive application with an explicit instance
+    /// token for queued-effect boundaries.
+    pub const fn new_with_identity(instance_id: u16) -> Self {
+        Self::from_configuration_with_identity(
+            ActivatedConfiguration::new(0, Pmr446Channel::FIRST, true),
+            instance_id,
+        )
     }
 
     /// Returns the current semantic view.
@@ -227,50 +253,19 @@ impl ReceiveApp {
     /// Applies one target-neutral event and returns ordered target effects.
     pub fn apply(&mut self, event: Event) -> Effects {
         match event {
-            Event::Start => self.retune(),
-            Event::ConfigurationCandidate(candidate) => {
-                if self.pending_configuration.is_some() {
-                    let rejected = ConfigurationChange::new(0, candidate);
-                    return Effects::one(Effect::ConfigurationAcknowledged(
-                        ConfigurationAcknowledgement::rejected(rejected),
-                    ));
-                }
-                let Some(change) = self.allocate_change(candidate) else {
-                    let rejected = ConfigurationChange::new(0, candidate);
-                    return Effects::one(Effect::ConfigurationAcknowledged(
-                        ConfigurationAcknowledgement::rejected(rejected),
-                    ));
-                };
-                self.pending_configuration = Some(change);
-                self.pending_retune(change)
+            Event::Start
+            | Event::NextChannel
+            | Event::PreviousChannel
+            | Event::SelectChannel(_)
+            | Event::ToggleAudio
+                if self.pending_configuration.is_some() =>
+            {
+                Effects::none()
             }
+            Event::Start => self.retune(),
+            Event::ConfigurationCandidate(candidate) => self.apply_candidate(candidate),
             Event::ConfigurationAcknowledged(acknowledgement) => {
-                let Some(change) = self.pending_configuration else {
-                    return Effects::none();
-                };
-                if change != acknowledgement.change() {
-                    return Effects::none();
-                }
-                self.pending_configuration = None;
-                if matches!(acknowledgement.result(), ConfigurationChangeResult::Applied) {
-                    self.configuration = change.candidate().configuration();
-                    self.receiver_ok = true;
-                    self.squelch_open = false;
-                    Effects::three(
-                        Effect::SetSpeaker(false),
-                        Effect::Redraw(self.view()),
-                        Effect::ConfigurationAcknowledged(acknowledgement),
-                    )
-                } else {
-                    self.receiver_ok = false;
-                    self.squelch_open = false;
-                    Effects::four(
-                        Effect::SetChipAudio(false),
-                        Effect::SetSpeaker(false),
-                        Effect::Redraw(self.view()),
-                        Effect::ConfigurationAcknowledged(acknowledgement),
-                    )
-                }
+                self.apply_acknowledgement(acknowledgement)
             }
             Event::NextChannel => {
                 self.configuration = self
@@ -316,10 +311,59 @@ impl ReceiveApp {
                 }
             }
             Event::ReceiverFault => {
+                // A fault invalidates the in-flight adapter operation. Its
+                // later acknowledgement must not resurrect the candidate.
+                self.pending_configuration = None;
                 self.receiver_ok = false;
                 self.squelch_open = false;
                 Effects::two(Effect::SetSpeaker(false), Effect::Redraw(self.view()))
             }
+        }
+    }
+
+    fn apply_candidate(&mut self, candidate: ConfigurationCandidate) -> Effects {
+        if self.pending_configuration.is_some() {
+            let rejected = ConfigurationChange::new(0, candidate);
+            return Effects::one(Effect::ConfigurationAcknowledged(
+                ConfigurationAcknowledgement::rejected(rejected),
+            ));
+        }
+        let Some(change) = self.allocate_change(candidate) else {
+            let rejected = ConfigurationChange::new(0, candidate);
+            return Effects::one(Effect::ConfigurationAcknowledged(
+                ConfigurationAcknowledgement::rejected(rejected),
+            ));
+        };
+        self.pending_configuration = Some(change);
+        self.pending_retune(change)
+    }
+
+    fn apply_acknowledgement(&mut self, acknowledgement: ConfigurationAcknowledgement) -> Effects {
+        let Some(change) = self.pending_configuration else {
+            return Effects::none();
+        };
+        if change != acknowledgement.change() {
+            return Effects::none();
+        }
+        self.pending_configuration = None;
+        if matches!(acknowledgement.result(), ConfigurationChangeResult::Applied) {
+            self.configuration = change.candidate().configuration();
+            self.receiver_ok = true;
+            self.squelch_open = false;
+            Effects::three(
+                Effect::SetSpeaker(false),
+                Effect::Redraw(self.view()),
+                Effect::ConfigurationAcknowledged(acknowledgement),
+            )
+        } else {
+            self.receiver_ok = false;
+            self.squelch_open = false;
+            Effects::four(
+                Effect::SetChipAudio(false),
+                Effect::SetSpeaker(false),
+                Effect::Redraw(self.view()),
+                Effect::ConfigurationAcknowledged(acknowledgement),
+            )
         }
     }
 
@@ -345,7 +389,11 @@ impl ReceiveApp {
         }
         let id = self.next_change_id;
         self.next_change_id = self.next_change_id.checked_add(1).unwrap_or(0);
-        Some(ConfigurationChange::new(id, candidate))
+        Some(ConfigurationChange::with_instance(
+            self.instance_id,
+            id,
+            candidate,
+        ))
     }
 
     fn pending_retune(&mut self, change: ConfigurationChange) -> Effects {
@@ -655,8 +703,7 @@ mod tests {
             app.apply(Event::ConfigurationAcknowledged(
                 ConfigurationAcknowledgement::applied(first_change),
             )),
-            Effects::four(
-                Effect::SetChipAudio(true),
+            Effects::three(
                 Effect::SetSpeaker(false),
                 Effect::Redraw(app.view()),
                 Effect::ConfigurationAcknowledged(ConfigurationAcknowledgement::applied(
@@ -684,5 +731,97 @@ mod tests {
             Effects::none()
         );
         assert_eq!(app.view().channel, 4);
+    }
+
+    #[test]
+    fn pending_candidate_is_not_overwritten_by_intervening_receive_events() {
+        let mut app = ReceiveApp::new();
+        let candidate = ConfigurationCandidate::from_channel(2, 8, false).expect("candidate");
+        let request = app.apply(Event::ConfigurationCandidate(candidate));
+        let change = request
+            .iter()
+            .find_map(|effect| match effect {
+                Effect::ConfigurationChange(change) => Some(change),
+                _ => None,
+            })
+            .expect("pending change");
+
+        for event in [
+            Event::Start,
+            Event::NextChannel,
+            Event::PreviousChannel,
+            Event::SelectChannel(12),
+            Event::ToggleAudio,
+            Event::KeyPress(Key::Up),
+            Event::KeyPress(Key::Menu),
+        ] {
+            assert_eq!(app.apply(event), Effects::none());
+        }
+        assert_eq!(app.view().channel, 1);
+        assert!(app.view().audio);
+
+        app.apply(Event::ConfigurationAcknowledged(
+            ConfigurationAcknowledgement::applied(change),
+        ));
+        assert_eq!(app.view().channel, 8);
+        assert!(!app.view().audio);
+    }
+
+    #[test]
+    fn receiver_fault_invalidates_pending_change_and_late_ack() {
+        let mut app = ReceiveApp::new();
+        let candidate = ConfigurationCandidate::from_channel(2, 8, true).expect("candidate");
+        let request = app.apply(Event::ConfigurationCandidate(candidate));
+        let change = request
+            .iter()
+            .find_map(|effect| match effect {
+                Effect::ConfigurationChange(change) => Some(change),
+                _ => None,
+            })
+            .expect("pending change");
+        app.apply(Event::ReceiverFault);
+        assert_eq!(app.view().channel, 1);
+        assert!(!app.view().receiver_ok);
+        assert_eq!(
+            app.apply(Event::ConfigurationAcknowledged(
+                ConfigurationAcknowledgement::applied(change),
+            )),
+            Effects::none()
+        );
+        assert_eq!(app.view().channel, 1);
+        assert!(!app.view().receiver_ok);
+    }
+
+    #[test]
+    fn queued_acknowledgement_cannot_cross_explicit_app_instances() {
+        let candidate = ConfigurationCandidate::from_channel(2, 8, true).expect("candidate");
+        let mut first = ReceiveApp::new_with_identity(1);
+        let mut second = ReceiveApp::new_with_identity(2);
+        let first_request = first.apply(Event::ConfigurationCandidate(candidate));
+        let first_change = first_request
+            .iter()
+            .find_map(|effect| match effect {
+                Effect::ConfigurationChange(change) => Some(change),
+                _ => None,
+            })
+            .expect("first change");
+        let second_request = second.apply(Event::ConfigurationCandidate(candidate));
+        let second_change = second_request
+            .iter()
+            .find_map(|effect| match effect {
+                Effect::ConfigurationChange(change) => Some(change),
+                _ => None,
+            })
+            .expect("second change");
+        assert_ne!(first_change.id(), second_change.id());
+        assert_eq!(first_change.instance_id(), 1);
+        assert_eq!(second_change.instance_id(), 2);
+        assert_eq!(
+            second.apply(Event::ConfigurationAcknowledged(
+                ConfigurationAcknowledgement::applied(first_change),
+            )),
+            Effects::none()
+        );
+        assert_eq!(second.view().channel, 1);
     }
 }

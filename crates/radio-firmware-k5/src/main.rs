@@ -120,7 +120,7 @@ fn main() -> ! {
     // K5 has no AFIK persistence adapter yet. Generation zero is explicit at
     // this boundary; the target still enters the same shared activation and
     // receive state machine as K1 without inventing EEPROM semantics.
-    let mut app = ReceiveApp::new();
+    let mut app = ReceiveApp::new_with_identity(1);
     let mut configured = None;
     let mut metrics = None;
     let mut keypad = K5Matrix::initialise();
@@ -268,6 +268,7 @@ fn apply_effects<B: RegisterBus>(
     configured: &mut Option<u16>,
     metrics: &mut Option<ReceiveMetrics>,
 ) -> bool {
+    let mut complete = true;
     for effect in effects {
         match effect {
             Effect::Tune {
@@ -276,14 +277,16 @@ fn apply_effects<B: RegisterBus>(
                 audio,
             } => {
                 let Some(channel) = Pmr446Channel::new(channel) else {
-                    return false;
+                    complete = false;
+                    continue;
                 };
                 if channel.frequency().as_hz() != frequency_hz {
-                    return false;
+                    complete = false;
+                    continue;
                 }
                 (*configured, *metrics) = tune_and_sample(radio, channel, audio);
                 if configured.is_none() || metrics.is_none() {
-                    return false;
+                    complete = false;
                 }
             }
             Effect::SetChipAudio(audio) => {
@@ -296,7 +299,7 @@ fn apply_effects<B: RegisterBus>(
                     .set_af_output(radio_domain::Modulation::Fm, output)
                     .is_err()
                 {
-                    return false;
+                    complete = false;
                 }
             }
             Effect::SetSpeaker(enabled) => speaker.set_enabled(enabled),
@@ -306,12 +309,22 @@ fn apply_effects<B: RegisterBus>(
                     *configured = None;
                     *metrics = None;
                 }
-                display.show_pmr_receive(view, *configured, *metrics)
+                if display
+                    .show_pmr_receive(view, *configured, *metrics)
+                    .is_err()
+                {
+                    complete = false;
+                }
             }
             Effect::ConfigurationAcknowledged(_) => {}
         }
     }
-    true
+    if !complete {
+        // A rejected/faulted change cannot leave the amplifier open even when
+        // a preceding chip operation or redraw failed.
+        speaker.set_enabled(false);
+    }
+    complete
 }
 
 /// Startup work that has to touch memory the linker owns rather than Rust.

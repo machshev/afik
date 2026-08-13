@@ -87,7 +87,7 @@ impl K5BootDisplay {
         view: View,
         configured: Option<u16>,
         metrics: Option<ReceiveMetrics>,
-    ) {
+    ) -> Result<(), core::convert::Infallible> {
         let mut channel_text = *b"00";
         decimal_text(u32::from(view.channel), &mut channel_text);
         let mut configured_text = *b"----";
@@ -129,6 +129,7 @@ impl K5BootDisplay {
         draw_text(6, 50, b"N");
         draw_text(6, 62, &noise);
         select_display(false);
+        Ok(())
     }
 }
 

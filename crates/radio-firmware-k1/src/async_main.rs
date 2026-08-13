@@ -705,17 +705,24 @@ impl Receiver {
 ///
 /// Rendering remains the richer K1 shell renderer: the shared redraw effect
 /// marks it dirty rather than replacing its semantic screens with K5 pixels.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SharedApplyOutcome {
+    redraw: bool,
+    complete: bool,
+}
+
 fn apply_shared_effects(
     effects: SharedEffects,
     receiver: &mut Receiver,
     radio_wide_squelch: SquelchLevel,
-) -> bool {
+) -> SharedApplyOutcome {
     let mut redraw = false;
+    let mut complete = !receiver.faulted;
     for effect in effects.iter() {
         let Ok(effect) = translate(effect) else {
             receiver.faulted = true;
-            receiver.set_speaker(false);
-            return true;
+            complete = false;
+            continue;
         };
         match effect {
             K1Effect::ConfigurationChange(_) => {}
@@ -729,11 +736,17 @@ fn apply_shared_effects(
             K1Effect::ConfigurationAcknowledged(_) => {}
         }
         if receiver.faulted {
-            receiver.set_speaker(false);
-            return true;
+            complete = false;
         }
     }
-    redraw
+    if !complete {
+        // Continue through safe effects above so a failed chip operation does
+        // not skip the speaker gate or semantic redraw. This final guard also
+        // covers a failure in the translation boundary itself.
+        receiver.set_speaker(false);
+        redraw = true;
+    }
+    SharedApplyOutcome { redraw, complete }
 }
 
 /// The external configuration memory's peripheral and pins.
@@ -1246,6 +1259,9 @@ async fn ui_task(
     // PMR446 examples. Arbitrary programmed channels and the VFO retain the
     // existing K1 controller path.
     let mut shared_receive: Option<ReceiveApp> = None;
+    // Fresh token for each shared-app replacement, so queued adapter effects
+    // cannot cross a publication boundary even when storage generation wraps.
+    let mut shared_instance_id = 1_u16;
     // The shared app owns this semantic preference. Keep it across a K1
     // configuration publication while replacing the activation generation;
     // receiver hardware state is not a valid source because a first tune
@@ -1319,6 +1335,10 @@ async fn ui_task(
             // the shared app cannot accidentally carry semantic state from a
             // prior generation into the replacement.
             shared_audio = shared_receive.as_ref().map_or(true, |app| app.view().audio);
+            shared_instance_id = shared_instance_id.wrapping_add(1);
+            if shared_instance_id == 0 {
+                shared_instance_id = 1;
+            }
             shared_receive = None;
             adopt_settings(&mut shell, &programmed);
             // A radio which had no channels and now has some is being given
@@ -1506,7 +1526,8 @@ async fn ui_task(
         if let Some(setup) = pending.filter(|_| bus_available()) {
             if let Some(channel) = shared_channel(setup) {
                 let had_shared = shared_receive.is_some();
-                let app = shared_receive.get_or_insert_with(ReceiveApp::new);
+                let app = shared_receive
+                    .get_or_insert_with(|| ReceiveApp::new_with_identity(shared_instance_id));
                 let candidate = ConfigurationCandidate::from_channel(
                     generation,
                     channel,
@@ -1517,15 +1538,15 @@ async fn ui_task(
                     },
                 )
                 .expect("shared channel was validated");
-                let was_faulted = receiver.faulted;
                 let candidate_effects = app.apply(SharedEvent::ConfigurationCandidate(candidate));
                 let change = candidate_effects.iter().find_map(|effect| match effect {
                     SharedEffect::ConfigurationChange(change) => Some(change),
                     _ => None,
                 });
-                let _ = apply_shared_effects(candidate_effects, &mut receiver, shell.squelch());
+                let outcome =
+                    apply_shared_effects(candidate_effects, &mut receiver, shell.squelch());
                 if let Some(change) = change {
-                    let acknowledgement = if !was_faulted && !receiver.faulted {
+                    let acknowledgement = if outcome.complete {
                         ConfigurationAcknowledgement::applied(change)
                     } else {
                         ConfigurationAcknowledgement::rejected(change)
@@ -1564,7 +1585,8 @@ async fn ui_task(
                         }),
                         &mut receiver,
                         shell.squelch(),
-                    );
+                    )
+                    .redraw;
                 }
                 // While scanning this is what decides whether the channel is
                 // busy, so the hold it asks for has to reach the scan's clock.
@@ -1588,7 +1610,8 @@ async fn ui_task(
                         app.apply(SharedEvent::ReceiverFault),
                         &mut receiver,
                         shell.squelch(),
-                    );
+                    )
+                    .redraw;
                 }
             }
             next_sample = Instant::now()

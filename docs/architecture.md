@@ -227,6 +227,16 @@ setup; K5 applies them to its immutable built-in receive fixture. Neither
 target's serial protocol, EEPROM transport, object commit/read-back, or
 volatile capability is represented in this shared contract.
 
+While a candidate is pending, start/navigation/audio events cannot overwrite
+the active snapshot, and a receiver fault invalidates the pending change before
+any later acknowledgement can apply it. Change identities carry a bounded
+application-instance token so queued acknowledgements cannot cross an app
+replacement when callers provide a fresh token. Target adapters return an
+explicit complete-effect result: translation, tune, chip-audio, read-back,
+metric, and display failures reject the change, while failure cleanup still
+closes the speaker and emits the semantic fault redraw. These are in-memory
+software guarantees, not persistence or hardware evidence.
+
 The DP32G030 target linker and package tools own the V1 application-region
 contract. They emit a full `0x0000..0xEFFF` raw image and never include the
 stock `0xF000..0xFFFF` bootloader region. Hardware-independent radio crates do

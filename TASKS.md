@@ -2646,6 +2646,15 @@
   release/package gate pass; K5 flash ends at `0x5CC0`, static RAM ends at
   `0x20000100`, the package remains exactly `0xF000` bytes, and its SHA-256 is
   `2e231566f3d84bfce5708d3135e41a1c9c019fce037a6d730d376390fccebbd6`.
+- **Configuration-change atomicity correction:** pending changes now isolate
+  the active snapshot from intervening start/navigation/audio events, receiver
+  faults invalidate pending changes, and a bounded application-instance token
+  rejects cross-instance queued acknowledgements. K1 returns explicit complete
+  adapter-effect success (including translation failure handling); K5 checks
+  its display result and both adapters force the speaker closed on failure.
+  Deterministic platform tests cover these boundaries. No hardware was
+  flashed; the final throttled workspace, target-build, and package evidence
+  is recorded in `STATUS.md` below.
 - **Then:** serial control remains target-owned until a separate boundary is
   designed. Keep K1 persistence and serial protocol, K5 persistence (until
   evidenced), MCU registers, interrupts,

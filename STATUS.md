@@ -131,6 +131,28 @@ No hardware was flashed. Next smallest actionable task: extract serial
 control only after its target-owned persistence and transport boundary is
 designed.
 
+The APP-052 configuration-change boundary received an atomicity and adapter
+completion correction on 2026-08-13. While a candidate is pending,
+`ReceiveApp` ignores `Start`, navigation, direct selection, and audio events;
+`ReceiverFault` clears pending state, so a later applied acknowledgement cannot
+resurrect the candidate. Changes now carry a bounded application-instance token
+plus sequence, and a deterministic fixture proves acknowledgements from two
+instances with the same candidate do not cross-commit. K1 now returns explicit
+complete adapter-effect success, including translation failures, and continues
+safe speaker-off/redraw cleanup after an operation fault. K5 checks its display
+result and both adapters force the speaker closed when an effect fails. K1
+persistence/protocol and K5 volatile generation-zero behavior remain
+target-owned.
+
+Focused checks passed through the cached direnv shell, one process at a time:
+
+- `direnv exec . env CARGO_BUILD_JOBS=2 ionice -c 3 nice -n 10 cargo test -p radio-platform receive_app::tests` — 15 passed.
+- `direnv exec . env CARGO_BUILD_JOBS=2 ionice -c 3 nice -n 10 cargo test -p radio-firmware-k1 --lib` — 127 passed.
+- `direnv exec . env CARGO_BUILD_JOBS=2 ionice -c 3 nice -n 10 cargo test -p radio-firmware-k5 --lib` — 16 passed.
+
+The single successful sequential final gate was:
+`direnv exec . env CARGO_BUILD_JOBS=2 ionice -c 3 nice -n 10 bash -c 'cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && ./tool/build-k1-async.sh --release && ./tool/build-k5.sh --release && ./tool/verify-k5-image.sh && ./tool/package-k5-image.sh --force && git diff --check'` — passed. The workspace suite passed; both release builds passed; K5 verification reports flash end `0x5BD8`, static RAM end `0x20000100`, and application bound `0xF000`; packaging reports exactly `0xF000` bytes with SHA-256 `c9930ebd919c64583ba45312cb40b42f9acbcac4881b48d48409d994cf12ea52`. No hardware was flashed.
+
 K1 live-path verification on 2026-08-13:
 
 - `nix flake check path:. --no-build` — passed; Nix reported the incompatible

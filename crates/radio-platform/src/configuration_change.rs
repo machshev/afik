@@ -73,9 +73,36 @@ impl ConfigurationChange {
         Self { id, candidate }
     }
 
+    /// Creates a change with a bounded application-instance identity.
+    ///
+    /// The high half identifies the application instance and the low half is
+    /// its monotonic sequence.  This remains an opaque application token: it
+    /// does not contain a target, storage, or transport type.
+    pub const fn with_instance(
+        instance_id: u16,
+        sequence: u16,
+        candidate: ConfigurationCandidate,
+    ) -> Self {
+        Self {
+            id: ((instance_id as u32) << 16) | sequence as u32,
+            candidate,
+        }
+    }
+
     /// Returns the application-local change identity.
     pub const fn id(self) -> u32 {
         self.id
+    }
+
+    /// Returns the bounded application-instance portion of this identity.
+    pub const fn instance_id(self) -> u16 {
+        (self.id >> 16) as u16
+    }
+
+    /// Returns the bounded per-instance sequence portion of this identity.
+    pub const fn sequence(self) -> u16 {
+        let bytes = self.id.to_le_bytes();
+        u16::from_le_bytes([bytes[0], bytes[1]])
     }
 
     /// Returns the candidate requested by this change.
