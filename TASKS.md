@@ -2672,6 +2672,21 @@
   changes remain excluded because their exact acknowledgement and persistence
   semantics are not common. Deterministic K1/K5 and `radio-sim` tests prove
   exact bytes and shared `ReceiveApp` effects; no hardware was flashed.
+- **Target envelope command mapping:** K1 assigns `RuntimeControl` command
+  `0x18` (`CommonApplication`) to the fixed two-byte payload, preserving the
+  existing `DeviceService` response, replay, sequence-conflict, and error
+  matrix. K5 assigns normal-mode `0x0600` View, `0x0601` Capabilities,
+  `0x0602..=0x0614` logical keys, and `0x0620` common responses inside its
+  observed fixed envelope. Both paths validate target framing before entering
+  the shared app; malformed, unknown, reserved, and wrong-service requests do
+  not mutate state. Exact K1/K5 frame, stream-recovery, and end-to-end
+  `ReceiveApp` tests pass. K5 persistence/candidate wire remains excluded.
+  This is software/simulator evidence only; physical common serial behavior is
+  still open and no hardware was flashed.
+- **Envelope review correction:** K5 response inner lengths now describe only
+  the bounded common response data, and target-effect failures feed the shared
+  receiver-fault event before refusal. Deterministic tests cover malformed
+  CRC/footer/payload nonmutation and K1 replay of a common command.
 - **Then:** serial control remains target-owned until a separate boundary is
   designed. Keep K1 persistence and serial protocol, K5 persistence (until
   evidenced), MCU registers, interrupts,

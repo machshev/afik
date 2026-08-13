@@ -556,6 +556,20 @@ mod tests {
         assert_eq!(&query_response[..length], &[0x81, 2, 1, 2]);
     }
 
+    #[test]
+    fn malformed_or_unknown_common_payloads_are_rejected_without_app_mutation() {
+        use super::{decode_shared_request, shared_wire};
+        use radio_platform::receive_app::ReceiveApp;
+
+        let app = ReceiveApp::new();
+        let before = app.view();
+        assert!(decode_shared_request(&[0x03]).is_err());
+        assert!(decode_shared_request(&[0x03, 0xFF]).is_err());
+        assert!(decode_shared_request(&[0x01, 0x01]).is_err());
+        assert_eq!(app.view(), before);
+        assert_eq!(shared_wire::REQUEST_BYTES, 2);
+    }
+
     fn encode_request_for_test(payload: [u8; 8]) -> [u8; 10] {
         let mut encoded = [0_u8; 10];
         encoded[..8].copy_from_slice(&payload);

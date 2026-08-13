@@ -3533,3 +3533,54 @@ Disk was 30% used (`270G/944G`, `659G` available) after the gate. Next
 smallest task: decide and document a target-owned envelope command assignment
 for carrying these common payloads; do not imply K5 persistence or physical
 serial support until that wire and bench evidence exists.
+
+## APP-052 target envelope command mapping, 2026-08-13
+
+The envelope boundary is now implemented and documented. K1 retains its
+existing COBS/object/runtime framing and assigns `RuntimeControl` command
+`0x18` (`CommonApplication`) to an exactly two-byte common payload. The normal
+`DeviceService` path still owns flags, sequence replay, sequence conflicts,
+wrong-service/command errors, and response framing; the K1 interface task only
+decodes the bounded payload and routes it through the existing `ReceiveApp`
+instance. K1 persistence, object transactions, VFO, scan, and raw metrics stay
+target-owned.
+
+K5 retains its observed fixed normal-mode envelope and assigns `0x0600` View,
+`0x0601` Capabilities, `0x0602..=0x0614` canonical logical keys, and `0x0620`
+common responses. The normal parser validates the existing CRC, session,
+length, and trailer before returning a common request; malformed, unknown, and
+reserved values are discarded and the parser resynchronises at the next
+header. K5 common effects are applied through its one `ReceiveApp` and target
+adapters; no K5 persistence or candidate wire was added.
+
+Tests cover exact K1 framed common request/response and malformed-payload
+errors, K5 byte-stream recovery and exact response envelope, K5 end-to-end
+normal-envelope dispatch into `ReceiveApp`, shared key/view/capability payload
+parity, and existing simulator/target service sequence behavior. Focused
+warning-denied Clippy and host tests pass. No hardware was flashed. The final
+serialized workspace/target/package gate remains to be run after this change.
+Remaining gaps are physical K1/K5 common serial interoperability and K5
+normal-mode sequence/replay semantics: the observed K5 envelope carries no
+sequence field, so it has no invented replay cache.
+
+The envelope review corrected the K5 response's inner length field to the
+bounded common response data length (four bytes for View/key responses and
+three for Capabilities), matching the existing fixed-envelope convention.
+Malformed K5 CRC/footer frames and malformed K1/K5 common payloads are tested
+to leave the shared application untouched. A failed serial key effect now
+feeds `ReceiverFault` back into `ReceiveApp` on both targets, so a later View
+cannot report a healthy semantic state after a target adapter failure. The
+focused K1 (131), K5 library (20), K5 hello (10), and radio-device (23) test
+suites pass, as does warning-denied focused Clippy. No hardware was flashed.
+
+The single serialized final gate then passed through the cached direnv shell:
+`direnv exec . env CARGO_BUILD_JOBS=2 ionice -c 3 nice -n 10 bash -c 'cargo
+fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings &&
+cargo test --workspace && ./tool/build-k1-async.sh --release &&
+./tool/build-k5.sh --release && ./tool/verify-k5-image.sh &&
+./tool/package-k5-image.sh --force && git diff --check'`. The workspace suite,
+K1 release image, K5 release image, static K5 verification, and fixed package
+all passed. K5 flash end is `0x60D4`, static RAM end is `0x20000100`, and the
+`0xF000` package SHA-256 is
+`fb386bffe7fdc72c7a1409cbb4dde7885470ce4a7b09333b127d5a18e004759d`.
+Disk remained at 30% (`270G/944G`, `659G` available). No hardware was flashed.

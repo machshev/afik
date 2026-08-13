@@ -75,6 +75,8 @@ use radio_platform::configuration_change::{ConfigurationAcknowledgement, Configu
 use radio_platform::receive_app::{
     Effect as SharedEffect, Effects as SharedEffects, Event as SharedEvent, ReceiveApp,
 };
+use radio_platform::serial_control::wire as shared_wire;
+use radio_platform::serial_control::{dispatch as dispatch_shared, Result as SharedResult};
 use radio_protocol::{ControlRequest, DeviceErrorCode, ReceiveMetricsReport, MAX_ENCODED_FRAME};
 use radio_storage::ObjectArena;
 
@@ -749,6 +751,104 @@ fn apply_shared_effects(
     SharedApplyOutcome { redraw, complete }
 }
 
+/// Answers one validated common application request on the K1 target wire.
+///
+/// The request arrived through `DeviceService`, so framing, flags, sequence
+/// replay, and target-only error responses remain owned by `radio-device`. This
+/// adapter only decodes the bounded common payload and applies its effects to
+/// the one shared `ReceiveApp` instance already used by the interface loop.
+fn answer_common_serial(
+    payload: [u8; 2],
+    app: &mut Option<ReceiveApp>,
+    receiver: &mut Receiver,
+    radio_wide_squelch: SquelchLevel,
+) -> (ControlAnswer, bool) {
+    let Ok(request) = shared_wire::decode_request(&payload) else {
+        return (
+            ControlAnswer::Refused(DeviceErrorCode::MalformedPayload),
+            false,
+        );
+    };
+    match request {
+        shared_wire::Request::Capabilities => {
+            let mut empty = ReceiveApp::new();
+            common_result_answer(
+                dispatch_shared(
+                    &mut empty,
+                    host_control::serial_capabilities(),
+                    shared_wire::into_request(request),
+                ),
+                false,
+            )
+        }
+        shared_wire::Request::View => {
+            let Some(app) = app.as_mut() else {
+                return (ControlAnswer::Refused(DeviceErrorCode::InvalidState), false);
+            };
+            common_result_answer(
+                dispatch_shared(
+                    app,
+                    host_control::serial_capabilities(),
+                    shared_wire::into_request(request),
+                ),
+                false,
+            )
+        }
+        shared_wire::Request::Key(_) => {
+            let Some(app) = app.as_mut() else {
+                return (ControlAnswer::Refused(DeviceErrorCode::InvalidState), false);
+            };
+            let SharedResult::Effects(effects) = dispatch_shared(
+                app,
+                host_control::serial_capabilities(),
+                shared_wire::into_request(request),
+            ) else {
+                return (ControlAnswer::Refused(DeviceErrorCode::Internal), false);
+            };
+            let outcome = apply_shared_effects(effects, receiver, radio_wide_squelch);
+            if !outcome.complete {
+                // The target operation failed after the shared event had
+                // already changed its candidate/semantic state.  Feed the
+                // failure back through ReceiveApp so a subsequent View cannot
+                // report a healthy receiver after a refused key command.
+                let fault = app.apply(SharedEvent::ReceiverFault);
+                let fault_outcome = apply_shared_effects(fault, receiver, radio_wide_squelch);
+                return (
+                    ControlAnswer::Refused(DeviceErrorCode::Internal),
+                    outcome.redraw || fault_outcome.redraw,
+                );
+            }
+            let mut bytes = [0_u8; 4];
+            let length =
+                shared_wire::encode_key_response(app.view(), &mut bytes).unwrap_or_default();
+            (
+                ControlAnswer::Common {
+                    payload: bytes,
+                    length: u8::try_from(length).unwrap_or(0),
+                },
+                outcome.redraw,
+            )
+        }
+    }
+}
+
+/// Encodes the query result into the response payload carried by the K1
+/// runtime-control frame.
+fn common_result_answer(result: SharedResult, _key: bool) -> (ControlAnswer, bool) {
+    let mut bytes = [0_u8; 4];
+    let Ok(length) = radio_platform::serial_control::wire::encode_response(result, &mut bytes)
+    else {
+        return (ControlAnswer::Refused(DeviceErrorCode::Internal), false);
+    };
+    (
+        ControlAnswer::Common {
+            payload: bytes,
+            length: u8::try_from(length).unwrap_or(0),
+        },
+        false,
+    )
+}
+
 /// The external configuration memory's peripheral and pins.
 ///
 /// `EVID-K1-060` records this wiring: the memory is on `SPI2` with an
@@ -1361,20 +1461,32 @@ async fn ui_task(
         // while this happens and nothing here is suspended: both peers drive
         // one controller, and whichever arrives first is served first.
         if let Some(request) = CONTROL_REQUEST.try_take() {
-            let answer = match activation.as_mut() {
-                Some((controller, _)) => {
-                    let performed =
-                        host_control::perform(controller, request, receiver.last_metrics);
-                    if let Some(update) = performed.update {
-                        apply(update, &mut pending, &mut scan_timer);
-                        redraw = true;
-                    }
-                    performed.answer
+            let answer = match request {
+                ControlRequest::CommonApplication { payload } => {
+                    let (answer, dirty) = answer_common_serial(
+                        payload,
+                        &mut shared_receive,
+                        &mut receiver,
+                        shell.squelch(),
+                    );
+                    redraw |= dirty;
+                    answer
                 }
-                // No controller yet means no channels and no VFO: the radio has
-                // not finished starting. That is a state the request cannot be
-                // performed from, not a fault.
-                None => ControlAnswer::Refused(DeviceErrorCode::InvalidState),
+                request => match activation.as_mut() {
+                    Some((controller, _)) => {
+                        let performed =
+                            host_control::perform(controller, request, receiver.last_metrics);
+                        if let Some(update) = performed.update {
+                            apply(update, &mut pending, &mut scan_timer);
+                            redraw = true;
+                        }
+                        performed.answer
+                    }
+                    // No controller yet means no channels and no VFO: the radio has
+                    // not finished starting. That is a state the request cannot be
+                    // performed from, not a fault.
+                    None => ControlAnswer::Refused(DeviceErrorCode::InvalidState),
+                },
             };
             CONTROL_ANSWER.signal(answer);
         }

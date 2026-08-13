@@ -120,6 +120,13 @@ pub fn perform<S: ChannelSource>(
         ControlRequest::SelectChannel { index } => {
             settled(controller, |controller| controller.select(index))
         }
+        // Common application requests are answered by the interface task,
+        // which owns `ReceiveApp`; they must never be interpreted as a
+        // controller operation here.
+        ControlRequest::CommonApplication { .. } => Performed {
+            update: None,
+            answer: ControlAnswer::Refused(DeviceErrorCode::UnsupportedCommand),
+        },
         ControlRequest::TuneTo { frequency_hz } => {
             let Ok(frequency) = Frequency::from_hz(frequency_hz) else {
                 return Performed {

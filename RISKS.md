@@ -111,6 +111,14 @@
   target framing remains separate; host and simulator tests do not establish
   physical serial interoperability, K5 persistence, or K1 object-protocol
   compatibility for the new payload.
+- **Target envelope mapping narrowing, 2026-08-13:** K1 now carries the common
+  payload only as `RuntimeControl` command `0x18`, retaining its existing
+  sequence/replay behavior. K5 now assigns `0x0600..=0x0614` and response
+  `0x0620` inside the observed fixed normal-mode envelope, which has no
+  sequence field and therefore receives no invented replay cache. Host and
+  simulator tests prove framing recovery and shared dispatch, but this does
+  not prove physical K1/K5 serial interoperability, K5 persistence, or
+  candidate acknowledgement on a wire.
 
 ## RISK-007 — BK4819 register applicability and board RF control are unverified
 

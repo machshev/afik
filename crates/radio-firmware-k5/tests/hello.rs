@@ -8,12 +8,17 @@
 
 use radio_firmware_k5::protocol::{
     apply_shared_serial_request, apply_shared_wire_request, decode_shared_request,
-    encode_shared_response, serial_capabilities, HelloService, SerialCapability, SerialCommand,
-    SerialRequest, SerialResult, APPLICATION_IDENTITY, APPLICATION_VERSION, RESPONSE_FRAME_BYTES,
+    encode_common_key_response, encode_shared_response, serial_capabilities, HelloService,
+    NormalRequest, NormalService, SerialCapability, SerialCommand, SerialRequest, SerialResult,
+    APPLICATION_IDENTITY, APPLICATION_VERSION, RESPONSE_FRAME_BYTES,
 };
 use radio_flasher::probe_normal_firmware;
 use radio_platform::receive_app::{Event, Key, ReceiveApp};
 use std::io::{Read, Write};
+
+const NORMAL_XOR_KEY: [u8; 16] = [
+    0x16, 0x6C, 0x14, 0xE6, 0x2E, 0x91, 0x0D, 0x40, 0x21, 0x35, 0xD5, 0x40, 0x13, 0x03, 0xE9, 0x80,
+];
 
 /// A radio which runs the image's own protocol code over an in-memory wire.
 struct SimulatedRadio {
@@ -166,4 +171,77 @@ fn k5_common_wire_capability_query_is_target_declared() {
     let mut response = [0_u8; 4];
     let length = encode_shared_response(result, &mut response).expect("capability response");
     assert_eq!(&response[..length], &[0x82, 0x07, 0x00]);
+}
+
+#[test]
+fn malformed_common_payload_is_rejected_without_mutating_receive_state() {
+    let app = ReceiveApp::new();
+    let before = app.view();
+    assert!(decode_shared_request(&[0x03]).is_err());
+    assert!(decode_shared_request(&[0x03, 0xFF]).is_err());
+    assert!(decode_shared_request(&[0x01, 0x01]).is_err());
+    assert_eq!(app.view(), before);
+}
+
+fn normal_request(command: u16) -> [u8; 16] {
+    let mut frame = [0_u8; 16];
+    frame[..4].copy_from_slice(&[0xAB, 0xCD, 8, 0]);
+    frame[4..6].copy_from_slice(&command.to_le_bytes());
+    frame[6..8].copy_from_slice(&4_u16.to_le_bytes());
+    frame[8..12].copy_from_slice(&0x6457_396A_u32.to_le_bytes());
+    let mut crc = 0_u16;
+    for byte in &frame[4..12] {
+        crc ^= u16::from(*byte) << 8;
+        for _ in 0..8 {
+            crc = if crc & 0x8000 == 0 {
+                crc << 1
+            } else {
+                (crc << 1) ^ 0x1021
+            };
+        }
+    }
+    frame[12..14].copy_from_slice(&crc.to_le_bytes());
+    for (index, byte) in frame[4..14].iter_mut().enumerate() {
+        *byte ^= NORMAL_XOR_KEY[index];
+    }
+    frame[14..].copy_from_slice(&[0xDC, 0xBA]);
+    frame
+}
+
+#[test]
+fn k5_normal_envelope_dispatches_a_key_into_receive_app_and_encodes_response() {
+    let mut service = NormalService::new();
+    let mut request = None;
+    for byte in normal_request(0x0606) {
+        request = service.push(byte).or(request);
+    }
+    assert_eq!(
+        request,
+        Some(NormalRequest::Common(
+            radio_platform::serial_control::wire::Request::Key(Key::Up)
+        ))
+    );
+    let NormalRequest::Common(request) = request.expect("common request") else {
+        panic!("expected common request");
+    };
+    let mut app = ReceiveApp::new();
+    let result = apply_shared_wire_request(&mut app, request);
+    assert!(matches!(result, SerialResult::Effects(_)));
+    let mut response = [0_u8; RESPONSE_FRAME_BYTES];
+    assert_eq!(
+        encode_common_key_response(app.view(), request, &mut response),
+        48
+    );
+    // The target-owned response is an exact fixed frame; the unit protocol
+    // tests assert its de-obfuscated command/payload fields.
+    assert_eq!(&response[..4], &[0xAB, 0xCD, 40, 0]);
+    assert_eq!(&response[46..], &[0xDC, 0xBA]);
+    // The fixed response envelope retains the legacy inner-length
+    // convention: this is the four-byte common response data area, not the
+    // command and metadata size.
+    let mut decoded = response;
+    for (index, byte) in decoded[4..46].iter_mut().enumerate() {
+        *byte ^= NORMAL_XOR_KEY[index % NORMAL_XOR_KEY.len()];
+    }
+    assert_eq!(&decoded[6..8], &[4, 0]);
 }

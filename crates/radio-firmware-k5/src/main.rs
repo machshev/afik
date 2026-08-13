@@ -22,7 +22,10 @@ use radio_firmware_k5::audio::SpeakerGate;
 use radio_firmware_k5::bk4819_bus::{K5Pins, K5RegisterBus};
 use radio_firmware_k5::k5_display::K5BootDisplay;
 use radio_firmware_k5::keypad::{self, K5Matrix};
-use radio_firmware_k5::protocol::{HelloService, APPLICATION_IDENTITY, RESPONSE_FRAME_BYTES};
+use radio_firmware_k5::protocol::{
+    encode_common_key_response, encode_common_response, encode_hello_response, NormalRequest,
+    NormalService, RESPONSE_FRAME_BYTES,
+};
 use radio_firmware_k5::receive::Pmr446Channel;
 use radio_platform::configuration_change::{ConfigurationAcknowledgement, ConfigurationCandidate};
 use radio_platform::display::show_boot_sequence;
@@ -150,13 +153,59 @@ fn main() -> ! {
         );
     }
 
-    let mut service = HelloService::new(APPLICATION_IDENTITY);
+    let mut service = NormalService::new();
     let mut response = [0_u8; RESPONSE_FRAME_BYTES];
     loop {
         while let Some(byte) = receiver.read_byte() {
-            let Some(length) = service.push(byte, &mut response) else {
+            let Some(request) = service.push(byte) else {
                 continue;
             };
+            let length = match request {
+                NormalRequest::Hello => {
+                    encode_hello_response(&mut response);
+                    RESPONSE_FRAME_BYTES
+                }
+                NormalRequest::Common(request) => {
+                    let result =
+                        radio_firmware_k5::protocol::apply_shared_wire_request(&mut app, request);
+                    match result {
+                        radio_firmware_k5::protocol::SerialResult::Effects(effects) => {
+                            let complete = apply_effects(
+                                effects.iter(),
+                                &mut radio,
+                                &mut speaker,
+                                &mut display,
+                                &mut configured,
+                                &mut metrics,
+                            );
+                            if !complete {
+                                // A target effect failure must invalidate the
+                                // semantic snapshot as well as muting the
+                                // physical speaker.  Otherwise a later View
+                                // could expose a healthy state after a
+                                // refused serial key.
+                                apply_event(
+                                    &mut app,
+                                    Event::ReceiverFault,
+                                    &mut radio,
+                                    &mut speaker,
+                                    &mut display,
+                                    &mut configured,
+                                    &mut metrics,
+                                );
+                                0
+                            } else {
+                                encode_common_key_response(app.view(), request, &mut response)
+                            }
+                        }
+                        result => encode_common_response(result, request, &mut response)
+                            .map_or(0, |_| RESPONSE_FRAME_BYTES),
+                    }
+                }
+            };
+            if length == 0 {
+                continue;
+            }
             UART1.write(&response[..length]);
             UART1.flush();
         }

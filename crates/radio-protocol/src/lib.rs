@@ -85,6 +85,12 @@ pub enum Command {
     TuneTo = 0x16,
     /// Select one memory channel by storage index.
     SelectChannel = 0x17,
+    /// Carry the bounded common application payload.
+    ///
+    /// This command is intentionally one slot above the existing runtime
+    /// control range. Its payload is exactly the common two-byte request;
+    /// the target adapter owns decoding it into the shared application.
+    CommonApplication = 0x18,
     /// List active configuration objects.
     ListObjects = 0x20,
     /// Read one active configuration object.
@@ -119,6 +125,7 @@ impl TryFrom<u8> for Command {
             0x15 => Ok(Self::EnterMemory),
             0x16 => Ok(Self::TuneTo),
             0x17 => Ok(Self::SelectChannel),
+            0x18 => Ok(Self::CommonApplication),
             0x20 => Ok(Self::ListObjects),
             0x21 => Ok(Self::ReadObject),
             0x22 => Ok(Self::BeginTransaction),
@@ -858,6 +865,11 @@ pub enum ControlRequest {
         /// Zero-based storage index.
         index: u16,
     },
+    /// Carry one fixed-size request for the shared receive application.
+    CommonApplication {
+        /// Common payload bytes; target adapters validate their meaning.
+        payload: [u8; 2],
+    },
 }
 
 impl ControlRequest {
@@ -875,6 +887,7 @@ impl ControlRequest {
             Self::EnterMemory => Command::EnterMemory,
             Self::TuneTo { .. } => Command::TuneTo,
             Self::SelectChannel { .. } => Command::SelectChannel,
+            Self::CommonApplication { .. } => Command::CommonApplication,
         }
     }
 
@@ -889,6 +902,11 @@ impl ControlRequest {
             Self::SelectChannel { index } => {
                 let buffer = output.get_mut(..2).ok_or(ProtocolError::OutputTooSmall)?;
                 buffer.copy_from_slice(&index.to_le_bytes());
+                Ok(2)
+            }
+            Self::CommonApplication { payload } => {
+                let buffer = output.get_mut(..2).ok_or(ProtocolError::OutputTooSmall)?;
+                buffer.copy_from_slice(payload);
                 Ok(2)
             }
             _ => Ok(0),
@@ -929,6 +947,12 @@ impl ControlRequest {
                 Ok(Self::SelectChannel {
                     index: u16::from_le_bytes(bytes),
                 })
+            }
+            Command::CommonApplication => {
+                let bytes: [u8; 2] = payload
+                    .try_into()
+                    .map_err(|_| ProtocolError::MalformedPayload)?;
+                Ok(Self::CommonApplication { payload: bytes })
             }
             _ => Err(ProtocolError::UnknownCommand),
         }
@@ -1315,12 +1339,12 @@ mod tests {
             (0x15, Command::EnterMemory),
             (0x16, Command::TuneTo),
             (0x17, Command::SelectChannel),
+            (0x18, Command::CommonApplication),
         ];
         for (byte, command) in expected {
             assert_eq!(Command::try_from(byte), Ok(command));
             assert_eq!(command as u8, byte);
         }
-        assert_eq!(Command::try_from(0x18), Err(ProtocolError::UnknownCommand));
     }
 
     #[test]
@@ -1336,6 +1360,9 @@ mod tests {
                 frequency_hz: 145_512_500,
             },
             ControlRequest::SelectChannel { index: 399 },
+            ControlRequest::CommonApplication {
+                payload: [0x03, 0x04],
+            },
         ];
         for request in requests {
             let mut payload = [0_u8; ControlRequest::MAX_PAYLOAD_LEN];

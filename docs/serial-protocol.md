@@ -108,3 +108,31 @@ transport/storage-free; K1 retains its COBS/object/runtime service and K5
 retains its observed normal-mode envelope and circular-DMA adapter. Candidate
 configuration changes are not encoded here because their exact
 acknowledgement and persistence semantics remain target-owned.
+
+## APP-052 target-owned envelope assignments
+
+The common payload is carried only inside an already validated target
+envelope. K1 retains the existing `RuntimeControl` service and assigns command
+`0x18` (`CommonApplication`) to an exactly two-byte payload. Its response keeps
+the request service, sequence, response flags, and command, so the existing
+`DeviceService` replay and sequence-conflict rules continue to apply. K1's
+`DeviceInfo`, `Configuration`, and existing runtime commands are unchanged.
+
+K5's observed normal-mode envelope has no spare request payload bytes after
+its fixed session word, so it assigns the unoccupied command window
+`0x0600..=0x0614`: `0x0600` is common View, `0x0601` is common Capabilities,
+and `0x0602..=0x0614` are the canonical logical-key values in vocabulary order
+(`Side1`, `Side2`, `Ptt`, `Menu`, `Up`, `Down`, `Exit`, digits `0` through `9`,
+`Star`, `Function`). K5 replies with `0x0620` and places the bounded common
+response at the start of the existing fixed response payload. Its inner length
+is the common response data length (four bytes for View/key and three for
+Capabilities), not the command/header size; the hello
+command `0x0514`, bootloader values, and version command remain untouched.
+Unknown assignments, bad CRC/session/trailer, malformed lengths, and reserved
+command values are discarded without an application call. K5 has no replay
+cache beyond its target envelope because no sequence field exists in the
+observed normal-mode frame.
+
+These assignments are target-owned adapters rather than a claim that K1 and K5
+have interoperable physical serial links. Candidate configuration activation,
+K5 persistence, and target-only K1 object/runtime operations remain excluded.

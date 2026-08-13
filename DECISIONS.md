@@ -1349,3 +1349,29 @@ meaning.
   semantics are not common. Deterministic K1, K5, and simulator fixtures prove
   request/response bytes and shared key effects; this remains host/static
   evidence, not physical serial interoperability.
+
+## ADR-081 — Common serial commands are assigned inside each target envelope
+
+- **Date:** 2026-08-13
+- **Status:** accepted for `APP-052`
+- K1 keeps the existing `RuntimeControl` service and assigns command `0x18` to
+  an exactly two-byte `CommonApplication` payload. `DeviceService` retains the
+  normal response flags, sequence replay, sequence-conflict rejection, and
+  target-only command matrix; the new command is decoded only after those
+  checks and its result is applied through the existing `ReceiveApp` instance.
+- K5's observed normal-mode request body has no spare payload bytes after its
+  fixed session word. It therefore assigns `0x0600` to View, `0x0601` to
+  Capabilities, and `0x0602..=0x0614` to the canonical logical-key vocabulary,
+  with common response command `0x0620`. The fixed hello command and observed
+  bootloader/version assignments remain unchanged. Invalid CRC/session/trailer,
+  malformed length, and unassigned command values are discarded before the
+  shared app is reached.
+- The assignments establish software command ownership and simulator parity,
+  not physical K1/K5 serial interoperability. K5 has no sequence/replay field
+  in this observed envelope, and neither target gains common candidate
+  persistence or K1 object operations.
+- The K5 response keeps the observed fixed outer envelope and uses the common
+  response data length in its inner length field. If applying a common key
+  fails in either target adapter, the target feeds `ReceiverFault` back into
+  `ReceiveApp` before refusing the request, preserving fail-silent semantic
+  state as well as the physical speaker gate.

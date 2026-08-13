@@ -439,6 +439,17 @@ impl<const BYTES: usize> DeviceService<BYTES> {
             ControlAnswer::Metrics(report) => report
                 .encode(&mut payload)
                 .and_then(|length| success_response(&request, &payload[..length])),
+            ControlAnswer::Common {
+                payload: bytes,
+                length,
+            } => {
+                let length = usize::from(length);
+                if length > bytes.len() {
+                    Err(ProtocolError::MalformedPayload)
+                } else {
+                    success_response(&request, &bytes[..length])
+                }
+            }
             ControlAnswer::Refused(code) => error_response(&request, code),
         };
         let frame = match self.settle(&request, built) {
@@ -774,6 +785,13 @@ pub enum ControlAnswer {
     State(ReceiveStateReport),
     /// One raw metrics sample.
     Metrics(ReceiveMetricsReport),
+    /// A bounded response from the shared application wire adapter.
+    Common {
+        /// Encoded response bytes, padded with zeroes after `length`.
+        payload: [u8; 4],
+        /// Number of meaningful response bytes.
+        length: u8,
+    },
     /// The operation was refused, with the reason.
     Refused(DeviceErrorCode),
 }
@@ -1273,6 +1291,109 @@ mod tests {
             ReceiveStateReport::decode(response.payload()),
             Ok(state_report())
         );
+    }
+
+    #[test]
+    fn the_common_application_command_round_trips_its_bounded_payload() {
+        let mut harness = Harness::<STORE_BYTES>::new();
+        let (surfaced, response) = harness.control(
+            9,
+            Command::CommonApplication,
+            &[0x03, 0x04],
+            ControlAnswer::Common {
+                payload: [0x83, 2, 1, 2],
+                length: 4,
+            },
+        );
+        assert_eq!(
+            surfaced,
+            Some(ControlRequest::CommonApplication {
+                payload: [0x03, 0x04]
+            })
+        );
+        assert_eq!(response.flags(), FLAG_RESPONSE);
+        assert_eq!(response.command(), Command::CommonApplication);
+        assert_eq!(response.payload(), [0x83, 2, 1, 2]);
+    }
+
+    #[test]
+    fn a_common_application_retry_replays_without_resurfacing_the_request() {
+        let mut harness = Harness::<STORE_BYTES>::new();
+        let request = Frame::new(
+            Service::RuntimeControl,
+            0,
+            11,
+            Command::CommonApplication,
+            &[0x03, 0x04],
+        )
+        .expect("request frame");
+        let mut encoded = [0_u8; MAX_ENCODED_FRAME];
+        let length = encode_frame(&request, &mut encoded).expect("encode request");
+        let mut first = [0_u8; MAX_ENCODED_FRAME];
+        let mut first_length = None;
+        for byte in &encoded[..length] {
+            if let Push::Control(pending) =
+                harness
+                    .service
+                    .push_control(*byte, &mut first, &mut |event| harness.events.push(event))
+            {
+                assert_eq!(
+                    pending.request(),
+                    ControlRequest::CommonApplication {
+                        payload: [0x03, 0x04]
+                    }
+                );
+                first_length = harness.service.answer_control(
+                    pending,
+                    ControlAnswer::Common {
+                        payload: [0x83, 2, 1, 2],
+                        length: 4,
+                    },
+                    &mut first,
+                    &mut |event| harness.events.push(event),
+                );
+            }
+        }
+        let first_length = first_length.expect("first response");
+
+        let mut retry = [0_u8; MAX_ENCODED_FRAME];
+        let mut surfaced = false;
+        let mut retry_length = None;
+        for byte in &encoded[..length] {
+            match harness
+                .service
+                .push_control(*byte, &mut retry, &mut |event| harness.events.push(event))
+            {
+                Push::Control(_) => surfaced = true,
+                Push::Response(length) => retry_length = Some(length),
+                Push::Idle => {}
+            }
+        }
+        // The replayed request is answered from DeviceService's cache, so no
+        // second control can be surfaced or applied as a new operation.
+        assert!(!surfaced);
+        assert_eq!(retry_length, Some(first_length));
+        assert_eq!(harness.service.generation(), 0);
+        assert_eq!(&first[..first_length], &retry[..first_length]);
+    }
+
+    #[test]
+    fn malformed_common_application_payload_is_refused_without_state_change() {
+        let mut harness = Harness::<STORE_BYTES>::new();
+        let (surfaced, response) = harness.control(
+            10,
+            Command::CommonApplication,
+            &[0x03],
+            ControlAnswer::Refused(DeviceErrorCode::Internal),
+        );
+        assert_eq!(surfaced, None);
+        assert_eq!(response.flags(), FLAG_RESPONSE | FLAG_ERROR);
+        assert_eq!(response.payload()[0], Command::CommonApplication as u8);
+        assert_eq!(
+            response.payload()[1],
+            DeviceErrorCode::MalformedPayload as u8
+        );
+        assert_eq!(harness.service.generation(), 0);
     }
 
     #[test]
