@@ -16,6 +16,7 @@ radio-device = { path = "../radio-device" }
 radio-domain = { path = "../radio-domain" }
 radio-programmer = { path = "../radio-programmer" }
 radio-protocol = { path = "../radio-protocol" }
+radio-platform = { path = "../radio-platform" }
 radio-storage = { path = "../radio-storage" }
 radio-tx-policy = { path = "../radio-tx-policy" }
 radio-ui = { path = "../radio-ui" }

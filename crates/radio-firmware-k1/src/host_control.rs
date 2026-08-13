@@ -16,6 +16,9 @@ use radio_channel_control::{
 };
 use radio_device::ControlAnswer;
 use radio_domain::Frequency;
+use radio_platform::receive_app::ReceiveApp;
+use radio_platform::serial_control::{dispatch, Request as SerialRequest, Result as SerialResult};
+use radio_platform::serial_control::{Capabilities, Capability};
 use radio_protocol::{
     ControlRequest, DeviceErrorCode, ReceiveMetricsReport, ReceiveMode, ReceiveStateReport,
     ScanActivity,
@@ -31,6 +34,33 @@ pub struct Performed {
     pub update: Option<ReceiveUpdate>,
     /// The answer to encode for the host.
     pub answer: ControlAnswer,
+}
+
+/// Capabilities exposed by the K1 serial adapter.
+///
+/// The shared receive view and logical-key boundary are common with K5. K1
+/// additionally retains its target-owned object protocol, persistence, raw
+/// metrics, arbitrary channels, VFO, and scan controller. Those capabilities
+/// are declared here instead of being pulled into the shared platform crate.
+#[must_use]
+pub const fn serial_capabilities() -> Capabilities {
+    Capabilities::shared_receive()
+        .with(Capability::PersistentConfiguration)
+        .with(Capability::ObjectConfiguration)
+        .with(Capability::ArbitraryChannels)
+        .with(Capability::Vfo)
+        .with(Capability::Scanning)
+        .with(Capability::RawMetrics)
+}
+
+/// Applies one decoded common request through the shared application.
+///
+/// The K1 wire task remains responsible for converting its object/runtime
+/// protocol and for retaining target-only commands. Only requests which have
+/// crossed that target-owned boundary use this adapter, so a shared command
+/// cannot bypass the common event/effect/acknowledgement path.
+pub fn apply_shared_serial_request(app: &mut ReceiveApp, request: SerialRequest) -> SerialResult {
+    dispatch(app, serial_capabilities(), request)
 }
 
 /// Describes what the receiver is doing, as the display would show it.
@@ -143,7 +173,7 @@ const fn refusal(error: ReceiveError) -> DeviceErrorCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{perform, report, Performed};
+    use super::{perform, report, serial_capabilities, Performed};
     use radio_channel_control::{
         BankedReceiveController, BankedScanPhase, ChannelMemory, ReceiveState,
     };
@@ -154,6 +184,11 @@ mod tests {
     use radio_domain::{
         Bandwidth, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, RadioConfig,
         SquelchLevel, Tone, TxClass,
+    };
+    use radio_platform::receive_app::{Event, Key, ReceiveApp};
+    use radio_platform::serial_control::{
+        Capabilities, Capability, Command as SerialCommand, Request as SerialRequest,
+        Result as SerialResult,
     };
     use radio_protocol::{ControlRequest, DeviceErrorCode, ReceiveMode, ScanActivity};
 
@@ -336,5 +371,39 @@ mod tests {
             answer,
             ControlAnswer::Refused(DeviceErrorCode::InvalidState)
         );
+    }
+
+    #[test]
+    fn k1_retains_target_owned_serial_capabilities_beside_shared_receive() {
+        let capabilities = serial_capabilities();
+        assert!(capabilities.contains(Capability::SharedReceive));
+        assert!(capabilities.contains(Capability::ViewQuery));
+        assert!(capabilities.contains(Capability::KeyCommands));
+        for capability in [
+            Capability::PersistentConfiguration,
+            Capability::ObjectConfiguration,
+            Capability::ArbitraryChannels,
+            Capability::Vfo,
+            Capability::Scanning,
+            Capability::RawMetrics,
+        ] {
+            assert!(capabilities.contains(capability));
+        }
+        assert_ne!(capabilities, Capabilities::shared_receive());
+    }
+
+    #[test]
+    fn k1_common_serial_key_uses_the_shared_receive_path() {
+        let mut serial = ReceiveApp::new();
+        let mut keypad = ReceiveApp::new();
+        let serial_result = super::apply_shared_serial_request(
+            &mut serial,
+            SerialRequest::Command(SerialCommand::Key(Key::Up)),
+        );
+        assert_eq!(
+            serial_result,
+            SerialResult::Effects(keypad.apply(Event::KeyPress(Key::Up)))
+        );
+        assert_eq!(serial.view(), keypad.view());
     }
 }

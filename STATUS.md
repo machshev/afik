@@ -127,9 +127,9 @@ platform, 127 K1, 16 K5, and deterministic `radio-sim` tests), and
 passes without warnings. The K5 release/package gate passes with image end
 `0x5CC0`, static RAM end `0x20000100`, fixed package size `0xF000`, and SHA-256
 `2e231566f3d84bfce5708d3135e41a1c9c019fce037a6d730d376390fccebbd6`.
-No hardware was flashed. Next smallest actionable task: extract serial
-control only after its target-owned persistence and transport boundary is
-designed.
+No hardware was flashed. Next smallest actionable task: define the target-owned
+wire mapping for common serial requests only after its framing and capability
+evidence are bounded; do not add a K5 storage protocol by implication.
 
 The APP-052 configuration-change boundary received an atomicity and adapter
 completion correction on 2026-08-13. While a candidate is pending,
@@ -143,6 +143,43 @@ safe speaker-off/redraw cleanup after an operation fault. K5 checks its display
 result and both adapters force the speaker closed when an effect fails. K1
 persistence/protocol and K5 volatile generation-zero behavior remain
 target-owned.
+
+The APP-052 serial-control boundary is now implemented as
+`radio-platform::serial_control`. It is a transport/storage-free, no-std,
+heap-free, bounded contract for semantic-view/capability queries and common
+logical-key or configuration-candidate commands. K1 and K5 publish separate
+capability sets: K1 retains persistence, object configuration, arbitrary
+channels, VFO, scanning, and raw metrics; K5 explicitly publishes only the
+shared receive/view/key boundary and remains volatile generation zero. Both
+target adapters route decoded common commands through `ReceiveApp`, so key
+effects and candidate changes use the same event/effect/exact-ack path. The
+wire decoders, UART/DMA, DeviceService, EEPROM, and K1 target-only controls
+remain outside the shared crate. No hardware was flashed.
+
+Focused serial-control checks passed through the cached direnv shell, one
+process at a time:
+
+- `direnv exec . env CARGO_BUILD_JOBS=2 ionice -c 3 nice -n 10 cargo test -p radio-platform serial_control` — 4 passed.
+- `direnv exec . env CARGO_BUILD_JOBS=2 ionice -c 3 nice -n 10 cargo test -p radio-firmware-k1 --lib host_control::tests::k1_retains_target_owned_serial_capabilities_beside_shared_receive` — passed.
+- `direnv exec . env CARGO_BUILD_JOBS=2 ionice -c 3 nice -n 10 cargo test -p radio-firmware-k1 --lib host_control::tests::k1_common_serial_key_uses_the_shared_receive_path` — passed.
+- `direnv exec . env CARGO_BUILD_JOBS=2 ionice -c 3 nice -n 10 cargo test -p radio-firmware-k5 --test hello k5_advertises_only_the_shared_receive_serial_boundary` — passed.
+- `direnv exec . env CARGO_BUILD_JOBS=2 ionice -c 3 nice -n 10 cargo test -p radio-firmware-k5 --test hello k5_common_serial_key_enters_the_same_shared_app_as_keypad` — passed.
+
+Disk remained at 29% used (`261G/944G`) with 666G available after these
+focused builds. The final serialized workspace/target/package gate is recorded
+below.
+
+The single successful serialized final gate for the serial-control step was:
+`direnv exec . env CARGO_BUILD_JOBS=2 ionice -c 3 nice -n 10 bash -c 'cargo
+fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings &&
+cargo test --workspace && ./tool/build-k1-async.sh --release &&
+./tool/build-k5.sh --release && ./tool/verify-k5-image.sh &&
+./tool/package-k5-image.sh --force && git diff --check'` — passed. The K5
+release image verified with flash end `0x5BD8`, static RAM end `0x20000100`,
+and application bound `0xF000`; packaging remained exactly `0xF000` bytes with
+SHA-256 `c9930ebd919c64583ba45312cb40b42f9acbcac4881b48d48409d994cf12ea52`.
+No hardware was flashed. This is simulator/host and static image evidence;
+K5 physical serial-control behavior remains unproven.
 
 Focused checks passed through the cached direnv shell, one process at a time:
 

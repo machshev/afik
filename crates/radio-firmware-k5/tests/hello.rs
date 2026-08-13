@@ -7,9 +7,12 @@
 //! framing rather than testing either against a fixture written beside it.
 
 use radio_firmware_k5::protocol::{
-    HelloService, APPLICATION_IDENTITY, APPLICATION_VERSION, RESPONSE_FRAME_BYTES,
+    apply_shared_serial_request, serial_capabilities, HelloService, SerialCapability,
+    SerialCommand, SerialRequest, SerialResult, APPLICATION_IDENTITY, APPLICATION_VERSION,
+    RESPONSE_FRAME_BYTES,
 };
 use radio_flasher::probe_normal_firmware;
+use radio_platform::receive_app::{Event, Key, ReceiveApp};
 use std::io::{Read, Write};
 
 /// A radio which runs the image's own protocol code over an in-memory wire.
@@ -106,4 +109,32 @@ fn a_longer_frame_is_read_past_rather_than_partly_answered() {
     assert_eq!(radio.answered, 0);
     probe_normal_firmware(&mut radio).expect("the next request still lands");
     assert_eq!(radio.answered, 1);
+}
+
+#[test]
+fn k5_advertises_only_the_shared_receive_serial_boundary() {
+    let capabilities = serial_capabilities();
+    assert!(capabilities.contains(SerialCapability::SharedReceive));
+    assert!(capabilities.contains(SerialCapability::ViewQuery));
+    assert!(capabilities.contains(SerialCapability::KeyCommands));
+    assert!(!capabilities.contains(SerialCapability::PersistentConfiguration));
+    assert!(!capabilities.contains(SerialCapability::ObjectConfiguration));
+    assert!(!capabilities.contains(SerialCapability::ArbitraryChannels));
+    assert!(!capabilities.contains(SerialCapability::Vfo));
+    assert!(!capabilities.contains(SerialCapability::Scanning));
+}
+
+#[test]
+fn k5_common_serial_key_enters_the_same_shared_app_as_keypad_input() {
+    let mut serial = ReceiveApp::new();
+    let mut keypad = ReceiveApp::new();
+    let serial_result = apply_shared_serial_request(
+        &mut serial,
+        SerialRequest::Command(SerialCommand::Key(Key::Up)),
+    );
+    assert_eq!(
+        serial_result,
+        SerialResult::Effects(keypad.apply(Event::KeyPress(Key::Up)))
+    );
+    assert_eq!(serial.view(), keypad.view());
 }

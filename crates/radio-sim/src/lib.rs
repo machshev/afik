@@ -1189,6 +1189,12 @@ mod tests {
     use radio_channel_plan::{BankName, GeneratedBank, PlanEncoding};
     use radio_device::map_storage_error;
     use radio_domain::{ActiveChannel, BankId, Frequency, FrequencyStep, TxClass};
+    use radio_platform::receive_app::{Event as SharedEvent, Key as SharedKey, ReceiveApp};
+    use radio_platform::serial_control::{
+        dispatch as dispatch_shared, Capabilities as SharedCapabilities,
+        Capability as SharedCapability, Command as SharedCommand, Request as SharedRequest,
+        Result as SharedResult,
+    };
     use radio_programmer::{
         ListedObject, Programmer, ProgrammerError, ProtocolTransport, RadioProject,
     };
@@ -1202,6 +1208,23 @@ mod tests {
     };
     use radio_tx_policy::{LoadStatus, PermissionSet, StoredPermissions, TxPolicy};
     use radio_ui::{Key, KeyEvent, KeySet, UiAction, UiView};
+
+    #[test]
+    fn deterministic_simulator_shared_serial_trace_matches_keypad() {
+        let capabilities = SharedCapabilities::shared_receive();
+        let mut serial = ReceiveApp::new();
+        let mut keypad = ReceiveApp::new();
+        let serial_result = dispatch_shared(
+            &mut serial,
+            capabilities,
+            SharedRequest::Command(SharedCommand::Key(SharedKey::Up)),
+        );
+        let keypad_effects = keypad.apply(SharedEvent::KeyPress(SharedKey::Up));
+        assert_eq!(serial_result, SharedResult::Effects(keypad_effects));
+        assert_eq!(serial.view(), keypad.view());
+        assert!(capabilities.contains(SharedCapability::SharedReceive));
+        assert!(!capabilities.contains(SharedCapability::PersistentConfiguration));
+    }
 
     fn bank(id: u16, name: &str) -> GeneratedBank {
         GeneratedBank::linear_simplex(

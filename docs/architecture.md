@@ -237,6 +237,17 @@ metric, and display failures reject the change, while failure cleanup still
 closes the speaker and emits the semantic fault redraw. These are in-memory
 software guarantees, not persistence or hardware evidence.
 
+The serial-control extension is a smaller boundary above those target-owned
+wire services. `radio-platform::serial_control` receives only a decoded query
+or common command and returns a semantic view, an explicit capability set, or
+the same bounded effects that a keypad event produces. A candidate command
+still emits an identified configuration change and can become active only
+after the exact adapter acknowledgement. K1 and K5 construct capability sets
+locally: K1 retains its object/runtime protocol, persistence, arbitrary
+channels, VFO, scan, and raw metrics, while K5 declares only shared
+receive/view/key behavior and volatile generation-zero activation. No UART,
+DMA, framing, EEPROM, storage, or target controller type crosses this seam.
+
 The DP32G030 target linker and package tools own the V1 application-region
 contract. They emit a full `0x0000..0xEFFF` raw image and never include the
 stock `0xF000..0xFFFF` bootloader region. Hardware-independent radio crates do

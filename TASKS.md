@@ -2655,6 +2655,15 @@
   Deterministic platform tests cover these boundaries. No hardware was
   flashed; the final throttled workspace, target-build, and package evidence
   is recorded in `STATUS.md` below.
+- **Serial-control boundary:** `radio-platform::serial_control` now exposes
+  only transport/storage-free semantic-view and capability queries plus common
+  logical-key and acknowledged-candidate commands. K1 and K5 target adapters
+  publish explicit divergent capability sets and route decoded common commands
+  through `ReceiveApp`; K1 retains its object protocol, persistence, arbitrary
+  channels, VFO, scan, and raw metrics, while K5 makes its volatile,
+  receive-only boundary explicit. Host/simulator fixtures prove serial `Up`
+  matches keypad `Up`, candidate activation still waits for the exact ack, and
+  K5 does not claim K1-only storage/control features. No hardware was flashed.
 - **Then:** serial control remains target-owned until a separate boundary is
   designed. Keep K1 persistence and serial protocol, K5 persistence (until
   evidenced), MCU registers, interrupts,

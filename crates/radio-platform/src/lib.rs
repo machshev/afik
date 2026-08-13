@@ -10,3 +10,4 @@ pub mod configuration_change;
 pub mod display;
 pub mod receive_app;
 pub mod serial;
+pub mod serial_control;

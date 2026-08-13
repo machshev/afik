@@ -98,6 +98,13 @@
   now require complete adapter-effect success and failure cleanup keeps the
   speaker muted. These are deterministic software guarantees only; they do
   not add serial, EEPROM, power-loss, or physical receiver evidence.
+- **Shared serial-control narrowing, 2026-08-13:** `APP-052` now has a
+  transport/storage-free request/result seam for semantic view, capabilities,
+  logical keys, and acknowledged candidates. K1 and K5 capability sets are
+  explicit, but the seam does not prove a common wire format, K5 persistence,
+  K5 object configuration, or physical serial behavior. K1's existing wire
+  adapters and K5's circular-DMA UART remain target-owned; target-only K1
+  arbitrary/VFO/scan operations are not silently represented as K5 features.
 
 ## RISK-007 — BK4819 register applicability and board RF control are unverified
 

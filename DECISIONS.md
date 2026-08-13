@@ -1313,3 +1313,21 @@ meaning.
   rejection. It continues safe speaker-off and redraw effects after a failure.
   K5 checks its display result and drains all safe effects before returning its
   acknowledgement result; both adapters force the speaker closed on failure.
+
+## ADR-079 — Serial control shares application meaning, not wire or storage
+
+- **Date:** 2026-08-13
+- **Status:** accepted for `APP-052`
+- `radio-platform::serial_control` accepts only requests which have already
+  crossed a target-owned wire boundary. It contains bounded semantic-view and
+  capability queries, logical-key commands, and configuration candidates. It
+  emits the same `ReceiveApp` effects as keypad events; candidates retain the
+  existing exact change acknowledgement contract.
+- K1 keeps UART/DMA, the object/runtime protocol, `DeviceService`, EEPROM
+  persistence and commit/read-back, arbitrary channels, VFO, scan, and raw
+  metrics in its target adapter. K5 keeps circular-DMA UART and exposes only
+  shared receive/view/key capabilities with generation-zero volatile
+  activation; it does not gain invented persistence or a K1 object protocol.
+- Capability sets are target-owned and deterministic host fixtures assert the
+  divergence. This boundary is not wire interoperability, EEPROM durability,
+  physical serial evidence, or proof that K5 supports K1-only controls.
