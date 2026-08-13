@@ -118,6 +118,17 @@ image import/export, negotiated-capability checks, and allocated project data.
 The image is independent of transport and target hardware; no physical flash
 layout or durability semantics cross into the hardware-independent crate.
 
+APP-052 Milestone 2 adds an optional relative dual-slot model beside that
+codec. It accepts the exact canonical image (bounded to 1,280 bytes), stores
+two complete 1,312-byte slots (2,624 bytes total) over an eight-byte
+`BlockBackend`, writes a full-generation candidate tag in the final block,
+verifies every write by read-back, and selects the newest valid wrapping
+generation. Slot and block numbers are relative to the adapter allocation;
+there is deliberately no EEPROM address or target wiring here. Host fault
+injection covers torn writes, stale atomic writes, corruption, and generation
+wrap. This model is no_std and heap-free in production; its caller supplies a
+slot buffer and image scratch, and the next task is simulator object transport.
+
 Work Package 5 adds `radio-ui` as another embedded, hardware-independent leaf
 over `radio-domain` and `radio-tx-policy`. It owns only logical key edges,
 bounded semantic display views, and boot-scoped draft permission state. It does

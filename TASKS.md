@@ -2786,3 +2786,25 @@
   `ec0c8580`, `240/240 acknowledged_not_read_back`, three normal probes, and
   the user's clean-edge/menu/channel/source/Info/Side2/Up/Down confirmation;
   it is not `2.2Q` read-back or boot evidence. APP-052 remains active.
+
+- **APP-052 Milestone 2 — relative persistence model (2026-08-14; superseded
+  by the review correction below):** added the no_std dual-slot canonical-image
+  model. Its geometry and backend atomicity were subsequently tightened to the
+  K1-parity 1,280-byte/2,624-byte design recorded below.
+
+- **APP-052 Milestone 2 review correction (2026-08-14):** bounded the model to
+  the existing K1-parity 1,280-byte retained-image limit: two 1,312-byte slots,
+  2,624 bytes total, with a compile-time bound below the documented 8,192-byte
+  model region. The generic `AFIP` format validates reserved bytes and uses a
+  final eight-byte block containing the full u32 generation plus a digest tag
+  over generation, length, and image CRC; old low-16 markers cannot commit a
+  new candidate. `BlockBackend::write_verified` now owns the atomic expected
+  compare/program operation, followed by independent read-back. Update scans
+  the actual target slot and uses each current block as its expected value,
+  with one caller-owned slot scratch and one 1,280-byte image scratch. Tests
+  cover marker-last interruption, generation collision, reserved corruption,
+  atomic stale interleaving, read-back failure, wrap skipping generation zero,
+  tombstone interruption/read-back failure, explicit all-FF tombstone
+  rejection at generation maximum, old-marker invalidation, and the complete
+  fault/corruption/round-trip matrix. Next smallest task is simulator object
+  transport; no physical allocation is implied.

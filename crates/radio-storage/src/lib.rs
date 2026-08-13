@@ -14,6 +14,9 @@ use radio_domain::{
     RadioConfig, RadioFlags, ScanResume, SquelchLevel, Tone, TxClass,
 };
 
+/// Relative dual-slot canonical-image persistence model.
+pub mod dual_slot;
+
 /// Encoded calling-channel index meaning a plan marks no calling channel.
 ///
 /// A plan holds at most `MAX_GENERATED_CHANNELS` channels, so this value is

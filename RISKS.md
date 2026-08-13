@@ -869,3 +869,14 @@
   and operator-observation evidence, not read-back or `2.2Q` evidence. The
   unflashed `2.2Q` package has only static/simulator proof; APP-052 remains
   open.
+
+- **APP-052 Milestone 2 persistence model, 2026-08-14:**
+  `radio-storage::dual_slot` now models two relative slots, commit-last
+  tombstone-first publication, expected-byte protection, verified reads,
+  corruption fallback, and deterministic power-loss faults. Its 1,280-byte canonical-image bound
+  and relative block indices are software allocation choices only. The
+  retained backup is not allocation evidence; no absolute address, disposable
+  range, physical power-loss result, restore proof, K5 adapter, persistence
+  capability, or hardware write is claimed. The model is 2,624 bytes total
+  with caller-owned bounded scratch; it is ready for simulator object
+  transport, while physical allocation and restore evidence remain open.

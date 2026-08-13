@@ -3734,3 +3734,47 @@ package is `0xF000` bytes, flash ends at `0x938c`, static RAM ends at
 `0x20000100`, and SHA-256 is
 `83e93887e51ebb99248ee485f190b117077d02ad8b17caee8dc18d6d7ef3e5b5`.
 No hardware was flashed for this correction.
+
+## APP-052 Milestone 2 — relative persistence model, 2026-08-14
+
+`radio-storage::dual_slot` now provides an application-independent,
+`no_std`, heap-free relative model for a future K5 persistence adapter. It
+uses a fixed eight-byte `BlockBackend`, two complete 1,312-byte slots (164
+relative blocks each; 2,624 bytes total), explicit generic magic/version,
+length/generation/integrity, and a final commit block written last. It stores
+and returns the exact canonical `radio-storage` image, bounded to 1,280 bytes,
+rather than defining
+another object format. Load validates both slots and selects the newest valid
+wrapping generation; equal and half-range ambiguity deterministically keeps
+the lower slot. Update writes only the inactive slot, checks expected bytes
+before every block through the atomic expected-byte backend operation, and
+reads every block back. The fake backend tests every
+operation interruption, stale expected bytes, newest corruption fallback,
+empty/corrupt recovery, generation wrap skipping zero, commit identity
+collisions, reserved-byte and explicit all-FF tombstone rejection,
+tombstone-before-replacement ordering,
+active-slot preservation, and exact round-trip. Scratch is caller-owned: one
+1,312-byte slot buffer plus one 1,280-byte image buffer.
+
+This is software modelling evidence only. No absolute EEPROM address,
+target-owned adapter, EEPROM capability bit, persistence claim, firmware
+identity bump, hardware write, or flash was added. `EVID-K5-028` establishes
+only an eight-byte write shape; the retained complete backup does not establish
+a disposable allocation, power-loss behaviour, or restore route. APP-052
+remains active. Next smallest task: simulator object transport around this
+relative seam; physical allocation/restore evidence remains a separate risk.
+
+The serialized final cached-direnv gate passed with
+`CARGO_BUILD_JOBS=2 ionice -c 3 nice -n 10`: `cargo fmt --all --check`,
+`cargo clippy --workspace --all-targets -- -D warnings`,
+`cargo test --workspace`, `./tool/build-k1-async.sh --release`,
+`./tool/build-k5.sh --release`, `./tool/verify-k5-image.sh
+target/thumbv6m-none-eabi/release/radio-firmware-k5`,
+`./tool/package-k5-image.sh --force
+target/thumbv6m-none-eabi/release/radio-firmware-k5
+target/thumbv6m-none-eabi/release/afik-k5-2.2Q.bin`, and `git diff --check`.
+The focused `radio-storage` suite is 27/27. K5 verification reports flash end
+`0x97f4`, static RAM end `0x20000100`, and application end `0xF000`; the fixed
+package is `0xF000` bytes with SHA-256
+`49f4a27dabd338e51e27c37db83a82dd5d0f602570dd17e88cdd87d54ecea8a4`.
+No Nix command, hardware, flash, or commit was used.

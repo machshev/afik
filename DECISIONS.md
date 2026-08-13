@@ -1408,3 +1408,31 @@ meaning.
 - **ADR-086 — Common serial key ownership follows the target controller (2026-08-13):** K5's `ReceiveApp` is its bounded receive/controller boundary, so K5 advertises and accepts common Up/Down/Side2 key commands plus explicit AUDIO. Their direction matches the shared shell: Up is previous and Down is next. K1's banked controller and shell live in a separate UI task; its serial adapter advertises view-only common access and refuses key/audio mutations rather than mutating a second `ReceiveApp` state. The shared wire vocabulary and bit-2 monitoring flag remain available to adapters that can own the corresponding target mechanics.
 - **ADR-087 — K5 shared-frame transport uses the evidenced controller window (2026-08-13):** The physical `2.0P` image booted and answered normal serial, but its shared framebuffer was visibly cropped on the left with stray pixels on the right. The target adapter trace found that direct text already selected controller column `+4`, while shared `clear`/frame writes selected column `0`. K5 now keeps the shared pixels unchanged and sends each eight-page 128-byte framebuffer row at controller columns `4..=131`; tests prove every visible column is written once with no edge wrap. The corrective image is `AFIK-K5-2.1D`. This is software evidence until a separately authorized physical write and display observation.
 - **ADR-088 — K5 handset squelch is a volatile acknowledged application setting (2026-08-13):** K5 enables the shared Settings/SquelchList shell, but the shell does not commit its displayed value until `ReceiveApp` stages the selected `SquelchLevel`, the target applies `SquelchThresholds::for_level`, and the target acknowledges success. The target seam reports explicit applied, rejected/no-effect, and faulted outcomes; activation, source, publication, and pending replacement paths cancel staged squelch before replacing the target generation. A rejected, faulted, or pending operation leaves the shell and shared level unchanged, closes audio, and emits no K1 persistence signal. The accepted K5 path is volatile generation-zero behavior; no EEPROM, serial persistence, or capability claim is added. `AFIK-K5-2.2Q` is an unflashed software/package identity. The guarded physical `AFIK-K5-2.1D` evidence remains separate and is not read-back or `2.2Q` evidence.
+
+## ADR-089 — Persistence is a relative dual-slot canonical-image model (2026-08-14)
+
+- **Status:** accepted for APP-052 Milestone 2 software modelling only
+- `radio-storage::dual_slot` owns no application state and defines no EEPROM
+  address. A target adapter later supplies relative eight-byte block reads and
+  writes. Each of two fixed slots contains explicit metadata, the exact
+  canonical configuration image, and a final commit marker written last.
+- Every candidate block is protected by expected-byte comparison and verified
+  read-back. An uncommitted or corrupt candidate is ignored; the highest valid
+  wrapping generation wins, with equal and half-range ambiguity resolved by
+  the lower relative slot index. An update never writes the active slot.
+- Before replacing the selected inactive slot, its current commit block is
+  atomically expected-checked and written as an all-FF tombstone, with
+  independent read-back. Header/payload blocks follow, and only the final
+  full-generation digest marker can publish the new candidate. Thus a torn
+  update cannot leave an old marker authenticating new bytes; a failure after
+  the final marker write may legitimately recover the new candidate. The
+  all-FF commit block is rejected before generation/tag parsing, and marker
+  encoding remaps the otherwise reserved all-FF result.
+- The bounded 1280-byte image limit mirrors the existing K1 retained-image
+  bound and is a model geometry, not evidence of the K5 EEPROM map. The two
+  slots occupy 2624 bytes within an 8192-byte documented model region. The
+  retained complete backup and pinned eight-byte write
+  shape do not establish a disposable address, power-loss behaviour, or safe
+  restore route. Therefore K5 capabilities remain volatile generation zero,
+  no firmware identity is bumped, and no physical write is authorized. The
+  next task is simulator object transport, not physical allocation.
