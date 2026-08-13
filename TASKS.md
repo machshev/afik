@@ -2500,3 +2500,7 @@
   Side inputs exposed a scan-control bug: AFIK continued into matrix passes
   after the zero-row match. The scanner now returns the side key immediately,
   matching the pinned first-key behavior and restoring shared pins first.
+- **Input acceptance complete:** after the correction was flashed, S1 and S2
+  displayed correctly and three normal probes returned `AFIK-K5-1.5E`. Main
+  matrix, both side keys, and input-only PTT are now physically confirmed.
+  Next: BK4819 receive initialization and raw metering with speaker muted.

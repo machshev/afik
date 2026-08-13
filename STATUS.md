@@ -42,6 +42,12 @@ exchanges returned `AFIK-K5-1.5E`. This independently confirms application boot
 for the EEPROM `0343`, BK `4819`, main-key and PTT observations. The side-key
 early-return correction is built and committed but not yet flashed.
 
+The side-key correction was subsequently acknowledged `240/240`; after normal
+boot both buttons displayed `S1` and `S2`, and three consecutive normal probes
+again returned `AFIK-K5-1.5E`. K5 keypad parity is therefore physically
+complete: all sixteen main keys, both side keys, and input-only PTT. The next
+bounded step is BK4819 receive initialization and raw metering with PC4 muted.
+
 Pre-flash gates on 2026-08-13:
 
 - Focused warning-denied Clippy and K5 tests passed, including eleven library,

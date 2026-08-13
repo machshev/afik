@@ -2677,3 +2677,8 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   normal-mode probes returned `AFIK-K5-1.5E`. The two preceding `0x0518`
   responses were correctly treated as bootloader beacons while the unit was
   still in DFU, not as failed application responses.
+- **Corrected input result:** the side-key correction image was acknowledged
+  `240/240` pages. After normal boot, both physical buttons displayed `S1` and
+  `S2`, and three consecutive normal probes returned `AFIK-K5-1.5E`. Together
+  with the preceding observations, all sixteen main keys, both side keys, and
+  input-only PTT are physically confirmed on the exact unit.
