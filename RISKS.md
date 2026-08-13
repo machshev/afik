@@ -108,6 +108,11 @@
   chip AF routing and PC4. This is deliberately provisional until the unit's
   calibration is available. Software/package success does not establish quiet
   closure, demodulation, intelligibility, or clean retuning.
+- **K5 audio result:** `1.7A` produced receive audio at `A1` and the operator
+  confirmed squelch worked. This establishes the downstream path and recurring
+  gate, but not timing, Menu control, retune transients, sensitivity,
+  calibration, or selectivity. Later `0x0518` observations occurred after the
+  operator deliberately re-entered DFU and are not application failures.
 
 ## RISK-008 — Physical scan timing and signal inputs are unverified
 

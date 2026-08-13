@@ -2,7 +2,15 @@
 
 ## Current work package
 
-**`K5APP-051` is active.** Its first step adds the source-backed K5 V1 main
+**`APP-052` is active.** It will extract one deterministic receive/operator
+application state machine used by both K1 and K5 while retaining separate MCU,
+bus, chip-profile, storage, display, packaging, and recovery adapters. The first
+step is the common event/effect contract for channel selection, tuning, sampled
+squelch/audio gating, and operator mute. `RISK-036` is deferred by operator
+decision and is not a prerequisite for extracting behavior which K5 can expose
+independently.
+
+`K5APP-051` is complete. Its first step added the source-backed K5 V1 main
 keypad matrix adapter. All sixteen main labels are mapped, unstable or
 multiple-key samples are rejected, and every scan restores the EEPROM/I2C and
 voice-chip shared row pins. Host tests and physical main-key observations pass.
@@ -67,7 +75,7 @@ boot and signal-correlated BK4819 initialization/tuning/metering on the exact
 unit. It does not establish demodulated audio, intelligibility, sensitivity,
 calibrated squelch, adjacent-channel rejection, or TX.
 
-`AFIK-K5-1.7A` is now built for the next physical step. Receive audio defaults
+`AFIK-K5-1.7A` was built for the final physical step. Receive audio defaults
 on, using AFIK's provisional carrier-only squelch level three. A polled
 Cortex-M0 `SysTick` samples status every 50 ms and gates PC4 from the squelch
 link; Menu immediately toggles both the BK4819 AF route and PC4, and retuning
@@ -78,7 +86,12 @@ Focused format, 27 DP32G030 tests, 15 K5 tests, warning-denied Clippy, target
 build, and package verification pass. The package is exactly `0xF000` bytes,
 used flash ends at `0x571c`, static RAM ends at `0x20000100`, and SHA-256 is
 `535d0b5d8f6bce1f5460b1205ba035db4e5fedc58d2dbc537f262ffba206a267`.
-It has not yet been flashed or physically observed.
+It received `240/240` page acknowledgements and booted visibly. The operator
+reported receive audio at `A1` and confirmed that squelch worked. The unit was
+then deliberately returned to DFU, so subsequent `0x0518` responses are DFU
+observations and no post-audio normal hello is claimed. Menu mute/unmute, retune
+transients, exact timing, sensitivity, calibration, and selectivity remain
+unproven.
 
 The final workspace gate also passed: `nix develop path:. -c bash -c 'cargo
 fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings &&
@@ -86,9 +99,9 @@ cargo test --workspace && ./tool/build-k5.sh --release &&
 tool/package-k5-image.sh --force'`. It reproduced the same image bounds and
 SHA-256; `git diff --check` passed before the gate.
 
-**Next smallest actionable task:** guardedly flash `1.7A` and observe quiet,
-same-channel audio open/close, Menu mute/unmute, retune behavior, and normal
-serial identity before closing `K5APP-051` and opening the unified-app package.
+**Next smallest actionable task:** implement and test the first `APP-052`
+hardware-independent event/effect contract, then adapt both target loops to it
+without moving target-specific register or recovery behavior.
 
 Pre-flash gates on 2026-08-13:
 

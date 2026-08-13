@@ -2453,7 +2453,8 @@
 
 ## K5APP-051 — K5 receive-only operator hardware bring-up
 
-- **Status:** audio/squelch image built; physical audio experiment pending
+- **Status:** complete (2026-08-13); receive audio and sampled squelch physically
+  observed
 - **Objective:** add the K5 V1 keypad, read-only configuration-memory access,
   BK4819 receive control, and demodulated-audio enablement as separately tested
   and committed steps.
@@ -2539,3 +2540,35 @@
   restore audio immediately, Up/Down must retune without a noise burst, and
   three normal probes must return `AFIK-K5-1.7A`. This tests receive audio and
   provisional carrier squelch only, not calibrated sensitivity or selectivity.
+- **Seventh-step physical result:** `1.7A` received `240/240` acknowledgements,
+  booted visibly, produced receive audio at `A1`, and the operator confirmed
+  squelch closed it. The unit was deliberately returned to DFU before serial
+  probes, so the observed `0x0518` is not an application failure and no
+  post-audio normal hello is claimed. Menu behavior, retune transients, timing,
+  sensitivity, calibration, and selectivity remain follow-on acceptance.
+
+## APP-052 — Unified receive application for K1 and K5
+
+- **Status:** active
+- **Objective:** compile one hardware-independent receive/operator application
+  state machine for both K1 and K5, with target crates limited to event, radio,
+  storage, display, audio, serial, and clock adapters.
+- **Dependencies:** `PLAT-050`, `K5APP-051`, and the existing K1 receive app.
+  `RISK-036` is explicitly deferred by operator decision; K5 parity will be
+  used to expose cross-target assumptions rather than blocking indefinitely on
+  the K1-only symptom.
+- **First step:** extract the smallest shared application event/effect contract
+  for channel selection, retune, receive samples, squelch audio gating, and
+  operator mute. Prove identical deterministic behavior for K1 and K5 adapter
+  fixtures before replacing either target loop.
+- **Then:** move keypad semantics and semantic display state, then configuration
+  activation/persistence and serial control. Keep MCU registers, interrupts,
+  DMA, physical buses, chip profile selection, image layout, and recovery in
+  their target crates.
+- **Initial exclusions:** TX/PTT behavior, calibrated squelch/sensitivity,
+  battery parity, APRS physical decoding, K5 SPI0 repair, and new bootloader or
+  radio-family support.
+- **Acceptance:** the same event script yields the same semantic state and
+  effects for both target fixtures; both embedded images compile that core;
+  physical K1 and K5 builds independently boot, tune, gate audio, navigate the
+  same PMR446 example channels, and answer the shared normal identity service.

@@ -2765,3 +2765,17 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   signal, Menu mute/unmute, and transient-free retuning are physical acceptance
   items. The threshold is not factory-calibrated and establishes no sensitivity
   or adjacent-channel rejection claim.
+- **Physical result:** the guarded write received `240/240` acknowledgements.
+  After ordinary boot the operator reported receive audio while the display
+  showed `A1`, and separately confirmed that squelch worked when the other
+  radio stopped. This establishes demodulated audio through the BK4819 and PC4
+  speaker path plus recurring squelch-driven gating on the exact unit.
+- **Serial boundary:** a later normal probe received command `0x0518`, and a
+  bootloader classifier then saw a packet it could not decode. The operator
+  subsequently confirmed the radio had been put back into DFU mode. Those
+  checks are therefore DFU observations, not an application serial regression
+  or post-audio normal-hello proof. The visible/audible application observation
+  independently establishes that `1.7A` booted before DFU was re-entered.
+- **Still open:** exact open/close timing, Menu mute/unmute, clean retuning,
+  sensitivity, calibration, and adjacent-channel rejection were not reported
+  and remain unproven.

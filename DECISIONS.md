@@ -1212,3 +1212,18 @@ meaning.
 - Level three is AFIK's existing carrier-only provisional threshold, not this
   unit's factory calibration. Physical audio can be validated with it, while
   calibrated squelch and selectivity remain separate work.
+
+## ADR-074 — Unified application extraction proceeds with K1 risk deferred
+
+- **Date:** 2026-08-13
+- **Status:** accepted for `APP-052`
+- `RISK-036` remains an honest K1 defect but does not block extracting pure
+  application behavior. The now-working K5 receive/audio path provides a second
+  adapter which can expose hidden K1 assumptions instead of repeatedly
+  bisecting one target before architecture work begins.
+- The shared boundary is event/effect and semantic state, not peripheral traits
+  which pretend unlike MCUs are alike. Target crates continue to own scheduling,
+  register buses, chip profiles, persistence transport, rendering, packaging,
+  and recovery.
+- The first unified milestone is receive-only. TX, calibrated RF claims, battery
+  parity, and nonessential peripheral parity do not delay it.
