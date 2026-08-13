@@ -105,6 +105,12 @@
   K5 object configuration, or physical serial behavior. K1's existing wire
   adapters and K5's circular-DMA UART remain target-owned; target-only K1
   arbitrary/VFO/scan operations are not silently represented as K5 features.
+- **Common payload narrowing, 2026-08-13:** `radio-platform::serial_control::wire`
+  now fixes a small view/capability/logical-key payload and rejects candidates,
+  malformed lengths, reserved state bits, and unknown key codes. K1 and K5
+  target framing remains separate; host and simulator tests do not establish
+  physical serial interoperability, K5 persistence, or K1 object-protocol
+  compatibility for the new payload.
 
 ## RISK-007 — BK4819 register applicability and board RF control are unverified
 

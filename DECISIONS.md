@@ -1331,3 +1331,21 @@ meaning.
 - Capability sets are target-owned and deterministic host fixtures assert the
   divergence. This boundary is not wire interoperability, EEPROM durability,
   physical serial evidence, or proof that K5 supports K1-only controls.
+
+## ADR-080 — Common serial payloads are bounded, while framing remains target-owned
+
+- **Date:** 2026-08-13
+- **Status:** accepted for `APP-052`
+- `radio-platform::serial_control::wire` defines only a fixed two-byte request
+  payload for semantic-view/capability queries and canonical logical keys.
+  Responses are fixed, bounded view or capability payloads. The shared key
+  decoder maps to the same `ReceiveApp` request as a keypad edge.
+- K1 and K5 adapters retain their existing framing and transport: K1's COBS
+  object/runtime service and K5's observed normal-mode hello envelope and
+  circular-DMA UART. They may carry the common payload only after their own
+  framing validates it; no target or host wire type enters `radio-platform`.
+- Candidate configuration changes are excluded from this payload because their
+  exact acknowledgement, K1 persistence, and K5 volatile generation-zero
+  semantics are not common. Deterministic K1, K5, and simulator fixtures prove
+  request/response bytes and shared key effects; this remains host/static
+  evidence, not physical serial interoperability.

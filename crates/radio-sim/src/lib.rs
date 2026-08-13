@@ -1226,6 +1226,30 @@ mod tests {
         assert!(!capabilities.contains(SharedCapability::PersistentConfiguration));
     }
 
+    #[test]
+    fn deterministic_simulator_decodes_common_wire_and_returns_shared_view() {
+        use radio_platform::serial_control::wire::{
+            decode_request, decode_response, encode_key_response, Request as WireRequest,
+            Response as WireResponse,
+        };
+
+        let request = decode_request(&[0x03, 0x04]).expect("wire key");
+        assert_eq!(request, WireRequest::Key(SharedKey::Up));
+        let mut app = ReceiveApp::new();
+        let result = dispatch_shared(
+            &mut app,
+            SharedCapabilities::shared_receive(),
+            radio_platform::serial_control::wire::into_request(request),
+        );
+        assert!(matches!(result, SharedResult::Effects(_)));
+        let mut response = [0_u8; 4];
+        let length = encode_key_response(app.view(), &mut response).expect("wire response");
+        assert_eq!(
+            decode_response(&response[..length]),
+            Ok(WireResponse::View(app.view()))
+        );
+    }
+
     fn bank(id: u16, name: &str) -> GeneratedBank {
         GeneratedBank::linear_simplex(
             BankId::new(id),

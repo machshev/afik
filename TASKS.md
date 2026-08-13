@@ -2664,6 +2664,14 @@
   receive-only boundary explicit. Host/simulator fixtures prove serial `Up`
   matches keypad `Up`, candidate activation still waits for the exact ack, and
   K5 does not claim K1-only storage/control features. No hardware was flashed.
+- **Common payload mapping:** `radio-platform::serial_control::wire` now
+  defines a fixed two-byte request for semantic view, capabilities, or one
+  logical key, and bounded view/capability responses. K1 and K5 expose
+  target-owned decode/apply/encode adapters over that payload, while retaining
+  their existing COBS/object/runtime and normal-mode hello framing. Candidate
+  changes remain excluded because their exact acknowledgement and persistence
+  semantics are not common. Deterministic K1/K5 and `radio-sim` tests prove
+  exact bytes and shared `ReceiveApp` effects; no hardware was flashed.
 - **Then:** serial control remains target-owned until a separate boundary is
   designed. Keep K1 persistence and serial protocol, K5 persistence (until
   evidenced), MCU registers, interrupts,

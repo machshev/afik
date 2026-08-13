@@ -4,6 +4,8 @@ use radio_platform::receive_app::ReceiveApp;
 pub use radio_platform::serial::{
     ApplicationIdentity, HelloService, REQUEST_BODY_BYTES, RESPONSE_FRAME_BYTES,
 };
+use radio_platform::serial_control::wire as shared_wire;
+pub use radio_platform::serial_control::wire::Error as SharedWireError;
 pub use radio_platform::serial_control::{
     dispatch as dispatch_shared, Capabilities as SerialCapabilities,
     Capability as SerialCapability, Command as SerialCommand, Query as SerialQuery,
@@ -33,6 +35,29 @@ pub const fn serial_capabilities() -> SerialCapabilities {
 /// effect, and configuration-acknowledgement path used by keypad input.
 pub fn apply_shared_serial_request(app: &mut ReceiveApp, request: SerialRequest) -> SerialResult {
     dispatch_shared(app, serial_capabilities(), request)
+}
+
+/// Decodes the fixed common payload after K5's normal-mode framing is removed.
+/// Circular DMA, UART registers, and the legacy envelope remain K5-owned.
+pub fn decode_shared_request(payload: &[u8]) -> Result<shared_wire::Request, SharedWireError> {
+    shared_wire::decode_request(payload)
+}
+
+/// Routes one decoded common request through the same application as keypad
+/// events, without introducing K1 persistence or object services.
+pub fn apply_shared_wire_request(
+    app: &mut ReceiveApp,
+    request: shared_wire::Request,
+) -> SerialResult {
+    apply_shared_serial_request(app, shared_wire::into_request(request))
+}
+
+/// Encodes a semantic response for a target-owned K5 wire envelope.
+pub fn encode_shared_response(
+    result: SerialResult,
+    output: &mut [u8],
+) -> Result<usize, SharedWireError> {
+    shared_wire::encode_response(result, output)
 }
 
 /// Plain-text banner retained for bounded serial diagnostics.

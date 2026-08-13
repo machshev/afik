@@ -117,6 +117,203 @@ pub enum Result {
     Effects(Effects),
 }
 
+/// The bounded common request vocabulary which target wire adapters may
+/// encode.  Configuration candidates are deliberately absent: their exact
+/// acknowledgement and persistence semantics remain target-owned.
+pub mod wire {
+    use super::{Capabilities, Command, Key, Query, Result as DispatchResult, View};
+
+    /// Bytes in one common request payload.
+    pub const REQUEST_BYTES: usize = 2;
+    /// Maximum bytes in one common response payload.
+    pub const MAX_RESPONSE_BYTES: usize = 4;
+
+    const OP_VIEW: u8 = 0x01;
+    const OP_CAPABILITIES: u8 = 0x02;
+    const OP_KEY: u8 = 0x03;
+
+    const RESPONSE_VIEW: u8 = 0x81;
+    const RESPONSE_CAPABILITIES: u8 = 0x82;
+    const RESPONSE_KEY: u8 = 0x83;
+
+    /// A request representable on the common wire boundary.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub enum Request {
+        /// Query the semantic receive view.
+        View,
+        /// Query the adapter-declared shared capability bits.
+        Capabilities,
+        /// Apply one canonical logical key through the shared app.
+        Key(Key),
+    }
+
+    /// A response representable on the common wire boundary.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub enum Response {
+        /// Semantic view returned by a view query or accepted key command.
+        View(View),
+        /// Explicit target capability bits.
+        Capabilities(Capabilities),
+    }
+
+    /// Failure while decoding or encoding the fixed common payload.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub enum Error {
+        /// The payload was not exactly the fixed request length.
+        InvalidRequestLength,
+        /// The operation or key code is not in the bounded vocabulary.
+        UnknownCode,
+        /// The response variant cannot be represented by the common wire.
+        UnsupportedResult,
+        /// The caller's response buffer is too short.
+        ResponseTooSmall,
+    }
+
+    /// Encodes a common request into its fixed two-byte payload.
+    pub const fn encode_request(request: Request, output: &mut [u8; REQUEST_BYTES]) {
+        output[0] = match request {
+            Request::View => OP_VIEW,
+            Request::Capabilities => OP_CAPABILITIES,
+            Request::Key(_) => OP_KEY,
+        };
+        output[1] = match request {
+            Request::Key(key) => encode_key(key),
+            Request::View | Request::Capabilities => 0,
+        };
+    }
+
+    /// Decodes the fixed common request payload and maps it to the shared
+    /// transport-free contract.
+    pub const fn decode_request(input: &[u8]) -> core::result::Result<Request, Error> {
+        if input.len() != REQUEST_BYTES {
+            return Err(Error::InvalidRequestLength);
+        }
+        match input[0] {
+            OP_VIEW if input[1] == 0 => Ok(Request::View),
+            OP_CAPABILITIES if input[1] == 0 => Ok(Request::Capabilities),
+            OP_KEY => match decode_key(input[1]) {
+                Some(key) => Ok(Request::Key(key)),
+                None => Err(Error::UnknownCode),
+            },
+            _ => Err(Error::UnknownCode),
+        }
+    }
+
+    /// Encodes a shared dispatch result. `Effects` are not wire results: the
+    /// target must apply them first and answer with the resulting view.
+    pub fn encode_response(
+        result: DispatchResult,
+        output: &mut [u8],
+    ) -> core::result::Result<usize, Error> {
+        match result {
+            DispatchResult::View(view) => {
+                let bytes = output.get_mut(..4).ok_or(Error::ResponseTooSmall)?;
+                bytes[0] = RESPONSE_VIEW;
+                encode_view(view, &mut bytes[1..4]);
+                Ok(4)
+            }
+            DispatchResult::Capabilities(capabilities) => {
+                let bytes = output.get_mut(..3).ok_or(Error::ResponseTooSmall)?;
+                bytes[0] = RESPONSE_CAPABILITIES;
+                bytes[1..3].copy_from_slice(&capabilities.bits().to_le_bytes());
+                Ok(3)
+            }
+            DispatchResult::Effects(_) => Err(Error::UnsupportedResult),
+        }
+    }
+
+    /// Encodes the view returned after a target applies a logical key.
+    pub fn encode_key_response(
+        view: View,
+        output: &mut [u8],
+    ) -> core::result::Result<usize, Error> {
+        let bytes = output.get_mut(..4).ok_or(Error::ResponseTooSmall)?;
+        bytes[0] = RESPONSE_KEY;
+        encode_view(view, &mut bytes[1..4]);
+        Ok(4)
+    }
+
+    /// Decodes a response payload for deterministic host/simulator fixtures.
+    pub fn decode_response(input: &[u8]) -> core::result::Result<Response, Error> {
+        match input {
+            [RESPONSE_VIEW | RESPONSE_KEY, channel, audio, flags] => {
+                decode_view(*channel, *audio, *flags)
+                    .map(Response::View)
+                    .ok_or(Error::UnknownCode)
+            }
+            [RESPONSE_CAPABILITIES, low, high] => {
+                let bits = u16::from_le_bytes([*low, *high]);
+                if bits & !0x01FF != 0 {
+                    return Err(Error::UnknownCode);
+                }
+                Ok(Response::Capabilities(Capabilities::from_bits(bits)))
+            }
+            _ => Err(Error::UnknownCode),
+        }
+    }
+
+    /// Maps a wire request to the transport-free shared request.
+    pub const fn into_request(request: Request) -> super::Request {
+        match request {
+            Request::View => super::Request::Query(Query::View),
+            Request::Capabilities => super::Request::Query(Query::Capabilities),
+            Request::Key(key) => super::Request::Command(Command::Key(key)),
+        }
+    }
+
+    /// Encodes the three semantic view flags into one bounded byte.
+    const fn encode_view(view: View, output: &mut [u8]) {
+        output[0] = view.channel;
+        output[1] = if view.audio { 1 } else { 0 };
+        output[2] =
+            (if view.squelch_open { 1 } else { 0 }) | ((if view.receiver_ok { 1 } else { 0 }) << 1);
+    }
+
+    const fn decode_view(channel: u8, audio: u8, flags: u8) -> Option<View> {
+        if audio > 1 || flags & !0x03 != 0 {
+            return None;
+        }
+        Some(View {
+            channel,
+            audio: audio != 0,
+            squelch_open: flags & 1 != 0,
+            receiver_ok: flags & 2 != 0,
+        })
+    }
+
+    const fn encode_key(key: Key) -> u8 {
+        match key {
+            Key::Side1 => 0,
+            Key::Side2 => 1,
+            Key::Ptt => 2,
+            Key::Menu => 3,
+            Key::Up => 4,
+            Key::Down => 5,
+            Key::Exit => 6,
+            Key::Digit(digit) if digit < 10 => 0x10 + digit,
+            Key::Digit(_) => 0xFF,
+            Key::Star => 0x1A,
+            Key::Function => 0x1B,
+        }
+    }
+
+    const fn decode_key(code: u8) -> Option<Key> {
+        Some(match code {
+            0 => Key::Side1,
+            1 => Key::Side2,
+            2 => Key::Ptt,
+            3 => Key::Menu,
+            4 => Key::Up,
+            5 => Key::Down,
+            6 => Key::Exit,
+            0x10..=0x19 => Key::Digit(code - 0x10),
+            0x1A => Key::Star,
+            0x1B => Key::Function,
+            _ => return None,
+        })
+    }
+}
+
 /// Dispatches one decoded request into the shared application.
 ///
 /// This function performs no transport I/O and does not apply target effects.
@@ -216,6 +413,95 @@ mod tests {
         assert_eq!(
             dispatch(&mut app, capabilities, Request::Query(Query::View)),
             Result::View(before)
+        );
+    }
+
+    #[test]
+    fn common_wire_requests_and_responses_are_fixed_and_deterministic() {
+        use super::wire::{
+            decode_request, decode_response, encode_key_response, encode_request, encode_response,
+            Request as WireRequest, Response as WireResponse, REQUEST_BYTES,
+        };
+        use crate::receive_app::View;
+
+        let requests = [
+            (WireRequest::View, [0x01, 0x00]),
+            (WireRequest::Capabilities, [0x02, 0x00]),
+            (WireRequest::Key(Key::Up), [0x03, 0x04]),
+            (WireRequest::Key(Key::Menu), [0x03, 0x03]),
+        ];
+        for (request, expected) in requests {
+            let mut encoded = [0_u8; REQUEST_BYTES];
+            encode_request(request, &mut encoded);
+            assert_eq!(encoded, expected);
+            assert_eq!(decode_request(&encoded), Ok(request));
+        }
+
+        let view = View {
+            channel: 7,
+            audio: true,
+            squelch_open: false,
+            receiver_ok: true,
+        };
+        let mut response = [0_u8; super::wire::MAX_RESPONSE_BYTES];
+        let length = encode_response(Result::View(view), &mut response).expect("view response");
+        assert_eq!(&response[..length], &[0x81, 7, 1, 2]);
+        assert_eq!(
+            decode_response(&response[..length]),
+            Ok(WireResponse::View(view))
+        );
+
+        let capabilities = Capabilities::shared_receive();
+        let length = encode_response(Result::Capabilities(capabilities), &mut response)
+            .expect("capability response");
+        assert_eq!(&response[..length], &[0x82, 7, 0]);
+        assert_eq!(
+            decode_response(&response[..length]),
+            Ok(WireResponse::Capabilities(capabilities))
+        );
+
+        let length = encode_key_response(view, &mut response).expect("key response");
+        assert_eq!(&response[..length], &[0x83, 7, 1, 2]);
+        assert_eq!(
+            decode_response(&response[..length]),
+            Ok(WireResponse::View(view))
+        );
+    }
+
+    #[test]
+    fn common_wire_rejects_candidates_and_malformed_key_payloads() {
+        use super::wire::{decode_request, encode_response, Error};
+        use crate::configuration_change::ConfigurationCandidate;
+
+        assert_eq!(decode_request(&[0x03, 0xFF]), Err(Error::UnknownCode));
+        let mut invalid_digit = [0_u8; super::wire::REQUEST_BYTES];
+        super::wire::encode_request(
+            super::wire::Request::Key(Key::Digit(10)),
+            &mut invalid_digit,
+        );
+        assert_eq!(
+            decode_request(&invalid_digit),
+            Err(Error::UnknownCode),
+            "out-of-range digit cannot alias Star"
+        );
+        assert_eq!(decode_request(&[0x01]), Err(Error::InvalidRequestLength));
+        assert_eq!(
+            super::wire::decode_response(&[0x81, 1, 2, 0]),
+            Err(Error::UnknownCode)
+        );
+        assert_eq!(
+            super::wire::decode_response(&[0x82, 0, 2]),
+            Err(Error::UnknownCode)
+        );
+        let candidate = ConfigurationCandidate::from_channel(0, 2, true).expect("candidate");
+        let effects = dispatch(
+            &mut ReceiveApp::new(),
+            Capabilities::shared_receive(),
+            Request::Command(Command::Activate(candidate)),
+        );
+        assert_eq!(
+            encode_response(effects, &mut [0_u8; super::wire::MAX_RESPONSE_BYTES]),
+            Err(Error::UnsupportedResult)
         );
     }
 }

@@ -6,6 +6,9 @@ use radio_platform::serial::{
     decode_command, encode_hello_response as encode_shared_hello_response, ApplicationIdentity,
 };
 pub use radio_platform::serial::{REQUEST_BODY_BYTES, RESPONSE_FRAME_BYTES};
+use radio_platform::serial_control::wire as shared_wire;
+pub use radio_platform::serial_control::wire::Error as SharedWireError;
+use radio_platform::serial_control::Result as SharedResult;
 /// Complete encoded response size for the 16-byte keypad diagnostic payload.
 pub const KEYPAD_RESPONSE_FRAME_BYTES: usize = 24;
 /// Complete encoded response size for the 24-byte clock diagnostic payload.
@@ -100,6 +103,29 @@ pub const RF_STAGE_READ_BACK: u8 = 2;
 pub const RF_STAGE_RECEIVING: u8 = 3;
 /// A bus or state error was latched; the observation is not trustworthy.
 pub const RF_STAGE_FAULTED: u8 = 0xFF;
+
+/// Decodes the fixed common payload after this target's framing has been
+/// removed. The payload mapping is shared; K1 retains ownership of its
+/// COBS/object framing and target-only commands.
+pub fn decode_shared_request(payload: &[u8]) -> Result<shared_wire::Request, SharedWireError> {
+    shared_wire::decode_request(payload)
+}
+
+/// Routes one decoded common request through the K1 shared application seam.
+pub fn apply_shared_wire_request(
+    app: &mut radio_platform::receive_app::ReceiveApp,
+    request: shared_wire::Request,
+) -> SharedResult {
+    super::host_control::apply_shared_serial_request(app, shared_wire::into_request(request))
+}
+
+/// Encodes a semantic response for a target-owned K1 wire envelope.
+pub fn encode_shared_response(
+    result: SharedResult,
+    output: &mut [u8],
+) -> Result<usize, SharedWireError> {
+    shared_wire::encode_response(result, output)
+}
 
 /// Decodes one bounded normal-mode request body.
 pub fn decode_request(encoded_body: &mut [u8; REQUEST_BODY_BYTES]) -> Option<Request> {
@@ -503,6 +529,31 @@ mod tests {
             u32::from_le_bytes(frame[12..16].try_into().unwrap()),
             CLOCK_CONTROL_MARKER
         );
+    }
+
+    #[test]
+    fn common_wire_key_is_decoded_and_enters_the_shared_k1_app() {
+        use super::{apply_shared_wire_request, decode_shared_request, encode_shared_response};
+        use radio_platform::receive_app::{Key, ReceiveApp};
+        use radio_platform::serial_control::wire::{decode_response, Response};
+
+        let request = decode_shared_request(&[0x03, 0x04]).expect("common key");
+        assert_eq!(request, super::shared_wire::Request::Key(Key::Up));
+        let mut app = ReceiveApp::new();
+        let result = apply_shared_wire_request(&mut app, request);
+        assert!(matches!(result, super::SharedResult::Effects(_)));
+        let mut response = [0_u8; 4];
+        let length = super::shared_wire::encode_key_response(app.view(), &mut response)
+            .expect("key response");
+        assert_eq!(
+            decode_response(&response[..length]),
+            Ok(Response::View(app.view()))
+        );
+        let mut query_response = [0_u8; 4];
+        let length =
+            encode_shared_response(super::SharedResult::View(app.view()), &mut query_response)
+                .expect("view response");
+        assert_eq!(&query_response[..length], &[0x81, 2, 1, 2]);
     }
 
     fn encode_request_for_test(payload: [u8; 8]) -> [u8; 10] {

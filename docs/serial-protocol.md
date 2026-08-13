@@ -88,3 +88,23 @@ path and baud. It configures that path through `stty` as raw, no-echo, `min 0`,
 `ProtocolTransport`. This introduces no new wire command, raw storage access,
 target UART assumption, default device, or default baud. Physical
 interoperability remains open in `RISK-009`.
+
+## Common application payload mapping
+
+`radio-platform::serial_control::wire` defines the small common payload which
+target-owned serial adapters may carry inside an already validated frame. A
+request is exactly two bytes: `01 00` queries the semantic receive view,
+`02 00` queries the adapter's capability bits, and `03 key` applies one
+canonical logical key. Key codes are bounded and stable (`Up=04`, `Down=05`,
+`Menu=03`); the remaining post-debounce vocabulary is representable for
+target-owned shells but has no receive-only action in this milestone.
+
+A view response is four bytes: `81 channel audio state`, or `83 channel audio
+state` after a key command. `audio` is `0` or `1`; `state` bit 0 is sampled
+squelch and bit 1 is receiver health. A capability response is three bytes:
+`82` followed by a little-endian `u16` bitset. Unknown operations, reserved
+bits, wrong lengths, and invalid key codes are rejected. The mapping is
+transport/storage-free; K1 retains its COBS/object/runtime service and K5
+retains its observed normal-mode envelope and circular-DMA adapter. Candidate
+configuration changes are not encoded here because their exact
+acknowledgement and persistence semantics remain target-owned.

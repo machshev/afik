@@ -240,13 +240,18 @@ software guarantees, not persistence or hardware evidence.
 The serial-control extension is a smaller boundary above those target-owned
 wire services. `radio-platform::serial_control` receives only a decoded query
 or common command and returns a semantic view, an explicit capability set, or
-the same bounded effects that a keypad event produces. A candidate command
-still emits an identified configuration change and can become active only
-after the exact adapter acknowledgement. K1 and K5 construct capability sets
-locally: K1 retains its object/runtime protocol, persistence, arbitrary
-channels, VFO, scan, and raw metrics, while K5 declares only shared
-receive/view/key behavior and volatile generation-zero activation. No UART,
-DMA, framing, EEPROM, storage, or target controller type crosses this seam.
+the same bounded effects that a keypad event produces. Its `wire` submodule
+defines a fixed two-byte request payload for view/capability queries and the
+canonical logical-key vocabulary, plus bounded view/capability response
+payloads. K1 and K5 adapters may put those payloads inside their existing
+framing, but do not share a UART or framing implementation. Candidate commands
+are intentionally absent from this payload mapping: they still emit an
+identified configuration change and can become active only after the exact
+adapter acknowledgement. K1 and K5 construct capability sets locally: K1
+retains its object/runtime protocol, persistence, arbitrary channels, VFO,
+scan, and raw metrics, while K5 declares only shared receive/view/key behavior
+and volatile generation-zero activation. No UART, DMA, framing, EEPROM,
+storage, or target controller type crosses this seam.
 
 The DP32G030 target linker and package tools own the V1 application-region
 contract. They emit a full `0x0000..0xEFFF` raw image and never include the

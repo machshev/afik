@@ -7,9 +7,9 @@
 //! framing rather than testing either against a fixture written beside it.
 
 use radio_firmware_k5::protocol::{
-    apply_shared_serial_request, serial_capabilities, HelloService, SerialCapability,
-    SerialCommand, SerialRequest, SerialResult, APPLICATION_IDENTITY, APPLICATION_VERSION,
-    RESPONSE_FRAME_BYTES,
+    apply_shared_serial_request, apply_shared_wire_request, decode_shared_request,
+    encode_shared_response, serial_capabilities, HelloService, SerialCapability, SerialCommand,
+    SerialRequest, SerialResult, APPLICATION_IDENTITY, APPLICATION_VERSION, RESPONSE_FRAME_BYTES,
 };
 use radio_flasher::probe_normal_firmware;
 use radio_platform::receive_app::{Event, Key, ReceiveApp};
@@ -137,4 +137,33 @@ fn k5_common_serial_key_enters_the_same_shared_app_as_keypad_input() {
         SerialResult::Effects(keypad.apply(Event::KeyPress(Key::Up)))
     );
     assert_eq!(serial.view(), keypad.view());
+}
+
+#[test]
+fn k5_common_wire_key_is_decoded_and_returns_the_shared_view() {
+    let request = decode_shared_request(&[0x03, 0x04]).expect("common key");
+    let mut app = ReceiveApp::new();
+    let result = apply_shared_wire_request(&mut app, request);
+    assert!(matches!(result, SerialResult::Effects(_)));
+    let mut response = [0_u8; 4];
+    let length =
+        radio_platform::serial_control::wire::encode_key_response(app.view(), &mut response)
+            .expect("key response");
+    assert_eq!(&response[..length], &[0x83, 2, 1, 2]);
+
+    let mut query_response = [0_u8; 4];
+    let length = encode_shared_response(SerialResult::View(app.view()), &mut query_response)
+        .expect("view response");
+    assert_eq!(&query_response[..length], &[0x81, 2, 1, 2]);
+}
+
+#[test]
+fn k5_common_wire_capability_query_is_target_declared() {
+    let request = decode_shared_request(&[0x02, 0x00]).expect("capability query");
+    let mut app = ReceiveApp::new();
+    let result = apply_shared_wire_request(&mut app, request);
+    assert_eq!(result, SerialResult::Capabilities(serial_capabilities()));
+    let mut response = [0_u8; 4];
+    let length = encode_shared_response(result, &mut response).expect("capability response");
+    assert_eq!(&response[..length], &[0x82, 0x07, 0x00]);
 }
