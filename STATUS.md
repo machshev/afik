@@ -45,10 +45,21 @@ their existing paths, so this step does not reduce K1 behavior. Shared receive
 samples now own the K1 speaker gate on those exact PMR setups; receiver faults
 feed the common fail-silent event. Physical K1 parity is not yet established.
 
-Next smallest actionable task: physically validate the K1 PMR shared path,
-then move keypad semantics and semantic display state into the shared
-application without changing the retained K1-only persistence, diagnostics,
-chip profile, or recovery behavior.
+Physical K1 parity passes. The live bootloader identified as K1 page-write
+`7.03.01`; the validated 94,248-byte image (SHA-256
+`302eb48a0f61f2675799bb5d827d20b18a2a6e403d8798991ee240dafaaccdec`,
+CRC-32 `d27e35e3`) received `369/369` exact acknowledgements under transaction
+`24afd6e4`, with no retries. After an ordinary power-cycle, three consecutive
+read-only programmer `info` and `list` pairs returned protocol version 1,
+storage version 4, generation 1, and the same three generated banks plus radio
+configuration. The operator then confirmed Up/Down navigation, PMR446 receive
+audio, squelch opening/closing, menus, channel list, VFO, and Info all work.
+This independently establishes application boot and preservation of the K1
+operator/programmer behavior through the shared PMR receive path.
+
+Next smallest actionable task: move keypad semantics and semantic display
+state into the shared application without changing the retained K1-only
+persistence, diagnostics, chip profile, or recovery behavior.
 
 K1 live-path verification on 2026-08-13:
 
@@ -62,6 +73,18 @@ K1 live-path verification on 2026-08-13:
 - `nix develop path:. -c ./tool/build-k1-async.sh --release` — passed without
   warnings.
 - `git diff --check` — passed.
+- Live normal-mode `afik-programmer info` and `list` before the write — passed;
+  protocol version 1, storage version 4, generation 1, four objects.
+- `afik-flasher identify` in boot mode — K1 page-write `7.03.01`; the beacon
+  was not treated as hardware identity.
+- Guarded `flash-afik-k1` — retained recovery SHA-256
+  `7b6b277c319e6924bd878f4e4208490875dc3f15beb205c366d20130c02a4463`,
+  backup CRC-32 `99765400`, and all `369/369` pages acknowledged with no retry;
+  status `acknowledged_not_read_back` before power-cycle.
+- Three post-power-cycle `afik-programmer info`/`list` pairs — passed with the
+  same capabilities, generation, and four objects.
+- Operator observation — Up/Down navigation, PMR446 audio, squelch, menus,
+  channel list, VFO, and Info all work.
 
 `K5APP-051` is complete. Its first step added the source-backed K5 V1 main
 keypad matrix adapter. All sixteen main labels are mapped, unstable or
