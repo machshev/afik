@@ -6,6 +6,7 @@
 extern crate std;
 
 pub mod configuration;
+pub mod configuration_change;
 pub mod display;
 pub mod receive_app;
 pub mod serial;

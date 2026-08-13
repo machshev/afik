@@ -71,8 +71,10 @@ use radio_firmware_k1::shell::{
     SQUELCH_LEVELS, VFO_STEPS_HZ,
 };
 use radio_firmware_k1::unified_receive::{shared_channel, translate, K1Effect};
-use radio_platform::configuration::ActivatedConfiguration;
-use radio_platform::receive_app::{Effects as SharedEffects, Event as SharedEvent, ReceiveApp};
+use radio_platform::configuration_change::{ConfigurationAcknowledgement, ConfigurationCandidate};
+use radio_platform::receive_app::{
+    Effect as SharedEffect, Effects as SharedEffects, Event as SharedEvent, ReceiveApp,
+};
 use radio_protocol::{ControlRequest, DeviceErrorCode, ReceiveMetricsReport, MAX_ENCODED_FRAME};
 use radio_storage::ObjectArena;
 
@@ -711,10 +713,12 @@ fn apply_shared_effects(
     let mut redraw = false;
     for effect in effects.iter() {
         let Ok(effect) = translate(effect) else {
+            receiver.faulted = true;
             receiver.set_speaker(false);
             return true;
         };
         match effect {
+            K1Effect::ConfigurationChange(_) => {}
             K1Effect::Tune { setup, audio } => {
                 receiver.tune(setup, radio_wide_squelch);
                 receiver.set_chip_audio(audio);
@@ -722,6 +726,7 @@ fn apply_shared_effects(
             K1Effect::SetChipAudio(enabled) => receiver.set_chip_audio(enabled),
             K1Effect::SetSpeaker(enabled) => receiver.set_speaker(enabled),
             K1Effect::Redraw(_) => redraw = true,
+            K1Effect::ConfigurationAcknowledged(_) => {}
         }
         if receiver.faulted {
             receiver.set_speaker(false);
@@ -1500,20 +1505,33 @@ async fn ui_task(
         // the serial link is quiet. Bus work is deferred, never dropped.
         if let Some(setup) = pending.filter(|_| bus_available()) {
             if let Some(channel) = shared_channel(setup) {
-                let app = shared_receive.get_or_insert_with(|| {
-                    ReceiveApp::from_configuration(
-                        ActivatedConfiguration::from_channel(generation, channel, shared_audio)
-                            .expect("shared channel was validated"),
-                    )
+                let had_shared = shared_receive.is_some();
+                let app = shared_receive.get_or_insert_with(ReceiveApp::new);
+                let candidate = ConfigurationCandidate::from_channel(
+                    generation,
+                    channel,
+                    if had_shared {
+                        app.view().audio
+                    } else {
+                        shared_audio
+                    },
+                )
+                .expect("shared channel was validated");
+                let was_faulted = receiver.faulted;
+                let candidate_effects = app.apply(SharedEvent::ConfigurationCandidate(candidate));
+                let change = candidate_effects.iter().find_map(|effect| match effect {
+                    SharedEffect::ConfigurationChange(change) => Some(change),
+                    _ => None,
                 });
-                let _ = apply_shared_effects(
-                    app.apply(SharedEvent::SelectChannel(channel)),
-                    &mut receiver,
-                    shell.squelch(),
-                );
-                if receiver.faulted {
+                let _ = apply_shared_effects(candidate_effects, &mut receiver, shell.squelch());
+                if let Some(change) = change {
+                    let acknowledgement = if !was_faulted && !receiver.faulted {
+                        ConfigurationAcknowledgement::applied(change)
+                    } else {
+                        ConfigurationAcknowledgement::rejected(change)
+                    };
                     let _ = apply_shared_effects(
-                        app.apply(SharedEvent::ReceiverFault),
+                        app.apply(SharedEvent::ConfigurationAcknowledged(acknowledgement)),
                         &mut receiver,
                         shell.squelch(),
                     );

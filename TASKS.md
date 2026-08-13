@@ -2629,9 +2629,26 @@
   `00761d035a6bcf43483bf3eb535004282bc12254a2fd31cf4c12fb552f64f40d`.
   Formatting, warning-denied focused Clippy, 14 platform tests, 127 K1 tests,
   16 K5 tests, and both target release builds pass; no hardware was flashed.
-- **Then:** extract the shared configuration-change event and acknowledgement
-  boundary, then serial control. Keep K1 persistence and serial protocol, K5
-  persistence (until evidenced), MCU registers, interrupts,
+- **Configuration-change step:** `radio-platform::configuration_change` now
+  owns a no-std, heap-free, bounded candidate/change/acknowledgement contract.
+  The change identity is distinct from the opaque K1 storage generation, so a
+  stale acknowledgement cannot commit a repeated candidate. `ReceiveApp`
+  stages the candidate without mutating its active semantic snapshot, emits one
+  identified change effect, accepts only the exact acknowledgement, ignores
+  mismatched/stale acknowledgements, and fails silent on matching rejection by
+  muting chip audio and the speaker. K1 keeps object decoding, EEPROM writes,
+  commit/read-back, arbitrary channels, VFO, scanning, and serial control in
+  its target path; K5 retains generation-zero immutable receive capability and
+  gains no EEPROM persistence. Deterministic host fixtures cover K1/K5 traces,
+  generation identity, atomicity, repeated candidates, mismatched/stale acks,
+  and failure. Focused platform/K1/K5 tests and formatting pass; no hardware
+  was flashed. The pinned workspace gate, K1 release build, and K5
+  release/package gate pass; K5 flash ends at `0x5CC0`, static RAM ends at
+  `0x20000100`, the package remains exactly `0xF000` bytes, and its SHA-256 is
+  `2e231566f3d84bfce5708d3135e41a1c9c019fce037a6d730d376390fccebbd6`.
+- **Then:** serial control remains target-owned until a separate boundary is
+  designed. Keep K1 persistence and serial protocol, K5 persistence (until
+  evidenced), MCU registers, interrupts,
   DMA, physical buses, chip profile selection, image layout, and recovery in
   their target crates.
 - **Initial exclusions:** TX/PTT behavior, calibrated squelch/sensitivity,

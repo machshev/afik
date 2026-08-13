@@ -105,10 +105,31 @@ clippy --workspace --all-targets -- -D warnings && cargo test --workspace'`
 and `git diff --check`. The complete workspace suite passed, including the
 deterministic `radio-sim` tests.
 
-Next smallest actionable task: extract the shared configuration-change event
-and acknowledgement boundary while retaining K1 serial protocol and EEPROM
-transport ownership; K5 remains receive-only until its persistence behavior is
-evidenced.
+The configuration-change boundary is now implemented in
+`radio-platform::configuration_change`. It is a no-std, heap-free, bounded
+candidate/change/acknowledgement contract: each change has an application-local
+identity in addition to the opaque target/storage generation, so a delayed ack
+cannot commit a later attempt carrying the same candidate. `ReceiveApp` stages
+the candidate, leaves the active semantic snapshot unchanged until the exact
+ack arrives, ignores mismatched/stale acks, and fails silent on matching
+rejection by muting chip audio and the speaker. K1 and K5 target adapters use
+the same effect path; K1's object protocol, EEPROM persistence, commit/readback,
+arbitrary channels, VFO, scanning, and serial behavior remain target-owned,
+while K5 remains generation-zero volatile receive-only with no invented EEPROM
+activation. Host tests cover atomicity, generation identity, repeated
+candidates, mismatch/stale acknowledgements, failure, and deterministic K1/K5
+effects. No hardware was flashed for this step.
+
+Pinned gates for the configuration-change step pass: `cargo fmt --all --check`,
+warning-denied workspace Clippy, `cargo test --workspace` (including 18
+platform, 127 K1, 16 K5, and deterministic `radio-sim` tests), and
+`git diff --check`. `nix develop path:. -c ./tool/build-k1-async.sh --release`
+passes without warnings. The K5 release/package gate passes with image end
+`0x5CC0`, static RAM end `0x20000100`, fixed package size `0xF000`, and SHA-256
+`2e231566f3d84bfce5708d3135e41a1c9c019fce037a6d730d376390fccebbd6`.
+No hardware was flashed. Next smallest actionable task: extract serial
+control only after its target-owned persistence and transport boundary is
+designed.
 
 K1 live-path verification on 2026-08-13:
 

@@ -1272,3 +1272,24 @@ meaning.
   views while separately asserting K1 and K5 generation identity. This keeps
   the common behavior identical without treating unlike persistence systems as
   interchangeable.
+
+## ADR-077 — Configuration changes commit only after an exact adapter acknowledgement
+
+- **Date:** 2026-08-13
+- **Status:** accepted for `APP-052`
+- `radio-platform::configuration_change` is a `no_std`, heap-free, bounded
+  value contract. A candidate carries the common channel/audio value and the
+  opaque target/storage generation; a change adds a monotonically allocated
+  application-local identity; an acknowledgement carries that exact change
+  and an applied/rejected result.
+- `ReceiveApp` keeps the active semantic snapshot unchanged while a change is
+  pending. It emits one identified change request, accepts only a matching
+  acknowledgement, ignores mismatched or stale acknowledgements, and on a
+  matching rejection keeps the old snapshot while muting chip audio and the
+  speaker and marking the receiver unknown. IDs fail closed at exhaustion and
+  are never wrapped or reused.
+- K1's target adapter acknowledges only after its existing receive operation
+  has not faulted; K5 acknowledges only after its existing bounded tune,
+  read-back, and metric operations succeed. The contract does not own K1
+  object transactions, EEPROM persistence, serial framing, or any K5 EEPROM
+  behavior.

@@ -83,6 +83,14 @@
   persistence/object activation remains target-owned; K5 generation zero is a
   no-persistence fixture, not EEPROM evidence. K5 configuration retention,
   restore, power-loss behavior, and host configuration control remain open.
+- **Shared change narrowing, 2026-08-13:**
+  `radio-platform::configuration_change` proves only an in-memory application
+  hand-off. Its application-local change identity prevents stale acknowledg-
+  ments within one app instance, and matching rejection fails silent, but it
+  is not a serial transaction, EEPROM journal, power-loss proof, or physical
+  tune/read-back observation. K1 object commit/read-back and K5's lack of AFIK
+  persistence remain separate target concerns; K5 generation zero remains a
+  volatile capability.
 
 ## RISK-007 — BK4819 register applicability and board RF control are unverified
 

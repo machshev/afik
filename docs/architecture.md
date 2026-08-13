@@ -215,6 +215,18 @@ AFIK persistence behavior. Thus both targets execute one activation/receive
 state machine without importing unlike storage or transport dependencies into
 the K5 image.
 
+Configuration changes use a separate bounded candidate/change/acknowledgement
+contract in `radio-platform::configuration_change`. A change carries both the
+candidate and a monotonically allocated application-local identity; the
+opaque storage generation remains part of the candidate and is never treated as
+the change identity. `ReceiveApp` keeps the old semantic snapshot until the
+adapter acknowledges that exact change, ignores mismatched or stale
+acknowledgements, and fails silent on a matching rejection. K1 creates these
+changes only after its retained object path has selected a common receive
+setup; K5 applies them to its immutable built-in receive fixture. Neither
+target's serial protocol, EEPROM transport, object commit/read-back, or
+volatile capability is represented in this shared contract.
+
 The DP32G030 target linker and package tools own the V1 application-region
 contract. They emit a full `0x0000..0xEFFF` raw image and never include the
 stock `0xF000..0xFFFF` bootloader region. Hardware-independent radio crates do

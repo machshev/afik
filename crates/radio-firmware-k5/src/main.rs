@@ -24,7 +24,7 @@ use radio_firmware_k5::k5_display::K5BootDisplay;
 use radio_firmware_k5::keypad::{self, K5Matrix};
 use radio_firmware_k5::protocol::{HelloService, APPLICATION_IDENTITY, RESPONSE_FRAME_BYTES};
 use radio_firmware_k5::receive::Pmr446Channel;
-use radio_platform::configuration::ActivatedConfiguration;
+use radio_platform::configuration_change::{ConfigurationAcknowledgement, ConfigurationCandidate};
 use radio_platform::display::show_boot_sequence;
 use radio_platform::receive_app::{Effect, Event, ReceiveApp};
 
@@ -120,10 +120,7 @@ fn main() -> ! {
     // K5 has no AFIK persistence adapter yet. Generation zero is explicit at
     // this boundary; the target still enters the same shared activation and
     // receive state machine as K1 without inventing EEPROM semantics.
-    let mut app = ReceiveApp::from_configuration(
-        ActivatedConfiguration::from_channel(0, Pmr446Channel::FIRST.number(), true)
-            .expect("first PMR446 channel is valid"),
-    );
+    let mut app = ReceiveApp::new();
     let mut configured = None;
     let mut metrics = None;
     let mut keypad = K5Matrix::initialise();
@@ -131,7 +128,10 @@ fn main() -> ! {
     if initialised {
         apply_event(
             &mut app,
-            Event::Start,
+            Event::ConfigurationCandidate(
+                ConfigurationCandidate::from_channel(0, Pmr446Channel::FIRST.number(), true)
+                    .expect("first PMR446 channel is valid"),
+            ),
             &mut radio,
             &mut speaker,
             &mut display,
@@ -212,14 +212,28 @@ fn apply_event<B: RegisterBus>(
     configured: &mut Option<u16>,
     metrics: &mut Option<ReceiveMetrics>,
 ) {
-    if !apply_effects(
-        app.apply(event).iter(),
-        radio,
-        speaker,
-        display,
-        configured,
-        metrics,
-    ) {
+    let effects = app.apply(event);
+    let change = effects.iter().find_map(|effect| match effect {
+        Effect::ConfigurationChange(change) => Some(change),
+        _ => None,
+    });
+    let applied = apply_effects(effects.iter(), radio, speaker, display, configured, metrics);
+    if let Some(change) = change {
+        let acknowledgement = if applied {
+            ConfigurationAcknowledgement::applied(change)
+        } else {
+            ConfigurationAcknowledgement::rejected(change)
+        };
+        let _ = apply_effects(
+            app.apply(Event::ConfigurationAcknowledged(acknowledgement))
+                .iter(),
+            radio,
+            speaker,
+            display,
+            configured,
+            metrics,
+        );
+    } else if !applied {
         let _ = apply_effects(
             app.apply(Event::ReceiverFault).iter(),
             radio,
@@ -286,6 +300,7 @@ fn apply_effects<B: RegisterBus>(
                 }
             }
             Effect::SetSpeaker(enabled) => speaker.set_enabled(enabled),
+            Effect::ConfigurationChange(_) => {}
             Effect::Redraw(view) => {
                 if !view.receiver_ok {
                     *configured = None;
@@ -293,6 +308,7 @@ fn apply_effects<B: RegisterBus>(
                 }
                 display.show_pmr_receive(view, *configured, *metrics)
             }
+            Effect::ConfigurationAcknowledged(_) => {}
         }
     }
     true

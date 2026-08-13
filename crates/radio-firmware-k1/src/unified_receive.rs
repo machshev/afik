@@ -3,11 +3,15 @@
 use radio_channel_control::ChannelReceiveSetup;
 use radio_domain::{Bandwidth, Frequency, FrequencyStep, Modulation, SquelchLevel, Tone};
 use radio_platform::configuration::Pmr446Channel;
+use radio_platform::configuration_change::{ConfigurationAcknowledgement, ConfigurationChange};
 use radio_platform::receive_app::{Effect, View};
 
 /// One operation expressed in the K1 receiver/display adapter vocabulary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum K1Effect {
+    /// Identify the exact candidate which the target must acknowledge after
+    /// the preceding tune operation completes.
+    ConfigurationChange(ConfigurationChange),
     /// Apply the existing complete K1 receive setup.
     Tune {
         /// Complete validated receive setup.
@@ -21,6 +25,8 @@ pub enum K1Effect {
     SetSpeaker(bool),
     /// Render the shared semantic view through the K1 display adapter.
     Redraw(View),
+    /// Carry the shared application acknowledgement across the target seam.
+    ConfigurationAcknowledged(ConfigurationAcknowledgement),
 }
 
 /// A shared effect was inconsistent with its validated PMR channel identity.
@@ -69,9 +75,11 @@ pub fn translate(effect: Effect) -> Result<K1Effect, AdapterError> {
                 audio,
             })
         }
+        Effect::ConfigurationChange(change) => Ok(K1Effect::ConfigurationChange(change)),
         Effect::SetChipAudio(enabled) => Ok(K1Effect::SetChipAudio(enabled)),
         Effect::SetSpeaker(enabled) => Ok(K1Effect::SetSpeaker(enabled)),
         Effect::Redraw(view) => Ok(K1Effect::Redraw(view)),
+        Effect::ConfigurationAcknowledged(ack) => Ok(K1Effect::ConfigurationAcknowledged(ack)),
     }
 }
 
