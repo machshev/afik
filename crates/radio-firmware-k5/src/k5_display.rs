@@ -84,6 +84,7 @@ impl K5BootDisplay {
     pub fn show_pmr_receive(
         &mut self,
         channel: u8,
+        audio: bool,
         configured: Option<u16>,
         metrics: Option<ReceiveMetrics>,
     ) {
@@ -111,11 +112,12 @@ impl K5BootDisplay {
 
         select_display(true);
         clear();
-        draw_text(0, 8, b"AFIK K5 1.6R");
+        draw_text(0, 8, b"AFIK K5 1.7A");
         draw_text(2, 8, b"PMR");
         draw_text(2, 32, &channel_text);
         draw_text(2, 50, b"CFG");
         draw_text(2, 74, &configured_text);
+        draw_text(2, 104, if audio { b"A1" } else { b"A0" });
         draw_text(4, 8, b"R2");
         draw_text(4, 26, &rssi);
         draw_text(4, 62, b"S");

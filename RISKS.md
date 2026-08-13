@@ -103,6 +103,11 @@
   observation only as far as raw signal-correlated metering. Audio,
   intelligibility, sensitivity, calibrated squelch, selectivity, and exact
   meter values remain open.
+- **K5 audio candidate, 2026-08-13:** built `1.7A` applies AFIK's carrier-only
+  level three, samples the raw link on a 50 ms polled `SysTick`, and gates both
+  chip AF routing and PC4. This is deliberately provisional until the unit's
+  calibration is available. Software/package success does not establish quiet
+  closure, demodulation, intelligibility, or clean retuning.
 
 ## RISK-008 — Physical scan timing and signal inputs are unverified
 

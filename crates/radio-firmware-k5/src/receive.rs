@@ -1,7 +1,7 @@
 //! Receive-only PMR446 examples for the K5 BK4819 validation image.
 
 use radio_bk4819::{AfOutput, ReceiveSetup, SquelchThresholds};
-use radio_domain::{Bandwidth, Frequency, Modulation, Tone};
+use radio_domain::{Bandwidth, Frequency, Modulation, SquelchLevel, Tone};
 
 /// Number of analogue PMR446 channels in the example raster.
 pub const PMR446_CHANNELS: u8 = 16;
@@ -64,14 +64,18 @@ impl Pmr446Channel {
 
     /// Builds the receive-only setup used by the validation image.
     #[must_use]
-    pub fn setup(self) -> ReceiveSetup {
+    pub fn setup(self, audio: bool) -> ReceiveSetup {
         ReceiveSetup {
             frequency: self.frequency(),
             modulation: Modulation::Fm,
             bandwidth: Bandwidth::Narrow,
             tone: Tone::None,
-            squelch: SquelchThresholds::squelch_off(),
-            af: AfOutput::Mute,
+            squelch: SquelchThresholds::for_level(SquelchLevel::CONSERVATIVE),
+            af: if audio {
+                AfOutput::Demodulated
+            } else {
+                AfOutput::Mute
+            },
         }
     }
 }
@@ -111,11 +115,11 @@ mod tests {
     }
 
     #[test]
-    fn pmr_receive_is_narrow_muted_and_never_writes_the_tx_word() {
+    fn pmr_receive_is_narrow_squelched_and_never_writes_the_tx_word() {
         let channel = Pmr446Channel::new(8).unwrap();
         let mut radio = Bk4819::new(Bus::default());
         radio.initialise().unwrap();
-        radio.configure_receive(&channel.setup()).unwrap();
+        radio.configure_receive(&channel.setup(true)).unwrap();
 
         assert_eq!(
             radio.state(),
@@ -124,6 +128,22 @@ mod tests {
             }
         );
         assert!(radio.bus().writes.contains(&(0x43, 0x3648)));
+        assert!(radio.bus().writes.contains(&(0x78, 0x5C5A)));
+        assert!(radio
+            .bus()
+            .writes
+            .iter()
+            .any(|(address, value)| { *address == 0x47 && *value != 0 }));
         assert!(!radio.bus().writes.contains(&(0x30, 0x80FE)));
+    }
+
+    #[test]
+    fn operator_mute_keeps_the_same_squelch_but_disables_chip_audio() {
+        let channel = Pmr446Channel::FIRST;
+        let audible = channel.setup(true);
+        let muted = channel.setup(false);
+        assert_eq!(audible.squelch, muted.squelch);
+        assert_eq!(muted.af, radio_bk4819::AfOutput::Mute);
+        assert_eq!(audible.af, radio_bk4819::AfOutput::Demodulated);
     }
 }

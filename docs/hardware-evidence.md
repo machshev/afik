@@ -534,6 +534,24 @@ order are maintained in `docs/k1-bring-up.md`.
 - **Required experiment:** inspect the first two ELF words and prove in Renode
   that execution reaches the Rust Reset handler without overriding the PC.
 
+### EVID-ARM-004 — Polled Cortex-M0 SysTick cadence
+
+- **Fact:** SysTick control, reload, and current-value registers are at
+  `0xE000_E010`, `0xE000_E014`, and `0xE000_E018`. The reload field is 24 bits;
+  control bit zero enables the counter, bit two selects the processor clock,
+  and read-only bit sixteen reports that the counter has reached zero since the
+  previous control-register read.
+- **Source:** Arm DUI 0497A section 4.4, document pages 4-8 through 4-11.
+- **Method:** copied from the already pinned Arm Cortex-M0 generic guide. The K5
+  adapter combines it with the processor clock explicitly established by
+  `radio_dp32g030::clock::configure`; it uses no interrupt or DP32-specific
+  timer behavior.
+- **Permitted use:** a polled 50 ms application-loop cadence whose reload is
+  computed from the corrected processor clock and rejected unless it fits the
+  24-bit field. This permits recurring receive-status samples and speaker-gate
+  updates; it does not establish receiver settling, scan dwell, or timing
+  accuracy beyond the corrected clock input.
+
 ## Simulation-only observation contract
 
 `DP32-003` may reserve one linker-controlled word inside the evidenced RAM and
@@ -2726,3 +2744,24 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   channel-wrap values, so those details remain unrecorded rather than inferred.
   Audio was independently muted, so demodulation, intelligibility, sensitivity,
   calibrated squelch, and adjacent-channel rejection remain unproven.
+
+### EVID-K5-031 — Default-on receive audio and polled squelch candidate
+
+- **Image contract:** `AFIK-K5-1.7A` retains the physically observed `1.6R`
+  initialization and tuning, changes the setup to demodulated AF and AFIK's
+  provisional carrier-only squelch level three, and starts PC4 low.
+- **Cadence and gating:** `EVID-ARM-004` supplies a polled 50 ms `SysTick` from
+  the corrected processor clock. Every complete sample updates PC4 from the
+  BK4819 squelch link. Retuning closes PC4 until a new sample; a read failure
+  disables audio. Menu disables PC4 before muting chip AF, or restores chip AF
+  while leaving PC4 closed until the next open sample.
+- **Software result:** 27 DP32G030 tests, 15 K5 tests, focused warning-denied
+  Clippy, target build, ELF bounds, and fixed-size packaging pass. The package
+  is 0xF000 bytes, flash ends at 0x571c, static RAM ends at 0x20000100, and its
+  SHA-256 is
+  `535d0b5d8f6bce1f5460b1205ba035db4e5fedc58d2dbc537f262ffba206a267`.
+- **Not established:** `1.7A` has not been written or booted. Quiet closure,
+  audio opening on a same-channel signal, intelligibility, closing after the
+  signal, Menu mute/unmute, and transient-free retuning are physical acceptance
+  items. The threshold is not factory-calibrated and establishes no sensitivity
+  or adjacent-channel rejection claim.

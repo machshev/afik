@@ -67,9 +67,28 @@ boot and signal-correlated BK4819 initialization/tuning/metering on the exact
 unit. It does not establish demodulated audio, intelligibility, sensitivity,
 calibrated squelch, adjacent-channel rejection, or TX.
 
-**Next smallest actionable task:** add an explicit operator-controlled receive
-audio route which changes both BK4819 AF output and PC4 speaker gating, defaults
-muted, retains an immediate mute action, and contains no PTT or transmit path.
+`AFIK-K5-1.7A` is now built for the next physical step. Receive audio defaults
+on, using AFIK's provisional carrier-only squelch level three. A polled
+Cortex-M0 `SysTick` samples status every 50 ms and gates PC4 from the squelch
+link; Menu immediately toggles both the BK4819 AF route and PC4, and retuning
+starts closed until a new sample. The display shows `A1` or `A0`. PTT remains
+input-only and no TX API is reachable.
+
+Focused format, 27 DP32G030 tests, 15 K5 tests, warning-denied Clippy, target
+build, and package verification pass. The package is exactly `0xF000` bytes,
+used flash ends at `0x571c`, static RAM ends at `0x20000100`, and SHA-256 is
+`535d0b5d8f6bce1f5460b1205ba035db4e5fedc58d2dbc537f262ffba206a267`.
+It has not yet been flashed or physically observed.
+
+The final workspace gate also passed: `nix develop path:. -c bash -c 'cargo
+fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings &&
+cargo test --workspace && ./tool/build-k5.sh --release &&
+tool/package-k5-image.sh --force'`. It reproduced the same image bounds and
+SHA-256; `git diff --check` passed before the gate.
+
+**Next smallest actionable task:** guardedly flash `1.7A` and observe quiet,
+same-channel audio open/close, Menu mute/unmute, retune behavior, and normal
+serial identity before closing `K5APP-051` and opening the unified-app package.
 
 Pre-flash gates on 2026-08-13:
 

@@ -1197,3 +1197,18 @@ meaning.
 - No receiver timing is invented. Up/Down retune and Menu resamples once on a
   new key edge; an operator who wants a post-settling sample waits before
   pressing Menu. Periodic polling and audible output require later evidence.
+
+## ADR-073 — K5 audio defaults on but the amplifier follows sampled squelch
+
+- **Date:** 2026-08-13
+- **Status:** accepted for `K5APP-051`
+- Audio-on is the operator default, but it does not mean PC4 is held on. The
+  BK4819 receives with demodulated AF selected while a 50 ms polled Cortex-M0
+  `SysTick` updates PC4 from the chip's squelch link. A retune starts closed and
+  a read failure mutes immediately.
+- Menu is the immediate escape: it disables PC4 before changing the chip AF
+  route, and the inverse action still waits for a squelch sample before opening
+  the amplifier. PTT remains a displayed input with no behavior.
+- Level three is AFIK's existing carrier-only provisional threshold, not this
+  unit's factory calibration. Physical audio can be validated with it, while
+  calibrated squelch and selectivity remain separate work.

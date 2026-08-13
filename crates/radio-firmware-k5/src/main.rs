@@ -2,20 +2,20 @@
 //!
 //! It configures the clock, binds UART1 to the programming connector, and then
 //! answers the read-only hello while validating the evidenced display, keypad,
-//! EEPROM-read, keypad, and muted BK4819 receive adapters. It has no transmit
-//! path and never enables the speaker gate.
+//! keypad and squelch-gated BK4819 receive audio. It has no transmit path.
 
 #![no_std]
 #![no_main]
 #![deny(unsafe_code)]
 
 use core::panic::PanicInfo;
-use radio_bk4819::{Bk4819, ReadbackRegister, ReceiveMetrics, RegisterBus};
+use radio_bk4819::{AfOutput, Bk4819, ReadbackRegister, ReceiveMetrics, RegisterBus};
 use radio_dp32g030::clock;
 use radio_dp32g030::dma::CircularReceiver;
 use radio_dp32g030::gpio::{self, Port};
 use radio_dp32g030::portcon;
 use radio_dp32g030::syscon::{self, Peripheral};
+use radio_dp32g030::systick::PeriodicTick;
 use radio_dp32g030::uart::{k5_programming_divider, Uart};
 use radio_dp32g030::UART1_BASE;
 use radio_firmware_k5::audio::SpeakerGate;
@@ -33,6 +33,7 @@ const INITIAL_STACK_POINTER: u32 = 0x2000_3FF0;
 /// The UART bound to the programming connector, per `EVID-K5-019`.
 const UART1: Uart = Uart::new(UART1_BASE);
 const DMA_BYTES: usize = 256;
+const SAMPLE_MILLISECONDS: u32 = 50;
 
 static mut DMA_BUFFER: [u8; DMA_BYTES] = [0; DMA_BYTES];
 
@@ -93,6 +94,8 @@ fn main() -> ! {
     portcon::enable_pull_up(Port::A, 8);
 
     let clock = clock::configure();
+    let mut sample_tick = PeriodicTick::start(clock.hertz(), SAMPLE_MILLISECONDS)
+        .expect("50 ms fits the Cortex-M0 SysTick reload at the configured clock");
     portcon::select_pa7_uart1_tx();
     portcon::select_pa8_uart1_rx();
     UART1.prepare_receive_dma_with_divider(k5_programming_divider(clock.hertz()));
@@ -107,21 +110,22 @@ fn main() -> ! {
     let mut display = K5BootDisplay::initialise();
     let _ = show_boot_sequence(&mut display);
 
-    // PC4 is forced low before the first BK4819 write and remains owned by an
-    // unmodified gate for this whole image. Both board and chip audio paths are
-    // therefore independently muted during the receive/metering experiment.
-    let _speaker = SpeakerGate::initialise();
+    // PC4 starts low even though receive audio is the operator default. It is
+    // opened only after the first complete sample says squelch is open.
+    let mut speaker = SpeakerGate::initialise();
     let mut radio = Bk4819::new(K5RegisterBus::new(K5Pins::initialise()));
     let mut channel = Pmr446Channel::FIRST;
+    let mut audio = true;
     let initialised = radio.initialise().is_ok();
     let (mut configured, mut metrics) = if initialised {
-        tune_and_sample(&mut radio, channel)
+        tune_and_sample(&mut radio, channel, audio)
     } else {
         (None, None)
     };
     let mut keypad = K5Matrix::initialise();
     let mut shown_key = keypad::scan(&mut keypad);
-    display.show_pmr_receive(channel.number(), configured, metrics);
+    gate_speaker(&mut speaker, audio, metrics);
+    display.show_pmr_receive(channel.number(), audio, configured, metrics);
 
     let mut service = HelloService::new(APPLICATION_IDENTITY);
     let mut response = [0_u8; RESPONSE_FRAME_BYTES];
@@ -139,14 +143,42 @@ fn main() -> ! {
             let selected = match key {
                 Some(keypad::Key::Up) => Some(channel.next()),
                 Some(keypad::Key::Down) => Some(channel.previous()),
-                Some(keypad::Key::Menu) => Some(channel),
+                Some(keypad::Key::Menu) => {
+                    audio = !audio;
+                    speaker.set_enabled(false);
+                    let output = if audio {
+                        AfOutput::Demodulated
+                    } else {
+                        AfOutput::Mute
+                    };
+                    if radio
+                        .set_af_output(radio_domain::Modulation::Fm, output)
+                        .is_err()
+                    {
+                        audio = false;
+                    }
+                    None
+                }
                 _ => None,
             };
             if let Some(next) = selected {
                 channel = next;
-                (configured, metrics) = tune_and_sample(&mut radio, channel);
-                display.show_pmr_receive(channel.number(), configured, metrics);
+                (configured, metrics) = tune_and_sample(&mut radio, channel, audio);
             }
+            gate_speaker(&mut speaker, audio, metrics);
+            display.show_pmr_receive(channel.number(), audio, configured, metrics);
+        }
+        sample_tick.wait();
+        if let Ok(sample) = radio.receive_metrics(radio_domain::Tone::None) {
+            let changed = metrics.map(|old| old.squelch_open) != Some(sample.squelch_open);
+            metrics = Some(sample);
+            gate_speaker(&mut speaker, audio, metrics);
+            if changed {
+                display.show_pmr_receive(channel.number(), audio, configured, metrics);
+            }
+        } else {
+            audio = false;
+            speaker.set_enabled(false);
         }
     }
 }
@@ -156,13 +188,18 @@ fn main() -> ! {
 fn tune_and_sample<B: RegisterBus>(
     radio: &mut Bk4819<B>,
     channel: Pmr446Channel,
+    audio: bool,
 ) -> (Option<u16>, Option<ReceiveMetrics>) {
-    if radio.configure_receive(&channel.setup()).is_err() {
+    if radio.configure_receive(&channel.setup(audio)).is_err() {
         return (None, None);
     }
     let configured = radio.read_back(ReadbackRegister::FilterBandwidth).ok();
     let metrics = radio.receive_metrics(radio_domain::Tone::None).ok();
     (configured, metrics)
+}
+
+fn gate_speaker(speaker: &mut SpeakerGate, audio: bool, metrics: Option<ReceiveMetrics>) {
+    speaker.set_enabled(audio && metrics.is_some_and(|sample| sample.should_unmute()));
 }
 
 /// Startup work that has to touch memory the linker owns rather than Rust.

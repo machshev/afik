@@ -2453,8 +2453,7 @@
 
 ## K5APP-051 — K5 receive-only operator hardware bring-up
 
-- **Status:** raw receive metering physically observed; demodulated-audio
-  experiment pending
+- **Status:** audio/squelch image built; physical audio experiment pending
 - **Objective:** add the K5 V1 keypad, read-only configuration-memory access,
   BK4819 receive control, and demodulated-audio enablement as separately tested
   and committed steps.
@@ -2527,3 +2526,16 @@
   receive initialization/tuning/metering only. Next: independently route
   demodulated receive audio and enable PC4 under an explicit operator control,
   retaining a one-action mute and no TX path.
+- **Seventh step:** `AFIK-K5-1.7A` defaults to demodulated receive audio with
+  AFIK's provisional carrier-only squelch level three. A polled, interrupt-free
+  Cortex-M0 `SysTick` samples the BK4819 status every 50 ms and PC4 follows the
+  resulting squelch link. Menu immediately toggles both chip audio routing and
+  the speaker gate; every retune starts gated closed until a fresh sample opens
+  it. The display reports `A1`/`A0`. PTT remains input-only and no TX API is
+  reachable.
+- **Seventh-step acceptance:** after guarded flashing and ordinary boot, quiet
+  PMR446 channels must remain silent, a same-channel nearby transmission must
+  open intelligible audio, its end must close audio again, Menu must mute and
+  restore audio immediately, Up/Down must retune without a noise burst, and
+  three normal probes must return `AFIK-K5-1.7A`. This tests receive audio and
+  provisional carrier squelch only, not calibrated sensitivity or selectivity.

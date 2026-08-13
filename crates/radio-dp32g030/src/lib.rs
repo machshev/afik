@@ -23,6 +23,7 @@ pub mod portcon;
 pub mod pwm_plus;
 pub mod spi;
 pub mod syscon;
+pub mod systick;
 pub mod uart;
 
 /// SYSCON base address, per `EVID-DP32-004`.
