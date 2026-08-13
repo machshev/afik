@@ -7,6 +7,12 @@ use radio_dp32g030::pwm_plus::PwmPlus;
 use radio_dp32g030::syscon::{self, Peripheral};
 use radio_dp32g030::PWM_PLUS0_BASE;
 use radio_platform::display::{BootDisplay, BootStage, ReceiveDiagnostic};
+use radio_platform::operator_display::{
+    render_channel_list, render_info_screen, render_operating_screen, render_selector_list,
+    ListRow, MemoryState, OperatingView, ResetCause, SelectorRow, SerialCounters, FRAME_BYTES,
+    LIST_ROWS,
+};
+use radio_platform::operator_shell::{Screen, Shell, Source};
 use radio_platform::receive_app::View;
 
 use crate::keypad::Key;
@@ -19,7 +25,10 @@ const DATA_PIN: u8 = 10;
 const RESET_PIN: u8 = 11;
 
 /// Infallible fixed display adapter; its controller has no return path.
-pub struct K5BootDisplay;
+pub struct K5BootDisplay {
+    previous_frame: [u8; FRAME_BYTES],
+    has_previous_frame: bool,
+}
 
 impl K5BootDisplay {
     /// Configures only the evidenced display pins and SPI0 controller.
@@ -57,7 +66,10 @@ impl K5BootDisplay {
         command_byte(0x40);
         command_byte(0xAF);
         select_display(false);
-        Self
+        Self {
+            previous_frame: [0; FRAME_BYTES],
+            has_previous_frame: false,
+        }
     }
 
     /// Shows the read-only K5 operator-hardware validation state.
@@ -71,7 +83,7 @@ impl K5BootDisplay {
         let key = key_label(key);
         select_display(true);
         clear();
-        draw_text(0, 8, b"AFIK K5 1.5E");
+        draw_text(0, 8, Self::IMAGE_IDENTITY);
         draw_text(2, 8, b"EEP");
         draw_text(2, 38, &eeprom);
         draw_text(4, 8, b"BK");
@@ -79,58 +91,140 @@ impl K5BootDisplay {
         draw_text(6, 8, b"KEY");
         draw_text(6, 38, &key);
         select_display(false);
+        self.has_previous_frame = false;
     }
 
-    /// Shows the muted PMR446 receive-validation state and raw chip metrics.
-    pub fn show_pmr_receive(
+    /// Printable identity shown by the shared Info screen and normal hello.
+    pub const IMAGE_IDENTITY: &'static [u8] = crate::protocol::APPLICATION_VERSION;
+
+    /// Renders a shared K1-layout operator frame through the K5 transport.
+    pub fn show_operator(
         &mut self,
+        shell: &Shell,
         view: View,
-        configured: Option<u16>,
         metrics: Option<ReceiveMetrics>,
     ) -> Result<(), core::convert::Infallible> {
-        let mut channel_text = *b"00";
-        decimal_text(u32::from(view.channel), &mut channel_text);
-        let mut configured_text = *b"----";
-        if let Some(value) = configured {
-            hexadecimal_text(value.into(), &mut configured_text);
+        let frame = render_operator_frame(shell, view, metrics);
+        if !self.has_previous_frame || self.previous_frame != frame {
+            write_frame(&frame);
+            self.previous_frame = frame;
+            self.has_previous_frame = true;
         }
-        let mut rssi = *b"-----";
-        let mut glitch = *b"---";
-        let mut noise = *b"---";
-        let squelch = if view.receiver_ok {
-            if let Some(sample) = metrics {
-                signed_decimal_text(sample.rssi_dbm_x2, &mut rssi);
-                decimal_text(u32::from(sample.glitch), &mut glitch);
-                decimal_text(u32::from(sample.noise), &mut noise);
-            }
-            if view.squelch_open {
-                b'1'
-            } else {
-                b'0'
-            }
-        } else {
-            b'-'
-        };
-
-        select_display(true);
-        clear();
-        draw_text(0, 8, b"AFIK K5 1.8U");
-        draw_text(2, 8, b"PMR");
-        draw_text(2, 32, &channel_text);
-        draw_text(2, 50, b"CFG");
-        draw_text(2, 74, &configured_text);
-        draw_text(2, 104, if view.audio { b"A1" } else { b"A0" });
-        draw_text(4, 8, b"R2");
-        draw_text(4, 26, &rssi);
-        draw_text(4, 62, b"S");
-        draw_text(4, 74, &[squelch]);
-        draw_text(6, 8, b"G");
-        draw_text(6, 20, &glitch);
-        draw_text(6, 50, b"N");
-        draw_text(6, 62, &noise);
-        select_display(false);
         Ok(())
     }
+}
+
+/// Builds the exact K5 operator frame before target transport writes it.
+#[allow(clippy::missing_panics_doc, clippy::too_many_lines)]
+pub fn render_operator_frame(
+    shell: &Shell,
+    view: View,
+    metrics: Option<ReceiveMetrics>,
+) -> [u8; FRAME_BYTES] {
+    let mut frame = [0_u8; FRAME_BYTES];
+    let channel = radio_platform::configuration::Pmr446Channel::new(view.channel)
+        .unwrap_or(radio_platform::configuration::Pmr446Channel::FIRST);
+    let name = channel.display_name();
+    let rssi_raw = metrics.map_or(0, |sample| {
+        u16::try_from(sample.rssi_dbm_x2.saturating_add(320)).unwrap_or(0)
+    });
+    match shell.screen() {
+        Screen::Operating => {
+            render_operating_screen(
+                &mut frame,
+                &OperatingView {
+                    position: u16::from(view.channel),
+                    total: u16::from(radio_platform::configuration::PMR446_CHANNELS),
+                    name: &name,
+                    frequency_hz: channel.frequency_hz(),
+                    rssi_raw,
+                    squelch_open: view.squelch_open,
+                    receiver_ok: view.receiver_ok,
+                    battery_percent: None,
+                    monitoring: view.monitoring,
+                    scanning: false,
+                    bank: None,
+                    entry: shell.entry(),
+                    vfo_step_hz: None,
+                },
+            );
+        }
+        Screen::ChannelList => {
+            let mut rows = [ListRow::default(); LIST_ROWS];
+            let first = shell.cursor() / u16::try_from(LIST_ROWS).unwrap_or(1)
+                * u16::try_from(LIST_ROWS).unwrap_or(1);
+            let mut count = 0;
+            for (offset, row) in rows.iter_mut().enumerate() {
+                let position = first + u16::try_from(offset).unwrap_or(0);
+                if position >= u16::from(radio_platform::configuration::PMR446_CHANNELS) {
+                    break;
+                }
+                let channel = radio_platform::configuration::Pmr446Channel::new(
+                    u8::try_from(position + 1).unwrap_or(1),
+                )
+                .expect("bounded PMR channel");
+                let row_name = channel.display_name();
+                *row = ListRow::new(
+                    position + 1,
+                    &row_name,
+                    position + 1 == u16::from(view.channel),
+                );
+                count += 1;
+            }
+            render_channel_list(
+                &mut frame,
+                &rows[..count],
+                usize::from(shell.cursor() - first),
+                u16::from(radio_platform::configuration::PMR446_CHANNELS),
+            );
+        }
+        Screen::SourceList => {
+            let mut rows = [SelectorRow::default(); LIST_ROWS];
+            let first = shell.source_cursor() / LIST_ROWS * LIST_ROWS;
+            let mut count = 0;
+            for (offset, row_slot) in rows.iter_mut().enumerate() {
+                let row = first + offset;
+                let Some(source) = shell.source_at(row) else {
+                    break;
+                };
+                *row_slot = match source {
+                    Source::Vfo => SelectorRow::text(b"VFO", shell.is_active_source(row)),
+                    Source::AllChannels => {
+                        SelectorRow::text(b"ALL CHANNELS", shell.is_active_source(row))
+                    }
+                    Source::Bank(bank) => {
+                        SelectorRow::bank(bank.get(), b"", shell.is_active_source(row))
+                    }
+                };
+                count += 1;
+            }
+            render_selector_list(
+                &mut frame,
+                b"SOURCE",
+                &rows[..count],
+                shell.source_cursor() - first,
+            );
+        }
+        Screen::Info => {
+            render_info_screen(
+                &mut frame,
+                K5BootDisplay::IMAGE_IDENTITY,
+                0,
+                u16::from(radio_platform::configuration::PMR446_CHANNELS),
+                false,
+                MemoryState::Unknown,
+                SerialCounters::default(),
+                0,
+                ResetCause::default(),
+            );
+        }
+        // K5's current capability set keeps these screens unreachable;
+        // retaining explicit frames makes a future adapter fail closed.
+        Screen::Settings | Screen::SquelchList | Screen::StepList => {
+            render_selector_list(&mut frame, b"NO CAP", &[], 0);
+        }
+    }
+    frame
 }
 
 fn key_label(key: Option<Key>) -> [u8; 4] {
@@ -164,6 +258,7 @@ impl BootDisplay for K5BootDisplay {
         draw_text(3, 26, b"K5");
         draw_text(5, centered(stage_text), stage_text);
         select_display(false);
+        self.has_previous_frame = false;
         Ok(())
     }
 
@@ -180,6 +275,7 @@ impl BootDisplay for K5BootDisplay {
         draw_text(5, 10, b"ERR");
         draw_text(5, 34, &status);
         select_display(false);
+        self.has_previous_frame = false;
         Ok(())
     }
 }
@@ -192,6 +288,19 @@ fn clear() {
             write_byte(0);
         }
     }
+}
+
+fn write_frame(frame: &[u8; FRAME_BYTES]) {
+    select_display(true);
+    for page in 0_u8..8 {
+        select(page, 0);
+        set_data_mode();
+        let start = usize::from(page) * 128;
+        for byte in &frame[start..start + 128] {
+            write_byte(*byte);
+        }
+    }
+    select_display(false);
 }
 
 fn draw_text(page: u8, column: u8, text: &[u8]) {
@@ -273,6 +382,8 @@ fn glyph(character: u8) -> [u8; 5] {
         b'7' => [0x01, 0x71, 0x09, 0x05, 0x03],
         b'8' => [0x36, 0x49, 0x49, 0x49, 0x36],
         b'9' => [0x06, 0x49, 0x49, 0x29, 0x1E],
+        b'>' => [0x00, 0x41, 0x22, 0x14, 0x08],
+        b'*' => [0x14, 0x08, 0x3E, 0x08, 0x14],
         _ => [0; 5],
     }
 }
@@ -281,24 +392,6 @@ fn decimal_text(mut value: u32, text: &mut [u8]) {
     for character in text.iter_mut().rev() {
         *character = b'0' + u8::try_from(value % 10).unwrap_or(0);
         value /= 10;
-    }
-}
-
-fn signed_decimal_text(value: i16, text: &mut [u8]) {
-    text.fill(b' ');
-    let negative = value.is_negative();
-    let mut magnitude = u32::from(value.unsigned_abs());
-    let mut index = text.len();
-    loop {
-        index -= 1;
-        text[index] = b'0' + u8::try_from(magnitude % 10).unwrap_or(0);
-        magnitude /= 10;
-        if magnitude == 0 || index == 0 {
-            break;
-        }
-    }
-    if negative && index > 0 {
-        text[index - 1] = b'-';
     }
 }
 

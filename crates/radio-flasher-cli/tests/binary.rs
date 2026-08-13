@@ -9,7 +9,7 @@ fn binary_help_version_and_missing_device_smoke() {
     assert!(help.status.success());
     assert_eq!(help.stdout, radio_flasher_cli::HELP.as_bytes());
     assert!(String::from_utf8_lossy(&help.stdout)
-        .contains("control view|capabilities|key MENU|UP|DOWN"));
+        .contains("control view|capabilities|key AUDIO|UP|DOWN"));
     assert!(help.stderr.is_empty());
 
     let version = Command::new(binary).arg("--version").output().unwrap();

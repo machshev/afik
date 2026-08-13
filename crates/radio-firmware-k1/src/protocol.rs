@@ -111,12 +111,26 @@ pub fn decode_shared_request(payload: &[u8]) -> Result<shared_wire::Request, Sha
     shared_wire::decode_request(payload)
 }
 
-/// Routes one decoded common request through the K1 shared application seam.
-pub fn apply_shared_wire_request(
+/// Applies a common request at the K1 boundary.
+///
+/// K1's banked controller and operator shell are owned by the UI task, so
+/// common key/audio mutations are refused rather than mutating a detached
+/// shared receive instance. View and capability queries remain transport-free.
+pub fn apply_common_request(
     app: &mut radio_platform::receive_app::ReceiveApp,
     request: shared_wire::Request,
-) -> SharedResult {
-    super::host_control::apply_shared_serial_request(app, shared_wire::into_request(request))
+) -> core::result::Result<SharedResult, radio_protocol::DeviceErrorCode> {
+    if matches!(
+        request,
+        shared_wire::Request::Key(_) | shared_wire::Request::ToggleAudio
+    ) {
+        return Err(radio_protocol::DeviceErrorCode::UnsupportedCommand);
+    }
+    Ok(radio_platform::serial_control::dispatch(
+        app,
+        crate::host_control::serial_capabilities(),
+        shared_wire::into_request(request),
+    ))
 }
 
 /// Encodes a semantic response for a target-owned K1 wire envelope.
@@ -532,28 +546,34 @@ mod tests {
     }
 
     #[test]
-    fn common_wire_key_is_decoded_and_enters_the_shared_k1_app() {
-        use super::{apply_shared_wire_request, decode_shared_request, encode_shared_response};
-        use radio_platform::receive_app::{Key, ReceiveApp};
-        use radio_platform::serial_control::wire::{decode_response, Response};
+    fn common_wire_key_is_decoded_but_k1_capability_is_view_only() {
+        use super::decode_shared_request;
+        use radio_platform::serial_control::Capability;
 
         let request = decode_shared_request(&[0x03, 0x04]).expect("common key");
-        assert_eq!(request, super::shared_wire::Request::Key(Key::Up));
-        let mut app = ReceiveApp::new();
-        let result = apply_shared_wire_request(&mut app, request);
-        assert!(matches!(result, super::SharedResult::Effects(_)));
-        let mut response = [0_u8; 4];
-        let length = super::shared_wire::encode_key_response(app.view(), &mut response)
-            .expect("key response");
         assert_eq!(
-            decode_response(&response[..length]),
-            Ok(Response::View(app.view()))
+            request,
+            super::shared_wire::Request::Key(super::shared_wire::KeyCode::Up)
         );
-        let mut query_response = [0_u8; 4];
-        let length =
-            encode_shared_response(super::SharedResult::View(app.view()), &mut query_response)
-                .expect("view response");
-        assert_eq!(&query_response[..length], &[0x81, 2, 1, 2]);
+        assert!(!crate::host_control::serial_capabilities().contains(Capability::KeyCommands));
+    }
+
+    #[test]
+    fn k1_common_key_and_audio_requests_are_refused_without_app_mutation() {
+        use super::{apply_common_request, decode_shared_request};
+        use radio_platform::receive_app::ReceiveApp;
+        use radio_protocol::DeviceErrorCode;
+
+        let mut app = ReceiveApp::new();
+        let before = app.view();
+        for payload in [[0x03, 0x01], [0x03, 0x04], [0x03, 0x05], [0x04, 0x00]] {
+            let request = decode_shared_request(&payload).expect("bounded common request");
+            assert_eq!(
+                apply_common_request(&mut app, request),
+                Err(DeviceErrorCode::UnsupportedCommand)
+            );
+            assert_eq!(app.view(), before);
+        }
     }
 
     #[test]

@@ -13,7 +13,7 @@ pub use radio_platform::serial_control::{
 };
 
 /// Printable identity returned by the verified AFIK K5 application.
-pub const APPLICATION_VERSION: &[u8] = b"AFIK-K5-1.9S";
+pub const APPLICATION_VERSION: &[u8] = b"AFIK-K5-2.0P";
 /// Validated identity consumed by the shared application service.
 pub const APPLICATION_IDENTITY: ApplicationIdentity<'static> =
     ApplicationIdentity::new(APPLICATION_VERSION).expect("K5 identity is printable and bounded");
@@ -61,7 +61,7 @@ pub fn encode_shared_response(
 }
 
 /// Plain-text banner retained for bounded serial diagnostics.
-pub const BOOT_BANNER: &[u8] = b"AFIK-K5-1.9S booted";
+pub const BOOT_BANNER: &[u8] = b"AFIK-K5-2.0P booted";
 
 /// Encodes the existing identity response without changing its envelope.
 pub fn encode_hello_response(frame: &mut [u8; RESPONSE_FRAME_BYTES]) {
@@ -71,14 +71,17 @@ pub fn encode_hello_response(frame: &mut [u8; RESPONSE_FRAME_BYTES]) {
 /// Target-owned normal-mode commands for the common application boundary.
 ///
 /// The existing `0x0514` hello envelope remains unchanged. Common requests
-/// use the otherwise unassigned `0x0600..=0x0614` command window; each logical
-/// key has its own command because the observed K5 request body has no spare
-/// payload bytes after its fixed session word.
+/// use the otherwise unassigned `0x0600..=0x0617` command window, with `0x0615`
+/// reserved for explicit audio; each supported logical key has its own command
+/// because the observed K5 request body has no spare payload bytes after its
+/// fixed session word.
 pub const COMMON_VIEW_COMMAND: u16 = 0x0600;
 /// Command assigned to the common capability query.
 pub const COMMON_CAPABILITIES_COMMAND: u16 = 0x0601;
 /// First command in the common logical-key assignment window.
 pub const COMMON_KEY_FIRST_COMMAND: u16 = 0x0602;
+/// Explicit audio preference command; Menu remains shell-owned list confirm.
+pub const COMMON_TOGGLE_AUDIO_COMMAND: u16 = 0x0615;
 /// Response command assigned to all common application responses.
 pub const COMMON_RESPONSE_COMMAND: u16 = 0x0620;
 
@@ -194,18 +197,14 @@ fn decode_normal_command(command: u16) -> Option<NormalRequest> {
     if command == COMMON_CAPABILITIES_COMMAND {
         return Some(NormalRequest::Common(shared_wire::Request::Capabilities));
     }
+    if command == COMMON_TOGGLE_AUDIO_COMMAND {
+        return Some(NormalRequest::Common(shared_wire::Request::ToggleAudio));
+    }
     let code = command.checked_sub(COMMON_KEY_FIRST_COMMAND)?;
     let key = match code {
-        0 => radio_platform::receive_app::Key::Side1,
-        1 => radio_platform::receive_app::Key::Side2,
-        2 => radio_platform::receive_app::Key::Ptt,
-        3 => radio_platform::receive_app::Key::Menu,
-        4 => radio_platform::receive_app::Key::Up,
-        5 => radio_platform::receive_app::Key::Down,
-        6 => radio_platform::receive_app::Key::Exit,
-        7..=16 => radio_platform::receive_app::Key::Digit(u8::try_from(code - 7).ok()?),
-        17 => radio_platform::receive_app::Key::Star,
-        18 => radio_platform::receive_app::Key::Function,
+        1 => shared_wire::KeyCode::Side2,
+        4 => shared_wire::KeyCode::Up,
+        5 => shared_wire::KeyCode::Down,
         _ => return None,
     };
     Some(NormalRequest::Common(shared_wire::Request::Key(key)))
@@ -229,13 +228,19 @@ pub fn encode_common_response(
     Ok(())
 }
 
-/// Encodes the response to a common logical-key command.
-pub fn encode_common_key_response(
+/// Encodes the bounded view response to a common state-changing command.
+///
+/// Both logical keys and the explicit audio command return the same validated
+/// view payload; the caller does not need a second response envelope.
+pub fn encode_common_view_response(
     view: radio_platform::receive_app::View,
     request: shared_wire::Request,
     frame: &mut [u8; RESPONSE_FRAME_BYTES],
 ) -> usize {
-    if !matches!(request, shared_wire::Request::Key(_)) {
+    if !matches!(
+        request,
+        shared_wire::Request::Key(_) | shared_wire::Request::ToggleAudio
+    ) {
         return 0;
     }
     let mut common = [0_u8; shared_wire::MAX_RESPONSE_BYTES];
@@ -277,10 +282,10 @@ mod tests {
     extern crate std;
 
     use super::{
-        apply_shared_wire_request, encode_common_key_response, encode_common_response,
+        apply_shared_wire_request, encode_common_response, encode_common_view_response,
         NormalRequest, NormalService, COMMON_RESPONSE_COMMAND,
     };
-    use radio_platform::receive_app::{Key, ReceiveApp, View};
+    use radio_platform::receive_app::{ReceiveApp, View};
     use radio_platform::serial_control::{wire, Capabilities, Result as SerialResult};
     use std::vec;
 
@@ -338,7 +343,7 @@ mod tests {
         }
         assert_eq!(
             seen,
-            Some(NormalRequest::Common(wire::Request::Key(Key::Up)))
+            Some(NormalRequest::Common(wire::Request::Key(wire::KeyCode::Up)))
         );
     }
 
@@ -347,22 +352,35 @@ mod tests {
         let mut service = NormalService::new();
         let mut stream = vec![0xAB, 0xCD, 0x40, 0x00];
         stream.extend([0_u8; 68]);
-        stream.extend(request(0x0605));
+        stream.extend(request(0x0615));
         let mut seen = None;
         for byte in stream {
             seen = service.push(byte).or(seen);
         }
         assert_eq!(
             seen,
-            Some(NormalRequest::Common(wire::Request::Key(Key::Menu)))
+            Some(NormalRequest::Common(wire::Request::ToggleAudio))
         );
 
         let mut service = NormalService::new();
         let mut seen = None;
-        for byte in request(0x0615) {
+        for byte in request(0x0616) {
             seen = service.push(byte).or(seen);
         }
         assert_eq!(seen, None);
+    }
+
+    #[test]
+    fn unsupported_shell_keys_are_rejected_before_receive_app_dispatch() {
+        let unsupported = [0x0602, 0x0604, 0x0608, 0x0613, 0x0614];
+        for command in unsupported {
+            let mut service = NormalService::new();
+            let mut seen = None;
+            for byte in request(command) {
+                seen = service.push(byte).or(seen);
+            }
+            assert_eq!(seen, None, "unsupported command {command:#06x}");
+        }
     }
 
     #[test]
@@ -407,6 +425,7 @@ mod tests {
         let view = View {
             channel: 7,
             audio: true,
+            monitoring: false,
             squelch_open: false,
             receiver_ok: true,
         };
@@ -422,7 +441,11 @@ mod tests {
 
         let mut key_frame = [0_u8; 48];
         assert_eq!(
-            encode_common_key_response(view, wire::Request::Key(Key::Up), &mut key_frame),
+            encode_common_view_response(
+                view,
+                wire::Request::Key(wire::KeyCode::Up),
+                &mut key_frame,
+            ),
             48
         );
         super::xor(&mut key_frame[4..46]);

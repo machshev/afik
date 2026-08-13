@@ -65,6 +65,8 @@ pub enum FlashError {
     },
     /// A K5 common-application response failed its bounded payload contract.
     InvalidK5Response(&'static str),
+    /// A K5 state-changing request was answered by a receiver-fault view.
+    K5StateChangeRejected,
     /// A bounded text field was empty, malformed, or unsupported.
     InvalidText(&'static str),
     /// Normal firmware reported a custom key or password lock.
@@ -138,6 +140,9 @@ impl fmt::Display for FlashError {
             ),
             Self::InvalidK5Response(field) => {
                 write!(formatter, "invalid K5 common response: {field}")
+            }
+            Self::K5StateChangeRejected => {
+                formatter.write_str("K5 state-changing request rejected: receiver fault")
             }
             Self::InvalidText(field) => write!(formatter, "invalid {field}"),
             Self::ProtectedFirmware => {

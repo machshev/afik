@@ -38,22 +38,77 @@ pub enum Key {
 }
 
 impl Key {
+    /// Every logical key exposed by the supported handset adapters.
+    pub const ALL: [Self; 19] = [
+        Self::Side1,
+        Self::Side2,
+        Self::Ptt,
+        Self::Menu,
+        Self::Up,
+        Self::Down,
+        Self::Exit,
+        Self::Digit(0),
+        Self::Digit(1),
+        Self::Digit(2),
+        Self::Digit(3),
+        Self::Digit(4),
+        Self::Digit(5),
+        Self::Digit(6),
+        Self::Digit(7),
+        Self::Digit(8),
+        Self::Digit(9),
+        Self::Star,
+        Self::Function,
+    ];
+
+    /// Fixed label used by shared display witnesses.
+    #[must_use]
+    pub const fn label(self) -> &'static [u8] {
+        match self {
+            Self::Side1 => b"SIDE1",
+            Self::Side2 => b"SIDE2",
+            Self::Ptt => b"PTT",
+            Self::Menu => b"MENU",
+            Self::Up => b"UP",
+            Self::Down => b"DOWN",
+            Self::Exit => b"EXIT",
+            Self::Digit(0) => b"0",
+            Self::Digit(1) => b"1",
+            Self::Digit(2) => b"2",
+            Self::Digit(3) => b"3",
+            Self::Digit(4) => b"4",
+            Self::Digit(5) => b"5",
+            Self::Digit(6) => b"6",
+            Self::Digit(7) => b"7",
+            Self::Digit(8) => b"8",
+            Self::Digit(9) => b"9",
+            Self::Digit(_) => b"?",
+            Self::Star => b"STAR",
+            Self::Function => b"F",
+        }
+    }
+}
+
+impl Key {
     /// Returns the receive-app action for a pressed key.
     ///
     /// Keys which belong to a retained target shell, such as digits and side
     /// keys, intentionally have no action in this receive-only slice.
     pub const fn receive_event(self) -> Option<Event> {
         match self {
-            Self::Up => Some(Event::NextChannel),
-            Self::Down => Some(Event::PreviousChannel),
-            Self::Menu => Some(Event::ToggleAudio),
-            Self::Side1
-            | Self::Side2
-            | Self::Ptt
-            | Self::Exit
-            | Self::Digit(_)
-            | Self::Star
-            | Self::Function => None,
+            // Match the operator shell: Up walks toward the first channel and
+            // Down walks toward the last. Target serial adapters may narrow
+            // this domain when their controller cannot own that selection.
+            Self::Up => Some(Event::PreviousChannel),
+            Self::Down => Some(Event::NextChannel),
+            // Menu belongs to the operator shell's list-confirm behavior. It
+            // is deliberately not a receive-app key shortcut; serial control
+            // uses the explicit ToggleAudio command when that is intended.
+            Self::Menu => None,
+            Self::Side2 => Some(Event::ToggleMonitor),
+            Self::Side1 | Self::Ptt | Self::Exit | Self::Digit(_) | Self::Star | Self::Function => {
+                None
+            }
         }
     }
 }
@@ -81,6 +136,10 @@ pub enum Event {
     ConfigurationAcknowledged(ConfigurationAcknowledgement),
     /// Toggle the operator audio preference.
     ToggleAudio,
+    /// Toggle the operator monitor override, which opens squelch deliberately.
+    ToggleMonitor,
+    /// Set the monitor override to a target-owned desired state.
+    SetMonitor(bool),
     /// Apply the receive meaning of one stable pressed key.
     KeyPress(Key),
     /// One complete receiver-status sample.
@@ -121,11 +180,14 @@ pub enum Effect {
 
 /// Semantic state consumed by either target's renderer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct View {
     /// One-based PMR446 channel number.
     pub channel: u8,
     /// Operator audio preference.
     pub audio: bool,
+    /// Whether the operator monitor override is active.
+    pub monitoring: bool,
     /// Latest sampled squelch link; false before a sample or after retuning.
     pub squelch_open: bool,
     /// Whether receiver state is still known.
@@ -189,6 +251,7 @@ pub struct ReceiveApp {
     next_change_id: u16,
     squelch_open: bool,
     receiver_ok: bool,
+    monitoring: bool,
 }
 
 impl Default for ReceiveApp {
@@ -228,6 +291,7 @@ impl ReceiveApp {
             next_change_id: 1,
             squelch_open: false,
             receiver_ok: true,
+            monitoring: false,
         }
     }
 
@@ -245,6 +309,7 @@ impl ReceiveApp {
         View {
             channel: self.configuration.channel_number(),
             audio: self.configuration.audio(),
+            monitoring: self.monitoring,
             squelch_open: self.squelch_open,
             receiver_ok: self.receiver_ok,
         }
@@ -258,7 +323,20 @@ impl ReceiveApp {
             | Event::PreviousChannel
             | Event::SelectChannel(_)
             | Event::ToggleAudio
+            | Event::ToggleMonitor
                 if self.pending_configuration.is_some() =>
+            {
+                Effects::none()
+            }
+            Event::Start
+            | Event::NextChannel
+            | Event::PreviousChannel
+            | Event::SelectChannel(_)
+            | Event::ToggleAudio
+            | Event::ToggleMonitor
+            | Event::SetMonitor(_)
+            | Event::KeyPress(_)
+                if !self.receiver_ok =>
             {
                 Effects::none()
             }
@@ -295,6 +373,20 @@ impl ReceiveApp {
                     Effect::Redraw(self.view()),
                 )
             }
+            Event::ToggleMonitor => {
+                self.monitoring = !self.monitoring;
+                Effects::two(
+                    Effect::SetSpeaker(self.configuration.audio() && self.monitoring),
+                    Effect::Redraw(self.view()),
+                )
+            }
+            Event::SetMonitor(monitoring) => {
+                self.monitoring = monitoring;
+                Effects::two(
+                    Effect::SetSpeaker(self.configuration.audio() && monitoring),
+                    Effect::Redraw(self.view()),
+                )
+            }
             Event::KeyPress(key) => key
                 .receive_event()
                 .map_or_else(Effects::none, |event| self.apply(event)),
@@ -302,7 +394,7 @@ impl ReceiveApp {
                 if !self.receiver_ok {
                     return Effects::none();
                 }
-                let speaker = self.configuration.audio() && squelch_open;
+                let speaker = self.configuration.audio() && (self.monitoring || squelch_open);
                 if self.squelch_open == squelch_open {
                     Effects::one(Effect::SetSpeaker(speaker))
                 } else {
@@ -316,6 +408,7 @@ impl ReceiveApp {
                 self.pending_configuration = None;
                 self.receiver_ok = false;
                 self.squelch_open = false;
+                self.monitoring = false;
                 Effects::two(Effect::SetSpeaker(false), Effect::Redraw(self.view()))
             }
         }
@@ -369,15 +462,21 @@ impl ReceiveApp {
 
     fn retune(&mut self) -> Effects {
         self.squelch_open = false;
-        Effects::three(
-            Effect::SetSpeaker(false),
-            Effect::Tune {
-                channel: self.configuration.channel_number(),
-                frequency_hz: self.configuration.frequency_hz(),
-                audio: self.configuration.audio(),
-            },
-            Effect::Redraw(self.view()),
-        )
+        let tune = Effect::Tune {
+            channel: self.configuration.channel_number(),
+            frequency_hz: self.configuration.frequency_hz(),
+            audio: self.configuration.audio(),
+        };
+        if self.monitoring {
+            Effects::four(
+                Effect::SetSpeaker(false),
+                tune,
+                Effect::SetSpeaker(self.configuration.audio()),
+                Effect::Redraw(self.view()),
+            )
+        } else {
+            Effects::three(Effect::SetSpeaker(false), tune, Effect::Redraw(self.view()))
+        }
     }
 
     fn allocate_change(
@@ -503,6 +602,25 @@ mod tests {
     }
 
     #[test]
+    fn monitor_opens_and_closes_the_shared_speaker_gate() {
+        let mut app = ReceiveApp::new();
+        app.apply(Event::Start);
+        app.apply(Event::ToggleMonitor);
+        assert!(app.view().monitoring);
+        assert!(app
+            .apply(Event::ReceiveSample {
+                squelch_open: false,
+            })
+            .iter()
+            .any(|effect| effect == Effect::SetSpeaker(true)));
+        let effects = app.apply(Event::ToggleMonitor);
+        assert!(!app.view().monitoring);
+        assert!(effects
+            .iter()
+            .any(|effect| effect == Effect::SetSpeaker(false)));
+    }
+
+    #[test]
     fn a_receiver_fault_latches_silent_and_ignores_later_samples() {
         let mut app = ReceiveApp::new();
         app.apply(Event::Start);
@@ -512,6 +630,57 @@ mod tests {
             app.apply(Event::ReceiveSample { squelch_open: true }),
             super::Effects::none()
         );
+    }
+
+    #[test]
+    fn receiver_fault_blocks_every_operational_control_until_recovery() {
+        let mut app = ReceiveApp::new();
+        app.apply(Event::ReceiverFault);
+        let before = app.view();
+        for event in [
+            Event::Start,
+            Event::NextChannel,
+            Event::PreviousChannel,
+            Event::SelectChannel(8),
+            Event::ToggleAudio,
+            Event::ToggleMonitor,
+            Event::SetMonitor(true),
+            Event::KeyPress(Key::Up),
+            Event::KeyPress(Key::Side2),
+        ] {
+            assert_eq!(app.apply(event), Effects::none());
+            assert_eq!(app.view(), before);
+        }
+    }
+
+    #[test]
+    fn pending_monitor_synchronization_is_allowed_and_recovery_requires_ack() {
+        let mut app = ReceiveApp::new();
+        let candidate = ConfigurationCandidate::from_channel(4, 8, true).expect("candidate");
+        let request = app.apply(Event::ConfigurationCandidate(candidate));
+        assert!(request
+            .iter()
+            .any(|effect| matches!(effect, Effect::ConfigurationChange(_))));
+        let sync = app.apply(Event::SetMonitor(true));
+        assert!(app.view().monitoring);
+        assert!(sync.iter().any(|effect| effect == Effect::SetSpeaker(true)));
+        assert_eq!(app.view().channel, 1);
+        app.apply(Event::ReceiverFault);
+        let recovery = ConfigurationCandidate::from_channel(4, 9, true).expect("recovery");
+        let request = app.apply(Event::ConfigurationCandidate(recovery));
+        let recovery_change = request
+            .iter()
+            .find_map(|effect| match effect {
+                Effect::ConfigurationChange(change) => Some(change),
+                _ => None,
+            })
+            .expect("recovery change");
+        assert!(!app.view().receiver_ok);
+        app.apply(Event::ConfigurationAcknowledged(
+            ConfigurationAcknowledgement::applied(recovery_change),
+        ));
+        assert!(app.view().receiver_ok);
+        assert_eq!(app.view().channel, 9);
     }
 
     #[test]

@@ -1224,17 +1224,27 @@ mod tests {
         assert_eq!(serial.view(), keypad.view());
         assert!(capabilities.contains(SharedCapability::SharedReceive));
         assert!(!capabilities.contains(SharedCapability::PersistentConfiguration));
+
+        let serial_result = dispatch_shared(
+            &mut serial,
+            capabilities,
+            SharedRequest::Command(SharedCommand::Key(SharedKey::Side2)),
+        );
+        let keypad_effects = keypad.apply(SharedEvent::KeyPress(SharedKey::Side2));
+        assert_eq!(serial_result, SharedResult::Effects(keypad_effects));
+        assert_eq!(serial.view(), keypad.view());
+        assert!(serial.view().monitoring);
     }
 
     #[test]
     fn deterministic_simulator_decodes_common_wire_and_returns_shared_view() {
         use radio_platform::serial_control::wire::{
-            decode_request, decode_response, encode_key_response, Request as WireRequest,
+            decode_request, decode_response, encode_key_response, KeyCode, Request as WireRequest,
             Response as WireResponse,
         };
 
         let request = decode_request(&[0x03, 0x04]).expect("wire key");
-        assert_eq!(request, WireRequest::Key(SharedKey::Up));
+        assert_eq!(request, WireRequest::Key(KeyCode::Up));
         let mut app = ReceiveApp::new();
         let result = dispatch_shared(
             &mut app,

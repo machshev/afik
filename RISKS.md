@@ -111,7 +111,8 @@
   target framing remains separate; host and simulator tests do not establish
   physical serial interoperability, K5 persistence, or K1 object-protocol
   compatibility for the new payload.
-- **Target envelope mapping narrowing, 2026-08-13:** K1 now carries the common
+- **Target envelope mapping narrowing (historical key range superseded by
+  ADR-085/ADR-086), 2026-08-13:** K1 now carries the common
   payload only as `RuntimeControl` command `0x18`, retaining its existing
   sequence/replay behavior. K5 now assigns `0x0600..=0x0614` and response
   `0x0620` inside the observed fixed normal-mode envelope, which has no
@@ -119,6 +120,10 @@
   simulator tests prove framing recovery and shared dispatch, but this does
   not prove physical K1/K5 serial interoperability, K5 persistence, or
   candidate acknowledgement on a wire.
+  The current unflashed `2.0P` K5 mapping is View `0x0600`, Capabilities
+  `0x0601`, Side2 `0x0603`, Up `0x0606`, Down `0x0607`, AUDIO `0x0615`, and
+  response `0x0620`; the latest STATUS final-gate record is authoritative for
+  artifact evidence.
 
 ## RISK-007 — BK4819 register applicability and board RF control are unverified
 
@@ -832,3 +837,25 @@
   by the running image against the hardware, because a profile claiming more
   memory than is fitted writes past the end of the calibration a resoldered
   unit cannot restore.
+- **Shared operator UI narrowing, 2026-08-13:** the pure shell state machine and logical screen navigation now live in `radio-platform::operator_shell`. K5 uses the same operating/channel/source/Info navigation with explicit capability gates for its fixed PMR bank; VFO, handset squelch settings, and scan remain unavailable rather than inferred. K1/K5 share deterministic display pixels, glyphs, and layout; framebuffer storage, page writes, physical key scanning/debounce, and board timing remain target-owned. Host tests and an unflashed image do not establish physical K5 UI appearance, key ergonomics, persistence, or display parity.
+- **Shared-pixel and monitor boundary, 2026-08-13:** the K5 adapter now emits
+  the shared K1-layout frame and skips unchanged framebuffer writes, and the
+  K5 matrix maps Side2 to the shared monitor effect. This removes the old
+  target-specific PMR redraw approximation and proves only deterministic
+  software behavior. Physical K5 pixel appearance, Side2 electrical decoding,
+  audio audibility, and Menu/list ergonomics still require a separately
+  authorized acceptance run; Side1/settings remains capability-gated.
+- **APP-052 review corrections, 2026-08-13:** shared frames now distinguish a
+  receiver fault from a healthy quiet channel, and K1 common PMR monitor state
+  is synchronized through `SetMonitor`; arbitrary K1 channels remain outside
+  that shared app boundary. Menu is shell-owned list confirmation and cannot
+  silently toggle audio through serial; explicit audio command `0x0615` is
+  software-only until physical normal-mode evidence. Physical fault-screen
+  legibility, monitor audibility, and side-key electrical behavior remain
+  unproven.
+- **Common serial ownership narrowing, 2026-08-13:** K5 serial Up/Down/Side2
+  parity is covered against the shared shell and ReceiveApp fixture. K1's
+  banked controller and shell are owned by another task, so K1 now advertises
+  view-only common serial access and refuses key/audio mutations; this avoids
+  claiming that a serial request changed only the detached ReceiveApp. K1/K5
+  physical serial interoperability and K1 controller forwarding remain open.

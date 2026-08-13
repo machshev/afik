@@ -23,12 +23,13 @@ use radio_firmware_k5::bk4819_bus::{K5Pins, K5RegisterBus};
 use radio_firmware_k5::k5_display::K5BootDisplay;
 use radio_firmware_k5::keypad::{self, K5Matrix};
 use radio_firmware_k5::protocol::{
-    encode_common_key_response, encode_common_response, encode_hello_response, NormalRequest,
+    encode_common_response, encode_common_view_response, encode_hello_response, NormalRequest,
     NormalService, RESPONSE_FRAME_BYTES,
 };
 use radio_firmware_k5::receive::Pmr446Channel;
 use radio_platform::configuration_change::{ConfigurationAcknowledgement, ConfigurationCandidate};
 use radio_platform::display::show_boot_sequence;
+use radio_platform::operator_shell::{Capabilities, Context, Intent, Shell};
 use radio_platform::receive_app::{Effect, Event, ReceiveApp};
 
 /// Initial stack pointer, per `EVID-K5-019`: the top of the evidenced RAM less
@@ -127,7 +128,11 @@ fn main() -> ! {
     let mut configured = None;
     let mut metrics = None;
     let mut keypad = K5Matrix::initialise();
+    let mut shell = Shell::new();
+    shell.set_capabilities(Capabilities::K5);
+    shell.select_memory();
     let mut shown_key = keypad::scan(&mut keypad);
+    let mut ui_now = 0_u32;
     if initialised {
         apply_event(
             &mut app,
@@ -137,7 +142,6 @@ fn main() -> ! {
             ),
             &mut radio,
             &mut speaker,
-            &mut display,
             &mut configured,
             &mut metrics,
         );
@@ -147,11 +151,12 @@ fn main() -> ! {
             Event::ReceiverFault,
             &mut radio,
             &mut speaker,
-            &mut display,
             &mut configured,
             &mut metrics,
         );
     }
+
+    let _ = display.show_operator(&shell, app.view(), metrics);
 
     let mut service = NormalService::new();
     let mut response = [0_u8; RESPONSE_FRAME_BYTES];
@@ -174,7 +179,6 @@ fn main() -> ! {
                                 effects.iter(),
                                 &mut radio,
                                 &mut speaker,
-                                &mut display,
                                 &mut configured,
                                 &mut metrics,
                             );
@@ -189,13 +193,12 @@ fn main() -> ! {
                                     Event::ReceiverFault,
                                     &mut radio,
                                     &mut speaker,
-                                    &mut display,
                                     &mut configured,
                                     &mut metrics,
                                 );
                                 0
                             } else {
-                                encode_common_key_response(app.view(), request, &mut response)
+                                encode_common_view_response(app.view(), request, &mut response)
                             }
                         }
                         result => encode_common_response(result, request, &mut response)
@@ -211,19 +214,41 @@ fn main() -> ! {
         }
         let key = keypad::scan(&mut keypad);
         if key != shown_key {
+            let previous = shown_key;
             shown_key = key;
             if let Some(key) = key {
-                apply_event(
+                let intent = shell.press(
+                    key.shared(),
+                    ui_now,
+                    Context {
+                        visible_channels: radio_platform::configuration::PMR446_CHANNELS as u16,
+                        active_index: u16::from(app.view().channel.saturating_sub(1)),
+                        scanning: false,
+                    },
+                );
+                apply_ui_intent(
+                    intent,
                     &mut app,
-                    Event::KeyPress(key.shared()),
                     &mut radio,
                     &mut speaker,
-                    &mut display,
                     &mut configured,
                     &mut metrics,
                 );
+            } else if let Some(previous) = previous {
+                let intent = shell.release(previous.shared());
+                if !matches!(intent, Intent::Idle) {
+                    apply_ui_intent(
+                        intent,
+                        &mut app,
+                        &mut radio,
+                        &mut speaker,
+                        &mut configured,
+                        &mut metrics,
+                    );
+                }
             }
         }
+        ui_now = ui_now.wrapping_add(SAMPLE_MILLISECONDS);
         sample_tick.wait();
         if let Ok(sample) = radio.receive_metrics(radio_domain::Tone::None) {
             metrics = Some(sample);
@@ -234,7 +259,6 @@ fn main() -> ! {
                 },
                 &mut radio,
                 &mut speaker,
-                &mut display,
                 &mut configured,
                 &mut metrics,
             );
@@ -244,11 +268,42 @@ fn main() -> ! {
                 Event::ReceiverFault,
                 &mut radio,
                 &mut speaker,
-                &mut display,
                 &mut configured,
                 &mut metrics,
             );
         }
+        let _ = display.show_operator(&shell, app.view(), metrics);
+    }
+}
+
+fn apply_ui_intent<B: RegisterBus>(
+    intent: Intent,
+    app: &mut ReceiveApp,
+    radio: &mut Bk4819<B>,
+    speaker: &mut SpeakerGate,
+    configured: &mut Option<u16>,
+    metrics: &mut Option<ReceiveMetrics>,
+) {
+    let event = match intent {
+        Intent::SelectNext => Some(Event::NextChannel),
+        Intent::SelectPrevious => Some(Event::PreviousChannel),
+        Intent::SelectIndex(index) => Some(Event::SelectChannel(
+            u8::try_from(index.saturating_add(1)).unwrap_or(0),
+        )),
+        // Menu remains the K1-compatible list confirm key. Side2's monitor
+        // intent enters the same shared ReceiveApp effect path as serial and
+        // simulator commands; VFO/source changes remain capability-gated.
+        Intent::ToggleMonitor => Some(Event::ToggleMonitor),
+        Intent::SetSource(_)
+        | Intent::TuneVfo
+        | Intent::SetSquelch(_)
+        | Intent::StartScan
+        | Intent::StopScan
+        | Intent::Redraw
+        | Intent::Idle => None,
+    };
+    if let Some(event) = event {
+        apply_event(app, event, radio, speaker, configured, metrics);
     }
 }
 
@@ -257,7 +312,6 @@ fn apply_event<B: RegisterBus>(
     event: Event,
     radio: &mut Bk4819<B>,
     speaker: &mut SpeakerGate,
-    display: &mut K5BootDisplay,
     configured: &mut Option<u16>,
     metrics: &mut Option<ReceiveMetrics>,
 ) {
@@ -266,7 +320,7 @@ fn apply_event<B: RegisterBus>(
         Effect::ConfigurationChange(change) => Some(change),
         _ => None,
     });
-    let applied = apply_effects(effects.iter(), radio, speaker, display, configured, metrics);
+    let applied = apply_effects(effects.iter(), radio, speaker, configured, metrics);
     if let Some(change) = change {
         let acknowledgement = if applied {
             ConfigurationAcknowledgement::applied(change)
@@ -278,7 +332,6 @@ fn apply_event<B: RegisterBus>(
                 .iter(),
             radio,
             speaker,
-            display,
             configured,
             metrics,
         );
@@ -287,7 +340,6 @@ fn apply_event<B: RegisterBus>(
             app.apply(Event::ReceiverFault).iter(),
             radio,
             speaker,
-            display,
             configured,
             metrics,
         );
@@ -313,7 +365,6 @@ fn apply_effects<B: RegisterBus>(
     effects: impl Iterator<Item = Effect>,
     radio: &mut Bk4819<B>,
     speaker: &mut SpeakerGate,
-    display: &mut K5BootDisplay,
     configured: &mut Option<u16>,
     metrics: &mut Option<ReceiveMetrics>,
 ) -> bool {
@@ -357,12 +408,6 @@ fn apply_effects<B: RegisterBus>(
                 if !view.receiver_ok {
                     *configured = None;
                     *metrics = None;
-                }
-                if display
-                    .show_pmr_receive(view, *configured, *metrics)
-                    .is_err()
-                {
-                    complete = false;
                 }
             }
             Effect::ConfigurationAcknowledged(_) => {}

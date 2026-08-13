@@ -16,18 +16,22 @@ squelch-to-speaker rule, receiver-fault silence, semantic view, and ordered
 target effects. Identical K1 and K5 fixtures produce identical traces. Seven
 `radio-platform` tests and warning-denied Clippy pass.
 
-The K5 target now executes that shared core as `AFIK-K5-1.8U`. Its proven
-keypad and 50 ms `SysTick` emit shared events; ordered tune, chip-audio,
-speaker-gate, and redraw effects drive the existing K5 adapters. Adapter failure
-feeds the common fail-silent event. Focused tests, warning-denied Clippy, target
-build, and packaging pass; the unflashed package is `0xF000` bytes, flash ends
-at `0x5738`, static RAM ends at `0x20000100`, and SHA-256 is
-`d359c43e4d6bd9d72028d48f2acbb2b63f58affd75d579878750747ff27b216d`.
+The K5 target now executes that shared core as the unflashed
+`AFIK-K5-2.0P` image. Its proven keypad and 50 ms `SysTick` emit shared events;
+ordered tune, chip-audio, speaker-gate, and redraw effects drive the existing
+K5 adapters. Adapter failure feeds the common fail-silent event. The latest
+shared operator frame is rendered by the hardware-independent K1 layout and
+only written by the K5 adapter when pixels change. Focused tests, warning-denied
+Clippy, target build, and packaging pass; the unflashed package is `0xF000`
+bytes, flash ends at `0x938c`, static RAM ends at `0x20000100`, and SHA-256 is
+`3097fa254b4922409184d50d2be102e678ce720f83117f6303cdb153667b3ad4`.
 
 Physical K5 parity passes. The guarded write received `240/240`
 acknowledgements; after ordinary boot the operator confirmed channel
 navigation, default audio, sampled squelch, and Menu `A1`/`A0` behavior all
-still worked. Three consecutive normal probes returned `AFIK-K5-1.8U`.
+still worked. Three consecutive normal probes returned `AFIK-K5-1.8U`; no
+hardware was flashed for `2.0P`, so its physical identity and UI remain
+unproven.
 
 The first K1 adapter seam is implemented and now runs in the K1 runtime for
 complete shared PMR446 example setups.
@@ -59,7 +63,8 @@ operator/programmer behavior through the shared PMR receive path.
 
 The keypad/display step is now implemented in the shared application boundary.
 `radio-platform::receive_app` owns the canonical logical key vocabulary and
-maps `Up`, `Down`, and `Menu` to receive events; digits, side keys, `Exit`,
+maps `Up`, `Down`, and Side2 to receive events; Menu remains shell-owned list
+confirmation, while explicit serial audio uses its own command. Digits, side keys, `Exit`,
 `Star`, `Function`, and input-only `Ptt` remain no-op receive events for the
 retained target shells. Both target keypad adapters translate their physical
 key enums into that vocabulary, and host tests prove the K1/K5 mappings and
@@ -3545,9 +3550,12 @@ decodes the bounded payload and routes it through the existing `ReceiveApp`
 instance. K1 persistence, object transactions, VFO, scan, and raw metrics stay
 target-owned.
 
-K5 retains its observed fixed normal-mode envelope and assigns `0x0600` View,
-`0x0601` Capabilities, `0x0602..=0x0614` canonical logical keys, and `0x0620`
-common responses. The normal parser validates the existing CRC, session,
+K5 retains its observed fixed normal-mode envelope. This historical entry
+describes the earlier `0x0600` View, `0x0601` Capabilities,
+`0x0602..=0x0614` canonical-key range, and `0x0620` common responses; the key
+range is superseded for `AFIK-K5-2.0P` by ADR-085/ADR-086. The current mapping
+is View `0x0600`, Capabilities `0x0601`, Side2 `0x0603`, Up `0x0606`, Down
+`0x0607`, AUDIO `0x0615`, and response `0x0620`. The normal parser validates the existing CRC, session,
 length, and trailer before returning a common request; malformed, unknown, and
 reserved values are discarded and the parser resynchronises at the next
 header. K5 common effects are applied through its one `ReceiveApp` and target
@@ -3573,7 +3581,8 @@ cannot report a healthy semantic state after a target adapter failure. The
 focused K1 (131), K5 library (20), K5 hello (10), and radio-device (23) test
 suites pass, as does warning-denied focused Clippy. No hardware was flashed.
 
-The single serialized final gate then passed through the cached direnv shell:
+The single serialized final gate then passed through the cached direnv shell
+for that historical implementation:
 `direnv exec . env CARGO_BUILD_JOBS=2 ionice -c 3 nice -n 10 bash -c 'cargo
 fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings &&
 cargo test --workspace && ./tool/build-k1-async.sh --release &&
@@ -3584,6 +3593,8 @@ all passed. K5 flash end is `0x60D4`, static RAM end is `0x20000100`, and the
 `0xF000` package SHA-256 is
 `fb386bffe7fdc72c7a1409cbb4dde7885470ce4a7b09333b127d5a18e004759d`.
 Disk remained at 30% (`270G/944G`, `659G` available). No hardware was flashed.
+This historical artifact record is superseded by the final `2.0P` gate below;
+the later hash and image measurements are authoritative.
 
 ## APP-052 release-prep control witness, 2026-08-13
 
@@ -3606,3 +3617,77 @@ were run sequentially through the cached direnv shell. Disk remained at 30%
 used (`270G/944G`, about `658G` available). No hardware was flashed. Next
 smallest task: obtain separately authorized physical normal-mode evidence for
 `1.9S`; do not flash this release-prep image implicitly.
+
+The 1.9S/Menu release-prep facts above are historical and intentionally
+preserved; ADR-085/ADR-086 supersede their mutation-boundary description for
+the unflashed 2.0P image.
+## APP-052 shared-pixel/monitor correction, 2026-08-13
+
+The K1 128x64 operator framebuffer model and render functions now live in
+`radio-platform::operator_display`; K1 keeps only its adapter facade and K5
+uses the same operating, channel-list, source-list, and Info pixel layouts.
+K5 derives all PMR labels and frequencies from `PMR446_CHANNELS`, reports
+volatile generation zero with unprobed memory, and renders unsupported VFO,
+settings, and scan choices as an explicit capability-gated screen. Its target
+adapter owns only page writes/timing and suppresses unchanged-frame writes;
+the old `show_pmr_receive` redraw path is gone. Side2 maps through the shared
+`ToggleMonitor` event to the ReceiveApp speaker gate; Menu remains K1 list
+confirmation. K5 frame snapshots compare directly with shared renderer calls,
+and the K5 keypad plus simulator traces cover monitor transitions.
+K1’s shared PMR adapter synchronizes its target controller monitor state into
+the same shared `SetMonitor` boundary; arbitrary K1 channels retain their
+controller-owned monitor behavior. A receiver fault is now visibly distinct
+from a healthy quiet/no-sample frame. Menu is not a serial audio alias:
+`0x0615` is the explicit audio command, while `0x0605` is no longer advertised.
+
+The final serialized cached-direnv gate was:
+`direnv exec . env CARGO_BUILD_JOBS=2 ionice -c 3 nice -n 10 bash -c
+'set -euo pipefail; cargo fmt --all --check; cargo clippy --workspace
+--all-targets -- -D warnings; cargo test --workspace;
+./tool/build-k1-async.sh --release; ./tool/build-k5.sh --release;
+./tool/verify-k5-image.sh target/thumbv6m-none-eabi/release/radio-firmware-k5;
+./tool/package-k5-image.sh --force target/thumbv6m-none-eabi/release/radio-firmware-k5
+target/thumbv6m-none-eabi/release/afik-k5-2.0P.bin; git diff --check'`.
+It passed formatting, warning-denied workspace Clippy, the full workspace test
+suite, K1 async release build, K5 release build, image verification, package,
+and diff checks sequentially. K5 flash end is `0x938c`, static RAM end is
+`0x20000100`, and the fixed `0xF000` package SHA-256 is
+`3097fa254b4922409184d50d2be102e678ce720f83117f6303cdb153667b3ad4`.
+No hardware was flashed; the physically running `AFIK-K5-1.8U` remains the
+only physical receive witness. Physical K5 display pixel parity, Side2
+electrical/audio acceptance, and Menu/list ergonomics remain open.
+
+## APP-052 serial ownership correction, 2026-08-13
+
+The shared serial wire now follows the operator shell's navigation direction:
+Up is previous and Down is next, with Side2 retaining monitor semantics and
+view state bit 2 documenting monitoring. K5 tests compare serial Up/Down/Side2
+effects with shared-shell physical intents and verify channel plus monitor
+parity. K1's banked controller and shell live in the UI task, so K1 now
+advertises view-only common serial access and refuses common key/AUDIO
+mutations rather than changing a detached `ReceiveApp`. The explicit AUDIO
+command remains supported by K5. Physical K1 serial forwarding and all physical
+K5 serial/UI acceptance remain unproven.
+
+## APP-052 final fault and recovery correction, 2026-08-13
+
+`ReceiveApp` is fail-silent after a receiver fault: operational start,
+navigation, audio, monitor, and key events do not mutate controls or enable
+chip/speaker output. Only a validated configuration candidate and matching
+applied acknowledgement can recover it. K1 synchronizes the shared
+`SetMonitor` state from its banked controller after each successful
+configuration acknowledgement, including recovery; failed recovery remains
+faulted. K5 accepts only serial Up, Down, and Side2 key commands, and rejects
+unsupported shell keys before dispatch. A K5 state-changing response carrying
+`receiver_ok=false` is a typed host operation failure, while View remains a
+diagnostic query. Focused tests cover these boundaries and K1 view-only refusal
+without semantic mutation.
+
+The final serialized cached-direnv gate passed after these corrections: format,
+warning-denied workspace Clippy, full workspace tests, K1/K5 release builds,
+K5 image verification, fixed-size packaging, and diff checks. The unflashed
+`AFIK-K5-2.0P` package is `0xF000` bytes, flash ends at `0x938c`, static RAM
+ends at `0x20000100`, and SHA-256 is
+`3097fa254b4922409184d50d2be102e678ce720f83117f6303cdb153667b3ad4`.
+No hardware was flashed; physical K5 display, Side2 audio, and serial
+interoperability remain acceptance work.

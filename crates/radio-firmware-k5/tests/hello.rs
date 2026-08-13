@@ -8,11 +8,12 @@
 
 use radio_firmware_k5::protocol::{
     apply_shared_serial_request, apply_shared_wire_request, decode_shared_request,
-    encode_common_key_response, encode_shared_response, serial_capabilities, HelloService,
+    encode_common_view_response, encode_shared_response, serial_capabilities, HelloService,
     NormalRequest, NormalService, SerialCapability, SerialCommand, SerialRequest, SerialResult,
     APPLICATION_IDENTITY, APPLICATION_VERSION, RESPONSE_FRAME_BYTES,
 };
 use radio_flasher::probe_normal_firmware;
+use radio_platform::operator_shell::{Capabilities as ShellCapabilities, Context, Intent, Shell};
 use radio_platform::receive_app::{Event, Key, ReceiveApp};
 use std::io::{Read, Write};
 
@@ -131,17 +132,52 @@ fn k5_advertises_only_the_shared_receive_serial_boundary() {
 
 #[test]
 fn k5_common_serial_key_enters_the_same_shared_app_as_keypad_input() {
+    let mut shell = Shell::new();
+    shell.set_capabilities(ShellCapabilities::K5);
+    shell.select_memory();
+    let mut physical = ReceiveApp::new();
     let mut serial = ReceiveApp::new();
-    let mut keypad = ReceiveApp::new();
+    let up_context = Context {
+        visible_channels: 16,
+        active_index: 0,
+        scanning: false,
+    };
+    assert_eq!(shell.press(Key::Up, 0, up_context), Intent::SelectPrevious);
+    let physical_result = physical.apply(Event::PreviousChannel);
     let serial_result = apply_shared_serial_request(
         &mut serial,
         SerialRequest::Command(SerialCommand::Key(Key::Up)),
     );
-    assert_eq!(
-        serial_result,
-        SerialResult::Effects(keypad.apply(Event::KeyPress(Key::Up)))
+    assert_eq!(serial_result, SerialResult::Effects(physical_result));
+    assert_eq!(serial.view(), physical.view());
+    assert_eq!(serial.view().channel, 16);
+
+    let down_context = Context {
+        active_index: 15,
+        ..up_context
+    };
+    assert_eq!(shell.press(Key::Down, 1, down_context), Intent::SelectNext);
+    let physical_result = physical.apply(Event::NextChannel);
+    let serial_result = apply_shared_serial_request(
+        &mut serial,
+        SerialRequest::Command(SerialCommand::Key(Key::Down)),
     );
-    assert_eq!(serial.view(), keypad.view());
+    assert_eq!(serial_result, SerialResult::Effects(physical_result));
+    assert_eq!(serial.view(), physical.view());
+    assert_eq!(serial.view().channel, 1);
+
+    assert_eq!(
+        shell.press(Key::Side2, 2, down_context),
+        Intent::ToggleMonitor
+    );
+    let physical_result = physical.apply(Event::ToggleMonitor);
+    let serial_result = apply_shared_serial_request(
+        &mut serial,
+        SerialRequest::Command(SerialCommand::Key(Key::Side2)),
+    );
+    assert_eq!(serial_result, SerialResult::Effects(physical_result));
+    assert_eq!(serial.view(), physical.view());
+    assert!(serial.view().monitoring);
 }
 
 #[test]
@@ -154,12 +190,12 @@ fn k5_common_wire_key_is_decoded_and_returns_the_shared_view() {
     let length =
         radio_platform::serial_control::wire::encode_key_response(app.view(), &mut response)
             .expect("key response");
-    assert_eq!(&response[..length], &[0x83, 2, 1, 2]);
+    assert_eq!(&response[..length], &[0x83, 16, 1, 2]);
 
     let mut query_response = [0_u8; 4];
     let length = encode_shared_response(SerialResult::View(app.view()), &mut query_response)
         .expect("view response");
-    assert_eq!(&query_response[..length], &[0x81, 2, 1, 2]);
+    assert_eq!(&query_response[..length], &[0x81, 16, 1, 2]);
 }
 
 #[test]
@@ -218,7 +254,9 @@ fn k5_normal_envelope_dispatches_a_key_into_receive_app_and_encodes_response() {
     assert_eq!(
         request,
         Some(NormalRequest::Common(
-            radio_platform::serial_control::wire::Request::Key(Key::Up)
+            radio_platform::serial_control::wire::Request::Key(
+                radio_platform::serial_control::wire::KeyCode::Up,
+            )
         ))
     );
     let NormalRequest::Common(request) = request.expect("common request") else {
@@ -229,7 +267,7 @@ fn k5_normal_envelope_dispatches_a_key_into_receive_app_and_encodes_response() {
     assert!(matches!(result, SerialResult::Effects(_)));
     let mut response = [0_u8; RESPONSE_FRAME_BYTES];
     assert_eq!(
-        encode_common_key_response(app.view(), request, &mut response),
+        encode_common_view_response(app.view(), request, &mut response),
         48
     );
     // The target-owned response is an exact fixed frame; the unit protocol
@@ -244,4 +282,33 @@ fn k5_normal_envelope_dispatches_a_key_into_receive_app_and_encodes_response() {
         *byte ^= NORMAL_XOR_KEY[index % NORMAL_XOR_KEY.len()];
     }
     assert_eq!(&decoded[6..8], &[4, 0]);
+}
+
+#[test]
+fn k5_toggle_audio_dispatches_and_emits_the_bounded_view_response() {
+    let mut service = NormalService::new();
+    let mut request = None;
+    for byte in normal_request(0x0615) {
+        request = service.push(byte).or(request);
+    }
+    assert_eq!(
+        request,
+        Some(NormalRequest::Common(
+            radio_platform::serial_control::wire::Request::ToggleAudio,
+        ))
+    );
+    let NormalRequest::Common(request) = request.expect("common request") else {
+        panic!("expected common request");
+    };
+    let mut app = ReceiveApp::new();
+    let result = apply_shared_wire_request(&mut app, request);
+    assert!(matches!(result, SerialResult::Effects(_)));
+    assert!(!app.view().audio);
+    let mut response = [0_u8; RESPONSE_FRAME_BYTES];
+    assert_eq!(
+        encode_common_view_response(app.view(), request, &mut response),
+        48
+    );
+    assert_eq!(&response[..4], &[0xAB, 0xCD, 40, 0]);
+    assert_eq!(&response[46..], &[0xDC, 0xBA]);
 }

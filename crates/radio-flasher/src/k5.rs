@@ -18,8 +18,8 @@ pub const K5_COMMON_RESPONSE_COMMAND: u16 = 0x0620;
 pub const K5_VIEW_COMMAND: u16 = 0x0600;
 /// Common K5 capability query command.
 pub const K5_CAPABILITIES_COMMAND: u16 = 0x0601;
-/// Common K5 Menu key command.
-pub const K5_MENU_COMMAND: u16 = 0x0605;
+/// Common K5 explicit audio-toggle command.
+pub const K5_TOGGLE_AUDIO_COMMAND: u16 = 0x0615;
 /// Common K5 Up key command.
 pub const K5_UP_COMMAND: u16 = 0x0606;
 /// Common K5 Down key command.
@@ -36,6 +36,8 @@ pub enum ControlRequest {
     View,
     /// Read the target's shared application capability bits.
     Capabilities,
+    /// Toggle application audio explicitly; this is not the shell Menu key.
+    ToggleAudio,
     /// Apply one logical key through the shared receive application.
     Key(LogicalKey),
 }
@@ -43,8 +45,6 @@ pub enum ControlRequest {
 /// The bounded logical-key subset exposed by the host K5 control command.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LogicalKey {
-    /// Shared Menu key, which toggles operator mute.
-    Menu,
     /// Shared Up key, which selects the previous channel.
     Up,
     /// Shared Down key, which selects the next channel.
@@ -53,6 +53,7 @@ pub enum LogicalKey {
 
 /// Shared semantic view returned by K5.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct View {
     /// PMR446 example channel number selected by the application.
     pub channel: u8,
@@ -60,6 +61,8 @@ pub struct View {
     pub audio: bool,
     /// Whether the sampled squelch is open.
     pub squelch_open: bool,
+    /// Whether the operator monitor override is active.
+    pub monitoring: bool,
     /// Whether the receiver is in a healthy state.
     pub receiver_ok: bool,
 }
@@ -100,7 +103,7 @@ impl ControlRequest {
         match self {
             Self::View => K5_VIEW_COMMAND,
             Self::Capabilities => K5_CAPABILITIES_COMMAND,
-            Self::Key(LogicalKey::Menu) => K5_MENU_COMMAND,
+            Self::ToggleAudio => K5_TOGGLE_AUDIO_COMMAND,
             Self::Key(LogicalKey::Up) => K5_UP_COMMAND,
             Self::Key(LogicalKey::Down) => K5_DOWN_COMMAND,
         }
@@ -130,7 +133,7 @@ fn parse_response(
     let length = usize::from(u16::from_le_bytes([payload[2], payload[3]]));
     let expected_length = match request {
         ControlRequest::Capabilities => 3,
-        ControlRequest::View | ControlRequest::Key(_) => 4,
+        ControlRequest::View | ControlRequest::Key(_) | ControlRequest::ToggleAudio => 4,
     };
     if length != expected_length {
         return Err(FlashError::UnexpectedPacket {
@@ -149,7 +152,19 @@ fn parse_response(
     match request {
         ControlRequest::Capabilities => parse_capabilities(data),
         ControlRequest::View => parse_view(data, 0x81),
-        ControlRequest::Key(_) => parse_view(data, 0x83),
+        ControlRequest::Key(_) | ControlRequest::ToggleAudio => {
+            let response = parse_view(data, 0x83)?;
+            if matches!(
+                response,
+                ControlResponse::View(View {
+                    receiver_ok: false,
+                    ..
+                })
+            ) {
+                return Err(FlashError::K5StateChangeRejected);
+            }
+            Ok(response)
+        }
     }
 }
 
@@ -161,13 +176,14 @@ fn parse_view(data: &[u8], expected_code: u8) -> Result<ControlResponse, FlashEr
     if data.len() != 4 || data[0] != expected_code {
         return Err(FlashError::InvalidK5Response("view response payload"));
     }
-    if data[2] > 1 || data[3] & !0x03 != 0 {
+    if data[2] > 1 || data[3] & !0x07 != 0 {
         return Err(FlashError::InvalidK5Response("view response flags"));
     }
     Ok(ControlResponse::View(View {
         channel: data[1],
         audio: data[2] != 0,
         squelch_open: data[3] & 1 != 0,
+        monitoring: data[3] & 4 != 0,
         receiver_ok: data[3] & 2 != 0,
     }))
 }
@@ -252,6 +268,7 @@ mod tests {
                 channel: 7,
                 audio: true,
                 squelch_open: false,
+                monitoring: false,
                 receiver_ok: true,
             })
         );
@@ -272,20 +289,16 @@ mod tests {
     fn capabilities_and_logical_keys_use_expected_commands() {
         for (request, command, data) in [
             (ControlRequest::Capabilities, 0x0601, &[0x82, 7, 0][..]),
-            (
-                ControlRequest::Key(LogicalKey::Menu),
-                0x0605,
-                &[0x83, 1, 1, 0][..],
-            ),
+            (ControlRequest::ToggleAudio, 0x0615, &[0x83, 1, 1, 2][..]),
             (
                 ControlRequest::Key(LogicalKey::Up),
                 0x0606,
-                &[0x83, 2, 1, 0][..],
+                &[0x83, 2, 1, 2][..],
             ),
             (
                 ControlRequest::Key(LogicalKey::Down),
                 0x0607,
-                &[0x83, 3, 1, 0][..],
+                &[0x83, 3, 1, 2][..],
             ),
         ] {
             let mut radio = Radio::new(response(data));
@@ -320,7 +333,7 @@ mod tests {
 
     #[test]
     fn wrong_length_and_unknown_flags_fail_without_a_second_request() {
-        let mut frame = response(&[0x81, 1, 1, 4]);
+        let mut frame = response(&[0x81, 1, 1, 8]);
         let mut radio = Radio::new(frame.clone());
         assert!(matches!(
             control(&mut radio, ControlRequest::View),
@@ -332,10 +345,31 @@ mod tests {
     }
 
     #[test]
+    fn state_change_fault_view_is_a_typed_host_failure_but_query_reports_it() {
+        let mut radio = Radio::new(response(&[0x83, 1, 1, 0]));
+        assert!(matches!(
+            control(&mut radio, ControlRequest::ToggleAudio),
+            Err(FlashError::K5StateChangeRejected)
+        ));
+
+        let mut radio = Radio::new(response(&[0x81, 1, 1, 0]));
+        assert_eq!(
+            control(&mut radio, ControlRequest::View).unwrap(),
+            ControlResponse::View(View {
+                channel: 1,
+                audio: true,
+                squelch_open: false,
+                monitoring: false,
+                receiver_ok: false,
+            })
+        );
+    }
+
+    #[test]
     fn view_and_key_response_opcodes_are_not_interchangeable() {
         let mut radio = Radio::new(response(&[0x83, 1, 1, 0]));
         assert!(control(&mut radio, ControlRequest::View).is_err());
         let mut radio = Radio::new(response(&[0x81, 1, 1, 0]));
-        assert!(control(&mut radio, ControlRequest::Key(LogicalKey::Menu)).is_err());
+        assert!(control(&mut radio, ControlRequest::ToggleAudio).is_err());
     }
 }

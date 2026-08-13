@@ -38,6 +38,18 @@ impl Pmr446Channel {
         PMR446_FIRST_HZ + (self.0 as u32 - 1) * PMR446_STEP_HZ
     }
 
+    /// Returns the honest fixed name used by the shared operator display.
+    pub const fn display_name(self) -> [u8; 6] {
+        [
+            b'P',
+            b'M',
+            b'R',
+            b' ',
+            b'0' + self.0 / 10,
+            b'0' + self.0 % 10,
+        ]
+    }
+
     /// Returns the next channel, wrapping after the last channel.
     #[must_use]
     pub const fn next(self) -> Self {

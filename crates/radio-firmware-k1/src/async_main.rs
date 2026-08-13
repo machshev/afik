@@ -755,14 +755,10 @@ fn apply_shared_effects(
 ///
 /// The request arrived through `DeviceService`, so framing, flags, sequence
 /// replay, and target-only error responses remain owned by `radio-device`. This
-/// adapter only decodes the bounded common payload and applies its effects to
-/// the one shared `ReceiveApp` instance already used by the interface loop.
-fn answer_common_serial(
-    payload: [u8; 2],
-    app: &mut Option<ReceiveApp>,
-    receiver: &mut Receiver,
-    radio_wide_squelch: SquelchLevel,
-) -> (ControlAnswer, bool) {
+/// adapter only decodes the bounded common payload and answers view-only
+/// queries; K1 key/audio mutations are refused because the banked controller
+/// and operator shell are owned by the UI task.
+fn answer_common_serial(payload: [u8; 2], app: &mut Option<ReceiveApp>) -> (ControlAnswer, bool) {
     let Ok(request) = shared_wire::decode_request(&payload) else {
         return (
             ControlAnswer::Refused(DeviceErrorCode::MalformedPayload),
@@ -785,49 +781,19 @@ fn answer_common_serial(
             let Some(app) = app.as_mut() else {
                 return (ControlAnswer::Refused(DeviceErrorCode::InvalidState), false);
             };
-            common_result_answer(
-                dispatch_shared(
-                    app,
-                    host_control::serial_capabilities(),
-                    shared_wire::into_request(request),
-                ),
-                false,
-            )
+            match radio_firmware_k1::protocol::apply_common_request(app, request) {
+                Ok(result) => common_result_answer(result, false),
+                Err(error) => (ControlAnswer::Refused(error), false),
+            }
         }
-        shared_wire::Request::Key(_) => {
+        shared_wire::Request::Key(_) | shared_wire::Request::ToggleAudio => {
             let Some(app) = app.as_mut() else {
                 return (ControlAnswer::Refused(DeviceErrorCode::InvalidState), false);
             };
-            let SharedResult::Effects(effects) = dispatch_shared(
-                app,
-                host_control::serial_capabilities(),
-                shared_wire::into_request(request),
-            ) else {
-                return (ControlAnswer::Refused(DeviceErrorCode::Internal), false);
-            };
-            let outcome = apply_shared_effects(effects, receiver, radio_wide_squelch);
-            if !outcome.complete {
-                // The target operation failed after the shared event had
-                // already changed its candidate/semantic state.  Feed the
-                // failure back through ReceiveApp so a subsequent View cannot
-                // report a healthy receiver after a refused key command.
-                let fault = app.apply(SharedEvent::ReceiverFault);
-                let fault_outcome = apply_shared_effects(fault, receiver, radio_wide_squelch);
-                return (
-                    ControlAnswer::Refused(DeviceErrorCode::Internal),
-                    outcome.redraw || fault_outcome.redraw,
-                );
+            match radio_firmware_k1::protocol::apply_common_request(app, request) {
+                Ok(_) => (ControlAnswer::Refused(DeviceErrorCode::Internal), false),
+                Err(error) => (ControlAnswer::Refused(error), false),
             }
-            let mut bytes = [0_u8; 4];
-            let length =
-                shared_wire::encode_key_response(app.view(), &mut bytes).unwrap_or_default();
-            (
-                ControlAnswer::Common {
-                    payload: bytes,
-                    length: u8::try_from(length).unwrap_or(0),
-                },
-                outcome.redraw,
-            )
         }
     }
 }
@@ -1463,12 +1429,7 @@ async fn ui_task(
         if let Some(request) = CONTROL_REQUEST.try_take() {
             let answer = match request {
                 ControlRequest::CommonApplication { payload } => {
-                    let (answer, dirty) = answer_common_serial(
-                        payload,
-                        &mut shared_receive,
-                        &mut receiver,
-                        shell.squelch(),
-                    );
+                    let (answer, dirty) = answer_common_serial(payload, &mut shared_receive);
                     redraw |= dirty;
                     answer
                 }
@@ -1501,18 +1462,18 @@ async fn ui_task(
         let intent = match debounce.update(now, sample) {
             Edge::Pressed(key) => {
                 held_since = Some(now);
-                shell.press(key, now, context)
+                shell.press(key.shared(), now, context)
             }
             Edge::Released(key) => {
                 held_since = None;
-                shell.release(key)
+                shell.release(key.shared())
             }
             // A key still down past the hold interval is a second, different
             // input from the press which started it, and it acts once.
             Edge::None => match (debounce.held_key(), held_since) {
                 (Some(key), Some(since)) if now.wrapping_sub(since) >= HOLD_MILLISECONDS => {
                     held_since = None;
-                    shell.hold(key, context)
+                    shell.hold(key.shared(), context)
                 }
                 _ => shell.tick(now, context),
             },
@@ -1552,7 +1513,21 @@ async fn ui_task(
             _ if activation.is_none() => redraw = true,
             Intent::ToggleMonitor => {
                 if let Some((controller, _)) = activation.as_mut() {
-                    let update = controller.set_monitor(!controller.is_monitoring());
+                    let monitoring = !controller.is_monitoring();
+                    // The K1 controller owns target mechanics, while the
+                    // shared app owns the semantic monitor state whenever
+                    // this activation is on the common PMR path. Keep both
+                    // at one explicit desired value rather than maintaining
+                    // two independently toggled booleans.
+                    if let Some(app) = shared_receive.as_mut() {
+                        let _ = apply_shared_effects(
+                            app.apply(SharedEvent::SetMonitor(monitoring)),
+                            &mut receiver,
+                            shell.squelch(),
+                        )
+                        .redraw;
+                    }
+                    let update = controller.set_monitor(monitoring);
                     apply(update, &mut pending, &mut scan_timer);
                 }
                 redraw = true;
@@ -1640,6 +1615,16 @@ async fn ui_task(
                 let had_shared = shared_receive.is_some();
                 let app = shared_receive
                     .get_or_insert_with(|| ReceiveApp::new_with_identity(shared_instance_id));
+                if !had_shared {
+                    let monitoring = activation
+                        .as_ref()
+                        .is_some_and(|(controller, _)| controller.is_monitoring());
+                    let _ = apply_shared_effects(
+                        app.apply(SharedEvent::SetMonitor(monitoring)),
+                        &mut receiver,
+                        shell.squelch(),
+                    );
+                }
                 let candidate = ConfigurationCandidate::from_channel(
                     generation,
                     channel,
@@ -1668,6 +1653,19 @@ async fn ui_task(
                         &mut receiver,
                         shell.squelch(),
                     );
+                    // The banked controller owns the physical monitor intent;
+                    // after an applied tune/recovery, make the shared view
+                    // agree with that owner. A failed adapter path never
+                    // reaches this synchronization and remains fail-silent.
+                    if outcome.complete {
+                        if let Some((controller, _)) = activation.as_ref() {
+                            let _ = apply_shared_effects(
+                                app.apply(SharedEvent::SetMonitor(controller.is_monitoring())),
+                                &mut receiver,
+                                shell.squelch(),
+                            );
+                        }
+                    }
                 }
             } else {
                 shared_receive = None;
@@ -1809,6 +1807,7 @@ fn render(
                 frequency_hz: receiver.frequency_hz,
                 rssi_raw: receiver.rssi_raw,
                 squelch_open: receiver.squelch_open,
+                receiver_ok: !receiver.faulted,
                 battery_percent,
                 monitoring: controller.is_some_and(BankedReceiveController::is_monitoring),
                 scanning: controller.is_some_and(|controller| {

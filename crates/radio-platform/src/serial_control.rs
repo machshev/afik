@@ -62,6 +62,14 @@ impl Capabilities {
         )
     }
 
+    /// Creates the shared view boundary without claiming target key ownership.
+    ///
+    /// This is used by adapters whose physical controller lives in another
+    /// task or owns a richer selection state than the common receive app.
+    pub const fn shared_view() -> Self {
+        Self::from_bits(Self::bit(Capability::SharedReceive) | Self::bit(Capability::ViewQuery))
+    }
+
     /// Adds one capability to this set.
     #[must_use]
     pub const fn with(self, capability: Capability) -> Self {
@@ -92,6 +100,8 @@ pub enum Query {
 pub enum Command {
     /// Apply the receive meaning of one stable logical key.
     Key(Key),
+    /// Toggle application audio without using the operator Menu key.
+    ToggleAudio,
     /// Ask the target to apply one candidate, then acknowledge it through the
     /// same exact change identity used by keypad-driven activation.
     Activate(ConfigurationCandidate),
@@ -123,6 +133,43 @@ pub enum Result {
 pub mod wire {
     use super::{Capabilities, Command, Key, Query, Result as DispatchResult, View};
 
+    /// Logical keys representable on the common serial wire. Menu is omitted:
+    /// it belongs to the operator shell and cannot be an audio shortcut.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub enum KeyCode {
+        /// Upper side key.
+        Side1,
+        /// Lower side monitor key.
+        Side2,
+        /// Push-to-talk input label.
+        Ptt,
+        /// Previous-channel key.
+        Up,
+        /// Next-channel key.
+        Down,
+        /// Shell back key.
+        Exit,
+        /// Star key.
+        Star,
+        /// Function key.
+        Function,
+    }
+
+    impl KeyCode {
+        const fn into_shared(self) -> Key {
+            match self {
+                Self::Side1 => Key::Side1,
+                Self::Side2 => Key::Side2,
+                Self::Ptt => Key::Ptt,
+                Self::Up => Key::Up,
+                Self::Down => Key::Down,
+                Self::Exit => Key::Exit,
+                Self::Star => Key::Star,
+                Self::Function => Key::Function,
+            }
+        }
+    }
+
     /// Bytes in one common request payload.
     pub const REQUEST_BYTES: usize = 2;
     /// Maximum bytes in one common response payload.
@@ -131,6 +178,7 @@ pub mod wire {
     const OP_VIEW: u8 = 0x01;
     const OP_CAPABILITIES: u8 = 0x02;
     const OP_KEY: u8 = 0x03;
+    const OP_TOGGLE_AUDIO: u8 = 0x04;
 
     const RESPONSE_VIEW: u8 = 0x81;
     const RESPONSE_CAPABILITIES: u8 = 0x82;
@@ -144,7 +192,9 @@ pub mod wire {
         /// Query the adapter-declared shared capability bits.
         Capabilities,
         /// Apply one canonical logical key through the shared app.
-        Key(Key),
+        Key(KeyCode),
+        /// Toggle application audio explicitly.
+        ToggleAudio,
     }
 
     /// A response representable on the common wire boundary.
@@ -175,10 +225,11 @@ pub mod wire {
             Request::View => OP_VIEW,
             Request::Capabilities => OP_CAPABILITIES,
             Request::Key(_) => OP_KEY,
+            Request::ToggleAudio => OP_TOGGLE_AUDIO,
         };
         output[1] = match request {
             Request::Key(key) => encode_key(key),
-            Request::View | Request::Capabilities => 0,
+            Request::View | Request::Capabilities | Request::ToggleAudio => 0,
         };
     }
 
@@ -191,6 +242,7 @@ pub mod wire {
         match input[0] {
             OP_VIEW if input[1] == 0 => Ok(Request::View),
             OP_CAPABILITIES if input[1] == 0 => Ok(Request::Capabilities),
+            OP_TOGGLE_AUDIO if input[1] == 0 => Ok(Request::ToggleAudio),
             OP_KEY => match decode_key(input[1]) {
                 Some(key) => Ok(Request::Key(key)),
                 None => Err(Error::UnknownCode),
@@ -257,7 +309,8 @@ pub mod wire {
         match request {
             Request::View => super::Request::Query(Query::View),
             Request::Capabilities => super::Request::Query(Query::Capabilities),
-            Request::Key(key) => super::Request::Command(Command::Key(key)),
+            Request::Key(key) => super::Request::Command(Command::Key(key.into_shared())),
+            Request::ToggleAudio => super::Request::Command(Command::ToggleAudio),
         }
     }
 
@@ -265,50 +318,47 @@ pub mod wire {
     const fn encode_view(view: View, output: &mut [u8]) {
         output[0] = view.channel;
         output[1] = if view.audio { 1 } else { 0 };
-        output[2] =
-            (if view.squelch_open { 1 } else { 0 }) | ((if view.receiver_ok { 1 } else { 0 }) << 1);
+        output[2] = (if view.squelch_open { 1 } else { 0 })
+            | ((if view.receiver_ok { 1 } else { 0 }) << 1)
+            | ((if view.monitoring { 1 } else { 0 }) << 2);
     }
 
     const fn decode_view(channel: u8, audio: u8, flags: u8) -> Option<View> {
-        if audio > 1 || flags & !0x03 != 0 {
+        if audio > 1 || flags & !0x07 != 0 {
             return None;
         }
         Some(View {
             channel,
             audio: audio != 0,
+            monitoring: flags & 4 != 0,
             squelch_open: flags & 1 != 0,
             receiver_ok: flags & 2 != 0,
         })
     }
 
-    const fn encode_key(key: Key) -> u8 {
+    const fn encode_key(key: KeyCode) -> u8 {
         match key {
-            Key::Side1 => 0,
-            Key::Side2 => 1,
-            Key::Ptt => 2,
-            Key::Menu => 3,
-            Key::Up => 4,
-            Key::Down => 5,
-            Key::Exit => 6,
-            Key::Digit(digit) if digit < 10 => 0x10 + digit,
-            Key::Digit(_) => 0xFF,
-            Key::Star => 0x1A,
-            Key::Function => 0x1B,
+            KeyCode::Side1 => 0,
+            KeyCode::Side2 => 1,
+            KeyCode::Ptt => 2,
+            KeyCode::Up => 4,
+            KeyCode::Down => 5,
+            KeyCode::Exit => 6,
+            KeyCode::Star => 0x1A,
+            KeyCode::Function => 0x1B,
         }
     }
 
-    const fn decode_key(code: u8) -> Option<Key> {
+    const fn decode_key(code: u8) -> Option<KeyCode> {
         Some(match code {
-            0 => Key::Side1,
-            1 => Key::Side2,
-            2 => Key::Ptt,
-            3 => Key::Menu,
-            4 => Key::Up,
-            5 => Key::Down,
-            6 => Key::Exit,
-            0x10..=0x19 => Key::Digit(code - 0x10),
-            0x1A => Key::Star,
-            0x1B => Key::Function,
+            0 => KeyCode::Side1,
+            1 => KeyCode::Side2,
+            2 => KeyCode::Ptt,
+            4 => KeyCode::Up,
+            5 => KeyCode::Down,
+            6 => KeyCode::Exit,
+            0x1A => KeyCode::Star,
+            0x1B => KeyCode::Function,
             _ => return None,
         })
     }
@@ -326,6 +376,7 @@ pub fn dispatch(app: &mut ReceiveApp, capabilities: Capabilities, request: Reque
         Request::Query(Query::View) => Result::View(app.view()),
         Request::Query(Query::Capabilities) => Result::Capabilities(capabilities),
         Request::Command(Command::Key(key)) => Result::Effects(app.apply(Event::KeyPress(key))),
+        Request::Command(Command::ToggleAudio) => Result::Effects(app.apply(Event::ToggleAudio)),
         Request::Command(Command::Activate(candidate)) => {
             Result::Effects(app.apply(Event::ConfigurationCandidate(candidate)))
         }
@@ -420,15 +471,15 @@ mod tests {
     fn common_wire_requests_and_responses_are_fixed_and_deterministic() {
         use super::wire::{
             decode_request, decode_response, encode_key_response, encode_request, encode_response,
-            Request as WireRequest, Response as WireResponse, REQUEST_BYTES,
+            KeyCode, Request as WireRequest, Response as WireResponse, REQUEST_BYTES,
         };
         use crate::receive_app::View;
 
         let requests = [
             (WireRequest::View, [0x01, 0x00]),
             (WireRequest::Capabilities, [0x02, 0x00]),
-            (WireRequest::Key(Key::Up), [0x03, 0x04]),
-            (WireRequest::Key(Key::Menu), [0x03, 0x03]),
+            (WireRequest::Key(KeyCode::Up), [0x03, 0x04]),
+            (WireRequest::ToggleAudio, [0x04, 0x00]),
         ];
         for (request, expected) in requests {
             let mut encoded = [0_u8; REQUEST_BYTES];
@@ -440,6 +491,7 @@ mod tests {
         let view = View {
             channel: 7,
             audio: true,
+            monitoring: false,
             squelch_open: false,
             receiver_ok: true,
         };
@@ -474,15 +526,15 @@ mod tests {
         use crate::configuration_change::ConfigurationCandidate;
 
         assert_eq!(decode_request(&[0x03, 0xFF]), Err(Error::UnknownCode));
-        let mut invalid_digit = [0_u8; super::wire::REQUEST_BYTES];
-        super::wire::encode_request(
-            super::wire::Request::Key(Key::Digit(10)),
-            &mut invalid_digit,
+        assert_eq!(
+            decode_request(&[0x03, 3]),
+            Err(Error::UnknownCode),
+            "Menu is shell-owned and has no common wire encoding"
         );
         assert_eq!(
-            decode_request(&invalid_digit),
+            decode_request(&[0x03, 0x10]),
             Err(Error::UnknownCode),
-            "out-of-range digit cannot alias Star"
+            "unsupported digit key cannot enter the common wire domain"
         );
         assert_eq!(decode_request(&[0x01]), Err(Error::InvalidRequestLength));
         assert_eq!(

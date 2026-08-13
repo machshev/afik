@@ -322,4 +322,17 @@ mod tests {
             let _ = app.apply(Event::KeyPress(key.shared()));
         }
     }
+
+    #[test]
+    fn side2_is_the_shared_receive_monitor_key() {
+        let mut app = ReceiveApp::new();
+        assert_eq!(Key::Side2.shared(), SharedKey::Side2);
+        let effects = app.apply(Event::KeyPress(Key::Side2.shared()));
+        assert!(app.view().monitoring);
+        assert!(effects
+            .iter()
+            .any(|effect| { effect == radio_platform::receive_app::Effect::SetSpeaker(true) }));
+        app.apply(Event::KeyPress(Key::Side2.shared()));
+        assert!(!app.view().monitoring);
+    }
 }

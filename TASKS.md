@@ -2672,7 +2672,8 @@
   changes remain excluded because their exact acknowledgement and persistence
   semantics are not common. Deterministic K1/K5 and `radio-sim` tests prove
   exact bytes and shared `ReceiveApp` effects; no hardware was flashed.
-- **Target envelope command mapping:** K1 assigns `RuntimeControl` command
+- **Target envelope command mapping (historical; key range superseded by
+  ADR-085/ADR-086):** K1 assigns `RuntimeControl` command
   `0x18` (`CommonApplication`) to the fixed two-byte payload, preserving the
   existing `DeviceService` response, replay, sequence-conflict, and error
   matrix. K5 assigns normal-mode `0x0600` View, `0x0601` Capabilities,
@@ -2683,6 +2684,10 @@
   `ReceiveApp` tests pass. K5 persistence/candidate wire remains excluded.
   This is software/simulator evidence only; physical common serial behavior is
   still open and no hardware was flashed.
+  The current authoritative `2.0P` mapping is View `0x0600`, Capabilities
+  `0x0601`, Side2 `0x0603`, Up `0x0606`, Down `0x0607`, AUDIO `0x0615`, and
+  response `0x0620`; the final gate and package evidence are recorded in the
+  latest STATUS entry.
 - **Envelope review correction:** K5 response inner lengths now describe only
   the bounded common response data, and target-effect failures feed the shared
   receiver-fault event before refusal. Deterministic tests cover malformed
@@ -2712,3 +2717,37 @@
   gate passed with K5 flash end `0x60D4`, static RAM end `0x20000100`, fixed
   `0xF000` package, and SHA-256
   `ab4a2f8a7010b3233ce83816ea81b16ec2dabb226d4b37d8f15abc8fcc71b626`.
+  This is preserved historical 1.9S/Menu evidence; ADR-085/ADR-086 supersede
+  its mutation-boundary description for 2.0P.
+- **APP-052 shared-pixel correction (2026-08-13):** extracted the K1
+  hardware-independent 128x64 operator renderer into
+  `radio-platform::operator_display`; K1 re-exports it and K5 now renders the
+  same operating, channel-list, source-list, and Info frames before its
+  target-owned page writes. K5 derives the sixteen PMR names and frequencies
+  from `PMR446_CHANNELS`, shows generation-zero/no-memory honestly, and keeps
+  VFO/settings/scan visibly capability-gated. Deterministic K5 frame snapshots
+  compare each supported frame directly to the shared renderer. The old
+  `show_pmr_receive` redraw path is removed and unchanged frames are not sent
+  again. Side2 now enters shared `ToggleMonitor`, with the K5 matrix and
+  simulator traces covered; Menu remains the shared list-confirm key. Focused
+  platform/K5 tests, K5 release build, image verification, and fixed package
+  pass. The unflashed image is `AFIK-K5-2.0P`; physical K5 UI and side-key
+  acceptance remain open.
+- **APP-052 review corrections (2026-08-13):** shared operating views now carry
+  receiver health and render `RX FAULT` distinctly from a healthy quiet frame;
+  K1’s common PMR adapter synchronizes controller monitor state through the
+  shared `SetMonitor` boundary while preserving target-owned mechanics for
+  arbitrary channels. `Key::Menu` no longer maps to audio in the shared
+  receive app or serial dispatch; the additive explicit audio command is
+  `0x0615`, and K5 host control exposes `AUDIO|UP|DOWN` only. Direct K5 boot,
+  validation, and diagnostic writers invalidate the operator-frame cache.
+  K5’s display identity aliases the protocol identity constant. Focused tests
+  pass; the final serialized gate and package evidence are recorded above.
+- **APP-052 serial ownership correction (2026-08-13):** common serial key
+  direction now matches the shell (Up previous, Down next), and K5 parity tests
+  cover both channel navigation and Side2 monitoring against physical-shell
+  intents. K1's serial capability is narrowed to shared view queries because
+  its banked controller/shell is owned by the UI task; K1 refuses common key and
+  AUDIO mutations instead of leaving controller state behind. The explicit
+  AUDIO operation remains available on K5, and bit 2 of the shared view flags
+  is documented as monitoring.

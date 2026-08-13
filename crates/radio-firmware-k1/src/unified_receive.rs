@@ -126,6 +126,57 @@ mod tests {
     }
 
     #[test]
+    fn k1_monitor_intent_uses_the_shared_state_boundary() {
+        let mut app = ReceiveApp::new();
+        let translated: std::vec::Vec<_> = app
+            .apply(Event::SetMonitor(true))
+            .iter()
+            .map(translate)
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(app.view().monitoring);
+        assert!(translated.contains(&K1Effect::SetSpeaker(true)));
+        let translated: std::vec::Vec<_> = app
+            .apply(Event::SetMonitor(false))
+            .iter()
+            .map(translate)
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(!app.view().monitoring);
+        assert!(translated.contains(&K1Effect::SetSpeaker(false)));
+    }
+
+    #[test]
+    fn k1_configuration_recovery_can_resynchronize_controller_monitor_state() {
+        use radio_platform::configuration_change::{
+            ConfigurationAcknowledgement, ConfigurationCandidate,
+        };
+
+        let mut app = ReceiveApp::new();
+        app.apply(Event::ReceiverFault);
+        let candidate = ConfigurationCandidate::from_channel(2, 8, true).expect("candidate");
+        let request = app.apply(Event::ConfigurationCandidate(candidate));
+        let change = request
+            .iter()
+            .find_map(|effect| match effect {
+                Effect::ConfigurationChange(change) => Some(change),
+                _ => None,
+            })
+            .expect("configuration change");
+        app.apply(Event::ConfigurationAcknowledged(
+            ConfigurationAcknowledgement::applied(change),
+        ));
+        assert!(app.view().receiver_ok);
+        // This is the same synchronization performed by the K1 UI boundary
+        // after its banked controller reports an applied recovery.
+        let effects = app.apply(Event::SetMonitor(true));
+        assert!(app.view().monitoring);
+        assert!(effects
+            .iter()
+            .any(|effect| effect == Effect::SetSpeaker(true)));
+    }
+
+    #[test]
     fn mismatched_channel_frequency_fails_before_hardware() {
         assert_eq!(
             translate(Effect::Tune {

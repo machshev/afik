@@ -24,9 +24,13 @@ minimal AFIK image a usable radio firmware.
 - A bootloader acknowledgement is not flash read-back and is not proof that the
   application booted.
 
-The final shared-application image identity is `AFIK-K5-1.9S`. This is a new
-software identity and must not be confused with the physically flashed
-`AFIK-K5-1.8U`; no physical result is implied by building or packaging `1.9S`.
+The final shared-application image identity for this software milestone is
+`AFIK-K5-2.0P`. This is a new software identity and must not be confused with
+the physically flashed intermediate `AFIK-K5-1.8U`; no physical result is
+implied by building or packaging `2.0P`. The shared operator screens use the K1
+128x64 layout for the K5-supported operating, channel-list, source-list, and
+Info views. K5 has no evidenced VFO, settings, scan, or persistent-memory
+adapter, so those choices remain visibly capability-gated.
 
 For a running AFIK normal-mode image, the host flasher also has bounded,
 read/control-only commands:
@@ -34,15 +38,20 @@ read/control-only commands:
 ```sh
 afik-k5 --device /dev/ttyUSB0 control view
 afik-k5 --device /dev/ttyUSB0 control capabilities
-afik-k5 --device /dev/ttyUSB0 control key MENU
+afik-k5 --device /dev/ttyUSB0 control key AUDIO
 afik-k5 --device /dev/ttyUSB0 control key UP
 afik-k5 --device /dev/ttyUSB0 control key DOWN
 ```
 
-Each command sends one fixed-session request and waits for one validated
+`AUDIO` is an explicit audio-preference command; the physical/operator Menu
+key remains shell-owned list confirmation. Each command sends one fixed-session request and waits for one validated
 `0x0620` response. It does not retry, write EEPROM, persist configuration,
 transmit, or flash. A malformed CRC/footer, wrong command/session/length, or
-invalid payload is reported as an operation failure. These commands are
+invalid payload is reported as an operation failure; a view reports audio,
+receiver health, and monitoring. A state-changing response carrying
+`receiver_ok=false` is also reported as a typed receiver-fault operation
+failure rather than a successful no-op. The view reports audio, monitoring,
+squelch, and receiver health separately. These commands are
 software/simulator-ready only; do not treat a successful host exchange as
 physical proof until the separate normal-mode experiment is authorized.
 

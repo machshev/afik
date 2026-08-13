@@ -40,7 +40,7 @@ pub const HELP: &str = "AFIK UV-K5 V1 recovery-gated flasher\n\
 Usage:\n\
   afik-k5 inspect IMAGE\n\
   afik-k5 --device PATH probe\n\
-  afik-k5 --device PATH control view|capabilities|key MENU|UP|DOWN\n\
+  afik-k5 --device PATH control view|capabilities|key AUDIO|UP|DOWN\n\
   afik-k5 --device PATH backup-eeprom OUTPUT [--force]\n\
   afik-k5 --device PATH flash-recovery IMAGE --backup EEPROM --version VERSION \\\n    --confirm-target UV-K5-V1-DP32G030 --confirm-image-crc32 CRC32\n\
   afik-k5 --device PATH flash-afik IMAGE --recovery RAW --backup EEPROM \\\n    --version VERSION --confirm-target UV-K5-V1-DP32G030 \\\n    --confirm-image-crc32 CRC32 \\\n    --confirm-recovery-rehearsed RECOVERY-REHEARSED-ON-THIS-UNIT\n\
@@ -120,7 +120,7 @@ fn request_label(request: ControlRequest) -> &'static str {
     match request {
         ControlRequest::View => "view command=0x0600",
         ControlRequest::Capabilities => "capabilities command=0x0601",
-        ControlRequest::Key(LogicalKey::Menu) => "key MENU command=0x0605",
+        ControlRequest::ToggleAudio => "audio command=0x0615",
         ControlRequest::Key(LogicalKey::Up) => "key UP command=0x0606",
         ControlRequest::Key(LogicalKey::Down) => "key DOWN command=0x0607",
     }
@@ -147,6 +147,12 @@ fn render_view<W: Write>(view: View, stdout: &mut W) -> Result<(), CliError> {
     writeln!(stdout, "channel={}", view.channel).map_err(CliError::operation)?;
     writeln!(stdout, "audio={}", if view.audio { "on" } else { "off" })
         .map_err(CliError::operation)?;
+    writeln!(
+        stdout,
+        "monitoring={}",
+        if view.monitoring { "on" } else { "off" }
+    )
+    .map_err(CliError::operation)?;
     writeln!(
         stdout,
         "squelch={}",
@@ -353,7 +359,8 @@ impl fmt::Display for CliError {
 mod tests {
     use std::{fs, time::SystemTime};
 
-    use super::{run_to, EXIT_SUCCESS, EXIT_USAGE, HELP};
+    use super::{render_view, run_to, EXIT_SUCCESS, EXIT_USAGE, HELP};
+    use radio_flasher::k5::View;
 
     fn temp_path(name: &str) -> std::path::PathBuf {
         let nonce = SystemTime::now()
@@ -378,6 +385,26 @@ mod tests {
         assert_eq!(run_to(&[], &mut stdout, &mut stderr), EXIT_USAGE);
         assert!(stdout.is_empty());
         assert!(stderr.starts_with(b"error: "));
+    }
+
+    #[test]
+    fn view_output_reports_monitoring_separately_from_audio() {
+        let mut output = Vec::new();
+        render_view(
+            View {
+                channel: 3,
+                audio: true,
+                squelch_open: false,
+                monitoring: true,
+                receiver_ok: true,
+            },
+            &mut output,
+        )
+        .expect("render");
+        let output = String::from_utf8(output).expect("utf8");
+        assert!(output.contains("audio=on\n"));
+        assert!(output.contains("monitoring=on\n"));
+        assert!(output.contains("receiver=ok\n"));
     }
 
     #[test]

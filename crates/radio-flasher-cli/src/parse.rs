@@ -82,12 +82,12 @@ fn parse_control(arguments: &[String]) -> Result<Command, String> {
         [operation] if operation == "view" => ControlRequest::View,
         [operation] if operation == "capabilities" => ControlRequest::Capabilities,
         [operation, key] if operation == "key" => match key.as_str() {
-            "MENU" => ControlRequest::Key(LogicalKey::Menu),
+            "AUDIO" => ControlRequest::ToggleAudio,
             "UP" => ControlRequest::Key(LogicalKey::Up),
             "DOWN" => ControlRequest::Key(LogicalKey::Down),
-            _ => return Err("control key requires MENU, UP, or DOWN".into()),
+            _ => return Err("control key requires AUDIO, UP, or DOWN".into()),
         },
-        _ => return Err("control requires view, capabilities, or key MENU|UP|DOWN".into()),
+        _ => return Err("control requires view, capabilities, or key AUDIO|UP|DOWN".into()),
     };
     Ok(Command::Control(request))
 }
@@ -187,7 +187,7 @@ fn set_once<T>(slot: &mut Option<T>, value: T, option: &str) -> Result<(), Strin
 
 #[cfg(test)]
 mod tests {
-    use super::{parse, Command, ControlRequest, LogicalKey, Parsed, Purpose};
+    use super::{parse, Command, ControlRequest, Parsed, Purpose};
 
     fn strings(arguments: &[&str]) -> Vec<String> {
         arguments.iter().map(ToString::to_string).collect()
@@ -210,9 +210,9 @@ mod tests {
         assert!(parse(&strings(&["probe"])).is_err());
         assert!(parse(&strings(&["--device", "/dev/x", "backup-eeprom"])).is_err());
         assert!(matches!(
-            parse(&strings(&["--device", "/dev/x", "control", "key", "MENU"])).unwrap(),
+            parse(&strings(&["--device", "/dev/x", "control", "key", "AUDIO"])).unwrap(),
             Parsed::Hardware {
-                command: Command::Control(ControlRequest::Key(LogicalKey::Menu)),
+                command: Command::Control(ControlRequest::ToggleAudio),
                 ..
             }
         ));

@@ -94,14 +94,22 @@ interoperability remains open in `RISK-009`.
 `radio-platform::serial_control::wire` defines the small common payload which
 target-owned serial adapters may carry inside an already validated frame. A
 request is exactly two bytes: `01 00` queries the semantic receive view,
-`02 00` queries the adapter's capability bits, and `03 key` applies one
-canonical logical key. Key codes are bounded and stable (`Up=04`, `Down=05`,
-`Menu=03`); the remaining post-debounce vocabulary is representable for
-target-owned shells but has no receive-only action in this milestone.
+`02 00` queries the adapter's capability bits, `03 key` applies one bounded
+canonical logical key, and `04 00` is an explicit audio toggle. Key codes are
+stable (`Up=04`, `Down=05`, `Side2=01`); Up/Down follow the operator shell's
+previous/next direction. Menu is owned by the operator shell and is not a
+common serial receive command. K5 advertises and accepts the key/audio
+mutation boundary. K1 advertises view-only common access because its banked
+controller and shell live in another task; its target adapter refuses these
+mutations rather than changing only `ReceiveApp`.
 
 A view response is four bytes: `81 channel audio state`, or `83 channel audio
-state` after a key command. `audio` is `0` or `1`; `state` bit 0 is sampled
-squelch and bit 1 is receiver health. A capability response is three bytes:
+state` after a key/audio command. `audio` is `0` or `1`; `state` bit 0 is
+sampled squelch, bit 1 is receiver health, and bit 2 is operator monitoring.
+A View request may report a receiver fault diagnostically; a state-changing K5
+response carrying that fault is rejected by the host as a typed operation
+failure.
+A capability response is three bytes:
 `82` followed by a little-endian `u16` bitset. Unknown operations, reserved
 bits, wrong lengths, and invalid key codes are rejected. The mapping is
 transport/storage-free; K1 retains its COBS/object/runtime service and K5
@@ -119,11 +127,11 @@ the request service, sequence, response flags, and command, so the existing
 `DeviceInfo`, `Configuration`, and existing runtime commands are unchanged.
 
 K5's observed normal-mode envelope has no spare request payload bytes after
-its fixed session word, so it assigns the unoccupied command window
-`0x0600..=0x0614`: `0x0600` is common View, `0x0601` is common Capabilities,
-and `0x0602..=0x0614` are the canonical logical-key values in vocabulary order
-(`Side1`, `Side2`, `Ptt`, `Menu`, `Up`, `Down`, `Exit`, digits `0` through `9`,
-`Star`, `Function`). K5 replies with `0x0620` and places the bounded common
+its fixed session word, so it assigns `0x0600` to common View, `0x0601` to
+common Capabilities, `0x0603` for Side2, `0x0606` for Up, `0x0607` for Down,
+and `0x0615` for explicit audio toggle. The K5 serial key domain omits
+shell-owned Menu, Side1, PTT, Exit, Star, Function, and digits. K5 replies with
+`0x0620` and places the bounded common
 response at the start of the existing fixed response payload. Its inner length
 is the common response data length (four bytes for View/key and three for
 Capabilities), not the command/header size; the hello
@@ -144,16 +152,16 @@ The recovery flasher exposes one-at-a-time, normal-mode-only control requests:
 ```text
 afik-k5 --device PATH control view
 afik-k5 --device PATH control capabilities
-afik-k5 --device PATH control key MENU|UP|DOWN
+afik-k5 --device PATH control key AUDIO|UP|DOWN
 ```
 
 The host always sends the fixed session word and request CRC through the
 existing K5 envelope encoder, then accepts only one bounded response. It
 requires the exact `0x0620` response command, the expected inner length (four
-bytes for a view/key response or three for capabilities), zero reserved bytes,
+bytes for a view/state-changing response or three for capabilities), zero reserved bytes,
 valid response footer/marker, and valid view/capability payload bits. A bad
 frame is an operation failure and cannot trigger another request. The command
 does not write EEPROM, persist configuration, transmit, or flash. Its output is
 line-oriented and identifies the request, response, channel/audio/squelch/
-receiver state, or capability labels. This is simulator/fake-transport and
+receiver/monitoring state, or capability labels. This is simulator/fake-transport and
 static host evidence only; physical serial interoperability remains open.

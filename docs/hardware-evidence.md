@@ -2800,6 +2800,19 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   `0x20000100`, the package is exactly `0xF000`, and its SHA-256 is
   `ab4a2f8a7010b3233ce83816ea81b16ec2dabb226d4b37d8f15abc8fcc71b626`.
 
+The `EVID-SW-APP052-001` block above is historical 1.9S/Menu release-prep
+evidence and remains unchanged as a record of that software state. ADR-085 and
+ADR-086 supersede its advertised mutation boundary for the later unflashed
+`AFIK-K5-2.0P` image. The current software-only boundary uses the shared K1
+128x64 operator renderer, fixed PMR446 channel/source data, capability-gated
+unsupported screens, explicit AUDIO, and only K5 serial Side2/Up/Down
+mutations; K1 common serial access is view-only because its banked controller
+and shell are owned by the UI task. Receiver-fault views remain diagnostic for
+queries, while the host treats a receiver-fault response to a state-changing
+request as an operation failure. These are static/simulator facts only: no
+2.0P image has been flashed and no physical UI, serial, side-key, or audio
+parity is claimed.
+
 ### EVID-K5-032 — Shared receive application preserves K5 behavior
 
 - **Image:** `AFIK-K5-1.8U`, the first physical target image whose channel,

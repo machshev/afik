@@ -1353,28 +1353,36 @@ meaning.
 ## ADR-081 — Common serial commands are assigned inside each target envelope
 
 - **Date:** 2026-08-13
-- **Status:** accepted for `APP-052`
+- **Status:** historical boundary; key-command portion superseded for `2.0P`
+  by ADR-085/ADR-086. The framing and K1 `0x18` assignment remain applicable.
 - K1 keeps the existing `RuntimeControl` service and assigns command `0x18` to
   an exactly two-byte `CommonApplication` payload. `DeviceService` retains the
   normal response flags, sequence replay, sequence-conflict rejection, and
   target-only command matrix; the new command is decoded only after those
   checks and its result is applied through the existing `ReceiveApp` instance.
 - K5's observed normal-mode request body has no spare payload bytes after its
-  fixed session word. It therefore assigns `0x0600` to View, `0x0601` to
-  Capabilities, and `0x0602..=0x0614` to the canonical logical-key vocabulary,
-  with common response command `0x0620`. The fixed hello command and observed
-  bootloader/version assignments remain unchanged. Invalid CRC/session/trailer,
-  malformed length, and unassigned command values are discarded before the
-  shared app is reached.
+  fixed session word. This historical record assigned `0x0600` to View,
+  `0x0601` to Capabilities, and `0x0602..=0x0614` to the canonical
+  logical-key vocabulary, with common response command `0x0620`. For the
+  corrected unflashed `AFIK-K5-2.0P`, ADR-086 supersedes that key range:
+  `0x0603` is Side2, `0x0606` is Up, `0x0607` is Down, and `0x0615` is the
+  explicit AUDIO operation; unsupported shell keys are rejected before app
+  dispatch. The fixed hello command and observed bootloader/version
+  assignments remain unchanged. Invalid CRC/session/trailer, malformed
+  length, and unassigned command values are discarded before the shared app
+  is reached.
 - The assignments establish software command ownership and simulator parity,
   not physical K1/K5 serial interoperability. K5 has no sequence/replay field
   in this observed envelope, and neither target gains common candidate
   persistence or K1 object operations.
-- The K5 response keeps the observed fixed outer envelope and uses the common
-  response data length in its inner length field. If applying a common key
-  fails in either target adapter, the target feeds `ReceiverFault` back into
-  `ReceiveApp` before refusing the request, preserving fail-silent semantic
-  state as well as the physical speaker gate.
+- **Historical envelope review statement:** the K5 response keeps the observed
+  fixed outer envelope and uses the common response data length in its inner
+  length field. The earlier shared sentence said that a failed common key in
+  either adapter fed `ReceiverFault` back before refusal. For the corrected
+  `2.0P` boundary, K1 refuses common key/audio requests before dispatch because
+  its advertised common serial capability is view-only; K5 feeds
+  `ReceiverFault` back into `ReceiveApp` when a dispatched target effect fails,
+  preserving fail-silent semantic state and the physical speaker gate.
 
 ## ADR-082 — K5 host control is one bounded normal-mode exchange
 
@@ -1392,3 +1400,9 @@ meaning.
 - The command is read/control-only: it has no EEPROM, persistence, TX, or flash
   path. Fake-transport and parser tests are software readiness evidence, not
   physical serial interoperability or normal-mode proof.
+- This release-prep record preserves the 1.9S/Menu facts at the time; ADR-085
+  and ADR-086 supersede its advertised mutation boundary for the 2.0P image.
+- **ADR-083 — Operator shell semantics are shared and target capabilities gate screens (2026-08-13):** `radio-platform::operator_shell` owns the pure K1/K5 operator shell: logical key meaning, operating/channel/source/settings/info screen transitions, list cursors, numeric channel selection, hold/release handling, and bounded intents. K1 keeps only a target-module re-export, so it cannot silently grow a second shell implementation. K1 enables VFO, settings, sources, scan, and Info. K5 enables the common sixteen-channel source/list, operating, and Info screens, while VFO, handset squelch application, and scanning remain disabled until their target-owned adapters are evidenced. K1 and K5 share display framebuffer layout, glyphs, and render semantics; target adapters retain framebuffer storage, page/command transport, timing, receiver metrics, storage, and MCU mechanics. K5's renderer consumes the shared shell state and shared semantic `View`; its richer screen output is static/simulator evidence, not physical display proof.
+- **ADR-084 — Operator pixels are shared; transport remains target-owned (2026-08-13):** the K1 128x64 layout, glyphs, list rows, operating state, capability-gated selector, and Info model live in `radio-platform::operator_display`. Both targets call these render functions and only adapters own controller commands, page timing, and framebuffer writes. K5 uses `AFIK-K5-2.0P`, PMR names/frequencies derived from the bounded shared raster, and explicit unprobed persistence/generation-zero values. A K5 Side2 press maps to the shared monitor override and opens the same receive speaker gate semantics; Menu remains list confirmation. This is deterministic host/simulator evidence, not physical K5 display or side-key acceptance.
+- **ADR-085 — Monitor and audio commands have separate boundaries (2026-08-13):** `Intent::ToggleMonitor` is the shell-facing operator intent. On K5 it enters `ReceiveApp`; on K1’s common PMR adapter the target controller applies the requested monitor mechanics and the shared app receives the same desired value through `Event::SetMonitor`. This preserves one semantic monitor state at the application boundary without pretending arbitrary K1 channels use that app. `Key::Menu` is never a receive-app audio shortcut: shell Menu confirms lists, and serial audio uses explicit common operation `0x04` / K5 command `0x0615`. Receiver health is part of the shared operating view and faults render visibly. Direct target display writers invalidate any cached shared frame.
+- **ADR-086 — Common serial key ownership follows the target controller (2026-08-13):** K5's `ReceiveApp` is its bounded receive/controller boundary, so K5 advertises and accepts common Up/Down/Side2 key commands plus explicit AUDIO. Their direction matches the shared shell: Up is previous and Down is next. K1's banked controller and shell live in a separate UI task; its serial adapter advertises view-only common access and refuses key/audio mutations rather than mutating a second `ReceiveApp` state. The shared wire vocabulary and bit-2 monitoring flag remain available to adapters that can own the corresponding target mechanics.
