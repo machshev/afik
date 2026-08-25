@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use radio_flasher::k5::{ControlRequest, LogicalKey};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum Parsed {
     Help,
     Version,
@@ -16,6 +17,7 @@ pub(crate) enum Command {
     Backup { output: PathBuf, force: bool },
     Control(ControlRequest),
     Flash(FlashArguments),
+    Restore(RestoreArguments),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -28,6 +30,19 @@ pub(crate) struct FlashArguments {
     pub(crate) target_confirmation: String,
     pub(crate) image_crc32_confirmation: String,
     pub(crate) recovery_rehearsed_confirmation: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RestoreArguments {
+    pub(crate) restore: PathBuf,
+    pub(crate) current: PathBuf,
+    pub(crate) recovery: PathBuf,
+    pub(crate) pre_write_backup: PathBuf,
+    pub(crate) version: String,
+    pub(crate) target_confirmation: String,
+    pub(crate) recovery_crc32_confirmation: String,
+    pub(crate) recovery_sha256_confirmation: String,
+    pub(crate) restore_confirmation: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -69,6 +84,7 @@ pub(crate) fn parse(arguments: &[String]) -> Result<Parsed, String> {
             Command::Probe
         }
         "backup-eeprom" => parse_backup(&arguments[3..])?,
+        "restore-eeprom" => parse_restore(&arguments[3..])?,
         "control" => parse_control(&arguments[3..])?,
         "flash-recovery" => Command::Flash(parse_flash(Purpose::Recovery, &arguments[3..])?),
         "flash-afik" => Command::Flash(parse_flash(Purpose::Afik, &arguments[3..])?),
@@ -106,6 +122,61 @@ fn parse_backup(arguments: &[String]) -> Result<Command, String> {
         output: PathBuf::from(output),
         force,
     })
+}
+
+fn parse_restore(arguments: &[String]) -> Result<Command, String> {
+    let restore = arguments
+        .first()
+        .filter(|argument| !argument.starts_with("--"))
+        .ok_or_else(|| "restore-eeprom requires RESTORE_IMAGE".to_owned())?;
+    let mut current = None;
+    let mut recovery = None;
+    let mut pre_write_backup = None;
+    let mut version = None;
+    let mut target_confirmation = None;
+    let mut recovery_crc32_confirmation = None;
+    let mut recovery_sha256_confirmation = None;
+    let mut restore_confirmation = None;
+    let mut offset = 1;
+    while offset < arguments.len() {
+        let option = &arguments[offset];
+        let value = arguments
+            .get(offset + 1)
+            .filter(|value| !value.starts_with("--"))
+            .ok_or_else(|| format!("{option} requires a value"))?;
+        match option.as_str() {
+            "--current" => set_once(&mut current, PathBuf::from(value), option)?,
+            "--recovery" => set_once(&mut recovery, PathBuf::from(value), option)?,
+            "--pre-write-backup" => set_once(&mut pre_write_backup, PathBuf::from(value), option)?,
+            "--version" => set_once(&mut version, value.clone(), option)?,
+            "--confirm-target" => set_once(&mut target_confirmation, value.clone(), option)?,
+            "--confirm-recovery-crc32" => {
+                set_once(&mut recovery_crc32_confirmation, value.clone(), option)?;
+            }
+            "--confirm-recovery-sha256" => {
+                set_once(&mut recovery_sha256_confirmation, value.clone(), option)?;
+            }
+            "--confirm-restore" => set_once(&mut restore_confirmation, value.clone(), option)?,
+            _ => return Err(format!("unknown restore-eeprom option: {option}")),
+        }
+        offset += 2;
+    }
+    Ok(Command::Restore(RestoreArguments {
+        restore: PathBuf::from(restore),
+        current: current.ok_or_else(|| "restore-eeprom requires --current BACKUP".to_owned())?,
+        recovery: recovery.ok_or_else(|| "restore-eeprom requires --recovery IMAGE".to_owned())?,
+        pre_write_backup: pre_write_backup
+            .ok_or_else(|| "restore-eeprom requires --pre-write-backup OUTPUT".to_owned())?,
+        version: version.ok_or_else(|| "restore-eeprom requires --version VERSION".to_owned())?,
+        target_confirmation: target_confirmation
+            .ok_or_else(|| "restore-eeprom requires --confirm-target TARGET".to_owned())?,
+        recovery_crc32_confirmation: recovery_crc32_confirmation
+            .ok_or_else(|| "restore-eeprom requires --confirm-recovery-crc32 CRC32".to_owned())?,
+        recovery_sha256_confirmation: recovery_sha256_confirmation
+            .ok_or_else(|| "restore-eeprom requires --confirm-recovery-sha256 SHA256".to_owned())?,
+        restore_confirmation: restore_confirmation
+            .ok_or_else(|| "restore-eeprom requires --confirm-restore TARGET:CRC32".to_owned())?,
+    }))
 }
 
 fn parse_flash(purpose: Purpose, arguments: &[String]) -> Result<FlashArguments, String> {
@@ -225,7 +296,7 @@ mod tests {
             "--backup",
             "eeprom.raw",
             "--version",
-            "2.01.23",
+            "F4HWN v4.3",
             "--confirm-target",
             "UV-K5-V1-DP32G030",
             "--confirm-image-crc32",
@@ -259,5 +330,46 @@ mod tests {
 
         recovery.extend(["--recovery", "stock.raw"]);
         assert!(parse(&strings(&recovery)).is_err());
+    }
+
+    #[test]
+    fn restore_requires_all_confirmation_gates() {
+        let parsed = parse(&strings(&[
+            "--device",
+            "/dev/x",
+            "restore-eeprom",
+            "restore.raw",
+            "--current",
+            "current.raw",
+            "--recovery",
+            "recovery.raw",
+            "--pre-write-backup",
+            "before.raw",
+            "--version",
+            "2.01.23",
+            "--confirm-target",
+            "UV-K5-V1-DP32G030",
+            "--confirm-recovery-crc32",
+            "12345678",
+            "--confirm-recovery-sha256",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            "--confirm-restore",
+            "UV-K5-V1-DP32G030:90abcdef",
+        ]))
+        .unwrap();
+        assert!(matches!(
+            parsed,
+            Parsed::Hardware {
+                command: Command::Restore(_),
+                ..
+            }
+        ));
+        assert!(parse(&strings(&[
+            "--device",
+            "/dev/x",
+            "restore-eeprom",
+            "restore.raw"
+        ]))
+        .is_err());
     }
 }

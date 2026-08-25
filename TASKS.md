@@ -2826,3 +2826,23 @@
   transactions remain usable.
   APP-052 remains open. Next smallest task: safe allocation evidence plus K5 target
   adapter sizing/static checks, not flashing.
+
+- **APP-052 Milestone 4a — guarded K5 EEPROM restore tooling (2026-08-14):**
+  added the explicit, never-auto-selected `restore-eeprom` command and the
+  library preflight/apply seam. It requires separate exact non-uniform restore
+  and expected-current images, a vector-checked 60,612-byte recovery artifact
+  with trusted out-of-band SHA-256, version and CRC confirmation, the qualified
+  target phrase, and a
+  `TARGET:CRC32` restore confirmation. A complete live backup is compared
+  before any write and atomically no-replace published to a mode-0600 output,
+  including dangling-symlink refusal.
+  Changed aligned eight-byte blocks use the source-backed `0x051D`/`0x051E`
+  protocol with two stable immediate reads before compare/read-back and a final complete read-back;
+  no response is retried and no-write images are reported explicitly. Fake
+  serial tests cover exact body/order, no-write, gates, current mismatch,
+  malformed/wrong acknowledgements, timeout, block verification failure, and
+  verified restore. External exact-unit K6 artifacts remain outside the repo
+  (two identical 8192-byte copies with hashes retained privately; a separate
+  60612-byte recovery artifact also has its trusted hash retained privately). No hardware write or allocation
+  claim follows. APP-052 remains open; next smallest task is deliberate
+  vendor-memory repurposing/allocation evidence, not automatic persistence.

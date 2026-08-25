@@ -1190,10 +1190,18 @@ explicitly bounded.
   `0x6457396A` session word and `0x051B` reads containing a 16-bit offset,
   at-most-128-byte length, zero padding, and that word. `0x0515` and `0x051C`
   responses carry a bounded firmware version and offset/length-tagged data.
+- **Source corroboration:** the pinned V1 UART implementation also dispatches
+  `0x051D` writes containing aligned eight-byte data, a zero password-allow
+  flag, and the same session timestamp; `0x051E` echoes the written offset.
+  This is source-backed protocol shape, not a claim that every normal firmware
+  or clone permits writes.
 - **Confidence:** medium for the exact old firmware samples represented by the
   two tools; low for other firmware, password/custom-key modes, or clones.
-- **Permitted use:** a read-only, exact 8 KiB EEPROM backup workflow that
-  rejects any response mismatch. No EEPROM write command is permitted.
+- **Permitted use:** an exact 8 KiB backup workflow and, separately, a
+  software-only guarded restore workflow which requires a same-unit current
+  backup, recovery artifact, explicit target/image confirmation, immediate
+  block read-back, and final full-image read-back. No physical restore is
+  authorized by this evidence entry.
 - **Required experiment:** capture and compare every hello/read response from
   the exact stock test unit, then hash and retain its complete backup before
   entering bootloader mode.
@@ -2618,10 +2626,10 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
 - **Binding and framing:** PA10 is clock and PA11 is bidirectional data. A random
   read sends `A0`, the big-endian 16-bit address, a repeated start, then `A1`,
   acknowledging every byte except the last before stop.
-- **Permitted use:** an 8 KiB-bounded read-only adapter which checks every
-  address-phase acknowledgement and releases high bus levels rather than
-  driving them. No EEPROM write API, data-layout interpretation, or persistence
-  claim follows.
+- **Permitted use:** an 8 KiB-bounded read-only electrical adapter which checks
+  every address-phase acknowledgement and releases high bus levels rather than
+  driving them. This does not establish a data layout or persistence claim;
+  the host UART restore path is separately gated by EVID-K5-028.
 - **Required experiment:** read a small non-sensitive range and compare it with
   the same offsets in the retained pre-flash backup before consuming any value.
 
@@ -2653,11 +2661,16 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   It first reads and compares caller-supplied expected bytes, performs one
   program transaction without retrying an ambiguous data acknowledgement,
   boundedly acknowledgement-polls readiness, and requires exact read-back.
-- **Permitted use:** software construction and host testing. There is no boot
-  call site and no physical write authorization. A physical experiment requires
-  the retained complete backup, an explicitly chosen address/current value,
-  and an independently tested restore route because no disposable EEPROM range
-  has been established.
+- **Host UART boundary:** `radio-flasher::restore_eeprom` uses the separately
+  sourced normal-mode `0x051D`/`0x051E` command shape, compares the full live
+  backup before writes, changes only aligned eight-byte differences, and
+  verifies each block plus the complete image. Tests use deterministic fake
+  serial only.
+- **Permitted use:** software construction and host testing. There is still no
+  physical write authorization. A physical experiment requires the retained
+  complete backup, an explicitly chosen address/current value, and an
+  independently tested restore route because no disposable EEPROM range has
+  been established.
 
 ### EVID-K5-029 — Read-only operator-adapter validation image contract
 

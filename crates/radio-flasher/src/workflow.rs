@@ -4,7 +4,7 @@ use crate::{
     codec::{
         is_device_marker, receive_packet, receive_packet_with_response_crc, send_packet, Packet,
     },
-    image::{ApplicationImage, EepromBackup, ImageError, EEPROM_BYTES, FLASH_PAGE_BYTES},
+    image::{sha256, ApplicationImage, EepromBackup, ImageError, EEPROM_BYTES, FLASH_PAGE_BYTES},
 };
 
 const SESSION_WORD: u32 = 0x6457_396A;
@@ -25,13 +25,20 @@ const COMMAND_RF_AUDIO_OFF_REQUEST: u16 = 0x7F22;
 const CLOCK_CONTROL_MARKER: u32 = 0x4B31_434C;
 const COMMAND_READ_EEPROM_REQUEST: u16 = 0x051B;
 const COMMAND_READ_EEPROM_RESPONSE: u16 = 0x051C;
+const COMMAND_WRITE_EEPROM_REQUEST: u16 = 0x051D;
+const COMMAND_WRITE_EEPROM_RESPONSE: u16 = 0x051E;
 const COMMAND_V2_BEACON: u16 = 0x0518;
 const COMMAND_V2_PAGE_REQUEST: u16 = 0x0519;
 const COMMAND_V2_PAGE_RESPONSE: u16 = 0x051A;
 const COMMAND_V2_VERSION_REQUEST: u16 = 0x0530;
 const COMMAND_V5_BEACON: u16 = 0x057A;
 const EEPROM_BLOCK_BYTES: usize = 0x80;
+const EEPROM_WRITE_BYTES: usize = 8;
+const EEPROM_WRITE_BYTES_U16: u16 = 8;
+const EEPROM_WRITE_BLOCKS: u16 = 1024;
 const MAX_BEACONS_BEFORE_ACK: usize = 4;
+/// Exact raw source length of the separately retained qualified recovery image.
+pub const K5_RECOVERY_SOURCE_BYTES: usize = 60_612;
 
 /// Exact destructive target phrase required by the library.
 pub const QUALIFIED_TARGET_CONFIRMATION: &str = "UV-K5-V1-DP32G030";
@@ -103,6 +110,35 @@ pub enum FlashError {
     },
     /// A completed read did not form a credible complete EEPROM backup.
     InvalidEepromBackup(ImageError),
+    /// The current EEPROM image did not match the separately supplied backup.
+    EepromCurrentMismatch,
+    /// The live normal-firmware hello did not match the explicitly selected version.
+    EepromFirmwareMismatch,
+    /// The recovery image CRC or source-length confirmation was not exact.
+    EepromRecoveryMismatch,
+    /// A restore plan was forged or became internally inconsistent.
+    InvalidEepromRestorePlan,
+    /// The two immediate reads before a block write disagreed.
+    EepromBlockChangedDuringPreflight {
+        /// Block offset observed changing between the two reads.
+        offset: u16,
+    },
+    /// The restore confirmation did not bind the qualified target and image.
+    EepromRestoreConfirmationMismatch,
+    /// A write response did not echo the exact requested EEPROM offset.
+    EepromWriteAcknowledgementMismatch {
+        /// Offset sent by the host.
+        expected_offset: u16,
+        /// Offset echoed by the radio.
+        actual_offset: u16,
+    },
+    /// A changed EEPROM block failed its immediate read-back.
+    EepromBlockVerificationFailed {
+        /// Block offset that failed verification.
+        offset: u16,
+    },
+    /// The complete restore read-back did not equal the requested image.
+    EepromRestoreVerificationFailed,
     /// A page acknowledgement named the wrong transaction or page.
     PageAcknowledgementMismatch {
         /// Sequential page that was awaiting acknowledgement.
@@ -178,6 +214,39 @@ impl fmt::Display for FlashError {
                 "EEPROM response mismatch: expected {expected_offset:04x}/{expected_length:02x}, got {actual_offset:04x}/{actual_length:02x}"
             ),
             Self::InvalidEepromBackup(error) => write!(formatter, "invalid EEPROM backup: {error}"),
+            Self::EepromCurrentMismatch => {
+                formatter.write_str("live EEPROM does not match the expected current backup")
+            }
+            Self::EepromFirmwareMismatch => {
+                formatter.write_str("live normal firmware does not match the expected version")
+            }
+            Self::EepromRecoveryMismatch => {
+                formatter.write_str("recovery image identity confirmation is not exact")
+            }
+            Self::InvalidEepromRestorePlan => {
+                formatter.write_str("EEPROM restore plan is inconsistent or out of bounds")
+            }
+            Self::EepromBlockChangedDuringPreflight { offset } => write!(
+                formatter,
+                "EEPROM block changed during immediate preflight reads at offset {offset:04x}"
+            ),
+            Self::EepromRestoreConfirmationMismatch => formatter.write_str(
+                "EEPROM restore confirmation must be TARGET:CRC32 for the selected image",
+            ),
+            Self::EepromWriteAcknowledgementMismatch {
+                expected_offset,
+                actual_offset,
+            } => write!(
+                formatter,
+                "EEPROM write response mismatch: expected offset {expected_offset:04x}, got {actual_offset:04x}"
+            ),
+            Self::EepromBlockVerificationFailed { offset } => write!(
+                formatter,
+                "EEPROM block read-back failed at offset {offset:04x}"
+            ),
+            Self::EepromRestoreVerificationFailed => {
+                formatter.write_str("complete EEPROM restore read-back failed")
+            }
             Self::PageAcknowledgementMismatch { expected_page } => write!(
                 formatter,
                 "page acknowledgement does not match page 0x{expected_page:04x}"
@@ -224,6 +293,24 @@ impl FirmwareVersion {
                 .any(|byte| !byte.is_ascii_digit() && *byte != b'.')
         {
             return Err(FlashError::InvalidText("version-2 firmware string"));
+        }
+        let mut bytes = [0_u8; 16];
+        bytes[..raw.len()].copy_from_slice(raw);
+        Ok(Self {
+            bytes,
+            len: raw.len(),
+        })
+    }
+
+    /// Accepts the bounded printable identity returned by normal-mode hello.
+    /// This is deliberately separate from the bootloader's version-2 grammar.
+    pub fn normal(version: &str) -> Result<Self, FlashError> {
+        let raw = version.as_bytes();
+        if raw.is_empty()
+            || raw.len() > 16
+            || raw.iter().any(|byte| !byte.is_ascii() || *byte < 0x20)
+        {
+            return Err(FlashError::InvalidText("normal-firmware version"));
         }
         let mut bytes = [0_u8; 16];
         bytes[..raw.len()].copy_from_slice(raw);
@@ -449,6 +536,72 @@ pub struct FlashReport {
     pub transaction_id: u32,
 }
 
+/// Inputs which must be independently confirmed before a K5 EEPROM restore.
+#[derive(Clone, Copy, Debug)]
+pub struct EepromRestorePrerequisites<'a> {
+    /// Complete image to write.
+    pub restore_image: &'a EepromBackup,
+    /// Complete image expected to be on the radio before any write.
+    pub expected_current: &'a EepromBackup,
+    /// Separately retained, vector-checked recovery application for the unit.
+    pub recovery_image: &'a ApplicationImage,
+    /// Explicit source length of the independently checked recovery artifact.
+    pub recovery_source_len: usize,
+    /// CRC-32 confirmation for the padded recovery image.
+    pub recovery_crc32: u32,
+    /// Trusted SHA-256 of the raw recovery artifact, supplied out-of-band.
+    pub recovery_sha256: [u8; 32],
+    /// Exact version expected from the live normal-firmware hello.
+    pub expected_firmware: &'a FirmwareVersion,
+    /// Exact qualified K5 target phrase.
+    pub target_confirmation: &'a str,
+    /// Exact `TARGET:CRC32` confirmation for the selected restore image.
+    pub restore_confirmation: &'a str,
+}
+
+/// Preflight result. No EEPROM write is sent while constructing this value.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EepromRestorePlan {
+    /// Firmware identity returned by the preflight hello.
+    firmware: NormalFirmwareInfo,
+    /// Complete live image captured and compared before writes.
+    live_backup: EepromBackup,
+    /// Complete validated image selected for restore.
+    restore_image: EepromBackup,
+    /// Changed eight-byte offsets in ascending order.
+    changed_offsets: Vec<u16>,
+}
+
+impl EepromRestorePlan {
+    /// Firmware identity returned by the preflight hello.
+    pub fn firmware(&self) -> &NormalFirmwareInfo {
+        &self.firmware
+    }
+    /// Complete live image captured before writes.
+    pub fn live_backup(&self) -> &EepromBackup {
+        &self.live_backup
+    }
+    /// Complete selected restore image.
+    pub fn restore_image(&self) -> &EepromBackup {
+        &self.restore_image
+    }
+    /// Changed eight-byte offsets in ascending order.
+    pub fn changed_offsets(&self) -> &[u16] {
+        &self.changed_offsets
+    }
+}
+
+/// Result after a restore has either verified no changes or read back all writes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EepromRestoreReport {
+    /// Firmware identity returned by the preflight hello.
+    pub firmware: NormalFirmwareInfo,
+    /// Number of changed eight-byte blocks applied.
+    pub changed_blocks: u16,
+    /// Complete image read-back matched the selected restore image.
+    pub verified_read_back: bool,
+}
+
 /// Reads and validates the complete 8 KiB EEPROM without exposing any write.
 pub fn backup_eeprom<T: Read + Write>(
     transport: &mut T,
@@ -457,21 +610,94 @@ pub fn backup_eeprom<T: Read + Write>(
     send_packet(transport, &hello)?;
     let info = parse_hello_response(&receive_packet(transport)?)?;
 
-    let mut bytes = vec![0_u8; EEPROM_BYTES];
-    for block in 0_u16..64 {
-        let offset_u16 = block * 0x80;
-        let offset = usize::from(offset_u16);
-        let request = eeprom_read_request(offset_u16);
-        send_packet(transport, &request)?;
-        let packet = receive_packet(transport)?;
-        parse_eeprom_response(
-            &packet,
-            offset_u16,
-            &mut bytes[offset..offset + EEPROM_BLOCK_BYTES],
-        )?;
-    }
-    let backup = EepromBackup::from_raw(&bytes).map_err(FlashError::InvalidEepromBackup)?;
+    let backup = read_eeprom_image(transport)?;
     Ok((info, backup))
+}
+
+/// Performs the hello, complete live backup, and changed-block plan without writing.
+pub fn prepare_eeprom_restore<T: Read + Write>(
+    transport: &mut T,
+    prerequisites: EepromRestorePrerequisites<'_>,
+) -> Result<EepromRestorePlan, FlashError> {
+    validate_restore_prerequisites(&prerequisites)?;
+    let hello = hello_request();
+    send_packet(transport, &hello)?;
+    let firmware = parse_hello_response(&receive_packet(transport)?)?;
+    if firmware.version() != prerequisites.expected_firmware.as_str() {
+        return Err(FlashError::EepromFirmwareMismatch);
+    }
+    let live_backup = read_eeprom_image(transport)?;
+    if live_backup.bytes() != prerequisites.expected_current.bytes() {
+        return Err(FlashError::EepromCurrentMismatch);
+    }
+    let mut changed_offsets = Vec::new();
+    for block in 0_u16..EEPROM_WRITE_BLOCKS {
+        let offset = usize::from(block) * EEPROM_WRITE_BYTES;
+        if live_backup.bytes()[offset..offset + EEPROM_WRITE_BYTES]
+            != prerequisites.restore_image.bytes()[offset..offset + EEPROM_WRITE_BYTES]
+        {
+            changed_offsets.push(block * EEPROM_WRITE_BYTES_U16);
+        }
+    }
+    Ok(EepromRestorePlan {
+        firmware,
+        live_backup,
+        restore_image: prerequisites.restore_image.clone(),
+        changed_offsets,
+    })
+}
+
+/// Applies a previously prepared plan. The caller must preserve `live_backup`
+/// before calling this function; no retry is performed after an ambiguous write.
+pub fn apply_eeprom_restore<T: Read + Write>(
+    transport: &mut T,
+    plan: &EepromRestorePlan,
+) -> Result<EepromRestoreReport, FlashError> {
+    validate_restore_plan(plan)?;
+    if plan.changed_offsets.is_empty() {
+        return Ok(EepromRestoreReport {
+            firmware: plan.firmware.clone(),
+            changed_blocks: 0,
+            verified_read_back: true,
+        });
+    }
+    for &offset in &plan.changed_offsets {
+        let mut current = [0_u8; EEPROM_WRITE_BYTES];
+        read_eeprom_bytes(transport, offset, &mut current)?;
+        let mut stable = [0_u8; EEPROM_WRITE_BYTES];
+        read_eeprom_bytes(transport, offset, &mut stable)?;
+        if current != stable {
+            return Err(FlashError::EepromBlockChangedDuringPreflight { offset });
+        }
+        let start = usize::from(offset);
+        let expected = &plan.live_backup.bytes()[start..start + EEPROM_WRITE_BYTES];
+        let replacement = &plan.restore_image.bytes()[start..start + EEPROM_WRITE_BYTES];
+        if current != expected {
+            return Err(FlashError::EepromCurrentMismatch);
+        }
+        let mut replacement_block = [0_u8; EEPROM_WRITE_BYTES];
+        replacement_block.copy_from_slice(replacement);
+        let request = eeprom_write_request(offset, replacement_block);
+        send_packet(transport, &request)?;
+        let response = receive_packet(transport)?;
+        parse_eeprom_write_response(&response, offset)?;
+        let mut verified = [0_u8; EEPROM_WRITE_BYTES];
+        read_eeprom_bytes(transport, offset, &mut verified)?;
+        if verified != replacement {
+            return Err(FlashError::EepromBlockVerificationFailed { offset });
+        }
+    }
+    let final_image = read_eeprom_image(transport)?;
+    if final_image.bytes() != plan.restore_image.bytes() {
+        return Err(FlashError::EepromRestoreVerificationFailed);
+    }
+    let changed_blocks = u16::try_from(plan.changed_offsets.len())
+        .map_err(|_| FlashError::PacketTooLarge(plan.changed_offsets.len()))?;
+    Ok(EepromRestoreReport {
+        firmware: plan.firmware.clone(),
+        changed_blocks,
+        verified_read_back: true,
+    })
 }
 
 /// Sends the observed read-only normal-firmware hello and returns its identity.
@@ -888,13 +1114,114 @@ fn parse_hello_response(packet: &Packet) -> Result<NormalFirmwareInfo, FlashErro
     Ok(NormalFirmwareInfo { version })
 }
 
-fn eeprom_read_request(offset: u16) -> [u8; 12] {
+fn validate_restore_prerequisites(
+    prerequisites: &EepromRestorePrerequisites<'_>,
+) -> Result<(), FlashError> {
+    if prerequisites.target_confirmation != QUALIFIED_TARGET_CONFIRMATION {
+        return Err(FlashError::TargetNotConfirmed);
+    }
+    let Some((target, digest)) = prerequisites.restore_confirmation.split_once(':') else {
+        return Err(FlashError::EepromRestoreConfirmationMismatch);
+    };
+    if target != QUALIFIED_TARGET_CONFIRMATION
+        || digest.len() != 8
+        || !digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || u32::from_str_radix(digest, 16).ok() != Some(prerequisites.restore_image.crc32())
+    {
+        return Err(FlashError::EepromRestoreConfirmationMismatch);
+    }
+    // ApplicationImage::from_raw has already performed the existing vector and
+    // bounded-image checks. Requiring a distinct, validated recovery value here
+    // prevents a missing recovery artifact from being papered over by the host.
+    if prerequisites.recovery_source_len != K5_RECOVERY_SOURCE_BYTES
+        || prerequisites.recovery_source_len > crate::image::APPLICATION_BYTES
+        || prerequisites.recovery_source_len != prerequisites.recovery_image.source_len()
+        || prerequisites.recovery_crc32 != prerequisites.recovery_image.crc32()
+        || sha256(prerequisites.recovery_image.source_bytes()) != prerequisites.recovery_sha256
+    {
+        return Err(FlashError::EepromRecoveryMismatch);
+    }
+    Ok(())
+}
+
+fn validate_restore_plan(plan: &EepromRestorePlan) -> Result<(), FlashError> {
+    if plan.live_backup.bytes().len() != EEPROM_BYTES
+        || plan.restore_image.bytes().len() != EEPROM_BYTES
+    {
+        return Err(FlashError::InvalidEepromRestorePlan);
+    }
+    let mut expected = Vec::new();
+    for block in 0_u16..EEPROM_WRITE_BLOCKS {
+        let start = usize::from(block) * EEPROM_WRITE_BYTES;
+        if plan.live_backup.bytes()[start..start + EEPROM_WRITE_BYTES]
+            != plan.restore_image.bytes()[start..start + EEPROM_WRITE_BYTES]
+        {
+            expected.push(block * EEPROM_WRITE_BYTES_U16);
+        }
+    }
+    if plan.changed_offsets != expected
+        || plan
+            .changed_offsets
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        || plan.changed_offsets.iter().any(|offset| {
+            usize::from(*offset) % EEPROM_WRITE_BYTES != 0
+                || usize::from(*offset)
+                    .checked_add(EEPROM_WRITE_BYTES)
+                    .is_none_or(|end| end > EEPROM_BYTES)
+        })
+    {
+        return Err(FlashError::InvalidEepromRestorePlan);
+    }
+    Ok(())
+}
+
+fn read_eeprom_image<T: Read + Write>(transport: &mut T) -> Result<EepromBackup, FlashError> {
+    let mut bytes = vec![0_u8; EEPROM_BYTES];
+    for block in 0_u16..64 {
+        let offset_u16 = block * u16::try_from(EEPROM_BLOCK_BYTES).expect("bounded block");
+        let offset = usize::from(offset_u16);
+        read_eeprom_bytes(
+            transport,
+            offset_u16,
+            &mut bytes[offset..offset + EEPROM_BLOCK_BYTES],
+        )?;
+    }
+    EepromBackup::from_raw(&bytes).map_err(FlashError::InvalidEepromBackup)
+}
+
+fn read_eeprom_bytes<T: Read + Write>(
+    transport: &mut T,
+    offset: u16,
+    output: &mut [u8],
+) -> Result<(), FlashError> {
+    if output.is_empty() || output.len() > EEPROM_BLOCK_BYTES {
+        return Err(FlashError::PacketTooLarge(output.len()));
+    }
+    let request = eeprom_read_request(offset, output.len());
+    send_packet(transport, &request)?;
+    let packet = receive_packet(transport)?;
+    parse_eeprom_response(&packet, offset, output)
+}
+
+fn eeprom_read_request(offset: u16, length: usize) -> [u8; 12] {
     let mut payload = [0_u8; 12];
     payload[0..2].copy_from_slice(&COMMAND_READ_EEPROM_REQUEST.to_le_bytes());
     payload[2..4].copy_from_slice(&8_u16.to_le_bytes());
     payload[4..6].copy_from_slice(&offset.to_le_bytes());
-    payload[6] = u8::try_from(EEPROM_BLOCK_BYTES).expect("bounded EEPROM block");
+    payload[6] = u8::try_from(length).expect("bounded EEPROM block");
     payload[8..12].copy_from_slice(&SESSION_WORD.to_le_bytes());
+    payload
+}
+
+fn eeprom_write_request(offset: u16, data: [u8; EEPROM_WRITE_BYTES]) -> [u8; 20] {
+    let mut payload = [0_u8; 20];
+    payload[0..2].copy_from_slice(&COMMAND_WRITE_EEPROM_REQUEST.to_le_bytes());
+    payload[2..4].copy_from_slice(&16_u16.to_le_bytes());
+    payload[4..6].copy_from_slice(&offset.to_le_bytes());
+    payload[6] = u8::try_from(EEPROM_WRITE_BYTES).expect("bounded EEPROM write");
+    payload[8..12].copy_from_slice(&SESSION_WORD.to_le_bytes());
+    payload[12..20].copy_from_slice(&data);
     payload
 }
 
@@ -924,6 +1251,19 @@ fn parse_eeprom_response(
         });
     }
     output.copy_from_slice(&payload[8..]);
+    Ok(())
+}
+
+fn parse_eeprom_write_response(packet: &Packet, expected_offset: u16) -> Result<(), FlashError> {
+    let payload = packet.as_slice();
+    require_packet(payload, COMMAND_WRITE_EEPROM_RESPONSE, 2, 6, "EEPROM write")?;
+    let actual_offset = u16::from_le_bytes([payload[4], payload[5]]);
+    if actual_offset != expected_offset {
+        return Err(FlashError::EepromWriteAcknowledgementMismatch {
+            expected_offset,
+            actual_offset,
+        });
+    }
     Ok(())
 }
 
@@ -1089,11 +1429,12 @@ mod tests {
     };
 
     use super::{
-        backup_eeprom, detect_bootloader, flash_application, observe_bootloader,
-        probe_bootloader_v2, probe_clock_control, probe_clock_registers, probe_clock_snapshot,
-        probe_keypad_matrix, probe_normal_firmware, BeaconProtocol, BootloaderFamily,
-        FirmwareVersion, FlashError, FlashPrerequisites, FlashPurpose,
-        QUALIFIED_TARGET_CONFIRMATION, RECOVERY_REHEARSED_CONFIRMATION,
+        apply_eeprom_restore, backup_eeprom, detect_bootloader, flash_application,
+        observe_bootloader, prepare_eeprom_restore, probe_bootloader_v2, probe_clock_control,
+        probe_clock_registers, probe_clock_snapshot, probe_keypad_matrix, probe_normal_firmware,
+        BeaconProtocol, BootloaderFamily, EepromRestorePrerequisites, FirmwareVersion, FlashError,
+        FlashPrerequisites, FlashPurpose, EEPROM_BLOCK_BYTES, QUALIFIED_TARGET_CONFIRMATION,
+        RECOVERY_REHEARSED_CONFIRMATION,
     };
 
     const TEST_TRANSACTION_ID: u32 = 0xA55A_1234;
@@ -1142,12 +1483,91 @@ mod tests {
         bytes
     }
 
+    fn recovery_image() -> ApplicationImage {
+        let mut bytes = vec![0x5A; super::K5_RECOVERY_SOURCE_BYTES];
+        bytes[0..4].copy_from_slice(&0x2000_4000_u32.to_le_bytes());
+        bytes[4..8].copy_from_slice(&9_u32.to_le_bytes());
+        ApplicationImage::from_raw(&bytes).unwrap()
+    }
+
     fn valid_backup() -> EepromBackup {
         let bytes = (0_u8..=u8::MAX)
             .cycle()
             .take(EEPROM_BYTES)
             .collect::<Vec<_>>();
         EepromBackup::from_raw(&bytes).unwrap()
+    }
+
+    fn hello_response() -> Vec<u8> {
+        let mut hello = vec![0_u8; 40];
+        hello[0..4].copy_from_slice(&[0x15, 0x05, 0x24, 0x00]);
+        hello[4..20].copy_from_slice(b"F4HWN v4.3\0\0\0\0\0\0");
+        encode_response(&hello)
+    }
+
+    fn eeprom_response(offset: usize, data: &[u8]) -> Vec<u8> {
+        let mut payload = vec![0_u8; data.len() + 8];
+        payload[0..4].copy_from_slice(&[
+            0x1C,
+            0x05,
+            u8::try_from(data.len() + 4).unwrap(),
+            u8::try_from((data.len() + 4) >> 8).unwrap(),
+        ]);
+        payload[4..6].copy_from_slice(&u16::try_from(offset).unwrap().to_le_bytes());
+        payload[6] = u8::try_from(data.len()).unwrap();
+        payload[8..].copy_from_slice(data);
+        encode_response(&payload)
+    }
+
+    fn eeprom_write_ack(offset: usize) -> Vec<u8> {
+        let mut payload = [0_u8; 6];
+        payload[0..4].copy_from_slice(&[0x1E, 0x05, 0x02, 0x00]);
+        payload[4..6].copy_from_slice(&u16::try_from(offset).unwrap().to_le_bytes());
+        encode_response(&payload)
+    }
+
+    fn restore_responses(live: &[u8], replacement: &[u8], changed: &[usize]) -> Vec<u8> {
+        let mut responses = hello_response();
+        for offset in (0..EEPROM_BYTES).step_by(EEPROM_BLOCK_BYTES) {
+            responses.extend(eeprom_response(
+                offset,
+                &live[offset..offset + EEPROM_BLOCK_BYTES],
+            ));
+        }
+        for &offset in changed {
+            responses.extend(eeprom_response(offset, &live[offset..offset + 8]));
+            responses.extend(eeprom_response(offset, &live[offset..offset + 8]));
+            responses.extend(eeprom_write_ack(offset));
+            responses.extend(eeprom_response(offset, &replacement[offset..offset + 8]));
+        }
+        for offset in (0..EEPROM_BYTES).step_by(EEPROM_BLOCK_BYTES) {
+            responses.extend(eeprom_response(
+                offset,
+                &replacement[offset..offset + EEPROM_BLOCK_BYTES],
+            ));
+        }
+        responses
+    }
+
+    fn restore_prerequisites<'a>(
+        restore: &'a EepromBackup,
+        current: &'a EepromBackup,
+        recovery: &'a ApplicationImage,
+        confirmation: &'a str,
+    ) -> EepromRestorePrerequisites<'a> {
+        EepromRestorePrerequisites {
+            restore_image: restore,
+            expected_current: current,
+            recovery_image: recovery,
+            recovery_source_len: recovery.source_len(),
+            recovery_crc32: recovery.crc32(),
+            recovery_sha256: super::sha256(recovery.source_bytes()),
+            expected_firmware: Box::leak(Box::new(
+                FirmwareVersion::normal("F4HWN v4.3").expect("test version"),
+            )),
+            target_confirmation: QUALIFIED_TARGET_CONFIRMATION,
+            restore_confirmation: confirmation,
+        }
     }
 
     fn beacon() -> Vec<u8> {
@@ -1194,7 +1614,7 @@ mod tests {
     #[test]
     fn complete_flash_writes_exact_pages_in_order_with_one_byte_reads() {
         let image = ApplicationImage::from_raw(&valid_raw(0xA5)).unwrap();
-        let recovery = ApplicationImage::from_raw(&valid_raw(0x5A)).unwrap();
+        let recovery = recovery_image();
         let backup = valid_backup();
         let version = FirmwareVersion::new("2.01.23").unwrap();
         let mut responses = beacon();
@@ -1229,7 +1649,7 @@ mod tests {
     #[test]
     fn prerequisites_fail_before_any_transport_access() {
         let image = ApplicationImage::from_raw(&valid_raw(0xA5)).unwrap();
-        let recovery = ApplicationImage::from_raw(&valid_raw(0x5A)).unwrap();
+        let recovery = recovery_image();
         let backup = valid_backup();
         let version = FirmwareVersion::new("2.01.23").unwrap();
         let mut prerequisites = afik_prerequisites(&image, &recovery, &backup, &version);
@@ -1261,7 +1681,7 @@ mod tests {
     #[test]
     fn missing_or_mismatched_ack_stops_without_retry() {
         let image = ApplicationImage::from_raw(&valid_raw(0xA5)).unwrap();
-        let recovery = ApplicationImage::from_raw(&valid_raw(0x5A)).unwrap();
+        let recovery = recovery_image();
         let backup = valid_backup();
         let version = FirmwareVersion::new("2.01.23").unwrap();
 
@@ -1425,6 +1845,404 @@ mod tests {
         assert_eq!(info.version(), "k5_2.01.23");
         assert_eq!(backup.bytes(), expected);
         assert_eq!(decode_requests(&transport.writes).len(), 65);
+    }
+
+    #[test]
+    fn restore_preflight_plans_changed_blocks_and_writes_vendor_051d_shape() {
+        let live = valid_backup();
+        let mut replacement_bytes = live.bytes().to_vec();
+        replacement_bytes[0] ^= 0x11;
+        replacement_bytes[8] ^= 0x22;
+        let replacement = EepromBackup::from_raw(&replacement_bytes).unwrap();
+        let recovery = recovery_image();
+        let confirmation = format!(
+            "{QUALIFIED_TARGET_CONFIRMATION}:{:08x}",
+            replacement.crc32()
+        );
+        let responses = restore_responses(live.bytes(), replacement.bytes(), &[0, 8]);
+        let mut transport = ScriptedTransport::new(responses, 1);
+        let plan = prepare_eeprom_restore(
+            &mut transport,
+            restore_prerequisites(&replacement, &live, &recovery, &confirmation),
+        )
+        .unwrap();
+        assert_eq!(plan.changed_offsets(), [0, 8]);
+        let report = apply_eeprom_restore(&mut transport, &plan).unwrap();
+        assert_eq!(report.changed_blocks, 2);
+        assert!(report.verified_read_back);
+        let requests = decode_requests(&transport.writes);
+        assert_eq!(
+            requests.iter().filter(|p| p[0..2] == [0x1D, 0x05]).count(),
+            2
+        );
+        assert_eq!(&requests[1][8..12], &super::SESSION_WORD.to_le_bytes());
+        let write = requests.iter().find(|p| p[0..2] == [0x1D, 0x05]).unwrap();
+        assert_eq!(u16::from_le_bytes([write[2], write[3]]), 16);
+        assert_eq!(u16::from_le_bytes([write[4], write[5]]), 0);
+        assert_eq!(write[6], 8);
+        assert_eq!(write[7], 0);
+        assert_eq!(&write[8..12], &super::SESSION_WORD.to_le_bytes());
+        assert_eq!(&write[12..20], &replacement.bytes()[..8]);
+    }
+
+    #[test]
+    fn restore_same_image_is_verified_without_a_write() {
+        let live = valid_backup();
+        let recovery = recovery_image();
+        let confirmation = format!("{QUALIFIED_TARGET_CONFIRMATION}:{:08x}", live.crc32());
+        let mut responses = hello_response();
+        for offset in (0..EEPROM_BYTES).step_by(EEPROM_BLOCK_BYTES) {
+            responses.extend(eeprom_response(
+                offset,
+                &live.bytes()[offset..offset + EEPROM_BLOCK_BYTES],
+            ));
+        }
+        let mut transport = ScriptedTransport::new(responses, 1);
+        let plan = prepare_eeprom_restore(
+            &mut transport,
+            restore_prerequisites(&live, &live, &recovery, &confirmation),
+        )
+        .unwrap();
+        let report = apply_eeprom_restore(&mut transport, &plan).unwrap();
+        assert_eq!(report.changed_blocks, 0);
+        assert!(report.verified_read_back);
+        assert!(decode_requests(&transport.writes)
+            .iter()
+            .all(|payload| payload[0..2] != [0x1D, 0x05]));
+    }
+
+    #[test]
+    fn restore_refuses_live_mismatch_before_any_write() {
+        let expected = valid_backup();
+        let mut live_bytes = expected.bytes().to_vec();
+        live_bytes[0] ^= 1;
+        let live = EepromBackup::from_raw(&live_bytes).unwrap();
+        let recovery = recovery_image();
+        let confirmation = format!("{QUALIFIED_TARGET_CONFIRMATION}:{:08x}", expected.crc32());
+        let mut responses = hello_response();
+        for offset in (0..EEPROM_BYTES).step_by(EEPROM_BLOCK_BYTES) {
+            responses.extend(eeprom_response(
+                offset,
+                &live.bytes()[offset..offset + EEPROM_BLOCK_BYTES],
+            ));
+        }
+        let mut transport = ScriptedTransport::new(responses, 1);
+        assert!(matches!(
+            prepare_eeprom_restore(
+                &mut transport,
+                restore_prerequisites(&expected, &expected, &recovery, &confirmation),
+            ),
+            Err(FlashError::EepromCurrentMismatch)
+        ));
+        assert_eq!(decode_requests(&transport.writes).len(), 65);
+    }
+
+    #[test]
+    fn restore_wrong_confirmation_and_recovery_are_rejected_without_transport() {
+        let live = valid_backup();
+        let recovery = recovery_image();
+        let mut transport = ScriptedTransport::new(Vec::new(), 1);
+        assert!(matches!(
+            prepare_eeprom_restore(
+                &mut transport,
+                restore_prerequisites(&live, &live, &recovery, "UV-K5-V1-DP32G030:00000000"),
+            ),
+            Err(FlashError::EepromRestoreConfirmationMismatch)
+        ));
+        assert!(transport.writes.is_empty());
+    }
+
+    #[test]
+    fn restore_checks_live_firmware_before_reading_eeprom() {
+        let live = valid_backup();
+        let recovery = recovery_image();
+        let confirmation = format!("{QUALIFIED_TARGET_CONFIRMATION}:{:08x}", live.crc32());
+        let mut prerequisites = restore_prerequisites(&live, &live, &recovery, &confirmation);
+        let expected = FirmwareVersion::normal("F4HWN v4.4").unwrap();
+        prerequisites.expected_firmware = Box::leak(Box::new(expected));
+        let mut transport = ScriptedTransport::new(hello_response(), 1);
+        assert!(matches!(
+            prepare_eeprom_restore(&mut transport, prerequisites),
+            Err(FlashError::EepromFirmwareMismatch)
+        ));
+        assert_eq!(decode_requests(&transport.writes).len(), 1);
+    }
+
+    #[test]
+    fn restore_checks_recovery_crc_before_any_transport_access() {
+        let live = valid_backup();
+        let recovery = recovery_image();
+        let confirmation = format!("{QUALIFIED_TARGET_CONFIRMATION}:{:08x}", live.crc32());
+        let mut prerequisites = restore_prerequisites(&live, &live, &recovery, &confirmation);
+        prerequisites.recovery_crc32 ^= 1;
+        let mut transport = ScriptedTransport::new(Vec::new(), 1);
+        assert!(matches!(
+            prepare_eeprom_restore(&mut transport, prerequisites),
+            Err(FlashError::EepromRecoveryMismatch)
+        ));
+        assert!(transport.writes.is_empty());
+    }
+
+    #[test]
+    fn restore_requires_the_separately_supplied_recovery_sha256() {
+        let live = valid_backup();
+        let recovery = recovery_image();
+        let confirmation = format!("{QUALIFIED_TARGET_CONFIRMATION}:{:08x}", live.crc32());
+        let mut prerequisites = restore_prerequisites(&live, &live, &recovery, &confirmation);
+        prerequisites.recovery_sha256[0] ^= 1;
+        let mut transport = ScriptedTransport::new(Vec::new(), 1);
+        assert!(matches!(
+            prepare_eeprom_restore(&mut transport, prerequisites),
+            Err(FlashError::EepromRecoveryMismatch)
+        ));
+        assert!(transport.writes.is_empty());
+    }
+
+    #[test]
+    fn restore_stops_before_write_when_immediate_reads_disagree() {
+        let live = valid_backup();
+        let mut replacement_bytes = live.bytes().to_vec();
+        replacement_bytes[0] ^= 1;
+        let replacement = EepromBackup::from_raw(&replacement_bytes).unwrap();
+        let recovery = recovery_image();
+        let confirmation = format!(
+            "{QUALIFIED_TARGET_CONFIRMATION}:{:08x}",
+            replacement.crc32()
+        );
+        let mut responses = restore_responses(live.bytes(), replacement.bytes(), &[0]);
+        // Replace the first block's second pre-write read with a changed but valid block.
+        let stable = eeprom_response(0, &live.bytes()[..8]);
+        let stable_len = stable.len();
+        let mut changed = live.bytes()[..8].to_vec();
+        changed[0] ^= 0x40;
+        let changed_response = eeprom_response(0, &changed);
+        let first = responses
+            .windows(stable.len())
+            .position(|window| window == stable.as_slice())
+            .expect("pre-write response");
+        responses.splice(first..first + stable_len, stable);
+        let second = first + stable_len;
+        responses.splice(second..second + stable_len, changed_response);
+        let mut transport = ScriptedTransport::new(responses, 1);
+        let plan = prepare_eeprom_restore(
+            &mut transport,
+            restore_prerequisites(&replacement, &live, &recovery, &confirmation),
+        )
+        .unwrap();
+        assert!(matches!(
+            apply_eeprom_restore(&mut transport, &plan),
+            Err(FlashError::EepromBlockChangedDuringPreflight { offset: 0 })
+        ));
+        assert_eq!(decode_requests(&transport.writes).len(), 67);
+        assert!(decode_requests(&transport.writes)
+            .iter()
+            .all(|payload| payload[0..2] != [0x1D, 0x05]));
+    }
+
+    #[test]
+    fn forged_restore_plans_are_rejected_without_transport_access() {
+        let live = valid_backup();
+        let mut replacement_bytes = live.bytes().to_vec();
+        replacement_bytes[0] ^= 1;
+        let replacement = EepromBackup::from_raw(&replacement_bytes).unwrap();
+        let recovery = recovery_image();
+        let confirmation = format!(
+            "{QUALIFIED_TARGET_CONFIRMATION}:{:08x}",
+            replacement.crc32()
+        );
+        let responses = restore_responses(live.bytes(), replacement.bytes(), &[0]);
+        let mut transport = ScriptedTransport::new(responses, 1);
+        let plan = prepare_eeprom_restore(
+            &mut transport,
+            restore_prerequisites(&replacement, &live, &recovery, &confirmation),
+        )
+        .unwrap();
+        let mut forged = plan.clone();
+        forged.changed_offsets = vec![8, 0];
+        let mut empty = ScriptedTransport::new(Vec::new(), 1);
+        assert!(matches!(
+            apply_eeprom_restore(&mut empty, &forged),
+            Err(FlashError::InvalidEepromRestorePlan)
+        ));
+        forged.changed_offsets = Vec::new();
+        assert!(matches!(
+            apply_eeprom_restore(&mut empty, &forged),
+            Err(FlashError::InvalidEepromRestorePlan)
+        ));
+        forged.changed_offsets = vec![0x2000];
+        assert!(matches!(
+            apply_eeprom_restore(&mut empty, &forged),
+            Err(FlashError::InvalidEepromRestorePlan)
+        ));
+    }
+
+    #[test]
+    fn restore_block_timeout_or_bad_readback_stops_without_retry() {
+        let live = valid_backup();
+        let mut replacement_bytes = live.bytes().to_vec();
+        replacement_bytes[0] ^= 1;
+        let replacement = EepromBackup::from_raw(&replacement_bytes).unwrap();
+        let recovery = recovery_image();
+        let confirmation = format!(
+            "{QUALIFIED_TARGET_CONFIRMATION}:{:08x}",
+            replacement.crc32()
+        );
+        let mut responses = hello_response();
+        for offset in (0..EEPROM_BYTES).step_by(EEPROM_BLOCK_BYTES) {
+            responses.extend(eeprom_response(
+                offset,
+                &live.bytes()[offset..offset + EEPROM_BLOCK_BYTES],
+            ));
+        }
+        responses.extend(eeprom_response(0, &live.bytes()[..8]));
+        responses.extend(eeprom_response(0, &live.bytes()[..8]));
+        responses.extend(eeprom_write_ack(0));
+        responses.extend(eeprom_response(0, &live.bytes()[..8]));
+        let mut transport = ScriptedTransport::new(responses, 1);
+        let plan = prepare_eeprom_restore(
+            &mut transport,
+            restore_prerequisites(&replacement, &live, &recovery, &confirmation),
+        )
+        .unwrap();
+        assert!(matches!(
+            apply_eeprom_restore(&mut transport, &plan),
+            Err(FlashError::EepromBlockVerificationFailed { offset: 0 })
+        ));
+        assert_eq!(decode_requests(&transport.writes).len(), 69);
+    }
+
+    #[test]
+    fn restore_wrong_write_ack_stops_before_the_next_block() {
+        let live = valid_backup();
+        let mut replacement_bytes = live.bytes().to_vec();
+        replacement_bytes[0] ^= 1;
+        replacement_bytes[8] ^= 2;
+        let replacement = EepromBackup::from_raw(&replacement_bytes).unwrap();
+        let recovery = recovery_image();
+        let confirmation = format!(
+            "{QUALIFIED_TARGET_CONFIRMATION}:{:08x}",
+            replacement.crc32()
+        );
+        let mut responses = hello_response();
+        for offset in (0..EEPROM_BYTES).step_by(EEPROM_BLOCK_BYTES) {
+            responses.extend(eeprom_response(
+                offset,
+                &live.bytes()[offset..offset + EEPROM_BLOCK_BYTES],
+            ));
+        }
+        responses.extend(eeprom_response(0, &live.bytes()[..8]));
+        responses.extend(eeprom_response(0, &live.bytes()[..8]));
+        responses.extend(eeprom_write_ack(8));
+        let mut transport = ScriptedTransport::new(responses, 1);
+        let plan = prepare_eeprom_restore(
+            &mut transport,
+            restore_prerequisites(&replacement, &live, &recovery, &confirmation),
+        )
+        .unwrap();
+        assert!(matches!(
+            apply_eeprom_restore(&mut transport, &plan),
+            Err(FlashError::EepromWriteAcknowledgementMismatch {
+                expected_offset: 0,
+                actual_offset: 8
+            })
+        ));
+        assert_eq!(decode_requests(&transport.writes).len(), 68);
+    }
+
+    #[test]
+    fn restore_missing_write_ack_times_out_without_retry() {
+        let live = valid_backup();
+        let mut replacement_bytes = live.bytes().to_vec();
+        replacement_bytes[0] ^= 1;
+        let replacement = EepromBackup::from_raw(&replacement_bytes).unwrap();
+        let recovery = recovery_image();
+        let confirmation = format!(
+            "{QUALIFIED_TARGET_CONFIRMATION}:{:08x}",
+            replacement.crc32()
+        );
+        let mut responses = hello_response();
+        for offset in (0..EEPROM_BYTES).step_by(EEPROM_BLOCK_BYTES) {
+            responses.extend(eeprom_response(
+                offset,
+                &live.bytes()[offset..offset + EEPROM_BLOCK_BYTES],
+            ));
+        }
+        responses.extend(eeprom_response(0, &live.bytes()[..8]));
+        responses.extend(eeprom_response(0, &live.bytes()[..8]));
+        let mut transport = ScriptedTransport::new(responses, 1);
+        let plan = prepare_eeprom_restore(
+            &mut transport,
+            restore_prerequisites(&replacement, &live, &recovery, &confirmation),
+        )
+        .unwrap();
+        assert!(matches!(
+            apply_eeprom_restore(&mut transport, &plan),
+            Err(FlashError::Timeout)
+        ));
+        assert_eq!(decode_requests(&transport.writes).len(), 68);
+    }
+
+    #[test]
+    fn restore_preflight_rejects_wrong_offset_or_length_response() {
+        let live = valid_backup();
+        let recovery = recovery_image();
+        let confirmation = format!("{QUALIFIED_TARGET_CONFIRMATION}:{:08x}", live.crc32());
+        for response in [
+            eeprom_response(8, &live.bytes()[..EEPROM_BLOCK_BYTES]),
+            eeprom_response(0, &live.bytes()[..EEPROM_BLOCK_BYTES - 1]),
+        ] {
+            let mut responses = hello_response();
+            responses.extend(response);
+            let mut transport = ScriptedTransport::new(responses, 1);
+            let result = prepare_eeprom_restore(
+                &mut transport,
+                restore_prerequisites(&live, &live, &recovery, &confirmation),
+            );
+            assert!(matches!(
+                result,
+                Err(FlashError::EepromBlockMismatch { .. } | FlashError::UnexpectedPacket { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn restore_rejects_a_final_full_image_mismatch() {
+        let live = valid_backup();
+        let mut replacement_bytes = live.bytes().to_vec();
+        replacement_bytes[0] ^= 1;
+        let replacement = EepromBackup::from_raw(&replacement_bytes).unwrap();
+        let recovery = recovery_image();
+        let confirmation = format!(
+            "{QUALIFIED_TARGET_CONFIRMATION}:{:08x}",
+            replacement.crc32()
+        );
+        let mut responses = hello_response();
+        for offset in (0..EEPROM_BYTES).step_by(EEPROM_BLOCK_BYTES) {
+            responses.extend(eeprom_response(
+                offset,
+                &live.bytes()[offset..offset + EEPROM_BLOCK_BYTES],
+            ));
+        }
+        responses.extend(eeprom_response(0, &live.bytes()[..8]));
+        responses.extend(eeprom_response(0, &live.bytes()[..8]));
+        responses.extend(eeprom_write_ack(0));
+        responses.extend(eeprom_response(0, &replacement.bytes()[..8]));
+        for offset in (0..EEPROM_BYTES).step_by(EEPROM_BLOCK_BYTES) {
+            responses.extend(eeprom_response(
+                offset,
+                &live.bytes()[offset..offset + EEPROM_BLOCK_BYTES],
+            ));
+        }
+        let mut transport = ScriptedTransport::new(responses, 1);
+        let plan = prepare_eeprom_restore(
+            &mut transport,
+            restore_prerequisites(&replacement, &live, &recovery, &confirmation),
+        )
+        .unwrap();
+        assert!(matches!(
+            apply_eeprom_restore(&mut transport, &plan),
+            Err(FlashError::EepromRestoreVerificationFailed)
+        ));
     }
 
     #[test]

@@ -1470,3 +1470,26 @@ meaning.
   transport input are explicit failures, never panics.
 - The next decision gate is safe allocation evidence and target-adapter
   sizing/static analysis, not a flash or physical persistence operation.
+
+## ADR-091 — K5 EEPROM restore is explicit, backup-gated, and host-verified
+
+- **Date:** 2026-08-14
+- **Status:** accepted for APP-052 Milestone 4a software tooling only
+- `restore-eeprom` is a separate explicit K5 CLI command and is absent from
+  auto-detection. It requires a complete non-uniform restore image, a separate
+  exact expected-current image, a vector-checked 60,612-byte recovery
+  application with a separately supplied trusted SHA-256 plus version/CRC
+  confirmation, the qualified target phrase, and a
+  `TARGET:CRC32` restore token.
+- Preflight reads hello and all 8,192 live bytes, refuses any mismatch, and
+  creates a create-new mode-0600 pre-write backup before a write. The host
+  then performs two stable immediate reads for each expected eight-byte block
+  before sending the vendor `0x051D` request, validates the `0x051E` offset
+  echo, reads the block back, and requires a final complete-image read-back.
+  This narrows but does not eliminate TOCTOU because the vendor command has no
+  atomic expected-byte compare; exclusive serial ownership and a quiescent
+  stock UI are required. Missing or ambiguous responses stop without retry.
+- This does not select an EEPROM address, create a persistence capability, or
+  authorize a physical run. The relative 2,624-byte dual-slot model remains
+  unallocated; deliberate vendor-memory repurposing requires a separate
+  evidence decision.

@@ -186,8 +186,13 @@ target peripherals, persistence, and automatic tuning remain outside the
 architecture until their evidence gates are satisfied.
 
 Work Package 12 adds a separate host-only K5 deployment boundary. A new
-flashing library owns the legacy packet codec, read-only EEPROM backup,
-bootloader-v2 probe, raw-image validation, recovery gates, and page sequence.
+flashing library owns the legacy packet codec, read-only EEPROM backup, the
+explicitly selected guarded EEPROM restore workflow, bootloader-v2 probe,
+raw-image validation, recovery gates, and page sequence. Restore preflight
+requires a complete expected-current image and a target/image confirmation;
+the host sends only source-backed eight-byte `0x051D` writes after an immediate
+compare and requires both per-block and complete-image read-back. It is not
+an allocation decision or target persistence adapter.
 Its CLI is a thin explicit-path adapter over the shared Linux serial port. This
 protocol is the stock UV-K5 deployment protocol and does not enter
 `radio-protocol`, which remains AFIK's object-level runtime configuration

@@ -892,3 +892,20 @@
   error is replayed without another write, and typed reboot errors preserve
   service on backend read failure. Before any target adapter, obtain safe allocation
   evidence and complete bounded sizing/static checks. APP-052 remains open.
+
+- **K5 guarded restore boundary, 2026-08-14:** `restore-eeprom` now models the
+  source-backed stock normal-mode `0x051D` eight-byte write and `0x051E` offset
+  response behind explicit target/current-image/recovery/restore gates. A
+  complete live backup is compared and preserved before any write; the recovery
+  source length and trusted out-of-band SHA-256 are checked before transport;
+  each changed block is stable-checked with two immediate reads, then compared and read back,
+  and the whole image is read back at the end. The vendor command has no atomic
+  expected-byte compare, so exclusive serial ownership and a quiescent stock UI
+  are required; the double read only narrows the race.
+  Fake serial tests cover interruption and malformed responses. This remains
+  host software evidence only: no hardware restore, exact current-unit restore
+  rehearsal, power-loss result, or disposable address exists. The retained
+  exact-unit K6 copies (8192 bytes; hashes retained privately) and
+  separate 60,612-byte recovery artifact (hash retained privately) remain external and were not
+  used by tests. No 2,624-byte relative model region is allocated; the next
+  risk decision is deliberate vendor-memory repurposing.

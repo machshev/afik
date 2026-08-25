@@ -3825,3 +3825,55 @@ The unchanged unflashed K5 package remains `0xF000` bytes, flash end
 `0x97f4`, static RAM end `0x20000100`, application end `0xF000`, and
 SHA-256 `49f4a27dabd338e51e27c37db83a82dd5d0f602570dd17e88cdd87d54ecea8a4`.
 No Nix command, hardware, flash, real EEPROM, or commit was used.
+
+## APP-052 Milestone 4a — guarded K5 EEPROM restore tooling, 2026-08-14
+
+`radio-flasher` now has an explicit `prepare_eeprom_restore` preflight and
+`apply_eeprom_restore` workflow. The K5 CLI exposes only the explicit
+`restore-eeprom` command; auto-detection has no restore branch. It requires
+separate exact 8 KiB non-uniform restore/current images, a vector-checked
+recovery application plus version/CRC confirmation, the qualified target
+phrase, and a `TARGET:CRC32` restore token. Preflight performs hello, a complete
+live read, exact current-image comparison, and an ascending aligned eight-byte
+change plan before the CLI atomically publishes a mode-0600 pre-write backup.
+
+Each changed block uses the vendor-sourced normal-mode `0x051D` request with
+eight data bytes, `bAllowPassword=0`, and the fixed session timestamp. The
+`0x051E` offset acknowledgement is validated; two immediate reads are stable-
+checked before a write, the block is read back immediately, and a complete
+8 KiB read-back is required. This narrows but cannot eliminate the race because
+the vendor command has no atomic expected-byte compare; exclusive serial
+ownership and a quiescent stock UI are required. Missing, malformed,
+wrong-session/offset/length, timeout, or verification failures stop without a
+restore-wide retry. Equal images return `verified_no_write` and issue no write.
+The pre-write artifact is written and fsynced privately, atomically published
+with same-directory no-replace hard-link semantics (including dangling
+symlinks), then parent-synced; no rename-overwrite race is accepted. The
+workflow has 53 deterministic unit tests, including exact ordering/body,
+no-write, firmware/recovery identity gates, forged-plan rejection, stable-read
+race detection, invalid inputs, wrong acknowledgements, timeout, per-block
+read-back failure, and successful verified restore.
+
+The only externally retained K5/K6 artifacts remain outside the repository:
+two identical exact-unit 8,192-byte copies, with their hash retained privately,
+and a separate 60,612-byte recovery artifact, whose trusted hash is supplied
+out-of-band and retained privately.
+They were not copied into the repository or used by tests. No physical command
+was run, no hardware was written, no firmware identity/capability changed, and
+the relative 2,624-byte dual-slot model still does not establish a safe K5
+allocation. The next decision is deliberate vendor-memory repurposing, not
+implicit persistence.
+
+The serialized final cached-direnv gate for this correction passed with
+`CARGO_BUILD_JOBS=2 ionice -c 3 nice -n 10`: `cargo fmt --all --check`,
+`cargo clippy --workspace --all-targets -- -D warnings`,
+`cargo test --workspace`, `./tool/build-k1-async.sh --release`,
+`./tool/build-k5.sh --release`,
+`./tool/verify-k5-image.sh target/thumbv6m-none-eabi/release/radio-firmware-k5`,
+`./tool/package-k5-image.sh --force target/thumbv6m-none-eabi/release/radio-firmware-k5 target/thumbv6m-none-eabi/release/afik-k5-2.2Q.bin`, and `git diff --check`.
+Focused restore coverage is 53 `radio-flasher` tests and 18 CLI tests. The
+unchanged unflashed K5 package remains `0xF000` bytes, flash end `0x97f4`,
+static RAM end `0x20000100`, application end `0xF000`, and SHA-256
+`49f4a27dabd338e51e27c37db83a82dd5d0f602570dd17e88cdd87d54ecea8a4`.
+No Nix command, hardware, serial device, EEPROM write, flash, or commit was
+used.

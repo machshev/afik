@@ -5,16 +5,20 @@
 mod auto;
 mod parse;
 
-use parse::{parse, Command, FlashArguments, Parsed, Purpose};
+use parse::{parse, Command, FlashArguments, Parsed, Purpose, RestoreArguments};
 use radio_flasher::k5::{control as k5_control, ControlRequest, ControlResponse, LogicalKey, View};
 use radio_flasher::{
-    backup_eeprom, flash_application, probe_bootloader_v2, ApplicationImage, EepromBackup,
+    apply_eeprom_restore, backup_eeprom, flash_application, prepare_eeprom_restore,
+    probe_bootloader_v2, sha256, ApplicationImage, EepromBackup, EepromRestorePrerequisites,
     FirmwareVersion, FlashPrerequisites, FlashPurpose, APPLICATION_BYTES, EEPROM_BYTES,
+    K5_RECOVERY_SOURCE_BYTES,
 };
 use radio_programmer_serial::LinuxSerialTransport;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 use std::{
     fmt,
-    fs::{File, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::{Read, Write},
     os::unix::fs::OpenOptionsExt,
     path::Path,
@@ -42,6 +46,10 @@ Usage:\n\
   afik-k5 --device PATH probe\n\
   afik-k5 --device PATH control view|capabilities|key AUDIO|UP|DOWN\n\
   afik-k5 --device PATH backup-eeprom OUTPUT [--force]\n\
+  afik-k5 --device PATH restore-eeprom RESTORE --current BACKUP --recovery IMAGE \\\n\
+    --pre-write-backup OUTPUT --version NORMAL_VERSION --confirm-target TARGET \\\n\
+    --confirm-recovery-crc32 CRC32 --confirm-recovery-sha256 SHA256 \\\n\
+    --confirm-restore TARGET:CRC32\n\
   afik-k5 --device PATH flash-recovery IMAGE --backup EEPROM --version VERSION \\\n    --confirm-target UV-K5-V1-DP32G030 --confirm-image-crc32 CRC32\n\
   afik-k5 --device PATH flash-afik IMAGE --recovery RAW --backup EEPROM \\\n    --version VERSION --confirm-target UV-K5-V1-DP32G030 \\\n    --confirm-image-crc32 CRC32 \\\n    --confirm-recovery-rehearsed RECOVERY-REHEARSED-ON-THIS-UNIT\n\
   afik-k5 --help\n\
@@ -76,6 +84,7 @@ fn execute<W: Write>(parsed: Parsed, stdout: &mut W) -> Result<(), CliError> {
         Parsed::Hardware { device, command } => match command {
             Command::Probe => probe(&device, stdout),
             Command::Backup { output, force } => backup(&device, &output, force, stdout),
+            Command::Restore(arguments) => restore(&device, &arguments, stdout),
             Command::Control(request) => control(&device, request, stdout),
             Command::Flash(arguments) => flash(&device, &arguments, stdout),
         },
@@ -203,6 +212,131 @@ fn backup<W: Write>(
     writeln!(stdout, "crc32={:08x}", backup.crc32()).map_err(CliError::operation)
 }
 
+fn restore<W: Write>(
+    device: &Path,
+    arguments: &RestoreArguments,
+    stdout: &mut W,
+) -> Result<(), CliError> {
+    validate_restore_paths(arguments)?;
+    let restore_raw = read_bounded(&arguments.restore, EEPROM_BYTES, "restore EEPROM image")?;
+    let restore_image = EepromBackup::from_raw(&restore_raw).map_err(CliError::operation)?;
+    let current_raw = read_bounded(
+        &arguments.current,
+        EEPROM_BYTES,
+        "expected current EEPROM backup",
+    )?;
+    let expected_current = EepromBackup::from_raw(&current_raw).map_err(CliError::operation)?;
+    let recovery_raw = read_bounded(
+        &arguments.recovery,
+        APPLICATION_BYTES,
+        "recovery application",
+    )?;
+    let recovery_image = ApplicationImage::from_raw(&recovery_raw).map_err(CliError::operation)?;
+    let recovery_crc = parse_crc32(&arguments.recovery_crc32_confirmation)?;
+    if recovery_crc != recovery_image.crc32() {
+        return Err(CliError::Operation(format!(
+            "recovery CRC-32 confirmation mismatch: expected {:08x}, supplied {:08x}",
+            recovery_image.crc32(),
+            recovery_crc
+        )));
+    }
+    if recovery_image.source_len() != K5_RECOVERY_SOURCE_BYTES {
+        return Err(CliError::Operation(format!(
+            "recovery must contain exactly {K5_RECOVERY_SOURCE_BYTES} raw bytes"
+        )));
+    }
+    let recovery_sha = parse_sha256(&arguments.recovery_sha256_confirmation)?;
+    if sha256(recovery_image.source_bytes()) != recovery_sha {
+        return Err(CliError::Operation(
+            "trusted recovery SHA-256 confirmation mismatch".into(),
+        ));
+    }
+    let version = FirmwareVersion::normal(&arguments.version).map_err(CliError::operation)?;
+
+    writeln!(stdout, "device={}", device.display()).map_err(CliError::operation)?;
+    writeln!(stdout, "baud={K5_BAUD}").map_err(CliError::operation)?;
+    writeln!(stdout, "restore_crc32={:08x}", restore_image.crc32()).map_err(CliError::operation)?;
+    stdout.flush().map_err(CliError::operation)?;
+
+    let mut serial = open_serial(device)?;
+    let plan = prepare_eeprom_restore(
+        &mut serial,
+        EepromRestorePrerequisites {
+            restore_image: &restore_image,
+            expected_current: &expected_current,
+            recovery_image: &recovery_image,
+            recovery_source_len: recovery_image.source_len(),
+            recovery_crc32: recovery_crc,
+            recovery_sha256: recovery_sha,
+            expected_firmware: &version,
+            target_confirmation: &arguments.target_confirmation,
+            restore_confirmation: &arguments.restore_confirmation,
+        },
+    )
+    .map_err(CliError::operation)?;
+    writeln!(stdout, "firmware={}", plan.firmware().version()).map_err(CliError::operation)?;
+    writeln!(stdout, "live_crc32={:08x}", plan.live_backup().crc32())
+        .map_err(CliError::operation)?;
+    writeln!(stdout, "changed_blocks={}", plan.changed_offsets().len())
+        .map_err(CliError::operation)?;
+    write_private_file_atomic(&arguments.pre_write_backup, plan.live_backup().bytes())?;
+    writeln!(
+        stdout,
+        "pre_write_backup={}",
+        arguments.pre_write_backup.display()
+    )
+    .map_err(CliError::operation)?;
+    stdout.flush().map_err(CliError::operation)?;
+    let report = apply_eeprom_restore(&mut serial, &plan).map_err(CliError::operation)?;
+    writeln!(
+        stdout,
+        "status={}",
+        if report.changed_blocks == 0 {
+            "verified_no_write"
+        } else if report.verified_read_back {
+            "verified_read_back"
+        } else {
+            "not_verified"
+        }
+    )
+    .map_err(CliError::operation)
+}
+
+fn validate_restore_paths(arguments: &RestoreArguments) -> Result<(), CliError> {
+    for (left, right, label) in [
+        (&arguments.restore, &arguments.current, "restore/current"),
+        (&arguments.restore, &arguments.recovery, "restore/recovery"),
+        (&arguments.current, &arguments.recovery, "current/recovery"),
+        (
+            &arguments.restore,
+            &arguments.pre_write_backup,
+            "restore/output",
+        ),
+        (
+            &arguments.current,
+            &arguments.pre_write_backup,
+            "current/output",
+        ),
+        (
+            &arguments.recovery,
+            &arguments.pre_write_backup,
+            "recovery/output",
+        ),
+    ] {
+        if paths_same(left, right) {
+            return Err(CliError::Operation(format!(
+                "restore-eeprom inputs must be distinct: {label}"
+            )));
+        }
+    }
+    if fs::symlink_metadata(&arguments.pre_write_backup).is_ok() {
+        return Err(CliError::Operation(
+            "pre-write backup output already exists; refusing overwrite".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn flash<W: Write>(
     device: &Path,
     arguments: &FlashArguments,
@@ -301,6 +435,57 @@ fn write_private_file(path: &Path, bytes: &[u8], force: bool) -> Result<(), CliE
         .map_err(|error| CliError::Operation(format!("could not write backup: {error}")))
 }
 
+fn write_private_file_atomic(path: &Path, bytes: &[u8]) -> Result<(), CliError> {
+    let temporary = path.with_extension(format!("restore-{}.tmp", std::process::id()));
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true).mode(0o600);
+    let mut file = options.open(&temporary).map_err(|error| {
+        CliError::Operation(format!(
+            "could not create temporary pre-write backup: {error}"
+        ))
+    })?;
+    let result = file
+        .write_all(bytes)
+        .and_then(|()| file.flush())
+        .and_then(|()| file.sync_all())
+        .map_err(|error| CliError::Operation(format!("could not write pre-write backup: {error}")));
+    if let Err(error) = result {
+        let _ = fs::remove_file(&temporary);
+        return Err(error);
+    }
+    if let Err(error) = fs::hard_link(&temporary, path) {
+        let _ = fs::remove_file(&temporary);
+        return Err(CliError::Operation(format!(
+            "could not publish pre-write backup without overwrite: {error}"
+        )));
+    }
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let result = File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| CliError::Operation(format!("could not sync backup directory: {error}")));
+    let _ = fs::remove_file(&temporary);
+    result
+}
+
+fn paths_same(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    #[cfg(unix)]
+    if let (Ok(left), Ok(right)) = (fs::metadata(left), fs::metadata(right)) {
+        if left.dev() == right.dev() && left.ino() == right.ino() {
+            return true;
+        }
+    }
+    match (fs::canonicalize(left), fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
 fn parse_crc32(value: &str) -> Result<u32, CliError> {
     if value.len() != 8 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(CliError::Operation(
@@ -308,6 +493,20 @@ fn parse_crc32(value: &str) -> Result<u32, CliError> {
         ));
     }
     u32::from_str_radix(value, 16).map_err(CliError::operation)
+}
+
+fn parse_sha256(value: &str) -> Result<[u8; 32], CliError> {
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(CliError::Operation(
+            "--confirm-recovery-sha256 requires exactly 64 hexadecimal digits".into(),
+        ));
+    }
+    let mut digest = [0_u8; 32];
+    for (index, byte) in digest.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16)
+            .map_err(CliError::operation)?;
+    }
+    Ok(digest)
 }
 
 fn fresh_transaction_id() -> Result<u32, CliError> {
@@ -359,7 +558,11 @@ impl fmt::Display for CliError {
 mod tests {
     use std::{fs, time::SystemTime};
 
-    use super::{render_view, run_to, EXIT_SUCCESS, EXIT_USAGE, HELP};
+    use super::{
+        render_view, run_to, validate_restore_paths, write_private_file_atomic, EXIT_SUCCESS,
+        EXIT_USAGE, HELP,
+    };
+    use crate::parse::RestoreArguments;
     use radio_flasher::k5::View;
 
     fn temp_path(name: &str) -> std::path::PathBuf {
@@ -379,6 +582,8 @@ mod tests {
             EXIT_SUCCESS
         );
         assert_eq!(stdout, HELP.as_bytes());
+        assert!(HELP.contains("--confirm-recovery-sha256 SHA256"));
+        assert!(!HELP.contains("\\n+"));
         assert!(stderr.is_empty());
 
         stdout.clear();
@@ -430,5 +635,47 @@ mod tests {
         assert!(output.contains("reset_vector=0x00000009\n"));
         assert!(output.contains("crc32="));
         assert!(stderr.is_empty());
+    }
+
+    #[test]
+    fn restore_preflight_rejects_hardlink_aliases_without_serial() {
+        let original = temp_path("restore-original");
+        let alias = temp_path("restore-alias");
+        fs::write(&original, [1_u8]).unwrap();
+        fs::hard_link(&original, &alias).unwrap();
+        let arguments = RestoreArguments {
+            restore: original.clone(),
+            current: alias.clone(),
+            recovery: temp_path("restore-recovery"),
+            pre_write_backup: temp_path("restore-output"),
+            version: "F4HWN v4.3".into(),
+            target_confirmation: "UV-K5-V1-DP32G030".into(),
+            recovery_crc32_confirmation: "00000000".into(),
+            recovery_sha256_confirmation: "00".repeat(32),
+            restore_confirmation: "UV-K5-V1-DP32G030:00000000".into(),
+        };
+        assert!(validate_restore_paths(&arguments).is_err());
+        fs::remove_file(alias).unwrap();
+        fs::remove_file(original).unwrap();
+    }
+
+    #[test]
+    fn atomic_pre_write_backup_is_create_new_and_directory_synced() {
+        let path = temp_path("atomic-backup");
+        write_private_file_atomic(&path, b"backup").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"backup");
+        assert!(write_private_file_atomic(&path, b"replacement").is_err());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_pre_write_backup_rejects_dangling_symlink() {
+        let path = temp_path("atomic-dangling");
+        let target = temp_path("atomic-target");
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        assert!(write_private_file_atomic(&path, b"backup").is_err());
+        assert!(fs::symlink_metadata(&path).is_ok());
+        fs::remove_file(path).unwrap();
     }
 }

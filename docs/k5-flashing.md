@@ -13,8 +13,14 @@ minimal AFIK image a usable radio firmware.
   erased, or written by AFIK.
 - Serial is one explicit Linux path at 38,400 baud, 8-N-1. There is no device
   discovery or default path.
-- Normal-mode access is read-only and limited to a complete 8 KiB EEPROM
-  backup. No EEPROM or calibration write exists.
+- Normal-mode backup is read-only; the separate explicit `restore-eeprom`
+  command is the only host EEPROM write path. It requires an exact live backup,
+  a validated recovery application, an explicit target/image confirmation, and
+  writes only changed aligned eight-byte blocks with immediate and final
+  read-back verification. The host owns its serial descriptor exclusively,
+  but the stock UI must also be quiescent: stock firmware has no atomic
+  expected-byte compare. The host performs two immediate reads before each
+  write to narrow (not eliminate) that TOCTOU race.
 - Bootloader access accepts only the exact version-2 shape and printable `2.*`
   version. Bootloader v5 and unknown variants are rejected.
 - Flashing is one full 240-page write. There is no address, length, partial,
@@ -95,6 +101,42 @@ first. The output is create-new and mode `0600` unless `--force` is deliberate:
 nix develop path:. -c cargo run --package radio-flasher-cli --bin afik-k5 -- \
   --device /dev/ttyUSB0 backup-eeprom unit-eeprom.raw
 ```
+
+The software-only restore command is never selected implicitly or by
+auto-detection. It requires separate restore and expected-current images, a
+same-unit vector-checked recovery application, and a create-new pre-write
+backup output. The confirmation token is exactly
+`UV-K5-V1-DP32G030:CRC32`, where the eight hexadecimal digits are the selected
+restore image's CRC-32. The command compares a fresh complete live read against
+the expected-current backup before making the pre-write backup and sending any
+`0x051D` write. Stock firmware accepts eight-byte chunks in that command;
+`0x051E` only echoes the offset, so the host compares two immediate reads
+immediately before each write and reads the block back immediately afterward.
+This is not an atomic compare-and-write; exclusive serial ownership and a
+quiescent stock UI remain operator requirements. Missing or malformed
+responses stop without retry; a final complete read must match the restore
+image.
+
+```sh
+afik-k5 --device /dev/ttyUSB0 restore-eeprom restore.raw \
+  --current expected-current.raw --recovery recovery.raw \
+  --pre-write-backup live-before-restore.raw --version "F4HWN v4.3" \
+  --confirm-target UV-K5-V1-DP32G030 \
+  --confirm-recovery-crc32 RECOVERY_CRC32 \
+  --confirm-recovery-sha256 RECOVERY_SHA256 \
+  --confirm-restore UV-K5-V1-DP32G030:RESTORE_CRC32
+```
+
+The recovery SHA-256 is a separately retained trusted value supplied out of
+band; it is not calculated from the selected file and echoed back as its own
+confirmation. The source artifact must be exactly 60,612 bytes, and the live
+normal hello must equal the supplied normal-firmware identity (for example,
+`F4HWN v4.3`). This prevents a substituted vector-valid image from satisfying
+the gate merely by supplying its own CRC or digest. This is a destructive
+hardware command and was not run for APP-052. It does
+not establish a disposable EEPROM allocation: the two 1,312-byte simulator
+slots still have no safe absolute K5 address, and deliberate repurposing of
+vendor configuration remains a separate evidence decision.
 
 After recording the backup hash and validating a raw recovery application, use
 offline inspection to obtain the CRC-32 selection guard:
