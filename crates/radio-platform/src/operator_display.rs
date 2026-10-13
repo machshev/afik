@@ -1,7 +1,7 @@
 //! Hardware-independent ST7565-compatible display commands and fixed witness.
 
 use crate::display::{BootStage, ReceiveDiagnostic};
-use crate::operator_shell::TX_POWER_NOMINAL_MW;
+use crate::operator_shell::{TX_POWER_NOMINAL_MW, TX_TIMEOUT_SECONDS};
 use crate::receive_app::Key;
 use radio_bk4819::SquelchThresholds;
 use radio_domain::SquelchLevel;
@@ -373,6 +373,24 @@ impl SelectorRow {
         Self::with_label(&label[..8], active)
     }
 
+    /// Builds the settings-menu row for the TX timeout, with its value.
+    #[must_use]
+    pub fn tx_timeout_setting(choice: u8) -> Self {
+        let mut label = [b' '; LIST_NAME_BYTES];
+        label[..10].copy_from_slice(b"TX TIMEOUT");
+        label[11..].copy_from_slice(&seconds_label(choice));
+        Self::with_label(&label, false)
+    }
+
+    /// Builds one TX timeout row, numbered from one.
+    #[must_use]
+    pub fn tx_timeout_choice(choice: u8, active: bool) -> Self {
+        let mut label = [b' '; LIST_NAME_BYTES];
+        label[0] = b'1' + choice.min(8);
+        label[3..6].copy_from_slice(&seconds_label(choice));
+        Self::with_label(&label[..6], active)
+    }
+
     /// Builds one squelch-level row.
     ///
     /// Level zero is named rather than numbered, because "no squelch at all" is
@@ -414,6 +432,16 @@ impl SelectorRow {
     pub fn label(&self) -> &[u8] {
         &self.label[..usize::from(self.label_len)]
     }
+}
+
+/// A three-byte timeout label such as `15S` or `60S`.
+fn seconds_label(choice: u8) -> [u8; 3] {
+    let seconds = TX_TIMEOUT_SECONDS
+        .get(usize::from(choice))
+        .copied()
+        .unwrap_or(0)
+        .min(99);
+    [b'0' + seconds / 10, b'0' + seconds % 10, b'S']
 }
 
 /// A five-byte nominal power label such as ` 20MW` or `500MW`.
@@ -1354,6 +1382,10 @@ mod operating_screen_tests {
         for level in 0..crate::operator_shell::TX_POWER_LEVELS {
             fixed.extend_from_slice(SelectorRow::tx_power_setting(level).label());
             fixed.extend_from_slice(SelectorRow::tx_power_level(level, false).label());
+        }
+        for choice in 0..crate::operator_shell::TX_TIMEOUT_CHOICES {
+            fixed.extend_from_slice(SelectorRow::tx_timeout_setting(choice).label());
+            fixed.extend_from_slice(SelectorRow::tx_timeout_choice(choice, false).label());
         }
 
         for byte in fixed {

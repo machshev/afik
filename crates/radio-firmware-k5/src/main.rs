@@ -223,7 +223,7 @@ fn main() -> ! {
                 .and_then(|(channel, calibration)| {
                     transmit::level_bias(calibration, channel.frequency().as_hz(), level)
                 });
-        let request = transmit::request(view, revision, bias, level);
+        let request = transmit::request(view, revision, bias, level, shell.tx_timeout_ms());
         let ptt = keypad.ptt_pressed();
         let ptt_event = match (ptt_down, ptt) {
             (false, true) => tx_control::Event::Pressed,

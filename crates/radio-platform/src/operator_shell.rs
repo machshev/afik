@@ -81,6 +81,8 @@ enum Cursor {
     Squelch,
     /// The TX power-level list.
     TxPower,
+    /// The TX timeout list.
+    TxTimeout,
 }
 
 /// Which receive source the operator is listening to.
@@ -122,6 +124,8 @@ pub enum Screen {
     SquelchList,
     /// The selectable TX power levels, where the target can transmit.
     TxPowerList,
+    /// The selectable TX timeouts, where the target can transmit.
+    TxTimeoutList,
     /// Image identity and storage state.
     Info,
 }
@@ -138,6 +142,8 @@ pub enum Setting {
     Squelch,
     /// The radio-wide TX power level, where the target can transmit.
     TxPower,
+    /// How long one press may transmit, where the target can transmit.
+    TxTimeout,
 }
 
 /// Every settings row, in the order the menu lists them.
@@ -153,7 +159,8 @@ pub const SETTINGS: [Setting; 1] = [Setting::Squelch];
 
 /// Settings rows on a target that can transmit. TX power qualifies for the
 /// same reason squelch does: the right level depends on where the operator is.
-pub const SETTINGS_WITH_TX_POWER: [Setting; 2] = [Setting::Squelch, Setting::TxPower];
+/// The TX timeout does too: a net with long overs needs a longer one.
+pub const SETTINGS_WITH_TX: [Setting; 3] = [Setting::Squelch, Setting::TxPower, Setting::TxTimeout];
 
 /// Selectable TX power levels.
 pub const TX_POWER_LEVELS: u8 = 4;
@@ -161,6 +168,15 @@ pub const TX_POWER_LEVELS: u8 = 4;
 /// Nominal output of each TX power level, in milliwatts: Armel F4HWN Low1 to
 /// Low4 as its README documents them. Nominal, not measured by AFIK.
 pub const TX_POWER_NOMINAL_MW: [u32; TX_POWER_LEVELS as usize] = [20, 125, 250, 500];
+
+/// Selectable TX timeouts.
+pub const TX_TIMEOUT_CHOICES: u8 = 4;
+
+/// Each TX timeout in seconds, all within the TX policy's 60 s ceiling.
+pub const TX_TIMEOUT_SECONDS: [u8; TX_TIMEOUT_CHOICES as usize] = [15, 30, 45, 60];
+
+/// Index into [`TX_TIMEOUT_SECONDS`] in force until the operator picks one.
+pub const TX_TIMEOUT_DEFAULT: u8 = 1;
 
 /// Selectable squelch levels, from permanently open to tightest.
 pub const SQUELCH_LEVELS: u8 = MAX_SQUELCH_LEVEL + 1;
@@ -278,6 +294,8 @@ pub struct Shell {
     squelch_cursor: u8,
     tx_power: u8,
     tx_power_cursor: u8,
+    tx_timeout: u8,
+    tx_timeout_cursor: u8,
     /// Whether a star press is still waiting to become a hold or a release.
     star_pending: bool,
     capabilities: Capabilities,
@@ -312,6 +330,8 @@ impl Shell {
             squelch_cursor: SquelchLevel::CONSERVATIVE.get(),
             tx_power: 0,
             tx_power_cursor: 0,
+            tx_timeout: TX_TIMEOUT_DEFAULT,
+            tx_timeout_cursor: TX_TIMEOUT_DEFAULT,
             star_pending: false,
             capabilities: Capabilities::K1,
         }
@@ -331,12 +351,17 @@ impl Shell {
         if !capabilities.settings
             && matches!(
                 self.screen,
-                Screen::Settings | Screen::SquelchList | Screen::TxPowerList
+                Screen::Settings
+                    | Screen::SquelchList
+                    | Screen::TxPowerList
+                    | Screen::TxTimeoutList
             )
         {
             self.screen = Screen::Operating;
         }
-        if !capabilities.tx_power && self.screen == Screen::TxPowerList {
+        if !capabilities.tx_power
+            && matches!(self.screen, Screen::TxPowerList | Screen::TxTimeoutList)
+        {
             self.screen = Screen::Operating;
         }
         self.settings_cursor = self
@@ -348,7 +373,7 @@ impl Shell {
     #[must_use]
     pub const fn settings(&self) -> &'static [Setting] {
         if self.capabilities.tx_power {
-            &SETTINGS_WITH_TX_POWER
+            &SETTINGS_WITH_TX
         } else {
             &SETTINGS
         }
@@ -364,6 +389,24 @@ impl Shell {
     #[must_use]
     pub const fn tx_power_cursor(&self) -> u8 {
         self.tx_power_cursor
+    }
+
+    /// Returns the selected TX timeout, as an index into [`TX_TIMEOUT_SECONDS`].
+    #[must_use]
+    pub const fn tx_timeout(&self) -> u8 {
+        self.tx_timeout
+    }
+
+    /// Returns the selected TX timeout in milliseconds.
+    #[must_use]
+    pub const fn tx_timeout_ms(&self) -> u32 {
+        TX_TIMEOUT_SECONDS[self.tx_timeout as usize] as u32 * 1_000
+    }
+
+    /// Returns the TX timeout-list cursor row.
+    #[must_use]
+    pub const fn tx_timeout_cursor(&self) -> u8 {
+        self.tx_timeout_cursor
     }
 
     /// Returns the active target capability gates.
@@ -742,6 +785,11 @@ impl Shell {
             Screen::TxPowerList => {
                 self.step_row(direction, usize::from(TX_POWER_LEVELS), Cursor::TxPower)
             }
+            Screen::TxTimeoutList => self.step_row(
+                direction,
+                usize::from(TX_TIMEOUT_CHOICES),
+                Cursor::TxTimeout,
+            ),
             Screen::Info => Intent::Redraw,
         }
     }
@@ -754,12 +802,14 @@ impl Shell {
         let last = rows.saturating_sub(1);
         let mut squelch_cursor = usize::from(self.squelch_cursor);
         let mut tx_power_cursor = usize::from(self.tx_power_cursor);
+        let mut tx_timeout_cursor = usize::from(self.tx_timeout_cursor);
         let cursor = match which {
             Cursor::Source => &mut self.source_cursor,
             Cursor::Step => &mut self.step_cursor,
             Cursor::Settings => &mut self.settings_cursor,
             Cursor::Squelch => &mut squelch_cursor,
             Cursor::TxPower => &mut tx_power_cursor,
+            Cursor::TxTimeout => &mut tx_timeout_cursor,
         };
         *cursor = match direction {
             Direction::Up => {
@@ -782,6 +832,9 @@ impl Shell {
         }
         if matches!(which, Cursor::TxPower) {
             self.tx_power_cursor = u8::try_from(tx_power_cursor).unwrap_or(0);
+        }
+        if matches!(which, Cursor::TxTimeout) {
+            self.tx_timeout_cursor = u8::try_from(tx_timeout_cursor).unwrap_or(0);
         }
         Intent::Redraw
     }
@@ -822,6 +875,10 @@ impl Shell {
                         self.screen = Screen::TxPowerList;
                         self.tx_power_cursor = self.tx_power;
                     }
+                    Some(Setting::TxTimeout) => {
+                        self.screen = Screen::TxTimeoutList;
+                        self.tx_timeout_cursor = self.tx_timeout;
+                    }
                     // A menu row with nothing behind it cannot open a screen the
                     // operator would then be stuck on.
                     None => self.screen = Screen::Operating,
@@ -840,12 +897,20 @@ impl Shell {
                 }
                 Intent::SetSquelch(level)
             }
-            // TX power is held by the shell and read by the target before each
-            // transmission, so choosing one needs no target acknowledgement.
+            // TX power and timeout are held by the shell and read by the target
+            // before each transmission, so choosing one needs no target
+            // acknowledgement.
             Screen::TxPowerList => {
                 self.screen = Screen::Operating;
                 if self.tx_power_cursor < TX_POWER_LEVELS {
                     self.tx_power = self.tx_power_cursor;
+                }
+                Intent::Redraw
+            }
+            Screen::TxTimeoutList => {
+                self.screen = Screen::Operating;
+                if self.tx_timeout_cursor < TX_TIMEOUT_CHOICES {
+                    self.tx_timeout = self.tx_timeout_cursor;
                 }
                 Intent::Redraw
             }
@@ -911,7 +976,10 @@ impl Shell {
         }
         // Exit unwinds one step, so a value list returns to the menu that opened
         // it rather than throwing the operator all the way out.
-        self.screen = if matches!(self.screen, Screen::SquelchList | Screen::TxPowerList) {
+        self.screen = if matches!(
+            self.screen,
+            Screen::SquelchList | Screen::TxPowerList | Screen::TxTimeoutList
+        ) {
             Screen::Settings
         } else {
             Screen::Operating
@@ -938,6 +1006,18 @@ impl Shell {
                     return Intent::Idle;
                 };
                 self.tx_power_cursor = level;
+                return self.confirm(context);
+            }
+            // Timeouts are numbered from one on screen too.
+            Screen::TxTimeoutList => {
+                let Some(choice) = u8::try_from(digit)
+                    .ok()
+                    .and_then(|digit| digit.checked_sub(1))
+                    .filter(|choice| *choice < TX_TIMEOUT_CHOICES)
+                else {
+                    return Intent::Idle;
+                };
+                self.tx_timeout_cursor = choice;
                 return self.confirm(context);
             }
             Screen::Settings => return Intent::Idle,
@@ -1021,7 +1101,7 @@ impl Shell {
         self.entry = None;
         if matches!(
             self.screen,
-            Screen::Settings | Screen::SquelchList | Screen::TxPowerList
+            Screen::Settings | Screen::SquelchList | Screen::TxPowerList | Screen::TxTimeoutList
         ) {
             self.screen = Screen::Operating;
             return Intent::Redraw;
@@ -1078,7 +1158,7 @@ impl Shell {
 mod tests {
     use super::{
         Capabilities, Context, Intent, Mode, Screen, Shell, Source, ENTRY_TIMEOUT_MILLISECONDS,
-        SETTINGS, SETTINGS_WITH_TX_POWER, VFO_DEFAULT_HZ, VFO_MAXIMUM_HZ, VFO_STEPS_HZ,
+        SETTINGS, SETTINGS_WITH_TX, VFO_DEFAULT_HZ, VFO_MAXIMUM_HZ, VFO_STEPS_HZ,
     };
     use crate::receive_app::Key;
     use radio_channel_plan::MAX_BANKS;
@@ -1438,7 +1518,7 @@ mod tests {
 
         shell.set_capabilities(Capabilities::K5);
         shell.select_memory();
-        assert_eq!(shell.settings(), &SETTINGS_WITH_TX_POWER[..]);
+        assert_eq!(shell.settings(), &SETTINGS_WITH_TX[..]);
         assert_eq!(shell.tx_power(), 0, "the lowest level is the default");
         shell.press(Key::Menu, 0, context(16, 0));
         shell.press(Key::Down, 1, context(16, 0));
@@ -1468,6 +1548,51 @@ mod tests {
         shell.press(Key::Exit, 16, context(16, 0));
         assert_eq!(shell.screen(), Screen::Settings);
         assert_eq!(shell.tx_power(), 3);
+    }
+
+    #[test]
+    fn tx_timeout_is_a_setting_that_picks_the_timeout_in_force() {
+        let mut shell = Shell::new();
+        shell.set_capabilities(Capabilities::K5);
+        shell.select_memory();
+        assert_eq!(shell.tx_timeout_ms(), 30_000, "30 s is the default");
+        shell.press(Key::Menu, 0, context(16, 0));
+        shell.press(Key::Down, 1, context(16, 0));
+        shell.press(Key::Down, 2, context(16, 0));
+        assert_eq!(shell.press(Key::Menu, 3, context(16, 0)), Intent::Redraw);
+        assert_eq!(shell.screen(), Screen::TxTimeoutList);
+        assert_eq!(
+            shell.tx_timeout_cursor(),
+            1,
+            "opens on the timeout in force"
+        );
+        shell.press(Key::Down, 4, context(16, 0));
+        shell.press(Key::Down, 5, context(16, 0));
+        assert_eq!(shell.press(Key::Menu, 6, context(16, 0)), Intent::Redraw);
+        assert_eq!(shell.tx_timeout_ms(), 60_000);
+        assert_eq!(shell.screen(), Screen::Operating);
+
+        // Digits pick a timeout numbered from one; others do nothing.
+        shell.press(Key::Menu, 7, context(16, 0));
+        shell.press(Key::Up, 8, context(16, 0));
+        shell.press(Key::Menu, 9, context(16, 0));
+        assert_eq!(
+            shell.screen(),
+            Screen::TxTimeoutList,
+            "Up wraps to the last row"
+        );
+        assert_eq!(shell.press(Key::Digit(5), 10, context(16, 0)), Intent::Idle);
+        shell.press(Key::Digit(1), 11, context(16, 0));
+        assert_eq!(shell.tx_timeout_ms(), 15_000);
+
+        // Exit returns to the menu and applies nothing.
+        shell.press(Key::Menu, 12, context(16, 0));
+        shell.press(Key::Up, 13, context(16, 0));
+        shell.press(Key::Menu, 14, context(16, 0));
+        shell.press(Key::Down, 15, context(16, 0));
+        shell.press(Key::Exit, 16, context(16, 0));
+        assert_eq!(shell.screen(), Screen::Settings);
+        assert_eq!(shell.tx_timeout_ms(), 15_000);
     }
 
     /// A host write is the authority on the level the menu shows.

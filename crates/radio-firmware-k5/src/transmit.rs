@@ -13,7 +13,7 @@ use radio_tx_policy::{TxPolicy, TxRequest, TxState};
 use crate::application::SpeakerOutput;
 use crate::receive::Pmr446Channel;
 
-pub use radio_platform::transmit::{run_effects, Delay, TIMEOUT_MS};
+pub use radio_platform::transmit::{run_effects, Delay};
 
 /// EEPROM address of the three low-power bias bytes for the 400–470 MHz band:
 /// `0x1ED0 + band 5 * 16 + low * 3` (`radio.c:555`).
@@ -45,7 +45,13 @@ pub fn policy() -> TxPolicy {
 }
 
 /// Builds the complete request from the current receive view.
-pub fn request(view: View, revision: u32, bias: Option<u8>, level: u8) -> TxRequest {
+pub fn request(
+    view: View,
+    revision: u32,
+    bias: Option<u8>,
+    level: u8,
+    timeout_ms: u32,
+) -> TxRequest {
     let channel = Pmr446Channel::new(view.channel);
     let state = if view.receiver_ok && channel.is_some() {
         TxState::Selected
@@ -58,6 +64,7 @@ pub fn request(view: View, revision: u32, bias: Option<u8>, level: u8) -> TxRequ
         revision,
         bias,
         level,
+        timeout_ms,
     )
 }
 
@@ -82,7 +89,7 @@ pub fn execute<B: RegisterBus, S: SpeakerOutput, D: Delay>(
 
 #[cfg(test)]
 mod tests {
-    use super::{execute, level_bias, policy, request, run_effects, Delay, TIMEOUT_MS};
+    use super::{execute, level_bias, policy, request, run_effects, Delay};
     use crate::application::SpeakerOutput;
     use crate::receive::Pmr446Channel;
     use radio_bk4819::{Bk4819, RegisterAddress, RegisterBus, GPIO_PA_ENABLE, MODE_TRANSMIT_K5};
@@ -91,6 +98,8 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::vec::Vec;
+
+    const TIMEOUT_MS: u32 = 15_000;
 
     #[derive(Default)]
     struct Log {
@@ -179,7 +188,7 @@ mod tests {
 
         fn step(&mut self, now: u64, event: Event) {
             let policy = policy();
-            let request = request(VIEW, 1, self.bias, 0);
+            let request = request(VIEW, 1, self.bias, 0, TIMEOUT_MS);
             let _ = self.controller.handle(now, event, &policy, &request);
             let receive = Pmr446Channel::new(VIEW.channel).map(|channel| channel.setup(true));
             let Self {
@@ -229,7 +238,7 @@ mod tests {
     #[test]
     fn every_level_is_within_the_pmr446_ceiling_and_authorised() {
         for level in 0..4 {
-            let request = request(VIEW, 1, Some(15), level);
+            let request = request(VIEW, 1, Some(15), level, TIMEOUT_MS);
             assert!(policy().authorise(&request).is_ok(), "level {level}");
         }
     }
@@ -265,7 +274,7 @@ mod tests {
         bench.step(100 + u64::from(TIMEOUT_MS), Event::Tick);
         assert_eq!(bench.controller.state(), State::ReleaseRequired);
         assert_eq!(pa_enabled(&bench.writes()), Some(false));
-        bench.step(6_000, Event::Pressed);
+        bench.step(1_100 + u64::from(TIMEOUT_MS), Event::Pressed);
         assert!(bench.writes().is_empty());
     }
 
@@ -281,9 +290,11 @@ mod tests {
             ..VIEW
         };
         assert!(policy()
-            .authorise(&request(faulted, 1, Some(15), 0))
+            .authorise(&request(faulted, 1, Some(15), 0, TIMEOUT_MS))
             .is_err());
-        assert!(policy().authorise(&request(VIEW, 1, Some(15), 0)).is_ok());
+        assert!(policy()
+            .authorise(&request(VIEW, 1, Some(15), 0, TIMEOUT_MS))
+            .is_ok());
     }
 
     #[test]

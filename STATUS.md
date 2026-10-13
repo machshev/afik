@@ -19,7 +19,14 @@
   `cargo test --workspace` 659 passed 0 failed, K5 image builds, verifies and
   flashed (240/240 pages acknowledged). On the radio it read 100% fresh off
   charge, then 99% unplugged.
-- Next: flash K1 `7.0.3` and check its speech level; then CTCSS/DCS with an
+- `7.0.4` adds a TX TIMEOUT setting on both targets (15/30/45/60 s, default
+  30 s; the 60 s ceiling is `radio-tx-policy`'s) in place of the fixed 5 s.
+  Changing it mid-TX changes the request, so the controller stops TX. Gate:
+  `cargo fmt --all --check` clean, workspace clippy `-D warnings` clean,
+  `cargo test --workspace` 661 passed 0 failed, K5 image builds and verifies
+  (flash end `0x0000e46c`), K1 async image builds. Not yet flashed.
+- Next: flash `7.0.4` and check a 30 s over times out; flash K1 and check its
+  speech level; then CTCSS/DCS with an
   end-of-transmission tail tone to remove the key-off squelch burst.
 
 ## Previous work package: TXK5-058

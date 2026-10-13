@@ -23,8 +23,6 @@ use radio_tx_policy::{
 use crate::operator_shell::{TX_POWER_LEVELS, TX_POWER_NOMINAL_MW};
 use crate::tx_control::{Acknowledgement, Action, Controller, Effect, Event};
 
-/// TX timeout from the accepted press, in milliseconds.
-pub const TIMEOUT_MS: u32 = 5_000;
 /// PMR446 ceiling, which also bounds each target's hardware envelope.
 pub const PMR446_MAX_MW: u32 = 500;
 /// Most controller effects driven in one pass; a full entry or exit is four or
@@ -115,7 +113,8 @@ impl Pmr446Target {
     /// The attestations are the operator's, given for this experimental bench
     /// build on 2026-10-13 (`TXK5-058`). The calibration envelope is present
     /// only when a bias for `level` was derived from this unit's calibration.
-    /// A frequency off the PMR446 raster is denied by policy, not here.
+    /// A frequency off the PMR446 raster, or a timeout over the policy
+    /// ceiling, is denied by policy, not here.
     #[must_use]
     pub fn request(
         &self,
@@ -124,6 +123,7 @@ impl Pmr446Target {
         revision: u32,
         bias: Option<u8>,
         level: u8,
+        timeout_ms: u32,
     ) -> TxRequest {
         TxRequest {
             target_id: self.target_id,
@@ -138,7 +138,7 @@ impl Pmr446Target {
                 .get(usize::from(level))
                 .copied()
                 .unwrap_or(0),
-            timeout_ms: TIMEOUT_MS,
+            timeout_ms,
             state,
             configuration: Some(ConfigurationIdentity {
                 instance: 1,
@@ -245,6 +245,7 @@ pub fn run_effects(
 #[cfg(test)]
 mod tests {
     use super::{policy, Pmr446Target};
+    use crate::operator_shell::TX_TIMEOUT_SECONDS;
     use radio_domain::Frequency;
     use radio_tx_policy::{TxDenied, TxState};
 
@@ -271,9 +272,26 @@ mod tests {
     }
 
     #[test]
+    fn every_selectable_timeout_is_authorised() {
+        let policy = policy();
+        for seconds in TX_TIMEOUT_SECONDS {
+            let timeout_ms = u32::from(seconds) * 1_000;
+            let request = K5.request(
+                pmr(446_006_250),
+                TxState::Selected,
+                1,
+                Some(15),
+                0,
+                timeout_ms,
+            );
+            assert!(policy.authorise(&request).is_ok(), "{seconds} s");
+        }
+    }
+
+    #[test]
     fn only_selected_pmr446_raster_frequencies_are_authorised() {
         let policy = policy();
-        let selected = |hz| K1.request(pmr(hz), TxState::Selected, 1, Some(15), 0);
+        let selected = |hz| K1.request(pmr(hz), TxState::Selected, 1, Some(15), 0, 30_000);
         assert!(policy.authorise(&selected(446_006_250)).is_ok());
         assert!(policy.authorise(&selected(446_193_750)).is_ok());
         assert_eq!(
@@ -285,9 +303,9 @@ mod tests {
             policy.authorise(&selected(145_500_000)).is_err(),
             "amateur VHF is not PMR446"
         );
-        let scanning = K1.request(pmr(446_006_250), TxState::Scanning, 1, Some(15), 0);
+        let scanning = K1.request(pmr(446_006_250), TxState::Scanning, 1, Some(15), 0, 30_000);
         assert_eq!(policy.authorise(&scanning).unwrap_err(), TxDenied::State);
-        let uncalibrated = K1.request(pmr(446_006_250), TxState::Selected, 1, None, 0);
+        let uncalibrated = K1.request(pmr(446_006_250), TxState::Selected, 1, None, 0, 30_000);
         assert_eq!(
             policy.authorise(&uncalibrated).unwrap_err(),
             TxDenied::Calibration

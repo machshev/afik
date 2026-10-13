@@ -255,6 +255,7 @@ fn k5_settings_and_squelch_frames_use_the_shared_k1_layout() {
         &[
             SelectorRow::squelch_setting(radio_domain::SquelchLevel::CONSERVATIVE.get()),
             SelectorRow::tx_power_setting(0),
+            SelectorRow::tx_timeout_setting(radio_platform::operator_shell::TX_TIMEOUT_DEFAULT),
         ],
         0,
     );

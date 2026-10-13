@@ -13,7 +13,7 @@ use radio_platform::operator_display::{
     FRAME_BYTES, LIST_ROWS, PAGES, WIDTH,
 };
 use radio_platform::operator_shell::{
-    Screen, Setting, Shell, Source, SQUELCH_LEVELS, TX_POWER_LEVELS,
+    Screen, Setting, Shell, Source, SQUELCH_LEVELS, TX_POWER_LEVELS, TX_TIMEOUT_CHOICES,
 };
 use radio_platform::receive_app::View;
 
@@ -294,6 +294,7 @@ pub fn render_operator_frame(
                 rows[offset] = match setting {
                     Setting::Squelch => SelectorRow::squelch_setting(shell.squelch().get()),
                     Setting::TxPower => SelectorRow::tx_power_setting(shell.tx_power()),
+                    Setting::TxTimeout => SelectorRow::tx_timeout_setting(shell.tx_timeout()),
                 };
                 count += 1;
             }
@@ -333,6 +334,20 @@ pub fn render_operator_frame(
                 b"TX POWER",
                 &rows[..count],
                 usize::from(shell.tx_power_cursor()),
+            );
+        }
+        Screen::TxTimeoutList => {
+            let mut rows = [SelectorRow::default(); LIST_ROWS];
+            let mut count = 0;
+            for (choice, row) in (0..TX_TIMEOUT_CHOICES).zip(rows.iter_mut()) {
+                *row = SelectorRow::tx_timeout_choice(choice, choice == shell.tx_timeout());
+                count += 1;
+            }
+            render_selector_list(
+                &mut frame,
+                b"TX TIMEOUT",
+                &rows[..count],
+                usize::from(shell.tx_timeout_cursor()),
             );
         }
         Screen::StepList => render_selector_list(&mut frame, b"NO CAP", &[], 0),

@@ -68,7 +68,7 @@ use radio_firmware_k1::py32f071_runtime::{compose, K1RuntimePeripherals};
 use radio_firmware_k1::py32f071_runtime_init::init;
 use radio_firmware_k1::shell::{
     Context, Intent, Mode, Screen, Setting, Shell, Source, HOLD_MILLISECONDS, SQUELCH_LEVELS,
-    TX_POWER_LEVELS, VFO_STEPS_HZ,
+    TX_POWER_LEVELS, TX_TIMEOUT_CHOICES, VFO_STEPS_HZ,
 };
 use radio_firmware_k1::unified_receive::{shared_channel, translate, K1Effect};
 use radio_platform::configuration_change::{ConfigurationAcknowledgement, ConfigurationCandidate};
@@ -1538,6 +1538,7 @@ async fn ui_task(
             tx_revision,
             tx_calibration,
             shell.tx_power(),
+            shell.tx_timeout_ms(),
         );
         let tx_now = Instant::now().as_millis();
         let ptt = keypad.ptt.is_low();
@@ -2013,6 +2014,7 @@ fn tx_request(
     revision: u32,
     calibration: Option<[u8; 3]>,
     level: u8,
+    timeout_ms: u32,
 ) -> (TxRequest, Option<u8>) {
     let frequency = Frequency::from_hz(receiver.frequency_hz).ok();
     let state = if receiver.faulted || !receiver.started || frequency.is_none() {
@@ -2030,7 +2032,10 @@ fn tx_request(
     let frequency = frequency.unwrap_or_else(|| {
         Frequency::from_hz(446_006_250).expect("PMR446 channel 1 is a frequency")
     });
-    (K1_TX.request(frequency, state, revision, bias, level), bias)
+    (
+        K1_TX.request(frequency, state, revision, bias, level, timeout_ms),
+        bias,
+    )
 }
 
 fn render(
@@ -2129,6 +2134,7 @@ fn render(
                 rows[offset] = match setting {
                     Setting::Squelch => SelectorRow::squelch_setting(shell.squelch().get()),
                     Setting::TxPower => SelectorRow::tx_power_setting(shell.tx_power()),
+                    Setting::TxTimeout => SelectorRow::tx_timeout_setting(shell.tx_timeout()),
                 };
                 count += 1;
             }
@@ -2146,6 +2152,20 @@ fn render(
                 b"TX POWER",
                 &rows[..count],
                 usize::from(shell.tx_power_cursor()),
+            );
+        }
+        Screen::TxTimeoutList => {
+            let mut rows = [SelectorRow::default(); LIST_ROWS];
+            let mut count = 0;
+            for (choice, row) in (0..TX_TIMEOUT_CHOICES).zip(rows.iter_mut()) {
+                *row = SelectorRow::tx_timeout_choice(choice, choice == shell.tx_timeout());
+                count += 1;
+            }
+            render_selector_list(
+                frame,
+                b"TX TIMEOUT",
+                &rows[..count],
+                usize::from(shell.tx_timeout_cursor()),
             );
         }
         Screen::SquelchList => {
