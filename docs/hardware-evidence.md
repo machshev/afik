@@ -4,6 +4,9 @@ Hardware facts are recorded before they are encoded in target or simulator
 source. A simulator result confirms software behaviour against its declared
 model; it does not increase confidence in the underlying silicon fact.
 
+The current [target TX matrix](#txevid-055--target-tx-effect-evidence) records
+the separate K1/BK4829 and K5 V1/BK4819 preparation and shutdown gaps.
+
 ## Source selected by K1EVID-013
 
 ### Armel UV-K1/K5-V3 firmware
@@ -2862,3 +2865,214 @@ recorded in EVID-K5-033 and is retained as historical evidence.
 - **Next image:** the corrective unflashed identity is `AFIK-K5-2.1D`.
   Building, packaging, or static plan tests do not establish physical display
   legibility; a separate authorized write and observation remains required.
+
+## TXEVID-055 — Target TX effect evidence
+
+Reviewed 2026-10-13. This is an evidence-only contract for the six actions in
+`radio-platform::tx_control::Action`, including their startup, entry, ordinary
+shutdown, and second fault-cleanup occurrences. Neither target invokes that
+controller. No physical experiment, target TX adapter, new register behavior,
+or hardware/calibration envelope is established here. `RISK-007`, `RISK-038`,
+`RISK-039`, and `RISK-040` remain open.
+
+### Pinned source provenance
+
+K1 references below are relative to [Armel commit
+fe9c4e9432694b50aea651084a043aae0b58673d](https://github.com/armel/uv-k1-k5v3-firmware-custom/tree/fe9c4e9432694b50aea651084a043aae0b58673d).
+The commit archive was retrieved into `/tmp/afik-txevid-055-k1`, outside AFIK;
+all five baseline file hashes in `docs/k1-bring-up.md` match. Its
+`App/CMakeLists.txt:10` selects `App/driver/bk4829.c` despite that driver's
+`BK4819_` function names. The unselected `bk4819.c` is not K1 TX evidence.
+
+K5 references are relative to [machshev commit
+7f959e8d09b435845753182b329e3a88490ebe32](https://github.com/machshev/uv-k5-firmware-custom/tree/7f959e8d09b435845753182b329e3a88490ebe32)
+in `/home/jamesm/base/uv-k5-firmware-custom`. HEAD matches the pin; only the
+unrelated `Makefile` is modified. Every cited K5 file matches HEAD. This source
+is V1 board evidence; it does not qualify every K5-family board or the K1.
+
+SHA-256 of the principal inspected files:
+
+| Target | Pinned file | SHA-256 |
+| --- | --- | --- |
+| K1 | `App/driver/bk4829.c` | `c4a6931fcde7ae92c94c9250eba65f6535be068b55605fe7ab09aea192003f16` |
+| K1 | `App/radio.c` | `9ea1fc45caa739597f717002f5203f3955d818652165caf14ee47d1bfcf222cc` |
+| K5 V1 | `driver/bk4819.c` | `a2bc8167130798c081ed4286e909e2f48628b1c5fdbac38750a50ac30ae0cacc` |
+| K5 V1 | `radio.c` | `719cc6dfadc4363753f72b67faeaa2be73a87889877301ff103520e3a0008076` |
+
+The sources retain their existing standing: observations of working firmware
+and source-declared wiring/register use, with no permission to copy, port,
+link, or translate the implementation. In particular, literal writes and
+comments below are source facts, not newly accepted silicon semantics.
+Confidence is **high for the inspected source/software statement**; physical
+applicability of each TX statement remains **unestablished** unless a separate
+exact-unit observation is named. No exact-unit PA/TX-off observation is recorded.
+
+### EVID-TX055-001 — PA off shares the chip bus and a cached output word
+
+- **K1 source:** `App/driver/bk4819-regs.h:136-145` names chip GPIO1/pin 29
+  `PA_ENABLE`, GPIO0/pin 28 `RX_ENABLE`, and GPIO3/4 UHF/VHF LNA outputs.
+  `App/driver/bk4829.c:198-201,434-442` initializes an output shadow to
+  `0x9000`; toggling an output edits that shadow with `0x40 >> Pin` and writes
+  the whole `REG_33` word. `App/radio.c:782-784,987,1015-1021` clears the PA
+  bit for receive, clears the RX bit for TX, and sets the PA bit for TX.
+- **K5 V1 source:** `driver/bk4819-regs.h:135-144`,
+  `driver/bk4819.c:121-124,366-374`, and
+  `radio.c:554-556,764,791-797` show the corresponding names, shadow, and
+  clear/set operations. The PA is a chip-controlled output in this source,
+  not PC4 (the physically observed speaker gate) or PC5 (input-only PTT).
+- **Bounded conclusion:** both sources declare asserted-bit PA enable and
+  cleared-bit PA disable through the same three-wire bus as chip mode control.
+  This is no evidence of an MCU-controlled independent PA inhibit. A stale
+  output shadow can overwrite other outputs; clearing one bit does not
+  establish all direction, reset, RF-routing, or bias prerequisites from an
+  unknown state. No complete safe whole-register word is inferred.
+- **RF-path source fact:** K1 `App/driver/bk4829.c:890-908` and K5
+  `driver/bk4819.c:827-845` select the named VHF/UHF LNA output bits around
+  the source's 280 MHz split, or clear both for the `0xFFFFFFFF` sentinel.
+  Both TX callers also use this helper. Those names and branches do not
+  identify the complete PCB TX/RX switch/filter topology or safe TX bands.
+- **Unsupported:** electrical PA polarity/voltage, PCB switching topology,
+  reset/brownout/bootloader output states, physical decay time, safe repetition
+  after partial writes, or fail-off with a broken bus. A source's software
+  clear operation does not measure RF silence. See `RISK-040` experiment 1.
+
+### EVID-TX055-002 — Source preparation already enters chip TX
+
+- **K1 source:** `App/driver/bk4829.c:1159-1162` implements `BK4819_Idle`
+  as a literal `REG_30 = 0x0000`. `:1222-1236` shows `PrepareTransmit` calling
+  bypass exit, TX unmute, and `TxOn_Beep`; the latter writes `REG_36 = 0`,
+  `REG_37 = 0x9D1F`, `REG_52 = 0x028F`, then `REG_30 = 0` and `0xC1FE`.
+- **K5 V1 source:** `driver/bk4819.c:1082-1085,1128-1141` has the literal
+  idle write and the same prepare/unmute/TX call chain. Its TX helper uses
+  `REG_37 = 0x1D0F`, with no corresponding `REG_36 = 0` in that helper.
+- **Mismatch with shared effects:** the source function called preparation
+  performs a TX-mode write. It cannot implement AFIK's non-energizing
+  `PrepareTransmit`. The shared logical driver instead writes inferred
+  `0x80FE`; `ChipProfile` does not select a target-specific TX word. Neither
+  this inference nor copying the source's `0xC1FE` qualifies target TX.
+- **Unsupported:** unconditional physical chip/modulation off from an unknown
+  or faulted state, sufficient shutdown registers for tones/DTMF/FSK/microphone,
+  mode latch/read-back semantics, calibration completion, settling limits,
+  microphone routing, FM deviation, or spectral behavior. Literal idle writes
+  corroborate the candidate neutral operation, not physical success. The
+  known-TX-only `stop_transmit` method cannot satisfy unknown-state shutdown;
+  the simulator uses `recover_to_standby`. See `RISK-040` experiments 1 and 3.
+
+### EVID-TX055-003 — Bias tables are not conducted-power envelopes
+
+- **K1 source:** `App/radio.c:591-601,691-698` selects three calibration bytes
+  from SPI NOR at `0x100D0 + Band * 16 + Op * 3`, with build/settings-dependent
+  transformations between the read and use. `App/frequencies.c:127-145`
+  returns a byte from those points. `App/driver/bk4829.c:729-752` writes
+  `REG_36` from a bias byte, an always-one enable field, and band-dependent
+  gain bits. The source's comments label these bias/gain controls.
+- **K5 V1 source:** `radio.c:456-482` reads EEPROM at
+  `0x1ED0 + Band * 16 + OUTPUT_POWER * 3`, optionally rescales low/mid bytes,
+  and uses `frequencies.c:127-144`. `driver/bk4819.c:666-688` writes its
+  corresponding bias/enable/gain word. These are different memories/maps;
+  neither source's table is interchangeable with the other target.
+- **Ordering gap:** K1 `App/radio.c:1011-1023` and K5
+  `radio.c:787-799` enter chip TX, delay 10 ms, select the filter path, enable
+  the PA, delay 5 ms, then apply bias and delay 10 ms. These literal delays
+  are source choices, not measured bounds or a qualification of AFIK's
+  order of preparing power before enable. Both `SetupPowerAmplifier(0, 0)` calls
+  still compose `0x0088` with the source's enable field set; zero bias is not
+  a source statement that every PA control is disabled.
+- **Unsupported:** a mapping from AFIK integer conducted milliwatts to bias,
+  validated per-unit table contents/provenance, permissible RF bands/filter
+  paths, deviation/bandwidth ceilings, voltage/temperature/load dependence,
+  transient overshoot, or maximum safe power. A retained backup protects bytes;
+  it does not validate their RF meaning. Product ranges, band tables, named
+  low/mid/high settings, receive profiles, and regional ceilings cannot fill
+  hardware/calibration envelopes. Neither target has a qualified envelope;
+  missing inputs continue to deny. See `RISK-040` experiments 2 and 4.
+
+### EVID-TX055-004 — Receive and timing evidence do not prove TX cleanup
+
+- **Receive sources:** K1 `App/radio.c:782-822` and K5 `radio.c:554-591`
+  request zero bias and cleared PA enable, clear interrupt state, tune the RX
+  frequency, set squelch/filter paths, and assert the source's RX-enable bit.
+  Their interrupt-clearing loops (`K1 :786-794`, `K5 :558-566`) have no retry
+  bound. They cannot be adopted as bounded shutdown/restore operations.
+- **Exact-unit receive observations:** `EVID-K1-057`, `EVID-K1-060`, and the
+  APP-052 K1 operator acceptance establish register read-back, receive audio,
+  and receive operation on the available K1. `EVID-K5-029..031` and the
+  APP-052 K5 2.1D acceptance establish input-only PTT, receive metering/audio,
+  and receive UI operation on the available V1 unit. None follows TX or a
+  faulted shutdown; none establishes PA-off polarity or a deadline bound.
+- **AFIK completion boundary:** K1
+  `crates/radio-firmware-k1/src/py32f071_bk4819.rs` uses `Infallible` pin
+  operations; K5 `crates/radio-firmware-k5/src/bk4819_bus.rs` uses an
+  `Infallible` register bus. Writes return after emitting edges, without a
+  device acknowledgement or physical-off observation. K1's fallible abstract
+  bus and simulator failures do not make physical electrical faults detectable.
+  No such return value alone qualifies an applied shutdown acknowledgement.
+- **Timing boundary:** fixed transfer loops and delay parameters are software
+  bounds only. K1's receive executor has no TX deadline integration; its panic
+  handler resets the MCU without an evidenced independent PA-off action. K5's
+  `main.rs` advances UI time by wrapping 50 ms additions per loop, waits on
+  polled `SysTick`, and uses blocking UART write/flush waits; its panic handler
+  spins. Those paths do not supply the TX controller's monotonic elapsed time,
+  guaranteed release/deadline delivery, or scheduler-independent shutdown.
+- **Unsupported:** receive restoration after partial TX, current full settings
+  restoration after invalidation, trustworthy physical completion, worst-case
+  PTT/deadline-to-off latency, MCU-reset fail-off, or watchdog coverage of the
+  chip and external PA. See `RISK-039` and `RISK-040` experiments 3 and 5.
+
+### K1 / selected BK4829 source: effect matrix
+
+Source paths are relative to the K1 pin above. All rows remain unqualified for
+target TX. Source confidence and exact-unit observations are deliberately
+separate; the listed gaps are unsupported inputs, not implementation choices.
+
+| Shared effect | Source/register or AFIK software fact | Exact-unit observation | Missing fact / confidence boundary |
+| --- | --- | --- | --- |
+| `DisablePa` (startup, entry, both cleanup pairs) | `bk4829.c:434-442` writes the output shadow; `radio.c:782-784` requests zero bias and clear PA (`EVID-TX055-001/003`). | No PA-off measurement. | Electrical polarity, complete unknown-state word, repetition, broken-bus inhibit and decay remain unknown. High source confidence only. |
+| `DisableTransmit` (startup, both cleanup pairs) | `bk4829.c:1159-1162` writes neutral mode; logical recovery accepts unknown/faulted state (`EVID-TX055-002`). | No chip/RF-off measurement. | Target applicability, all modulation/tone paths, partial-write behavior and off completion remain unknown. |
+| `RestoreReceive` (startup, ordinary cleanup) | Full `ReceiveSetup` and `BK4829_PROFILE` exist; source `radio.c:782-822` also owns board RX controls (`EVID-TX055-004`). | Receive register read-back/audio and APP-052 receive acceptance. | Post-TX/fault restoration, latest configuration/tones/audio, output-shadow ownership and bounded completion unproven. |
+| `PrepareTransmit` | `radio.c:983-1009` silences receive and selects TX frequency/filter; calibration bias comes from SPI NOR (`EVID-TX055-003`). | No non-energizing TX preparation measurement. | Source preparation already enters TX. Safe split, microphone/deviation, exact approved mW and settled power before enable unproven. |
+| `EnableTransmit` | `bk4829.c:1229-1236` emits `0xC1FE`; logical driver emits inferred `0x80FE` (`EVID-TX055-002`). | No AFIK physical TX observation. | Target-specific mode prerequisites, frequency/calibration settling, FM/bandwidth/deviation and RF envelope absent. |
+| `EnablePa` | `radio.c:1015-1023` sets source PA output before applying bias (`EVID-TX055-001/003`). | No power/polarity/transient measurement. | Power preparation before enable, load/voltage limits, fresh physical completion and independent fail-off absent. |
+
+`bk4829.c` means `App/driver/bk4829.c`; `radio.c` means `App/radio.c`.
+Input-only PB10 evidence is not a latency bound or held-PTT shutdown proof.
+
+### K5 V1 / BK4819 source: effect matrix
+
+Source paths are relative to the K5 pin above. This matrix applies to the
+reviewed V1 source and available unit; it does not extend to other generations.
+
+| Shared effect | Source/register or AFIK software fact | Exact-unit observation | Missing fact / confidence boundary |
+| --- | --- | --- | --- |
+| `DisablePa` (startup, entry, both cleanup pairs) | `bk4819.c:366-374` writes the output shadow; `radio.c:554-556` requests zero bias and clear PA (`EVID-TX055-001/003`). | PC4 speaker-off is receive evidence; no PA-off measurement. | Chip pin 29 electrical polarity, complete unknown-state word, repetition, broken-bus inhibit and decay unknown. High source confidence only. |
+| `DisableTransmit` (startup, both cleanup pairs) | `bk4819.c:1082-1085` writes neutral mode; simulator uses unconditional logical recovery (`EVID-TX055-002`). | No chip/RF-off measurement. | Fitted revision applicability, all modulation/tone paths, partial-write behavior and physical completion unknown. |
+| `RestoreReceive` (startup, ordinary cleanup) | Full `ReceiveSetup`, `BK4819_PROFILE`, and PC4 speaker gating exist; `radio.c:554-591` owns source RX controls (`EVID-TX055-004`). | `EVID-K5-030/031` metering/audio and APP-052 2.1D receive acceptance. | Post-TX/fault restoration, current full settings, output-shadow ownership and bounded completion unproven. |
+| `PrepareTransmit` | `radio.c:760-785` silences receive and selects TX frequency/filter; bias table comes from I2C EEPROM (`EVID-TX055-003`). | No non-energizing TX preparation measurement. | Source preparation already enters TX and lacks the K1 helper's bias-zero write. Safe split, microphone/deviation and approved mW unproven. |
+| `EnableTransmit` | `bk4819.c:1135-1141` emits `0xC1FE`; logical driver emits inferred `0x80FE` (`EVID-TX055-002`). | No AFIK physical TX observation. | Exact-chip mode prerequisites, frequency/calibration settling, FM/bandwidth/deviation and RF envelope absent. |
+| `EnablePa` | `radio.c:791-799` sets source PA output before applying bias (`EVID-TX055-001/003`). | No power/polarity/transient measurement. | Power preparation before enable, load/voltage limits, fresh physical completion and independent fail-off absent. |
+
+`bk4819.c` means `driver/bk4819.c`. Input-only PC5 and a 50 ms receive polling
+cadence do not qualify PTT edge delivery or TX deadline latency.
+
+### Qualification order and denied inputs
+
+For each exact target separately, first resolve source/schematic identification
+and the complete proposed shutdown acceptance plan (`TXPLAN-056`). Physical
+work then requires separate operator authorization and the retained
+recovery/calibration/equipment gates in `RISK-007`. The proposed experiments
+are listed in `RISK-040`; they have not run. No experiment number or matrix row
+is an authorization to touch hardware.
+
+Shutdown must be qualified from unknown/reset/fault/partially applied states
+before energizing work: PA off, unconditional chip TX off, then full current
+receive restoration only after both completions. Failure of PA off still
+requires attempting chip off; either uncertain disable blocks restoration.
+Failed restoration requires the second cleanup pair and a latched fault. A
+broken shared bus needs an independently evidenced fail-off route; controller
+ordering cannot manufacture one.
+
+Only later measured evidence can support target/unit-bound hardware and
+calibration envelopes, exact integer power application and allowed FM bandwidth,
+and bounded monotonic scheduling/completion. Source settings and host fixtures
+cannot supply those fields. This review leaves both targets without qualified
+TX inputs and makes no register or firmware change.

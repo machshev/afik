@@ -2,18 +2,56 @@
 
 ## Current work package
 
-**`TXEVID-055` is active** (2026-10-13), following operator authorization.
-This evidence-only package maps every shared PTT effect to the separate pinned
-K1/BK4829 and K5 V1/BK4819 sources, beginning with unconditional PA/TX shutdown
-from unknown or faulted state. Facts, source confidence, exact-unit observations,
-unsupported assumptions, and proposed experiments will be recorded separately.
-Unsupported hardware/calibration inputs remain denied. No target TX adapter,
-register implementation, firmware identity change, flashing, or physical
-experiment is authorized by this package. `APP-052` remains paused.
+**`TXEVID-055` is complete** (2026-10-13), evidence-only milestone. The
+separate K1/selected BK4829 and K5 V1/BK4819 matrices cover all six shared PTT
+effects, including startup, entry, ordinary shutdown and second fault cleanup.
+`EVID-TX055-001..004` in `docs/hardware-evidence.md` distinguish pinned source
+statements, exact-unit receive observations, software facts and unsupported
+TX assumptions. `ADR-094` records the qualification boundary; `RISK-040`
+records five ordered groups of missing evidence and proposed experiments.
 
-Activation verification: `git diff --check` passed. Next smallest actionable
-step: inspect the pinned shutdown/control/power sources and the shared effect
-implementation, then record the per-target matrix and missing evidence.
+Both source PA controls use the chip bus and a cached whole output word;
+neither establishes an independent broken-bus inhibit or safe unknown-state
+shutdown. Source preparation already enters chip TX and bias follows PA
+enable. The logical inferred TX word is not a target qualification. Source
+bias tables do not establish conducted milliwatts, and the current physical
+bus adapters' `Infallible` completion does not observe electrical success.
+Receive operation does not prove restoration after TX; no monotonic TX
+deadline, physical completion bound or watchdog fail-off is established.
+Unsupported target hardware/calibration inputs remain absent and denied.
+
+The K1 pinned commit archive was retrieved outside the repository; all five
+baseline hashes in `docs/k1-bring-up.md` match. K5 HEAD matches its pin and
+every cited file matches HEAD; the unrelated modified source `Makefile` was
+preserved. Four principal inspected-file hashes are recorded in the ledger.
+No private calibration data was opened or committed. The initial sandboxed
+archive download failed DNS resolution; the same read-only download succeeded
+with network access. The activation step passed `git diff --check` and was
+committed as `8d21756` before the evidence work.
+
+The final host gate ran sequentially in the pinned cached direnv environment:
+
+```sh
+direnv exec . env CARGO_BUILD_JOBS=2 ionice -c 3 nice -n 10 bash -c 'cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && git diff --check' > /tmp/afik-txevid-055-gate.log 2>&1
+python3 /tmp/afik-txevid-055-audit.py
+git diff --check
+```
+
+All commands passed without warning/error diagnostics. The unchanged workspace
+suite passed 636 tests across 60 unit/integration/doc-test suites. The separate
+document/source audit checks the K5 pin and cited-file state, five K1 baseline
+hashes, four ledger hashes, all six action names in both matrices, key pinned
+source ranges, task/risk/ADR references, both local anchor links and the
+documentation-only diff. The audit script and gate log are temporary artifacts
+outside the repository. No behavioral change or new regression test was
+needed; target release builds were not rerun for this documentation package.
+
+No production code, firmware identity, target TX adapter, serial operation,
+flashing or physical experiment changed. `APP-052` remains paused, `RISK-036`
+deferred, and `RISK-007`, `RISK-038`, `RISK-039`, `RISK-040` open. Next smallest
+actionable task: planned `TXPLAN-056`, prepare separate exact-target
+non-transmitting shutdown acceptance plans for `RISK-040` item 1. Preparing
+those plans or listing experiments does not authorize their physical execution.
 
 ## Previous work package: TXCTRL-054
 

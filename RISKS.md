@@ -165,6 +165,13 @@
   gate, but not timing, Menu control, retune transients, sensitivity,
   calibration, or selectivity. Later `0x0518` observations occurred after the
   operator deliberately re-entered DFU and are not application failures.
+- **TXEVID-055 narrowing, 2026-10-13:** the separate pinned K1/BK4829 and
+  K5 V1/BK4819 effect matrices establish source-declared PA/RX controls and
+  bias-table locations, not physical polarity, safe unknown-state shutdown,
+  conducted power, or an RF envelope. Source preparation already enables chip
+  TX; source bias follows PA enable. Neither sequence qualifies AFIK's shared
+  contract. `EVID-TX055-001..004` and `RISK-040` record the remaining gates;
+  no target TX input was qualified and this risk remains open.
 
 ## RISK-008 — Physical scan timing and signal inputs are unverified
 
@@ -912,7 +919,8 @@
 
 ## RISK-038 — Complete TX inputs still depend on authoritative adapters
 
-- **State:** open for `TXAUTH-053` / `TXCTRL-054` target integration
+- **State:** open for `TXAUTH-053` / `TXCTRL-054` target integration;
+  `TXEVID-055` evidence review completed without qualifying target inputs
 - **Impact:** a caller can misrepresent selected state, reuse configuration
   identity, or supply fabricated hardware/calibration/operator facts. A pure
   software policy cannot measure or authenticate those facts.
@@ -934,6 +942,12 @@
   chip model still does not apply physical conducted power or own a target PA.
   Trusted facts, bounded physical execution, and independently evidenced target
   work remain required. Risk remains open.
+- **Evidence result, 2026-10-13:** neither per-target source bias table proves
+  an integer conducted-power mapping or a target/unit-bound calibration
+  envelope. The SPI NOR K1 and I2C EEPROM K5 maps are distinct; backup bytes,
+  low/mid/high labels, product frequency ranges, and receive profiles do not
+  supply missing authority. Source pins are not an independently authenticated
+  target identity. Hardware/calibration inputs remain absent and denied.
 
 ## RISK-039 — PTT scheduling and shutdown acknowledgements require target proof
 
@@ -954,3 +968,92 @@
   where the scheduler cannot meet that guarantee. Record exact-unit observations
   and confidence under `docs/hardware-evidence.md`; no such fact follows from
   virtual-time or logical register tests. `RISK-007` remains the RF evidence gate.
+- **TXEVID-055 result, 2026-10-13:** both current physical buses return
+  `Infallible` software completion; emitting edges does not establish physical
+  PA/chip shutdown. Source RX interrupt-clear loops are unbounded. K1 MCU
+  panic-reset and K5 panic-spin/loop-count UI time do not establish monotonic
+  TX deadlines or fail-off. No execution/acknowledgement bound was measured;
+  the proposed checks are in `RISK-040`. Risk remains open.
+
+## RISK-040 — Source PA controls and bias do not qualify target TX effects
+
+- **State:** open; evidence-only `TXEVID-055` review complete, no experiment run
+- **Impact:** both pinned targets control PA enable through the chip bus and a
+  cached whole `REG_33` output word. A broken bus or stale shadow can defeat
+  shutdown or alter another RF output. The source's named preparation already
+  enters chip TX and applies bias after PA enable, so mapping functions by name
+  violates AFIK's non-energizing preparation and power preparation before enable.
+  Calibration bytes do not establish conducted milliwatts or safe RF limits.
+- **Current facts:** `EVID-TX055-001..004` in `docs/hardware-evidence.md` record
+  pinned source statements, exact-unit receive observations, and separate K1
+  and K5 V1 effect matrices. Source-declared asserted/cleared PA bits are not
+  observed PCB polarity. Literal `REG_30 = 0` is a candidate idle operation,
+  not a measured unconditional physical TX-off guarantee. Zero-bias helper
+  calls still set the source's PA-control enable field. Both current AFIK
+  physical adapters return `Infallible`; they cannot observe an electrical
+  write failure merely by returning `Ok`.
+- **Mitigation:** no target TX wiring or hardware/calibration envelope is
+  introduced. Keep unknown target inputs denied, qualify shutdown before
+  energizing work, retain the shared fault latch and fresh authority checks,
+  and keep source evidence separate from measurements. Do not transplant
+  either source's function, shadow word, timing, power table, or TX mode word.
+
+Required evidence and proposed experiments, separately for the exact K1 and
+the exact K5 V1 unit, in this order:
+
+1. **Identify and bound the off path before any energizing experiment.** Record
+   board/chip revision, applicable original register documentation or clearly
+   bounded trusted source evidence, PA/RX/filter wiring, output direction,
+   electrical asserted/deasserted levels, bias behavior, and reset/bootloader
+   ownership. Prepare a non-transmitting acceptance plan and measurement
+   points, with recovery and preserved applicable calibration data. A later
+   separately authorized capture must establish PA/chip-off at cold start,
+   warm reset, held PTT, unknown mode, partial preparation, target fault, and
+   repeated shutdown. Establish a complete safe output-state strategy without
+   reusing an unknown shadow or guessing a whole-register word. Record the
+   off criterion, instrument detection limits and measured decay. Software
+   zeros, speaker mute, status text, and register read-back alone do not prove
+   RF silence. A non-transmitting plan cannot establish active-TX decay;
+   that remains for a later contained, separately authorized test.
+2. **Bound RF routing and non-energizing preparation.** From the identified
+   board, establish PA-off while changing TX frequency, modulation/bandwidth,
+   microphone, bias/gain and RF path; capture the proposed preparation without
+   asserting chip TX or PA. Record required settling/calibration status and
+   prove no energizing write or routing transient. The source's prepare function
+   and its 10/5/10 ms delays cannot supply that proof. This needs its own
+   authorized plan; no candidate register sequence is prescribed here.
+3. **Qualify cleanup and current receive restoration.** Exercise each partial
+   operation and shutdown completion boundary on the target, initially without
+   TX. Verify PA-off before unconditional chip-off, no receive restoration when
+   either is uncertain, and the second cleanup pair after failed restoration.
+   Restore the current full configuration, including RX frequency, target chip
+   profile, modulation/bandwidth, tones, squelch, chip audio and speaker state;
+   a former TX request must not restore an obsolete selection. Later contained
+   TX tests must cover the same paths from active TX and all supported
+   modulation/tone states. Record physical outcomes independently of adapter
+   return values, including how completion is established and faults detected.
+4. **Measure an exact-unit power/modulation envelope only after off is proven.**
+   Validate the relevant calibration map/table provenance without committing
+   private bytes. With separately authorized contained RF equipment, a safe
+   dummy load, spectrum/power measurement and current limiting, bound conducted
+   milliwatts, bias/gain mapping, transient overshoot, deviation, occupied
+   bandwidth, spurs and supported RF ranges across the qualified battery/load
+   conditions. Use separate non-reused evidence/unit identities for hardware
+   and calibration limits. A label, bias byte, regional ceiling or receive
+   result cannot substitute for these measurements.
+5. **Measure deadline delivery and independent fail-off.** Define the allowed
+   worst-case release/deadline-to-physical-off latency, including synchronous
+   effect time; measure it under serial/display/storage load and injected
+   stalls. Verify genuine monotonic time and held-PTT release interlocks.
+   Establish what de-energizes the PA and chip when the shared bus or executor
+   is unavailable, during panic/reset/bootloader handoff, and under watchdog
+   or brownout. Qualify watchdog coverage of external RF controls, not just
+   MCU restart. If an independent off route or the required bound cannot be
+   established, target TX remains denied.
+
+`TXPLAN-056` is the next smallest actionable document task: prepare the exact-
+target non-transmitting shutdown acceptance plan for item 1, explicitly leaving
+active-TX and power measurements pending. These proposed experiments have not
+run and require separate authorization; `TXEVID-055` does not authorize
+flashing, a hardware control write, or physical transmission. `APP-052` remains
+paused and `RISK-036` remains deferred by operator decision.

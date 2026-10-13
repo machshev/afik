@@ -1544,3 +1544,29 @@ meaning.
   not target evidence. Deadline delivery and bounded adapter execution remain
   adapter obligations. Neither target is wired to this controller; `RISK-007`,
   `RISK-038`, and `RISK-039` remain open for physical integration.
+
+## ADR-094 — TX source evidence qualifies each target effect separately
+
+- **Date:** 2026-10-13
+- **Status:** accepted for the evidence-only `TXEVID-055` package
+- Every shared PTT effect requires a separate exact-target contract. Begin
+  with unconditional PA/chip TX off from unknown, reset, faulted and partially
+  applied state. Source/register statements, exact-unit measurements, software
+  tests and unsupported assumptions remain distinct in the hardware ledger.
+- K1 evidence follows the pinned build's selected BK4829 driver; K5 evidence
+  follows the separate V1/BK4819 source. Shared function names and register
+  addresses do not establish interchangeable mode words, power maps or safety
+  prerequisites. Existing receive observations do not qualify post-TX cleanup.
+- Both reviewed sources control the PA over the chip bus with an output shadow.
+  Their named preparation enters chip TX, and bias follows PA enable. No safe
+  whole-register word, independent PA inhibit, non-energizing preparation split,
+  applied acknowledgement, power conversion or timing bound is inferred from
+  those source sequences. Physical bus `Ok` is software completion alone.
+- Target hardware and calibration envelopes remain absent until supported by
+  independently recorded unit-bound evidence; source bias tables, host fixtures
+  and regulatory ceilings cannot create them. Qualification of shutdown and
+  fail-off precedes energizing experiments. Unknown inputs continue to deny TX.
+- The matrices and proposed experiments establish a reviewable boundary only.
+  No production code, firmware identity, adapter wiring, calibration bytes or
+  physical experiment changes. `TXPLAN-056` prepares the next non-transmitting
+  shutdown acceptance plan; its activation and any physical work are separate.

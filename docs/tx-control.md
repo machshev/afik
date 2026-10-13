@@ -100,3 +100,13 @@ fabricated successful shutdown observation.
 
 No hardware/register/calibration fact is added by these tests. `RISK-007` remains
 the separate physical TX evidence gate.
+
+`TXEVID-055` records the [per-target effect matrix and source
+confidence](hardware-evidence.md#txevid-055--target-tx-effect-evidence).
+Both reviewed sources control the PA through the chip bus and a cached output
+word; neither supplies an independently proven fault shutdown. Their named
+preparation function already enters chip TX, and bias is applied after PA
+enable. Those source sequences do not qualify the shared non-energizing
+preparation or power preparation before enable. Required measurements and the
+order of qualifying shutdown first are recorded in `RISK-040`; both targets
+remain without qualified hardware/calibration TX inputs.

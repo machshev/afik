@@ -2904,8 +2904,7 @@
 
 ## TXEVID-055 — Evidence-only target TX preparation and shutdown contract
 
-- **Status:** active (2026-10-13), following operator authorization;
-  evidence-only scope after `TXCTRL-054`.
+- **Status:** complete (2026-10-13), evidence-only scope after `TXCTRL-054`.
 - **First step:** build a per-target evidence matrix for each shared PTT effect,
   starting with unconditional PA/TX off from unknown/faulted state. Read pinned
   evidence, record facts/confidence under `docs/hardware-evidence.md`, and list
@@ -2916,3 +2915,28 @@
   deadline/fail-off behavior. Unsupported target inputs remain denied.
 - **Exclusions:** target TX wiring, new inferred register behavior, firmware
   flashing, physical transmission, or starting an experiment by implication.
+- **Completion:** separately pinned K1/selected BK4829 and K5 V1/BK4819
+  matrices cover all six effects and distinguish source/software statements,
+  receive observations, confidence and unsupported TX prerequisites.
+  `EVID-TX055-001..004`, `ADR-094`, and open `RISK-040` record shared-bus PA
+  controls, preparation/order mismatches, unqualified bias/power inputs,
+  completion/timing gaps and five ordered experiment groups. Source/hash/link
+  audit, formatting, warning-denied workspace Clippy, all 636 workspace tests
+  and diff checks pass. Only documentation changed; no hardware experiment
+  ran and unsupported target inputs remain denied. Next: `TXPLAN-056`.
+
+## TXPLAN-056 — Exact-target non-transmitting shutdown acceptance plan
+
+- **Status:** planned; next smallest actionable task after `TXEVID-055`.
+- **First step:** turn `RISK-040` item 1 into a reviewable K1 and K5 V1 plan
+  with pinned board/chip applicability, documented off-state prerequisites,
+  measurement points/equipment, recovery/calibration prerequisites, bounded
+  observations, stop criteria and explicit unknowns. Resolve facts from source
+  and schematics before proposing any target register sequence.
+- **Acceptance:** distinguish what a non-transmitting bench can establish
+  from active-TX decay, power/modulation and broken-bus fail-off evidence which
+  remains pending. Cover reset, held PTT, unknown/faulted state, partial
+  preparation and repeated shutdown without claiming measurements or authority
+  to execute the plan. Missing independent off routes remain explicit gates.
+- **Exclusions:** target TX implementation, firmware flashing, hardware writes,
+  physical experiments or transmission; those need separate authorization.
