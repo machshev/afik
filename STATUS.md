@@ -2,7 +2,23 @@
 
 ## Current work package
 
-**`APP-052` is active.** It will extract one deterministic receive/operator
+**`TXAUTH-053` is active** by operator instruction on 2026-10-13. Its first
+milestone replaces class-only TX authority with one bounded request covering
+the exact channel, modulation, bandwidth, conducted power, timeout,
+configuration identity, regional/operator facts, and explicit hardware and
+calibration envelopes. Host and deterministic simulator tests must prove
+default denial and rejection of changed requests before any logical TX write.
+No target TX wiring, PTT actuation, PA control, firmware identity change,
+hardware write, or physical transmission is part of this milestone.
+
+`APP-052` is paused to prioritize this authorized TX milestone. Its K5
+allocation/restore evidence remains open; it is not a prerequisite for host
+authorization work. `RISK-036` remains deferred. Next smallest actionable task:
+implement and test the complete authorization boundary described in ADR-092.
+
+## Previous work package: APP-052 (paused)
+
+**`APP-052` is paused.** It will extract one deterministic receive/operator
 application state machine used by both K1 and K5 while retaining separate MCU,
 bus, chip-profile, storage, display, packaging, and recovery adapters. The first
 step is the common event/effect contract for channel selection, tuning, sampled

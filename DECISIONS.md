@@ -1493,3 +1493,21 @@ meaning.
   authorize a physical run. The relative 2,624-byte dual-slot model remains
   unallocated; deliberate vendor-memory repurposing requires a separate
   evidence decision.
+
+## ADR-092 — TX authority approves the complete immutable request
+
+- **Date:** 2026-10-13
+- **Status:** accepted for `TXAUTH-053` first milestone
+- Class permission alone no longer constructs a `TxAuthorisation`. The sole
+  constructor checks the exact channel, modulation, bandwidth, conducted
+  milliwatts, bounded timeout, healthy selected state, configuration identity,
+  regional/operator facts, and independent hardware/calibration envelopes.
+- Tokens borrow the policy and complete request, so their approved inputs
+  cannot be mutated while borrowed. Downstream logical TX entry compares the
+  complete current request before any bus operation. Application instance and
+  selection/configuration revision identifiers must not be reused; generation
+  zero is allowed for volatile targets and is not the sole identity.
+- Envelopes are caller-supplied evidence inputs, not built-in target profiles.
+  No synthesized fixture is hardware evidence. The existing regional snapshot
+  retains its version/date; no claim of refreshed regulatory compliance is
+  made. First-milestone tests do not establish PTT lifecycle or physical TX.

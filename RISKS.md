@@ -909,3 +909,18 @@
   separate 60,612-byte recovery artifact (hash retained privately) remain external and were not
   used by tests. No 2,624-byte relative model region is allocated; the next
   risk decision is deliberate vendor-memory repurposing.
+
+## RISK-038 — Complete TX inputs still depend on authoritative adapters
+
+- **State:** open for `TXAUTH-053`
+- **Impact:** a caller can misrepresent selected state, reuse configuration
+  identity, or supply fabricated hardware/calibration/operator facts. A pure
+  software policy cannot measure or authenticate those facts.
+- **Mitigation:** default-deny missing/invalid inputs, borrow immutable policy
+  and request, compare the complete fresh request before logical TX entry,
+  require non-reused instance/revision identities, and keep synthetic fixture
+  envelopes out of firmware. Physical adapters require independently recorded
+  evidence and a separately tested PTT/fault/timeout shutdown lifecycle.
+- `RISK-007` remains the physical TX evidence gate. No PA, microphone, power
+  calibration, safe target shutdown, or physical transmit claim follows from
+  the authorization milestone.

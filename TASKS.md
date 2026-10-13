@@ -2549,7 +2549,8 @@
 
 ## APP-052 — Unified receive application for K1 and K5
 
-- **Status:** active
+- **Status:** paused by operator instruction on 2026-10-13 for `TXAUTH-053`;
+  K5 allocation and physical persistence evidence remain open.
 - **Objective:** compile one hardware-independent receive/operator application
   state machine for both K1 and K5, with target crates limited to event, radio,
   storage, display, audio, serial, and clock adapters.
@@ -2846,3 +2847,25 @@
   60612-byte recovery artifact also has its trusted hash retained privately). No hardware write or allocation
   claim follows. APP-052 remains open; next smallest task is deliberate
   vendor-memory repurposing/allocation evidence, not automatic persistence.
+
+## TXAUTH-053 — Complete, configuration-bound transmit authorization
+
+- **Status:** active (2026-10-13), first milestone authorized by the operator.
+- **Objective:** make `radio-tx-policy` the only constructor of a complete TX
+  token, with no remaining class-only token path.
+- **Scope:** exact channel/modulation/bandwidth/power/timeout, non-reused
+  application/configuration identity, selected/healthy state, regional rules
+  and operator facts, explicit bounded hardware and calibration envelopes,
+  logical-driver enforcement, and deterministic host/simulator tests.
+- **Dependencies:** `RF-006`, `SCAN-007`, the existing regional-rule snapshot,
+  and permission loading. Unknown target envelopes remain denied; fixtures
+  assert synthetic inputs only.
+- **Acceptance:** invalid/missing facts deny; independent ceilings are all
+  enforced; changed configuration, selection, policy, evidence, or request
+  cannot reuse authority; no denial emits a TX register write or simulator TX
+  event. Embedded crates stay no_std, heap-free, bounded, and integer-only.
+- **Exclusions:** PTT lifecycle/controller, target RF limits or calibration
+  invention, microphone/PA/RF-switch wiring, hardware flashing/transmission,
+  and changes to permission persistence or serial permissions.
+- **Next milestone:** shared simulator-first PTT press/release, timeout,
+  failure cleanup, and return-to-receive controller.
