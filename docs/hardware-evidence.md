@@ -3219,5 +3219,6 @@ the proven hardware reference.
   shared `tx_control` lifecycle on this unit. Output power (Armel Low1,
   documented as under ~20 mW), deviation, spectrum and release-to-off latency
   were not measured; those belong to `TXK5-059` and `TXHARD-061`.
-- **Not observed:** a post-test `afik-flasher probe-normal` timed out once and
-  was not retried, so the running identity was not read back over serial.
+- **Not observed:** a post-test `afik-flasher probe-normal` timed out because
+  the operator had unplugged the cable, so the running identity was not read
+  back over serial.
