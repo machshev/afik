@@ -2927,7 +2927,8 @@
 
 ## TXPLAN-056 — Exact-target non-transmitting shutdown acceptance plan
 
-- **Status:** planned; next smallest actionable task after `TXEVID-055`.
+- **Status:** active (2026-10-13), following operator continuation;
+  document-only scope after `TXEVID-055`.
 - **First step:** turn `RISK-040` item 1 into a reviewable K1 and K5 V1 plan
   with pinned board/chip applicability, documented off-state prerequisites,
   measurement points/equipment, recovery/calibration prerequisites, bounded

@@ -2,6 +2,20 @@
 
 ## Current work package
 
+**`TXPLAN-056` is active** (2026-10-13), following operator continuation.
+Prepare separate reviewable K1 and K5 V1 non-transmitting shutdown acceptance
+plans from `RISK-040` item 1. Resolve source/schematic applicability, identify
+candidate measurement points and prerequisites, bound proposed observations,
+and state stop criteria and remaining qualification gaps. This is document
+work only: no firmware implementation, hardware write, flashing, or physical
+experiment. Target TX inputs remain denied; `APP-052` remains paused.
+
+Activation verification: `git diff --check` passed. Next smallest actionable
+step: inspect pinned board/control sources and available schematic evidence,
+then draft the two target plans and their common measurement/acceptance record.
+
+## Previous work package: TXEVID-055
+
 **`TXEVID-055` is complete** (2026-10-13), evidence-only milestone. The
 separate K1/selected BK4829 and K5 V1/BK4819 matrices cover all six shared PTT
 effects, including startup, entry, ordinary shutdown and second fault cleanup.
