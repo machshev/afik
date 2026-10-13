@@ -1224,7 +1224,10 @@ mod tests {
         );
         let version = invoke(&["--version"]);
         assert_eq!(version.exit_code, EXIT_SUCCESS);
-        assert_eq!(version.stdout, "afik-programmer 0.1.0\n");
+        assert_eq!(
+            version.stdout,
+            concat!("afik-programmer ", env!("CARGO_PKG_VERSION"), "\n")
+        );
         for values in [
             &[][..],
             &["info"][..],

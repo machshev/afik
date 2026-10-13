@@ -91,10 +91,10 @@ const K1_VECTOR_TABLE_ORIGIN: u32 = 0x0800_2800;
 /// A diagnostic build says so on the screen. An image which drops every byte
 /// it receives must not be mistaken for one which answers.
 #[cfg(feature = "serial-drop-bytes")]
-const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-6.5TD";
+const IMAGE_IDENTITY: &[u8] = concat!("AFIK-K1-", env!("CARGO_PKG_VERSION"), "D").as_bytes();
 /// Identity this image reports on the information screen.
 #[cfg(not(feature = "serial-drop-bytes"))]
-const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-6.5T";
+const IMAGE_IDENTITY: &[u8] = radio_firmware_k1::protocol::APPLICATION_VERSION;
 
 /// Interval between receive samples while audio is routed.
 ///

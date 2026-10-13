@@ -1620,3 +1620,13 @@ meaning.
   scope. Physical transmission still needs the operator's explicit
   authorization, recorded in `STATUS.md`; once given for the bring-up sequence
   it is not re-requested per step.
+
+## ADR-097 — One version for every target and tool
+
+- **Date:** 2026-10-13
+- **Status:** accepted, operator request.
+- Every firmware identity (`AFIK-K1-…`, `AFIK-K5-…`, screen and serial alike)
+  and every host tool's `--version` derive from the workspace version in the
+  root `Cargo.toml`. Bump it once for each image that will be flashed.
+- Starts at `7.0.0`, above both earlier per-target numbers (K1 6.5, K5 2.5).
+  This also fixes the K1 serial hello, which still reported `AFIK-K1-1.2`.

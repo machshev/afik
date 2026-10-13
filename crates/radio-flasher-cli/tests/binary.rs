@@ -14,7 +14,10 @@ fn binary_help_version_and_missing_device_smoke() {
 
     let version = Command::new(binary).arg("--version").output().unwrap();
     assert!(version.status.success());
-    assert_eq!(version.stdout, b"afik-k5 0.1.0\n");
+    assert_eq!(
+        version.stdout,
+        concat!("afik-k5 ", env!("CARGO_PKG_VERSION"), "\n").as_bytes()
+    );
     assert!(version.stderr.is_empty());
 
     let probe = Command::new(binary).arg("probe").output().unwrap();
@@ -33,6 +36,9 @@ fn generic_binary_exposes_auto_detection_help_and_version() {
 
     let version = Command::new(binary).arg("--version").output().unwrap();
     assert!(version.status.success());
-    assert_eq!(version.stdout, b"afik-flasher 0.1.0\n");
+    assert_eq!(
+        version.stdout,
+        concat!("afik-flasher ", env!("CARGO_PKG_VERSION"), "\n").as_bytes()
+    );
     assert!(version.stderr.is_empty());
 }

@@ -12,7 +12,10 @@ fn binary_help_version_and_usage_smoke() {
 
     let version = Command::new(binary).arg("--version").output().unwrap();
     assert!(version.status.success());
-    assert_eq!(version.stdout, b"afik-programmer 0.1.0\n");
+    assert_eq!(
+        version.stdout,
+        concat!("afik-programmer ", env!("CARGO_PKG_VERSION"), "\n").as_bytes()
+    );
 
     let info = Command::new(binary)
         .args(["--sim", "info"])

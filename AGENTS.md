@@ -53,3 +53,6 @@ code, not the other way round.
 - Record findings in a few lines at their real scope. A `STATUS.md` entry is a
   short paragraph plus the exact gate commands and results.
 - Once the operator authorizes a direction, do not re-request it for each step.
+- Firmware and tool versions come from the workspace `version` in the root
+  `Cargo.toml` (`ADR-097`). Bump it once for each image that will be flashed;
+  never hard-code an identity string.

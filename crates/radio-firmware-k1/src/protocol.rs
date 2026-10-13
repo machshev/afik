@@ -38,8 +38,8 @@ const XOR_KEY: [u8; 16] = [
     0x16, 0x6C, 0x14, 0xE6, 0x2E, 0x91, 0x0D, 0x40, 0x21, 0x35, 0xD5, 0x40, 0x13, 0x03, 0xE9, 0x80,
 ];
 
-/// Printable identity returned by the first AFIK K1 application.
-pub const APPLICATION_VERSION: &[u8] = b"AFIK-K1-1.2";
+/// Printable identity: the workspace version, shared by every target and tool.
+pub const APPLICATION_VERSION: &[u8] = concat!("AFIK-K1-", env!("CARGO_PKG_VERSION")).as_bytes();
 const APPLICATION_IDENTITY: ApplicationIdentity<'static> =
     ApplicationIdentity::new(APPLICATION_VERSION).expect("K1 identity is printable and bounded");
 

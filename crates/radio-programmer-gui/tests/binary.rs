@@ -12,7 +12,10 @@ fn binary_help_version_and_non_loopback_rejection_smoke() {
 
     let version = Command::new(binary).arg("--version").output().unwrap();
     assert!(version.status.success());
-    assert_eq!(version.stdout, b"afik-programmer-gui 0.1.0\n");
+    assert_eq!(
+        version.stdout,
+        concat!("afik-programmer-gui ", env!("CARGO_PKG_VERSION"), "\n").as_bytes()
+    );
     assert!(version.stderr.is_empty());
 
     let invalid = Command::new(binary)
