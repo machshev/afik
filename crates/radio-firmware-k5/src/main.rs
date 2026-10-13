@@ -2,7 +2,8 @@
 //!
 //! It configures the clock, binds UART1 to the programming connector, and then
 //! answers the read-only hello while validating the evidenced display, keypad,
-//! keypad and squelch-gated BK4819 receive audio. It has no transmit path.
+//! keypad and squelch-gated BK4819 receive audio. PTT drives experimental
+//! PMR446 low-power transmit through the shared controller (`TXK5-058`).
 
 #![no_std]
 #![no_main]
@@ -21,17 +22,20 @@ use radio_dp32g030::UART1_BASE;
 use radio_firmware_k5::application::{apply_effects, apply_event, UiDispatcher};
 use radio_firmware_k5::audio::SpeakerGate;
 use radio_firmware_k5::bk4819_bus::{K5Pins, K5RegisterBus};
+use radio_firmware_k5::eeprom::{self, K5Bus};
 use radio_firmware_k5::k5_display::K5BootDisplay;
-use radio_firmware_k5::keypad::{self, K5Matrix};
+use radio_firmware_k5::keypad::{self, K5Matrix, MatrixIo};
 use radio_firmware_k5::protocol::{
     encode_common_response, encode_common_view_response, encode_hello_response, NormalRequest,
     NormalService, RESPONSE_FRAME_BYTES,
 };
 use radio_firmware_k5::receive::Pmr446Channel;
+use radio_firmware_k5::transmit;
 use radio_platform::configuration_change::ConfigurationCandidate;
 use radio_platform::display::show_boot_sequence;
 use radio_platform::operator_shell::{Capabilities, Context, Shell};
 use radio_platform::receive_app::{Event, ReceiveApp};
+use radio_platform::tx_control::{self, Controller, State};
 
 /// Initial stack pointer, per `EVID-K5-019`: the top of the evidenced RAM less
 /// the sixteen bytes the firmware running on these units leaves alone.
@@ -79,6 +83,7 @@ extern "C" fn reset() -> ! {
 #[allow(unsafe_code)]
 #[unsafe(export_name = "Fault")]
 extern "C" fn fault() -> ! {
+    best_effort_transmit_off();
     loop {
         core::hint::spin_loop();
     }
@@ -128,6 +133,16 @@ fn main() -> ! {
     let mut app = ReceiveApp::new_with_identity(1);
     let mut configured = None;
     let mut metrics = None;
+    // The EEPROM shares PA10/PA11 with the keypad, so calibration is read once
+    // before the matrix takes those pins. Any failure leaves TX denied.
+    let mut calibration = [0_u8; 3];
+    let calibration = eeprom::read(
+        &mut K5Bus::initialise(),
+        transmit::CALIBRATION_ADDRESS,
+        &mut calibration,
+    )
+    .ok()
+    .map(|()| calibration);
     let mut keypad = K5Matrix::initialise();
     let mut shell = Shell::new();
     shell.set_capabilities(Capabilities::K5);
@@ -161,7 +176,54 @@ fn main() -> ! {
 
     let mut service = NormalService::new();
     let mut response = [0_u8; RESPONSE_FRAME_BYTES];
+
+    let tx_policy = transmit::policy();
+    let mut ptt_down = keypad.ptt_pressed();
+    let mut now_ms = 0_u64;
+    let mut tx = Controller::new(1, ptt_down, now_ms).expect("instance is non-zero");
+    let mut selected = app.view().channel;
+    let mut revision = 1_u32;
     loop {
+        let view = app.view();
+        if view.channel != selected {
+            selected = view.channel;
+            revision = revision.saturating_add(1);
+        }
+        let bias =
+            Pmr446Channel::new(view.channel)
+                .zip(calibration)
+                .and_then(|(channel, calibration)| {
+                    transmit::low1_bias(calibration, channel.frequency().as_hz())
+                });
+        let request = transmit::request(view, revision, bias);
+        let ptt = keypad.ptt_pressed();
+        let ptt_event = match (ptt_down, ptt) {
+            (false, true) => tx_control::Event::Pressed,
+            (true, false) => tx_control::Event::Released,
+            _ => tx_control::Event::Tick,
+        };
+        ptt_down = ptt;
+        let _ = tx.handle(now_ms, ptt_event, &tx_policy, &request);
+        let receive = Pmr446Channel::new(view.channel)
+            .map(|channel| channel.setup_with_squelch(view.audio, app.squelch()));
+        transmit::run_effects(&mut tx, &tx_policy, &request, now_ms, |effect| {
+            transmit::execute(
+                effect,
+                bias,
+                receive,
+                &mut radio,
+                &mut speaker,
+                &mut sample_tick,
+            )
+        });
+        // Serial, keypad and receive sampling all touch the radio, so they
+        // pause until the controller has restored receive.
+        if !matches!(tx.state(), State::Ready | State::ReleaseRequired) {
+            now_ms = now_ms.saturating_add(u64::from(SAMPLE_MILLISECONDS));
+            sample_tick.wait();
+            continue;
+        }
+
         while let Some(byte) = receiver.read_byte() {
             let Some(request) = service.push(byte) else {
                 continue;
@@ -230,6 +292,7 @@ fn main() -> ! {
             &mut metrics,
         );
         ui_now = ui_now.wrapping_add(SAMPLE_MILLISECONDS);
+        now_ms = now_ms.saturating_add(u64::from(SAMPLE_MILLISECONDS));
         sample_tick.wait();
         if let Ok(sample) = radio.receive_metrics(radio_domain::Tone::None) {
             metrics = Some(sample);
@@ -307,8 +370,18 @@ mod startup {
     }
 }
 
+/// Rebinds the BK4819 pins and writes PA off then chip idle, ignoring state.
+///
+/// Best effort only: it needs the bus and the core to be working.
+fn best_effort_transmit_off() {
+    let mut radio = Bk4819::new(K5RegisterBus::new(K5Pins::initialise()));
+    let _ = radio.disable_pa();
+    let _ = radio.disable_transmit();
+}
+
 #[panic_handler]
 fn panic(_info: &PanicInfo<'_>) -> ! {
+    best_effort_transmit_off();
     loop {
         core::hint::spin_loop();
     }
