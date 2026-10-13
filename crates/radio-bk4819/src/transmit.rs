@@ -9,7 +9,8 @@
 //! - [`Bk4819::disable_transmit`]: `BK4819_Idle`, `REG_30 = 0`.
 //! - [`Bk4819::prepare_transmit`]: the non-energizing part of
 //!   `RADIO_SetTxParameters`: audio mute, RX enable clear, bandwidth,
-//!   frequency, compander off.
+//!   frequency, compander off, and the microphone gain Armel's receive setup
+//!   leaves in force.
 //! - [`Bk4819::enable_transmit`]: `BK4819_PrepareTransmit`, which enters chip TX.
 //!
 //! [`ChipProfile`]: crate::ChipProfile
@@ -34,6 +35,7 @@ use crate::{
 const REG_PA_CONTROL: RegisterAddress = RegisterAddress::known(0x36);
 const REG_TX_MUTE: RegisterAddress = RegisterAddress::known(0x50);
 const REG_TX_52: RegisterAddress = RegisterAddress::known(0x52);
+const REG_MIC_GAIN: RegisterAddress = RegisterAddress::known(0x7D);
 
 /// `REG_30` written by `BK4819_TxOn_Beep` to enter chip TX.
 pub const MODE_TRANSMIT_K5: u16 = 0xC1FE;
@@ -117,6 +119,7 @@ impl<B: RegisterBus> Bk4819<B> {
         self.write(REG_FREQUENCY_HIGH, word.high())?;
         let compander = self.read(REG_AM_DEMODULATOR)?;
         self.write(REG_AM_DEMODULATOR, compander & !COMPANDER_ENABLE)?;
+        self.write(REG_MIC_GAIN, self.profile.tx_mic_gain)?;
         self.state = DriverState::PreparedTransmit { frequency };
         Ok(())
     }
@@ -280,6 +283,7 @@ mod tests {
                 (0x38, 0x8D31),
                 (0x39, 0x02A8),
                 (0x31, 0x0007),
+                (0x7D, 0xE95F),
             ]
         );
         radio.bus_mut().operations.clear();
@@ -331,6 +335,10 @@ mod tests {
         let mut radio = Bk4819::with_profile(FakeBus::new(None), crate::BK4829_PROFILE);
         radio.recover_to_standby().unwrap();
         radio.prepare_transmit(&request, &token).unwrap();
+        assert!(
+            writes(&radio).contains(&(0x7D, 0xE960)),
+            "Armel K1 mic gain"
+        );
         radio.bus_mut().operations.clear();
         radio.enable_transmit(&request, &token).unwrap();
         let entry = writes(&radio);

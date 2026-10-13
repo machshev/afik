@@ -139,6 +139,10 @@ pub struct ChipProfile {
     pub tx_clears_bias_first: bool,
     /// `REG_33` bit driving the red LED (`0x40 >> pin`).
     pub gpio_red_led: u16,
+    /// `REG_7D` microphone gain in force for TX. Armel writes
+    /// `0xE940 | gMicGain_dB2[MIC_SENSITIVITY]` in every receive setup, which
+    /// precedes TX; this is that word at the default sensitivity, 4.
+    pub tx_mic_gain: u16,
 }
 
 const BK4819_AGC_FM: [(u8, u16); 8] = [
@@ -218,6 +222,8 @@ pub const BK4819_PROFILE: ChipProfile = ChipProfile {
     tx_clears_bias_first: false,
     // Armel K5 V1 `BK4819_GPIO5_PIN1_RED = 5`.
     gpio_red_led: 0x40 >> 5,
+    // K5 `radio.c:737`, 5-bit field; `gMicGain_dB2[4] = 31`.
+    tx_mic_gain: 0xE940 | 31,
 };
 
 /// Values recorded for the BK4829 driver the pinned K1 build actually compiles.
@@ -241,6 +247,8 @@ pub const BK4829_PROFILE: ChipProfile = ChipProfile {
     tx_clears_bias_first: true,
     // Armel K1 `BK4819_GPIO5_PIN1_RED = 6`.
     gpio_red_led: 0x40 >> 6,
+    // K1 `radio.c:798`, 6-bit field; `gMicGain_dB2[4] = 32`.
+    tx_mic_gain: 0xE940 | 32,
 };
 
 /// Requested audio-frequency output routing.
