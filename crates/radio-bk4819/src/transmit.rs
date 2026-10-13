@@ -1,7 +1,8 @@
-//! BK4819 transmit sequence for the UV-K5 V1, after the pinned Armel source.
+//! BK4819/BK4829 transmit sequence, after the pinned Armel sources.
 //!
-//! `EVID-TX056-003` accepts the Armel K5 V1 driver and callers as proven
-//! board/register authority. The operations below reimplement its normal
+//! `EVID-TX056-003` accepts the Armel K5 V1 and K1 drivers and callers as
+//! proven board/register authority. The chip-specific values (TX unmute, TX
+//! power blocks, bias clear before TX, red LED bit) come from [`ChipProfile`]. The operations below reimplement its normal
 //! enter and exit paths, split into the shared PTT effects:
 //!
 //! - [`Bk4819::disable_pa`]: `RADIO_SetupRegisters` zero bias, then PA clear.
@@ -10,6 +11,8 @@
 //!   `RADIO_SetTxParameters`: audio mute, RX enable clear, bandwidth,
 //!   frequency, compander off.
 //! - [`Bk4819::enable_transmit`]: `BK4819_PrepareTransmit`, which enters chip TX.
+//!
+//! [`ChipProfile`]: crate::ChipProfile
 //! - [`Bk4819::enable_pa`] then [`Bk4819::set_pa_bias`]: filter path, PA
 //!   enable, and bias, with the source's 5 ms between them left to the caller.
 //!
@@ -34,12 +37,8 @@ const REG_TX_52: RegisterAddress = RegisterAddress::known(0x52);
 
 /// `REG_30` written by `BK4819_TxOn_Beep` to enter chip TX.
 pub const MODE_TRANSMIT_K5: u16 = 0xC1FE;
-/// `REG_37` written by `BK4819_TxOn_Beep`.
-const TX_POWER_BLOCKS: u16 = 0x1D0F;
-/// `REG_52` written by `BK4819_TxOn_Beep`.
+/// `REG_52` written by `BK4819_TxOn_Beep` on both chips.
 const TX_52: u16 = 0x028F;
-/// `BK4819_ExitTxMute`.
-const TX_UNMUTED: u16 = 0x3B20;
 /// `REG_7E` bits 5:3, the TX microphone DC filter, set to 5 by `ExitBypass`.
 const MIC_DC_FILTER_MASK: u16 = 0b111 << 3;
 const MIC_DC_FILTER: u16 = 5 << 3;
@@ -50,8 +49,6 @@ const COMPANDER_ENABLE: u16 = 1 << 3;
 const GPIO_RX_ENABLE: u16 = 0x40;
 /// `REG_33` bit for logical GPIO1, the PA enable output.
 pub const GPIO_PA_ENABLE: u16 = 0x40 >> 1;
-/// `REG_33` bit for logical GPIO5, the red LED.
-const GPIO_RED_LED: u16 = 0x40 >> 5;
 
 /// `REG_36` PA-control output enable, bit 7.
 const PA_CONTROL_ENABLE: u16 = 1 << 7;
@@ -80,7 +77,7 @@ impl<B: RegisterBus> Bk4819<B> {
     /// The logical chip state is unchanged: chip TX may still be on.
     pub fn disable_pa(&mut self) -> Result<(), DriverError<B::Error>> {
         self.write(REG_PA_CONTROL, pa_control_word(0, 0))?;
-        self.gpio_out &= !(GPIO_PA_ENABLE | GPIO_RED_LED);
+        self.gpio_out &= !(GPIO_PA_ENABLE | self.profile.gpio_red_led);
         self.write(REG_GPIO_OUT, self.gpio_out)
     }
 
@@ -138,8 +135,11 @@ impl<B: RegisterBus> Bk4819<B> {
         self.write_af_output(Modulation::Fm, AfOutput::Mute)?;
         let agc = self.read(REG_AGC_CONTROL)?;
         self.write(REG_AGC_CONTROL, (agc & !MIC_DC_FILTER_MASK) | MIC_DC_FILTER)?;
-        self.write(REG_TX_MUTE, TX_UNMUTED)?;
-        self.write(REG_POWER_BLOCKS, TX_POWER_BLOCKS)?;
+        self.write(REG_TX_MUTE, self.profile.tx_unmute)?;
+        if self.profile.tx_clears_bias_first {
+            self.write(REG_PA_CONTROL, 0)?;
+        }
+        self.write(REG_POWER_BLOCKS, self.profile.tx_power_blocks)?;
         self.write(REG_TX_52, TX_52)?;
         self.write(REG_MODE_CONTROL, 0)?;
         self.write(REG_MODE_CONTROL, MODE_TRANSMIT_K5)?;
@@ -158,7 +158,7 @@ impl<B: RegisterBus> Bk4819<B> {
     ) -> Result<(), DriverError<B::Error>> {
         let frequency = self.check_transmitting(request, authorisation)?;
         self.select_filter_path(frequency)?;
-        self.gpio_out |= GPIO_PA_ENABLE | GPIO_RED_LED;
+        self.gpio_out |= GPIO_PA_ENABLE | self.profile.gpio_red_led;
         self.write(REG_GPIO_OUT, self.gpio_out)
     }
 
@@ -321,6 +321,39 @@ mod tests {
             [(0x36, 0x0088), (0x33, path), (0x30, 0x0000)]
         );
         assert_eq!(radio.state(), DriverState::Standby);
+    }
+
+    #[test]
+    fn bk4829_uses_its_own_unmute_power_blocks_bias_clear_and_led() {
+        let policy = policy();
+        let request = pmr();
+        let token = policy.authorise(&request).unwrap();
+        let mut radio = Bk4819::with_profile(FakeBus::new(None), crate::BK4829_PROFILE);
+        radio.recover_to_standby().unwrap();
+        radio.prepare_transmit(&request, &token).unwrap();
+        radio.bus_mut().operations.clear();
+        radio.enable_transmit(&request, &token).unwrap();
+        let entry = writes(&radio);
+        assert_eq!(
+            &entry[2..],
+            [
+                (0x50, 0x3B18),
+                (0x36, 0x0000),
+                (0x37, 0x9D1F),
+                (0x52, 0x028F),
+                (0x30, 0x0000),
+                (0x30, MODE_TRANSMIT_K5),
+            ]
+        );
+        radio.bus_mut().operations.clear();
+        radio.enable_pa(&request, &token).unwrap();
+        let led_and_pa = writes(&radio).last().unwrap().1;
+        assert_eq!(led_and_pa & (GPIO_PA_ENABLE | 0x01), GPIO_PA_ENABLE | 0x01);
+        radio.disable_pa().unwrap();
+        assert_eq!(
+            writes(&radio).last().unwrap().1 & (GPIO_PA_ENABLE | 0x01),
+            0
+        );
     }
 
     #[test]

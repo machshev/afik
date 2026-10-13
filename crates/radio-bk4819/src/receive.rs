@@ -131,6 +131,14 @@ pub struct ChipProfile {
     pub agc_auto_after_init: bool,
     /// Remaining initialisation writes in their source order.
     pub extra_init: &'static [(u8, u16)],
+    /// `REG_50` written by `BK4819_ExitTxMute` before chip TX.
+    pub tx_unmute: u16,
+    /// `REG_37` written by `BK4819_TxOn_Beep`.
+    pub tx_power_blocks: u16,
+    /// Whether `BK4819_TxOn_Beep` zeroes `REG_36` before entering chip TX.
+    pub tx_clears_bias_first: bool,
+    /// `REG_33` bit driving the red LED (`0x40 >> pin`).
+    pub gpio_red_led: u16,
 }
 
 const BK4819_AGC_FM: [(u8, u16); 8] = [
@@ -205,6 +213,11 @@ pub const BK4819_PROFILE: ChipProfile = ChipProfile {
     agc_am: &BK4819_AGC_AM,
     agc_auto_after_init: true,
     extra_init: &BK4819_EXTRA_INIT,
+    tx_unmute: 0x3B20,
+    tx_power_blocks: 0x1D0F,
+    tx_clears_bias_first: false,
+    // Armel K5 V1 `BK4819_GPIO5_PIN1_RED = 5`.
+    gpio_red_led: 0x40 >> 5,
 };
 
 /// Values recorded for the BK4829 driver the pinned K1 build actually compiles.
@@ -223,6 +236,11 @@ pub const BK4829_PROFILE: ChipProfile = ChipProfile {
     agc_am: &BK4829_AGC,
     agc_auto_after_init: false,
     extra_init: &BK4829_EXTRA_INIT,
+    tx_unmute: 0x3B18,
+    tx_power_blocks: 0x9D1F,
+    tx_clears_bias_first: true,
+    // Armel K1 `BK4819_GPIO5_PIN1_RED = 6`.
+    gpio_red_led: 0x40 >> 6,
 };
 
 /// Requested audio-frequency output routing.
