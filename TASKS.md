@@ -2952,7 +2952,7 @@
 
 ## TXOFF-057 — Source-backed K5 off/receive hardware witness
 
-- **Status:** planned, next after `TXPLAN-056`; required flashing and hardware
+- **Status:** active (2026-10-13), after `TXPLAN-056`; required flashing and hardware
   testing already authorized by the operator on 2026-10-13.
 - **First step:** implement a bounded receive-only K5 diagnostic which uses
   the selected Armel initialization/zero-bias/PA-clear/chip-idle facts, records

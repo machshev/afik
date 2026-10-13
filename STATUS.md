@@ -2,6 +2,20 @@
 
 ## Current work package
 
+**`TXOFF-057` is active** (2026-10-13), explicitly requested for prompt K5/K6
+hardware testing. Required flashing is already authorized. Implement a bounded
+receive-only K5 diagnostic using the proven Armel initialization, zero-bias,
+PA-clear and chip-idle facts; test its order/failures, build/verify/package,
+flash the attached radio, and observe actual boot/register/receive/serial
+behavior. No physical RF TX, PA enable, calibration write or synthetic TX
+envelope is part of this package. Preserve the normal K5 receive application.
+
+Activation verification: `git diff --check` passed. Next smallest actionable
+step: implement and host-test the dedicated off/receive witness, then validate
+its target image before the authorized flash.
+
+## Previous work package: TXPLAN-056
+
 **`TXPLAN-056` is complete** (2026-10-13). `docs/tx-shutdown-plan.md` contains
 separate K1 and K5 V1 plans, candidate signals, recovery/calibration and
 instrument prerequisites, nine bounded cases, stop criteria and explicit
