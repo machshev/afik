@@ -108,7 +108,7 @@ fn unsettled_state_missing_identity_timeout_and_zero_power_deny() {
         }
         denied(&candidate, TxDenied::Configuration);
     }
-    for timeout_ms in [0, 60_001, u32::MAX] {
+    for timeout_ms in [0, 300_001, u32::MAX] {
         denied(
             &TxRequest {
                 timeout_ms,
@@ -119,7 +119,7 @@ fn unsettled_state_missing_identity_timeout_and_zero_power_deny() {
     }
     assert!(policy()
         .authorise(&TxRequest {
-            timeout_ms: 60_000,
+            timeout_ms: 300_000,
             ..original
         })
         .is_ok());

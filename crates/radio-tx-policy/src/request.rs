@@ -7,8 +7,9 @@ use crate::{TxDenied, TxPolicy};
 
 /// Maximum number of ranges in a hardware or calibration envelope.
 pub const MAX_ENVELOPE_RANGES: usize = 4;
-/// Conservative application timeout ceiling, in milliseconds.
-pub const MAX_TX_TIMEOUT_MS: u32 = 60_000;
+/// Application timeout ceiling, in milliseconds: five minutes, the longest
+/// TX timeout an operator can choose on the handset.
+pub const MAX_TX_TIMEOUT_MS: u32 = 300_000;
 
 /// Adapter-owned identity; instance and revision must never be reused.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -169,14 +169,12 @@ pub const TX_POWER_LEVELS: u8 = 4;
 /// Low4 as its README documents them. Nominal, not measured by AFIK.
 pub const TX_POWER_NOMINAL_MW: [u32; TX_POWER_LEVELS as usize] = [20, 125, 250, 500];
 
-/// Selectable TX timeouts.
-pub const TX_TIMEOUT_CHOICES: u8 = 4;
+/// Selectable TX timeouts: one to five whole minutes, the last being the TX
+/// policy's ceiling.
+pub const TX_TIMEOUT_CHOICES: u8 = 5;
 
-/// Each TX timeout in seconds, all within the TX policy's 60 s ceiling.
-pub const TX_TIMEOUT_SECONDS: [u8; TX_TIMEOUT_CHOICES as usize] = [15, 30, 45, 60];
-
-/// Index into [`TX_TIMEOUT_SECONDS`] in force until the operator picks one.
-pub const TX_TIMEOUT_DEFAULT: u8 = 1;
+/// Index of the TX timeout in force until the operator picks one: one minute.
+pub const TX_TIMEOUT_DEFAULT: u8 = 0;
 
 /// Selectable squelch levels, from permanently open to tightest.
 pub const SQUELCH_LEVELS: u8 = MAX_SQUELCH_LEVEL + 1;
@@ -391,7 +389,7 @@ impl Shell {
         self.tx_power_cursor
     }
 
-    /// Returns the selected TX timeout, as an index into [`TX_TIMEOUT_SECONDS`].
+    /// Returns the selected TX timeout index; the timeout is one more minute.
     #[must_use]
     pub const fn tx_timeout(&self) -> u8 {
         self.tx_timeout
@@ -400,7 +398,7 @@ impl Shell {
     /// Returns the selected TX timeout in milliseconds.
     #[must_use]
     pub const fn tx_timeout_ms(&self) -> u32 {
-        TX_TIMEOUT_SECONDS[self.tx_timeout as usize] as u32 * 1_000
+        (self.tx_timeout as u32 + 1) * 60_000
     }
 
     /// Returns the TX timeout-list cursor row.
@@ -1008,7 +1006,7 @@ impl Shell {
                 self.tx_power_cursor = level;
                 return self.confirm(context);
             }
-            // Timeouts are numbered from one on screen too.
+            // Timeouts are whole minutes, so the digit is the minutes.
             Screen::TxTimeoutList => {
                 let Some(choice) = u8::try_from(digit)
                     .ok()
@@ -1555,7 +1553,7 @@ mod tests {
         let mut shell = Shell::new();
         shell.set_capabilities(Capabilities::K5);
         shell.select_memory();
-        assert_eq!(shell.tx_timeout_ms(), 30_000, "30 s is the default");
+        assert_eq!(shell.tx_timeout_ms(), 60_000, "one minute is the default");
         shell.press(Key::Menu, 0, context(16, 0));
         shell.press(Key::Down, 1, context(16, 0));
         shell.press(Key::Down, 2, context(16, 0));
@@ -1563,16 +1561,16 @@ mod tests {
         assert_eq!(shell.screen(), Screen::TxTimeoutList);
         assert_eq!(
             shell.tx_timeout_cursor(),
-            1,
+            0,
             "opens on the timeout in force"
         );
         shell.press(Key::Down, 4, context(16, 0));
         shell.press(Key::Down, 5, context(16, 0));
         assert_eq!(shell.press(Key::Menu, 6, context(16, 0)), Intent::Redraw);
-        assert_eq!(shell.tx_timeout_ms(), 60_000);
+        assert_eq!(shell.tx_timeout_ms(), 180_000);
         assert_eq!(shell.screen(), Screen::Operating);
 
-        // Digits pick a timeout numbered from one; others do nothing.
+        // The digit is the minutes; others do nothing.
         shell.press(Key::Menu, 7, context(16, 0));
         shell.press(Key::Up, 8, context(16, 0));
         shell.press(Key::Menu, 9, context(16, 0));
@@ -1581,9 +1579,10 @@ mod tests {
             Screen::TxTimeoutList,
             "Up wraps to the last row"
         );
-        assert_eq!(shell.press(Key::Digit(5), 10, context(16, 0)), Intent::Idle);
-        shell.press(Key::Digit(1), 11, context(16, 0));
-        assert_eq!(shell.tx_timeout_ms(), 15_000);
+        assert_eq!(shell.press(Key::Digit(6), 10, context(16, 0)), Intent::Idle);
+        assert_eq!(shell.press(Key::Digit(0), 10, context(16, 0)), Intent::Idle);
+        shell.press(Key::Digit(5), 11, context(16, 0));
+        assert_eq!(shell.tx_timeout_ms(), 300_000);
 
         // Exit returns to the menu and applies nothing.
         shell.press(Key::Menu, 12, context(16, 0));
@@ -1592,7 +1591,7 @@ mod tests {
         shell.press(Key::Down, 15, context(16, 0));
         shell.press(Key::Exit, 16, context(16, 0));
         assert_eq!(shell.screen(), Screen::Settings);
-        assert_eq!(shell.tx_timeout_ms(), 15_000);
+        assert_eq!(shell.tx_timeout_ms(), 300_000);
     }
 
     /// A host write is the authority on the level the menu shows.

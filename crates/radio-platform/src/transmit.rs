@@ -245,7 +245,7 @@ pub fn run_effects(
 #[cfg(test)]
 mod tests {
     use super::{policy, Pmr446Target};
-    use crate::operator_shell::TX_TIMEOUT_SECONDS;
+    use crate::operator_shell::TX_TIMEOUT_CHOICES;
     use radio_domain::Frequency;
     use radio_tx_policy::{TxDenied, TxState};
 
@@ -274,8 +274,8 @@ mod tests {
     #[test]
     fn every_selectable_timeout_is_authorised() {
         let policy = policy();
-        for seconds in TX_TIMEOUT_SECONDS {
-            let timeout_ms = u32::from(seconds) * 1_000;
+        for minutes in 1..=u32::from(TX_TIMEOUT_CHOICES) {
+            let timeout_ms = minutes * 60_000;
             let request = K5.request(
                 pmr(446_006_250),
                 TxState::Selected,
@@ -284,7 +284,7 @@ mod tests {
                 0,
                 timeout_ms,
             );
-            assert!(policy.authorise(&request).is_ok(), "{seconds} s");
+            assert!(policy.authorise(&request).is_ok(), "{minutes} min");
         }
     }
 
