@@ -2927,8 +2927,7 @@
 
 ## TXPLAN-056 — Exact-target non-transmitting shutdown acceptance plan
 
-- **Status:** active (2026-10-13), following operator continuation;
-  document-only scope after `TXEVID-055`.
+- **Status:** complete (2026-10-13), document-only milestone after `TXEVID-055`.
 - **First step:** turn `RISK-040` item 1 into a reviewable K1 and K5 V1 plan
   with pinned board/chip applicability, documented off-state prerequisites,
   measurement points/equipment, recovery/calibration prerequisites, bounded
@@ -2941,3 +2940,29 @@
   to execute the plan. Missing independent off routes remain explicit gates.
 - **Exclusions:** target TX implementation, firmware flashing, hardware writes,
   physical experiments or transmission; those need separate authorization.
+- **Operator steering:** required flashing and prompt real-hardware testing
+  authorized on 2026-10-13. Complete this document milestone, then move directly
+  to the non-transmitting K5 witness in `TXOFF-057`; no repeat flash approval.
+- **Completion:** separate source-correlated target plans, nine bounded cases,
+  measurement/stop/result criteria, package-name clarification, trusted Armel
+  normal-path evidence and distinct pending RF/fault qualification. Source
+  audits, formatting, warning-denied workspace Clippy and all 636 tests pass.
+  No experiment ran. `ADR-095` and `RISK-040` record the next immediate hardware
+  slice; proceed directly with authorized `TXOFF-057`.
+
+## TXOFF-057 — Source-backed K5 off/receive hardware witness
+
+- **Status:** planned, next after `TXPLAN-056`; required flashing and hardware
+  testing already authorized by the operator on 2026-10-13.
+- **First step:** implement a bounded receive-only K5 diagnostic which uses
+  the selected Armel initialization/zero-bias/PA-clear/chip-idle facts, records
+  raw read-back and restores the existing full narrow-FM receive setup. PTT is
+  input-only; no target TX enable, PA enable, power envelope or token is added.
+- **Acceptance:** test operation order and partial failures; preserve the
+  bootloader/EEPROM, build/verify/package the image, flash the attached K5/K6,
+  and check actual boot identity, register observations, off/receive repetition
+  and serial responsiveness. Record hardware evidence at its measured scope.
+- **Exclusions:** physical RF transmission, arbitrary register commands,
+  calibration writes, target TX preparation/enable, or claiming RF silence,
+  active-TX shutdown latency, calibrated power or independent fail-off from
+  register/boot results.

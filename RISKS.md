@@ -1067,9 +1067,11 @@ the exact K5 V1 unit, in this order:
    MCU restart. If an independent off route or the required bound cannot be
    established, target TX remains denied.
 
-`TXPLAN-056` is the next smallest actionable document task: prepare the exact-
-target non-transmitting shutdown acceptance plan for item 1, explicitly leaving
-active-TX and power measurements pending. These proposed experiments have not
-run and require separate authorization; `TXEVID-055` does not authorize
-flashing, a hardware control write, or physical transmission. `APP-052` remains
-paused and `RISK-036` remains deferred by operator decision.
+`TXPLAN-056` provides the separate target plans in `docs/tx-shutdown-plan.md`.
+No case has run. The operator reported K5/K6 attached in flash mode and
+authorized required flashing and prompt real-hardware testing on 2026-10-13.
+Next is `TXOFF-057`, a source-backed receive-only K5 off/idle/receive witness;
+boot/register observations do not require later RF power qualification first.
+Instrumented fault/active-TX/power/fail-off measurements remain pending and
+physical TX remains outside the authorized witness. `APP-052` remains paused
+and `RISK-036` remains deferred by operator decision.

@@ -1570,3 +1570,23 @@ meaning.
   No production code, firmware identity, adapter wiring, calibration bytes or
   physical experiment changes. `TXPLAN-056` prepares the next non-transmitting
   shutdown acceptance plan; its activation and any physical work are separate.
+
+## ADR-095 — Use proven Armel controls for a receive-only hardware witness
+
+- **Date:** 2026-10-13
+- **Status:** accepted for `TXPLAN-056`, following operator hardware steering
+- Correlate every hardware conclusion with the selected Armel driver and its
+  callers. Accept their proven operating paths as board/register authority;
+  remaining AFIK fault-state and timing questions do not invalidate that work.
+- Distinguish logical GPIO indices from inherited package-number labels.
+  K1's `PIN29` symbol denotes enum index 1; the selected BK4829 document places
+  GPIO1 on package pin 1. This is not an Armel driver defect. Probe pads need
+  the matched physical package/net map.
+- Proceed first with a source-backed K5 receive-only off/idle/restore witness,
+  host fault/order tests, a verified image, and real boot/register/receive
+  observations. Treat those observations at their actual scope rather than
+  requiring later RF measurements to precede a non-transmitting smoke test.
+- The operator authorized required flashing and requested prompt hardware
+  testing. Carry that permission into `TXOFF-057`; no repeat approval is needed
+  for the authorized required flash. No physical TX integration or invented
+  hardware/calibration envelope follows from this permission or witness.

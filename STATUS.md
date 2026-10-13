@@ -2,16 +2,14 @@
 
 ## Current work package
 
-**`TXPLAN-056` is active** (2026-10-13), following operator continuation.
-Prepare separate reviewable K1 and K5 V1 non-transmitting shutdown acceptance
-plans from `RISK-040` item 1. Resolve source/schematic applicability, identify
-candidate measurement points and prerequisites, bound proposed observations,
-and state stop criteria and remaining qualification gaps. This is document
-work only: no firmware implementation, hardware write, flashing, or physical
-experiment. Target TX inputs remain denied; `APP-052` remains paused.
+**`TXPLAN-056` is complete** (2026-10-13). `docs/tx-shutdown-plan.md` contains
+separate K1 and K5 V1 plans, candidate signals, recovery/calibration and
+instrument prerequisites, nine bounded cases, stop criteria and explicit
+unmeasured RF/fault guarantees. Every hardware conclusion correlates with
+Armel's proven selected drivers/callers. Target TX inputs remain denied and
+`APP-052` remains paused.
 
-Activation verification: `git diff --check` passed. Next smallest actionable
-step: draft the two target plans and their common measurement/acceptance record.
+Activation verification: `git diff --check` passed; committed as `69fa9a7`.
 
 The first source/applicability step is complete. `EVID-TX056-001` records the
 BK4829 manufacturer's published GPIO1 package pin 1, which differs from the
@@ -43,6 +41,29 @@ Correlation verification: `python3 /tmp/afik-txplan-056-source-audit.py` and
 `git diff --check` passed. The audit checks the selected Armel builds, K5
 commit/four file hashes, source call ranges and GPIO indices, both datasheet
 hashes/package tables, generic reference drawing and complete teardown tree.
+That refinement was committed as `e52055e` before drafting the plans.
+
+The final gate passed in the pinned cached direnv shell:
+
+```sh
+direnv exec . env CARGO_BUILD_JOBS=2 ionice -c 3 nice -n 10 bash -c 'cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && git diff --check' > /tmp/afik-txplan-056-gate.log 2>&1
+python3 /tmp/afik-txplan-056-source-audit.py
+git diff --check
+```
+
+All 636 tests in 60 suites pass without warning/error diagnostics. A separate
+Python document check confirmed both target plans, all nine case IDs and the
+Armel correlation heading/link. Only documentation changed; no target release
+build or physical experiment was required for this milestone.
+
+The operator now reports K5/K6 attached in firmware flash mode, authorizes
+required flashing, and requests prompt real-hardware testing. An escalated
+`ls -l /dev/serial/by-id /dev/ttyUSB0 /dev/ttyACM0` observed the CH340 path at
+`/dev/ttyUSB0` (`ttyACM0` absent); no serial port was opened and no beacon was
+read for this package. That permission persists into the next work package.
+`ADR-095` records the practical receive-only witness boundary. Next smallest
+actionable task, already requested by the operator: `TXOFF-057`, implement,
+verify, flash and observe the K5 receive-only off/idle/receive diagnostic.
 
 ## Previous work package: TXEVID-055
 

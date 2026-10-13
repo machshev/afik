@@ -110,3 +110,8 @@ enable. Those source sequences do not qualify the shared non-energizing
 preparation or power preparation before enable. Required measurements and the
 order of qualifying shutdown first are recorded in `RISK-040`; both targets
 remain without qualified hardware/calibration TX inputs.
+
+The [K1 and K5 shutdown acceptance plans](tx-shutdown-plan.md) distinguish
+the immediate receive-only boot/register smoke test from later instrumented
+off-state and active-TX qualification. Armel's proven operating paths remain
+the hardware reference; source names do not identify K1 package probe pads.
