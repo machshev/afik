@@ -1,177 +1,67 @@
 //! Experimental PMR446 low-power transmit for the UV-K5 V1 (`TXK5-058`).
 //!
-//! The PTT lifecycle is the shared `radio_platform::tx_control` controller;
-//! this module supplies the K5 request, the calibration-derived bias, and the
-//! effect adapter over the BK4819 sequence reimplemented from the Armel K5 V1
-//! source (`EVID-TX056-003`).
-//!
-//! Power is one of the Armel F4HWN "Low1" to "Low4" levels: the unit's own low
-//! calibration bias scaled by 4/25, 4/19, 4/13 or 4/10 (`radio.c`, the
-//! `dividers` table), which Armel documents as about 20, 125, 250 and 500 mW.
-//! Those milliwatt figures are nominal claims, not measurements.
+//! The request, bias derivation and effect executor are shared with the K1 in
+//! [`radio_platform::transmit`]; this module supplies the K5's identity, its
+//! Armel divider table and calibration address, and its speaker and delay.
 
 use radio_bk4819::{Bk4819, ReceiveSetup, RegisterBus};
-use radio_domain::{ActiveChannel, Bandwidth, Modulation, TxClass};
-use radio_platform::operator_shell::{TX_POWER_LEVELS, TX_POWER_NOMINAL_MW};
 use radio_platform::receive_app::View;
-use radio_platform::tx_control::{Acknowledgement, Action, Controller, Effect, Event};
-use radio_tx_policy::regional::{Attestation, Attestations, Region, RuleRange};
-use radio_tx_policy::{
-    ConfigurationIdentity, OperatingConditions, PermissionSet, StoredPermissions, TxEnvelope,
-    TxPolicy, TxRequest, TxState,
-};
+use radio_platform::transmit::{self as shared, Pmr446Target};
+use radio_platform::tx_control::Effect;
+use radio_tx_policy::{TxPolicy, TxRequest, TxState};
 
 use crate::application::SpeakerOutput;
 use crate::receive::Pmr446Channel;
 
+pub use radio_platform::transmit::{run_effects, Delay, TIMEOUT_MS};
+
 /// EEPROM address of the three low-power bias bytes for the 400–470 MHz band:
 /// `0x1ED0 + band 5 * 16 + low * 3` (`radio.c:555`).
 pub const CALIBRATION_ADDRESS: u16 = 0x1F20;
-/// TX timeout from the accepted press, in milliseconds.
-pub const TIMEOUT_MS: u32 = 5_000;
-/// PMR446 ceiling, which also bounds this build's hardware envelope.
-const PMR446_MAX_MW: u32 = 500;
-/// Low1–Low4 bias scaling from Armel's `dividers` table: numerator 4 over these.
-const LEVEL_DIVIDERS: [i32; TX_POWER_LEVELS as usize] = [25, 19, 13, 10];
-/// Most controller effects driven in one loop pass; a full entry or exit is
-/// four or three, so one pass completes either.
-const MAX_EFFECTS_PER_PASS: usize = 8;
 
-/// Opaque identity shared by this build's hardware and calibration envelopes.
-const K5_TARGET_ID: u64 = 0x4B35_5631;
-const PMR446_FIRST_HZ: u32 = 446_006_250;
-const PMR446_LAST_HZ: u32 = 446_193_750;
-const PMR446_RASTER_HZ: u32 = 12_500;
+/// The K5 V1: Armel K5 `dividers` Low1–Low4 are 25, 19, 13 and 10.
+const K5: Pmr446Target = Pmr446Target {
+    target_id: 0x4B35_5631,
+    dividers: [25, 19, 13, 10],
+};
 
-/// `frequencyBandTable[BAND6_400MHz]`, in the source's 10 Hz units.
-const BAND_LOWER: i32 = 40_000_000;
-const BAND_UPPER: i32 = 47_000_000;
+/// The K5 `SysTick` as the shared settling delay.
+pub struct TickDelay<'a>(pub &'a mut radio_dp32g030::systick::PeriodicTick);
 
-/// Settling waits from `RADIO_SetTxParameters`, in milliseconds.
-const AFTER_CHIP_TX_MS: u32 = 10;
-const AFTER_PA_ENABLE_MS: u32 = 5;
-const AFTER_BIAS_MS: u32 = 10;
-
-/// Millisecond busy-wait used for the source's settling delays.
-pub trait Delay {
-    /// Waits at least `milliseconds`.
-    fn delay_ms(&mut self, milliseconds: u32);
-}
-
-impl Delay for radio_dp32g030::systick::PeriodicTick {
+impl Delay for TickDelay<'_> {
     fn delay_ms(&mut self, milliseconds: u32) {
-        Self::delay_ms(self, milliseconds);
+        self.0.delay_ms(milliseconds);
     }
 }
 
-/// Derives the PA bias for one power level (0 = Low1) at a 400–470 MHz
-/// frequency from the three low calibration bytes, as
-/// `RADIO_ConfigureSquelchAndOutputPower` and `FREQUENCY_CalculateOutputPower` do.
-///
-/// Returns `None` for an unprogrammed (`0x00`/`0xFF`) byte, an unknown level, a
-/// frequency outside the band, or a zero result, so TX is then denied by
-/// missing calibration.
+/// Derives the PA bias for one power level (0 = Low1); see [`Pmr446Target::bias`].
 pub fn level_bias(calibration: [u8; 3], frequency_hz: u32, level: u8) -> Option<u8> {
-    if calibration.iter().any(|byte| matches!(byte, 0x00 | 0xFF)) {
-        return None;
-    }
-    let divider = *LEVEL_DIVIDERS.get(usize::from(level))?;
-    let frequency = i32::try_from(frequency_hz / 10).ok()?;
-    if !(BAND_LOWER..BAND_UPPER).contains(&frequency) {
-        return None;
-    }
-    let [low, mid, high] = calibration.map(|byte| i32::from(byte) * 4 / divider);
-    let middle = (BAND_LOWER + BAND_UPPER) / 2;
-    // The source's two interpolation branches, including its use of the
-    // low-to-mid slope added to mid below the middle point.
-    let bias = if frequency <= BAND_LOWER {
-        low
-    } else if frequency <= middle {
-        mid + (mid - low) * (frequency - BAND_LOWER) / (middle - BAND_LOWER)
-    } else {
-        mid + (high - mid) * (frequency - middle) / (BAND_UPPER - middle)
-    };
-    u8::try_from(bias).ok().filter(|bias| *bias != 0)
+    K5.bias(calibration, frequency_hz, level)
 }
 
 /// The fixed experimental policy: licence-free PMR446 only.
 pub fn policy() -> TxPolicy {
-    let permissions = PermissionSet::none().with(TxClass::LicenceFreePlan, true);
-    TxPolicy::load(&StoredPermissions::new(permissions, 1).encode()).0
-}
-
-fn envelope(evidence_id: u32) -> TxEnvelope {
-    TxEnvelope {
-        target_id: K5_TARGET_ID,
-        evidence_id,
-        ranges: [
-            Some(RuleRange {
-                first_hz: PMR446_FIRST_HZ,
-                last_hz: PMR446_LAST_HZ,
-                max_conducted_mw: PMR446_MAX_MW,
-                wide_fm: false,
-            }),
-            None,
-            None,
-            None,
-        ],
-        resolution_hz: PMR446_RASTER_HZ,
-    }
+    shared::policy()
 }
 
 /// Builds the complete request from the current receive view.
-///
-/// The attestations are the operator's, given for this experimental bench
-/// build on 2026-10-13 (`TXK5-058`). The calibration envelope is present only
-/// when a bias for `level` was derived from this unit's EEPROM.
 pub fn request(view: View, revision: u32, bias: Option<u8>, level: u8) -> TxRequest {
     let channel = Pmr446Channel::new(view.channel);
-    let frequency = channel.unwrap_or(Pmr446Channel::FIRST).frequency();
-    TxRequest {
-        target_id: K5_TARGET_ID,
-        channel: ActiveChannel {
-            receive: frequency,
-            transmit: frequency,
-            tx_class: TxClass::LicenceFreePlan,
-        },
-        modulation: Modulation::Fm,
-        bandwidth: Bandwidth::Narrow,
-        conducted_mw: TX_POWER_NOMINAL_MW
-            .get(usize::from(level))
-            .copied()
-            .unwrap_or(0),
-        timeout_ms: TIMEOUT_MS,
-        state: if view.receiver_ok && channel.is_some() {
-            TxState::Selected
-        } else {
-            TxState::Faulted
-        },
-        configuration: Some(ConfigurationIdentity {
-            instance: 1,
-            generation: 0,
-            revision,
-        }),
-        region: Region::UnitedKingdom,
-        attestations: Attestations {
-            location: Attestation::Attested,
-            licence_valid: Attestation::Attested,
-            operator_authorised: Attestation::Attested,
-            equipment_eligible: Attestation::Attested,
-        },
-        grant: None,
-        hardware: Some(envelope(1)),
-        calibration: bias.map(|_| envelope(2)),
-        operating: OperatingConditions {
-            mobile: Attestation::Attested,
-            non_airborne: Attestation::Attested,
-            receiver_capable: Attestation::Attested,
-        },
-    }
+    let state = if view.receiver_ok && channel.is_some() {
+        TxState::Selected
+    } else {
+        TxState::Faulted
+    };
+    K5.request(
+        channel.unwrap_or(Pmr446Channel::FIRST).frequency(),
+        state,
+        revision,
+        bias,
+        level,
+    )
 }
 
 /// Executes one controller effect against the K5 radio, speaker and delay.
-///
-/// Returns whether the whole operation completed.
 pub fn execute<B: RegisterBus, S: SpeakerOutput, D: Delay>(
     effect: &Effect<'_>,
     bias: Option<u8>,
@@ -180,65 +70,14 @@ pub fn execute<B: RegisterBus, S: SpeakerOutput, D: Delay>(
     speaker: &mut S,
     delay: &mut D,
 ) -> bool {
-    let request = effect.request();
-    match (effect.action(), effect.authorisation()) {
-        (Action::DisablePa, _) => radio.disable_pa().is_ok(),
-        (Action::DisableTransmit, _) => radio.disable_transmit().is_ok(),
-        (Action::RestoreReceive, _) => {
-            receive.is_some_and(|setup| radio.configure_receive(&setup).is_ok())
-        }
-        (Action::PrepareTransmit, Some(token)) => {
-            speaker.set_enabled(false);
-            radio.prepare_transmit(request, token).is_ok()
-        }
-        (Action::EnableTransmit, Some(token)) => {
-            let entered = radio.enable_transmit(request, token).is_ok();
-            delay.delay_ms(AFTER_CHIP_TX_MS);
-            entered
-        }
-        (Action::EnablePa, Some(token)) => {
-            let Some(bias) = bias else {
-                return false;
-            };
-            if radio.enable_pa(request, token).is_err() {
-                return false;
-            }
-            delay.delay_ms(AFTER_PA_ENABLE_MS);
-            let biased = radio.set_pa_bias(request, token, bias).is_ok();
-            delay.delay_ms(AFTER_BIAS_MS);
-            biased
-        }
-        (Action::PrepareTransmit | Action::EnableTransmit | Action::EnablePa, None) => false,
-    }
-}
-
-/// Drives every pending controller effect for this pass, acknowledging each.
-///
-/// A stale request or withdrawn authority invalidates, which starts shutdown.
-pub fn run_effects(
-    controller: &mut Controller,
-    policy: &TxPolicy,
-    request: &TxRequest,
-    now_ms: u64,
-    mut run: impl FnMut(&Effect<'_>) -> bool,
-) {
-    for _ in 0..MAX_EFFECTS_PER_PASS {
-        let acknowledgement = match controller.effect(policy, request) {
-            Ok(Some(effect)) => {
-                if run(&effect) {
-                    Acknowledgement::applied(effect.id())
-                } else {
-                    Acknowledgement::failed(effect.id())
-                }
-            }
-            Ok(None) => return,
-            Err(_) => {
-                let _ = controller.handle(now_ms, Event::Invalidated, policy, request);
-                continue;
-            }
-        };
-        let _ = controller.handle(now_ms, Event::Completed(acknowledgement), policy, request);
-    }
+    shared::execute(
+        effect,
+        bias,
+        receive,
+        radio,
+        || speaker.set_enabled(false),
+        delay,
+    )
 }
 
 #[cfg(test)]

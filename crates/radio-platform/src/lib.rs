@@ -13,4 +13,5 @@ pub mod operator_shell;
 pub mod receive_app;
 pub mod serial;
 pub mod serial_control;
+pub mod transmit;
 pub mod tx_control;

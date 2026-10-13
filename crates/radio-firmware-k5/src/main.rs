@@ -214,7 +214,7 @@ fn main() -> ! {
                 receive,
                 &mut radio,
                 &mut speaker,
-                &mut sample_tick,
+                &mut transmit::TickDelay(&mut sample_tick),
             )
         });
         // Serial, keypad and receive sampling all touch the radio, so they
