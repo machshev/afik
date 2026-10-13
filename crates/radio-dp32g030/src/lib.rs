@@ -21,6 +21,7 @@ pub mod gpio;
 pub mod mmio;
 pub mod portcon;
 pub mod pwm_plus;
+pub mod saradc;
 pub mod spi;
 pub mod syscon;
 pub mod systick;
@@ -50,3 +51,5 @@ pub const PORTCON_BASE: u32 = 0x400B_0000;
 pub const PWM_PLUS0_BASE: u32 = 0x400B_4000;
 /// SPI0 base address, per `EVID-DP32-010`.
 pub const SPI0_BASE: u32 = 0x400B_8000;
+/// SARADC base address, per `EVID-K5-034`.
+pub const SARADC_BASE: u32 = 0x400B_A000;

@@ -6,7 +6,7 @@
 //! with that calibration, and volts become percent along a discharge curve the
 //! target supplies. This module owns all three steps and touches no hardware.
 //!
-//! `EVID-K1-063` and `EVID-K5-064` record where each constant comes from.
+//! `EVID-K1-063` and `EVID-K5-034` record where each constant comes from.
 
 /// Raw conversions averaged into one reading.
 ///

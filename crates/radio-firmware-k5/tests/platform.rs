@@ -77,8 +77,11 @@ fn k5_supported_shell_screens_are_deterministic_and_shared() {
         scanning: false,
     };
 
-    let operating = render_operator_frame(&shell, view, None);
-    assert_eq!(operating, render_operator_frame(&shell, view, None));
+    let operating = render_operator_frame(&shell, view, None, Some(64));
+    assert_eq!(
+        operating,
+        render_operator_frame(&shell, view, None, Some(64))
+    );
     assert!(operating.iter().any(|byte| *byte != 0));
 
     let channel = Pmr446Channel::new(view.channel).unwrap();
@@ -94,7 +97,7 @@ fn k5_supported_shell_screens_are_deterministic_and_shared() {
             rssi_raw: 0,
             squelch_open: view.squelch_open,
             receiver_ok: view.receiver_ok,
-            battery_percent: None,
+            battery_percent: Some(64),
             monitoring: view.monitoring,
             scanning: false,
             bank: None,
@@ -105,13 +108,16 @@ fn k5_supported_shell_screens_are_deterministic_and_shared() {
     assert_eq!(operating, expected_operating);
     let mut fault_view = view;
     fault_view.receiver_ok = false;
-    assert_ne!(operating, render_operator_frame(&shell, fault_view, None));
+    assert_ne!(
+        operating,
+        render_operator_frame(&shell, fault_view, None, Some(64))
+    );
 
     assert_eq!(
         shell.press(radio_platform::receive_app::Key::Side1, 0, context),
         radio_platform::operator_shell::Intent::Redraw
     );
-    let channel_list = render_operator_frame(&shell, view, None);
+    let channel_list = render_operator_frame(&shell, view, None, Some(64));
     assert_ne!(operating, channel_list);
     assert_eq!(shell.screen(), Screen::ChannelList);
 
@@ -142,7 +148,7 @@ fn k5_supported_shell_screens_are_deterministic_and_shared() {
         shell.press(radio_platform::receive_app::Key::Star, 2, context),
         radio_platform::operator_shell::Intent::Redraw
     );
-    let source_list = render_operator_frame(&shell, view, None);
+    let source_list = render_operator_frame(&shell, view, None, Some(64));
     assert_ne!(channel_list, source_list);
     let mut expected_source_list = [0_u8; FRAME_BYTES];
     render_selector_list(
@@ -161,7 +167,7 @@ fn k5_supported_shell_screens_are_deterministic_and_shared() {
         shell.press(radio_platform::receive_app::Key::Function, 4, context),
         radio_platform::operator_shell::Intent::Redraw
     );
-    let info = render_operator_frame(&shell, view, None);
+    let info = render_operator_frame(&shell, view, None, Some(64));
     assert_ne!(source_list, info);
     assert_ne!(operating, info);
     let mut expected_info = [0_u8; FRAME_BYTES];
@@ -239,6 +245,7 @@ fn k5_settings_and_squelch_frames_use_the_shared_k1_layout() {
             receiver_ok: true,
         },
         None,
+        None,
     );
     assert_eq!(shell.screen(), Screen::Settings);
     let mut expected_settings = [0_u8; FRAME_BYTES];
@@ -265,6 +272,7 @@ fn k5_settings_and_squelch_frames_use_the_shared_k1_layout() {
             squelch_open: false,
             receiver_ok: true,
         },
+        None,
         None,
     );
     assert_eq!(shell.screen(), Screen::SquelchList);

@@ -7,6 +7,7 @@ extern crate std;
 
 pub mod application;
 pub mod audio;
+pub mod battery;
 pub mod bk4819_bus;
 pub mod eeprom;
 pub mod k5_display;

@@ -170,8 +170,9 @@ impl K5BootDisplay {
         shell: &Shell,
         view: View,
         metrics: Option<ReceiveMetrics>,
+        battery_percent: Option<u8>,
     ) -> Result<(), core::convert::Infallible> {
-        let frame = render_operator_frame(shell, view, metrics);
+        let frame = render_operator_frame(shell, view, metrics, battery_percent);
         if !self.has_previous_frame || self.previous_frame != frame {
             write_frame(&frame);
             self.previous_frame = frame;
@@ -187,6 +188,7 @@ pub fn render_operator_frame(
     shell: &Shell,
     view: View,
     metrics: Option<ReceiveMetrics>,
+    battery_percent: Option<u8>,
 ) -> [u8; FRAME_BYTES] {
     let mut frame = [0_u8; FRAME_BYTES];
     let channel = radio_platform::configuration::Pmr446Channel::new(view.channel)
@@ -207,7 +209,7 @@ pub fn render_operator_frame(
                     rssi_raw,
                     squelch_open: view.squelch_open,
                     receiver_ok: view.receiver_ok,
-                    battery_percent: None,
+                    battery_percent,
                     monitoring: view.monitoring,
                     scanning: false,
                     bank: None,

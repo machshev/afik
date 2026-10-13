@@ -29,6 +29,8 @@ pub enum Peripheral {
     Spi0,
     /// `PWM_PLUS` controller 0, which drives the V1 backlight.
     PwmPlus0,
+    /// The SAR analogue-to-digital converter, which reads the V1 battery.
+    Saradc,
 }
 
 impl Peripheral {
@@ -43,6 +45,7 @@ impl Peripheral {
             Self::Uart2 => 1 << 8,
             Self::Spi0 => 1 << 10,
             Self::PwmPlus0 => 1 << 20,
+            Self::Saradc => 1 << 25,
         }
     }
 }
@@ -70,6 +73,7 @@ mod tests {
         assert_eq!(Peripheral::Uart2.gate_bit(), 0x0000_0100);
         assert_eq!(Peripheral::Spi0.gate_bit(), 0x0000_0400);
         assert_eq!(Peripheral::PwmPlus0.gate_bit(), 0x0010_0000);
+        assert_eq!(Peripheral::Saradc.gate_bit(), 0x0200_0000);
     }
 
     #[test]
@@ -83,6 +87,7 @@ mod tests {
             Peripheral::Uart2,
             Peripheral::Spi0,
             Peripheral::PwmPlus0,
+            Peripheral::Saradc,
         ];
         let mut seen = 0_u32;
         for peripheral in peripherals {

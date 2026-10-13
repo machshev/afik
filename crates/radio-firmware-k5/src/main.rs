@@ -15,12 +15,14 @@ use radio_dp32g030::clock;
 use radio_dp32g030::dma::CircularReceiver;
 use radio_dp32g030::gpio::{self, Port};
 use radio_dp32g030::portcon;
+use radio_dp32g030::saradc;
 use radio_dp32g030::syscon::{self, Peripheral};
 use radio_dp32g030::systick::PeriodicTick;
 use radio_dp32g030::uart::{k5_programming_divider, Uart};
 use radio_dp32g030::UART1_BASE;
 use radio_firmware_k5::application::{apply_effects, apply_event, UiDispatcher};
 use radio_firmware_k5::audio::SpeakerGate;
+use radio_firmware_k5::battery;
 use radio_firmware_k5::bk4819_bus::{K5Pins, K5RegisterBus};
 use radio_firmware_k5::eeprom::{self, K5Bus};
 use radio_firmware_k5::k5_display::K5BootDisplay;
@@ -31,6 +33,7 @@ use radio_firmware_k5::protocol::{
 };
 use radio_firmware_k5::receive::Pmr446Channel;
 use radio_firmware_k5::transmit;
+use radio_platform::battery::{Calibration, CALIBRATION_BYTES, SAMPLES};
 use radio_platform::configuration_change::ConfigurationCandidate;
 use radio_platform::display::show_boot_sequence;
 use radio_platform::operator_shell::{Capabilities, Context, Shell};
@@ -99,6 +102,7 @@ fn main() -> ! {
         Peripheral::GpioB,
         Peripheral::GpioC,
         Peripheral::Uart1,
+        Peripheral::Saradc,
     ]);
     gpio::set_output(Port::A, 7);
     gpio::set_input(Port::A, 8);
@@ -110,6 +114,8 @@ fn main() -> ! {
         .expect("50 ms fits the Cortex-M0 SysTick reload at the configured clock");
     portcon::select_pa7_uart1_tx();
     portcon::select_pa8_uart1_rx();
+    portcon::select_k5_battery_saradc();
+    saradc::initialise();
     UART1.prepare_receive_dma_with_divider(k5_programming_divider(clock.hertz()));
     // SAFETY: this single-core image gives the static buffer exclusively to
     // this receiver for the rest of its lifetime.
@@ -135,14 +141,35 @@ fn main() -> ! {
     let mut metrics = None;
     // The EEPROM shares PA10/PA11 with the keypad, so calibration is read once
     // before the matrix takes those pins. Any failure leaves TX denied.
+    let mut eeprom_bus = K5Bus::initialise();
     let mut calibration = [0_u8; 3];
     let calibration = eeprom::read(
-        &mut K5Bus::initialise(),
+        &mut eeprom_bus,
         transmit::CALIBRATION_ADDRESS,
         &mut calibration,
     )
     .ok()
     .map(|()| calibration);
+    // The battery calibration comes from the same vendor area; without it the
+    // indicator stays unknown rather than guessing.
+    let mut battery = battery::new();
+    let mut battery_block = [0_u8; CALIBRATION_BYTES];
+    battery.calibrate(
+        eeprom::read(
+            &mut eeprom_bus,
+            battery::CALIBRATION_ADDRESS,
+            &mut battery_block,
+        )
+        .ok()
+        .and_then(|()| Calibration::from_vendor_block(&battery_block)),
+    );
+    // As the reference firmware does at boot, fill the average at once.
+    for _ in 0..SAMPLES {
+        if let Some(raw) = saradc::read_voltage() {
+            battery.sample(raw);
+        }
+    }
+    let mut battery_passes = 0_u32;
     let mut keypad = K5Matrix::initialise();
     let mut shell = Shell::new();
     shell.set_capabilities(Capabilities::K5);
@@ -172,7 +199,7 @@ fn main() -> ! {
         );
     }
 
-    let _ = display.show_operator(&shell, app.view(), metrics);
+    let _ = display.show_operator(&shell, app.view(), metrics, battery.percent());
 
     let mut service = NormalService::new();
     let mut response = [0_u8; RESPONSE_FRAME_BYTES];
@@ -317,7 +344,16 @@ fn main() -> ! {
                 &mut metrics,
             );
         }
-        let _ = display.show_operator(&shell, app.view(), metrics);
+        // Like the reference firmware, the pack is sampled once a second and
+        // never while transmitting, which the early `continue` above ensures.
+        battery_passes += 1;
+        if battery_passes >= battery::SAMPLE_PASSES {
+            battery_passes = 0;
+            if let Some(raw) = saradc::read_voltage() {
+                battery.sample(raw);
+            }
+        }
+        let _ = display.show_operator(&shell, app.view(), metrics, battery.percent());
     }
 }
 

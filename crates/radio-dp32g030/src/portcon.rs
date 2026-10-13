@@ -25,6 +25,10 @@ const FUNCTION_PA8_UART1_RX: u32 = 1;
 /// Function field value selecting the K5 display's SPI0 pins on port B.
 const FUNCTION_PORT_B_SPI0: u32 = 1;
 
+/// Function field value selecting the SARADC input on PA9 (channel 4) and
+/// PA14 (channel 9), per `EVID-K5-034`.
+const FUNCTION_PORT_A_SARADC: u32 = 5;
+
 /// Returns the function-select register holding `pin` of `port`.
 const fn select_register(port: Port, pin: u8) -> Register {
     let offset = match (port, pin < PINS_PER_SELECT_REGISTER) {
@@ -79,6 +83,14 @@ pub fn select_k5_display_spi0() {
 /// Selects `PWM_PLUS0` channel zero on the V1 backlight's PB6 pin.
 pub fn select_k5_backlight_pwm() {
     select_register(Port::B, 6).modify(|value| with_function(value, 6, FUNCTION_PORT_B_SPI0));
+}
+
+/// Selects the V1 battery voltage (PA9) and current (PA14) SARADC inputs.
+pub fn select_k5_battery_saradc() {
+    for pin in [9, 14] {
+        select_register(Port::A, pin)
+            .modify(|value| with_function(value, pin, FUNCTION_PORT_A_SARADC));
+    }
 }
 
 /// Enables the input buffer of one pin, which a pin that is read requires.
