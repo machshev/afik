@@ -2890,7 +2890,8 @@ or hardware/calibration envelope is established here. `RISK-007`, `RISK-038`,
   entry 3 is the count at 7.60 V. Default 1600 mAh curve `{828,100} {814,97}
   {760,25} {729,6} {630,0}`. Sampled once a second outside TX, four averaged.
 - **Method:** copied. **Confidence:** high (reference runs on these units).
-- **Required experiment:** the indicator shows a plausible percentage on hardware.
+- **Observation (2026-10-13):** `7.0.3` on the operator's K5 showed 100% just
+  after charging, then 99% (about 8.23 V on this curve) once unplugged.
 
 ### Pinned source provenance
 
