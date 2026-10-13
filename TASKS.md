@@ -2971,7 +2971,11 @@
 
 ## TXK5-058 — Experimental K5 PMR446 low-power TX
 
-- **Status:** active (2026-10-13), per `ADR-096`.
+- **Status:** complete (2026-10-13), per `ADR-096`.
+- **Completion:** driver sequence `30d110f`, SysTick delay `cbfde47`, K5 adapter
+  `156e5ff`, default image-only flash `a56ba07`. `AFIK-K5-2.3T` flashed; the
+  operator observed carrier on at press and off at release and timeout, with
+  receive working afterwards (`EVID-TX058-001`). 648 workspace tests pass.
 - **Operator authorization, 2026-10-13:** "I've got a K5 connected in firmware
   flash mode now. Can we add experimental TX support, I've got another radio and
   SDR dongle. If TX doesn't stop on PTT release then I can power down the radio
@@ -3000,7 +3004,7 @@
 
 ## TXK5-059 — Widen K5 TX: power levels, tones, measured power
 
-- **Status:** planned, after `TXK5-058`.
+- **Status:** planned, next.
 - **Objective:** further power levels and CTCSS/DCS on TX; measure power and
   deviation on the bench and replace the nominal milliwatt figure.
 

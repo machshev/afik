@@ -3201,3 +3201,23 @@ working normal path proves AFIK's safe behavior with unknown register/shadow
 state, a lost bus, blocked execution, reset handoff or stale authority. Those
 are the specific remaining acceptance questions, not a general rejection of
 the proven hardware reference.
+
+## TXK5-058 — First K5 transmission
+
+### EVID-TX058-001 — K5 V1 PMR446 Low1 TX starts and stops as designed
+
+- **Image:** `AFIK-K5-2.3T`, package CRC-32 `7fd43367`, SHA-256
+  `9998828db6ea9b12f109cbed04a8e6bb587fc4024c4945299d89fce07d9ad5ee`, written
+  with the default `afik-k5 flash-afik` on 2026-10-13: bootloader `2.00.06`,
+  transaction `571fdcf8`, `240/240` pages acknowledged (not read back).
+- **Operator observation, 2026-10-13:** "Works perfectly." The operator watched
+  with a second radio and an SDR on PMR446, per the `TXK5-058` test plan:
+  carrier on PTT press, carrier off on release, carrier off at the 5 s timeout,
+  receive working afterwards.
+- **Scope:** establishes that the BK4819 sequence reimplemented from the Armel
+  K5 V1 paths (`EVID-TX056-003`) keys up and drops the carrier through the
+  shared `tx_control` lifecycle on this unit. Output power (Armel Low1,
+  documented as under ~20 mW), deviation, spectrum and release-to-off latency
+  were not measured; those belong to `TXK5-059` and `TXHARD-061`.
+- **Not observed:** a post-test `afik-flasher probe-normal` timed out once and
+  was not retried, so the running identity was not read back over serial.

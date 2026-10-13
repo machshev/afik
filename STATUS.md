@@ -2,7 +2,21 @@
 
 ## Current work package
 
-**`TXK5-058` is active** (2026-10-13): experimental K5 PMR446 low-power TX.
+**`TXK5-058` is complete** (2026-10-13). `AFIK-K5-2.3T` transmits on PMR446
+at Armel's Low1 power. The operator saw the carrier start on PTT press and stop
+on release and at the 5 s timeout, with receive working afterwards
+(`EVID-TX058-001`). It was flashed with the new default `afik-k5 flash-afik
+IMAGE`, which needs no backup or recovery image (`a56ba07`; the recovery-gated
+form is opt-in with `--recovery`). Final gate: `cargo fmt --all --check`,
+workspace clippy with `-D warnings`, and `cargo test --workspace` (648 tests,
+60 suites) all passed; the image verifies with flash end `0x0000da94`.
+
+Next smallest actionable task: `TXK5-059`, more power levels and CTCSS/DCS on
+TX, with power and deviation measured on the bench.
+
+## Previous work package: TXK5-058 progress notes
+
+`TXK5-058` was activated (2026-10-13): experimental K5 PMR446 low-power TX.
 The operator asked for experimental TX support with the K5 attached in flash
 mode, a second radio and an SDR to observe, and power-down as the fallback if
 TX does not stop. `ADR-096` replaces the evidence/plan-first TX gating with
