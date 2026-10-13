@@ -2875,6 +2875,23 @@ controller. No physical experiment, target TX adapter, new register behavior,
 or hardware/calibration envelope is established here. `RISK-007`, `RISK-038`,
 `RISK-039`, and `RISK-040` remain open.
 
+### EVID-K5-034 — K5 battery sense on SARADC channel 4
+
+- **Source:** pinned `uv-k5-firmware-custom` `board.c` (`BOARD_PORTCON_Init`,
+  `BOARD_ADC_Init`, `BOARD_ADC_GetBatteryInfo`), `driver/adc.c`,
+  `bsp/dp32g030/saradc.h`, `settings.c:295`, `helper/battery.c`, `app/app.c:1357`.
+- **Fact:** SARADC at `0x400B_A000`, clock gate bit 25. PA9 function 5 is
+  channel 4 (pack voltage), PA14 function 5 is channel 9 (current).
+  `BOARD_ADC_Init` selects channels 4 and 9, 8-sample averaging, single CPU
+  trigger, per-channel results, internal sample clock at `CLK_SEL[11:10]=DIV2`,
+  15-cycle window, offset/KD calibration valid, no IRQ or DMA; then enable and
+  soft reset. A reading starts, waits for channel 9 EOC, and reads the 12-bit
+  data at `0x14 + 8*ch`. Calibration is six half-words at EEPROM `0x1F40`;
+  entry 3 is the count at 7.60 V. Default 1600 mAh curve `{828,100} {814,97}
+  {760,25} {729,6} {630,0}`. Sampled once a second outside TX, four averaged.
+- **Method:** copied. **Confidence:** high (reference runs on these units).
+- **Required experiment:** the indicator shows a plausible percentage on hardware.
+
 ### Pinned source provenance
 
 K1 references below are relative to [Armel commit

@@ -12,7 +12,13 @@
   (`ADR-097`, now `7.0.2`).
 - Gate: `cargo fmt --all --check`, workspace clippy `-D warnings`, and
   `cargo test --workspace` (653 tests) pass; both target images build.
-- Next: flash K1 `7.0.2` and check its speech level; then CTCSS/DCS with an
+- K5 `7.0.3` reads the battery (it showed `--%` because K5 never had a
+  battery reader): SARADC channel 4 per `EVID-K5-034`, the shared
+  `radio-platform::battery` arithmetic (moved from K1), 1600 mAh curve. Gate:
+  `cargo fmt --all --check` clean, workspace clippy `-D warnings` clean,
+  `cargo test --workspace` 659 passed 0 failed, K5 image builds, verifies and
+  flashed (240/240 pages acknowledged). Awaiting the on-radio reading.
+- Next: flash K1 `7.0.3` and check its speech level; then CTCSS/DCS with an
   end-of-transmission tail tone to remove the key-off squelch burst.
 
 ## Previous work package: TXK5-058
