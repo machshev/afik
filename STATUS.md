@@ -7,7 +7,35 @@ The operator asked for experimental TX support with the K5 attached in flash
 mode, a second radio and an SDR to observe, and power-down as the fallback if
 TX does not stop. `ADR-096` replaces the evidence/plan-first TX gating with
 "key up first, harden after"; `TXOFF-057` is superseded before any code.
-Next smallest actionable step: the BK4819 TX sequence in `radio-bk4819`.
+
+Steps 1–3 are done (`30d110f`, `cbfde47`, `156e5ff`): the BK4819 TX sequence
+from the Armel K5 V1 paths, a SysTick millisecond delay, and the K5 adapter.
+PTT on PC5 drives the shared controller. Power is Armel F4HWN Low1 (unit low
+calibration bias from EEPROM `0x1F20` × 4/25, interpolated per channel;
+documented as under ~20 mW, not measured). The timeout is 5 s. A missing or
+unprogrammed calibration denies TX. Panic and fault handlers make a best-effort
+PA-off. The firmware identity is now `AFIK-K5-2.3T`. Loop time advances 50 ms
+per pass, so an overrunning pass lengthens the timeout rather than shortening it.
+
+Gate, run one command at a time in the cached direnv shell:
+
+```sh
+direnv exec . cargo fmt --all --check
+direnv exec . env CARGO_BUILD_JOBS=2 nice -n 10 cargo clippy --workspace --all-targets -- -D warnings
+direnv exec . env CARGO_BUILD_JOBS=2 nice -n 10 cargo test --workspace
+direnv exec . env CARGO_BUILD_JOBS=2 nice -n 10 ./tool/build-k5.sh --release
+direnv exec . ./tool/verify-k5-image.sh target/thumbv6m-none-eabi/release/radio-firmware-k5
+direnv exec . ./tool/package-k5-image.sh --force target/thumbv6m-none-eabi/release/radio-firmware-k5 target/thumbv6m-none-eabi/release/afik-k5-2.3T.bin
+git diff --check
+```
+
+All passed: 646 tests in 60 suites, no warnings. K5 flash end `0x0000da94`
+(was `0x97f4`), static RAM end `0x20000100`, package `0xF000` bytes, SHA-256
+`9998828db6ea9b12f109cbed04a8e6bb587fc4024c4945299d89fce07d9ad5ee`.
+`afik-k5 --device /dev/ttyUSB0 probe` saw bootloader `2.00.06`. Not yet
+flashed: the `flash-afik` gate needs this unit's EEPROM backup and recovery
+image, which were not found on disk. Next step: flash 2.3T and run the operator
+bench test (step 4).
 
 ## Previous work package: TXOFF-057
 
