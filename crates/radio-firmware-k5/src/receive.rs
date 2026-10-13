@@ -147,6 +147,25 @@ mod tests {
     }
 
     #[test]
+    fn k5_receive_leaves_the_registers_armel_k5_never_writes() {
+        let mut radio = Bk4819::new(Bus::default());
+        radio.initialise().unwrap();
+        radio
+            .configure_receive(&Pmr446Channel::FIRST.setup(true))
+            .unwrap();
+        for register in [0x2A, 0x2B, 0x2F, 0x42, 0x54, 0x55] {
+            assert!(
+                !radio
+                    .bus()
+                    .writes
+                    .iter()
+                    .any(|(address, _)| *address == register),
+                "REG_{register:02X} written"
+            );
+        }
+    }
+
+    #[test]
     fn operator_mute_keeps_the_same_squelch_but_disables_chip_audio() {
         let channel = Pmr446Channel::FIRST;
         let audible = channel.setup_with_squelch(true, SquelchLevel::new(5).unwrap());

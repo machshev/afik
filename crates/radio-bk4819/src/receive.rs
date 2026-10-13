@@ -139,6 +139,10 @@ pub struct ChipProfile {
     pub tx_clears_bias_first: bool,
     /// `REG_33` bit driving the red LED (`0x40 >> pin`).
     pub gpio_red_led: u16,
+    /// Whether receive setup writes `REG_2A/2B/2F/42/54/55`. The machshev
+    /// K5 and the Armel K1 sources do; the Armel K5 V1 build never writes
+    /// them, and transmits louder speech than AFIK did with them written.
+    pub demodulator_tuning: bool,
     /// `REG_7D` microphone gain in force for TX. Armel writes
     /// `0xE940 | gMicGain_dB2[MIC_SENSITIVITY]` in every receive setup, which
     /// precedes TX; this is that word at the default sensitivity, 4.
@@ -222,6 +226,8 @@ pub const BK4819_PROFILE: ChipProfile = ChipProfile {
     tx_clears_bias_first: false,
     // Armel K5 V1 `BK4819_GPIO5_PIN1_RED = 5`.
     gpio_red_led: 0x40 >> 5,
+    // Armel K5 leaves these registers at their reset values.
+    demodulator_tuning: false,
     // K5 `radio.c:737`, 5-bit field; `gMicGain_dB2[4] = 31`.
     tx_mic_gain: 0xE940 | 31,
 };
@@ -247,6 +253,7 @@ pub const BK4829_PROFILE: ChipProfile = ChipProfile {
     tx_clears_bias_first: true,
     // Armel K1 `BK4819_GPIO5_PIN1_RED = 6`.
     gpio_red_led: 0x40 >> 6,
+    demodulator_tuning: true,
     // K1 `radio.c:798`, 6-bit field; `gMicGain_dB2[4] = 32`.
     tx_mic_gain: 0xE940 | 32,
 };
@@ -678,22 +685,29 @@ impl<B: RegisterBus> Bk4819<B> {
         modulation: Modulation,
     ) -> Result<(), DriverError<B::Error>> {
         let am_control = self.read(REG_AM_DEMODULATOR)?;
+        let legacy = self.profile.demodulator_tuning;
         match modulation {
             Modulation::Am => {
                 self.write(REG_AM_DEMODULATOR, am_control | 1)?;
-                self.write(REG_DEMODULATOR_42, 0x6F5C)?;
-                self.write(REG_DEMODULATOR_2A, 0x7434)?;
+                if legacy {
+                    self.write(REG_DEMODULATOR_42, 0x6F5C)?;
+                    self.write(REG_DEMODULATOR_2A, 0x7434)?;
+                }
             }
             Modulation::Fm | Modulation::Usb => {
                 self.write(REG_AM_DEMODULATOR, am_control & !1)?;
-                self.write(REG_DEMODULATOR_42, 0x6B5A)?;
-                self.write(REG_DEMODULATOR_2A, 0x7400)?;
-                self.write(REG_DEMODULATOR_2B, 0x0000)?;
-                self.write(REG_DEMODULATOR_2F, 0x9890)?;
+                if legacy {
+                    self.write(REG_DEMODULATOR_42, 0x6B5A)?;
+                    self.write(REG_DEMODULATOR_2A, 0x7400)?;
+                    self.write(REG_DEMODULATOR_2B, 0x0000)?;
+                    self.write(REG_DEMODULATOR_2F, 0x9890)?;
+                }
             }
         }
-        self.write(REG_AUDIO_54, 0x9009)?;
-        self.write(REG_AUDIO_55, 0x31A9)?;
+        if legacy {
+            self.write(REG_AUDIO_54, 0x9009)?;
+            self.write(REG_AUDIO_55, 0x31A9)?;
+        }
         // The evidence records this step as the AF DAC gain, which is the low
         // nibble. Writing the bare value would also clear the AF receive gain
         // fields the profile's audio level established, leaving the output
