@@ -44,6 +44,8 @@ pub const CONFIGURATION_BYTES: u32 = 4_096;
 /// channel list's erase cycles on a channel change, and would put the channels
 /// at risk in the window a place is being written.
 pub const OPERATOR_STATE_ORIGIN: u32 = 0x10_1000;
+/// Vendor address of the 400–470 MHz low-power TX bias bytes.
+pub const TX_CALIBRATION_ADDRESS: u32 = 0x1_0120;
 /// Bytes claimed for the operator's place, one erase sector.
 pub const OPERATOR_STATE_REGION_BYTES: u32 = 4_096;
 
@@ -187,6 +189,19 @@ impl RetainedConfiguration {
             .read_vendor(CALIBRATION_ADDRESS, &mut block)
             .ok()?;
         Calibration::from_vendor_block(&block)
+    }
+
+    /// Reads the three low-power TX bias bytes for the 400–470 MHz band.
+    ///
+    /// Armel K1 reads `0x100D0 + band * 16 + power * 3` from this memory
+    /// (`radio.c`); band 5 at the low row is `0x10120`. Read-only, like the
+    /// battery calibration, and absent when the memory does not answer.
+    pub fn read_tx_calibration(&mut self) -> Option<[u8; 3]> {
+        let mut block = [0_u8; 3];
+        self.eeprom
+            .read_vendor(TX_CALIBRATION_ADDRESS, &mut block)
+            .ok()?;
+        Some(block)
     }
 
     /// Reads a retained image into `buffer` and returns its exact length.

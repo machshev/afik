@@ -2454,6 +2454,7 @@ dependencies = [
  "radio-programmer",
  "radio-protocol",
  "radio-storage",
+ "radio-tx-policy",
 ]
 
 [[package]]

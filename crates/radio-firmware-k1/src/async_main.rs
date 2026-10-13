@@ -68,7 +68,7 @@ use radio_firmware_k1::py32f071_runtime::{compose, K1RuntimePeripherals};
 use radio_firmware_k1::py32f071_runtime_init::init;
 use radio_firmware_k1::shell::{
     Context, Intent, Mode, Screen, Setting, Shell, Source, HOLD_MILLISECONDS, SQUELCH_LEVELS,
-    VFO_STEPS_HZ,
+    TX_POWER_LEVELS, VFO_STEPS_HZ,
 };
 use radio_firmware_k1::unified_receive::{shared_channel, translate, K1Effect};
 use radio_platform::configuration_change::{ConfigurationAcknowledgement, ConfigurationCandidate};
@@ -77,8 +77,11 @@ use radio_platform::receive_app::{
 };
 use radio_platform::serial_control::wire as shared_wire;
 use radio_platform::serial_control::{dispatch as dispatch_shared, Result as SharedResult};
+use radio_platform::transmit::{self as transmit, Delay, Pmr446Target};
+use radio_platform::tx_control::{self, Action, Controller as TxController, State as TxPhase};
 use radio_protocol::{ControlRequest, DeviceErrorCode, ReceiveMetricsReport, MAX_ENCODED_FRAME};
 use radio_storage::ObjectArena;
+use radio_tx_policy::{TxRequest, TxState};
 
 const _: [(); 8] = [(); PAGES];
 const K1_VECTOR_TABLE_ORIGIN: u32 = 0x0800_2800;
@@ -88,10 +91,10 @@ const K1_VECTOR_TABLE_ORIGIN: u32 = 0x0800_2800;
 /// A diagnostic build says so on the screen. An image which drops every byte
 /// it receives must not be mistaken for one which answers.
 #[cfg(feature = "serial-drop-bytes")]
-const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-6.3D";
+const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-6.4TD";
 /// Identity this image reports on the information screen.
 #[cfg(not(feature = "serial-drop-bytes"))]
-const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-6.3";
+const IMAGE_IDENTITY: &[u8] = b"AFIK-K1-6.4T";
 
 /// Interval between receive samples while audio is routed.
 ///
@@ -154,6 +157,24 @@ static PROGRAMMED: Signal<CriticalSectionRawMutex, Publication> = Signal::new();
 /// once and hands it over. Until it does, the interface reports that it does not
 /// know the charge rather than a number derived from nothing.
 static BATTERY_CALIBRATION: Signal<CriticalSectionRawMutex, Option<Calibration>> = Signal::new();
+
+/// The 400–470 MHz low-power TX bias bytes, read once by the serial task.
+static TX_CALIBRATION: Signal<CriticalSectionRawMutex, Option<[u8; 3]>> = Signal::new();
+
+/// The K1: Armel K1 UHF `dividers_band5` Low1–Low4 are 25, 19, 13 and 9.
+const K1_TX: Pmr446Target = Pmr446Target {
+    target_id: 0x4B31_4B31,
+    dividers: [25, 19, 13, 9],
+};
+
+/// The source's settling waits, blocking because the bus already blocks.
+struct BlockingDelay;
+
+impl Delay for BlockingDelay {
+    fn delay_ms(&mut self, milliseconds: u32) {
+        embassy_time::block_for(Duration::from_millis(u64::from(milliseconds)));
+    }
+}
 
 /// A radio-wide setting the operator changed on the handset.
 ///
@@ -325,13 +346,13 @@ fn main() -> ! {
             Input::new(p.PB13, Pull::Up),
             Input::new(p.PB12, Pull::Up),
         ],
-        // Active-low PTT, read as an input only. AFIK implements no transmit
-        // path, so this pin cannot key the radio.
+        // Active-low PTT. It reaches the radio only through the shared TX
+        // controller and policy (`TXK1-060`).
         ptt: Input::new(p.PB10, Pull::Up),
     };
 
-    // Receive-only BK4819 three-wire pins from the pinned K1 pinout. AFIK
-    // constructs no transmit authority, so this bus cannot key the radio.
+    // BK4819 three-wire pins from the pinned K1 pinout. Transmit entry on
+    // this bus requires a fresh policy token from the shared TX controller.
     let radio_pins = Bk4819Pins::new(
         Output::new(p.PF9, Level::High, Speed::High),
         Output::new(p.PB8, Level::High, Speed::High),
@@ -517,6 +538,8 @@ struct Receiver {
     samples: u16,
     /// The most recent complete sample, as a host would read it.
     last_metrics: Option<ReceiveMetricsReport>,
+    /// The last tuned setup and radio-wide squelch, restored after TX.
+    last_tune: Option<(ChannelReceiveSetup, SquelchLevel)>,
 }
 
 impl Receiver {
@@ -535,6 +558,36 @@ impl Receiver {
             squelch_open: false,
             samples: 0,
             last_metrics: None,
+            last_tune: None,
+        }
+    }
+
+    /// Executes one TX controller effect; receive restore re-tunes the last
+    /// setup through the ordinary receive path.
+    fn transmit_effect(&mut self, effect: &tx_control::Effect<'_>, bias: Option<u8>) -> bool {
+        match effect.action() {
+            Action::RestoreReceive => {
+                let Some((setup, squelch)) = self.last_tune else {
+                    return false;
+                };
+                self.faulted = false;
+                self.tune(setup, squelch);
+                !self.faulted
+            }
+            action => {
+                if action == Action::PrepareTransmit {
+                    self.set_speaker(false);
+                    self.audio_routed = false;
+                }
+                transmit::execute(
+                    effect,
+                    bias,
+                    None,
+                    &mut self.radio,
+                    || {},
+                    &mut BlockingDelay,
+                )
+            }
         }
     }
 
@@ -649,6 +702,7 @@ impl Receiver {
             self.faulted = true;
             return;
         }
+        self.last_tune = Some((setup, radio_wide));
         self.frequency_hz = setup.frequency.as_hz();
         // The previous channel's link result says nothing about this one.
         self.squelch_open = false;
@@ -881,6 +935,11 @@ async fn serial_task(mut uart: Uart<'static, Async>, memory: EepromPins) {
         retained
             .as_mut()
             .and_then(RetainedConfiguration::read_battery_calibration),
+    );
+    TX_CALIBRATION.signal(
+        retained
+            .as_mut()
+            .and_then(RetainedConfiguration::read_tx_calibration),
     );
 
     // Restore the retained configuration before the host or the operator can
@@ -1339,6 +1398,18 @@ async fn ui_task(
     let mut pending = activation.as_mut().and_then(|(_, setup)| setup.take());
 
     let mut receiver = Receiver::new(radio_pins, speaker_pin);
+    // A reset can follow a panic in the middle of a transmission, so the PA
+    // and chip TX are switched off before anything else uses the radio.
+    let _ = receiver.radio.disable_pa();
+    let _ = receiver.radio.disable_transmit();
+    let tx_policy = transmit::policy();
+    let mut tx_calibration: Option<[u8; 3]> = None;
+    // Created once the receiver has a channel, so its startup restore has
+    // something to restore.
+    let mut tx: Option<TxController> = None;
+    let mut ptt_down = keypad.ptt.is_low();
+    let mut tx_tuned_hz = 0_u32;
+    let mut tx_revision = 1_u32;
     // Present only while the selected complete setup is one of the common
     // PMR446 examples. Arbitrary programmed channels and the VFO retain the
     // existing K1 controller path.
@@ -1452,6 +1523,50 @@ async fn ui_task(
             scan_timer = None;
             redraw = true;
         }
+
+        if let Some(calibration) = TX_CALIBRATION.try_take() {
+            tx_calibration = calibration;
+        }
+        if receiver.frequency_hz != tx_tuned_hz {
+            tx_tuned_hz = receiver.frequency_hz;
+            tx_revision = tx_revision.saturating_add(1);
+        }
+        let tx_request = tx_request(
+            &receiver,
+            context.scanning,
+            pending.is_some() || pending_operator_squelch.is_some(),
+            tx_revision,
+            tx_calibration,
+            shell.tx_power(),
+        );
+        let tx_now = Instant::now().as_millis();
+        let ptt = keypad.ptt.is_low();
+        if tx.is_none() && receiver.started && !receiver.faulted {
+            tx = TxController::new(1, ptt, tx_now).ok();
+        }
+        if let Some(controller) = tx.as_mut() {
+            let event = match (ptt_down, ptt) {
+                (false, true) => tx_control::Event::Pressed,
+                (true, false) => tx_control::Event::Released,
+                _ => tx_control::Event::Tick,
+            };
+            let _ = controller.handle(tx_now, event, &tx_policy, &tx_request.0);
+            let bias = tx_request.1;
+            transmit::run_effects(controller, &tx_policy, &tx_request.0, tx_now, |effect| {
+                receiver.transmit_effect(effect, bias)
+            });
+            // Keys, host requests and sampling all touch the radio, so they
+            // wait until the controller has restored receive.
+            if !matches!(
+                controller.state(),
+                TxPhase::Ready | TxPhase::ReleaseRequired
+            ) {
+                ptt_down = ptt;
+                Timer::after(Duration::from_millis(LOOP_MILLISECONDS)).await;
+                continue;
+            }
+        }
+        ptt_down = ptt;
 
         // A host request reaches the same controller a key press does, and its
         // update is applied by the same call. The operator is not locked out
@@ -1889,6 +2004,35 @@ async fn ui_task(
     }
 }
 
+/// Builds the TX request from what the receiver is tuned to, and the bias it
+/// would use. Off-raster, wide, or non-PMR446 tuning is denied by policy.
+fn tx_request(
+    receiver: &Receiver,
+    scanning: bool,
+    changing: bool,
+    revision: u32,
+    calibration: Option<[u8; 3]>,
+    level: u8,
+) -> (TxRequest, Option<u8>) {
+    let frequency = Frequency::from_hz(receiver.frequency_hz).ok();
+    let state = if receiver.faulted || !receiver.started || frequency.is_none() {
+        TxState::Faulted
+    } else if scanning {
+        TxState::Scanning
+    } else if changing {
+        TxState::Changing
+    } else {
+        TxState::Selected
+    };
+    let bias = calibration
+        .zip(frequency)
+        .and_then(|(calibration, frequency)| K1_TX.bias(calibration, frequency.as_hz(), level));
+    let frequency = frequency.unwrap_or_else(|| {
+        Frequency::from_hz(446_006_250).expect("PMR446 channel 1 is a frequency")
+    });
+    (K1_TX.request(frequency, state, revision, bias, level), bias)
+}
+
 fn render(
     frame: &mut [u8; FRAME_BYTES],
     shell: &Shell,
@@ -1984,15 +2128,26 @@ fn render(
             for (offset, setting) in shell.settings().iter().take(LIST_ROWS).enumerate() {
                 rows[offset] = match setting {
                     Setting::Squelch => SelectorRow::squelch_setting(shell.squelch().get()),
-                    // The K1 shell has no TX capability, so this row is never listed.
                     Setting::TxPower => SelectorRow::tx_power_setting(shell.tx_power()),
                 };
                 count += 1;
             }
             render_selector_list(frame, b"SETTINGS", &rows[..count], shell.settings_cursor());
         }
-        // Unreachable without the TX capability; draw an empty titled list.
-        Screen::TxPowerList => render_selector_list(frame, b"TX POWER", &[], 0),
+        Screen::TxPowerList => {
+            let mut rows = [SelectorRow::default(); LIST_ROWS];
+            let mut count = 0;
+            for (level, row) in (0..TX_POWER_LEVELS).zip(rows.iter_mut()) {
+                *row = SelectorRow::tx_power_level(level, level == shell.tx_power());
+                count += 1;
+            }
+            render_selector_list(
+                frame,
+                b"TX POWER",
+                &rows[..count],
+                usize::from(shell.tx_power_cursor()),
+            );
+        }
         Screen::SquelchList => {
             let mut rows = [SelectorRow::default(); LIST_ROWS];
             let cursor = usize::from(shell.squelch_cursor());
@@ -2086,9 +2241,9 @@ fn fail_closed() -> ! {
 /// restores receive-only operation, and the next boot reports the software
 /// reset flag from `RCC_CSR`.
 ///
-/// This is a deliberate change from stopping forever. Nothing here can
-/// transmit — the image constructs no transmit path at all — so a restart
-/// risks no emission. The exact unit proved its bootloader destroys `.uninit`,
+/// This is a deliberate change from stopping forever. A restart also ends a
+/// transmission: the interface task switches the PA and chip TX off before it
+/// uses the radio for anything else. The exact unit proved its bootloader destroys `.uninit`,
 /// so no file-and-line report is attempted here.
 #[panic_handler]
 fn panic(_info: &PanicInfo<'_>) -> ! {

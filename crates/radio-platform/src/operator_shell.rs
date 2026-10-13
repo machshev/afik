@@ -219,7 +219,7 @@ impl Capabilities {
         sources: true,
         scan: true,
         info: true,
-        tx_power: false,
+        tx_power: true,
     };
 
     /// The currently evidenced K5 capability set, including PMR446 TX.
@@ -1430,7 +1430,11 @@ mod tests {
     #[test]
     fn tx_power_is_a_setting_only_where_the_target_can_transmit() {
         let mut shell = Shell::new();
-        assert_eq!(shell.settings(), &SETTINGS[..], "K1 has no TX power row");
+        shell.set_capabilities(Capabilities {
+            tx_power: false,
+            ..Capabilities::K1
+        });
+        assert_eq!(shell.settings(), &SETTINGS[..], "no TX, no TX power row");
 
         shell.set_capabilities(Capabilities::K5);
         shell.select_memory();
