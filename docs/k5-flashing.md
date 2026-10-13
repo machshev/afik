@@ -195,10 +195,8 @@ destructive confirmation argument; this guards against selecting a different
 file but is not a signature. Re-enter programming mode, probe again, and write
 all pages without interruption.
 
-Two AFIK images exist for this target. `radio-firmware-dp32g030` is the original
-`DP32-003` Reset image: it writes a RAM sentinel that only Renode can read and
-then spins, so writing it proves nothing about a physical boot.
-`radio-firmware-k5` is the `K5DRV-048` application, built with
+The AFIK image for this target is
+`radio-firmware-k5`, originally the `K5DRV-048` application, built with
 `tool/build-k5.sh --release` and packaged with `tool/package-k5-image.sh`. It
 configures the clock, drives UART1 on the programming connector, sends
 `AFIK-K5-1.0 booted` in plain text once at power-on, and then answers the

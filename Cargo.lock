@@ -2430,10 +2430,6 @@ name = "radio-eeprom"
 version = "7.0.4"
 
 [[package]]
-name = "radio-firmware-dp32g030"
-version = "7.0.4"
-
-[[package]]
 name = "radio-firmware-k1"
 version = "7.0.4"
 dependencies = [

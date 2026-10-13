@@ -12,7 +12,6 @@ autobins = false
 path = "src/lib.rs"
 
 [features]
-firmware = []
 embassy-runtime = ["dep:embassy-executor"]
 py32f071-hal-inventory = ["dep:py32-hal"]
 py32f071-clock-handoff = ["py32f071-hal-inventory"]
@@ -84,13 +83,6 @@ cortex-m = { version = "=0.7.8", optional = true }
 
 [dev-dependencies]
 radio-programmer = { path = "../radio-programmer" }
-
-[[bin]]
-name = "radio-firmware-k1"
-path = "src/main.rs"
-required-features = ["firmware"]
-test = false
-bench = false
 
 [[bin]]
 name = "radio-firmware-k1-async"

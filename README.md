@@ -117,7 +117,7 @@ DP32G030 and the stock version-2 bootloader:
 ```sh
 cargo run --package radio-flasher-cli --bin afik-k5 -- --help
 cargo run --package radio-flasher-cli --bin afik-k5 -- \
-  inspect target/thumbv6m-none-eabi/debug/radio-firmware-dp32g030-k5-v1.raw
+  inspect target/thumbv6m-none-eabi/release/afik-k5-v1.raw
 ```
 
 The hardware workflow requires a complete read-only EEPROM backup, a
@@ -136,20 +136,20 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-## Minimal DP32G030 target checks
+## Target images
 
 ```sh
 nix develop
-tool/build-dp32g030.sh
-tool/verify-dp32g030-image.sh
-tool/package-k5-v1-image.sh
-tool/test-k5-v1-package.sh
-tool/test-renode.sh
+tool/build-k5.sh --release
+tool/verify-k5-image.sh
+tool/package-k5-image.sh
+tool/build-k1-async.sh --release
+tool/package-k1-async-image.sh
+tool/test-k1-async-image.sh
 ```
 
-The target build uses the locked Nix compiler and standard-library sources. It
-creates a statically checked 60 KiB V1 application package but does not access
-hardware or prove physical boot.
+The target builds use the locked Nix compiler and standard-library sources.
+The K5 package is exactly the 60 KiB V1 application region.
 
 With direnv installed, run `direnv allow` once and the same development shell
 loads automatically on entry. `flake.lock` pins the Nix package set; the CI

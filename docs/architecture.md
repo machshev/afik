@@ -68,15 +68,13 @@ No host crate is a dependency of an embedded crate. At the first milestone,
 board, PAC, HAL, display, keypad, BK4819, firmware, Renode, CLI, and GUI crates
 were intentionally deferred.
 
-Work Package 3 adds `radio-firmware-dp32g030` as a standalone embedded target
-leaf. It has no crate dependencies, is `no_std`, and is compiled only when its
-explicit `firmware` feature and `thumbv6m-none-eabi` target are selected. This
-keeps ordinary host workspace checks independent of target startup.
-
-The minimum target image contains only a Cortex-M0 vector table, Reset handler,
-and simulation observation word. Its linker script owns all allocated sections,
-asserts the evidenced flash/RAM bounds, and rejects `.data` or `.bss` until a
-later evidenced startup step deliberately implements their initialisation.
+The two target images are `radio-firmware-k5` and the K1 application in
+`radio-firmware-k1`. Each binary is compiled only when its firmware feature and
+the `thumbv6m-none-eabi` target are selected, which keeps ordinary host
+workspace checks independent of target startup. The Work Package 3
+`radio-firmware-dp32g030` reset image, the first K1 reset/serial image and the
+K5 UART bisect image were removed on 2026-10-13 once the applications
+superseded them.
 
 `K1BOOT-016` adds `radio-firmware-k1` as a separate standalone embedded target
 leaf. It has no host crate dependencies and uses only the pinned K1/PY32F071

@@ -261,7 +261,7 @@ the pinned Armel implementation.
 The linker, ELF verifier, raw-image verifier, and negative package checks are
 implemented in `tool/build-k1.sh`, `tool/verify-k1-image.sh`,
 `tool/verify-k1-raw-image.sh`, `tool/package-k1-image.sh`, and
-`tool/test-k1-image.sh`. The RAM value is not a physical boot witness: no
+`tool/test-k1-image.sh` (all removed on 2026-10-13 with this image). The RAM value is not a physical boot witness: no
 clock, USB, display, keypad, GPIO, external flash, BK4819, audio, RF, TX, or
 reset behavior is implemented. This reset-only milestone was superseded by the
 serial witness image described below; the first physical AFIK image must use
