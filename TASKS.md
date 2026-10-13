@@ -2904,7 +2904,8 @@
 
 ## TXEVID-055 — Evidence-only target TX preparation and shutdown contract
 
-- **Status:** planned; next smallest actionable task after `TXCTRL-054`.
+- **Status:** active (2026-10-13), following operator authorization;
+  evidence-only scope after `TXCTRL-054`.
 - **First step:** build a per-target evidence matrix for each shared PTT effect,
   starting with unconditional PA/TX off from unknown/faulted state. Read pinned
   evidence, record facts/confidence under `docs/hardware-evidence.md`, and list

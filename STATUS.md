@@ -2,6 +2,21 @@
 
 ## Current work package
 
+**`TXEVID-055` is active** (2026-10-13), following operator authorization.
+This evidence-only package maps every shared PTT effect to the separate pinned
+K1/BK4829 and K5 V1/BK4819 sources, beginning with unconditional PA/TX shutdown
+from unknown or faulted state. Facts, source confidence, exact-unit observations,
+unsupported assumptions, and proposed experiments will be recorded separately.
+Unsupported hardware/calibration inputs remain denied. No target TX adapter,
+register implementation, firmware identity change, flashing, or physical
+experiment is authorized by this package. `APP-052` remains paused.
+
+Activation verification: `git diff --check` passed. Next smallest actionable
+step: inspect the pinned shutdown/control/power sources and the shared effect
+implementation, then record the per-target matrix and missing evidence.
+
+## Previous work package: TXCTRL-054
+
 **`TXCTRL-054` is complete** (2026-10-13), host/simulator lifecycle milestone.
 `radio-platform::tx_control` now owns the shared, no_std, heap-free PTT
 press/release, held-at-boot interlock, complete-request entry sequencing,
