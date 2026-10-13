@@ -35,6 +35,12 @@
   `tool/build-k5.sh --release` + `tool/verify-k5-image.sh` pass,
   `tool/build-k1.sh --release`, `tool/package-k1-image.sh --force` and
   `tool/test-k1-image.sh` pass.
+- Renamed the host GUIs (operator request): the web front end is now
+  `radio-programmer-web` with bin `afik-programmer-web`
+  (`docs/programmer-web.md`); the native editor is now `radio-programmer-gui`,
+  bin still `afik-studio` (`docs/programmer-gui.md`). Gate: `cargo fmt --all
+  --check` clean, workspace clippy `-D warnings` clean, `cargo test
+  --workspace` 661 passed 0 failed.
 - `7.0.5`: the operator wanted longer overs, so the choices are now 1–5 min
   (default 1 min) and `radio-tx-policy`'s `MAX_TX_TIMEOUT_MS` is 300 s. `7.0.4`
   was flashed but not tried. Gate: fmt clean, clippy `-D warnings` clean,

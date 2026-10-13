@@ -44,14 +44,14 @@ The GUI retains one simulator or explicit serial session and serves responsive
 embedded assets only on a loopback IP address:
 
 ```sh
-cargo run --package radio-programmer-gui --bin afik-programmer-gui -- --sim
+cargo run --package radio-programmer-web --bin afik-programmer-web -- --sim
 ```
 
 It exposes the same negotiated capability, object, compile, verified write,
 backup, and restore workflows as the programmer library. Mutation requires a
 per-process token plus explicit replacement confirmation. This reduces
 accidental local mutation but is not authentication; the GUI must not be bound
-remotely or treated as a shared service. See `docs/programmer-gui.md`.
+remotely or treated as a shared service. See `docs/programmer-web.md`.
 
 ## Native editor and flashing front end
 
@@ -59,8 +59,8 @@ remotely or treated as a shared service. See `docs/programmer-gui.md`.
 the global radio configuration, and guarded firmware and EEPROM operations:
 
 ```sh
-cargo run --package radio-programmer-gui-native --bin afik-studio -- --help
-cargo run --package radio-programmer-gui-native --bin afik-studio -- --sim
+cargo run --package radio-programmer-gui --bin afik-studio -- --help
+cargo run --package radio-programmer-gui --bin afik-studio -- --sim
 ```
 
 Operator input is validated before it can reach a canonical image, a device
@@ -68,7 +68,7 @@ transaction, or a radio. Configuration writes use the programmer library's
 transactional write with read-back verification, and firmware writes reuse the
 recovery-gated flasher workflows with every confirmation gate intact. The
 editor is a local tool: it opens no network socket and holds no
-authentication. See `docs/programmer-gui-native.md`.
+authentication. See `docs/programmer-gui.md`.
 
 ## Channels, banks, and the receive path
 

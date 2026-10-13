@@ -4,17 +4,17 @@ use std::process::Command;
 
 #[test]
 fn binary_help_version_and_non_loopback_rejection_smoke() {
-    let binary = env!("CARGO_BIN_EXE_afik-programmer-gui");
+    let binary = env!("CARGO_BIN_EXE_afik-programmer-web");
     let help = Command::new(binary).arg("--help").output().unwrap();
     assert!(help.status.success());
-    assert_eq!(help.stdout, radio_programmer_gui::HELP.as_bytes());
+    assert_eq!(help.stdout, radio_programmer_web::HELP.as_bytes());
     assert!(help.stderr.is_empty());
 
     let version = Command::new(binary).arg("--version").output().unwrap();
     assert!(version.status.success());
     assert_eq!(
         version.stdout,
-        concat!("afik-programmer-gui ", env!("CARGO_PKG_VERSION"), "\n").as_bytes()
+        concat!("afik-programmer-web ", env!("CARGO_PKG_VERSION"), "\n").as_bytes()
     );
     assert!(version.stderr.is_empty());
 

@@ -2514,18 +2514,6 @@ dependencies = [
 name = "radio-programmer-gui"
 version = "7.0.5"
 dependencies = [
- "radio-channel-plan",
- "radio-domain",
- "radio-programmer",
- "radio-programmer-serial",
- "radio-sim",
- "radio-storage",
-]
-
-[[package]]
-name = "radio-programmer-gui-native"
-version = "7.0.5"
-dependencies = [
  "eframe",
  "radio-channel-control",
  "radio-channel-plan",
@@ -2542,6 +2530,18 @@ name = "radio-programmer-serial"
 version = "7.0.5"
 dependencies = [
  "radio-programmer",
+]
+
+[[package]]
+name = "radio-programmer-web"
+version = "7.0.5"
+dependencies = [
+ "radio-channel-plan",
+ "radio-domain",
+ "radio-programmer",
+ "radio-programmer-serial",
+ "radio-sim",
+ "radio-storage",
 ]
 
 [[package]]

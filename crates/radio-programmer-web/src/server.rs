@@ -26,10 +26,10 @@ pub const MAX_RESTORE_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 pub const HELP: &str = "AFIK programmer GUI\n\
 \n\
 Usage:\n\
-  afik-programmer-gui --sim [--listen LOOPBACK:PORT]\n\
-  afik-programmer-gui --device PATH --baud BAUD [--listen LOOPBACK:PORT]\n\
-  afik-programmer-gui --help\n\
-  afik-programmer-gui --version\n\
+  afik-programmer-web --sim [--listen LOOPBACK:PORT]\n\
+  afik-programmer-web --device PATH --baud BAUD [--listen LOOPBACK:PORT]\n\
+  afik-programmer-web --help\n\
+  afik-programmer-web --version\n\
 \n\
 The interface only accepts an explicit loopback IP address.\n\
 Supported BAUD: 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200\n";
@@ -67,7 +67,7 @@ pub fn main_entry(arguments: &[String]) -> i32 {
             0
         }
         Ok(Invocation::Version) => {
-            println!("afik-programmer-gui {}", env!("CARGO_PKG_VERSION"));
+            println!("afik-programmer-web {}", env!("CARGO_PKG_VERSION"));
             0
         }
         Ok(Invocation::Serve { backend, listen }) => match run_server(backend, listen) {
