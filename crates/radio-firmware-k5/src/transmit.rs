@@ -5,13 +5,14 @@
 //! effect adapter over the BK4819 sequence reimplemented from the Armel K5 V1
 //! source (`EVID-TX056-003`).
 //!
-//! Power is the Armel F4HWN "Low1" level: the unit's own low calibration bias
-//! scaled by 4/25 (`radio.c`, the `dividers` table), which Armel documents as
-//! under about 20 mW. The milliwatt figure here is that nominal claim, not a
-//! measurement.
+//! Power is one of the Armel F4HWN "Low1" to "Low4" levels: the unit's own low
+//! calibration bias scaled by 4/25, 4/19, 4/13 or 4/10 (`radio.c`, the
+//! `dividers` table), which Armel documents as about 20, 125, 250 and 500 mW.
+//! Those milliwatt figures are nominal claims, not measurements.
 
 use radio_bk4819::{Bk4819, ReceiveSetup, RegisterBus};
 use radio_domain::{ActiveChannel, Bandwidth, Modulation, TxClass};
+use radio_platform::operator_shell::{TX_POWER_LEVELS, TX_POWER_NOMINAL_MW};
 use radio_platform::receive_app::View;
 use radio_platform::tx_control::{Acknowledgement, Action, Controller, Effect, Event};
 use radio_tx_policy::regional::{Attestation, Attestations, Region, RuleRange};
@@ -28,8 +29,10 @@ use crate::receive::Pmr446Channel;
 pub const CALIBRATION_ADDRESS: u16 = 0x1F20;
 /// TX timeout from the accepted press, in milliseconds.
 pub const TIMEOUT_MS: u32 = 5_000;
-/// Armel's documented Low1 output, "<~20 mW". Nominal; not measured by AFIK.
-pub const NOMINAL_LOW1_MW: u32 = 20;
+/// PMR446 ceiling, which also bounds this build's hardware envelope.
+const PMR446_MAX_MW: u32 = 500;
+/// Low1–Low4 bias scaling from Armel's `dividers` table: numerator 4 over these.
+const LEVEL_DIVIDERS: [i32; TX_POWER_LEVELS as usize] = [25, 19, 13, 10];
 /// Most controller effects driven in one loop pass; a full entry or exit is
 /// four or three, so one pass completes either.
 const MAX_EFFECTS_PER_PASS: usize = 8;
@@ -61,21 +64,23 @@ impl Delay for radio_dp32g030::systick::PeriodicTick {
     }
 }
 
-/// Derives the Low1 PA bias for a 400–470 MHz frequency from the three low
-/// calibration bytes, as `RADIO_ConfigureSquelchAndOutputPower` and
-/// `FREQUENCY_CalculateOutputPower` do.
+/// Derives the PA bias for one power level (0 = Low1) at a 400–470 MHz
+/// frequency from the three low calibration bytes, as
+/// `RADIO_ConfigureSquelchAndOutputPower` and `FREQUENCY_CalculateOutputPower` do.
 ///
-/// Returns `None` for an unprogrammed (`0x00`/`0xFF`) byte, a frequency outside
-/// the band, or a zero result, so TX is then denied by missing calibration.
-pub fn low1_bias(calibration: [u8; 3], frequency_hz: u32) -> Option<u8> {
+/// Returns `None` for an unprogrammed (`0x00`/`0xFF`) byte, an unknown level, a
+/// frequency outside the band, or a zero result, so TX is then denied by
+/// missing calibration.
+pub fn level_bias(calibration: [u8; 3], frequency_hz: u32, level: u8) -> Option<u8> {
     if calibration.iter().any(|byte| matches!(byte, 0x00 | 0xFF)) {
         return None;
     }
+    let divider = *LEVEL_DIVIDERS.get(usize::from(level))?;
     let frequency = i32::try_from(frequency_hz / 10).ok()?;
     if !(BAND_LOWER..BAND_UPPER).contains(&frequency) {
         return None;
     }
-    let [low, mid, high] = calibration.map(|byte| i32::from(byte) * 4 / 25);
+    let [low, mid, high] = calibration.map(|byte| i32::from(byte) * 4 / divider);
     let middle = (BAND_LOWER + BAND_UPPER) / 2;
     // The source's two interpolation branches, including its use of the
     // low-to-mid slope added to mid below the middle point.
@@ -103,7 +108,7 @@ fn envelope(evidence_id: u32) -> TxEnvelope {
             Some(RuleRange {
                 first_hz: PMR446_FIRST_HZ,
                 last_hz: PMR446_LAST_HZ,
-                max_conducted_mw: NOMINAL_LOW1_MW,
+                max_conducted_mw: PMR446_MAX_MW,
                 wide_fm: false,
             }),
             None,
@@ -118,8 +123,8 @@ fn envelope(evidence_id: u32) -> TxEnvelope {
 ///
 /// The attestations are the operator's, given for this experimental bench
 /// build on 2026-10-13 (`TXK5-058`). The calibration envelope is present only
-/// when a Low1 bias was derived from this unit's EEPROM.
-pub fn request(view: View, revision: u32, bias: Option<u8>) -> TxRequest {
+/// when a bias for `level` was derived from this unit's EEPROM.
+pub fn request(view: View, revision: u32, bias: Option<u8>, level: u8) -> TxRequest {
     let channel = Pmr446Channel::new(view.channel);
     let frequency = channel.unwrap_or(Pmr446Channel::FIRST).frequency();
     TxRequest {
@@ -131,7 +136,10 @@ pub fn request(view: View, revision: u32, bias: Option<u8>) -> TxRequest {
         },
         modulation: Modulation::Fm,
         bandwidth: Bandwidth::Narrow,
-        conducted_mw: NOMINAL_LOW1_MW,
+        conducted_mw: TX_POWER_NOMINAL_MW
+            .get(usize::from(level))
+            .copied()
+            .unwrap_or(0),
         timeout_ms: TIMEOUT_MS,
         state: if view.receiver_ok && channel.is_some() {
             TxState::Selected
@@ -235,7 +243,7 @@ pub fn run_effects(
 
 #[cfg(test)]
 mod tests {
-    use super::{execute, low1_bias, policy, request, run_effects, Delay, TIMEOUT_MS};
+    use super::{execute, level_bias, policy, request, run_effects, Delay, TIMEOUT_MS};
     use crate::application::SpeakerOutput;
     use crate::receive::Pmr446Channel;
     use radio_bk4819::{Bk4819, RegisterAddress, RegisterBus, GPIO_PA_ENABLE, MODE_TRANSMIT_K5};
@@ -332,7 +340,7 @@ mod tests {
 
         fn step(&mut self, now: u64, event: Event) {
             let policy = policy();
-            let request = request(VIEW, 1, self.bias);
+            let request = request(VIEW, 1, self.bias, 0);
             let _ = self.controller.handle(now, event, &policy, &request);
             let receive = Pmr446Channel::new(VIEW.channel).map(|channel| channel.setup(true));
             let Self {
@@ -362,16 +370,29 @@ mod tests {
     }
 
     #[test]
-    fn low1_bias_scales_and_interpolates_like_the_source() {
-        // Armel's sample 400 MHz row is 5f 5f 5f: 95 * 4 / 25 = 15.
-        assert_eq!(low1_bias([0x5F, 0x5F, 0x5F], 446_006_250), Some(15));
+    fn level_bias_scales_and_interpolates_like_the_source() {
+        let row = [0x5F, 0x5F, 0x5F];
+        // Armel's sample 400 MHz row is 5f 5f 5f: 95 * 4 / 25, /19, /13, /10.
+        let levels: std::vec::Vec<_> = (0..4)
+            .map(|level| level_bias(row, 446_006_250, level))
+            .collect();
+        assert_eq!(levels, [Some(15), Some(20), Some(29), Some(38)]);
+        assert_eq!(level_bias(row, 446_006_250, 4), None, "no Low5");
         // 446.00625 MHz is above the 435 MHz middle: mid + (high - mid) * f.
         // low 50 -> 8, mid 100 -> 16, high 200 -> 32; 16 + 16 * 1_100_625 / 3_500_000 = 21.
-        assert_eq!(low1_bias([50, 100, 200], 446_006_250), Some(21));
-        assert_eq!(low1_bias([0xFF, 0x5F, 0x5F], 446_006_250), None);
-        assert_eq!(low1_bias([0x5F, 0x00, 0x5F], 446_006_250), None);
-        assert_eq!(low1_bias([0x5F, 0x5F, 0x5F], 145_500_000), None);
-        assert_eq!(low1_bias([1, 1, 1], 446_006_250), None);
+        assert_eq!(level_bias([50, 100, 200], 446_006_250, 0), Some(21));
+        assert_eq!(level_bias([0xFF, 0x5F, 0x5F], 446_006_250, 0), None);
+        assert_eq!(level_bias([0x5F, 0x00, 0x5F], 446_006_250, 0), None);
+        assert_eq!(level_bias(row, 145_500_000, 0), None);
+        assert_eq!(level_bias([1, 1, 1], 446_006_250, 0), None);
+    }
+
+    #[test]
+    fn every_level_is_within_the_pmr446_ceiling_and_authorised() {
+        for level in 0..4 {
+            let request = request(VIEW, 1, Some(15), level);
+            assert!(policy().authorise(&request).is_ok(), "level {level}");
+        }
     }
 
     #[test]
@@ -420,8 +441,10 @@ mod tests {
             receiver_ok: false,
             ..VIEW
         };
-        assert!(policy().authorise(&request(faulted, 1, Some(15))).is_err());
-        assert!(policy().authorise(&request(VIEW, 1, Some(15))).is_ok());
+        assert!(policy()
+            .authorise(&request(faulted, 1, Some(15), 0))
+            .is_err());
+        assert!(policy().authorise(&request(VIEW, 1, Some(15), 0)).is_ok());
     }
 
     #[test]

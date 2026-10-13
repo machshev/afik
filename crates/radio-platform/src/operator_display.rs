@@ -1,6 +1,7 @@
 //! Hardware-independent ST7565-compatible display commands and fixed witness.
 
 use crate::display::{BootStage, ReceiveDiagnostic};
+use crate::operator_shell::TX_POWER_NOMINAL_MW;
 use crate::receive_app::Key;
 use radio_bk4819::SquelchThresholds;
 use radio_domain::SquelchLevel;
@@ -354,6 +355,24 @@ impl SelectorRow {
         Self::with_label(&label, false)
     }
 
+    /// Builds the settings-menu row for the TX power level, with its value.
+    #[must_use]
+    pub fn tx_power_setting(level: u8) -> Self {
+        let mut label = [b' '; LIST_NAME_BYTES];
+        label[..8].copy_from_slice(b"TX POWER");
+        label[9..].copy_from_slice(&milliwatts_label(level));
+        Self::with_label(&label, false)
+    }
+
+    /// Builds one TX power-level row, numbered from one.
+    #[must_use]
+    pub fn tx_power_level(level: u8, active: bool) -> Self {
+        let mut label = [b' '; LIST_NAME_BYTES];
+        label[0] = b'1' + level.min(8);
+        label[3..8].copy_from_slice(&milliwatts_label(level));
+        Self::with_label(&label[..8], active)
+    }
+
     /// Builds one squelch-level row.
     ///
     /// Level zero is named rather than numbered, because "no squelch at all" is
@@ -395,6 +414,25 @@ impl SelectorRow {
     pub fn label(&self) -> &[u8] {
         &self.label[..usize::from(self.label_len)]
     }
+}
+
+/// A five-byte nominal power label such as ` 20MW` or `500MW`.
+fn milliwatts_label(level: u8) -> [u8; 5] {
+    let milliwatts = TX_POWER_NOMINAL_MW
+        .get(usize::from(level))
+        .copied()
+        .unwrap_or(0)
+        .min(999);
+    let mut label = *b"   MW";
+    let digits = [milliwatts / 100, milliwatts / 10 % 10, milliwatts % 10];
+    let mut started = false;
+    for (offset, digit) in digits.into_iter().enumerate() {
+        started |= digit != 0 || offset == 2;
+        if started {
+            label[offset] = b'0' + u8::try_from(digit).unwrap_or(0);
+        }
+    }
+    label
 }
 
 /// One channel list row.
@@ -1313,6 +1351,10 @@ mod operating_screen_tests {
         }
         fixed.extend_from_slice(SelectorRow::squelch_setting(0).label());
         fixed.extend_from_slice(SelectorRow::squelch_setting(5).label());
+        for level in 0..crate::operator_shell::TX_POWER_LEVELS {
+            fixed.extend_from_slice(SelectorRow::tx_power_setting(level).label());
+            fixed.extend_from_slice(SelectorRow::tx_power_level(level, false).label());
+        }
 
         for byte in fixed {
             if byte == b' ' {

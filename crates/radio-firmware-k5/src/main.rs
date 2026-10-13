@@ -189,13 +189,14 @@ fn main() -> ! {
             selected = view.channel;
             revision = revision.saturating_add(1);
         }
+        let level = shell.tx_power();
         let bias =
             Pmr446Channel::new(view.channel)
                 .zip(calibration)
                 .and_then(|(channel, calibration)| {
-                    transmit::low1_bias(calibration, channel.frequency().as_hz())
+                    transmit::level_bias(calibration, channel.frequency().as_hz(), level)
                 });
-        let request = transmit::request(view, revision, bias);
+        let request = transmit::request(view, revision, bias, level);
         let ptt = keypad.ptt_pressed();
         let ptt_event = match (ptt_down, ptt) {
             (false, true) => tx_control::Event::Pressed,

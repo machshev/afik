@@ -12,7 +12,9 @@ use radio_platform::operator_display::{
     ListRow, MemoryState, OperatingView, ResetCause, SelectorRow, SerialCounters, COLUMN_OFFSET,
     FRAME_BYTES, LIST_ROWS, PAGES, WIDTH,
 };
-use radio_platform::operator_shell::{Screen, Shell, Source, SETTINGS, SQUELCH_LEVELS};
+use radio_platform::operator_shell::{
+    Screen, Setting, Shell, Source, SQUELCH_LEVELS, TX_POWER_LEVELS,
+};
 use radio_platform::receive_app::View;
 
 use crate::keypad::Key;
@@ -286,11 +288,10 @@ pub fn render_operator_frame(
         Screen::Settings => {
             let mut rows = [SelectorRow::default(); LIST_ROWS];
             let mut count = 0;
-            for (offset, setting) in SETTINGS.iter().take(LIST_ROWS).enumerate() {
+            for (offset, setting) in shell.settings().iter().take(LIST_ROWS).enumerate() {
                 rows[offset] = match setting {
-                    radio_platform::operator_shell::Setting::Squelch => {
-                        SelectorRow::squelch_setting(shell.squelch().get())
-                    }
+                    Setting::Squelch => SelectorRow::squelch_setting(shell.squelch().get()),
+                    Setting::TxPower => SelectorRow::tx_power_setting(shell.tx_power()),
                 };
                 count += 1;
             }
@@ -317,6 +318,20 @@ pub fn render_operator_frame(
                 count += 1;
             }
             render_selector_list(&mut frame, b"SQUELCH", &rows[..count], cursor - first);
+        }
+        Screen::TxPowerList => {
+            let mut rows = [SelectorRow::default(); LIST_ROWS];
+            let mut count = 0;
+            for (level, row) in (0..TX_POWER_LEVELS).zip(rows.iter_mut()) {
+                *row = SelectorRow::tx_power_level(level, level == shell.tx_power());
+                count += 1;
+            }
+            render_selector_list(
+                &mut frame,
+                b"TX POWER",
+                &rows[..count],
+                usize::from(shell.tx_power_cursor()),
+            );
         }
         Screen::StepList => render_selector_list(&mut frame, b"NO CAP", &[], 0),
     }

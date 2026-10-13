@@ -79,6 +79,8 @@ enum Cursor {
     Settings,
     /// The squelch-level list.
     Squelch,
+    /// The TX power-level list.
+    TxPower,
 }
 
 /// Which receive source the operator is listening to.
@@ -118,6 +120,8 @@ pub enum Screen {
     Settings,
     /// The selectable squelch levels.
     SquelchList,
+    /// The selectable TX power levels, where the target can transmit.
+    TxPowerList,
     /// Image identity and storage state.
     Info,
 }
@@ -132,6 +136,8 @@ pub enum Screen {
 pub enum Setting {
     /// The radio-wide squelch level applied when no channel overrides it.
     Squelch,
+    /// The radio-wide TX power level, where the target can transmit.
+    TxPower,
 }
 
 /// Every settings row, in the order the menu lists them.
@@ -144,6 +150,17 @@ pub enum Setting {
 /// configuration a programmer writes, where it can be given whole
 /// milliseconds instead of a menu's worth of rows.
 pub const SETTINGS: [Setting; 1] = [Setting::Squelch];
+
+/// Settings rows on a target that can transmit. TX power qualifies for the
+/// same reason squelch does: the right level depends on where the operator is.
+pub const SETTINGS_WITH_TX_POWER: [Setting; 2] = [Setting::Squelch, Setting::TxPower];
+
+/// Selectable TX power levels.
+pub const TX_POWER_LEVELS: u8 = 4;
+
+/// Nominal output of each TX power level, in milliwatts: Armel F4HWN Low1 to
+/// Low4 as its README documents them. Nominal, not measured by AFIK.
+pub const TX_POWER_NOMINAL_MW: [u32; TX_POWER_LEVELS as usize] = [20, 125, 250, 500];
 
 /// Selectable squelch levels, from permanently open to tightest.
 pub const SQUELCH_LEVELS: u8 = MAX_SQUELCH_LEVEL + 1;
@@ -190,6 +207,8 @@ pub struct Capabilities {
     pub scan: bool,
     /// Whether the target exposes an identity/status information screen.
     pub info: bool,
+    /// Whether the target can transmit, so a TX power setting means something.
+    pub tx_power: bool,
 }
 
 impl Capabilities {
@@ -200,15 +219,17 @@ impl Capabilities {
         sources: true,
         scan: true,
         info: true,
+        tx_power: false,
     };
 
-    /// The currently evidenced K5 receive-only capability set.
+    /// The currently evidenced K5 capability set, including PMR446 TX.
     pub const K5: Self = Self {
         vfo: false,
         settings: true,
         sources: true,
         scan: false,
         info: true,
+        tx_power: true,
     };
 }
 
@@ -255,6 +276,8 @@ pub struct Shell {
     settings_cursor: usize,
     squelch: SquelchLevel,
     squelch_cursor: u8,
+    tx_power: u8,
+    tx_power_cursor: u8,
     /// Whether a star press is still waiting to become a hold or a release.
     star_pending: bool,
     capabilities: Capabilities,
@@ -287,6 +310,8 @@ impl Shell {
             settings_cursor: 0,
             squelch: SquelchLevel::CONSERVATIVE,
             squelch_cursor: SquelchLevel::CONSERVATIVE.get(),
+            tx_power: 0,
+            tx_power_cursor: 0,
             star_pending: false,
             capabilities: Capabilities::K1,
         }
@@ -303,9 +328,42 @@ impl Shell {
         if !capabilities.sources && self.screen == Screen::SourceList {
             self.screen = Screen::Operating;
         }
-        if !capabilities.settings && matches!(self.screen, Screen::Settings | Screen::SquelchList) {
+        if !capabilities.settings
+            && matches!(
+                self.screen,
+                Screen::Settings | Screen::SquelchList | Screen::TxPowerList
+            )
+        {
             self.screen = Screen::Operating;
         }
+        if !capabilities.tx_power && self.screen == Screen::TxPowerList {
+            self.screen = Screen::Operating;
+        }
+        self.settings_cursor = self
+            .settings_cursor
+            .min(self.settings().len().saturating_sub(1));
+    }
+
+    /// Returns the settings rows this target shows, in menu order.
+    #[must_use]
+    pub const fn settings(&self) -> &'static [Setting] {
+        if self.capabilities.tx_power {
+            &SETTINGS_WITH_TX_POWER
+        } else {
+            &SETTINGS
+        }
+    }
+
+    /// Returns the selected TX power level, zero-based.
+    #[must_use]
+    pub const fn tx_power(&self) -> u8 {
+        self.tx_power
+    }
+
+    /// Returns the TX power-list cursor row.
+    #[must_use]
+    pub const fn tx_power_cursor(&self) -> u8 {
+        self.tx_power_cursor
     }
 
     /// Returns the active target capability gates.
@@ -538,9 +596,10 @@ impl Shell {
             return Intent::StopScan;
         }
         match key {
-            // Audio is not a mode the operator has to find, so side key one
-            // opens the settings menu instead of routing it.
-            Key::Side1 => self.open_settings(),
+            // Menu opens settings from the operating screen, as on the stock
+            // and Armel firmware, so side key one opens the channel or step
+            // list that Menu used to.
+            Key::Side1 => self.open_list(context),
             Key::Side2 => Intent::ToggleMonitor,
             // Receive-only: the image constructs no transmit path, so the
             // push-to-talk input cannot reach the radio.
@@ -676,9 +735,12 @@ impl Shell {
             }
             Screen::SourceList => self.step_row(direction, self.source_rows(), Cursor::Source),
             Screen::StepList => self.step_row(direction, VFO_STEPS_HZ.len(), Cursor::Step),
-            Screen::Settings => self.step_row(direction, SETTINGS.len(), Cursor::Settings),
+            Screen::Settings => self.step_row(direction, self.settings().len(), Cursor::Settings),
             Screen::SquelchList => {
                 self.step_row(direction, usize::from(SQUELCH_LEVELS), Cursor::Squelch)
+            }
+            Screen::TxPowerList => {
+                self.step_row(direction, usize::from(TX_POWER_LEVELS), Cursor::TxPower)
             }
             Screen::Info => Intent::Redraw,
         }
@@ -691,11 +753,13 @@ impl Shell {
     fn step_row(&mut self, direction: Direction, rows: usize, which: Cursor) -> Intent {
         let last = rows.saturating_sub(1);
         let mut squelch_cursor = usize::from(self.squelch_cursor);
+        let mut tx_power_cursor = usize::from(self.tx_power_cursor);
         let cursor = match which {
             Cursor::Source => &mut self.source_cursor,
             Cursor::Step => &mut self.step_cursor,
             Cursor::Settings => &mut self.settings_cursor,
             Cursor::Squelch => &mut squelch_cursor,
+            Cursor::TxPower => &mut tx_power_cursor,
         };
         *cursor = match direction {
             Direction::Up => {
@@ -715,6 +779,9 @@ impl Shell {
         };
         if matches!(which, Cursor::Squelch) {
             self.squelch_cursor = u8::try_from(squelch_cursor).unwrap_or(0);
+        }
+        if matches!(which, Cursor::TxPower) {
+            self.tx_power_cursor = u8::try_from(tx_power_cursor).unwrap_or(0);
         }
         Intent::Redraw
     }
@@ -746,10 +813,14 @@ impl Shell {
                 Intent::Redraw
             }
             Screen::Settings => {
-                match SETTINGS.get(self.settings_cursor) {
+                match self.settings().get(self.settings_cursor) {
                     Some(Setting::Squelch) => {
                         self.screen = Screen::SquelchList;
                         self.squelch_cursor = self.squelch.get();
+                    }
+                    Some(Setting::TxPower) => {
+                        self.screen = Screen::TxPowerList;
+                        self.tx_power_cursor = self.tx_power;
                     }
                     // A menu row with nothing behind it cannot open a screen the
                     // operator would then be stuck on.
@@ -769,21 +840,16 @@ impl Shell {
                 }
                 Intent::SetSquelch(level)
             }
-            Screen::Operating => {
-                // Each mode's list is the one the operator can act on: memory
-                // channels in memory mode, tuning steps in the VFO.
-                match self.mode {
-                    Mode::Vfo => {
-                        self.screen = Screen::StepList;
-                        self.step_cursor = self.step_index;
-                    }
-                    Mode::Memory => {
-                        self.screen = Screen::ChannelList;
-                        self.cursor = context.active_index;
-                    }
+            // TX power is held by the shell and read by the target before each
+            // transmission, so choosing one needs no target acknowledgement.
+            Screen::TxPowerList => {
+                self.screen = Screen::Operating;
+                if self.tx_power_cursor < TX_POWER_LEVELS {
+                    self.tx_power = self.tx_power_cursor;
                 }
                 Intent::Redraw
             }
+            Screen::Operating => self.open_settings(),
             Screen::ChannelList => {
                 self.screen = Screen::Operating;
                 if self.cursor < context.visible_channels {
@@ -797,6 +863,28 @@ impl Shell {
                 Intent::Redraw
             }
         }
+    }
+
+    /// Opens the list the operator acts on in this mode, or closes it.
+    ///
+    /// Memory channels in memory mode, tuning steps in the VFO.
+    fn open_list(&mut self, context: Context) -> Intent {
+        self.entry = None;
+        if matches!(self.screen, Screen::ChannelList | Screen::StepList) {
+            self.screen = Screen::Operating;
+            return Intent::Redraw;
+        }
+        match self.mode {
+            Mode::Vfo => {
+                self.screen = Screen::StepList;
+                self.step_cursor = self.step_index;
+            }
+            Mode::Memory => {
+                self.screen = Screen::ChannelList;
+                self.cursor = context.active_index;
+            }
+        }
+        Intent::Redraw
     }
 
     /// Commits a squelch choice after the receive application and target
@@ -823,7 +911,7 @@ impl Shell {
         }
         // Exit unwinds one step, so a value list returns to the menu that opened
         // it rather than throwing the operator all the way out.
-        self.screen = if self.screen == Screen::SquelchList {
+        self.screen = if matches!(self.screen, Screen::SquelchList | Screen::TxPowerList) {
             Screen::Settings
         } else {
             Screen::Operating
@@ -838,6 +926,18 @@ impl Shell {
         match self.screen {
             Screen::SquelchList => {
                 self.squelch_cursor = u8::try_from(digit).unwrap_or(0);
+                return self.confirm(context);
+            }
+            // Power levels are numbered from one on screen.
+            Screen::TxPowerList => {
+                let Some(level) = u8::try_from(digit)
+                    .ok()
+                    .and_then(|digit| digit.checked_sub(1))
+                    .filter(|level| *level < TX_POWER_LEVELS)
+                else {
+                    return Intent::Idle;
+                };
+                self.tx_power_cursor = level;
                 return self.confirm(context);
             }
             Screen::Settings => return Intent::Idle,
@@ -919,7 +1019,10 @@ impl Shell {
             return Intent::Idle;
         }
         self.entry = None;
-        if matches!(self.screen, Screen::Settings | Screen::SquelchList) {
+        if matches!(
+            self.screen,
+            Screen::Settings | Screen::SquelchList | Screen::TxPowerList
+        ) {
             self.screen = Screen::Operating;
             return Intent::Redraw;
         }
@@ -975,7 +1078,7 @@ impl Shell {
 mod tests {
     use super::{
         Capabilities, Context, Intent, Mode, Screen, Shell, Source, ENTRY_TIMEOUT_MILLISECONDS,
-        VFO_DEFAULT_HZ, VFO_MAXIMUM_HZ, VFO_STEPS_HZ,
+        SETTINGS, SETTINGS_WITH_TX_POWER, VFO_DEFAULT_HZ, VFO_MAXIMUM_HZ, VFO_STEPS_HZ,
     };
     use crate::receive_app::Key;
     use radio_channel_plan::MAX_BANKS;
@@ -1127,7 +1230,7 @@ mod tests {
     #[test]
     fn the_step_list_opens_on_the_step_in_force_and_applies_the_chosen_one() {
         let mut shell = Shell::new();
-        assert_eq!(shell.press(Key::Menu, 0, context(0, 0)), Intent::Redraw);
+        assert_eq!(shell.press(Key::Side1, 0, context(0, 0)), Intent::Redraw);
         assert_eq!(shell.screen(), Screen::StepList);
         assert_eq!(shell.step_cursor(), shell.step_index());
 
@@ -1225,7 +1328,7 @@ mod tests {
         shell.press(Key::Exit, 50, context(8, 0));
 
         // Step list: opens on the step in force.
-        shell.press(Key::Menu, 60, context(0, 0));
+        shell.press(Key::Side1, 60, context(0, 0));
         assert_eq!(shell.screen(), Screen::StepList);
         assert_eq!(shell.step_cursor(), 1);
         shell.press(Key::Up, 70, context(0, 0));
@@ -1247,7 +1350,7 @@ mod tests {
         let mut shell = Shell::new();
         assert_eq!(shell.squelch(), SquelchLevel::CONSERVATIVE);
 
-        assert_eq!(shell.press(Key::Side1, 0, context(0, 0)), Intent::Redraw);
+        assert_eq!(shell.press(Key::Menu, 0, context(0, 0)), Intent::Redraw);
         assert_eq!(shell.screen(), Screen::Settings);
         assert_eq!(shell.settings_cursor(), 0);
 
@@ -1276,13 +1379,13 @@ mod tests {
         );
 
         // Choosing the level already in force changes nothing.
-        shell.press(Key::Side1, 40, context(0, 0));
+        shell.press(Key::Menu, 40, context(0, 0));
         shell.press(Key::Menu, 41, context(0, 0));
         assert_eq!(shell.press(Key::Menu, 42, context(0, 0)), Intent::Redraw);
         assert_eq!(shell.squelch(), SquelchLevel::new(5).expect("level"));
 
         // A digit is the whole choice on this screen, not a channel number.
-        shell.press(Key::Side1, 50, context(0, 0));
+        shell.press(Key::Menu, 50, context(0, 0));
         shell.press(Key::Menu, 51, context(0, 0));
         assert_eq!(
             shell.press(Key::Digit(0), 52, context(0, 0)),
@@ -1297,7 +1400,7 @@ mod tests {
     #[test]
     fn the_settings_menu_unwinds_one_screen_at_a_time() {
         let mut shell = Shell::new();
-        shell.press(Key::Side1, 0, context(0, 0));
+        shell.press(Key::Menu, 0, context(0, 0));
         shell.press(Key::Menu, 10, context(0, 0));
         assert_eq!(shell.screen(), Screen::SquelchList);
 
@@ -1312,14 +1415,55 @@ mod tests {
         assert_eq!(shell.press(Key::Exit, 40, context(0, 0)), Intent::Redraw);
         assert_eq!(shell.screen(), Screen::Operating);
 
-        // The side key closes what it opened, from either screen.
-        shell.press(Key::Side1, 50, context(0, 0));
-        assert_eq!(shell.press(Key::Side1, 60, context(0, 0)), Intent::Redraw);
+        // Menu opens the menu, as on the stock and Armel firmware, and side
+        // key one opens and closes the list Menu used to.
+        assert_eq!(shell.press(Key::Menu, 50, context(0, 0)), Intent::Redraw);
+        assert_eq!(shell.screen(), Screen::Settings);
+        assert_eq!(shell.press(Key::Exit, 60, context(0, 0)), Intent::Redraw);
         assert_eq!(shell.screen(), Screen::Operating);
-        shell.press(Key::Side1, 70, context(0, 0));
-        shell.press(Key::Menu, 71, context(0, 0));
+        assert_eq!(shell.press(Key::Side1, 70, context(0, 0)), Intent::Redraw);
+        assert_eq!(shell.screen(), Screen::StepList);
         assert_eq!(shell.press(Key::Side1, 80, context(0, 0)), Intent::Redraw);
         assert_eq!(shell.screen(), Screen::Operating);
+    }
+
+    #[test]
+    fn tx_power_is_a_setting_only_where_the_target_can_transmit() {
+        let mut shell = Shell::new();
+        assert_eq!(shell.settings(), &SETTINGS[..], "K1 has no TX power row");
+
+        shell.set_capabilities(Capabilities::K5);
+        shell.select_memory();
+        assert_eq!(shell.settings(), &SETTINGS_WITH_TX_POWER[..]);
+        assert_eq!(shell.tx_power(), 0, "the lowest level is the default");
+        shell.press(Key::Menu, 0, context(16, 0));
+        shell.press(Key::Down, 1, context(16, 0));
+        assert_eq!(shell.press(Key::Menu, 2, context(16, 0)), Intent::Redraw);
+        assert_eq!(shell.screen(), Screen::TxPowerList);
+        assert_eq!(shell.tx_power_cursor(), 0, "opens on the level in force");
+        shell.press(Key::Down, 3, context(16, 0));
+        shell.press(Key::Down, 4, context(16, 0));
+        assert_eq!(shell.press(Key::Menu, 5, context(16, 0)), Intent::Redraw);
+        assert_eq!(shell.tx_power(), 2);
+        assert_eq!(shell.screen(), Screen::Operating);
+
+        // Digits pick a level numbered from one; others do nothing.
+        shell.press(Key::Menu, 6, context(16, 0));
+        shell.press(Key::Down, 7, context(16, 0));
+        shell.press(Key::Menu, 8, context(16, 0));
+        assert_eq!(shell.press(Key::Digit(9), 9, context(16, 0)), Intent::Idle);
+        assert_eq!(shell.press(Key::Digit(0), 10, context(16, 0)), Intent::Idle);
+        shell.press(Key::Digit(4), 11, context(16, 0));
+        assert_eq!(shell.tx_power(), 3);
+
+        // Exit from the power list returns to the menu and applies nothing.
+        shell.press(Key::Menu, 12, context(16, 0));
+        shell.press(Key::Down, 13, context(16, 0));
+        shell.press(Key::Menu, 14, context(16, 0));
+        shell.press(Key::Up, 15, context(16, 0));
+        shell.press(Key::Exit, 16, context(16, 0));
+        assert_eq!(shell.screen(), Screen::Settings);
+        assert_eq!(shell.tx_power(), 3);
     }
 
     /// A host write is the authority on the level the menu shows.
@@ -1328,7 +1472,7 @@ mod tests {
         let mut shell = Shell::new();
         shell.set_squelch(SquelchLevel::new(7).expect("level"));
         assert_eq!(shell.squelch(), SquelchLevel::new(7).expect("level"));
-        shell.press(Key::Side1, 0, context(0, 0));
+        shell.press(Key::Menu, 0, context(0, 0));
         shell.press(Key::Menu, 10, context(0, 0));
         assert_eq!(shell.squelch_cursor(), 7);
     }
@@ -1382,7 +1526,7 @@ mod tests {
             Intent::SelectPrevious
         );
 
-        assert_eq!(shell.press(Key::Menu, 30, context(4, 1)), Intent::Redraw);
+        assert_eq!(shell.press(Key::Side1, 30, context(4, 1)), Intent::Redraw);
         assert_eq!(shell.screen(), Screen::ChannelList);
         assert_eq!(shell.cursor(), 1, "the list opens on the active channel");
         shell.press(Key::Down, 40, context(4, 1));
@@ -1406,7 +1550,7 @@ mod tests {
     #[test]
     fn exit_leaves_a_screen_without_changing_the_selection() {
         let mut shell = memory_shell(&[0]);
-        shell.press(Key::Menu, 10, context(4, 2));
+        shell.press(Key::Side1, 10, context(4, 2));
         shell.press(Key::Up, 20, context(4, 2));
         assert_eq!(shell.press(Key::Exit, 30, context(4, 2)), Intent::Redraw);
         assert_eq!(shell.screen(), Screen::Operating);
@@ -1568,7 +1712,7 @@ mod tests {
         // Neither is a hold on a list the operator is part way through.
         let mut shell = Shell::new();
         shell.select_memory();
-        assert_eq!(shell.press(Key::Menu, 0, context(4, 0)), Intent::Redraw);
+        assert_eq!(shell.press(Key::Side1, 0, context(4, 0)), Intent::Redraw);
         assert_eq!(shell.screen(), Screen::ChannelList);
         assert_eq!(shell.press(Key::Star, 10, context(4, 0)), Intent::Redraw);
         assert_eq!(shell.hold(Key::Star, context(4, 0)), Intent::Idle);
@@ -1609,7 +1753,7 @@ mod tests {
         assert_eq!(shell.screen(), Screen::Info);
         assert_eq!(shell.press(Key::Exit, 3, context), Intent::Redraw);
         assert_eq!(shell.screen(), Screen::Operating);
-        assert_eq!(shell.press(Key::Side1, 4, context), Intent::Redraw);
+        assert_eq!(shell.press(Key::Menu, 4, context), Intent::Redraw);
         assert_eq!(shell.screen(), Screen::Settings);
         assert_eq!(shell.press(Key::Exit, 5, context), Intent::Redraw);
         assert_eq!(shell.screen(), Screen::Operating);
@@ -1643,7 +1787,7 @@ mod tests {
     #[test]
     fn a_rejected_squelch_intent_leaves_the_displayed_setting_unchanged() {
         let mut shell = Shell::new();
-        shell.press(Key::Side1, 0, context(0, 0));
+        shell.press(Key::Menu, 0, context(0, 0));
         shell.press(Key::Menu, 1, context(0, 0));
         shell.press(Key::Down, 2, context(0, 0));
         let level = SquelchLevel::new(4).expect("level");

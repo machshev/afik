@@ -13,7 +13,7 @@ pub use radio_platform::serial_control::{
 };
 
 /// Printable identity returned by the verified AFIK K5 application.
-pub const APPLICATION_VERSION: &[u8] = b"AFIK-K5-2.3T";
+pub const APPLICATION_VERSION: &[u8] = b"AFIK-K5-2.4P";
 /// Validated identity consumed by the shared application service.
 pub const APPLICATION_IDENTITY: ApplicationIdentity<'static> =
     ApplicationIdentity::new(APPLICATION_VERSION).expect("K5 identity is printable and bounded");
@@ -61,7 +61,7 @@ pub fn encode_shared_response(
 }
 
 /// Plain-text banner retained for bounded serial diagnostics.
-pub const BOOT_BANNER: &[u8] = b"AFIK-K5-2.3T booted";
+pub const BOOT_BANNER: &[u8] = b"AFIK-K5-2.4P booted";
 
 /// Encodes the existing identity response without changing its envelope.
 pub fn encode_hello_response(frame: &mut [u8; RESPONSE_FRAME_BYTES]) {

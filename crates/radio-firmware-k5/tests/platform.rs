@@ -108,7 +108,7 @@ fn k5_supported_shell_screens_are_deterministic_and_shared() {
     assert_ne!(operating, render_operator_frame(&shell, fault_view, None));
 
     assert_eq!(
-        shell.press(radio_platform::receive_app::Key::Menu, 0, context),
+        shell.press(radio_platform::receive_app::Key::Side1, 0, context),
         radio_platform::operator_shell::Intent::Redraw
     );
     let channel_list = render_operator_frame(&shell, view, None);
@@ -226,7 +226,7 @@ fn k5_settings_and_squelch_frames_use_the_shared_k1_layout() {
         scanning: false,
     };
     assert_eq!(
-        shell.press(radio_platform::receive_app::Key::Side1, 0, context),
+        shell.press(radio_platform::receive_app::Key::Menu, 0, context),
         Intent::Redraw
     );
     let settings = render_operator_frame(
@@ -245,9 +245,10 @@ fn k5_settings_and_squelch_frames_use_the_shared_k1_layout() {
     render_selector_list(
         &mut expected_settings,
         b"SETTINGS",
-        &[SelectorRow::squelch_setting(
-            radio_domain::SquelchLevel::CONSERVATIVE.get(),
-        )],
+        &[
+            SelectorRow::squelch_setting(radio_domain::SquelchLevel::CONSERVATIVE.get()),
+            SelectorRow::tx_power_setting(0),
+        ],
         0,
     );
     assert_eq!(settings, expected_settings);
@@ -282,7 +283,7 @@ fn k5_settings_and_squelch_frames_use_the_shared_k1_layout() {
 
 #[test]
 #[allow(clippy::too_many_lines)]
-fn k5_physical_side1_settings_apply_the_selected_threshold_after_ack() {
+fn k5_physical_menu_settings_apply_the_selected_threshold_after_ack() {
     #[derive(Default)]
     struct Matrix {
         ptt: bool,
@@ -351,12 +352,13 @@ fn k5_physical_side1_settings_apply_the_selected_threshold_after_ack() {
         }
     }
 
+    // Menu opens settings from the operating screen, as on stock and Armel.
     let mut matrix = Matrix {
-        side: Some(PhysicalKey::Side1),
+        held: Some((0, 0)),
         ..Matrix::default()
     };
-    let side_scan = scan(&mut matrix);
-    assert_eq!(side_scan, Some(PhysicalKey::Side1));
+    let menu_scan = scan(&mut matrix);
+    assert_eq!(menu_scan, Some(PhysicalKey::Menu));
     assert!(matrix.restored);
 
     let context = Context {
@@ -376,7 +378,7 @@ fn k5_physical_side1_settings_apply_the_selected_threshold_after_ack() {
     let mut dispatcher = UiDispatcher::new(None);
     assert!(dispatcher
         .dispatch_scan(
-            side_scan,
+            menu_scan,
             0,
             context,
             &mut shell,
@@ -403,7 +405,7 @@ fn k5_physical_side1_settings_apply_the_selected_threshold_after_ack() {
         ),
         None
     );
-    matrix.side = None;
+    matrix.held = None;
     dispatcher.dispatch_scan(
         scan(&mut matrix),
         2,

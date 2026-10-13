@@ -67,8 +67,8 @@ use radio_firmware_k1::py32f071_eeprom::{RetainError, RetainedConfiguration};
 use radio_firmware_k1::py32f071_runtime::{compose, K1RuntimePeripherals};
 use radio_firmware_k1::py32f071_runtime_init::init;
 use radio_firmware_k1::shell::{
-    Context, Intent, Mode, Screen, Setting, Shell, Source, HOLD_MILLISECONDS, SETTINGS,
-    SQUELCH_LEVELS, VFO_STEPS_HZ,
+    Context, Intent, Mode, Screen, Setting, Shell, Source, HOLD_MILLISECONDS, SQUELCH_LEVELS,
+    VFO_STEPS_HZ,
 };
 use radio_firmware_k1::unified_receive::{shared_channel, translate, K1Effect};
 use radio_platform::configuration_change::{ConfigurationAcknowledgement, ConfigurationCandidate};
@@ -1981,14 +1981,18 @@ fn render(
         Screen::Settings => {
             let mut rows = [SelectorRow::default(); LIST_ROWS];
             let mut count = 0;
-            for (offset, setting) in SETTINGS.iter().take(LIST_ROWS).enumerate() {
+            for (offset, setting) in shell.settings().iter().take(LIST_ROWS).enumerate() {
                 rows[offset] = match setting {
                     Setting::Squelch => SelectorRow::squelch_setting(shell.squelch().get()),
+                    // The K1 shell has no TX capability, so this row is never listed.
+                    Setting::TxPower => SelectorRow::tx_power_setting(shell.tx_power()),
                 };
                 count += 1;
             }
             render_selector_list(frame, b"SETTINGS", &rows[..count], shell.settings_cursor());
         }
+        // Unreachable without the TX capability; draw an empty titled list.
+        Screen::TxPowerList => render_selector_list(frame, b"TX POWER", &[], 0),
         Screen::SquelchList => {
             let mut rows = [SelectorRow::default(); LIST_ROWS];
             let cursor = usize::from(shell.squelch_cursor());
