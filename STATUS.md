@@ -2,11 +2,59 @@
 
 ## Current work package
 
-**`TXCTRL-054` is active** (2026-10-13), following operator instruction.
-Implement the shared, hardware-independent PTT lifecycle with explicit adapter
-completion and deterministic simulator tests. Complete-request authority remains
-mandatory. Target TX wiring, hardware flashing, and physical transmission remain
-outside this work package. `APP-052` and `RISK-036` remain paused/deferred.
+**`TXCTRL-054` is complete** (2026-10-13), host/simulator lifecycle milestone.
+`radio-platform::tx_control` now owns the shared, no_std, heap-free PTT
+press/release, held-at-boot interlock, complete-request entry sequencing,
+explicit-time timeout, invalidation, and acknowledged fault cleanup. Effects
+borrow controller/policy/current facts; preparation, chip TX, and PA enable
+require fresh central authority. Exact instance/cycle/phase acknowledgements
+cannot advance another operation. Denied presses and timeout cannot retry while
+held, and cycle/deadline overflow cannot wrap into new authority.
+
+Startup and shutdown request PA off, unconditional chip TX off, then current
+receive restoration. Every entry failure takes that cleanup path. PA-off failure
+still attempts chip shutdown; either disable failure blocks receive restoration.
+Failed receive restore runs a distinct second cleanup pair. Faults remain latched
+without automatic retry. The simulator uses the existing logical RF driver and
+records abstract preparation/power and PA state; rejected shutdown preserves
+uncertain state instead of inventing success. This does not establish target
+power, PA wiring, scheduler latency, watchdog behavior, or physical shutdown.
+See `docs/tx-control.md`, `ADR-093`, and `RISK-039`.
+
+The final gate ran sequentially in the pinned cached direnv environment:
+
+```sh
+direnv exec . env CARGO_BUILD_JOBS=2 ionice -c 3 nice -n 10 bash -c 'cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && ./tool/build-k1-async.sh --release && ./tool/build-k5.sh --release && ./tool/verify-k5-image.sh target/thumbv6m-none-eabi/release/radio-firmware-k5 && ./tool/package-k5-image.sh --force target/thumbv6m-none-eabi/release/radio-firmware-k5 target/thumbv6m-none-eabi/release/afik-k5-2.2Q.bin && git diff --check'
+```
+
+All commands passed without warnings. The workspace suite passed 636 tests,
+including eight new controller tests, fifteen simulator integration tests, and
+one compile-fail effect-borrow check. Repeated scripts match both control and RF
+traces; failures are injected before/after every ordinary effect, at each TX
+and receive-restore register write, and in both second-cleanup operations.
+Both target release builds pass. K5 static verification remains flash end
+`0x97f4`, static RAM end `0x20000100`, package size `0xF000`, and SHA-256
+`49f4a27dabd338e51e27c37db83a82dd5d0f602570dd17e88cdd87d54ecea8a4`,
+byte-identical to the previous unflashed 2.2Q package.
+
+The successful focused gate was:
+
+```sh
+direnv exec . env CARGO_BUILD_JOBS=2 ionice -c 3 nice -n 10 bash -c 'cargo fmt --all && cargo clippy -p radio-platform -p radio-sim --all-targets -- -D warnings && cargo test -p radio-platform -p radio-sim'
+```
+
+It passed 95 platform unit tests, 33 simulator unit tests, 15 PTT integration
+tests, and the new compile-fail doc test. Earlier focused checks found an
+avoidable unwrap, a redundant interlock flag, test-helper reference lints, and
+missing integration-crate documentation; all were corrected before these gates.
+The activation notes were committed as `2b72976` before implementation.
+
+Neither target runtime invokes the new controller. No firmware identity changed,
+serial device was used, firmware was flashed, or physical TX path was added.
+`APP-052` remains paused and `RISK-036` deferred. `RISK-007` and `RISK-038` remain
+open. Next smallest actionable task: planned `TXEVID-055`, an evidence-only
+matrix for exact-target preparation and PA/TX-off prerequisites; no target TX
+adapter or physical experiment is implied.
 
 ## Previous work package: TXAUTH-053
 

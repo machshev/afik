@@ -2,6 +2,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod tx_control;
+
 use core::{cmp, convert::Infallible};
 use radio_aprs::{
     parse_repeater_event, AprsError, DiscoveryEntry, DiscoveryError, DiscoveryTable,

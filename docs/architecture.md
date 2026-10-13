@@ -160,6 +160,14 @@ request before writing. Test-only synthetic envelopes live under
 `radio-tx-policy/tests/support` and are excluded from firmware. No target main,
 PTT lifecycle, PA control, or physical TX capability is added.
 
+`TXCTRL-054` adds `radio-platform::tx_control` above that authority, depending
+only on the hardware-independent TX-policy contract. It owns bounded PTT
+press/release interlocks, exact-request entry sequencing, explicit-time timeout,
+identified adapter acknowledgements, and PA/TX shutdown before receive restore.
+`radio-sim::tx_control` supplies the logical adapter and fault injection; no
+target runtime invokes it. Effects borrow the controller and current authority,
+and faults latch without automatic retry. See [the PTT contract](tx-control.md).
+
 Work Package 8 adds `radio-programmer-cli` as a host-only front-end leaf. It
 depends on `radio-programmer` for compilation, image, protocol, transaction,
 listing, backup, restore, and verification logic, and on `radio-sim` only to

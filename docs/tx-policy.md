@@ -59,8 +59,11 @@ build the current request from authoritative state immediately before TX;
 comparing an old snapshot cannot discover that hardware or external facts
 changed. Channel-controller bundles also borrow the selected controller.
 
-This milestone proves authorization and logical no-write denial. The logical
-chip driver still models only tuning and mode entry: approved power, timeout,
-microphone setup, PA/RF switching, PTT release, fault cleanup, and physical
-shutdown require later controller/target work. Neither handset gains a TX path,
-permission persistence, firmware identity, or physical compliance claim.
+`TXCTRL-054` adds the shared [PTT lifecycle](tx-control.md) above this policy.
+It rechecks complete authority at each entry effect, measures a deterministic
+deadline from the press, and orders PA/TX shutdown before receive restoration.
+The simulator records logical preparation and PA state; the chip driver still
+models only tuning and mode entry. Physical power application, microphone,
+PA/RF switching, and safe target shutdown require independent target evidence.
+Neither handset gains a TX path, permission persistence, firmware identity, or
+physical compliance claim.

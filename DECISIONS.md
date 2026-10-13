@@ -1518,3 +1518,29 @@ meaning.
   and selected-controller bundles also borrow the controller. The complete
   request is compared again before logical TX entry. Workspace and both target
   build gates pass; neither firmware wires TX or includes synthetic envelopes.
+
+## ADR-093 — PTT effects are borrowed, sequential, and explicitly acknowledged
+
+- **Date:** 2026-10-13
+- **Status:** accepted for `TXCTRL-054`, host/simulator lifecycle only
+- The shared `radio-platform::tx_control` core owns no clock, driver, target,
+  register, allocator, or scheduler. Every input carries explicit monotonic
+  milliseconds and current facts. The timeout starts at the accepted press,
+  includes entry time, and cancels entry at the exact deadline. Held boot,
+  denied press, timeout, and presses during cleanup require a fresh release.
+- Startup establishes PA off and TX off before receive. Authorized entry is
+  PA off, preparation of exact approved settings/power, chip TX, then PA on.
+  The sole pending effect borrows controller/policy/request; every entry effect
+  rechecks complete authority. Adapters execute once synchronously, then report
+  the exact instance/cycle/phase identity. Old acknowledgements cannot advance
+  a later operation. Cycles never wrap; adapter instances must never be reused.
+- Release, invalidation, timeout, and fault cleanup request PA off before
+  unconditional TX off, including unknown/faulted chip state. Receive restoration
+  uses the current authoritative setup only after both disables succeed. Failed
+  PA off still attempts TX off. A failed receive restore runs a distinct second
+  cleanup pair. Any failure latches a fault and prevents further TX; replacement
+  requires a fresh instance and safe startup rather than automatic retry.
+- Simulator PA/power state and applied acknowledgements are logical contracts,
+  not target evidence. Deadline delivery and bounded adapter execution remain
+  adapter obligations. Neither target is wired to this controller; `RISK-007`,
+  `RISK-038`, and `RISK-039` remain open for physical integration.

@@ -11,6 +11,7 @@ description = "Hardware-independent AFIK application platform contracts"
 radio-bk4819 = { path = "../radio-bk4819" }
 radio-channel-plan = { path = "../radio-channel-plan" }
 radio-domain = { path = "../radio-domain" }
+radio-tx-policy = { path = "../radio-tx-policy" }
 
 [lints.rust]
 unsafe_code = "deny"

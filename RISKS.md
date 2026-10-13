@@ -912,7 +912,7 @@
 
 ## RISK-038 — Complete TX inputs still depend on authoritative adapters
 
-- **State:** open for `TXAUTH-053`
+- **State:** open for `TXAUTH-053` / `TXCTRL-054` target integration
 - **Impact:** a caller can misrepresent selected state, reuse configuration
   identity, or supply fabricated hardware/calibration/operator facts. A pure
   software policy cannot measure or authenticate those facts.
@@ -929,6 +929,28 @@
   and rejects missing or mismatched unit-bound hardware/calibration limits.
   Behavioral and compile-fail tests pass. Configuration identity is still an
   adapter contract: supplying an old snapshot cannot reveal a real-world
-  change. The accepted timeout is not yet a running shutdown timer; the logical
-  chip model does not apply conducted power or own PA shutdown. Those belong
-  to `TXCTRL-054` and independently evidenced target work. Risk remains open.
+  change. `TXCTRL-054` now supplies an explicit-time deadline, exact-request
+  rechecks at each entry effect, and ordered logical PA/TX cleanup. The logical
+  chip model still does not apply physical conducted power or own a target PA.
+  Trusted facts, bounded physical execution, and independently evidenced target
+  work remain required. Risk remains open.
+
+## RISK-039 — PTT scheduling and shutdown acknowledgements require target proof
+
+- **State:** open; host/simulator contract established by `TXCTRL-054`
+- **Impact:** a blocked executor, missed PTT/deadline input, unbounded adapter
+  operation, detached old effect, or fabricated success acknowledgement can
+  leave physical TX active despite correct shared sequencing. A failed PA/TX
+  disable cannot prove that either output is physically off.
+- **Mitigation:** borrowed synchronous effects, one exact acknowledged operation
+  at a time, explicit monotonic time, deadline from accepted press, fresh policy
+  checks before each entry operation, startup shutdown, unconditional fault
+  cleanup, and latched failures without automatic retry. Simulator tests cover
+  rejected operations and uncertain partial completion at every effect boundary;
+  receive restoration is blocked if either shutdown completion failed.
+- **Required evidence before target wiring:** authoritative fresh snapshots and
+  non-reused app instances; bounded execution and deadline delivery; safe PA/TX
+  off from every relevant target state; independent fail-off/watchdog behavior
+  where the scheduler cannot meet that guarantee. Record exact-unit observations
+  and confidence under `docs/hardware-evidence.md`; no such fact follows from
+  virtual-time or logical register tests. `RISK-007` remains the RF evidence gate.

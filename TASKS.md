@@ -2880,7 +2880,7 @@
 
 ## TXCTRL-054 — Shared PTT lifecycle and deterministic shutdown
 
-- **Status:** active (2026-10-13), following operator instruction.
+- **Status:** complete (2026-10-13), host/simulator lifecycle milestone.
 - **First step:** define the hardware-independent PTT press/release, held-at-
   boot, timeout, configuration invalidation, and target-fault event/effect
   contract with deterministic virtual time and explicit adapter completion.
@@ -2890,3 +2890,28 @@
   and fault injection at each effect boundary.
 - **Exclusions:** new register/PA/power-calibration facts, hardware target TX
   wiring, flashing, or physical transmission. `RISK-007` remains separate.
+- **Completion:** shared `radio-platform::tx_control` and explicit-time logical
+  simulator; borrowed fresh authority at entry effects; held-boot/denial/timeout
+  release interlocks; exact non-wrapping effect identities; PA-off/TX-off before
+  receive; partial-failure cleanup and terminal fault latch. Eight controller
+  tests, fifteen simulator tests, and one compile-fail borrow check were added.
+  Identical normal/fault scripts match; rejected and partially applied effects,
+  each TX/receive-restore register write, and the second cleanup pair are covered.
+  All 636 workspace tests, formatting, warning-denied workspace Clippy, both
+  target release builds, and K5 image/package checks pass. The package remains
+  byte-identical; neither target wires TX. `ADR-093` and `RISK-039` record the
+  synchronous adapter, deadline delivery, and trusted-completion boundaries.
+
+## TXEVID-055 — Evidence-only target TX preparation and shutdown contract
+
+- **Status:** planned; next smallest actionable task after `TXCTRL-054`.
+- **First step:** build a per-target evidence matrix for each shared PTT effect,
+  starting with unconditional PA/TX off from unknown/faulted state. Read pinned
+  evidence, record facts/confidence under `docs/hardware-evidence.md`, and list
+  missing facts and required experiments in `RISKS.md`.
+- **Acceptance:** distinguish source/register facts, exact-unit observations,
+  and unsupported assumptions for PA polarity, RF switching, modulation,
+  calibration/power application, receive restoration, bounded execution, and
+  deadline/fail-off behavior. Unsupported target inputs remain denied.
+- **Exclusions:** target TX wiring, new inferred register behavior, firmware
+  flashing, physical transmission, or starting an experiment by implication.

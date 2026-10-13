@@ -92,6 +92,25 @@ same central-policy constructor and complete-request driver comparison;
 denied requests and changed generation/power tokens produce no added RF writes
 or TX events. Repeated denial scripts have identical virtual-time traces.
 
+## Shared PTT lifecycle
+
+`TXCTRL-054` adds `tx_control::TxSimulator` around the same shared controller
+available to future target adapters. `step` delivers an explicit-time tick,
+executes one borrowed effect, and reports its exact acknowledgement. Virtual
+time advancement itself performs no work. The existing logical RF driver still
+requires complete central authority; PA enable and prepared settings/power are
+host observations only, with no GPIO or emitted-RF model.
+
+Startup and cleanup attempt PA off before unconditional neutral-mode recovery,
+and restore receive only after both shutdown operations are acknowledged.
+Entry is PA off, preparation, chip TX, then PA enable. Fault injection can
+reject an operation before application or fail its completion after partial
+application, and can fail individual register operations. Repeated normal and
+failure scripts must match in both control and RF traces. A failed PA-off
+operation may leave the logical PA enabled; the controller still attempts chip
+shutdown and faults without restoring receive. See [the PTT contract](tx-control.md)
+for the trusted adapter, deadline delivery, and synchronous execution bounds.
+
 ## APRS receive-only discovery
 
 Work Package 11 adds `AprsSimulator` around the hardware-independent
