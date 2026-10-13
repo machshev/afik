@@ -3019,7 +3019,9 @@
 
 ## TXK1-060 — K1 TX from the Armel BK4829 paths
 
-- **Status:** planned, after `TXK5-058`.
+- **Status:** active (2026-10-13), started at the operator's request. K1 TX is
+  implemented (`a89f9b4`) and `6.4T` was flashed; speech was weak before the
+  mic gain fix. Next: flash `7.0.2` and bench check.
 - **Objective:** the `TXK5-058` sequence for K1/BK4829, using the selected
   Armel K1 driver evidence and the K1 SPI NOR calibration map. Same bench check.
 

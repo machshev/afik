@@ -3222,3 +3222,14 @@ the proven hardware reference.
 - **Not observed:** a post-test `afik-flasher probe-normal` timed out because
   the operator had unplugged the cable, so the running identity was not read
   back over serial.
+
+### EVID-TX059-001 — K5 TX speech level follows Armel's register state
+
+- **Observations, 2026-10-13, operator:** `AFIK-K5-7.0.0` (mic gain written)
+  gave carrier only; `7.0.1` (DTMF and scrambler off before TX) gave audio
+  but low; an Armel K5 transmitted louder speech into the same NFM receiver.
+  `7.0.2`, which leaves `REG_2A/2B/2F/42/54/55` at reset values as the Armel
+  K5 build does, "does seem better".
+- **Scope:** relative listening only; deviation was not measured. Which of
+  the six registers mattered was not isolated. The K1 keeps them because its
+  Armel driver writes them; K1 speech level is untested on these builds.
