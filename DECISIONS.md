@@ -1590,3 +1590,33 @@ meaning.
   testing. Carry that permission into `TXOFF-057`; no repeat approval is needed
   for the authorized required flash. No physical TX integration or invented
   hardware/calibration envelope follows from this permission or witness.
+
+## ADR-096 — Proportionate TX bring-up: key up first, harden after
+
+- **Date:** 2026-10-13
+- **Status:** accepted, operator course correction. Supersedes the gating
+  order in `ADR-094` and the witness-first ordering in `ADR-095`.
+- The proven normal TX enter/exit and receive-restore paths in Armel's
+  selected drivers (`EVID-TX056-003`) are sufficient board/register authority
+  for a first transmission. They run on thousands of units. AFIK reimplements
+  the sequence from that evidence; it does not copy the code.
+- **Gates for the first K5 key-up are only:** the shared `tx_control` lifecycle
+  and policy in the path; host/simulator tests of order and failure cleanup;
+  the lowest reference power level derived from the unit's own EEPROM
+  calibration; a short timeout (≤ 5 s); a dummy load or a frequency the
+  operator may use (PMR446 for the K5 test); and carrier on/off seen on an
+  SDR or second radio at press, release and timeout.
+- These are **follow-up hardening, not gates**: instrument-measured off in
+  every unknown/reset/fault state, an independent PA fail-off route, watchdog
+  coverage of RF outputs, worst-case deadline-latency bounds, and a full
+  power/modulation envelope. Neither the stock firmware nor Armel provides
+  them. Track them as ordinary tasks once TX works.
+- The TX hardware/calibration envelope for K5 is declared in firmware: the
+  lowest reference power level and the operator's channels only. Its milliwatt
+  figure is nominal until measured, and is labelled as such.
+- **Process:** no further evidence-only or plan-only work packages for TX.
+  Each package changes code, adds tests, and ends with a hardware observation
+  where hardware is involved. Record findings in a few lines at their real
+  scope. Physical transmission still needs the operator's explicit
+  authorization, recorded in `STATUS.md`; once given for the bring-up sequence
+  it is not re-requested per step.

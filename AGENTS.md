@@ -38,3 +38,18 @@ Before handoff:
 6. Update task completion notes, decisions, and risks.
 7. Name the next smallest actionable task.
 8. Leave the workspace buildable and avoid unrelated changes.
+
+## Proportionate process
+
+Operator course correction, 2026-10-13 (`ADR-096`): documentation serves the
+code, not the other way round.
+
+- Every work package changes code and adds tests, and where hardware is
+  involved ends with a hardware observation. Do not create evidence-only or
+  plan-only work packages unless the operator asks for one.
+- Proven reference firmware behaviour (`EVID-TX056-003`) is sufficient
+  authority to implement and try. Do not re-derive it, and do not make
+  hardening that no reference firmware provides a gate.
+- Record findings in a few lines at their real scope. A `STATUS.md` entry is a
+  short paragraph plus the exact gate commands and results.
+- Once the operator authorizes a direction, do not re-request it for each step.

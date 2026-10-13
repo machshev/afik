@@ -2952,7 +2952,9 @@
 
 ## TXOFF-057 — Source-backed K5 off/receive hardware witness
 
-- **Status:** active (2026-10-13), after `TXPLAN-056`; required flashing and hardware
+- **Status:** superseded (2026-10-13) by `ADR-096` before any code was written.
+  Its off/restore sequence is folded into `TXK5-058`.
+- **Original status:** active (2026-10-13), after `TXPLAN-056`; required flashing and hardware
   testing already authorized by the operator on 2026-10-13.
 - **First step:** implement a bounded receive-only K5 diagnostic which uses
   the selected Armel initialization/zero-bias/PA-clear/chip-idle facts, records
@@ -2966,3 +2968,51 @@
   calibration writes, target TX preparation/enable, or claiming RF silence,
   active-TX shutdown latency, calibrated power or independent fail-off from
   register/boot results.
+
+## TXK5-058 — Experimental K5 PMR446 low-power TX
+
+- **Status:** active (2026-10-13), per `ADR-096`.
+- **Operator authorization, 2026-10-13:** "I've got a K5 connected in firmware
+  flash mode now. Can we add experimental TX support, I've got another radio and
+  SDR dongle. If TX doesn't stop on PTT release then I can power down the radio
+  to stop it. I'll use PMR446 for the brief test." The operator attests the
+  PMR446 operating facts the policy requires for this bench build.
+- **Objective:** PTT on the K5 V1 transmits narrow FM on the selected PMR446
+  channel at the lowest Armel F4HWN power level (Low1, documented as under
+  ~20 mW), and stops on release and at a 5 s timeout.
+- **Steps (commit after each):**
+  1. BK4819 TX sequence in `radio-bk4819`, reimplemented from the Armel K5 V1
+     enter/exit paths (`EVID-TX056-003`): disable PA, chip idle, prepare,
+     chip TX on, PA enable and bias. Host tests of exact writes, authority and
+     state checks.
+  2. A millisecond delay on the K5 `SysTick` for the source's 10/5/10 ms waits.
+  3. K5 adapter: calibration low bias from EEPROM `0x1F20` scaled to Low1,
+     firmware-declared PMR446 envelope, policy, PC5 PTT into
+     `radio-platform::tx_control`, receive restore. Host tests of a full
+     press/release cycle and of denial without calibration.
+  4. Build, verify, package and flash. Operator test: carrier on at press, off at
+     release, off at timeout, receive works afterwards.
+- **Acceptance:** fmt/clippy/workspace tests pass; the operator's bench results
+  are recorded in a short `docs/hardware-evidence.md` entry.
+- **Exclusions:** other bands or power levels, tones/DTMF, K1.
+- **Stop:** if the carrier does not stop on release or timeout, power the radio
+  down and fix that before anything else.
+
+## TXK5-059 — Widen K5 TX: power levels, tones, measured power
+
+- **Status:** planned, after `TXK5-058`.
+- **Objective:** further power levels and CTCSS/DCS on TX; measure power and
+  deviation on the bench and replace the nominal milliwatt figure.
+
+## TXK1-060 — K1 TX from the Armel BK4829 paths
+
+- **Status:** planned, after `TXK5-058`.
+- **Objective:** the `TXK5-058` sequence for K1/BK4829, using the selected
+  Armel K1 driver evidence and the K1 SPI NOR calibration map. Same bench check.
+
+## TXHARD-061 — TX hardening
+
+- **Status:** planned, follow-up; not a gate for `TXK5-058`..`TXK1-060`.
+- **Scope:** measure release/timeout-to-carrier-off latency; PA off in the
+  panic/fault handlers; watchdog behaviour with TX active; behaviour after a
+  bus fault during TX. Fix what turns out to matter.

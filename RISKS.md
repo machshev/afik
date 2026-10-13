@@ -173,6 +173,10 @@
   contract. `EVID-TX055-001..004` and `RISK-040` record the remaining gates;
   no target TX input was qualified and this risk remains open.
 
+- **Re-scope, 2026-10-13 (`ADR-096`):** Armel's proven K5 V1 TX paths are
+  accepted as register/board authority for a first lowest-power
+  key-up (`TXK5-058`). This risk no longer blocks K5 TX wiring.
+
 ## RISK-008 — Physical scan timing and signal inputs are unverified
 
 - **State:** open, first bracket taken
@@ -949,6 +953,11 @@
   supply missing authority. Source pins are not an independently authenticated
   target identity. Hardware/calibration inputs remain absent and denied.
 
+- **Re-scope, 2026-10-13 (`ADR-096`):** the K5 hardware/calibration envelope
+  is declared in firmware from the unit's low calibration point and the
+  operator's frequency, with a nominal milliwatt figure. That is accepted for
+  bench bring-up; the adapter-authority concern remains for later widening.
+
 ## RISK-039 — PTT scheduling and shutdown acknowledgements require target proof
 
 - **State:** open; host/simulator contract established by `TXCTRL-054`
@@ -975,9 +984,17 @@
   TX deadlines or fail-off. No execution/acknowledgement bound was measured;
   the proposed checks are in `RISK-040`. Risk remains open.
 
+- **Re-scope, 2026-10-13 (`ADR-096`):** the "required evidence before target
+  wiring" list is no longer a gate for a first K5 bench key-up. The short
+  timeout and the bench observation in `TXK5-058` suffice; measured latency and
+  scheduler-independent fail-off move to `TXHARD-061`.
+
 ## RISK-040 — Source PA controls and bias do not qualify target TX effects
 
-- **State:** open; evidence-only `TXEVID-055` review complete, no experiment run
+- **State:** open, re-scoped by `ADR-096` (2026-10-13). Items 1–3 below are
+  covered for a first bench key-up by Armel's proven normal paths plus the
+  `TXK5-058` bench observation; items 4–5 are follow-up hardening
+  (`TXHARD-061`), not gates. See the re-scope note at the end of this entry.
 - **Impact:** both pinned targets control PA enable through the chip bus and a
   cached whole `REG_33` output word. A broken bus or stale shadow can defeat
   shutdown or alter another RF output. The source's named preparation already
@@ -1075,3 +1092,26 @@ boot/register observations do not require later RF power qualification first.
 Instrumented fault/active-TX/power/fail-off measurements remain pending and
 physical TX remains outside the authorized witness. `APP-052` remains paused
 and `RISK-036` remains deferred by operator decision.
+
+**Re-scope, 2026-10-13 (`ADR-096`, operator course correction).** The five
+items above were written as gates before any energizing work. They ask for more
+than the stock firmware or Armel ever established, and they were producing
+documents rather than progress. They now apply as follows:
+
+- **Items 1–3 (off path, preparation, cleanup/restore):** satisfied for a first
+  lowest-power key-up (dummy load, or brief PMR446) by `EVID-TX056-003` plus
+  host/simulator tests of `tx_control` order and failure cleanup, and an
+  SDR/second-radio observation that the carrier stops on release and timeout (`TXK5-058`).
+  AFIK's non-energizing preparation split is a design goal, not a precondition
+  for following Armel's proven enter order.
+- **Item 4 (power/modulation envelope):** first key-up uses only the lowest
+  reference power level derived from the unit's own calibration, with a nominal, labelled milliwatt figure.
+  Measuring the real envelope is part of widening power levels (`TXK5-059`).
+- **Item 5 (deadline latency, independent fail-off, watchdog):** follow-up
+  hardening in `TXHARD-061`. The first key-up relies on the short timeout and
+  the operator holding the radio on the bench.
+
+What still matters: the lowest power, a dummy load or a frequency the operator
+may use (PMR446 for `TXK5-058`), a short timeout, and actually seeing the
+carrier stop. If the carrier does not stop on release or timeout, stop and fix
+that before anything else.

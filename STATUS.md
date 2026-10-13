@@ -2,7 +2,18 @@
 
 ## Current work package
 
-**`TXOFF-057` is active** (2026-10-13), explicitly requested for prompt K5/K6
+**`TXK5-058` is active** (2026-10-13): experimental K5 PMR446 low-power TX.
+The operator asked for experimental TX support with the K5 attached in flash
+mode, a second radio and an SDR to observe, and power-down as the fallback if
+TX does not stop. `ADR-096` replaces the evidence/plan-first TX gating with
+"key up first, harden after"; `TXOFF-057` is superseded before any code.
+Next smallest actionable step: the BK4819 TX sequence in `radio-bk4819`.
+
+## Previous work package: TXOFF-057
+
+**`TXOFF-057` is superseded** (2026-10-13) by `ADR-096`; no code was written.
+
+**`TXOFF-057` was active** (2026-10-13), explicitly requested for prompt K5/K6
 hardware testing. Required flashing is already authorized. Implement a bounded
 receive-only K5 diagnostic using the proven Armel initialization, zero-bias,
 PA-clear and chip-idle facts; test its order/failures, build/verify/package,
