@@ -997,6 +997,14 @@
   energizing work, retain the shared fault latch and fresh authority checks,
   and keep source evidence separate from measurements. Do not transplant
   either source's function, shadow word, timing, power table, or TX mode word.
+- **TXPLAN-056 source result, 2026-10-13:** `EVID-TX056-001` identifies a
+  package-map conflict: the selected K1 BK4829 datasheet places GPIO1 on pin 1,
+  while the inherited source symbol says `PIN29`. GPIO0 and GPIO4 labels also
+  differ from the BK4829 document. Resolve the fitted package and physical
+  board nets before selecting a probe pad; source names cannot do that work.
+  `EVID-TX056-002` establishes no qualified exact-board schematic or independent
+  off route from the inspected inventories and generic chip reference drawing.
+  No electrical polarity, register behavior or physical measurement is added.
 
 Required evidence and proposed experiments, separately for the exact K1 and
 the exact K5 V1 unit, in this order:

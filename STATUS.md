@@ -11,8 +11,25 @@ work only: no firmware implementation, hardware write, flashing, or physical
 experiment. Target TX inputs remain denied; `APP-052` remains paused.
 
 Activation verification: `git diff --check` passed. Next smallest actionable
-step: inspect pinned board/control sources and available schematic evidence,
-then draft the two target plans and their common measurement/acceptance record.
+step: draft the two target plans and their common measurement/acceptance record.
+
+The first source/applicability step is complete. `EVID-TX056-001` records the
+BK4829 manufacturer's published GPIO1 package pin 1, which conflicts with the
+K1 inherited source `PIN29` symbol; GPIO0 and GPIO4 also have different package
+numbers. The separately pinned BK4819 document retains GPIO1 pin 29. The two
+datasheet hashes, source pages, visual checks and confidence are recorded in the
+ledger. `EVID-TX056-002` bounds the available generic schematic/teardown search;
+it establishes no exact-board off route. `RISK-040` records the pin-map gap.
+
+Source-step checks: `python3 /tmp/afik-txevid-055-audit.py` passed the retained
+source/baseline/ledger hashes and both effect matrices. `sha256sum
+/tmp/afik-txplan-056-bk4829.pdf /tmp/afik-txplan-056-bk4819.pdf` and
+`git diff --check` passed. The BK4819 hash matches its original ledger pin.
+The K1 teardown commit/tree metadata and two datasheets are temporary public
+source artifacts outside the repository; no private calibration data or
+third-party unit dump was read. The PDF text/figure review used the installed
+`/nix/store/63r5wi3sdvwalqcdibpipnyl35swdzzg-poppler-utils-26.06.0/bin/pdftotext`
+and `pdftoppm` after `pdftotext` was unavailable on the default PATH.
 
 ## Previous work package: TXEVID-055
 

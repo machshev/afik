@@ -2909,8 +2909,10 @@ exact-unit observation is named. No exact-unit PA/TX-off observation is recorded
 
 ### EVID-TX055-001 — PA off shares the chip bus and a cached output word
 
-- **K1 source:** `App/driver/bk4819-regs.h:136-145` names chip GPIO1/pin 29
-  `PA_ENABLE`, GPIO0/pin 28 `RX_ENABLE`, and GPIO3/4 UHF/VHF LNA outputs.
+- **K1 source:** `App/driver/bk4819-regs.h:136-145` names logical GPIO1
+  `BK4819_GPIO1_PIN29_PA_ENABLE`, GPIO0 `BK4819_GPIO0_PIN28_RX_ENABLE`,
+  and GPIO3/4 UHF/VHF LNA outputs. Those inherited numeric pin labels are not
+  the BK4829 package map; see `EVID-TX056-001` before identifying a probe pad.
   `App/driver/bk4829.c:198-201,434-442` initializes an output shadow to
   `0x9000`; toggling an output edits that shadow with `0x40 >> Pin` and writes
   the whole `REG_33` word. `App/radio.c:782-784,987,1015-1021` clears the PA
@@ -3076,3 +3078,71 @@ calibration envelopes, exact integer power application and allowed FM bandwidth,
 and bounded monotonic scheduling/completion. Source settings and host fixtures
 cannot supply those fields. This review leaves both targets without qualified
 TX inputs and makes no register or firmware change.
+
+## TXPLAN-056 — Package and schematic applicability
+
+### EVID-TX056-001 — BK4829 package pins differ from inherited source names
+
+- **BK4829 source:** Beken-authored *BK4829 Datasheet*, `DS-BK4829-E01 V1.0`,
+  dated 2023-05-26, 27 pages. Retrieved 2026-10-13 from the public
+  `armel/k1-teardown` repository at commit
+  `434f46d600c30569a70e7a787a518f35c024536c`, file
+  [datasheet/BK4829-BEKEN.pdf](https://github.com/armel/k1-teardown/blob/434f46d600c30569a70e7a787a518f35c024536c/datasheet/BK4829-BEKEN.pdf).
+  SHA-256: `b03fb6dba016158ab9f4b5b3d1aeb1d9ea178efc44cc11c2c08398621553cdc9`.
+  This is a third-party-hosted manufacturer document, not an authenticated
+  download from Beken or proof of the fitted unit's chip revision.
+- **BK4819 source:** the already recorded Beken Rev.1.0 datasheet was retrieved
+  again from its existing mirror; SHA-256 remains
+  `a2b795a1f40f13e2708fc11720cc4df05fe00590eb0a8d82914699153321de02`.
+- **Method:** layout text extraction and visual inspection of BK4829 Figure
+  1-1 (printed/PDF page 5), Table 4-1 (pages 16-17), and BK4819 Figure 8 and
+  Table 7 (pages 10-11). The BK4819 table caption incorrectly says 20 pins,
+  but its diagram identifies QFN32 and the table enumerates pins 1 through 32;
+  that editorial inconsistency is retained rather than used to infer a package.
+
+| Logical signal | BK4829 published package pin | BK4819 published package pin |
+| --- | --- | --- |
+| GPIO1 (source PA-enable role) | 1 | 29 |
+| GPIO0 (source RX-enable role) | 2 | 28 |
+| GPIO3 (source UHF-LNA role) | 31 | 31 |
+| GPIO4 (source VHF-LNA role) | 30 | 32 |
+| SCK / SCN / SDATA | 25 / 26 / 27 | 25 / 26 / 27 |
+| VRAMP / PAOUT | 18 / 17 | 18 / 17 |
+
+- **Confidence:** high that these two inspected documents give different
+  GPIO package assignments; medium for document authenticity and unknown for
+  applicability to the exact fitted RF chip and PCB. The K1 build's selection
+  of `bk4829.c` and successful receive profile do not measure physical TX
+  wiring. Source `PIN29`, `PIN28`, and `PIN32` names must not select K1 pads.
+- **Permitted use:** distinguish logical source roles, published package pins,
+  and physical probe points in the shutdown acceptance plan. No GPIO direction,
+  safe output word, RF switch connection, electrical PA polarity, register
+  behavior, or shutdown success is inferred. Internal pull-down descriptions
+  do not prove external PA fail-off during reset or a lost bus.
+- **Required evidence:** identify the fitted RF package/revision and exact
+  board nets, then review the probe map against those facts before connecting
+  instruments or proposing control writes. No physical inspection occurred.
+
+### EVID-TX056-002 — Available drawings do not identify an exact-unit off route
+
+- **Reviewed scope:** both pinned firmware file inventories, the non-truncated
+  recursive tree of `armel/k1-teardown` at the commit above, and BK4829 Figure
+  5-1, *Typical Application Schematic* (printed/PDF page 18), visually inspected.
+  The latter exposes generic chip GPIOs and separate RX/TX ports; it does not
+  identify a UV-K1 PCB's external PA, TX/RX switch, probe pads, or independent
+  inhibit. Firmware GPIO names are not a complete board netlist.
+- **Result:** this review establishes no qualified exact-unit handset schematic
+  or independent off route for either target. Published teardown photographs,
+  a generic chip reference circuit, and the existing K5 FCC family photograph
+  context are not substitutes for a matched PCB net map. This is a bounded
+  search result, not a claim that no suitable schematic exists elsewhere.
+- **Confidence/use:** high for the inspected inventory/reference drawing;
+  exact-board applicability remains unknown. No third-party calibration dump,
+  stock/decompiled implementation, or device artifact from the teardown
+  repository was opened or downloaded. Only its public metadata and the
+  manufacturer-authored datasheet were retrieved outside AFIK.
+- **Required next evidence:** obtain a revision-matched board drawing or a
+  separately authorized exact-unit inspection/continuity map for each target;
+  retain source/revision/hash and link each signal to a marked physical pad.
+  Independently resolve whether the PA can be inhibited when the chip bus is
+  unavailable. `RISK-040` remains open; target TX inputs remain denied.
