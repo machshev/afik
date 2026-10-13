@@ -5,6 +5,7 @@
 #[cfg(test)]
 extern crate std;
 
+pub mod battery;
 pub mod configuration;
 pub mod configuration_change;
 pub mod display;

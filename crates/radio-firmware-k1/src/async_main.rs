@@ -47,7 +47,7 @@ use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, SquelchLevel,
     Tone, TxClass,
 };
-use radio_firmware_k1::battery::{Battery, Calibration};
+use radio_firmware_k1::battery::Calibration;
 use radio_firmware_k1::bk4819_bus::ThreeWireBus;
 use radio_firmware_k1::configuration::{
     device_service, store_setting, Programmed, SettingChange, CONFIGURATION_STORE_BYTES,
@@ -1437,7 +1437,7 @@ async fn ui_task(
     // Whether the receiver has produced a reading on the channel it is now on.
     let mut settled = false;
     let mut next_meter_redraw = Instant::now();
-    let mut battery = Battery::new();
+    let mut battery = radio_firmware_k1::battery::new();
     let mut next_battery_sample = Instant::now();
     let mut redraw = true;
     // The place already written down, and the one waiting to settle into it.
