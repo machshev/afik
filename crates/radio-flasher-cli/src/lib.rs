@@ -5,13 +5,16 @@
 mod auto;
 mod parse;
 
-use parse::{parse, Command, FlashArguments, Parsed, Purpose, RestoreArguments};
+use parse::{
+    parse, AfikApplicationArguments, Command, FlashArguments, Parsed, Purpose, RestoreArguments,
+};
+use prompt::Confirm;
 use radio_flasher::k5::{control as k5_control, ControlRequest, ControlResponse, LogicalKey, View};
 use radio_flasher::{
-    apply_eeprom_restore, backup_eeprom, flash_application, prepare_eeprom_restore,
-    probe_bootloader_v2, sha256, ApplicationImage, EepromBackup, EepromRestorePrerequisites,
-    FirmwareVersion, FlashPrerequisites, FlashPurpose, APPLICATION_BYTES, EEPROM_BYTES,
-    K5_RECOVERY_SOURCE_BYTES,
+    apply_eeprom_restore, backup_eeprom, flash_afik_application, flash_application,
+    prepare_eeprom_restore, probe_bootloader_v2, sha256, ApplicationImage, EepromBackup,
+    EepromRestorePrerequisites, FirmwareVersion, FlashPrerequisites, FlashPurpose,
+    APPLICATION_BYTES, EEPROM_BYTES, K5_RECOVERY_SOURCE_BYTES,
 };
 use radio_programmer_serial::LinuxSerialTransport;
 #[cfg(unix)]
@@ -23,6 +26,9 @@ use std::{
     os::unix::fs::OpenOptionsExt,
     path::Path,
 };
+
+/// Bootloader negotiation version sent by the default AFIK flash.
+pub const DEFAULT_NEGOTIATION_VERSION: &str = "2.01.23";
 
 /// Successful process exit code.
 pub const EXIT_SUCCESS: i32 = 0;
@@ -51,6 +57,7 @@ Usage:\n\
     --confirm-recovery-crc32 CRC32 --confirm-recovery-sha256 SHA256 \\\n\
     --confirm-restore TARGET:CRC32\n\
   afik-k5 --device PATH flash-recovery IMAGE --backup EEPROM --version VERSION \\\n    --confirm-target UV-K5-V1-DP32G030 --confirm-image-crc32 CRC32\n\
+  afik-k5 --device PATH flash-afik IMAGE [--yes] [--version VERSION]\n\
   afik-k5 --device PATH flash-afik IMAGE --recovery RAW --backup EEPROM \\\n    --version VERSION --confirm-target UV-K5-V1-DP32G030 \\\n    --confirm-image-crc32 CRC32 \\\n    --confirm-recovery-rehearsed RECOVERY-REHEARSED-ON-THIS-UNIT\n\
   afik-k5 --help\n\
   afik-k5 --version\n\
@@ -61,16 +68,33 @@ bounded read/control request and validates one exact response; it never writes\n
 EEPROM, persists configuration, transmits, or flashes. Flashing writes all 240\n\
 application pages, never the stock bootloader, and reports acknowledgements\n\
 rather than read-back.\n\
+The default flash-afik takes an AFIK image only: it must carry an AFIK-K5-\n\
+identity, the radio is probed read-only, and the write is confirmed at a\n\
+prompt (--yes skips it; without a terminal the write is refused). It needs no\n\
+backup or recovery image because it touches neither the bootloader nor EEPROM;\n\
+an image that does not boot is recovered by flashing again. The negotiation\n\
+version defaults to 2.01.23. Passing --recovery selects the recovery-gated form,\n\
+which requires every listed option.\n\
 Exit codes: 0 success, 1 operation failure, 2 usage failure.\n";
 
 /// Runs one CLI invocation against supplied output streams.
 pub fn run_to<W: Write, E: Write>(arguments: &[String], stdout: &mut W, stderr: &mut E) -> i32 {
+    run_k5_with(arguments, &mut prompt::terminal(), stdout, stderr)
+}
+
+/// Runs one invocation against an explicit confirmer.
+pub fn run_k5_with<C: Confirm, W: Write, E: Write>(
+    arguments: &[String],
+    confirm: &mut C,
+    stdout: &mut W,
+    stderr: &mut E,
+) -> i32 {
     match parse(arguments) {
         Ok(Parsed::Help) => write_success(stdout, HELP),
         Ok(Parsed::Version) => {
             write_success(stdout, &format!("afik-k5 {}\n", env!("CARGO_PKG_VERSION")))
         }
-        Ok(parsed) => match execute(parsed, stdout) {
+        Ok(parsed) => match execute(parsed, confirm, stdout) {
             Ok(()) => EXIT_SUCCESS,
             Err(error) => write_failure(stderr, EXIT_OPERATION, error),
         },
@@ -78,7 +102,11 @@ pub fn run_to<W: Write, E: Write>(arguments: &[String], stdout: &mut W, stderr: 
     }
 }
 
-fn execute<W: Write>(parsed: Parsed, stdout: &mut W) -> Result<(), CliError> {
+fn execute<C: Confirm, W: Write>(
+    parsed: Parsed,
+    confirm: &mut C,
+    stdout: &mut W,
+) -> Result<(), CliError> {
     match parsed {
         Parsed::Inspect { image } => inspect(&image, stdout),
         Parsed::Hardware { device, command } => match command {
@@ -87,6 +115,13 @@ fn execute<W: Write>(parsed: Parsed, stdout: &mut W) -> Result<(), CliError> {
             Command::Restore(arguments) => restore(&device, &arguments, stdout),
             Command::Control(request) => control(&device, request, stdout),
             Command::Flash(arguments) => flash(&device, &arguments, stdout),
+            Command::FlashAfikApplication(arguments) => {
+                if arguments.yes {
+                    flash_afik_default(&device, &arguments, &mut prompt::AssumeYes, stdout)
+                } else {
+                    flash_afik_default(&device, &arguments, confirm, stdout)
+                }
+            }
         },
         Parsed::Help | Parsed::Version => unreachable!("handled before execution"),
     }
@@ -386,6 +421,66 @@ fn flash<W: Write>(
 
     let mut serial = open_serial(device)?;
     let report = flash_application(&mut serial, prerequisites, |page| {
+        let complete = page + 1;
+        if complete % 16 == 0 || complete == 240 {
+            let _ = writeln!(stdout, "acknowledged_pages={complete}/240");
+            let _ = stdout.flush();
+        }
+    })
+    .map_err(CliError::operation)?;
+    writeln!(stdout, "bootloader={}", report.bootloader.version()).map_err(CliError::operation)?;
+    writeln!(stdout, "pages_acknowledged={}", report.pages_acknowledged)
+        .map_err(CliError::operation)?;
+    writeln!(stdout, "status=acknowledged_not_read_back").map_err(CliError::operation)
+}
+
+fn flash_afik_default<C: Confirm, W: Write>(
+    device: &Path,
+    arguments: &AfikApplicationArguments,
+    confirm: &mut C,
+    stdout: &mut W,
+) -> Result<(), CliError> {
+    let image_raw = read_bounded(&arguments.image, APPLICATION_BYTES, "application")?;
+    let image = ApplicationImage::from_raw(&image_raw).map_err(CliError::operation)?;
+    let version = FirmwareVersion::new(
+        arguments
+            .version
+            .as_deref()
+            .unwrap_or(DEFAULT_NEGOTIATION_VERSION),
+    )
+    .map_err(CliError::operation)?;
+    let transaction_id = fresh_transaction_id()?;
+    let mut serial = open_serial(device)?;
+    // Read-only, so the confirmation names the radio actually on the cable.
+    let bootloader = probe_bootloader_v2(&mut serial).map_err(CliError::operation)?;
+    let summary = format!(
+        "About to write an AFIK application to a K5 V1:\n\
+         \x20 device:     {}\n\
+         \x20 bootloader: {}\n\
+         \x20 image:      {}\n\
+         \x20 crc32:      {:08x}\n\
+         This replaces the application, not the bootloader or EEPROM, and cannot be read back.",
+        device.display(),
+        bootloader.version(),
+        arguments.image.display(),
+        image.crc32(),
+    );
+    if !confirm.confirm(&summary).map_err(CliError::operation)? {
+        return Err(CliError::Operation(if confirm.is_interactive() {
+            "write declined".to_owned()
+        } else {
+            "nothing can answer a confirmation prompt here; pass --yes to write unattended"
+                .to_owned()
+        }));
+    }
+
+    writeln!(stdout, "device={}", device.display()).map_err(CliError::operation)?;
+    writeln!(stdout, "baud={K5_BAUD}").map_err(CliError::operation)?;
+    writeln!(stdout, "image={}", arguments.image.display()).map_err(CliError::operation)?;
+    writeln!(stdout, "image_crc32={:08x}", image.crc32()).map_err(CliError::operation)?;
+    writeln!(stdout, "transaction_id={transaction_id:08x}").map_err(CliError::operation)?;
+    stdout.flush().map_err(CliError::operation)?;
+    let report = flash_afik_application(&mut serial, &image, &version, transaction_id, |page| {
         let complete = page + 1;
         if complete % 16 == 0 || complete == 240 {
             let _ = writeln!(stdout, "acknowledged_pages={complete}/240");

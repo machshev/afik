@@ -170,7 +170,24 @@ CRC-32. The command generates a fresh nonzero transaction identifier, writes
 all 240 pages, and prints `acknowledged_not_read_back` only if every exact
 acknowledgement succeeds.
 
-## AFIK image attempt
+## Default AFIK flash
+
+Operator decision, 2026-10-13: flashing an AFIK application is the default
+and needs no backup or recovery image. It writes only the 240 application
+pages, never the bootloader or EEPROM, so an image that does not boot is
+recovered by flashing again. The image must carry an `AFIK-K5-` identity; the
+radio is probed read-only and the write is confirmed at a prompt.
+
+```sh
+nix develop path:. -c cargo run --package radio-flasher-cli --bin afik-k5 -- \
+  --device /dev/ttyUSB0 flash-afik target/thumbv6m-none-eabi/release/afik-k5-2.3T.bin
+```
+
+`--yes` skips the prompt, and `--version` overrides the `2.01.23` negotiation
+value. Adding `--recovery` selects the recovery-gated form below, which still
+requires every one of its options.
+
+## AFIK image attempt (recovery-gated, opt-in)
 
 Only after the recovery rehearsal succeeds may the complete AFIK raw image be
 selected. Inspect the image first and copy its printed CRC-32 into the

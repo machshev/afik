@@ -21,12 +21,13 @@ pub use image::{
     FLASH_PAGE_BYTES, FLASH_PAGE_COUNT,
 };
 pub use workflow::{
-    apply_eeprom_restore, backup_eeprom, detect_bootloader, flash_application, observe_bootloader,
-    prepare_eeprom_restore, probe_bootloader_v2, probe_clock_control, probe_clock_register,
-    probe_clock_registers, probe_clock_snapshot, probe_keypad_matrix, probe_normal_firmware,
-    probe_rf, set_rf_audio, BeaconObservation, BeaconProtocol, BootloaderFamily, BootloaderInfo,
-    ClockSnapshotReport, EepromRestorePlan, EepromRestorePrerequisites, EepromRestoreReport,
-    FirmwareVersion, FlashError, FlashPrerequisites, FlashPurpose, FlashReport, KeypadMatrixReport,
-    NormalFirmwareInfo, RfReport, K5_RECOVERY_SOURCE_BYTES, QUALIFIED_TARGET_CONFIRMATION,
+    apply_eeprom_restore, backup_eeprom, detect_bootloader, flash_afik_application,
+    flash_application, observe_bootloader, prepare_eeprom_restore, probe_bootloader_v2,
+    probe_clock_control, probe_clock_register, probe_clock_registers, probe_clock_snapshot,
+    probe_keypad_matrix, probe_normal_firmware, probe_rf, set_rf_audio, BeaconObservation,
+    BeaconProtocol, BootloaderFamily, BootloaderInfo, ClockSnapshotReport, EepromRestorePlan,
+    EepromRestorePrerequisites, EepromRestoreReport, FirmwareVersion, FlashError,
+    FlashPrerequisites, FlashPurpose, FlashReport, KeypadMatrixReport, NormalFirmwareInfo,
+    RfReport, K5_RECOVERY_SOURCE_BYTES, QUALIFIED_TARGET_CONFIRMATION,
     RECOVERY_REHEARSED_CONFIRMATION,
 };

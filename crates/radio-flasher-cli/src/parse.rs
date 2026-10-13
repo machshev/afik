@@ -17,7 +17,16 @@ pub(crate) enum Command {
     Backup { output: PathBuf, force: bool },
     Control(ControlRequest),
     Flash(FlashArguments),
+    FlashAfikApplication(AfikApplicationArguments),
     Restore(RestoreArguments),
+}
+
+/// The default AFIK application flash: image only, with a confirmation prompt.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct AfikApplicationArguments {
+    pub(crate) image: PathBuf,
+    pub(crate) version: Option<String>,
+    pub(crate) yes: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -87,7 +96,16 @@ pub(crate) fn parse(arguments: &[String]) -> Result<Parsed, String> {
         "restore-eeprom" => parse_restore(&arguments[3..])?,
         "control" => parse_control(&arguments[3..])?,
         "flash-recovery" => Command::Flash(parse_flash(Purpose::Recovery, &arguments[3..])?),
-        "flash-afik" => Command::Flash(parse_flash(Purpose::Afik, &arguments[3..])?),
+        "flash-afik"
+            if arguments[3..]
+                .iter()
+                .any(|argument| argument == "--recovery") =>
+        {
+            Command::Flash(parse_flash(Purpose::Afik, &arguments[3..])?)
+        }
+        "flash-afik" => {
+            Command::FlashAfikApplication(parse_flash_afik_application(&arguments[3..])?)
+        }
         command => return Err(format!("unknown command: {command}")),
     };
     Ok(Parsed::Hardware { device, command })
@@ -248,6 +266,41 @@ fn parse_flash(purpose: Purpose, arguments: &[String]) -> Result<FlashArguments,
     })
 }
 
+fn parse_flash_afik_application(arguments: &[String]) -> Result<AfikApplicationArguments, String> {
+    let image = arguments
+        .first()
+        .filter(|argument| !argument.starts_with("--"))
+        .ok_or_else(|| "flash-afik requires IMAGE".to_owned())?;
+    let mut version = None;
+    let mut yes = false;
+    let mut offset = 1;
+    while offset < arguments.len() {
+        match arguments[offset].as_str() {
+            "--yes" if !yes => yes = true,
+            "--yes" => return Err("--yes was provided more than once".into()),
+            "--version" => {
+                let value = arguments
+                    .get(offset + 1)
+                    .filter(|value| !value.starts_with("--"))
+                    .ok_or_else(|| "--version requires a value".to_owned())?;
+                set_once(&mut version, value.clone(), "--version")?;
+                offset += 1;
+            }
+            option => {
+                return Err(format!(
+                    "unknown flash-afik option: {option}; pass --recovery to select the recovery-gated form"
+                ))
+            }
+        }
+        offset += 1;
+    }
+    Ok(AfikApplicationArguments {
+        image: PathBuf::from(image),
+        version,
+        yes,
+    })
+}
+
 fn set_once<T>(slot: &mut Option<T>, value: T, option: &str) -> Result<(), String> {
     if slot.replace(value).is_some() {
         Err(format!("{option} was provided more than once"))
@@ -330,6 +383,47 @@ mod tests {
 
         recovery.extend(["--recovery", "stock.raw"]);
         assert!(parse(&strings(&recovery)).is_err());
+    }
+
+    #[test]
+    fn plain_flash_afik_is_the_default_and_recovery_opts_into_the_strict_gate() {
+        assert!(matches!(
+            parse(&strings(&["--device", "/dev/x", "flash-afik", "afik.raw"])).unwrap(),
+            Parsed::Hardware {
+                command: Command::FlashAfikApplication(ref flash),
+                ..
+            } if !flash.yes && flash.version.is_none()
+        ));
+        assert!(matches!(
+            parse(&strings(&[
+                "--device", "/dev/x", "flash-afik", "afik.raw", "--yes", "--version", "2.01.26",
+            ]))
+            .unwrap(),
+            Parsed::Hardware {
+                command: Command::FlashAfikApplication(ref flash),
+                ..
+            } if flash.yes && flash.version.as_deref() == Some("2.01.26")
+        ));
+        // Any strict-gate option without --recovery is refused, not ignored.
+        assert!(parse(&strings(&[
+            "--device",
+            "/dev/x",
+            "flash-afik",
+            "afik.raw",
+            "--backup",
+            "eeprom.raw",
+        ]))
+        .is_err());
+        // --recovery selects the strict form, which still needs every gate.
+        assert!(parse(&strings(&[
+            "--device",
+            "/dev/x",
+            "flash-afik",
+            "afik.raw",
+            "--recovery",
+            "stock.raw",
+        ]))
+        .is_err());
     }
 
     #[test]

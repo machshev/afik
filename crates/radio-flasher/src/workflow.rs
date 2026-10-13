@@ -97,6 +97,8 @@ pub enum FlashError {
     RecoveryImageMatchesApplication,
     /// The explicit per-run transaction identifier was zero.
     InvalidTransactionId,
+    /// The default application flash accepts only an image naming itself AFIK.
+    NotAfikImage,
     /// An EEPROM block response did not match the exact requested range.
     EepromBlockMismatch {
         /// Requested EEPROM offset.
@@ -154,6 +156,7 @@ pub enum FlashError {
 }
 
 impl fmt::Display for FlashError {
+    #[allow(clippy::too_many_lines)] // One arm per error variant.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(error) => write!(formatter, "serial I/O failed: {error}"),
@@ -201,6 +204,7 @@ impl fmt::Display for FlashError {
             Self::RecoveryImageMatchesApplication => formatter.write_str(
                 "AFIK application and recovery image must be distinct",
             ),
+            Self::NotAfikImage => formatter.write_str("image carries no AFIK-K5- identity"),
             Self::InvalidTransactionId => {
                 formatter.write_str("flash transaction identifier must be nonzero")
             }
@@ -902,16 +906,70 @@ pub fn detect_bootloader<T: Read>(transport: &mut T) -> Result<BootloaderFamily,
 pub fn flash_application<T, F>(
     transport: &mut T,
     prerequisites: FlashPrerequisites<'_>,
-    mut page_acknowledged: F,
+    page_acknowledged: F,
 ) -> Result<FlashReport, FlashError>
 where
     T: Read + Write,
     F: FnMut(u16),
 {
     validate_prerequisites(prerequisites)?;
+    write_application(
+        transport,
+        prerequisites.image,
+        prerequisites.version,
+        prerequisites.transaction_id,
+        page_acknowledged,
+    )
+}
+
+/// Identity every AFIK K5 application image carries in its version string.
+const AFIK_K5_IDENTITY: &[u8] = b"AFIK-K5-";
+
+/// Writes an AFIK application without recovery or EEPROM prerequisites.
+///
+/// This is the default K5 path for AFIK's own images. Like
+/// [`flash_application`] it writes only the 240 application pages, never the
+/// bootloader or EEPROM, so an image that does not boot is recovered by
+/// flashing again through the same bootloader. The image must carry an
+/// `AFIK-K5-` identity, which guards against selecting a different file.
+pub fn flash_afik_application<T, F>(
+    transport: &mut T,
+    image: &ApplicationImage,
+    version: &FirmwareVersion,
+    transaction_id: u32,
+    page_acknowledged: F,
+) -> Result<FlashReport, FlashError>
+where
+    T: Read + Write,
+    F: FnMut(u16),
+{
+    if transaction_id == 0 {
+        return Err(FlashError::InvalidTransactionId);
+    }
+    if !image
+        .bytes()
+        .windows(AFIK_K5_IDENTITY.len())
+        .any(|window| window == AFIK_K5_IDENTITY)
+    {
+        return Err(FlashError::NotAfikImage);
+    }
+    write_application(transport, image, version, transaction_id, page_acknowledged)
+}
+
+fn write_application<T, F>(
+    transport: &mut T,
+    image: &ApplicationImage,
+    version: &FirmwareVersion,
+    transaction_id: u32,
+    mut page_acknowledged: F,
+) -> Result<FlashReport, FlashError>
+where
+    T: Read + Write,
+    F: FnMut(u16),
+{
     let bootloader = probe_bootloader_v2(transport)?;
 
-    let version_request = version_request(prerequisites.version);
+    let version_request = version_request(version);
     send_packet(transport, &version_request)?;
     let confirmed_bootloader = probe_bootloader_v2(transport)?;
     if confirmed_bootloader != bootloader {
@@ -925,20 +983,20 @@ where
     for page_number in 0_u16..240 {
         let start = usize::from(page_number) * FLASH_PAGE_BYTES;
         let request = page_request(
-            prerequisites.transaction_id,
+            transaction_id,
             page_number,
-            &prerequisites.image.bytes()[start..start + FLASH_PAGE_BYTES],
+            &image.bytes()[start..start + FLASH_PAGE_BYTES],
         );
         send_packet(transport, &request)?;
-        receive_page_acknowledgement(transport, prerequisites.transaction_id, page_number)?;
+        receive_page_acknowledgement(transport, transaction_id, page_number)?;
         page_acknowledged(page_number);
     }
 
     Ok(FlashReport {
         bootloader,
         pages_acknowledged: 240,
-        image_crc32: prerequisites.image.crc32(),
-        transaction_id: prerequisites.transaction_id,
+        image_crc32: image.crc32(),
+        transaction_id,
     })
 }
 
@@ -1429,12 +1487,12 @@ mod tests {
     };
 
     use super::{
-        apply_eeprom_restore, backup_eeprom, detect_bootloader, flash_application,
-        observe_bootloader, prepare_eeprom_restore, probe_bootloader_v2, probe_clock_control,
-        probe_clock_registers, probe_clock_snapshot, probe_keypad_matrix, probe_normal_firmware,
-        BeaconProtocol, BootloaderFamily, EepromRestorePrerequisites, FirmwareVersion, FlashError,
-        FlashPrerequisites, FlashPurpose, EEPROM_BLOCK_BYTES, QUALIFIED_TARGET_CONFIRMATION,
-        RECOVERY_REHEARSED_CONFIRMATION,
+        apply_eeprom_restore, backup_eeprom, detect_bootloader, flash_afik_application,
+        flash_application, observe_bootloader, prepare_eeprom_restore, probe_bootloader_v2,
+        probe_clock_control, probe_clock_registers, probe_clock_snapshot, probe_keypad_matrix,
+        probe_normal_firmware, BeaconProtocol, BootloaderFamily, EepromRestorePrerequisites,
+        FirmwareVersion, FlashError, FlashPrerequisites, FlashPurpose, EEPROM_BLOCK_BYTES,
+        QUALIFIED_TARGET_CONFIRMATION, RECOVERY_REHEARSED_CONFIRMATION,
     };
 
     const TEST_TRANSACTION_ID: u32 = 0xA55A_1234;
@@ -1644,6 +1702,48 @@ mod tests {
         let last = requests.last().unwrap();
         assert_eq!(u16::from_le_bytes([last[8], last[9]]), 239);
         assert_eq!(&last[16..], &image.bytes()[0xEF00..0xF000]);
+    }
+
+    #[test]
+    fn default_afik_flash_needs_no_recovery_but_refuses_non_afik_images() {
+        let mut raw = valid_raw(0xA5);
+        raw.extend_from_slice(b"AFIK-K5-2.3T");
+        let image = ApplicationImage::from_raw(&raw).unwrap();
+        let version = FirmwareVersion::new("2.01.23").unwrap();
+        let mut responses = beacon();
+        responses.extend(beacon());
+        for page in 0..FLASH_PAGE_COUNT {
+            responses.extend(acknowledgement(u16::try_from(page).unwrap(), 0));
+        }
+        let mut transport = ScriptedTransport::new(responses, 1);
+        let report = flash_afik_application(
+            &mut transport,
+            &image,
+            &version,
+            TEST_TRANSACTION_ID,
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(report.pages_acknowledged, 240);
+        assert_eq!(decode_requests(&transport.writes).len(), 241);
+
+        let other = ApplicationImage::from_raw(&valid_raw(0xA5)).unwrap();
+        let mut transport = ScriptedTransport::new(Vec::new(), 1);
+        assert!(matches!(
+            flash_afik_application(
+                &mut transport,
+                &other,
+                &version,
+                TEST_TRANSACTION_ID,
+                |_| {}
+            ),
+            Err(FlashError::NotAfikImage)
+        ));
+        assert!(matches!(
+            flash_afik_application(&mut transport, &image, &version, 0, |_| {}),
+            Err(FlashError::InvalidTransactionId)
+        ));
+        assert!(transport.writes.is_empty());
     }
 
     #[test]
