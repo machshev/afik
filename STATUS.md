@@ -46,8 +46,13 @@
   was flashed but not tried. Gate: fmt clean, clippy `-D warnings` clean,
   `cargo test --workspace` 661 passed 0 failed, K5 image verifies (flash end
   `0x0000e3ec`, SHA-256 `fc9cdf65…0a28`), K1 image builds.
-- Next: flash `7.0.5` and check a 1 min over times out; flash K1 and check its
-  speech level; then CTCSS/DCS with an
+- `afik-k5` is merged into `afik-flasher` (`ADR-098`): one binary, and
+  `flash-afik IMAGE` detects K5 or K1 from the bootloader beacon. Gate:
+  `cargo fmt --all --check` clean, workspace clippy `-D warnings` clean,
+  `cargo test --workspace` 662 passed 0 failed. Not yet run against a radio;
+  the next flash uses it.
+- Next: flash `7.0.5` with `afik-flasher flash-afik` and check a 1 min over
+  times out; flash K1 and check its speech level; then CTCSS/DCS with an
   end-of-transmission tail tone to remove the key-off squelch burst.
 
 ## Previous work package: TXK5-058

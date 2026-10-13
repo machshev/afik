@@ -1,4 +1,4 @@
-//! Process entry point for the recovery-gated AFIK K5 flasher.
+//! Process entry point for the AFIK K1/K5 flasher.
 
 #![forbid(unsafe_code)]
 

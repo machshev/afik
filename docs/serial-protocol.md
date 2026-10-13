@@ -150,9 +150,9 @@ K5 persistence, and target-only K1 object/runtime operations remain excluded.
 The recovery flasher exposes one-at-a-time, normal-mode-only control requests:
 
 ```text
-afik-k5 --device PATH control view
-afik-k5 --device PATH control capabilities
-afik-k5 --device PATH control key AUDIO|UP|DOWN
+afik-flasher [--device PATH|auto] control view
+afik-flasher [--device PATH|auto] control capabilities
+afik-flasher [--device PATH|auto] control key AUDIO|UP|DOWN
 ```
 
 The host always sends the fixed session word and request CRC through the

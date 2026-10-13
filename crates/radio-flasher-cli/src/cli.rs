@@ -1,21 +1,24 @@
-//! Generic auto-detecting K1/K5 flasher front end.
+//! The AFIK flasher command line: one tool for the K1 and the K5 V1.
 
 use std::{
     io::Write,
     path::{Path, PathBuf},
 };
 
+use radio_flasher::k5::ControlRequest;
 use radio_flasher::{
     backup_eeprom, crc32, detect_bootloader, flash_application, observe_bootloader,
     probe_clock_control, probe_clock_register, probe_clock_snapshot, probe_keypad_matrix,
-    probe_normal_firmware, probe_rf, set_rf_audio, ApplicationImage, EepromBackup,
-    FlashPrerequisites, FlashPurpose,
+    probe_normal_firmware, probe_rf, set_rf_audio, ApplicationImage, BootloaderFamily,
+    EepromBackup, FlashPrerequisites, FlashPurpose, APPLICATION_BYTES,
 };
 use radio_programmer_serial::{discover_usb_serial_devices, LinuxSerialTransport};
 
+use crate::k5::{self, GatedAfikArguments, RestoreArguments};
 use crate::{
-    fresh_transaction_id, open_serial, parse_crc32, read_bounded, write_failure,
-    write_private_file, write_success, CliError, EXIT_OPERATION, EXIT_SUCCESS, EXIT_USAGE, K5_BAUD,
+    confirm_write, fresh_transaction_id, open_serial, parse_crc32, read_bounded, set_once,
+    write_failure, write_private_file, write_success, CliError, DetectedFlash, EXIT_OPERATION,
+    EXIT_SUCCESS, EXIT_USAGE, K5_BAUD,
 };
 
 use radio_flasher::k1::K1RecoveryImage;
@@ -25,11 +28,18 @@ use crate::prompt::{self, AssumeYes, Confirm};
 const K1_MAX_IMAGE_BYTES: usize =
     (radio_flasher::k1::K1_APPLICATION_END - radio_flasher::k1::K1_APPLICATION_ORIGIN) as usize;
 
-/// Stable help text for the generic device-selecting flasher.
-pub const HELP: &str = "AFIK K1/K5 auto-detecting recovery flasher\n\
+/// Stable help text.
+pub const HELP: &str = "AFIK K1/K5 flasher\n\
 \n\
 Usage:\n\
+  afik-flasher inspect IMAGE\n\
   afik-flasher [--device PATH|auto] identify\n\
+  afik-flasher [--device PATH|auto] flash-afik IMAGE [--yes] [--version VERSION]\n\
+  afik-flasher [--device PATH|auto] backup-eeprom OUTPUT [--force]\n\
+  afik-flasher [--device PATH|auto] flash-recovery IMAGE --backup EEPROM \\\n    --confirm-target TARGET --confirm-image-crc32 CRC32 [--version VERSION]\n\
+  afik-flasher [--device PATH|auto] flash-afik IMAGE --recovery RAW --backup EEPROM \\\n    --version VERSION --confirm-target UV-K5-V1-DP32G030 \\\n    --confirm-image-crc32 CRC32 \\\n    --confirm-recovery-rehearsed RECOVERY-REHEARSED-ON-THIS-UNIT\n\
+  afik-flasher [--device PATH|auto] restore-eeprom RESTORE --current BACKUP \\\n    --recovery IMAGE --pre-write-backup OUTPUT --version NORMAL_VERSION \\\n    --confirm-target TARGET --confirm-recovery-crc32 CRC32 \\\n    --confirm-recovery-sha256 SHA256 --confirm-restore TARGET:CRC32\n\
+  afik-flasher [--device PATH|auto] control view|capabilities|key AUDIO|UP|DOWN\n\
   afik-flasher [--device PATH|auto] probe-normal\n\
   afik-flasher [--device PATH|auto] probe-keypad\n\
   afik-flasher [--device PATH|auto] probe-rf\n\
@@ -37,45 +47,40 @@ Usage:\n\
   afik-flasher [--device PATH|auto] probe-clock\n\
   afik-flasher [--device PATH|auto] probe-clock-register CR|ICSCR|CFGR|PLLCFGR\n\
   afik-flasher [--device PATH|auto] probe-clock-control\n\
-  afik-flasher [--device PATH|auto] backup-eeprom OUTPUT [--force]\n\
-  afik-flasher [--device PATH|auto] flash-recovery IMAGE --backup EEPROM \\\n    --confirm-target TARGET --confirm-image-crc32 CRC32 [--version VERSION]\n\
-  afik-flasher [--device PATH|auto] flash-afik-k1 IMAGE \\\n\
-    [--yes] [--recovery RAW] [--backup EEPROM]\n\
   afik-flasher --help\n\
   afik-flasher --version\n\
 \n\
 The default device selector is auto. One USB serial candidate is used, and\n\
 several are offered as a choice on a terminal or fail closed without one.\n\
-identify then reports the beacon as observed: its command, the protocol that\n\
-command announces, and the printable bootloader version, whatever that version\n\
-is. It makes no claim about which radio or processor this is, and an unfamiliar\n\
-version is reported rather than refused. Write paths remain separately gated to\n\
-the qualified K5 V1 2.* and pinned K1 7.03.* targets.\n\
-Recovery flashing remains separately gated. The K1 AFIK application command\n\
-takes the image and nothing else. It cannot reach the bootloader: the protocol\n\
-addresses a page index, not an address, and the image is bounded to the\n\
-application region, so an application which does not boot is recovered by\n\
-flashing again. Before writing, it classifies the radio read-only and shows the\n\
-device, bootloader, image, size and CRC-32 for confirmation. Pass --yes to skip\n\
-that prompt; without a terminal to ask, the write is refused rather than\n\
-assumed. A retained recovery image and EEPROM backup are optional and are\n\
-validated when supplied. Recovery flashing, which does put a unit at risk,\n\
-still requires the backup and its exact phrases.\n\
-The read-only probe-normal command sends one normal-mode hello and is the\n\
-serial witness command for an AFIK application. The read-only probe-keypad\n\
-command prints four raw active-low row masks without interpreting them as keys.\n\
-The rf-audio command routes or mutes demodulated receive audio. It drives the\n\
-receive audio chain only and cannot key the radio.\n\
-The read-only probe-rf command prints the raw receive observation: the\n\
-read-back register, the bring-up stage, and the latest RSSI, glitch, noise,\n\
-and squelch sample. It cannot request a transmission.\n\
-The read-only probe-clock command prints the inherited RCC clock registers and\n\
-the target's fail-closed contract result without changing the clock tree.\n\
-The diagnostic probe-clock-register command reads exactly one named register.\n\
-The diagnostic probe-clock-control command returns a constant without MMIO.\n\
-Serial is fixed at 38400 8-N-1.\n";
+Serial is fixed at 38400 8-N-1.\n\
+\n\
+Bootloader commands. identify reports the beacon as observed: its command, the\n\
+protocol that command announces, and the printable bootloader version. It makes\n\
+no claim about which radio or processor this is. flash-afik reads the beacon\n\
+and writes to whichever radio it finds: a K5 V1 2.* bootloader takes a K5\n\
+image carrying an AFIK-K5- identity, and a K1 7.03.* bootloader takes a K1\n\
+image. An image built for the other radio is refused. Before writing, it shows\n\
+the device, bootloader, image and CRC-32 for confirmation; --yes skips that\n\
+prompt, and without a terminal the write is refused rather than assumed. It\n\
+cannot reach either bootloader or EEPROM, so an application which does not boot\n\
+is recovered by flashing again. --version sets the K5 negotiation version\n\
+(default 2.01.23). Passing --recovery selects the K5 recovery-gated form, which\n\
+requires every listed option. flash-recovery and restore-eeprom put a unit at\n\
+risk and still require their backups and exact phrases. Writes report page\n\
+acknowledgements, not read-back. inspect prints a K5 image's vectors and CRC-32\n\
+without a radio.\n\
+\n\
+Normal-mode commands talk to running AFIK firmware. control (K5) sends one\n\
+bounded read or key request and never writes EEPROM, persists configuration,\n\
+transmits or flashes. probe-normal sends one hello. probe-keypad prints four\n\
+raw active-low row masks. probe-rf prints the raw receive observation, and\n\
+rf-audio routes or mutes receive audio; neither can key the radio. probe-clock\n\
+prints the inherited RCC clock registers and the fail-closed contract result,\n\
+probe-clock-register reads one named register, and probe-clock-control returns\n\
+a constant without MMIO.\n\
+Exit codes: 0 success, 1 operation failure, 2 usage failure.\n";
 
-/// Runs one generic flasher invocation against supplied output streams.
+/// Runs one invocation against supplied output streams.
 pub fn run_to<W: Write, E: Write>(arguments: &[String], stdout: &mut W, stderr: &mut E) -> i32 {
     run_with(arguments, &mut prompt::terminal(), stdout, stderr)
 }
@@ -105,9 +110,13 @@ pub fn run_with<C: Confirm, W: Write, E: Write>(
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 enum Parsed {
     Help,
     Version,
+    Inspect {
+        image: PathBuf,
+    },
     Hardware {
         device: DeviceSelector,
         command: Command,
@@ -121,6 +130,7 @@ enum DeviceSelector {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 enum Command {
     Identify,
     ProbeNormal,
@@ -130,9 +140,12 @@ enum Command {
     ProbeClock,
     ProbeClockRegister(usize),
     ProbeClockControl,
+    Control(ControlRequest),
     Backup { output: PathBuf, force: bool },
+    Restore(RestoreArguments),
     Flash(FlashArguments),
-    FlashAfikK1(K1AfikFlashArguments),
+    FlashAfik(AfikArguments),
+    FlashAfikGated(GatedAfikArguments),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -144,16 +157,12 @@ struct FlashArguments {
     image_crc32_confirmation: String,
 }
 
+/// The default AFIK application flash: the image and nothing else.
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct K1AfikFlashArguments {
+struct AfikArguments {
     image: PathBuf,
-    /// Optional retained recovery image, checked against the image being
-    /// written when it is supplied. This command cannot reach the bootloader,
-    /// so recovery from a bad application is a second flash.
-    recovery: Option<PathBuf>,
-    /// Optional retained EEPROM backup, validated and logged when supplied.
-    /// This command issues no EEPROM operation.
-    backup: Option<PathBuf>,
+    /// K5 bootloader negotiation version; refused for a K1.
+    version: Option<String>,
     /// Skip the confirmation prompt because the operator already decided.
     assume_yes: bool,
 }
@@ -175,6 +184,17 @@ fn parse(arguments: &[String]) -> Result<Parsed, String> {
     if matches!(arguments, [argument] if argument == "--version") {
         return Ok(Parsed::Version);
     }
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == "inspect")
+    {
+        return match arguments {
+            [_, image] => Ok(Parsed::Inspect {
+                image: PathBuf::from(image),
+            }),
+            _ => Err("inspect requires exactly one IMAGE".into()),
+        };
+    }
 
     let (device, command_index) = if arguments
         .first()
@@ -182,7 +202,7 @@ fn parse(arguments: &[String]) -> Result<Parsed, String> {
     {
         let path = arguments
             .get(1)
-            .filter(|value| !value.starts_with("--"))
+            .filter(|value| !value.is_empty() && !value.starts_with("--"))
             .ok_or_else(|| "--device requires PATH or auto".to_owned())?;
         let device = if path == "auto" {
             DeviceSelector::Auto
@@ -194,46 +214,36 @@ fn parse(arguments: &[String]) -> Result<Parsed, String> {
         (DeviceSelector::Auto, 0)
     };
     let command = arguments.get(command_index).ok_or_else(|| {
-        "a command is required: identify, probe-normal, probe-keypad, probe-rf, probe-clock, probe-clock-register, probe-clock-control, backup-eeprom, flash-recovery, or flash-afik-k1"
+        "a command is required: identify, flash-afik, backup-eeprom, flash-recovery, restore-eeprom, control, probe-normal, probe-keypad, probe-rf, rf-audio, probe-clock, probe-clock-register, or probe-clock-control"
             .to_owned()
     })?;
-    let tail = &arguments[command_index + 1..];
-    let command = match command.as_str() {
-        "identify" => {
-            if !tail.is_empty() {
-                return Err("identify does not accept arguments".into());
-            }
-            Command::Identify
-        }
-        "probe-normal" => {
-            if !tail.is_empty() {
-                return Err("probe-normal does not accept arguments".into());
-            }
-            Command::ProbeNormal
-        }
+    let command = parse_command(command, &arguments[command_index + 1..])?;
+    Ok(Parsed::Hardware { device, command })
+}
+
+fn parse_command(command: &str, tail: &[String]) -> Result<Command, String> {
+    let bare = match command {
+        "identify" => Some(Command::Identify),
+        "probe-normal" => Some(Command::ProbeNormal),
+        "probe-rf" => Some(Command::ProbeRf),
+        "probe-keypad" => Some(Command::ProbeKeypad),
+        "probe-clock" => Some(Command::ProbeClock),
+        "probe-clock-control" => Some(Command::ProbeClockControl),
+        _ => None,
+    };
+    if let Some(bare) = bare {
+        return if tail.is_empty() {
+            Ok(bare)
+        } else {
+            Err(format!("{command} does not accept arguments"))
+        };
+    }
+    Ok(match command {
         "rf-audio" => match tail {
             [state] if state == "on" => Command::RfAudio(true),
             [state] if state == "off" => Command::RfAudio(false),
             _ => return Err("rf-audio requires on or off".into()),
         },
-        "probe-rf" => {
-            if !tail.is_empty() {
-                return Err("probe-rf does not accept arguments".into());
-            }
-            Command::ProbeRf
-        }
-        "probe-keypad" => {
-            if !tail.is_empty() {
-                return Err("probe-keypad does not accept arguments".into());
-            }
-            Command::ProbeKeypad
-        }
-        "probe-clock" => {
-            if !tail.is_empty() {
-                return Err("probe-clock does not accept arguments".into());
-            }
-            Command::ProbeClock
-        }
         "probe-clock-register" => {
             let index = match tail {
                 [name] if name == "CR" => 0,
@@ -244,18 +254,16 @@ fn parse(arguments: &[String]) -> Result<Parsed, String> {
             };
             Command::ProbeClockRegister(index)
         }
-        "probe-clock-control" => {
-            if !tail.is_empty() {
-                return Err("probe-clock-control does not accept arguments".into());
-            }
-            Command::ProbeClockControl
-        }
+        "control" => Command::Control(k5::parse_control(tail)?),
         "backup-eeprom" => parse_backup(tail)?,
+        "restore-eeprom" => Command::Restore(k5::parse_restore(tail)?),
         "flash-recovery" => Command::Flash(parse_flash(tail)?),
-        "flash-afik-k1" => Command::FlashAfikK1(parse_flash_afik_k1(tail)?),
+        "flash-afik" if tail.iter().any(|argument| argument == "--recovery") => {
+            Command::FlashAfikGated(k5::parse_gated_afik(tail)?)
+        }
+        "flash-afik" => Command::FlashAfik(parse_flash_afik(tail)?),
         other => return Err(format!("unknown command: {other}")),
-    };
-    Ok(Parsed::Hardware { device, command })
+    })
 }
 
 fn parse_backup(arguments: &[String]) -> Result<Command, String> {
@@ -312,50 +320,39 @@ fn parse_flash(arguments: &[String]) -> Result<FlashArguments, String> {
     })
 }
 
-fn parse_flash_afik_k1(arguments: &[String]) -> Result<K1AfikFlashArguments, String> {
+fn parse_flash_afik(arguments: &[String]) -> Result<AfikArguments, String> {
     let image = arguments
         .first()
         .filter(|argument| !argument.starts_with("--"))
-        .ok_or_else(|| "flash-afik-k1 requires IMAGE".to_owned())?;
-    let mut recovery = None;
-    let mut backup = None;
+        .ok_or_else(|| "flash-afik requires IMAGE".to_owned())?;
+    let mut version = None;
     let mut assume_yes = false;
     let mut offset = 1;
     while offset < arguments.len() {
-        let option = &arguments[offset];
-        if option == "--yes" {
-            if assume_yes {
-                return Err("--yes was provided more than once".to_owned());
+        match arguments[offset].as_str() {
+            "--yes" if !assume_yes => assume_yes = true,
+            "--yes" => return Err("--yes was provided more than once".into()),
+            "--version" => {
+                let value = arguments
+                    .get(offset + 1)
+                    .filter(|value| !value.starts_with("--"))
+                    .ok_or_else(|| "--version requires a value".to_owned())?;
+                set_once(&mut version, value.clone(), "--version")?;
+                offset += 1;
             }
-            assume_yes = true;
-            offset += 1;
-            continue;
+            option => {
+                return Err(format!(
+                    "unknown flash-afik option: {option}; pass --recovery to select the K5 recovery-gated form"
+                ))
+            }
         }
-        let value = arguments
-            .get(offset + 1)
-            .filter(|value| !value.starts_with("--"))
-            .ok_or_else(|| format!("{option} requires a value"))?;
-        match option.as_str() {
-            "--recovery" => set_once(&mut recovery, PathBuf::from(value), option)?,
-            "--backup" => set_once(&mut backup, PathBuf::from(value), option)?,
-            _ => return Err(format!("unknown flash-afik-k1 option: {option}")),
-        }
-        offset += 2;
+        offset += 1;
     }
-    Ok(K1AfikFlashArguments {
+    Ok(AfikArguments {
         image: PathBuf::from(image),
-        recovery,
-        backup,
+        version,
         assume_yes,
     })
-}
-
-fn set_once<T>(slot: &mut Option<T>, value: T, option: &str) -> Result<(), String> {
-    if slot.replace(value).is_some() {
-        Err(format!("{option} was provided more than once"))
-    } else {
-        Ok(())
-    }
 }
 
 fn execute<W: Write, C: Confirm>(
@@ -363,8 +360,10 @@ fn execute<W: Write, C: Confirm>(
     confirm: &mut C,
     stdout: &mut W,
 ) -> Result<(), CliError> {
-    let Parsed::Hardware { device, command } = parsed else {
-        unreachable!("handled before execution");
+    let (device, command) = match parsed {
+        Parsed::Inspect { image } => return k5::inspect(&image, stdout),
+        Parsed::Hardware { device, command } => (device, command),
+        Parsed::Help | Parsed::Version => unreachable!("handled before execution"),
     };
     let device = resolve_device(&device, confirm)?;
     match command {
@@ -376,13 +375,16 @@ fn execute<W: Write, C: Confirm>(
         Command::ProbeClock => probe_clock(&device, stdout),
         Command::ProbeClockRegister(index) => probe_clock_register_named(&device, index, stdout),
         Command::ProbeClockControl => probe_clock_control_marker(&device, stdout),
+        Command::Control(request) => k5::control(&device, request, stdout),
         Command::Backup { output, force } => backup(&device, &output, force, stdout),
+        Command::Restore(arguments) => k5::restore(&device, &arguments, stdout),
         Command::Flash(arguments) => flash(&device, &arguments, stdout),
-        Command::FlashAfikK1(arguments) => {
+        Command::FlashAfikGated(arguments) => k5::flash_afik_gated(&device, &arguments, stdout),
+        Command::FlashAfik(arguments) => {
             if arguments.assume_yes {
-                flash_afik_k1(&device, &arguments, &mut AssumeYes, stdout)
+                flash_afik(&device, &arguments, &mut AssumeYes, stdout)
             } else {
-                flash_afik_k1(&device, &arguments, confirm, stdout)
+                flash_afik(&device, &arguments, confirm, stdout)
             }
         }
     }
@@ -592,111 +594,137 @@ fn flash<W: Write>(
     stdout.flush().map_err(CliError::operation)?;
 
     match family {
-        radio_flasher::BootloaderFamily::K1(info) => flash_k1(&mut serial, &context, &info, stdout),
-        radio_flasher::BootloaderFamily::K5V1(_info) => {
+        BootloaderFamily::K1(info) => flash_k1(&mut serial, &context, &info, stdout),
+        BootloaderFamily::K5V1(_info) => {
             flash_k5(&mut serial, &context, arguments.version.as_deref(), stdout)
         }
     }
 }
 
-fn flash_afik_k1<W: Write, C: Confirm>(
+/// Writes an AFIK application to whichever radio's bootloader answers.
+fn flash_afik<W: Write, C: Confirm>(
     device: &Path,
-    arguments: &K1AfikFlashArguments,
+    arguments: &AfikArguments,
     confirm: &mut C,
     stdout: &mut W,
 ) -> Result<(), CliError> {
-    let image_raw = read_bounded(&arguments.image, K1_MAX_IMAGE_BYTES, "AFIK K1 image")?;
-    let image = K1RecoveryImage::from_raw(&image_raw).map_err(CliError::operation)?;
-    // Both retained artefacts are optional for this command. It addresses a page
-    // index rather than an address, so it cannot reach the bootloader, and it
-    // issues no EEPROM operation. Recovery from an application which does not
-    // boot is another flash through the same passive beacon. When either is
-    // supplied it is still fully validated, so a caller who does retain them
-    // gets the same accidental-selection checks as before.
-    let recovery_raw = arguments
-        .recovery
-        .as_ref()
-        .map(|path| read_bounded(path, K1_MAX_IMAGE_BYTES, "K1 recovery image"))
-        .transpose()?;
-    let recovery = recovery_raw
-        .as_deref()
-        .map(K1RecoveryImage::from_raw)
-        .transpose()
-        .map_err(CliError::operation)?;
-    let backup = arguments
-        .backup
-        .as_ref()
-        .map(|path| read_bounded(path, radio_flasher::EEPROM_BYTES, "EEPROM backup"))
-        .transpose()?
-        .as_deref()
-        .map(EepromBackup::from_raw)
-        .transpose()
-        .map_err(CliError::operation)?;
-    let image_crc = crc32(image.bytes());
+    let image_raw = read_bounded(
+        &arguments.image,
+        APPLICATION_BYTES.max(K1_MAX_IMAGE_BYTES),
+        "AFIK image",
+    )?;
     let transaction_id = fresh_transaction_id()?;
     let mut serial = open_serial(device)?;
     // Classification is read-only, so it runs before the operator is asked. That
     // way the confirmation names the radio actually on the other end of the
     // cable rather than the one the operator meant to plug in.
     let family = detect_bootloader(&mut serial).map_err(CliError::operation)?;
-    let info = match &family {
-        radio_flasher::BootloaderFamily::K1(info) => info,
-        radio_flasher::BootloaderFamily::K5V1(info) => {
-            return Err(CliError::Operation(format!(
-                "flash-afik-k1 requires K1 bootloader 7.03.*, detected K5 V1 {}",
-                info.version()
-            )));
-        }
+    check_afik_image(Radio::of(&family), &image_raw).map_err(|error| {
+        CliError::Operation(format!(
+            "{error}; detected bootloader {}",
+            family.info().version()
+        ))
+    })?;
+    let flash = DetectedFlash {
+        device,
+        image_path: &arguments.image,
+        image_raw: &image_raw,
+        bootloader: family.info(),
+        transaction_id,
     };
+    match &family {
+        BootloaderFamily::K5V1(_) => k5::flash_afik_detected(
+            &mut serial,
+            &flash,
+            arguments.version.as_deref(),
+            confirm,
+            stdout,
+        ),
+        BootloaderFamily::K1(_) if arguments.version.is_some() => Err(CliError::Operation(
+            "--version sets the K5 negotiation version; a K1 bootloader was detected".into(),
+        )),
+        BootloaderFamily::K1(_) => flash_afik_k1(&mut serial, &flash, confirm, stdout),
+    }
+}
 
+/// Which radio a detected bootloader belongs to.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Radio {
+    K5V1,
+    K1,
+}
+
+impl Radio {
+    const fn of(family: &BootloaderFamily) -> Self {
+        match family {
+            BootloaderFamily::K5V1(_) => Self::K5V1,
+            BootloaderFamily::K1(_) => Self::K1,
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::K5V1 => "K5-V1",
+            Self::K1 => "K1",
+        }
+    }
+}
+
+/// Refuses an image built for the other radio before anything is asked or sent.
+///
+/// The two layouts cannot be confused: a K5 image's reset vector lies inside its
+/// own 60 KiB from address zero, and a K1 image's lies in the K1 flash region.
+fn check_afik_image(radio: Radio, image_raw: &[u8]) -> Result<(), String> {
+    let fits = match radio {
+        Radio::K5V1 => ApplicationImage::from_raw(image_raw)
+            .map(drop)
+            .map_err(|error| error.to_string()),
+        Radio::K1 => K1RecoveryImage::from_raw(image_raw)
+            .map(drop)
+            .map_err(|error| error.to_string()),
+    };
+    fits.map_err(|error| format!("image is not a {} application ({error})", radio.label()))
+}
+
+fn flash_afik_k1<W: Write, C: Confirm>(
+    serial: &mut LinuxSerialTransport,
+    flash: &DetectedFlash<'_>,
+    confirm: &mut C,
+    stdout: &mut W,
+) -> Result<(), CliError> {
+    let image = K1RecoveryImage::from_raw(flash.image_raw).map_err(CliError::operation)?;
+    let image_crc = crc32(image.bytes());
     let summary = format!(
-        "About to write an AFIK application to a radio:\n\
+        "About to write an AFIK application to a K1:\n\
          \x20 device:     {}\n\
-         \x20 bootloader: K1 {}\n\
+         \x20 bootloader: {}\n\
          \x20 image:      {}\n\
          \x20 bytes:      {} in {} pages\n\
          \x20 crc32:      {image_crc:08x}\n\
          This replaces the application and cannot be read back.",
-        device.display(),
-        info.version(),
-        arguments.image.display(),
+        flash.device.display(),
+        flash.bootloader.version(),
+        flash.image_path.display(),
         image.bytes().len(),
         image.page_count(),
     );
-    if !confirm.confirm(&summary).map_err(CliError::operation)? {
-        return Err(CliError::Operation(if confirm.is_interactive() {
-            "write declined".to_owned()
-        } else {
-            "nothing can answer a confirmation prompt here; pass --yes to write unattended"
-                .to_owned()
-        }));
-    }
+    confirm_write(confirm, &summary)?;
 
-    writeln!(stdout, "device={}", device.display()).map_err(CliError::operation)?;
+    writeln!(stdout, "device={}", flash.device.display()).map_err(CliError::operation)?;
     writeln!(stdout, "baud={K5_BAUD}").map_err(CliError::operation)?;
-    writeln!(stdout, "protocol_family={}", family.label()).map_err(CliError::operation)?;
-    writeln!(stdout, "bootloader={}", info.version()).map_err(CliError::operation)?;
-    writeln!(stdout, "image={}", arguments.image.display()).map_err(CliError::operation)?;
-    match &arguments.recovery {
-        Some(path) => writeln!(stdout, "recovery_image={}", path.display()),
-        None => writeln!(stdout, "recovery_image=none_retained"),
-    }
-    .map_err(CliError::operation)?;
-    match &backup {
-        Some(backup) => writeln!(stdout, "backup_crc32={:08x}", backup.crc32()),
-        None => writeln!(stdout, "backup_crc32=none_retained"),
-    }
-    .map_err(CliError::operation)?;
+    writeln!(stdout, "protocol_family=K1").map_err(CliError::operation)?;
+    writeln!(stdout, "bootloader={}", flash.bootloader.version()).map_err(CliError::operation)?;
+    writeln!(stdout, "image={}", flash.image_path.display()).map_err(CliError::operation)?;
     writeln!(stdout, "image_crc32={image_crc:08x}").map_err(CliError::operation)?;
-    writeln!(stdout, "transaction_id={transaction_id:08x}").map_err(CliError::operation)?;
+    writeln!(stdout, "transaction_id={:08x}", flash.transaction_id).map_err(CliError::operation)?;
     stdout.flush().map_err(CliError::operation)?;
 
     let report = radio_flasher::k1::flash_application(
-        &mut serial,
+        serial,
         &image,
-        recovery.as_ref(),
-        info.version(),
-        transaction_id,
+        None,
+        flash.bootloader.version(),
+        flash.transaction_id,
         |page| {
             let complete = page + 1;
             if complete % 16 == 0 || complete == image.page_count() {
@@ -800,9 +828,13 @@ fn flash_k5<W: Write>(
 mod tests {
     use std::path::PathBuf;
 
-    use super::{parse, run_with, select_auto_device, Command, DeviceSelector, Parsed};
+    use super::{
+        check_afik_image, parse, run_to, run_with, select_auto_device, Command, DeviceSelector,
+        Parsed, Radio, HELP,
+    };
     use crate::prompt::TerminalConfirm;
-    use crate::EXIT_SUCCESS;
+    use crate::{EXIT_SUCCESS, EXIT_USAGE};
+    use radio_flasher::k5::ControlRequest;
 
     fn strings(arguments: &[&str]) -> Vec<String> {
         arguments.iter().map(ToString::to_string).collect()
@@ -879,53 +911,148 @@ mod tests {
         ));
     }
 
-    /// The image is the whole command. Everything else is optional.
     #[test]
-    fn k1_afik_parser_takes_the_image_and_nothing_else() {
-        assert!(
-            matches!(
-                parse(&strings(&["flash-afik-k1", "image.raw"])).unwrap(),
-                Parsed::Hardware {
-                    command: Command::FlashAfikK1(_),
-                    ..
-                }
-            ),
-            "an image alone is a complete command"
+    fn help_and_usage_status_are_stable() {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        assert_eq!(
+            run_to(&["--help".into()], &mut stdout, &mut stderr),
+            EXIT_SUCCESS
         );
+        assert_eq!(stdout, HELP.as_bytes());
+        assert!(HELP.contains("--confirm-recovery-sha256 SHA256"));
+        assert!(HELP.contains("control view|capabilities|key AUDIO|UP|DOWN"));
+        assert!(stderr.is_empty());
 
-        let arguments = strings(&[
-            "flash-afik-k1",
+        stdout.clear();
+        assert_eq!(
+            run_to(&strings(&["unknown"]), &mut stdout, &mut stderr),
+            EXIT_USAGE
+        );
+        assert!(stdout.is_empty());
+        assert!(stderr.starts_with(b"error: "));
+    }
+
+    #[test]
+    fn inspect_needs_no_device_and_prints_the_vector_and_crc_contract() {
+        assert!(parse(&strings(&["inspect"])).is_err());
+        assert!(parse(&strings(&["inspect", "a.raw", "b.raw"])).is_err());
+
+        let path = std::env::temp_dir().join(format!("afik-inspect-{}", std::process::id()));
+        let mut raw = vec![0xA5; 32];
+        raw[0..4].copy_from_slice(&0x2000_4000_u32.to_le_bytes());
+        raw[4..8].copy_from_slice(&9_u32.to_le_bytes());
+        std::fs::write(&path, raw).unwrap();
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let code = run_to(
+            &["inspect".into(), path.display().to_string()],
+            &mut stdout,
+            &mut stderr,
+        );
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(code, EXIT_SUCCESS);
+        let output = String::from_utf8(stdout).unwrap();
+        assert!(output.contains("source_bytes=32\n"));
+        assert!(output.contains("application_bytes=61440\n"));
+        assert!(output.contains("initial_sp=0x20004000\n"));
+        assert!(output.contains("reset_vector=0x00000009\n"));
+        assert!(stderr.is_empty());
+    }
+
+    #[test]
+    fn k5_normal_mode_and_restore_commands_take_the_device_selector() {
+        assert!(matches!(
+            parse(&strings(&["control", "key", "AUDIO"])).unwrap(),
+            Parsed::Hardware {
+                device: DeviceSelector::Auto,
+                command: Command::Control(ControlRequest::ToggleAudio),
+            }
+        ));
+        assert!(matches!(
+            parse(&strings(&["--device", "/dev/x", "control", "view"])).unwrap(),
+            Parsed::Hardware {
+                device: DeviceSelector::Explicit(_),
+                command: Command::Control(ControlRequest::View),
+            }
+        ));
+        assert!(parse(&strings(&["control", "key", "PTT"])).is_err());
+        assert!(parse(&strings(&["restore-eeprom", "restore.raw"])).is_err());
+    }
+
+    /// The image is the whole command; the radio decides which protocol is used.
+    #[test]
+    fn flash_afik_takes_the_image_and_nothing_else() {
+        let Parsed::Hardware {
+            command: Command::FlashAfik(parsed),
+            ..
+        } = parse(&strings(&["flash-afik", "image.raw"])).unwrap()
+        else {
+            panic!("an image alone is a complete command");
+        };
+        assert!(!parsed.assume_yes);
+        assert_eq!(parsed.version, None);
+
+        let Parsed::Hardware {
+            command: Command::FlashAfik(parsed),
+            ..
+        } = parse(&strings(&[
+            "flash-afik",
             "image.raw",
             "--yes",
-            "--recovery",
-            "recovery.raw",
-            "--backup",
-            "eeprom.raw",
-        ]);
-        let Parsed::Hardware {
-            command: Command::FlashAfikK1(parsed),
-            ..
-        } = parse(&arguments).unwrap()
+            "--version",
+            "2.01.26",
+        ]))
+        .unwrap()
         else {
-            panic!("expected a K1 AFIK flash command");
+            panic!("expected an AFIK flash command");
         };
         assert!(parsed.assume_yes);
-        assert_eq!(parsed.recovery, Some(PathBuf::from("recovery.raw")));
-        assert_eq!(parsed.backup, Some(PathBuf::from("eeprom.raw")));
+        assert_eq!(parsed.version.as_deref(), Some("2.01.26"));
 
-        // The phrases this command used to demand are gone, so passing one is a
-        // mistake worth reporting rather than something silently ignored.
+        // A strict-gate option without --recovery is refused, not ignored.
         assert!(parse(&strings(&[
-            "flash-afik-k1",
+            "flash-afik",
             "image.raw",
-            "--confirm-target",
-            "UV-K1-AFIK-7.03.01",
+            "--backup",
+            "eeprom.raw"
         ]))
         .is_err());
+        assert!(parse(&strings(&["flash-afik", "image.raw", "--yes", "--yes"])).is_err());
         assert!(
-            parse(&strings(&["flash-afik-k1"])).is_err(),
+            parse(&strings(&["flash-afik"])).is_err(),
             "IMAGE is required"
         );
+        // --recovery selects the K5 recovery-gated form, which needs every gate.
+        assert!(parse(&strings(&[
+            "flash-afik",
+            "image.raw",
+            "--recovery",
+            "stock.raw"
+        ]))
+        .is_err());
+        // The K1-only command is gone; flash-afik detects the radio.
+        assert!(parse(&strings(&["flash-afik-k1", "image.raw"])).is_err());
+    }
+
+    /// An image built for one radio is refused when the other one answers.
+    #[test]
+    fn an_image_for_the_other_radio_is_refused() {
+        let (k5, k1) = (Radio::K5V1, Radio::K1);
+        let mut k5_image = vec![0xA5; 32];
+        k5_image[0..4].copy_from_slice(&0x2000_4000_u32.to_le_bytes());
+        k5_image[4..8].copy_from_slice(&9_u32.to_le_bytes());
+        let mut k1_image = vec![0xA5; 32];
+        k1_image[0..4].copy_from_slice(&radio_flasher::k1::K1_SRAM_END.to_le_bytes());
+        k1_image[4..8]
+            .copy_from_slice(&(radio_flasher::k1::K1_APPLICATION_ORIGIN + 9).to_le_bytes());
+
+        assert!(check_afik_image(k5, &k5_image).is_ok());
+        assert!(check_afik_image(k1, &k1_image).is_ok());
+        let error = check_afik_image(k5, &k1_image).unwrap_err();
+        assert!(error.contains("not a K5-V1 application"), "{error}");
+        let error = check_afik_image(k1, &k5_image).unwrap_err();
+        assert!(error.contains("not a K1 application"), "{error}");
     }
 
     /// A write must not proceed unless something actually approved it.
@@ -933,7 +1060,7 @@ mod tests {
     fn a_declined_or_unanswerable_confirmation_writes_nothing() {
         // No device is opened and no image is read: the refusal happens before
         // any of that, so these run without hardware.
-        let arguments = strings(&["--device", "/dev/null", "flash-afik-k1", "/nonexistent.raw"]);
+        let arguments = strings(&["--device", "/dev/null", "flash-afik", "/nonexistent.raw"]);
         let mut declined = TerminalConfirm::new(&b"n\n"[..], Vec::new(), true);
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();

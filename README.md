@@ -96,33 +96,27 @@ three-wire pinout come from the pinned reference firmware recorded in
 `docs/hardware-evidence.md`; no AFIK receive register has yet been written on
 hardware.
 
-## UV-K5 V1 recovery and firmware flashing
+## Flashing the K5 and K1
 
-`afik-flasher` is separate from the AFIK runtime configuration programmer. It
-auto-selects exactly one USB serial candidate, classifies the bootloader from
-its validated beacon, and currently supports K5 V1 recovery plus the pinned K1
-recovery protocol:
+`afik-flasher` is separate from the AFIK runtime configuration programmer and
+is the one flasher for both radios. It auto-selects one USB serial candidate
+(or asks, on a terminal, when there are several) and reads the bootloader
+beacon to decide between the K5 V1 `2.*` and K1 `7.03.*` protocols:
 
 ```sh
+cargo run --package radio-flasher-cli --bin afik-flasher -- --help
 cargo run --package radio-flasher-cli --bin afik-flasher -- identify
-cargo run --package radio-flasher-cli --bin afik-flasher -- \
-  --device /dev/ttyUSB0 identify
+cargo run --package radio-flasher-cli --bin afik-flasher -- flash-afik IMAGE
 ```
 
-Zero or multiple USB candidates fail closed; a beacon proves only the protocol
-family, not the physical board or MCU. `afik-k5` remains as the explicit-device
-K5 compatibility workflow and supports an inspected UV-K5 V1 fitted with
-DP32G030 and the stock version-2 bootloader:
+`flash-afik` writes to whichever radio answers and refuses an image built for
+the other one. A beacon proves only the protocol family, not the physical board
+or MCU. K5-specific commands (`inspect`, `control`, `restore-eeprom`, and the
+recovery-gated `flash-afik --recovery`) live in the same tool.
 
-```sh
-cargo run --package radio-flasher-cli --bin afik-k5 -- --help
-cargo run --package radio-flasher-cli --bin afik-k5 -- \
-  inspect target/thumbv6m-none-eabi/release/afik-k5-v1.raw
-```
-
-The hardware workflow requires a complete read-only EEPROM backup, a
-vector-valid known-good raw recovery image, a same-unit recovery rehearsal,
-and exact destructive confirmations. It never writes EEPROM or the preserved
+Recovery flashing and EEPROM restore require a complete read-only EEPROM
+backup, a vector-valid known-good raw recovery image, and exact destructive
+confirmations. Application flashing never writes EEPROM or the preserved
 stock bootloader and supports no V2/V3 radio or bootloader v5. See
 `docs/k5-flashing.md` before connecting hardware. No physical flash or target
 boot has yet been validated.

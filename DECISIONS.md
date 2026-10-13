@@ -1630,3 +1630,17 @@ meaning.
   root `Cargo.toml`. Bump it once for each image that will be flashed.
 - Starts at `7.0.0`, above both earlier per-target numbers (K1 6.5, K5 2.5).
   This also fixes the K1 serial hello, which still reported `AFIK-K1-1.2`.
+
+## ADR-098 — One flasher binary that detects the radio
+
+- **Date:** 2026-10-13
+- **Status:** accepted, operator request. Supersedes the separate `afik-k5`
+  binary and the `flash-afik-k1` command from `ADR-023` and `ADR-027`.
+- `afik-flasher` is the only flasher. It carries the former `afik-k5`
+  commands (`inspect`, `control`, `restore-eeprom`, recovery-gated
+  `flash-afik --recovery`) with `--device PATH|auto` like every other command;
+  `afik-k5 probe` is covered by `identify`.
+- `flash-afik IMAGE` reads the bootloader beacon and writes K5 V1 (`2.*`) or K1
+  (`7.03.*`), refusing an image whose vectors belong to the other radio before
+  the prompt. The K1 form no longer takes the optional, validation-only
+  `--recovery`/`--backup` files; `--version` is refused for a K1.

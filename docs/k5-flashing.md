@@ -43,11 +43,11 @@ For a running AFIK normal-mode image, the host flasher also has bounded,
 read/control-only commands:
 
 ```sh
-afik-k5 --device /dev/ttyUSB0 control view
-afik-k5 --device /dev/ttyUSB0 control capabilities
-afik-k5 --device /dev/ttyUSB0 control key AUDIO
-afik-k5 --device /dev/ttyUSB0 control key UP
-afik-k5 --device /dev/ttyUSB0 control key DOWN
+afik-flasher --device /dev/ttyUSB0 control view
+afik-flasher --device /dev/ttyUSB0 control capabilities
+afik-flasher --device /dev/ttyUSB0 control key AUDIO
+afik-flasher --device /dev/ttyUSB0 control key UP
+afik-flasher --device /dev/ttyUSB0 control key DOWN
 ```
 
 `AUDIO` is an explicit audio-preference command; the physical/operator Menu
@@ -98,7 +98,7 @@ With the radio running its normal stock firmware, create the EEPROM backup
 first. The output is create-new and mode `0600` unless `--force` is deliberate:
 
 ```sh
-nix develop path:. -c cargo run --package radio-flasher-cli --bin afik-k5 -- \
+nix develop path:. -c cargo run --package radio-flasher-cli --bin afik-flasher -- \
   --device /dev/ttyUSB0 backup-eeprom unit-eeprom.raw
 ```
 
@@ -118,7 +118,7 @@ responses stop without retry; a final complete read must match the restore
 image.
 
 ```sh
-afik-k5 --device /dev/ttyUSB0 restore-eeprom restore.raw \
+afik-flasher --device /dev/ttyUSB0 restore-eeprom restore.raw \
   --current expected-current.raw --recovery recovery.raw \
   --pre-write-backup live-before-restore.raw --version "F4HWN v4.3" \
   --confirm-target UV-K5-V1-DP32G030 \
@@ -142,15 +142,16 @@ After recording the backup hash and validating a raw recovery application, use
 offline inspection to obtain the CRC-32 selection guard:
 
 ```sh
-nix develop path:. -c cargo run --package radio-flasher-cli --bin afik-k5 -- \
+nix develop path:. -c cargo run --package radio-flasher-cli --bin afik-flasher -- \
   inspect recovery.raw
 ```
 
-Enter the verified stock programming mode, then probe before any write:
+Enter the verified stock programming mode, then identify the bootloader before
+any write:
 
 ```sh
-nix develop path:. -c cargo run --package radio-flasher-cli --bin afik-k5 -- \
-  --device /dev/ttyUSB0 probe
+nix develop path:. -c cargo run --package radio-flasher-cli --bin afik-flasher -- \
+  --device /dev/ttyUSB0 identify
 ```
 
 Only after the board/MCU record, backup copies, recovery bytes, power, and cable
@@ -158,7 +159,7 @@ checks are complete, run the recovery rehearsal with the exact CRC printed by
 `inspect`:
 
 ```sh
-nix develop path:. -c cargo run --package radio-flasher-cli --bin afik-k5 -- \
+nix develop path:. -c cargo run --package radio-flasher-cli --bin afik-flasher -- \
   --device /dev/ttyUSB0 flash-recovery recovery.raw \
   --backup unit-eeprom.raw --version 2.01.23 \
   --confirm-target UV-K5-V1-DP32G030 \
@@ -175,16 +176,19 @@ acknowledgement succeeds.
 Operator decision, 2026-10-13: flashing an AFIK application is the default
 and needs no backup or recovery image. It writes only the 240 application
 pages, never the bootloader or EEPROM, so an image that does not boot is
-recovered by flashing again. The image must carry an `AFIK-K5-` identity; the
-radio is probed read-only and the write is confirmed at a prompt.
+recovered by flashing again. The bootloader beacon is read first and decides
+the protocol, so the same command flashes a K1: a K5 V1 `2.*` bootloader takes
+a K5 image carrying an `AFIK-K5-` identity, a K1 `7.03.*` bootloader takes a K1
+image, and an image built for the other radio is refused before the prompt.
+The write is confirmed at a prompt naming the device, bootloader and CRC-32.
 
 ```sh
-nix develop path:. -c cargo run --package radio-flasher-cli --bin afik-k5 -- \
+nix develop path:. -c cargo run --package radio-flasher-cli --bin afik-flasher -- \
   --device /dev/ttyUSB0 flash-afik target/thumbv6m-none-eabi/release/afik-k5-2.3T.bin
 ```
 
-`--yes` skips the prompt, and `--version` overrides the `2.01.23` negotiation
-value. Adding `--recovery` selects the recovery-gated form below, which still
+`--device` defaults to `auto`. `--yes` skips the prompt, and `--version`
+overrides the K5 `2.01.23` negotiation value. Adding `--recovery` selects the recovery-gated form below, which still
 requires every one of its options.
 
 ## AFIK image attempt (recovery-gated, opt-in)
@@ -220,7 +224,7 @@ The AFIK attempt additionally requires the exact same-unit recovery phrase and
 the separately validated recovery file:
 
 ```sh
-nix develop path:. -c cargo run --package radio-flasher-cli --bin afik-k5 -- \
+nix develop path:. -c cargo run --package radio-flasher-cli --bin afik-flasher -- \
   --device /dev/ttyUSB0 flash-afik afik-k5-v1.raw \
   --recovery recovery.raw --backup unit-eeprom.raw --version 2.01.23 \
   --confirm-target UV-K5-V1-DP32G030 \
