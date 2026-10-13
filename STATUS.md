@@ -2,6 +2,14 @@
 
 ## Current work package
 
+**`TXCTRL-054` is active** (2026-10-13), following operator instruction.
+Implement the shared, hardware-independent PTT lifecycle with explicit adapter
+completion and deterministic simulator tests. Complete-request authority remains
+mandatory. Target TX wiring, hardware flashing, and physical transmission remain
+outside this work package. `APP-052` and `RISK-036` remain paused/deferred.
+
+## Previous work package: TXAUTH-053
+
 **`TXAUTH-053` is complete** (2026-10-13), following operator authorization.
 Its first milestone replaces class-only TX authority with one bounded request covering
 the exact channel, modulation, bandwidth, conducted power, timeout,

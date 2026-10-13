@@ -2880,7 +2880,7 @@
 
 ## TXCTRL-054 — Shared PTT lifecycle and deterministic shutdown
 
-- **Status:** planned; next smallest actionable package after `TXAUTH-053`.
+- **Status:** active (2026-10-13), following operator instruction.
 - **First step:** define the hardware-independent PTT press/release, held-at-
   boot, timeout, configuration invalidation, and target-fault event/effect
   contract with deterministic virtual time and explicit adapter completion.
