@@ -2,6 +2,11 @@
 
 ## Current work package
 
+**`TXK5-059` is active** (2026-10-13): K5 TX power levels, then CTCSS/DCS, then a
+bench comparison. Next step: the TX power settings row.
+
+## Previous work package: TXK5-058
+
 **`TXK5-058` is complete** (2026-10-13). `AFIK-K5-2.3T` transmits on PMR446
 at Armel's Low1 power. The operator saw the carrier start on PTT press and stop
 on release and at the 5 s timeout, with receive working afterwards

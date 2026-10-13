@@ -3004,9 +3004,18 @@
 
 ## TXK5-059 — Widen K5 TX: power levels, tones, measured power
 
-- **Status:** planned, next.
+- **Status:** active (2026-10-13).
 - **Objective:** further power levels and CTCSS/DCS on TX; measure power and
   deviation on the bench and replace the nominal milliwatt figure.
+- **Steps (commit after each):**
+  1. A TX power row in the handset settings menu, shown only where the target
+     can transmit (new `tx_power` capability; K1 unchanged). Levels are Armel
+     F4HWN Low1–Low4 (calibration low bias × 4/25, 4/19, 4/13, 4/10; nominally
+     20/125/250/500 mW). The PMR446 policy ceiling of 500 mW still applies.
+  2. CTCSS/DCS as a radio-wide setting applied to receive and transmit.
+  3. Flash; on the bench, compare the levels and check deviation on the SDR.
+     Replace nominal milliwatts with measurements where a power meter is
+     available.
 
 ## TXK1-060 — K1 TX from the Armel BK4829 paths
 
