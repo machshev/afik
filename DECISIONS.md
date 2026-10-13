@@ -1511,3 +1511,10 @@ meaning.
   No synthesized fixture is hardware evidence. The existing regional snapshot
   retains its version/date; no claim of refreshed regulatory compliance is
   made. First-milestone tests do not establish PTT lifecycle or physical TX.
+- **Verified result:** both envelopes must match the non-zero opaque unit
+  identity, every matching overlap contributes its strictest limit, and
+  optional grants restrict built-in rules. Timeout is an application ceiling
+  of 60,000 ms, not a hardware measurement. The token borrows policy/request,
+  and selected-controller bundles also borrow the controller. The complete
+  request is compared again before logical TX entry. Workspace and both target
+  build gates pass; neither firmware wires TX or includes synthetic envelopes.

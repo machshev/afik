@@ -924,3 +924,11 @@
 - `RISK-007` remains the physical TX evidence gate. No PA, microphone, power
   calibration, safe target shutdown, or physical transmit claim follows from
   the authorization milestone.
+- **Software result, 2026-10-13:** `TXAUTH-053` removes class-only authority,
+  compares all current request facts, borrows policy/request/controller state,
+  and rejects missing or mismatched unit-bound hardware/calibration limits.
+  Behavioral and compile-fail tests pass. Configuration identity is still an
+  adapter contract: supplying an old snapshot cannot reveal a real-world
+  change. The accepted timeout is not yet a running shutdown timer; the logical
+  chip model does not apply conducted power or own PA shutdown. Those belong
+  to `TXCTRL-054` and independently evidenced target work. Risk remains open.

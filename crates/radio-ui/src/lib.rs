@@ -316,7 +316,12 @@ impl BootUi {
 }
 
 #[cfg(test)]
+#[path = "../../radio-tx-policy/tests/support/mod.rs"]
+mod tx_fixture;
+
+#[cfg(test)]
 mod tests {
+    use super::tx_fixture::{channel as tx_channel, request as tx_request};
     use super::{BootUi, Key, KeyEvent, KeySet, MenuError, UiAction, UiView, EDITABLE_TX_CLASSES};
     use radio_domain::TxClass;
     use radio_tx_policy::{
@@ -433,16 +438,24 @@ mod tests {
         };
         assert_eq!(ui.view(), UiView::PermissionsSaved { generation: 8 });
 
-        assert!(live_policy.authorise(TxClass::LicenceFreePlan).is_err());
+        assert!(live_policy
+            .authorise(&tx_request(tx_channel(TxClass::LicenceFreePlan)))
+            .is_err());
         let stored = StoredPermissions::decode(&saved).unwrap();
         assert_eq!(stored.generation(), 8);
         assert!(stored.permissions().allows(TxClass::LicenceFreePlan));
         assert!(!stored.permissions().allows(TxClass::Never));
         let (rebooted_policy, reboot_status) = TxPolicy::load(&saved);
         assert_eq!(reboot_status, LoadStatus::Valid);
-        assert!(rebooted_policy.authorise(TxClass::LicenceFreePlan).is_ok());
-        assert!(rebooted_policy.authorise(TxClass::Amateur).is_err());
-        assert!(rebooted_policy.authorise(TxClass::Never).is_err());
+        assert!(rebooted_policy
+            .authorise(&tx_request(tx_channel(TxClass::LicenceFreePlan)))
+            .is_ok());
+        assert!(rebooted_policy
+            .authorise(&tx_request(tx_channel(TxClass::Amateur)))
+            .is_err());
+        assert!(rebooted_policy
+            .authorise(&tx_request(tx_channel(TxClass::Never)))
+            .is_err());
     }
 
     #[test]
@@ -454,7 +467,9 @@ mod tests {
         let (mut ui, ui_status) = BootUi::boot(&corrupt, KeySet::permission_menu_gesture());
         assert!(matches!(policy_status, LoadStatus::DefaultedDenied(_)));
         assert_eq!(ui_status, policy_status);
-        assert!(policy.authorise(TxClass::Amateur).is_err());
+        assert!(policy
+            .authorise(&tx_request(tx_channel(TxClass::Amateur)))
+            .is_err());
         release_boot_gesture(&mut ui);
         assert_eq!(
             ui.view(),

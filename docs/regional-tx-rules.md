@@ -40,12 +40,15 @@ assumption that the equipment-side conditions, including the antenna
 arrangement, are satisfied. That permission is an operator assertion, not
 firmware evidence, equipment approval, or legal advice. Frequency, raster,
 mode, bandwidth, power, simplex/mobile state, and timeout remain independent
-checks in the complete authorization path. Until those remaining request
-fields are integrated, this rule snapshot alone cannot mint a complete TX
-authorization.
+checks in the complete authorization path. `TXAUTH-053` now integrates these
+request fields in `TxPolicy::authorise`, along with explicit independent
+hardware/calibration limits. This regional evaluator still cannot mint a
+token on its own; its original snapshot date and compliance limits remain.
 
 The initial generic power ceilings are policy ceilings, deliberately no higher
 than 25 W for amateur operation. They do not model every licence tier,
 band-specific reduction, antenna gain, ERP/EIRP conversion, or individualized
-condition. A later complete request must take the minimum of the regional
-rule, grant, hardware envelope, calibration, and operator-selected power.
+condition. The complete request must satisfy the regional rule, any supplied
+grant, hardware envelope, and calibration ceiling at the exact operator-selected
+power. A supplied grant is validated even for built-in services; overlapping
+grant ranges apply the strictest matching limits, and malformed ranges deny.

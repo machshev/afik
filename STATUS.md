@@ -2,11 +2,11 @@
 
 ## Current work package
 
-**`TXAUTH-053` is active** by operator instruction on 2026-10-13. Its first
-milestone replaces class-only TX authority with one bounded request covering
+**`TXAUTH-053` is complete** (2026-10-13), following operator authorization.
+Its first milestone replaces class-only TX authority with one bounded request covering
 the exact channel, modulation, bandwidth, conducted power, timeout,
 configuration identity, regional/operator facts, and explicit hardware and
-calibration envelopes. Host and deterministic simulator tests must prove
+calibration envelopes. Host and deterministic simulator tests prove
 default denial and rejection of changed requests before any logical TX write.
 No target TX wiring, PTT actuation, PA control, firmware identity change,
 hardware write, or physical transmission is part of this milestone.
@@ -14,7 +14,51 @@ hardware write, or physical transmission is part of this milestone.
 `APP-052` is paused to prioritize this authorized TX milestone. Its K5
 allocation/restore evidence remains open; it is not a prerequisite for host
 authorization work. `RISK-036` remains deferred. Next smallest actionable task:
-implement and test the complete authorization boundary described in ADR-092.
+`TXCTRL-054` — a shared simulator-first PTT press/release, timeout, fault-cleanup,
+and return-to-receive controller. This is a planned work package; no target TX
+adapter or physical experiment is implied.
+
+`TxPolicy::authorise` is now the sole complete-request token constructor;
+there is no remaining class-only route. The token borrows the exact request
+and policy, and the logical BK4819 driver compares every current request field
+before any bus write. Channel-controller authority also borrows the selected
+controller. Missing/invalid state, identities, attestations, envelopes, grants,
+power, timeout, or licence-free raster/operating facts deny. Hardware and
+calibration must independently approve the same opaque target/unit identity;
+overlapping ranges apply the strictest matching limits. Generation zero is
+valid for volatile targets, while instance/revision must never be reused.
+Synthetic fixtures are test-only; this cannot authenticate external facts or
+discover a changed target when an adapter supplies an old snapshot (`RISK-038`).
+
+The final gate ran sequentially in the pinned cached direnv environment:
+
+```sh
+direnv exec . env CARGO_BUILD_JOBS=2 ionice -c 3 nice -n 10 bash -c 'cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && ./tool/build-k1-async.sh --release && ./tool/build-k5.sh --release && ./tool/verify-k5-image.sh target/thumbv6m-none-eabi/release/radio-firmware-k5 && ./tool/package-k5-image.sh --force target/thumbv6m-none-eabi/release/radio-firmware-k5 target/thumbv6m-none-eabi/release/afik-k5-2.2Q.bin && git diff --check'
+```
+
+All commands passed, with no warnings. The workspace suite passed 612 tests,
+including nine new complete-request cases, three compile-fail authority/borrow
+checks, and four new logical-driver/controller/simulator cases. Focused suites
+passed 8 policy unit tests, 9 authorization tests, 3 compile-fail doc tests,
+21 BK4819 unit tests plus its receive-loop test, 23 channel-control tests, and
+33 simulator tests. Both no_std target release builds passed. K5 static
+verification remains flash end `0x97f4`, static RAM end `0x20000100`, package
+size `0xF000`, and SHA-256
+`49f4a27dabd338e51e27c37db83a82dd5d0f602570dd17e88cdd87d54ecea8a4`,
+byte-identical to the previous unflashed 2.2Q package.
+
+The initial focused build passed with unused-import/fixture warnings; those
+were fixed. Focused Clippy caught reference/semicolon lints, also fixed. The
+first sandboxed workspace attempt could not unpack a missing Cargo dependency
+in the read-only shared cache; the authorized check was rerun with cache
+access. The first full compile then found five historical class-only UI test
+calls; they were migrated before the final successful gate. Exact commands
+for the focused successful gate were `direnv exec . env CARGO_BUILD_JOBS=2
+ionice -c 3 nice -n 10 bash -c 'cargo fmt --all && cargo clippy -p
+radio-tx-policy -p radio-bk4819 -p radio-channel-control -p radio-sim
+--all-targets -- -D warnings && cargo test -p radio-tx-policy -p radio-bk4819
+-p radio-channel-control -p radio-sim'`. No hardware or serial device was used,
+no firmware was flashed, and neither handset gains a physical TX path.
 
 ## Previous work package: APP-052 (paused)
 

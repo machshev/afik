@@ -2850,7 +2850,7 @@
 
 ## TXAUTH-053 — Complete, configuration-bound transmit authorization
 
-- **Status:** active (2026-10-13), first milestone authorized by the operator.
+- **Status:** complete (2026-10-13), host/simulator authorization milestone.
 - **Objective:** make `radio-tx-policy` the only constructor of a complete TX
   token, with no remaining class-only token path.
 - **Scope:** exact channel/modulation/bandwidth/power/timeout, non-reused
@@ -2869,3 +2869,24 @@
   and changes to permission persistence or serial permissions.
 - **Next milestone:** shared simulator-first PTT press/release, timeout,
   failure cleanup, and return-to-receive controller.
+- **Completion:** sole complete-request constructor and borrowed immutable
+  policy/request token; selected-controller borrowing; full current-request
+  logical-driver comparison; independent unit-bound hardware/calibration
+  limits; strict optional/overlapping grants; PMR raster/operating facts.
+  Sixteen added behavioral/compile-fail checks pass, as do the 612-test
+  workspace suite, formatting, warning-denied workspace Clippy, both target
+  release builds, K5 image/package checks, and diff checks. The K5 package is
+  byte-identical to the prior 2.2Q artifact; no physical TX path was added.
+
+## TXCTRL-054 — Shared PTT lifecycle and deterministic shutdown
+
+- **Status:** planned; next smallest actionable package after `TXAUTH-053`.
+- **First step:** define the hardware-independent PTT press/release, held-at-
+  boot, timeout, configuration invalidation, and target-fault event/effect
+  contract with deterministic virtual time and explicit adapter completion.
+- **Acceptance:** require complete policy authority; denied/stale requests
+  cannot enable the PA; release, timeout, invalidation, and every adapter
+  failure order shutdown before return to receive. Verify repeated scripts
+  and fault injection at each effect boundary.
+- **Exclusions:** new register/PA/power-calibration facts, hardware target TX
+  wiring, flashing, or physical transmission. `RISK-007` remains separate.

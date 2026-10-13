@@ -30,7 +30,7 @@ use radio_storage::{
     dual_slot::{self, BlockBackend, BLOCK_BYTES},
     ObjectKey,
 };
-use radio_tx_policy::{LoadStatus, TxAuthorisation, TxPolicy, PERMISSION_RECORD_LEN};
+use radio_tx_policy::{LoadStatus, TxAuthorisation, TxPolicy, TxRequest, PERMISSION_RECORD_LEN};
 use radio_ui::{BootUi, KeyEvent, KeySet, UiAction, UiView};
 use std::{
     cell::{Cell, RefCell},
@@ -582,10 +582,11 @@ impl RfSimulator {
     /// Runs the transmit plan only through a matching central-policy token.
     pub fn start_transmit(
         &mut self,
-        channel: ActiveChannel,
-        authorisation: &TxAuthorisation,
+        request: &TxRequest,
+        authorisation: &TxAuthorisation<'_>,
     ) -> Result<(), RfDriverError<RfSimBusError>> {
-        self.driver.start_transmit(channel, authorisation)?;
+        self.driver.start_transmit(request, authorisation)?;
+        let channel = request.channel;
         self.shared.record(RfTraceKind::TransmitStarted {
             frequency: channel.transmit,
             class: channel.tx_class,
@@ -836,12 +837,16 @@ impl ChannelSimulator {
     }
 
     /// Requests selected-state policy authority and starts logical TX.
-    pub fn start_transmit(&mut self, policy: &TxPolicy) -> Result<(), ChannelSimError> {
+    pub fn start_transmit(
+        &mut self,
+        policy: &TxPolicy,
+        request: &TxRequest,
+    ) -> Result<(), ChannelSimError> {
         self.require_not_transmitting()?;
-        match self.controller.authorise_transmit(policy) {
+        match self.controller.authorise_transmit(policy, request) {
             Ok(transmission) => {
                 self.rf
-                    .start_transmit(transmission.channel(), transmission.authorisation())?;
+                    .start_transmit(request, transmission.authorisation())?;
                 self.transmitting = true;
                 self.record(ChannelTraceKind::TransmitStarted {
                     index: self.controller.current_index(),
@@ -1577,7 +1582,12 @@ impl ProtocolTransport for K5ObjectTransport {
 }
 
 #[cfg(test)]
+#[path = "../../radio-tx-policy/tests/support/mod.rs"]
+mod tx_fixture;
+
+#[cfg(test)]
 mod tests {
+    use super::tx_fixture::{channel as tx_channel, request as tx_request};
     use super::{
         AprsSimError, AprsSimulator, AprsTraceEvent, AprsTraceKind, ChannelSimError,
         ChannelSimulator, ChannelTraceEvent, ChannelTraceKind, K5ObjectDevice, K5ObjectTransport,
@@ -2236,9 +2246,10 @@ mod tests {
             .with(TxClass::Amateur, true)
             .with(TxClass::Business, true);
         let policy = TxPolicy::load(&StoredPermissions::new(permissions, 1).encode()).0;
-        let amateur = policy.authorise(TxClass::Amateur).unwrap();
-        let business = policy.authorise(TxClass::Business).unwrap();
-        let channel = rf_channel(TxClass::Amateur);
+        let request = tx_request(rf_channel(TxClass::Amateur));
+        let amateur = policy.authorise(&request).unwrap();
+        let business_request = tx_request(rf_channel(TxClass::Business));
+        let business = policy.authorise(&business_request).unwrap();
         let mut simulator = RfSimulator::new();
 
         simulator.recover_to_standby().unwrap();
@@ -2255,17 +2266,17 @@ mod tests {
             }
         );
         simulator.advance_ms(3);
-        assert!(simulator.start_transmit(channel, &business).is_err());
+        assert!(simulator.start_transmit(&request, &business).is_err());
 
         simulator.advance_ms(2);
         simulator.inject_failure_after(3);
-        assert!(simulator.start_transmit(channel, &amateur).is_err());
+        assert!(simulator.start_transmit(&request, &amateur).is_err());
         assert_eq!(simulator.state(), super::RfDriverState::Faulted);
 
         simulator.advance_ms(3);
         simulator.recover_to_standby().unwrap();
         simulator.advance_ms(5);
-        simulator.start_transmit(channel, &amateur).unwrap();
+        simulator.start_transmit(&request, &amateur).unwrap();
         simulator.advance_ms(1);
         simulator.stop_transmit().unwrap();
 
@@ -2304,13 +2315,14 @@ mod tests {
             .with(TxClass::Amateur, true)
             .with(TxClass::Business, true);
         let policy = TxPolicy::load(&StoredPermissions::new(permissions, 1).encode()).0;
-        let business = policy.authorise(TxClass::Business).unwrap();
+        let business_request = tx_request(rf_channel(TxClass::Business));
+        let business = policy.authorise(&business_request).unwrap();
         let mut simulator = RfSimulator::new();
         simulator.recover_to_standby().unwrap();
         let before = simulator.trace();
 
         assert!(simulator
-            .start_transmit(rf_channel(TxClass::Amateur), &business)
+            .start_transmit(&tx_request(rf_channel(TxClass::Amateur)), &business)
             .is_err());
         assert_eq!(simulator.trace(), before);
         assert!(!simulator.trace().iter().any(|event| matches!(
@@ -2323,6 +2335,62 @@ mod tests {
     fn scan_policy(enabled: bool) -> TxPolicy {
         let permissions = PermissionSet::none().with(TxClass::LicenceFreePlan, enabled);
         TxPolicy::load(&StoredPermissions::new(permissions, 1).encode()).0
+    }
+
+    #[test]
+    fn complete_tx_denials_emit_no_rf_writes_and_repeat_the_same_trace() {
+        fn run() -> (Vec<ChannelTraceEvent>, Vec<RfTraceEvent>) {
+            let mut simulator =
+                ChannelSimulator::activate(bank(8, "DENY"), 0, ScanConfig::new(10, 30).unwrap())
+                    .unwrap();
+            let policy = scan_policy(true);
+            let original = tx_request(simulator.current_channel());
+            let rf_before = simulator.rf_trace();
+            for field in 0..8 {
+                let mut request = original;
+                match field {
+                    0 => request.hardware = None,
+                    1 => request.calibration = None,
+                    2 => request.configuration = None,
+                    3 => request.state = radio_tx_policy::TxState::Faulted,
+                    4 => request.timeout_ms = 0,
+                    5 => request.conducted_mw = 501,
+                    6 => {
+                        request.attestations.equipment_eligible =
+                            radio_tx_policy::regional::Attestation::Unattested;
+                    }
+                    _ => request.target_id += 1,
+                }
+                simulator.advance_ms(7);
+                assert_eq!(
+                    simulator.start_transmit(&policy, &request),
+                    Err(ChannelSimError::Transmit(ChannelTxError::PolicyDenied))
+                );
+                assert_eq!(simulator.rf_trace(), rf_before);
+            }
+            (simulator.trace().to_vec(), simulator.rf_trace())
+        }
+        assert_eq!(run(), run());
+    }
+
+    #[test]
+    fn rf_simulator_refuses_stale_generation_and_power_without_tx_events() {
+        let policy = scan_policy(true);
+        let request = tx_request(tx_channel(TxClass::LicenceFreePlan));
+        let token = policy.authorise(&request).unwrap();
+        let mut simulator = RfSimulator::new();
+        simulator.recover_to_standby().unwrap();
+        let before = simulator.trace();
+        for power in [false, true] {
+            let mut current = request;
+            if power {
+                current.conducted_mw += 1;
+            } else {
+                current.configuration.as_mut().unwrap().generation += 1;
+            }
+            assert!(simulator.start_transmit(&current, &token).is_err());
+            assert_eq!(simulator.trace(), before);
+        }
     }
 
     fn run_channel_script() -> (Vec<ChannelTraceEvent>, Vec<RfTraceEvent>, u16, ControlState) {
@@ -2359,7 +2427,9 @@ mod tests {
         assert_eq!(simulator.current_index(), 2);
 
         simulator.stop_scanning().unwrap();
-        simulator.start_transmit(&scan_policy(true)).unwrap();
+        simulator
+            .start_transmit(&scan_policy(true), &tx_request(simulator.current_channel()))
+            .unwrap();
         simulator.advance_ms(5);
         simulator.stop_transmit().unwrap();
 
@@ -2434,7 +2504,7 @@ mod tests {
         assert_eq!(simulator.current_index(), 0);
         let rf_before = simulator.rf_trace();
         assert_eq!(
-            simulator.start_transmit(&scan_policy(true)),
+            simulator.start_transmit(&scan_policy(true), &tx_request(simulator.current_channel())),
             Err(ChannelSimError::Transmit(ChannelTxError::Scanning))
         );
         assert_eq!(simulator.rf_trace(), rf_before);
@@ -2447,7 +2517,10 @@ mod tests {
 
         let rf_before = simulator.rf_trace();
         assert_eq!(
-            simulator.start_transmit(&scan_policy(false)),
+            simulator.start_transmit(
+                &scan_policy(false),
+                &tx_request(simulator.current_channel())
+            ),
             Err(ChannelSimError::Transmit(ChannelTxError::PolicyDenied))
         );
         assert_eq!(simulator.rf_trace(), rf_before);
@@ -2505,7 +2578,7 @@ mod tests {
         assert_eq!(first.view(), UiView::PermissionsSaved { generation: 11 });
         assert!(first
             .active_policy()
-            .authorise(TxClass::LicenceFreePlan)
+            .authorise(&tx_request(tx_channel(TxClass::LicenceFreePlan)))
             .is_err());
         assert!(matches!(
             first.trace().last().map(|event| event.kind),
@@ -2517,9 +2590,12 @@ mod tests {
         assert_eq!(first.view(), UiView::Normal);
         assert!(first
             .active_policy()
-            .authorise(TxClass::LicenceFreePlan)
+            .authorise(&tx_request(tx_channel(TxClass::LicenceFreePlan)))
             .is_ok());
-        assert!(first.active_policy().authorise(TxClass::Amateur).is_err());
+        assert!(first
+            .active_policy()
+            .authorise(&tx_request(tx_channel(TxClass::Amateur)))
+            .is_err());
         assert_eq!(first.trace().last().unwrap().at_ms, 40);
     }
 
@@ -2539,7 +2615,7 @@ mod tests {
         ));
         assert!(simulator
             .active_policy()
-            .authorise(TxClass::Amateur)
+            .authorise(&tx_request(tx_channel(TxClass::Amateur)))
             .is_err());
         simulator.handle(KeyEvent::released(Key::Menu));
         simulator.handle(KeyEvent::released(Key::Back));
@@ -2560,7 +2636,7 @@ mod tests {
         ));
         assert!(simulator
             .active_policy()
-            .authorise(TxClass::Amateur)
+            .authorise(&tx_request(tx_channel(TxClass::Amateur)))
             .is_err());
     }
 
@@ -2694,7 +2770,9 @@ mod tests {
         )));
 
         let tx_policy = TxPolicy::default();
-        assert!(tx_policy.authorise(TxClass::LicenceFreePlan).is_err());
+        assert!(tx_policy
+            .authorise(&tx_request(tx_channel(TxClass::LicenceFreePlan)))
+            .is_err());
     }
 
     #[test]

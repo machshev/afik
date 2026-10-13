@@ -15,7 +15,7 @@ pub use banked::{
 use core::fmt;
 use radio_channel_plan::{GeneratedBank, PlanError};
 use radio_domain::{ActiveChannel, SignalMeasurement};
-use radio_tx_policy::{TxAuthorisation, TxPolicy};
+use radio_tx_policy::{TxAuthorisation, TxPolicy, TxRequest};
 
 /// Explicit logical scan durations in integer milliseconds.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -168,8 +168,10 @@ impl From<PlanError> for ControlError {
 pub enum ChannelTxError {
     /// Scanning state never exposes transmit authority.
     Scanning,
-    /// Central policy denied the selected channel's class.
+    /// Central policy denied the selected channel's complete request.
     PolicyDenied,
+    /// The request is not for the exact selected channel.
+    RequestMismatch,
 }
 
 impl fmt::Display for ChannelTxError {
@@ -177,25 +179,28 @@ impl fmt::Display for ChannelTxError {
         match self {
             Self::Scanning => formatter.write_str("transmit denied while scanning"),
             Self::PolicyDenied => formatter.write_str("selected channel denied by TX policy"),
+            Self::RequestMismatch => {
+                formatter.write_str("TX request differs from selected channel")
+            }
         }
     }
 }
 
 /// Exact selected channel paired with central-policy capability authority.
 #[derive(Debug)]
-pub struct AuthorisedTransmission {
+pub struct AuthorisedTransmission<'a> {
     channel: ActiveChannel,
-    authorisation: TxAuthorisation,
+    authorisation: TxAuthorisation<'a>,
 }
 
-impl AuthorisedTransmission {
+impl AuthorisedTransmission<'_> {
     /// Returns the selected active channel approved for the request.
     pub const fn channel(&self) -> ActiveChannel {
         self.channel
     }
 
     /// Borrows the shortest-scope capability required by a TX driver.
-    pub const fn authorisation(&self) -> &TxAuthorisation {
+    pub const fn authorisation(&self) -> &TxAuthorisation<'_> {
         &self.authorisation
     }
 }
@@ -371,15 +376,19 @@ impl ChannelController {
     }
 
     /// Requests central-policy authority only while one channel is selected.
-    pub fn authorise_transmit(
-        &self,
-        policy: &TxPolicy,
-    ) -> Result<AuthorisedTransmission, ChannelTxError> {
+    pub fn authorise_transmit<'a>(
+        &'a self,
+        policy: &'a TxPolicy,
+        request: &'a TxRequest,
+    ) -> Result<AuthorisedTransmission<'a>, ChannelTxError> {
         if !matches!(self.state, ControlState::Selected) {
             return Err(ChannelTxError::Scanning);
         }
+        if request.channel != self.channel {
+            return Err(ChannelTxError::RequestMismatch);
+        }
         let authorisation = policy
-            .authorise(self.channel.tx_class)
+            .authorise(request)
             .map_err(|_| ChannelTxError::PolicyDenied)?;
         Ok(AuthorisedTransmission {
             channel: self.channel,
@@ -422,7 +431,12 @@ impl ChannelController {
 }
 
 #[cfg(test)]
+#[path = "../../radio-tx-policy/tests/support/mod.rs"]
+mod tx_fixture;
+
+#[cfg(test)]
 mod tests {
+    use super::tx_fixture::request as tx_request;
     use super::{
         ChannelController, ChannelTxError, ControlError, ControlState, ScanConfig, ScanConfigError,
         ScanPhase, TimerDirective,
@@ -593,17 +607,25 @@ mod tests {
     #[test]
     fn scan_denies_tx_and_selected_state_uses_exact_policy_class() {
         let mut control = controller(1);
+        let request = tx_request(control.current_channel());
+        let allowed_policy = policy(true);
         assert_eq!(
-            control.authorise_transmit(&policy(false)).unwrap_err(),
+            control
+                .authorise_transmit(&policy(false), &request)
+                .unwrap_err(),
             ChannelTxError::PolicyDenied
         );
-        let transmission = control.authorise_transmit(&policy(true)).unwrap();
+        let transmission = control
+            .authorise_transmit(&allowed_policy, &request)
+            .unwrap();
         assert_eq!(transmission.channel(), control.current_channel());
         assert_eq!(transmission.authorisation().class(), TxClass::Amateur);
 
         control.start_scanning().unwrap();
         assert_eq!(
-            control.authorise_transmit(&policy(true)).unwrap_err(),
+            control
+                .authorise_transmit(&allowed_policy, &request)
+                .unwrap_err(),
             ChannelTxError::Scanning
         );
     }
@@ -625,6 +647,18 @@ mod tests {
                 .unwrap()
                 .index,
             1
+        );
+    }
+
+    #[test]
+    fn selected_controller_refuses_a_request_for_another_channel() {
+        let control = controller(1);
+        let request = tx_request(bank().channel(0).unwrap());
+        assert_eq!(
+            control
+                .authorise_transmit(&policy(true), &request)
+                .unwrap_err(),
+            ChannelTxError::RequestMismatch
         );
     }
 }

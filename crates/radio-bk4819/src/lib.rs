@@ -16,8 +16,8 @@ pub use receive::{
 };
 
 use core::fmt;
-use radio_domain::{ActiveChannel, Frequency, TxClass};
-use radio_tx_policy::TxAuthorisation;
+use radio_domain::{Frequency, TxClass};
+use radio_tx_policy::{TxAuthorisation, TxRequest};
 
 const REG_MODE_CONTROL: RegisterAddress = RegisterAddress::known(0x30);
 const REG_FREQUENCY_LOW: RegisterAddress = RegisterAddress::known(0x38);
@@ -178,6 +178,8 @@ pub enum DriverError<E> {
         /// Class required by the requested active channel.
         requested: TxClass,
     },
+    /// The complete current request differs from the approved immutable facts.
+    AuthorisationRequestMismatch,
 }
 
 impl<E: fmt::Display> fmt::Display for DriverError<E> {
@@ -186,6 +188,9 @@ impl<E: fmt::Display> fmt::Display for DriverError<E> {
             Self::Bus(error) => write!(formatter, "BK4819 register bus failed: {error}"),
             Self::InvalidState(state) => write!(formatter, "invalid BK4819 state: {state:?}"),
             Self::Frequency(error) => write!(formatter, "{error}"),
+            Self::AuthorisationRequestMismatch => {
+                formatter.write_str("TX authorization request is stale or mismatched")
+            }
             Self::AuthorisationClassMismatch {
                 approved,
                 requested,
@@ -285,19 +290,25 @@ impl<B: RegisterBus> Bk4819<B> {
         })
     }
 
-    /// Tunes and enters inferred TX mode only with matching central authority.
+    /// Enters modeled TX only when the complete current request matches authority.
     ///
-    /// This method is the crate's only path to the TX mode-control word.
+    /// This method is the crate's only path to the TX mode-control word. It
+    /// does not implement the approved power, timeout, or board PA mechanics;
+    /// physical adapters must enforce those before this can be used on hardware.
     pub fn start_transmit(
         &mut self,
-        channel: ActiveChannel,
-        authorisation: &TxAuthorisation,
+        request: &TxRequest,
+        authorisation: &TxAuthorisation<'_>,
     ) -> Result<(), DriverError<B::Error>> {
+        let channel = request.channel;
         if authorisation.class() != channel.tx_class {
             return Err(DriverError::AuthorisationClassMismatch {
                 approved: authorisation.class(),
                 requested: channel.tx_class,
             });
+        }
+        if !authorisation.matches(request) {
+            return Err(DriverError::AuthorisationRequestMismatch);
         }
         if !matches!(
             self.state,
@@ -432,7 +443,12 @@ pub(crate) mod tests_support {
 }
 
 #[cfg(test)]
+#[path = "../../radio-tx-policy/tests/support/mod.rs"]
+mod tx_fixture;
+
+#[cfg(test)]
 mod tests {
+    use super::tx_fixture::request as tx_request;
     extern crate std;
 
     use super::tests_support::{FakeBus, FakeBusError, Operation};
@@ -516,14 +532,16 @@ mod tests {
     #[test]
     fn only_a_matching_class_token_reaches_transmit_mode() {
         let tx_policy = policy(&[TxClass::Amateur, TxClass::Business]);
-        let amateur = tx_policy.authorise(TxClass::Amateur).unwrap();
-        let business = tx_policy.authorise(TxClass::Business).unwrap();
+        let amateur_request = tx_request(channel(TxClass::Amateur));
+        let amateur = tx_policy.authorise(&amateur_request).unwrap();
+        let business_request = tx_request(channel(TxClass::Business));
+        let business = tx_policy.authorise(&business_request).unwrap();
         let mut radio = Bk4819::new(FakeBus::new(None));
         radio.recover_to_standby().unwrap();
 
         let operation_count = radio.bus().operations.len();
         assert_eq!(
-            radio.start_transmit(channel(TxClass::Business), &amateur),
+            radio.start_transmit(&business_request, &amateur),
             Err(DriverError::AuthorisationClassMismatch {
                 approved: TxClass::Amateur,
                 requested: TxClass::Business,
@@ -531,9 +549,7 @@ mod tests {
         );
         assert_eq!(radio.bus().operations.len(), operation_count);
 
-        radio
-            .start_transmit(channel(TxClass::Business), &business)
-            .unwrap();
+        radio.start_transmit(&business_request, &business).unwrap();
         assert_eq!(
             &radio.bus().operations[operation_count..],
             &[
@@ -561,14 +577,15 @@ mod tests {
     #[test]
     fn unknown_and_invalid_states_deny_without_bus_operations() {
         let tx_policy = policy(&[TxClass::Amateur]);
-        let authorisation = tx_policy.authorise(TxClass::Amateur).unwrap();
+        let request = tx_request(channel(TxClass::Amateur));
+        let authorisation = tx_policy.authorise(&request).unwrap();
         let mut radio = Bk4819::new(FakeBus::new(None));
         assert_eq!(
             radio.start_receive(frequency(145_500_000)),
             Err(DriverError::InvalidState(DriverState::Unknown))
         );
         assert_eq!(
-            radio.start_transmit(channel(TxClass::Amateur), &authorisation),
+            radio.start_transmit(&request, &authorisation),
             Err(DriverError::InvalidState(DriverState::Unknown))
         );
         assert_eq!(
@@ -582,21 +599,52 @@ mod tests {
         assert!(radio.bus().operations.is_empty());
     }
 
+    #[test]
+    fn changed_same_class_request_is_denied_before_every_bus_operation() {
+        let policy = policy(&[TxClass::Amateur]);
+        let request = tx_request(channel(TxClass::Amateur));
+        let token = policy.authorise(&request).unwrap();
+        let mut radio = Bk4819::new(FakeBus::new(None));
+        radio.recover_to_standby().unwrap();
+        let before = radio.bus().operations.len();
+        for field in 0..9 {
+            let mut current = request;
+            match field {
+                0 => current.channel.transmit = frequency(145_525_000),
+                1 => current.channel.receive = frequency(145_525_000),
+                2 => current.conducted_mw += 1,
+                3 => current.timeout_ms += 1,
+                4 => current.configuration.as_mut().unwrap().revision += 1,
+                5 => current.configuration.as_mut().unwrap().instance += 1,
+                6 => current.configuration.as_mut().unwrap().generation += 1,
+                7 => current.hardware.as_mut().unwrap().evidence_id += 1,
+                _ => current.target_id += 1,
+            }
+            assert_eq!(
+                radio.start_transmit(&current, &token),
+                Err(DriverError::AuthorisationRequestMismatch)
+            );
+            assert_eq!(radio.bus().operations.len(), before);
+            assert_eq!(radio.state(), DriverState::Standby);
+        }
+    }
+
     fn assert_mode_failure_latches_fault(final_mode: u16, fail_step: usize) {
         let tx_policy = policy(&[TxClass::Amateur]);
-        let authorisation = tx_policy.authorise(TxClass::Amateur).unwrap();
+        let request = tx_request(channel(TxClass::Amateur));
+        let authorisation = tx_policy.authorise(&request).unwrap();
         let mut radio = Bk4819::new(FakeBus::new(Some(fail_step + 1)));
         radio.recover_to_standby().unwrap();
         let result = if final_mode == MODE_RECEIVE {
             radio.start_receive(frequency(145_500_000))
         } else {
-            radio.start_transmit(channel(TxClass::Amateur), &authorisation)
+            radio.start_transmit(&request, &authorisation)
         };
         assert_eq!(result, Err(DriverError::Bus(FakeBusError)));
         assert_eq!(radio.state(), DriverState::Faulted);
         let operation_count = radio.bus().operations.len();
         assert_eq!(
-            radio.start_transmit(channel(TxClass::Amateur), &authorisation),
+            radio.start_transmit(&request, &authorisation),
             Err(DriverError::InvalidState(DriverState::Faulted))
         );
         assert_eq!(radio.bus().operations.len(), operation_count);

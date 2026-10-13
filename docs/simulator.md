@@ -85,6 +85,13 @@ passes through `TxPolicy`, the class-bound capability bundle, and the BK4819
 driver; TX stop resumes receive on the still-selected channel. Identical timed
 scan/hold/stop/TX scripts produce identical control and RF traces.
 
+`TXAUTH-053` requires callers of both RF and channel simulators to provide an
+explicit complete `TxRequest`. No production simulator API manufactures
+hardware/calibration/operator facts. Test-only synthetic fixtures exercise the
+same central-policy constructor and complete-request driver comparison;
+denied requests and changed generation/power tokens produce no added RF writes
+or TX events. Repeated denial scripts have identical virtual-time traces.
+
 ## APRS receive-only discovery
 
 Work Package 11 adds `AprsSimulator` around the hardware-independent

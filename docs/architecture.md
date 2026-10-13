@@ -139,7 +139,7 @@ permission bytes separate from the active policy loaded at the last boot.
 Work Package 6 adds `radio-bk4819` as an embedded, hardware-independent command
 driver over a fallible logical register-bus trait. It owns exact frequency-word
 packing, receive status decoding, state/fault latching, and the only modeled TX
-mode transition. That transition requires a borrowed, class-matching capability
+mode transition. That transition requires a borrowed, complete-request-matching capability
 from `radio-tx-policy`. It does not depend on a PAC, HAL, board crate, allocator,
 or host crate. `radio-sim` supplies a host-only logical bus with explicit virtual
 time and deterministic one-shot failures; it is not a silicon or RF model.
@@ -150,6 +150,15 @@ manual navigation, explicit dwell/hold state, opaque logical timer tokens, and
 selected-state policy authorization. It owns neither a clock nor an RF driver.
 `radio-sim` is the host composition root that applies activation outputs to the
 logical BK4819 driver and schedules tokens on explicit virtual time.
+
+`TXAUTH-053` makes the TX-policy leaf the sole complete-request authority.
+Its bounded request owns exact settings, configuration/selection identity,
+operator/regional inputs, and explicit hardware and per-unit calibration
+envelopes. A token borrows the immutable request and policy; controller bundles
+also borrow selection state. The logical driver compares the entire current
+request before writing. Test-only synthetic envelopes live under
+`radio-tx-policy/tests/support` and are excluded from firmware. No target main,
+PTT lifecycle, PA control, or physical TX capability is added.
 
 Work Package 8 adds `radio-programmer-cli` as a host-only front-end leaf. It
 depends on `radio-programmer` for compilation, image, protocol, transaction,

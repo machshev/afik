@@ -7,6 +7,12 @@ use core::fmt;
 use radio_domain::TxClass;
 
 pub mod regional;
+mod request;
+
+pub use request::{
+    ConfigurationIdentity, OperatingConditions, TxEnvelope, TxRequest, TxState,
+    MAX_ENVELOPE_RANGES, MAX_TX_TIMEOUT_MS,
+};
 
 /// Current persisted permission encoding version.
 pub const PERMISSION_FORMAT_VERSION: u8 = 1;
@@ -195,13 +201,42 @@ impl TxPolicy {
         }
     }
 
-    /// Attempts to mint a token required by the hardware TX boundary.
-    pub fn authorise(&self, class: TxClass) -> Result<TxAuthorisation, TxDenied> {
-        if self.permissions.allows(class) {
-            Ok(TxAuthorisation { class })
-        } else {
-            Err(TxDenied)
-        }
+    /// Authorizes one complete request, borrowing its immutable policy/facts.
+    ///
+    /// Class-only token construction is unavailable:
+    /// ```compile_fail
+    /// use radio_domain::TxClass;
+    /// use radio_tx_policy::TxPolicy;
+    /// TxPolicy::deny_all().authorise(TxClass::Amateur);
+    /// ```
+    /// Approved facts cannot be changed while authority is still used:
+    /// ```compile_fail
+    /// use radio_tx_policy::{TxPolicy, TxRequest};
+    /// fn change(policy: &TxPolicy, request: &mut TxRequest) {
+    ///     let token = policy.authorise(request).unwrap();
+    ///     request.conducted_mw += 1;
+    ///     assert!(token.matches(request));
+    /// }
+    /// ```
+    /// Policy replacement also ends the borrow before new authority is possible:
+    /// ```compile_fail
+    /// use radio_tx_policy::{TxPolicy, TxRequest};
+    /// fn change(policy: &mut TxPolicy, request: &TxRequest) {
+    ///     let token = policy.authorise(request).unwrap();
+    ///     *policy = TxPolicy::deny_all();
+    ///     assert!(token.matches(request));
+    /// }
+    /// ```
+    pub fn authorise<'a>(
+        &'a self,
+        request: &'a TxRequest,
+    ) -> Result<TxAuthorisation<'a>, TxDenied> {
+        let provenance = request.validate(*self)?;
+        Ok(TxAuthorisation {
+            request,
+            policy: self,
+            provenance,
+        })
     }
 }
 
@@ -210,24 +245,60 @@ impl TxPolicy {
 /// Its constructor is private to this crate. Drivers should accept a borrowed
 /// token for the shortest possible scope.
 #[derive(Debug)]
-pub struct TxAuthorisation {
-    class: TxClass,
+pub struct TxAuthorisation<'a> {
+    request: &'a TxRequest,
+    policy: &'a TxPolicy,
+    provenance: regional::RuleProvenance,
 }
 
-impl TxAuthorisation {
+impl TxAuthorisation<'_> {
     /// Returns the exact TX class approved by this capability token.
     pub const fn class(&self) -> TxClass {
-        self.class
+        self.request.channel.tx_class
+    }
+
+    /// Checks the entire freshly supplied request, including opaque identities.
+    pub fn matches(&self, current: &TxRequest) -> bool {
+        self.request == current && current.validate(*self.policy).is_ok()
+    }
+
+    /// Returns the exact approved request; this is not proof of current state.
+    pub const fn request(&self) -> &TxRequest {
+        self.request
+    }
+
+    /// Returns the unchanged regional snapshot provenance used for approval.
+    pub const fn provenance(&self) -> regional::RuleProvenance {
+        self.provenance
     }
 }
 
 /// Transmit authorisation was denied by central policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct TxDenied;
+pub enum TxDenied {
+    /// Service class is disabled, or permissions failed validation.
+    Permission,
+    /// No healthy, settled selected channel is established.
+    State,
+    /// Configuration identity is missing or invalid.
+    Configuration,
+    /// Timeout is zero or exceeds the bounded application ceiling.
+    Timeout,
+    /// Requested power is zero.
+    Power,
+    /// Regional rule or external fact validation failed.
+    Regional(regional::RegionalDenial),
+    /// Licence-free raster, simplex, or operating facts failed.
+    OperatingConditions,
+    /// Hardware limits are absent, malformed, or exceeded.
+    Hardware,
+    /// Calibration limits are absent, malformed, or exceeded.
+    Calibration,
+}
 
 impl fmt::Display for TxDenied {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("transmit denied by policy")
+        write!(formatter, "transmit denied by policy: {self:?}")
     }
 }
 
@@ -247,7 +318,15 @@ fn crc16_ccitt_false(bytes: &[u8]) -> u16 {
 }
 
 #[cfg(test)]
+extern crate self as radio_tx_policy;
+
+#[cfg(test)]
+#[path = "../tests/support/mod.rs"]
+mod tx_fixture;
+
+#[cfg(test)]
 mod tests {
+    use super::tx_fixture::{channel as tx_channel, request as tx_request};
     use super::{LoadStatus, PermissionSet, StoredPermissions, TxPolicy};
     use radio_domain::TxClass;
 
@@ -263,7 +342,7 @@ mod tests {
             TxClass::Business,
             TxClass::Experimental,
         ] {
-            assert!(policy.authorise(class).is_err());
+            assert!(policy.authorise(&tx_request(tx_channel(class))).is_err());
         }
     }
 
@@ -273,10 +352,15 @@ mod tests {
         let bytes = StoredPermissions::new(permissions, 8).encode();
         let (policy, status) = TxPolicy::load(&bytes);
         assert_eq!(status, LoadStatus::Valid);
-        let authorisation = policy.authorise(TxClass::LicenceFreePlan).unwrap();
+        let request = tx_request(tx_channel(TxClass::LicenceFreePlan));
+        let authorisation = policy.authorise(&request).unwrap();
         assert_eq!(authorisation.class(), TxClass::LicenceFreePlan);
-        assert!(policy.authorise(TxClass::Amateur).is_err());
-        assert!(policy.authorise(TxClass::Never).is_err());
+        assert!(policy
+            .authorise(&tx_request(tx_channel(TxClass::Amateur)))
+            .is_err());
+        assert!(policy
+            .authorise(&tx_request(tx_channel(TxClass::Never)))
+            .is_err());
     }
 
     #[test]
@@ -288,7 +372,11 @@ mod tests {
         bytes[1] ^= 1;
         let (policy, status) = TxPolicy::load(&bytes);
         assert!(matches!(status, LoadStatus::DefaultedDenied(_)));
-        assert!(policy.authorise(TxClass::LicenceFreePlan).is_err());
-        assert!(policy.authorise(TxClass::Amateur).is_err());
+        assert!(policy
+            .authorise(&tx_request(tx_channel(TxClass::LicenceFreePlan)))
+            .is_err());
+        assert!(policy
+            .authorise(&tx_request(tx_channel(TxClass::Amateur)))
+            .is_err());
     }
 }

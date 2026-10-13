@@ -167,11 +167,16 @@ pub fn evaluate(request: RegionalRequest<'_>) -> Result<RuleProvenance, Regional
     }
 
     let built_in = built_in_range(request.region, request.class, request.frequency);
-    let rule = if requires_grant(request.class) {
+    let mut rule = if requires_grant(request.class) {
         grant_range(request)?
     } else {
         built_in.ok_or(RegionalDenial::Frequency)?
     };
+    if !requires_grant(request.class) && request.grant.is_some() {
+        let grant = grant_range(request)?;
+        rule.max_conducted_mw = rule.max_conducted_mw.min(grant.max_conducted_mw);
+        rule.wide_fm &= grant.wide_fm;
+    }
     if request.bandwidth == Bandwidth::Wide && !rule.wide_fm {
         return Err(RegionalDenial::Bandwidth);
     }
@@ -190,16 +195,31 @@ const fn requires_grant(class: TxClass) -> bool {
 
 fn grant_range(request: RegionalRequest<'_>) -> Result<RuleRange, RegionalDenial> {
     let grant = request.grant.ok_or(RegionalDenial::MissingGrant)?;
-    if !grant.complete || grant.region != request.region || grant.class != request.class {
+    if !grant.complete
+        || grant.grant_id == 0
+        || grant.region != request.region
+        || grant.class != request.class
+    {
         return Err(RegionalDenial::InvalidGrant);
     }
-    grant
-        .ranges
-        .iter()
-        .flatten()
-        .copied()
-        .find(|range| range.contains(request.frequency))
-        .ok_or(RegionalDenial::Frequency)
+    let mut selected: Option<RuleRange> = None;
+    for range in grant.ranges.iter().flatten() {
+        if range.first_hz == 0 || range.first_hz > range.last_hz || range.max_conducted_mw == 0 {
+            return Err(RegionalDenial::InvalidGrant);
+        }
+        if range.contains(request.frequency) {
+            selected = Some(match selected {
+                None => *range,
+                Some(previous) => RuleRange {
+                    first_hz: previous.first_hz.max(range.first_hz),
+                    last_hz: previous.last_hz.min(range.last_hz),
+                    max_conducted_mw: previous.max_conducted_mw.min(range.max_conducted_mw),
+                    wide_fm: previous.wide_fm && range.wide_fm,
+                },
+            });
+        }
+    }
+    selected.ok_or(RegionalDenial::Frequency)
 }
 
 const fn built_in_range(region: Region, class: TxClass, frequency: Frequency) -> Option<RuleRange> {
