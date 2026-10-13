@@ -2899,13 +2899,14 @@ SHA-256 of the principal inspected files:
 | K5 V1 | `driver/bk4819.c` | `a2bc8167130798c081ed4286e909e2f48628b1c5fdbac38750a50ac30ae0cacc` |
 | K5 V1 | `radio.c` | `719cc6dfadc4363753f72b67faeaa2be73a87889877301ff103520e3a0008076` |
 
-The sources retain their existing standing: observations of working firmware
-and source-declared wiring/register use, with no permission to copy, port,
-link, or translate the implementation. In particular, literal writes and
-comments below are source facts, not newly accepted silicon semantics.
-Confidence is **high for the inspected source/software statement**; physical
-applicability of each TX statement remains **unestablished** unless a separate
-exact-unit observation is named. No exact-unit PA/TX-off observation is recorded.
+The sources retain their existing standing as hardware-tested board/register
+evidence, with no permission to copy, port, link, or translate the implementation.
+The operator reaffirmed on 2026-10-13 that hardware conclusions must correlate
+with Armel's proven firmware; `EVID-TX056-003` supplies that cross-reference for
+both targets. Confidence is **high for the hardware-tested operating paths and
+the inspected source statements**. AFIK's exact-unit unknown/faulted-state
+shutdown, timing and physical completion remain **unmeasured**. No new
+exact-unit AFIK PA/TX-off observation is recorded.
 
 ### EVID-TX055-001 — PA off shares the chip bus and a cached output word
 
@@ -3114,6 +3115,13 @@ TX inputs and makes no register or firmware change.
   applicability to the exact fitted RF chip and PCB. The K1 build's selection
   of `bk4829.c` and successful receive profile do not measure physical TX
   wiring. Source `PIN29`, `PIN28`, and `PIN32` names must not select K1 pads.
+- **Armel correlation:** `App/driver/bk4819-regs.h:137-143` assigns logical
+  GPIO1 the enum value 1; selected `App/driver/bk4829.c:434-442` uses that
+  value in `0x40 >> Pin`, not a package-pin address. The inherited `PIN29`
+  string therefore does not mean that proven K1 firmware drives package pin
+  29 as GPIO1. This is a symbol-label/package distinction, not a defect in
+  Armel's working implementation. The logical roles remain authoritative;
+  published package numbers still require a matched physical probe map.
 - **Permitted use:** distinguish logical source roles, published package pins,
   and physical probe points in the shutdown acceptance plan. No GPIO direction,
   safe output word, RF switch connection, electrical PA polarity, register
@@ -3146,3 +3154,50 @@ TX inputs and makes no register or firmware change.
   retain source/revision/hash and link each signal to a marked physical pad.
   Independently resolve whether the PA can be inhibited when the chip bus is
   unavailable. `RISK-040` remains open; target TX inputs remain denied.
+
+### EVID-TX056-003 — Hardware conclusions correlate with Armel's proven source
+
+- **Standing:** the operator explicitly reaffirmed Armel firmware as proven
+  on hardware and requested correlation of hardware conclusions on
+  2026-10-13. Accept its selected drivers and their application callers as
+  trusted board/register evidence. Do not downgrade proven normal operating
+  sequences merely because AFIK has not repeated their measurements.
+- **K1 pin:** the existing `armel/uv-k1-k5v3-firmware-custom` commit
+  `fe9c4e9432694b50aea651084a043aae0b58673d`; `App/CMakeLists.txt:10`
+  selects `App/driver/bk4829.c`. Prefix `K1` below denotes that source.
+- **K5 V1 correlation pin:** `armel/uv-k5-firmware-custom` commit
+  `fbcf26d8e9811b135b7e2d97bdefebaa4b3ed9e0`, resolved and retrieved
+  2026-10-13 outside AFIK. `Makefile:124` selects `driver/bk4819.o`.
+  Prefix `K5` below denotes this separate source. It corroborates the
+  earlier hardware-tested machshev V1 source without replacing that pin or
+  claiming the exact unit ran this particular Armel commit.
+
+| Hardware conclusion | K1 Armel selected source | K5 V1 Armel source | Qualification boundary |
+| --- | --- | --- | --- |
+| Register bus bindings | `App/board.c:108-112,126-129`: PB8 clock, PB9 data, PF9 select | `driver/gpio.h:51-58`: PC0 select, PC1 clock, PC2 data | Trusted board bindings; physical probe pad/access must match the actual board. |
+| PTT is an input, distinct from PA control | `App/driver/gpio.h:29-35,77-80`: PB10 PTT | `driver/gpio.h:51-58`: PC5 PTT | Proven source binding; no TX intent follows from AFIK input-only observation. |
+| PA/RX/LNA logical roles | `App/driver/bk4819-regs.h:137-143` | `driver/bk4819-regs.h:136-142` | GPIO1 PA, GPIO0 RX, GPIO3/4 UHF/VHF LNA; inherited numeric labels are not the K1 package map. |
+| PA off/on uses a cached chip output word | `App/driver/bk4829.c:434-442`; `App/radio.c:782-784,1017-1021` | `driver/bk4819.c:366-374`; `radio.c:721-723,967-971` | Clear for receive, set for TX, whole `REG_33` shadow write; these operations need the chip bus. An independent broken-bus route is not established by them. |
+| Zero bias is part of the proven receive off strategy | `App/driver/bk4829.c:729-752`; `App/radio.c:782-784` | `driver/bk4819.c:661-683`; `radio.c:721-723` | Zero bias plus PA-enable clear is a deliberate reference state. The helper's enable bit staying set is not evidence of a reference-firmware defect or transmission. Unknown-state completeness and AFIK completion remain separate. |
+| Candidate chip idle operation | `App/driver/bk4829.c:1159-1162` | `driver/bk4819.c:1077-1080` | Proven driver operation writes `REG_30 = 0`; all fault states and physical-off latency are not specified by that call alone. |
+| Named preparation includes chip TX | `App/driver/bk4829.c:1222-1236`; `App/radio.c:1011-1023` | `driver/bk4819.c:1123-1136`; `radio.c:961-973` | Proven source entry sequence, not a faulty sequence. It cannot map directly to AFIK's non-energizing preparation effect. Bias follows PA enable in the caller; K1's chip helper also clears bias first. |
+| Calibration map differs per target | `App/radio.c:591-601,691-698`: SPI NOR base `0x100D0` | `radio.c:555`: I2C EEPROM base `0x1ED0` | Working reference uses target-specific bias bytes; neither address nor a bias count is a measured AFIK milliwatt envelope. |
+| Receive interrupt-clear loop has no retry limit | `App/radio.c:786-794` | `radio.c:725-733` | Proven normal receive use; this loop supplies no worst-case completion bound when a peripheral is faulted. |
+
+Principal K5 Armel SHA-256 values for reproducible correlation:
+
+| File | SHA-256 |
+| --- | --- |
+| `driver/bk4819.c` | `27c583a0a7ae66083dcf4f94526e180267716deac5adf7b6d77323e41c034352` |
+| `driver/bk4819-regs.h` | `feb41a6b621e14ec6643e261e1e06bf75f230236af2402a5101eb4496feaef77` |
+| `driver/gpio.h` | `25b074d64d66db6e8c1117407f11907f97bbc4d67e094aead31433f8b97f1cad` |
+| `radio.c` | `97b3ecb8d5f23159e1c4da5de57f8547cedc10626c8d70c5ec3f1a2397ae6237` |
+
+Source: [pinned Armel K5 V1
+tree](https://github.com/armel/uv-k5-firmware-custom/tree/fbcf26d8e9811b135b7e2d97bdefebaa4b3ed9e0).
+Confidence is high for the hardware-tested reference operations and their
+correlation. No implementation is imported. Neither matching names nor a
+working normal path proves AFIK's safe behavior with unknown register/shadow
+state, a lost bus, blocked execution, reset handoff or stale authority. Those
+are the specific remaining acceptance questions, not a general rejection of
+the proven hardware reference.

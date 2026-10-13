@@ -14,8 +14,8 @@ Activation verification: `git diff --check` passed. Next smallest actionable
 step: draft the two target plans and their common measurement/acceptance record.
 
 The first source/applicability step is complete. `EVID-TX056-001` records the
-BK4829 manufacturer's published GPIO1 package pin 1, which conflicts with the
-K1 inherited source `PIN29` symbol; GPIO0 and GPIO4 also have different package
+BK4829 manufacturer's published GPIO1 package pin 1, which differs from the
+K1 inherited source `PIN29` label; GPIO0 and GPIO4 also have different package
 numbers. The separately pinned BK4819 document retains GPIO1 pin 29. The two
 datasheet hashes, source pages, visual checks and confidence are recorded in the
 ledger. `EVID-TX056-002` bounds the available generic schematic/teardown search;
@@ -30,6 +30,19 @@ source artifacts outside the repository; no private calibration data or
 third-party unit dump was read. The PDF text/figure review used the installed
 `/nix/store/63r5wi3sdvwalqcdibpipnyl35swdzzg-poppler-utils-26.06.0/bin/pdftotext`
 and `pdftoppm` after `pdftotext` was unavailable on the default PATH.
+
+Following the operator's hardware-source correlation instruction,
+`EVID-TX056-003` now traces every hardware conclusion to the selected K1 Armel
+driver and its callers and a separately pinned Armel K5 V1 source. Their proven
+normal paths are accepted as trusted hardware evidence. The K1 GPIO helper
+uses enum index 1, not physical pin 29: the inherited label is not a driver
+defect. Zero bias plus PA-enable clear is the proven receive off strategy;
+unknown-state/fault/latency guarantees remain distinct questions. The source
+step was committed as `f273095` before this correlation refinement.
+Correlation verification: `python3 /tmp/afik-txplan-056-source-audit.py` and
+`git diff --check` passed. The audit checks the selected Armel builds, K5
+commit/four file hashes, source call ranges and GPIO indices, both datasheet
+hashes/package tables, generic reference drawing and complete teardown tree.
 
 ## Previous work package: TXEVID-055
 

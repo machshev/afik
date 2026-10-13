@@ -998,13 +998,21 @@
   and keep source evidence separate from measurements. Do not transplant
   either source's function, shadow word, timing, power table, or TX mode word.
 - **TXPLAN-056 source result, 2026-10-13:** `EVID-TX056-001` identifies a
-  package-map conflict: the selected K1 BK4829 datasheet places GPIO1 on pin 1,
-  while the inherited source symbol says `PIN29`. GPIO0 and GPIO4 labels also
-  differ from the BK4829 document. Resolve the fitted package and physical
-  board nets before selecting a probe pad; source names cannot do that work.
+  package-label distinction: the selected K1 BK4829 datasheet places GPIO1 on
+  pin 1, while the inherited source symbol says `PIN29`. Armel's helper uses
+  enum value 1 to select the GPIO output bit, not package pin 29; its proven
+  implementation is not contradicted. GPIO0 and GPIO4 labels also differ from
+  the BK4829 document. Match the package and board before selecting probe pads.
   `EVID-TX056-002` establishes no qualified exact-board schematic or independent
   off route from the inspected inventories and generic chip reference drawing.
   No electrical polarity, register behavior or physical measurement is added.
+- **Operator correlation, 2026-10-13:** `EVID-TX056-003` maps each hardware
+  conclusion to the selected K1 Armel driver/callers and a separately pinned
+  Armel K5 V1 driver/callers. Accept their proven normal operating sequences
+  as trusted hardware evidence. Zero bias plus cleared PA enable is a deliberate
+  proven receive state; its control-enable bit is not a defect. Remaining
+  unknown-state, bus-failure and latency guarantees are specific gaps beyond
+  that normal-path evidence. No register behavior is invented to fill them.
 
 Required evidence and proposed experiments, separately for the exact K1 and
 the exact K5 V1 unit, in this order:
