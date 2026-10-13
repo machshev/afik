@@ -8,7 +8,7 @@ export RUSTFLAGS="-C link-arg=-Tlink.x -C link-arg=-L$PWD/crates/radio-firmware-
 
 exec cargo -Z build-std=core build --offline \
   --package radio-firmware-k1 \
-  --features async-firmware \
-  --bin radio-firmware-k1-async \
+  --features firmware \
+  --bin radio-firmware-k1 \
   --target thumbv6m-none-eabi \
   "$@"

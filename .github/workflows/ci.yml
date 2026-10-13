@@ -35,8 +35,8 @@ jobs:
       - name: Package K5 image
         run: nix develop path:. -c tool/package-k5-image.sh
       - name: Build K1 image
-        run: nix develop path:. -c tool/build-k1-async.sh --release
+        run: nix develop path:. -c tool/build-k1.sh --release
       - name: Package and verify K1 image
         run: |
-          nix develop path:. -c tool/package-k1-async-image.sh
-          nix develop path:. -c tool/test-k1-async-image.sh
+          nix develop path:. -c tool/package-k1-image.sh
+          nix develop path:. -c tool/test-k1-image.sh

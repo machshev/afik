@@ -143,9 +143,9 @@ nix develop
 tool/build-k5.sh --release
 tool/verify-k5-image.sh
 tool/package-k5-image.sh
-tool/build-k1-async.sh --release
-tool/package-k1-async-image.sh
-tool/test-k1-async-image.sh
+tool/build-k1.sh --release
+tool/package-k1-image.sh
+tool/test-k1-image.sh
 ```
 
 The target builds use the locked Nix compiler and standard-library sources.

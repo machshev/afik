@@ -49,7 +49,7 @@ py32f071-runtime-init = [
 # because counting no longer depends on anything downstream surviving.
 serial-drop-bytes = []
 
-async-firmware = [
+firmware = [
     "py32f071-runtime-init",
     "py32f071-bk4819",
     "py32f071-battery",
@@ -85,9 +85,9 @@ cortex-m = { version = "=0.7.8", optional = true }
 radio-programmer = { path = "../radio-programmer" }
 
 [[bin]]
-name = "radio-firmware-k1-async"
-path = "src/async_main.rs"
-required-features = ["async-firmware"]
+name = "radio-firmware-k1"
+path = "src/main.rs"
+required-features = ["firmware"]
 test = false
 bench = false
 

@@ -702,7 +702,7 @@
   top of `.bss`.
 - **Mitigation:** `crates/radio-firmware-k1/stack-headroom.x` asserts a 6,144-byte
   reserve at link time, so a build which eats the headroom fails to link rather
-  than packaging; `tool/verify-k1-async-image.sh` checks the same bound and
+  than packaging; `tool/verify-k1-image.sh` checks the same bound and
   records `llvm-size` with each image in `STATUS.md`. The reserve is a policy
   floor, not a measurement: it sits above the 5,396 bytes `AFIK-K1-4.0` had when
   it reached the operator and did not start. The configuration is held once,
