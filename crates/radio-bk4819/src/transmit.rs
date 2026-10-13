@@ -8,8 +8,9 @@
 //! - [`Bk4819::disable_pa`]: `RADIO_SetupRegisters` zero bias, then PA clear.
 //! - [`Bk4819::disable_transmit`]: `BK4819_Idle`, `REG_30 = 0`.
 //! - [`Bk4819::prepare_transmit`]: the non-energizing part of
-//!   `RADIO_SetTxParameters`: audio mute, RX enable clear, bandwidth,
-//!   frequency, compander off, and the microphone gain Armel's receive setup
+//!   `FUNCTION_Transmit`/`RADIO_SetTxParameters`: DTMF off, audio mute, RX
+//!   enable clear, bandwidth, frequency, compander and scrambler off, and the
+//!   microphone gain Armel's receive setup
 //!   leaves in force.
 //! - [`Bk4819::enable_transmit`]: `BK4819_PrepareTransmit`, which enters chip TX.
 //!
@@ -36,6 +37,7 @@ const REG_PA_CONTROL: RegisterAddress = RegisterAddress::known(0x36);
 const REG_TX_MUTE: RegisterAddress = RegisterAddress::known(0x50);
 const REG_TX_52: RegisterAddress = RegisterAddress::known(0x52);
 const REG_MIC_GAIN: RegisterAddress = RegisterAddress::known(0x7D);
+const REG_DTMF_CONTROL: RegisterAddress = RegisterAddress::known(0x24);
 
 /// `REG_30` written by `BK4819_TxOn_Beep` to enter chip TX.
 pub const MODE_TRANSMIT_K5: u16 = 0xC1FE;
@@ -46,6 +48,8 @@ const MIC_DC_FILTER_MASK: u16 = 0b111 << 3;
 const MIC_DC_FILTER: u16 = 5 << 3;
 /// `REG_31` bit 3 enables the compander.
 const COMPANDER_ENABLE: u16 = 1 << 3;
+/// `REG_31` bit 1 enables the scrambler (`BK4819_DisableScramble`).
+const SCRAMBLE_ENABLE: u16 = 1 << 1;
 
 /// `REG_33` bit for logical GPIO0, the RX enable output.
 const GPIO_RX_ENABLE: u16 = 0x40;
@@ -105,6 +109,9 @@ impl<B: RegisterBus> Bk4819<B> {
         }
         let frequency = request.channel.transmit;
         let word = FrequencyWord::from_frequency(frequency)?;
+        // `FUNCTION_Transmit` disables DTMF first: "if DTMF is enabled when
+        // TX'ing, it changes the TX audio filtering".
+        self.write(REG_DTMF_CONTROL, 0)?;
         self.write_af_output(Modulation::Fm, AfOutput::Mute)?;
         self.gpio_out &= !GPIO_RX_ENABLE;
         self.write(REG_GPIO_OUT, self.gpio_out)?;
@@ -118,7 +125,10 @@ impl<B: RegisterBus> Bk4819<B> {
         self.write(REG_FREQUENCY_LOW, word.low())?;
         self.write(REG_FREQUENCY_HIGH, word.high())?;
         let compander = self.read(REG_AM_DEMODULATOR)?;
-        self.write(REG_AM_DEMODULATOR, compander & !COMPANDER_ENABLE)?;
+        self.write(
+            REG_AM_DEMODULATOR,
+            compander & !(COMPANDER_ENABLE | SCRAMBLE_ENABLE),
+        )?;
         self.write(REG_MIC_GAIN, self.profile.tx_mic_gain)?;
         self.state = DriverState::PreparedTransmit { frequency };
         Ok(())
@@ -277,12 +287,13 @@ mod tests {
         assert_eq!(
             writes(&radio),
             [
+                (0x24, 0x0000),
                 (0x47, (6 << 12) | (1 << 6)),
                 (0x33, GPIO_OUT_DEFAULT),
                 (0x43, 0x3648),
                 (0x38, 0x8D31),
                 (0x39, 0x02A8),
-                (0x31, 0x0007),
+                (0x31, 0x0005),
                 (0x7D, 0xE95F),
             ]
         );
