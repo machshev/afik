@@ -19,19 +19,19 @@ const REG_INTERRUPT_FLAGS: RegisterAddress = RegisterAddress::known(0x02);
 const REG_DTMF_COEFFICIENT: RegisterAddress = RegisterAddress::known(0x09);
 const REG_CRYSTAL: RegisterAddress = RegisterAddress::known(0x36);
 const REG_MIC_GAIN: RegisterAddress = RegisterAddress::known(0x7D);
-const REG_AGC_CONTROL: RegisterAddress = RegisterAddress::known(0x7E);
+pub(crate) const REG_AGC_CONTROL: RegisterAddress = RegisterAddress::known(0x7E);
 const REG_SUB_AUDIO_FREQUENCY: RegisterAddress = RegisterAddress::known(0x07);
 const REG_CDCSS_CODE: RegisterAddress = RegisterAddress::known(0x08);
 const REG_DEMODULATOR_2A: RegisterAddress = RegisterAddress::known(0x2A);
 const REG_DEMODULATOR_2B: RegisterAddress = RegisterAddress::known(0x2B);
 const REG_DEMODULATOR_2F: RegisterAddress = RegisterAddress::known(0x2F);
-const REG_AM_DEMODULATOR: RegisterAddress = RegisterAddress::known(0x31);
-const REG_GPIO_OUT: RegisterAddress = RegisterAddress::known(0x33);
-const REG_POWER_BLOCKS: RegisterAddress = RegisterAddress::known(0x37);
+pub(crate) const REG_AM_DEMODULATOR: RegisterAddress = RegisterAddress::known(0x31);
+pub(crate) const REG_GPIO_OUT: RegisterAddress = RegisterAddress::known(0x33);
+pub(crate) const REG_POWER_BLOCKS: RegisterAddress = RegisterAddress::known(0x37);
 const REG_AF_TAIL: RegisterAddress = RegisterAddress::known(0x3D);
 const REG_INTERRUPT_MASK: RegisterAddress = RegisterAddress::known(0x3F);
 const REG_DEMODULATOR_42: RegisterAddress = RegisterAddress::known(0x42);
-const REG_FILTER_BANDWIDTH: RegisterAddress = RegisterAddress::known(0x43);
+pub(crate) const REG_FILTER_BANDWIDTH: RegisterAddress = RegisterAddress::known(0x43);
 const REG_AF_OUTPUT: RegisterAddress = RegisterAddress::known(0x47);
 const REG_AF_DAC_GAIN: RegisterAddress = RegisterAddress::known(0x48);
 /// Low nibble of `REG_48`, the AF DAC gain applied after the receive gains.
@@ -41,7 +41,7 @@ const AF_DAC_GAIN_MAXIMUM: u16 = 0x000F;
 const REG_SQUELCH_CLOSE_GLITCH: RegisterAddress = RegisterAddress::known(0x4D);
 const REG_SQUELCH_OPEN_GLITCH: RegisterAddress = RegisterAddress::known(0x4E);
 const REG_SQUELCH_NOISE: RegisterAddress = RegisterAddress::known(0x4F);
-const REG_SUB_AUDIO_CONTROL: RegisterAddress = RegisterAddress::known(0x51);
+pub(crate) const REG_SUB_AUDIO_CONTROL: RegisterAddress = RegisterAddress::known(0x51);
 const REG_AUDIO_54: RegisterAddress = RegisterAddress::known(0x54);
 const REG_AUDIO_55: RegisterAddress = RegisterAddress::known(0x55);
 const REG_GLITCH: RegisterAddress = RegisterAddress::known(0x63);
@@ -771,7 +771,10 @@ impl<B: RegisterBus> Bk4819<B> {
         }
     }
 
-    fn select_filter_path(&mut self, frequency: Frequency) -> Result<(), DriverError<B::Error>> {
+    pub(crate) fn select_filter_path(
+        &mut self,
+        frequency: Frequency,
+    ) -> Result<(), DriverError<B::Error>> {
         // The pinned source keeps one output word and toggles single bits, so
         // the power-on defaults must survive a filter-path change.
         let selected = if frequency.as_hz() < RECEIVE_FILTER_PATH_BOUNDARY_HZ {
@@ -784,7 +787,7 @@ impl<B: RegisterBus> Bk4819<B> {
         self.write(REG_GPIO_OUT, gpio)
     }
 
-    fn write_af_output(
+    pub(crate) fn write_af_output(
         &mut self,
         modulation: Modulation,
         af: AfOutput,

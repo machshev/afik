@@ -8,12 +8,14 @@
 #![forbid(unsafe_code)]
 
 mod receive;
+mod transmit;
 
 pub use receive::{
     cdcss_code_word, ctcss_control_word, AfOutput, ChipProfile, ReadbackRegister, ReceiveMetrics,
     ReceiveSetup, SquelchError, SquelchThresholds, ToneStatus, BK4819_PROFILE, BK4829_PROFILE,
     GPIO_OUT_DEFAULT, RECEIVE_FILTER_PATH_BOUNDARY_HZ,
 };
+pub use transmit::{pa_control_word, GPIO_PA_ENABLE, MODE_TRANSMIT_K5};
 
 use core::fmt;
 use radio_domain::{Frequency, TxClass};
@@ -140,6 +142,11 @@ pub enum DriverState {
     /// The inferred receive mode was written for this frequency.
     Receiving {
         /// Requested receive frequency.
+        frequency: Frequency,
+    },
+    /// Audio is muted and the chip is tuned for TX; chip TX is not entered.
+    PreparedTransmit {
+        /// Prepared transmit frequency.
         frequency: Frequency,
     },
     /// The inferred transmit mode was written for this authorized class/frequency.
