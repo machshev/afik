@@ -50,7 +50,10 @@
   `flash-afik IMAGE` detects K5 or K1 from the bootloader beacon. Gate:
   `cargo fmt --all --check` clean, workspace clippy `-D warnings` clean,
   `cargo test --workspace` 662 passed 0 failed. Not yet run against a radio;
-  the next flash uses it.
+  the next flash uses it. Without IMAGE, `flash-afik` now takes the detected
+  radio's packaged image from `target/thumbv6m-none-eabi/release/`. Gate: fmt
+  clean, workspace clippy `-D warnings` clean, `cargo test --workspace` 669
+  passed 0 failed.
 - Studio fixes (operator request): typing into a channel or bank row lost
   focus after one character (row headers were keyed by their changing label);
   a one-channel plan crashed the storage summary (`bytes_saved` underflow); a

@@ -106,11 +106,12 @@ beacon to decide between the K5 V1 `2.*` and K1 `7.03.*` protocols:
 ```sh
 cargo run --package radio-flasher-cli --bin afik-flasher -- --help
 cargo run --package radio-flasher-cli --bin afik-flasher -- identify
-cargo run --package radio-flasher-cli --bin afik-flasher -- flash-afik IMAGE
+cargo run --package radio-flasher-cli --bin afik-flasher -- flash-afik [IMAGE]
 ```
 
 `flash-afik` writes to whichever radio answers and refuses an image built for
-the other one. A beacon proves only the protocol family, not the physical board
+the other one. Without IMAGE it uses that radio's packaged image under
+`target/thumbv6m-none-eabi/release/`. A beacon proves only the protocol family, not the physical board
 or MCU. K5-specific commands (`inspect`, `control`, `restore-eeprom`, and the
 recovery-gated `flash-afik --recovery`) live in the same tool.
 

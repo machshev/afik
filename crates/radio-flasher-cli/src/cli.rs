@@ -34,7 +34,7 @@ pub const HELP: &str = "AFIK K1/K5 flasher\n\
 Usage:\n\
   afik-flasher inspect IMAGE\n\
   afik-flasher [--device PATH|auto] identify\n\
-  afik-flasher [--device PATH|auto] flash-afik IMAGE [--yes] [--version VERSION]\n\
+  afik-flasher [--device PATH|auto] flash-afik [IMAGE] [--yes] [--version VERSION]\n\
   afik-flasher [--device PATH|auto] backup-eeprom OUTPUT [--force]\n\
   afik-flasher [--device PATH|auto] flash-recovery IMAGE --backup EEPROM \\\n    --confirm-target TARGET --confirm-image-crc32 CRC32 [--version VERSION]\n\
   afik-flasher [--device PATH|auto] flash-afik IMAGE --recovery RAW --backup EEPROM \\\n    --version VERSION --confirm-target UV-K5-V1-DP32G030 \\\n    --confirm-image-crc32 CRC32 \\\n    --confirm-recovery-rehearsed RECOVERY-REHEARSED-ON-THIS-UNIT\n\
@@ -59,16 +59,17 @@ protocol that command announces, and the printable bootloader version. It makes\
 no claim about which radio or processor this is. flash-afik reads the beacon\n\
 and writes to whichever radio it finds: a K5 V1 2.* bootloader takes a K5\n\
 image carrying an AFIK-K5- identity, and a K1 7.03.* bootloader takes a K1\n\
-image. An image built for the other radio is refused. Before writing, it shows\n\
-the device, bootloader, image and CRC-32 for confirmation; --yes skips that\n\
-prompt, and without a terminal the write is refused rather than assumed. It\n\
-cannot reach either bootloader or EEPROM, so an application which does not boot\n\
-is recovered by flashing again. --version sets the K5 negotiation version\n\
-(default 2.01.23). Passing --recovery selects the K5 recovery-gated form, which\n\
-requires every listed option. flash-recovery and restore-eeprom put a unit at\n\
-risk and still require their backups and exact phrases. Writes report page\n\
-acknowledgements, not read-back. inspect prints a K5 image's vectors and CRC-32\n\
-without a radio.\n\
+image. Without IMAGE it takes the packaged image for the detected radio from\n\
+the workspace target directory. An image built for the other radio is refused.\n\
+Before writing, it shows the device, bootloader, image and CRC-32 for\n\
+confirmation; --yes skips that prompt, and without a terminal the write is\n\
+refused rather than assumed. It cannot reach either bootloader or EEPROM, so\n\
+an application which does not boot is recovered by flashing again. --version\n\
+sets the K5 negotiation version (default 2.01.23). Passing --recovery selects\n\
+the K5 recovery-gated form, which requires every listed option. flash-recovery\n\
+and restore-eeprom put a unit at risk and still require their backups and\n\
+exact phrases. Writes report page acknowledgements, not read-back. inspect\n\
+prints a K5 image's vectors and CRC-32 without a radio.\n\
 \n\
 Normal-mode commands talk to running AFIK firmware. control (K5) sends one\n\
 bounded read or key request and never writes EEPROM, persists configuration,\n\
@@ -160,7 +161,9 @@ struct FlashArguments {
 /// The default AFIK application flash: the image and nothing else.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct AfikArguments {
-    image: PathBuf,
+    /// The image to write; without one, the packaged image for the detected
+    /// radio is taken from the workspace `target` directory.
+    image: Option<PathBuf>,
     /// K5 bootloader negotiation version; refused for a K1.
     version: Option<String>,
     /// Skip the confirmation prompt because the operator already decided.
@@ -324,10 +327,10 @@ fn parse_flash_afik(arguments: &[String]) -> Result<AfikArguments, String> {
     let image = arguments
         .first()
         .filter(|argument| !argument.starts_with("--"))
-        .ok_or_else(|| "flash-afik requires IMAGE".to_owned())?;
+        .map(PathBuf::from);
     let mut version = None;
     let mut assume_yes = false;
-    let mut offset = 1;
+    let mut offset = usize::from(image.is_some());
     while offset < arguments.len() {
         match arguments[offset].as_str() {
             "--yes" if !assume_yes => assume_yes = true,
@@ -349,7 +352,7 @@ fn parse_flash_afik(arguments: &[String]) -> Result<AfikArguments, String> {
         offset += 1;
     }
     Ok(AfikArguments {
-        image: PathBuf::from(image),
+        image,
         version,
         assume_yes,
     })
@@ -608,18 +611,31 @@ fn flash_afik<W: Write, C: Confirm>(
     confirm: &mut C,
     stdout: &mut W,
 ) -> Result<(), CliError> {
-    let image_raw = read_bounded(
-        &arguments.image,
-        APPLICATION_BYTES.max(K1_MAX_IMAGE_BYTES),
-        "AFIK image",
-    )?;
     let transaction_id = fresh_transaction_id()?;
     let mut serial = open_serial(device)?;
     // Classification is read-only, so it runs before the operator is asked. That
     // way the confirmation names the radio actually on the other end of the
     // cable rather than the one the operator meant to plug in.
     let family = detect_bootloader(&mut serial).map_err(CliError::operation)?;
-    check_afik_image(Radio::of(&family), &image_raw).map_err(|error| {
+    let radio = Radio::of(&family);
+    let image_path = arguments
+        .image
+        .clone()
+        .unwrap_or_else(|| radio.default_image());
+    if arguments.image.is_none() && !image_path.is_file() {
+        return Err(CliError::Operation(format!(
+            "no IMAGE given and the default {} image {} does not exist; build it with {}",
+            radio.label(),
+            image_path.display(),
+            radio.build_hint()
+        )));
+    }
+    let image_raw = read_bounded(
+        &image_path,
+        APPLICATION_BYTES.max(K1_MAX_IMAGE_BYTES),
+        "AFIK image",
+    )?;
+    check_afik_image(radio, &image_raw).map_err(|error| {
         CliError::Operation(format!(
             "{error}; detected bootloader {}",
             family.info().version()
@@ -627,7 +643,7 @@ fn flash_afik<W: Write, C: Confirm>(
     })?;
     let flash = DetectedFlash {
         device,
-        image_path: &arguments.image,
+        image_path: &image_path,
         image_raw: &image_raw,
         bootloader: family.info(),
         transaction_id,
@@ -666,6 +682,24 @@ impl Radio {
         match self {
             Self::K5V1 => "K5-V1",
             Self::K1 => "K1",
+        }
+    }
+
+    /// The packaged image `tool/package-*-image.sh` writes for this radio.
+    fn default_image(self) -> PathBuf {
+        let name = match self {
+            Self::K5V1 => "afik-k5-v1.raw",
+            Self::K1 => "radio-firmware-k1.raw",
+        };
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/thumbv6m-none-eabi/release")
+            .join(name)
+    }
+
+    const fn build_hint(self) -> &'static str {
+        match self {
+            Self::K5V1 => "tool/build-k5.sh --release && tool/package-k5-image.sh",
+            Self::K1 => "tool/build-k1.sh --release && tool/package-k1-image.sh",
         }
     }
 }
@@ -992,6 +1026,7 @@ mod tests {
         };
         assert!(!parsed.assume_yes);
         assert_eq!(parsed.version, None);
+        assert_eq!(parsed.image, Some(PathBuf::from("image.raw")));
 
         let Parsed::Hardware {
             command: Command::FlashAfik(parsed),
@@ -1019,10 +1054,16 @@ mod tests {
         ]))
         .is_err());
         assert!(parse(&strings(&["flash-afik", "image.raw", "--yes", "--yes"])).is_err());
-        assert!(
-            parse(&strings(&["flash-afik"])).is_err(),
-            "IMAGE is required"
-        );
+        // Without IMAGE the detected radio's packaged image is used.
+        let Parsed::Hardware {
+            command: Command::FlashAfik(parsed),
+            ..
+        } = parse(&strings(&["flash-afik", "--yes"])).unwrap()
+        else {
+            panic!("IMAGE is optional");
+        };
+        assert_eq!(parsed.image, None);
+        assert!(parsed.assume_yes);
         // --recovery selects the K5 recovery-gated form, which needs every gate.
         assert!(parse(&strings(&[
             "flash-afik",
@@ -1033,6 +1074,19 @@ mod tests {
         .is_err());
         // The K1-only command is gone; flash-afik detects the radio.
         assert!(parse(&strings(&["flash-afik-k1", "image.raw"])).is_err());
+    }
+
+    /// The defaults are the files the packaging scripts write, in the workspace
+    /// target directory rather than wherever the command happens to run.
+    #[test]
+    fn default_images_are_the_packaged_ones_for_each_radio() {
+        let k5 = Radio::K5V1.default_image();
+        let k1 = Radio::K1.default_image();
+        assert!(k5.ends_with("target/thumbv6m-none-eabi/release/afik-k5-v1.raw"));
+        assert!(k1.ends_with("target/thumbv6m-none-eabi/release/radio-firmware-k1.raw"));
+        let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        assert!(k5.starts_with(&workspace));
+        assert!(workspace.join("Cargo.toml").is_file());
     }
 
     /// An image built for one radio is refused when the other one answers.
