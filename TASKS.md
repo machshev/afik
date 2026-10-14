@@ -3075,3 +3075,22 @@
   5. Firmware transmits at the channel's power, the handset TX POWER a
      temporary override. Done.
   6. Flash and check channel power, override, CHANNEL and SQL on hardware.
+
+## DUALW-064 — Dual watch, two slots on screen
+
+- **Status:** active (2026-10-14), operator request.
+- **Objective:** two slots, A and B, each a channel in any bank or the VFO;
+  F then 2 (A/B) selects the other slot, F then 3 (VFO/MR) switches the
+  selected one, as on the stock and Armel firmware; dual watch listens to the
+  other slot between signals; the screen shows both, with bank, channel,
+  AM/FM/NFM, power or VFO step, and RSSI as a meter bar present only while
+  the squelch is open.
+- **Steps (commit after each):**
+  1. Shell slots, F prefix, DUAL WATCH setting; K5 gains the VFO. Done
+     (`b3da50f`).
+  2. Dual-watch timing (`radio-platform::dual_watch`) and the interface: one
+     controller per slot, TX on the selected slot. Done (`c995989`).
+  3. Two-slot operating screen with the meter. Done (`69a4801`).
+  4. Place record version 3 keeps both slots and dual watch. Done
+     (`a95ec0e`).
+  5. Flash `7.0.22` and check on hardware (see `STATUS.md`).

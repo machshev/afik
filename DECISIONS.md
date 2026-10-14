@@ -1728,3 +1728,19 @@ meaning.
   radio's own record, to restrict a radio lent to someone else. It can only
   narrow what was programmed.
 - Hardware and calibration envelopes still apply beneath the ranges.
+
+## ADR-102 — Two slots and dual watch, keyed as the stock firmware
+
+- **Date:** 2026-10-14
+- **Status:** accepted, operator request (`DUALW-064`).
+- The radio has slots A and B, each a source of its own (channel in any bank,
+  or VFO). Keys act on the selected slot and PTT always transmits on its
+  frequency, whichever slot dual watch has the receiver on.
+- F arms the next key as on stock and Armel: F 2 is A/B, F 3 is VFO/MR. Any
+  other key after F only clears it. F twice opens Info (F alone used to).
+- Dual watch is a handset setting kept in the place record. It moves the
+  receiver every scan dwell between quiet slots, holds a busy one and for
+  3 s after, and returns to the selected slot after any action or TX. The
+  hang is chosen, not taken from a reference. The host's `dual_watch` option
+  and the controller's same-bank partner are not used by the firmware.
+- The place record grows to 32 bytes (version 3); versions 1 and 2 still read.

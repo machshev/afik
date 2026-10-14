@@ -1135,3 +1135,16 @@ the hardware envelope rises to 5 W and each programmed range's ceiling still
 applies, so PMR446 stays at 500 mW. Measure the real output on a dummy load
 before relying on it (experiment 2). A level above the range's ceiling is
 lowered to the highest level within it (operator request), by nominal figures.
+
+## RISK-041 — Dual watch timing and the two-slot screen are unobserved
+
+- **State:** open (2026-10-14, `DUALW-064`).
+- The receiver retunes every scan dwell (90 ms default) and judges a slot busy
+  on settled readings only, as a scan does; whether that misses short
+  transmissions, or false-holds on settling noise, is unmeasured
+  (`RISK-008`). PMR446 slots retune through the shared receive app each time.
+- The two-slot layout and meter scale (-130 to -50 dBm) were checked only as
+  host-rendered pixels.
+- Experiment: with dual watch on, key a second radio on the other slot and on
+  the selected one; check the hold, the 3 s hang, the meter, and that PTT
+  during dual watch transmits on the selected slot.

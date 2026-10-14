@@ -87,6 +87,28 @@ programmed TX ranges protect channel and VFO mode alike.
   refused. On the K1, repeat in VFO mode. Measure Mid/High on a dummy load
   (`RISK-040`). Then the K1's NOR erase plan; then CTCSS/DCS.
 
+**`DUALW-064` is active alongside** (2026-10-14, operator request,
+`ADR-102`): two slots and dual watch.
+
+- Steps 1–4 done: slots A and B each hold a channel (any bank) or the VFO;
+  F 2 swaps them, F 3 switches VFO/MR, F F opens Info; SETTINGS has DUAL
+  WATCH; K5 gains the VFO. Dual watch alternates per scan dwell, holds a busy
+  slot plus 3 s, and PTT always transmits on the selected slot. The screen
+  shows both slots (name, bank and channel or VFO step, frequency,
+  AM/FM/NFM, power) with RSSI as a meter bar drawn only while the squelch is
+  open. The place record is version 3 (32 bytes) with both slots and dual
+  watch; older records read as slot A.
+- `7.0.22` is the image to flash; it also carries `BANKSET-063` step 5.
+  Gate: `cargo fmt --all --check` clean, `cargo clippy --workspace
+  --all-targets -- -D warnings` clean, `cargo test --workspace` 719 passed 0
+  failed, `tool/build-k1.sh --release` passes, `tool/build-k5.sh --release`
+  passes (flash end `0x0000e140`). Not flashed: the flash command was refused
+  by this session's permissions, so the operator runs it.
+- Next (step 5, hardware): flash `7.0.22`; F 2 and F 3 on the keypad; put A
+  and B in different banks; dual watch on, key a second radio on B and check
+  the hold, hang, meter and that PTT goes out on A (`RISK-041`); power-cycle
+  and check both slots and DW come back.
+
 **`BANKSET-063` is active alongside** (2026-10-14, operator request): squelch
 is radio-wide, a channel is in one bank, and a channel bank shares settings
 with its channels.
