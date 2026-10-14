@@ -1690,9 +1690,16 @@ meaning.
 - The compact storage format stays: the image is the existing header plus
   packed objects, with generated banks as runtime generators. The studio
   compiles and validates it and writes it at `0x0000`; the region is
-  `0x1700` bytes, set by the one RAM copy the radio keeps. The radio loads it
-  at boot and 1 s after a host's last write, checking header, checksum, order
-  and every object; anything else leaves no channels rather than part of them.
+  `0x1D00` bytes. The radio keeps no copy: it validates the image in memory
+  object by object (`radio-storage::walk_image`) at boot and 1 s after a
+  host's last write, and keeps only an index of offsets plus one bank mask per
+  explicit channel. Channels are read from memory when shown or tuned. Any
+  failed check leaves no channels rather than part of them, and the interface
+  drops the old index as soon as a host starts writing.
+- Next format step (operator direction): storage v5 groups every channel into
+  a bank with shared properties and a bank-level presence bitfield, so
+  membership is the bank a channel is stored in and the RAM index is just the
+  bank starts. A channel then belongs to one bank.
 - `0x1D00` holds the radio's own record of the operator's place and handset
   squelch, so the handset never rewrites the host's image. `0x1E00..0x2000`
   is vendor calibration, readable but never writable by a host.

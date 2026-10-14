@@ -12,9 +12,8 @@ use embassy_sync::signal::Signal;
 use embassy_time::Instant;
 use radio_platform::battery::Calibration;
 use radio_platform::operator_display::{MemoryState, ResetCause, SerialCounters};
-use radio_storage::ObjectArena;
 
-use crate::configuration::{Programmed, CONFIGURATION_STORE_BYTES};
+use crate::configuration::{Programmed, MAX_STORED_CHANNELS};
 use crate::operator_state::OperatorState;
 
 /// Milliseconds the radio bus stays idle after the last serial byte.
@@ -68,41 +67,43 @@ pub(crate) struct Publication {
     pub(crate) place: Option<OperatorState>,
 }
 
-/// The one RAM copy of the configuration, as the memory stores it.
+/// The bank mask of each explicit channel, written when an image is loaded.
 ///
-/// The serial task loads it from memory; the interface task reads. Nothing
-/// decoded is held anywhere: a channel is built from these objects on the
-/// lookup that needs it and dropped again, so what a radio can hold is bounded
-/// by the storage it advertises rather than by its SRAM.
-pub(crate) static ACTIVE: TaskCell<ObjectArena<CONFIGURATION_STORE_BYTES>> =
-    TaskCell::new(ObjectArena::new());
+/// A bank filter asks about every channel on every interface pass, which is
+/// too often to read memory for, so these two bytes per channel stay in RAM.
+/// Everything else about a channel is read from memory when it is needed.
+pub(crate) static MASKS: TaskCell<[u16; MAX_STORED_CHANNELS]> =
+    TaskCell::new([0; MAX_STORED_CHANNELS]);
 
 /// State shared by the tasks of one thread-mode executor.
 ///
-/// A critical-section mutex would mask interrupts for as long as the serial
-/// task spends reading an image out of memory, which on the K5's bit-banged
-/// bus is long enough to lose timer ticks. Tasks on one executor never preempt
-/// one another, and neither task holds a borrow across an `await`, so a plain
-/// `RefCell` is enough; a broken rule panics rather than corrupting.
-pub(crate) struct TaskCell<T>(RefCell<T>);
+/// A critical-section mutex would mask interrupts for as long as a task spends
+/// reading memory, which on the K5's bit-banged bus is long enough to lose
+/// timer ticks. Tasks on one executor never preempt one another, and no task
+/// holds a borrow across an `await`, so a plain `RefCell` is enough; a broken
+/// rule panics rather than corrupting. A target keeps its memory in one, which
+/// it hands to both tasks.
+pub struct TaskCell<T>(RefCell<T>);
 
-// SAFETY: only the tasks of one thread-mode executor touch a `TaskCell`, and no
-// interrupt handler does, so it is never accessed from two contexts at once.
+// SAFETY: a `TaskCell` is for the tasks of one thread-mode executor, and no
+// interrupt handler may touch one, so it is never accessed from two contexts at
+// once. Every use in this crate and in the targets keeps to that.
 #[allow(unsafe_code)]
 unsafe impl<T> Sync for TaskCell<T> {}
 
 impl<T> TaskCell<T> {
-    const fn new(value: T) -> Self {
+    /// Wraps a value for the tasks of one executor.
+    pub const fn new(value: T) -> Self {
         Self(RefCell::new(value))
     }
 
     /// Runs `f` with shared access.
-    pub(crate) fn with<R>(&self, f: impl FnOnce(&T) -> R) -> R {
+    pub fn with<R>(&self, f: impl FnOnce(&T) -> R) -> R {
         f(&self.0.borrow())
     }
 
     /// Runs `f` with exclusive access.
-    pub(crate) fn with_mut<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+    pub fn with_mut<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
         f(&mut self.0.borrow_mut())
     }
 }

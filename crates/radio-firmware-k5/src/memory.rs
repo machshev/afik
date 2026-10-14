@@ -42,7 +42,7 @@ impl<B: Bus> Memory for K5Memory<B> {
 
     /// Writes one block, skipping it when the EEPROM already holds it: a host
     /// rewriting a whole image then costs only the blocks that changed.
-    async fn write(&mut self, address: u16, data: &[u8; WRITE_BYTES]) -> bool {
+    fn write(&mut self, address: u16, data: &[u8; WRITE_BYTES]) -> bool {
         let mut current = [0_u8; WRITE_BYTES];
         if eeprom::read(&mut self.bus, address, &mut current).is_err() {
             return false;

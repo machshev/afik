@@ -39,14 +39,17 @@ use radio_platform::tx_control::{self, Action, Controller as TxController, State
 use radio_tx_policy::{TxRequest, TxState};
 
 use crate::configuration::Programmed;
-use crate::drivers::{BatterySense, Display, Keypad, Speaker, Target};
+use crate::drivers::{BatterySense, Display, Keypad, Memory, Speaker, Target};
 use crate::keys::{Debouncer, Edge};
 use crate::operator_state::OperatorState;
 use crate::state::{
-    bus_available, now_ms, peripheral_clock_khz, reset_cause, serial_counters, Publication, ACTIVE,
-    BATTERY_CALIBRATION, OPERATOR_PLACE, PROGRAMMED, SERIAL_ACTIVITY, TX_CALIBRATION,
+    bus_available, now_ms, peripheral_clock_khz, reset_cause, serial_counters, Publication,
+    TaskCell, BATTERY_CALIBRATION, MASKS, OPERATOR_PLACE, PROGRAMMED, SERIAL_ACTIVITY,
+    TX_CALIBRATION,
 };
 use crate::unified_receive::{shared_channel, translate, ReceiverEffect};
+use radio_platform::memory_link::IMAGE_ORIGIN;
+use radio_storage::CONFIGURATION_IMAGE_HEADER_LEN;
 
 /// Interval between receive samples while audio is routed.
 ///
@@ -358,34 +361,44 @@ fn apply_shared_effects<B: RegisterBus, S: Speaker>(
 ///
 /// The programmed variant holds only the index. Counting, bank filtering and
 /// scan navigation — the walks which touch every channel — are answered from it
-/// without a lock or a decode. Only materialising a record, once per channel
-/// actually shown or tuned, reaches the shared snapshot.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Listening {
+/// and the bank masks without reading memory. Only materialising a record,
+/// once per channel actually shown or tuned, reads the memory.
+enum Listening<M: 'static> {
     Vfo(ChannelRecord),
-    Memory(Programmed),
+    Memory(Programmed, &'static TaskCell<Option<M>>),
 }
 
-impl ChannelSource for Listening {
+impl<M> Clone for Listening<M> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<M> Copy for Listening<M> {}
+
+impl<M: Memory> ChannelSource for Listening<M> {
     fn len(&self) -> u16 {
         match self {
             Self::Vfo(_) => 1,
-            Self::Memory(programmed) => programmed.len(),
+            Self::Memory(programmed, _) => programmed.len(),
         }
     }
 
     fn get(&self, index: u16) -> Option<ChannelRecord> {
         match self {
             Self::Vfo(record) => (index == 0).then_some(*record),
-            Self::Memory(programmed) => ACTIVE.with(|arena| programmed.channel_at(arena, index)),
+            Self::Memory(programmed, memory) => memory.with_mut(|cell| {
+                let memory = cell.as_mut()?;
+                programmed.channel_at(|offset, buffer| read_image(memory, offset, buffer), index)
+            }),
         }
     }
 
     fn member_at(&self, index: u16, bank: BankId) -> bool {
         match self {
             Self::Vfo(_) => false,
-            Self::Memory(programmed) => {
-                ACTIVE.with(|arena| programmed.member_at(arena, index, bank))
+            Self::Memory(programmed, _) => {
+                MASKS.with(|masks| programmed.member_at(masks, index, bank))
             }
         }
     }
@@ -491,12 +504,13 @@ fn adopt_place(shell: &mut Shell, programmed: &Programmed, place: Option<Operato
 /// if the configuration still has it. Every caller has one except the first: a
 /// radio which has just been switched on takes it from the retained place, and
 /// everything afterwards takes it from where the operator actually is.
-fn activate(
+fn activate<M: Memory>(
     programmed: &Programmed,
     shell: &Shell,
     keep: Option<Selected>,
+    memory: &'static TaskCell<Option<M>>,
 ) -> Option<(
-    BankedReceiveController<Listening>,
+    BankedReceiveController<Listening<M>>,
     Option<ChannelReceiveSetup>,
 )> {
     let (memory, bank) = match shell.mode() {
@@ -505,7 +519,7 @@ fn activate(
             if programmed.is_empty() {
                 return None;
             }
-            (Listening::Memory(*programmed), shell.bank_filter())
+            (Listening::Memory(*programmed, memory), shell.bank_filter())
         }
     };
     let keep = keep.map(|kept| (kept.index, ChannelId::new(kept.channel_id)));
@@ -522,7 +536,7 @@ fn activate(
 /// The VFO is expressed as an ordinary receive-only channel record so it reuses
 /// the whole programmed receive path unchanged. It is `TxClass::Never` like
 /// everything else this image constructs.
-fn vfo_source(shell: &Shell, squelch: SquelchLevel) -> Option<Listening> {
+fn vfo_source<M>(shell: &Shell, squelch: SquelchLevel) -> Option<Listening<M>> {
     let receive = Frequency::from_hz(shell.vfo_hz()).ok()?;
     let step = FrequencyStep::from_hz(shell.vfo_step_hz()).ok()?;
     let record = ChannelRecord::new(ChannelDefinition {
@@ -560,8 +574,8 @@ fn vfo_source(shell: &Shell, squelch: SquelchLevel) -> Option<Listening> {
 ///
 /// Only on a broken internal invariant: a staged squelch level or a validated
 /// shared channel that has gone missing.
-#[allow(clippy::too_many_lines)]
-pub async fn run<D, K, B, S, V>(
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+pub async fn run<D, K, B, S, V, M>(
     mut display: D,
     mut keypad: K,
     radio: Bk4819<B>,
@@ -569,12 +583,14 @@ pub async fn run<D, K, B, S, V>(
     mut battery_sense: V,
     mut battery: Battery,
     target: Target,
+    memory: &'static TaskCell<Option<M>>,
 ) where
     D: Display,
     K: Keypad,
     B: RegisterBus,
     S: Speaker,
     V: BatterySense,
+    M: Memory,
 {
     let mut frame = [0_u8; FRAME_BYTES];
     render_info_screen(
@@ -613,7 +629,7 @@ pub async fn run<D, K, B, S, V>(
     // The retained place is where the operator left this radio, and it is the
     // only thing which knows on the pass that adopts it.
     let mut selected = place.and_then(Selected::from_place);
-    let mut activation = activate(&programmed, &shell, selected);
+    let mut activation = activate(&programmed, &shell, selected, memory);
     let mut pending = activation.as_mut().and_then(|(_, setup)| setup.take());
 
     let mut receiver = Receiver::new(radio, speaker);
@@ -737,7 +753,7 @@ pub async fn run<D, K, B, S, V>(
                 shell.select_memory();
                 selected = None;
             }
-            activation = activate(&programmed, &shell, selected);
+            activation = activate(&programmed, &shell, selected, memory);
             pending = activation.as_mut().and_then(|(_, setup)| setup.take());
             // A configuration arriving replaces what a scan was walking.
             scan_timer = None;
@@ -827,7 +843,7 @@ pub async fn run<D, K, B, S, V>(
                 // rather than dragging the old selection into it.
                 selected = None;
                 let _ = pending.take();
-                activation = activate(&programmed, &shell, None);
+                activation = activate(&programmed, &shell, None, memory);
                 pending = activation.as_mut().and_then(|(_, setup)| setup.take());
                 redraw = true;
             }
@@ -1170,6 +1186,7 @@ pub async fn run<D, K, B, S, V>(
                 retained,
                 memory_state,
                 target.identity,
+                memory,
             );
             if !display.frame(&frame).await {
                 return;
@@ -1248,22 +1265,23 @@ fn tx_request<B: RegisterBus, S: Speaker>(
     clippy::too_many_lines,
     clippy::needless_range_loop
 )]
-fn render<B: RegisterBus, S: Speaker>(
+fn render<B: RegisterBus, S: Speaker, M: Memory>(
     frame: &mut [u8; FRAME_BYTES],
     shell: &Shell,
-    controller: Option<&BankedReceiveController<Listening>>,
+    controller: Option<&BankedReceiveController<Listening<M>>>,
     receiver: &Receiver<B, S>,
     battery_percent: Option<u8>,
     programmed: &Programmed,
     generation: u32,
     retained: bool,
-    memory: MemoryState,
+    memory_state: MemoryState,
     identity: &[u8],
+    memory: &'static TaskCell<Option<M>>,
 ) {
     // Names are fixed-capacity values copied out of the configuration, so they
     // are held here for as long as the view borrows their bytes.
     let filter = shell.bank_filter();
-    let filter_name = filter.and_then(|bank| bank_name(programmed, bank));
+    let filter_name = filter.and_then(|bank| bank_name(programmed, bank, memory));
     // Only an empty memory has no controller: the VFO always has one, so this is
     // the "you have selected channels but programmed none" case.
     let (visible, channel) = match controller {
@@ -1320,7 +1338,7 @@ fn render<B: RegisterBus, S: Speaker>(
                     Source::Vfo => SelectorRow::text(b"VFO", active),
                     Source::AllChannels => SelectorRow::text(b"ALL CHANNELS", active),
                     Source::Bank(bank) => {
-                        let name = bank_name(programmed, bank);
+                        let name = bank_name(programmed, bank, memory);
                         SelectorRow::bank(
                             bank.get(),
                             name.as_ref()
@@ -1446,7 +1464,7 @@ fn render<B: RegisterBus, S: Speaker>(
             generation,
             visible,
             retained,
-            memory,
+            memory_state,
             serial_counters(),
             peripheral_clock_khz(),
             reset_cause(),
@@ -1455,6 +1473,19 @@ fn render<B: RegisterBus, S: Speaker>(
 }
 
 /// Returns the host-programmed name of one bank, if the host named it.
-fn bank_name(programmed: &Programmed, bank: BankId) -> Option<BankName> {
-    ACTIVE.with(|arena| programmed.bank_name(arena, bank))
+fn bank_name<M: Memory>(
+    programmed: &Programmed,
+    bank: BankId,
+    memory: &'static TaskCell<Option<M>>,
+) -> Option<BankName> {
+    memory.with_mut(|cell| {
+        let memory = cell.as_mut()?;
+        programmed.bank_name(|offset, buffer| read_image(memory, offset, buffer), bank)
+    })
+}
+
+/// Reads image payload bytes from the memory view.
+fn read_image<M: Memory>(memory: &mut M, offset: usize, buffer: &mut [u8]) -> bool {
+    u16::try_from(CONFIGURATION_IMAGE_HEADER_LEN + offset)
+        .is_ok_and(|offset| memory.read(IMAGE_ORIGIN + offset, buffer))
 }

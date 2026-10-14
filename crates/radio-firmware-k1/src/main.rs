@@ -26,6 +26,7 @@ use py32_hal::usart::Uart;
 use radio_app::drivers::{Display, Keypad, LinkError, SerialLink, Speaker, Target};
 use radio_app::keys::Sample;
 use radio_app::operator_state::OperatorState;
+use radio_app::TaskCell;
 use radio_bk4819::{Bk4819, BK4829_PROFILE};
 use radio_firmware_k1::battery::Calibration;
 use radio_firmware_k1::bk4819_bus::ThreeWireBus;
@@ -43,6 +44,10 @@ use radio_platform::transmit::Pmr446Target;
 
 const _: [(); 8] = [(); PAGES];
 const K1_VECTOR_TABLE_ORIGIN: u32 = 0x0800_2800;
+
+/// The external memory, shared by the serial task and the interface task's
+/// channel lookups.
+static MEMORY: TaskCell<Option<Memory>> = TaskCell::new(None);
 
 /// Identity this image reports on the information screen.
 ///
@@ -168,7 +173,7 @@ fn main() -> ! {
 // moving it, which cost a 2.8 KB frame on the interface task (`RISK-033`).
 #[embassy_executor::task]
 fn serial_task(link: Link, memory: EepromPins) -> impl Future<Output = ()> {
-    radio_app::serial::run(link, move || open_memory(memory), IMAGE_IDENTITY)
+    radio_app::serial::run(link, move || open_memory(memory), IMAGE_IDENTITY, &MEMORY)
 }
 
 #[embassy_executor::task]
@@ -190,6 +195,7 @@ fn ui_task(
         battery_sense,
         radio_firmware_k1::battery::new(),
         K1,
+        &MEMORY,
     )
 }
 
@@ -429,7 +435,7 @@ impl radio_app::drivers::Memory for Memory {
             && self.0.read_configuration(u32::from(address), output)
     }
 
-    async fn write(&mut self, _address: u16, _data: &[u8; WRITE_BYTES]) -> bool {
+    fn write(&mut self, _address: u16, _data: &[u8; WRITE_BYTES]) -> bool {
         false
     }
 
@@ -445,8 +451,8 @@ impl radio_app::drivers::Memory for Memory {
         self.0.read_operator_state()
     }
 
-    async fn write_operator_state(&mut self, state: OperatorState) -> bool {
-        self.0.write_operator_state(state).await.is_ok()
+    fn write_operator_state(&mut self, state: OperatorState) -> bool {
+        self.0.write_operator_state(state).is_ok()
     }
 }
 

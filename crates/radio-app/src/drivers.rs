@@ -66,12 +66,15 @@ pub struct LinkError;
 /// The configuration image, the operator's place, and the vendor calibration
 /// all live here at the addresses the memory map gives. A target maps the view
 /// onto whatever memory it has.
-#[allow(async_fn_in_trait)]
+///
+/// Both tasks use it: the interface reads channels on demand and the serial
+/// task answers the host. Every operation is synchronous, so neither task can
+/// hold it across an `await`; a write waits for the memory to finish.
 pub trait Memory {
     /// Reads `output.len()` bytes from `address`.
     fn read(&mut self, address: u16, output: &mut [u8]) -> bool;
     /// Stores one block at an aligned `address` and reports whether it took.
-    async fn write(&mut self, address: u16, data: &[u8; WRITE_BYTES]) -> bool;
+    fn write(&mut self, address: u16, data: &[u8; WRITE_BYTES]) -> bool;
     /// Reads the battery calibration from the vendor block.
     fn read_battery_calibration(&mut self) -> Option<Calibration>;
     /// Reads the PMR446 low-power TX bias bytes from the vendor block.
@@ -87,14 +90,14 @@ pub trait Memory {
     }
 
     /// Records where the operator left the radio.
-    async fn write_operator_state(&mut self, state: OperatorState) -> bool {
+    fn write_operator_state(&mut self, state: OperatorState) -> bool {
         let bytes = state.encode();
         let mut stored = true;
         for (index, block) in bytes.chunks_exact(WRITE_BYTES).enumerate() {
             let mut data = [0_u8; WRITE_BYTES];
             data.copy_from_slice(block);
             let offset = u16::try_from(index * WRITE_BYTES).unwrap_or(0);
-            stored &= self.write(PLACE_ORIGIN + offset, &data).await;
+            stored &= self.write(PLACE_ORIGIN + offset, &data);
         }
         stored
     }

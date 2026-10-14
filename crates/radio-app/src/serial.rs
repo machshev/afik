@@ -19,8 +19,8 @@ use radio_storage::CONFIGURATION_IMAGE_HEADER_LEN;
 use crate::configuration::Programmed;
 use crate::drivers::{Memory, SerialLink};
 use crate::state::{
-    count, hold_bus_idle, Publication, ACTIVE, BATTERY_CALIBRATION, OPERATOR_PLACE, PROGRAMMED,
-    SERIAL_ACTIVITY, SERIAL_ANSWERED, SERIAL_DISCARDED, SERIAL_ERRORS, SERIAL_RECEIVED,
+    count, hold_bus_idle, Publication, TaskCell, BATTERY_CALIBRATION, MASKS, OPERATOR_PLACE,
+    PROGRAMMED, SERIAL_ACTIVITY, SERIAL_ANSWERED, SERIAL_DISCARDED, SERIAL_ERRORS, SERIAL_RECEIVED,
     TX_CALIBRATION,
 };
 
@@ -43,7 +43,8 @@ const RECEIVE_BYTES: usize = 64;
 
 /// Runs the serial task for ever.
 ///
-/// `open` takes the memory and reports what it found. It runs after the first
+/// `open` takes the memory and reports what it found; it is kept in `memory`,
+/// which the interface task reads channels from. It runs after the first
 /// publication, so a slow or broken memory never holds up the operator
 /// interface. `identity` is what hello answers.
 ///
@@ -55,6 +56,7 @@ pub async fn run<L: SerialLink, M: Memory>(
     mut link: L,
     open: impl FnOnce() -> (Option<M>, MemoryState),
     identity: &'static [u8],
+    memory: &'static TaskCell<Option<M>>,
 ) {
     let identity = ApplicationIdentity::new(identity).expect("printable bounded identity");
     // Publish before touching the memory, so the interface starts on the VFO
@@ -67,20 +69,22 @@ pub async fn run<L: SerialLink, M: Memory>(
         place: None,
     });
 
-    let (mut memory, memory_state) = open();
+    let (opened, memory_state) = open();
+    memory.with_mut(|cell| *cell = opened);
 
     // The calibration is the radio's own data and never changes, so it is read
-    // once, here, while the memory is already in hand.
-    BATTERY_CALIBRATION.signal(memory.as_mut().and_then(M::read_battery_calibration));
-    TX_CALIBRATION.signal(memory.as_mut().and_then(M::read_tx_calibration));
+    // once, here.
+    BATTERY_CALIBRATION
+        .signal(memory.with_mut(|cell| cell.as_mut().and_then(M::read_battery_calibration)));
+    TX_CALIBRATION.signal(memory.with_mut(|cell| cell.as_mut().and_then(M::read_tx_calibration)));
 
     // The place is read beside the configuration it refers to and published
     // with it, so the interface never restores a channel into a channel list it
     // has not adopted. Its squelch is the operator's own choice and replaces
     // the image's default.
-    let place = memory.as_mut().and_then(M::read_operator_state);
+    let place = memory.with_mut(|cell| cell.as_mut().and_then(M::read_operator_state));
     let mut generation = 1_u32;
-    let (programmed, loaded) = load(memory.as_mut());
+    let (programmed, loaded) = memory.with_mut(|cell| load(cell.as_mut()));
     let programmed = match place.and_then(|place| place.squelch) {
         Some(squelch) => programmed.with_squelch(squelch),
         None => programmed,
@@ -124,9 +128,11 @@ pub async fn run<L: SerialLink, M: Memory>(
                 continue;
             }
             Either3::Second(place) => {
-                if let Some(memory) = memory.as_mut() {
-                    let _ = memory.write_operator_state(place).await;
-                }
+                memory.with_mut(|cell| {
+                    if let Some(memory) = cell.as_mut() {
+                        let _ = memory.write_operator_state(place);
+                    }
+                });
                 continue;
             }
             Either3::Third(()) => {
@@ -134,7 +140,7 @@ pub async fn run<L: SerialLink, M: Memory>(
                 // now, squelch included, so nothing of the old one is kept.
                 written = false;
                 generation = generation.wrapping_add(1);
-                let (programmed, loaded) = load(memory.as_mut());
+                let (programmed, loaded) = memory.with_mut(|cell| load(cell.as_mut()));
                 PROGRAMMED.signal(Publication {
                     programmed,
                     generation,
@@ -164,19 +170,32 @@ pub async fn run<L: SerialLink, M: Memory>(
             SERIAL_ACTIVITY.signal(());
             let length = match request {
                 Request::Hello => Some(encode_hello_response(identity, &mut response)),
-                Request::Read { address, length } => memory.as_mut().and_then(|memory| {
+                Request::Read { address, length } => memory.with_mut(|cell| {
+                    let memory = cell.as_mut()?;
                     encode_read_response(address, length, &mut response, |data| {
                         memory.read(address, data)
                     })
                 }),
                 Request::Write { address, data } => {
-                    let stored = match memory.as_mut() {
-                        Some(memory) if host_may_write(address) => {
-                            written = true;
-                            memory.write(address, &data).await
-                        }
-                        _ => false,
-                    };
+                    if host_may_write(address) && !written {
+                        // The image is about to change under the index the
+                        // interface reads it through, so the interface lets go
+                        // of it until the new one is loaded.
+                        written = true;
+                        generation = generation.wrapping_add(1);
+                        PROGRAMMED.signal(Publication {
+                            programmed: Programmed::empty(),
+                            generation,
+                            retained: false,
+                            memory: memory_state,
+                            place: None,
+                        });
+                    }
+                    let stored = host_may_write(address)
+                        && memory.with_mut(|cell| {
+                            cell.as_mut()
+                                .is_some_and(|memory| memory.write(address, &data))
+                        });
                     // A refused or failed write is not acknowledged, so the
                     // host's write times out and it stops.
                     stored.then(|| encode_write_response(address, &mut response))
@@ -191,29 +210,32 @@ pub async fn run<L: SerialLink, M: Memory>(
     }
 }
 
-/// Loads the configuration image from memory into the shared copy.
+/// Validates and indexes the configuration image in memory.
 ///
-/// A missing, erased, torn, or corrupt image leaves the copy empty, so the
-/// radio runs on the VFO rather than on half a configuration.
+/// A missing, erased, torn, or corrupt image indexes as empty, so the radio
+/// runs on the VFO rather than on half a configuration.
 fn load<M: Memory>(memory: Option<&mut M>) -> (Programmed, bool) {
-    let loaded = memory.is_some_and(|memory| {
-        let mut header = [0_u8; CONFIGURATION_IMAGE_HEADER_LEN];
-        memory.read(IMAGE_ORIGIN, &mut header)
-            && ACTIVE.with_mut(|arena| {
-                arena
-                    .load_image(&header, |payload| {
-                        memory.read(IMAGE_ORIGIN + HEADER_BYTES, payload)
-                    })
-                    .is_ok()
-            })
-    });
-    if !loaded {
-        ACTIVE.with_mut(|arena| {
-            let _ = arena.load_payload(&[]);
-        });
+    let Some(memory) = memory else {
+        return (Programmed::empty(), false);
+    };
+    let mut header = [0_u8; CONFIGURATION_IMAGE_HEADER_LEN];
+    if !memory.read(IMAGE_ORIGIN, &mut header) {
+        return (Programmed::empty(), false);
     }
-    let programmed = ACTIVE.with(|arena| Programmed::index(arena).unwrap_or_default());
-    (programmed, loaded && !programmed.is_empty())
+    let indexed = MASKS.with_mut(|masks| {
+        Programmed::from_image(
+            &header,
+            |offset, buffer| {
+                u16::try_from(offset)
+                    .is_ok_and(|offset| memory.read(IMAGE_ORIGIN + HEADER_BYTES + offset, buffer))
+            },
+            masks,
+        )
+    });
+    match indexed {
+        Ok(programmed) => (programmed, !programmed.is_empty()),
+        Err(_) => (Programmed::empty(), false),
+    }
 }
 
 #[cfg(test)]
@@ -243,7 +265,7 @@ mod tests {
             true
         }
 
-        async fn write(&mut self, address: u16, data: &[u8; WRITE_BYTES]) -> bool {
+        fn write(&mut self, address: u16, data: &[u8; WRITE_BYTES]) -> bool {
             let start = usize::from(address);
             self.0[start..start + WRITE_BYTES].copy_from_slice(data);
             true

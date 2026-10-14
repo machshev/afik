@@ -22,12 +22,10 @@ use crate::serial::{
 pub const VIEW_BYTES: u16 = 0x2000;
 /// First address of the configuration image the host writes.
 pub const IMAGE_ORIGIN: u16 = 0x0000;
-/// Bytes reserved for the configuration image, header included.
-///
-/// The radio holds one RAM copy of the image, so this is set by SRAM: the
-/// K1 has about 4 KB of other statics and keeps a 6 KiB stack reserve
-/// (`RISK-033`). `0x1700..0x1D00` is left free so the image can grow.
-pub const IMAGE_REGION_BYTES: u16 = 0x1700;
+/// Bytes reserved for the configuration image, header included: everything
+/// below the radio's own place record. The radio reads the image from memory
+/// as it needs it, so RAM does not bound this.
+pub const IMAGE_REGION_BYTES: u16 = 0x1D00;
 /// First address of the radio's own record of where the operator left it.
 pub const PLACE_ORIGIN: u16 = 0x1D00;
 /// First address of the vendor calibration, which a host may read but never

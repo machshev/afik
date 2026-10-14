@@ -420,54 +420,6 @@ impl<const BYTES: usize> ObjectArena<BYTES> {
         checked
     }
 
-    /// Replaces this arena's contents with the payload of one canonical image
-    /// whose header has already been read, filling it in place.
-    ///
-    /// `fill` reads the payload straight into the arena, so a device holding
-    /// its image in memory needs no second buffer the size of the image. The
-    /// checksum, order, length, and every object are then validated exactly as
-    /// [`decode_configuration_image`] does. A refused image leaves the arena
-    /// empty, and so does a `fill` which reports failure.
-    pub fn load_image(
-        &mut self,
-        header: &[u8; CONFIGURATION_IMAGE_HEADER_LEN],
-        fill: impl FnOnce(&mut [u8]) -> bool,
-    ) -> Result<(), StorageError> {
-        self.len = 0;
-        let payload_len =
-            configuration_image_len_from_header(header)? - CONFIGURATION_IMAGE_HEADER_LEN;
-        if payload_len > BYTES {
-            return Err(StorageError::StoreFull);
-        }
-        if !fill(&mut self.bytes[..payload_len]) {
-            return Err(StorageError::MalformedImage);
-        }
-        let payload = &self.bytes[..payload_len];
-        let expected = u32::from_le_bytes([header[12], header[13], header[14], header[15]]);
-        if configuration_image_crc(&header[..12], payload) != expected {
-            return Err(StorageError::ImageIntegrity);
-        }
-        let declared = u16::from_le_bytes([header[6], header[7]]);
-        let mut offset = 0;
-        let mut previous = None;
-        for _ in 0..declared {
-            let (object, next) = decode_image_entry(payload, offset)?;
-            if previous.is_some_and(|key| key >= object.key()) {
-                return Err(StorageError::NonCanonicalImage);
-            }
-            if !validate_object(&object) {
-                return Err(StorageError::MalformedObject);
-            }
-            previous = Some(object.key());
-            offset = next;
-        }
-        if offset != payload_len {
-            return Err(StorageError::MalformedImage);
-        }
-        self.len = payload_len;
-        Ok(())
-    }
-
     /// Returns the total bytes this arena can hold.
     #[must_use]
     pub const fn capacity(&self) -> usize {
@@ -1388,6 +1340,74 @@ pub fn decode_configuration_image(bytes: &[u8]) -> Result<ConfigurationImage<'_>
     })
 }
 
+/// Reads one object entry header: the object's key and its data length.
+pub fn read_entry_header(
+    bytes: &[u8; OBJECT_ENTRY_HEADER_LEN],
+) -> Result<(ObjectKey, usize), StorageError> {
+    let kind = ObjectKind::try_from(bytes[0])?;
+    let id = u16::from_le_bytes([bytes[1], bytes[2]]);
+    let len = usize::from(u16::from_le_bytes([bytes[3], bytes[4]]));
+    if len > MAX_OBJECT_DATA {
+        return Err(StorageError::ObjectTooLarge);
+    }
+    Ok((ObjectKey { kind, id }, len))
+}
+
+/// Validates one canonical image held outside RAM, one object at a time.
+///
+/// `read` fills a buffer from a payload offset (the byte after the header),
+/// so a device can check an image in its memory without holding a copy of
+/// it. The checks are [`decode_configuration_image`]'s: header, length,
+/// object count, order, every object, and the checksum. `visit` sees each
+/// object with its payload offset; returning `false` refuses the image.
+/// Because the checksum covers the whole payload, it is only known at the
+/// end: a caller building state in `visit` must discard it on error.
+///
+/// Returns the payload length.
+pub fn walk_image(
+    header: &[u8; CONFIGURATION_IMAGE_HEADER_LEN],
+    mut read: impl FnMut(usize, &mut [u8]) -> bool,
+    mut visit: impl FnMut(usize, ObjectRef<'_>) -> bool,
+) -> Result<usize, StorageError> {
+    let payload_len = configuration_image_len_from_header(header)? - CONFIGURATION_IMAGE_HEADER_LEN;
+    let object_count = u16::from_le_bytes([header[6], header[7]]);
+    let expected = u32::from_le_bytes([header[12], header[13], header[14], header[15]]);
+    let mut crc = crc32_update(u32::MAX, &header[..12]);
+    let mut offset = 0_usize;
+    let mut previous = None;
+    let mut entry = [0_u8; OBJECT_ENTRY_HEADER_LEN + MAX_OBJECT_DATA];
+    for _ in 0..object_count {
+        let data_at = offset + OBJECT_ENTRY_HEADER_LEN;
+        if data_at > payload_len || !read(offset, &mut entry[..OBJECT_ENTRY_HEADER_LEN]) {
+            return Err(StorageError::MalformedImage);
+        }
+        let mut entry_header = [0_u8; OBJECT_ENTRY_HEADER_LEN];
+        entry_header.copy_from_slice(&entry[..OBJECT_ENTRY_HEADER_LEN]);
+        let (key, len) = read_entry_header(&entry_header)?;
+        let end = data_at + len;
+        if end > payload_len || !read(data_at, &mut entry[OBJECT_ENTRY_HEADER_LEN..][..len]) {
+            return Err(StorageError::MalformedImage);
+        }
+        crc = crc32_update(crc, &entry[..OBJECT_ENTRY_HEADER_LEN + len]);
+        if previous.is_some_and(|previous| previous >= key) {
+            return Err(StorageError::NonCanonicalImage);
+        }
+        previous = Some(key);
+        let object = ObjectRef::new(key, &entry[OBJECT_ENTRY_HEADER_LEN..][..len]);
+        if !validate_object(&object) || !visit(offset, object) {
+            return Err(StorageError::MalformedObject);
+        }
+        offset = end;
+    }
+    if offset != payload_len {
+        return Err(StorageError::MalformedImage);
+    }
+    if !crc != expected {
+        return Err(StorageError::ImageIntegrity);
+    }
+    Ok(payload_len)
+}
+
 fn validate_canonical_objects(objects: &[impl Object]) -> Result<(), StorageError> {
     let mut previous_key = None;
     for object in objects {
@@ -1865,52 +1885,68 @@ mod tests {
     }
 
     #[test]
-    fn an_arena_loads_an_image_in_place_and_refuses_a_damaged_one() {
+    fn an_image_in_memory_walks_object_by_object_and_a_damaged_one_is_refused() {
         let objects = [
             encode_channel(channel(2, "TWO")).unwrap(),
             encode_channel(channel(9, "NINE")).unwrap(),
         ];
         let mut image = [0_u8; 256];
         let len = super::encode_configuration_image(&objects, &mut image).unwrap();
-        let image = &image[..len];
         let mut header = [0_u8; CONFIGURATION_IMAGE_HEADER_LEN];
         header.copy_from_slice(&image[..CONFIGURATION_IMAGE_HEADER_LEN]);
-        let payload = &image[CONFIGURATION_IMAGE_HEADER_LEN..];
-
-        let mut arena = ObjectArena::<512>::new();
-        arena
-            .load_image(&header, |buffer| {
-                buffer.copy_from_slice(payload);
+        let reader = |payload: &[u8]| {
+            let payload = payload.to_vec();
+            move |offset: usize, buffer: &mut [u8]| {
+                buffer.copy_from_slice(&payload[offset..offset + buffer.len()]);
                 true
-            })
-            .unwrap();
-        assert_eq!(arena.payload(), payload);
-        assert_eq!(arena.object_count(), 2);
+            }
+        };
 
-        // One flipped payload bit fails the checksum and empties the arena.
+        let mut seen = Vec::new();
+        let walked = super::walk_image(
+            &header,
+            reader(&image[CONFIGURATION_IMAGE_HEADER_LEN..len]),
+            |offset, object| {
+                seen.push((offset, object.key().id));
+                true
+            },
+        );
+        assert_eq!(walked, Ok(len - CONFIGURATION_IMAGE_HEADER_LEN));
+        let stride = OBJECT_ENTRY_HEADER_LEN + CHANNEL_ENCODED_LEN;
+        assert_eq!(seen, [(0, 2), (stride, 9)]);
+
+        let mut damaged = image;
+        damaged[len - 1] ^= 1;
         assert_eq!(
-            arena.load_image(&header, |buffer| {
-                buffer.copy_from_slice(payload);
-                buffer[3] ^= 1;
-                true
-            }),
+            super::walk_image(
+                &header,
+                reader(&damaged[CONFIGURATION_IMAGE_HEADER_LEN..len]),
+                |_, _| true
+            ),
             Err(StorageError::ImageIntegrity)
         );
-        assert!(arena.payload().is_empty());
-
-        // A reader which fails leaves nothing behind either.
         assert_eq!(
-            arena.load_image(&header, |_| false),
-            Err(StorageError::MalformedImage)
-        );
-        // Erased memory is not an image.
-        assert_eq!(
-            arena.load_image(&[0xFF; CONFIGURATION_IMAGE_HEADER_LEN], |_| true),
-            Err(StorageError::MalformedImage)
+            super::walk_image(&header, |_, _| false, |_, _| true),
+            Err(StorageError::MalformedImage),
+            "a memory which cannot be read is no image"
         );
         assert_eq!(
-            ObjectArena::<8>::new().load_image(&header, |_| true),
-            Err(StorageError::StoreFull)
+            super::walk_image(
+                &[0xFF; CONFIGURATION_IMAGE_HEADER_LEN],
+                |_, _| true,
+                |_, _| true
+            ),
+            Err(StorageError::MalformedImage),
+            "erased memory is no image"
+        );
+        assert_eq!(
+            super::walk_image(
+                &header,
+                reader(&image[CONFIGURATION_IMAGE_HEADER_LEN..len]),
+                |offset, _| offset == 0
+            ),
+            Err(StorageError::MalformedObject),
+            "the visitor may refuse"
         );
     }
 

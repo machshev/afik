@@ -10,7 +10,7 @@
 //! the firmware and nothing else, so programming a radio cannot consume the
 //! space its own code occupies, and the configuration survives reflashing.
 
-use embassy_time::{block_for, Duration, Timer};
+use embassy_time::{block_for, Duration};
 use py32_hal::gpio::{Level, Output, Speed};
 use py32_hal::pac::spi::vals::Br;
 use py32_hal::peripherals::{PA0, PA1, PA2, PA3, SPI2};
@@ -254,7 +254,7 @@ impl RetainedConfiguration {
     /// sector is erased only when its last slot has been used, and the record
     /// being saved is then written first into the fresh sector, so there is no
     /// moment at which the radio holds no place at all beyond the erase itself.
-    pub async fn write_operator_state(&mut self, state: OperatorState) -> Result<(), RetainError> {
+    pub fn write_operator_state(&mut self, state: OperatorState) -> Result<(), RetainError> {
         let mut slot = match self.next_slot {
             Some(slot) => slot,
             // The sector has not been walked, so find the free slot before
@@ -268,7 +268,7 @@ impl RetainedConfiguration {
             self.eeprom
                 .issue_erase(self.place, 0)
                 .map_err(RetainError::Memory)?;
-            self.await_ready().await?;
+            self.await_ready()?;
             slot = 0;
         }
         // A failed program leaves this slot spent either way: the next save
@@ -282,16 +282,20 @@ impl RetainedConfiguration {
                 &state.encode(),
             )
             .map_err(RetainError::Memory)?;
-        self.await_ready().await
+        self.await_ready()
     }
 
-    /// Waits for the memory to finish, yielding between bounded polls.
-    async fn await_ready(&mut self) -> Result<(), RetainError> {
+    /// Waits for the memory to finish, between bounded polls.
+    ///
+    /// The memory is shared by both tasks through synchronous calls, so this
+    /// blocks. A page program takes about a millisecond; the sector erase,
+    /// once every 256 saved places, tens of milliseconds.
+    fn await_ready(&mut self) -> Result<(), RetainError> {
         for _ in 0..READY_POLL_ATTEMPTS {
             if self.eeprom.is_ready().map_err(RetainError::Memory)? {
                 return Ok(());
             }
-            Timer::after(Duration::from_micros(READY_POLL_INTERVAL_MICROSECONDS)).await;
+            block_for(Duration::from_micros(READY_POLL_INTERVAL_MICROSECONDS));
         }
         Err(RetainError::Busy)
     }

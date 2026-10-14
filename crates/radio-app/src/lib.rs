@@ -20,4 +20,4 @@ pub mod serial;
 mod state;
 pub mod unified_receive;
 
-pub use state::{set_peripheral_clock_khz, set_reset_cause};
+pub use state::{set_peripheral_clock_khz, set_reset_cause, TaskCell};

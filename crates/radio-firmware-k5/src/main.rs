@@ -18,6 +18,7 @@ use cortex_m as _;
 use embassy_executor::Executor;
 use embassy_time::{Duration, Timer};
 use radio_app::drivers::{LinkError, SerialLink, Target};
+use radio_app::TaskCell;
 use radio_bk4819::Bk4819;
 use radio_dp32g030::clock;
 use radio_dp32g030::dma::CircularReceiver;
@@ -48,6 +49,9 @@ const DMA_BYTES: usize = 256;
 
 static mut DMA_BUFFER: [u8; DMA_BYTES] = [0; DMA_BYTES];
 static mut EXECUTOR: MaybeUninit<Executor> = MaybeUninit::uninit();
+
+/// The EEPROM, shared by the serial task and the interface task's lookups.
+static MEMORY: TaskCell<Option<K5Memory<K5Bus>>> = TaskCell::new(None);
 
 /// The K5 as the application sees it. Armel K5 `dividers` Low1–Low4 are 25,
 /// 19, 13 and 10.
@@ -191,7 +195,7 @@ fn main() -> ! {
 // around them, so no wrapper frame holds the inner future (`RISK-033`).
 #[embassy_executor::task]
 fn serial_task(link: Link) -> impl Future<Output = ()> {
-    radio_app::serial::run(link, open_memory, K5.identity)
+    radio_app::serial::run(link, open_memory, K5.identity, &MEMORY)
 }
 
 #[embassy_executor::task]
@@ -209,6 +213,7 @@ fn interface_task(
         K5Battery,
         battery::new(),
         K5,
+        &MEMORY,
     )
 }
 

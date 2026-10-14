@@ -2,10 +2,7 @@
 //! change it, through the shared protocol and the K5's own EEPROM driver into
 //! a simulated two-wire EEPROM.
 
-use std::future::Future;
 use std::io::{Read, Write};
-use std::pin::pin;
-use std::task::{Context, Poll, Waker};
 
 use radio_app::drivers::Memory;
 use radio_firmware_k5::eeprom::{Bus, CAPACITY};
@@ -19,18 +16,6 @@ use radio_platform::memory_link::{
 use radio_platform::serial::{xor, ApplicationIdentity};
 
 const IDENTITY: &[u8] = b"AFIK-K5-7.0.15";
-
-/// Polls a future that never waits, as the K5's EEPROM writes do not.
-fn ready<F: Future>(future: F) -> F::Output {
-    let mut future = pin!(future);
-    match future
-        .as_mut()
-        .poll(&mut Context::from_waker(Waker::noop()))
-    {
-        Poll::Ready(value) => value,
-        Poll::Pending => panic!("an EEPROM write waited"),
-    }
-}
 
 /// What the simulated EEPROM expects next within one bus transaction.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -149,7 +134,7 @@ impl Write for SimulatedRadio {
                     })
                 }
                 Request::Write { address, data } => (host_may_write(address)
-                    && ready(self.memory.write(address, &data)))
+                    && self.memory.write(address, &data))
                 .then(|| encode_write_response(address, &mut frame)),
             };
             if let Some(length) = length {
