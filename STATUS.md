@@ -178,6 +178,8 @@
   1/1/40 ms through a `Delay`. Gate: fmt clean, workspace clippy `-D warnings`
   clean, `cargo test --workspace` 708 passed 0 failed, K5 build + verify pass
   (flash end `0x00007170`). K1 `7.0.11` confirmed working on the bench.
+  K5 `7.0.13` flashed (240/240 pages) and confirmed working on the bench,
+  which completes `ADR-099` step 1: both targets run on Embassy.
 - Next: flash `7.0.5` with `afik-flasher flash-afik` and check a 1 min over
   times out; flash K1 and check its speech level; then CTCSS/DCS with an
   end-of-transmission tail tone to remove the key-off squelch burst.
