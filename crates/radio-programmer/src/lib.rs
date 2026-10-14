@@ -96,6 +96,9 @@ impl<E> From<StorageError> for ProgrammerError<E> {
 
 pub use radio_storage::radio_image::CompileError as RadioImageError;
 
+/// Bytes a radio holds for its configuration image (`ADR-100`).
+pub const RADIO_IMAGE_BYTES: usize = IMAGE_REGION_BYTES as usize;
+
 /// Rich host-side project input prior to device compilation.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RadioProject {

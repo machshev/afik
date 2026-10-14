@@ -1,6 +1,6 @@
 //! The egui application drawing the validated project model.
 
-use std::{fs, time::Instant};
+use std::{fs, path::Path, time::Instant};
 
 use eframe::egui::{self, ComboBox, Grid, RichText, ScrollArea, TextEdit};
 use radio_channel_plan::MAX_GENERATED_CHANNELS;
@@ -8,8 +8,7 @@ use radio_domain::{
     Bandwidth, Modulation, PowerLevel, ScanResume, TxClass, BACKLIGHT_ALWAYS_ON,
     MAX_BATTERY_SAVE_RATIO, MAX_SQUELCH_LEVEL,
 };
-use radio_programmer::CapacityReport;
-use radio_storage::CHANNEL_ENCODED_LEN;
+use radio_flasher::ImageWriteReport;
 
 use radio_programmer_serial::SUPPORTED_BAUDS;
 
@@ -18,14 +17,14 @@ use crate::{
     flash_tab::FlashTab,
     model::{
         BankDraft, BankKind, ChannelDraft, ModelError, ProjectModel, StorageSummary, ToneDraft,
-        ToneKind, MAX_PROJECT_IMAGE_BYTES,
+        ToneKind, MAX_PROJECT_IMAGE_BYTES, RADIO_IMAGE_BYTES,
     },
     presets::PRESETS,
+    projects::ProjectStore,
     session::DeviceSession,
     DeviceSelector, Options,
 };
 
-const BANK_COUNT: u16 = 16;
 /// Channels of one generated plan the editor lists before summarising the rest.
 const EXPANSION_PREVIEW_ROWS: usize = 32;
 /// Colour used for advisory text which is not a validation failure.
@@ -41,7 +40,6 @@ override this.";
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum Tab {
     #[default]
-    Channels,
     Banks,
     Radio,
     Device,
@@ -52,46 +50,48 @@ enum Tab {
 pub struct StudioApp {
     tab: Tab,
     project: ProjectModel,
-    project_path: String,
+    /// The project as last loaded or saved, to tell whether it has changed.
+    saved: ProjectModel,
+    projects: ProjectStore,
+    new_project: String,
     status: String,
     errors: Vec<ModelError>,
     session: Option<DeviceSession>,
     chooser: DeviceChooser,
-    last_receipt: Option<CapacityReport>,
-    listing: Vec<(String, u16, u16)>,
+    last_write: Option<ImageWriteReport>,
     flash: FlashTab,
     preset: usize,
 }
 
-impl Default for StudioApp {
-    fn default() -> Self {
-        Self {
+impl StudioApp {
+    /// Builds the editor from start-up options, opening the last project.
+    pub fn new(options: &Options) -> Self {
+        Self::with_projects(options, ProjectStore::open())
+    }
+
+    /// Builds the editor over an explicit project store.
+    pub fn with_projects(options: &Options, projects: ProjectStore) -> Self {
+        let mut app = Self {
             tab: Tab::default(),
             project: ProjectModel::new(),
-            project_path: String::new(),
+            saved: ProjectModel::new(),
+            projects,
+            new_project: String::new(),
             status: "Ready.".to_owned(),
             errors: Vec::new(),
             session: None,
             chooser: DeviceChooser::new(),
-            last_receipt: None,
-            listing: Vec::new(),
+            last_write: None,
             flash: FlashTab::default(),
             preset: 0,
-        }
-    }
-}
-
-impl StudioApp {
-    /// Builds the editor from start-up options, connecting when requested.
-    pub fn new(options: &Options) -> Self {
-        let mut app = Self::default();
+        };
         if let Some(baud) = options.baud {
             app.chooser.baud = baud;
         }
         if let Some(path) = &options.project {
-            app.project_path = path.display().to_string();
-            app.load_project();
+            app.projects.adopt(path);
         }
+        app.load_project();
         if options.simulator {
             app.connect_simulator();
             return app;
@@ -157,54 +157,27 @@ impl StudioApp {
         }
     }
 
-    /// Replaces the connected device, forgetting what the previous one reported.
+    /// Replaces the connected radio, forgetting what was written to the last.
     fn install_session(&mut self, session: DeviceSession) {
         log::info!(
-            "connected to {}: {:?}",
+            "connected to {} running {}",
             session.description(),
-            session.capabilities()
+            session.firmware()
         );
-        self.status = format!("Connected to {}.", session.description());
+        self.status = format!(
+            "Connected to {}, running {}.",
+            session.description(),
+            session.firmware()
+        );
         self.session = Some(session);
-        self.last_receipt = None;
-        self.listing.clear();
-        self.refresh_listing();
+        self.last_write = None;
     }
 
     fn disconnect(&mut self) {
         if let Some(session) = self.session.take() {
             log::info!("disconnected from {}", session.description());
             self.status = format!("Disconnected from {}.", session.description());
-            self.listing.clear();
-            self.last_receipt = None;
-        }
-    }
-
-    fn refresh_listing(&mut self) {
-        let Some(session) = self.session.as_mut() else {
-            return;
-        };
-        let device = session.description().to_owned();
-        match session.listing() {
-            Ok(listing) => {
-                self.listing = listing
-                    .objects
-                    .iter()
-                    .map(|object| {
-                        (
-                            format!("{:?}", object.key.kind),
-                            object.key.id,
-                            object.encoded_len,
-                        )
-                    })
-                    .collect();
-                self.status = format!(
-                    "Device generation {} holds {} objects.",
-                    listing.generation,
-                    listing.objects.len()
-                );
-            }
-            Err(error) => self.fail(&format!("listing objects on {device}"), error.to_string()),
+            self.last_write = None;
         }
     }
 
@@ -218,23 +191,24 @@ impl StudioApp {
         };
         self.errors.clear();
         let Some(session) = self.session.as_mut() else {
-            self.refuse("Connect a device first.");
+            self.refuse("Connect a radio first.");
             return;
         };
         let device = session.description().to_owned();
         match session.write_project(&project) {
-            Ok(receipt) => {
+            Ok(report) => {
                 log::info!(
-                    "wrote and verified generation {} on {device}: {:?}",
-                    receipt.generation,
-                    receipt.report
+                    "wrote and verified a {}-byte image on {device} running {}: {} blocks changed",
+                    report.image_bytes,
+                    report.firmware.version(),
+                    report.changed_blocks
                 );
-                self.last_receipt = Some(receipt.report);
                 self.status = format!(
-                    "Wrote and verified generation {} with {} channels in {} banks.",
-                    receipt.generation, receipt.report.explicit_channels, receipt.report.banks
+                    "Wrote and verified {} bytes ({} blocks changed). The radio loads \
+                     the new channels a second after the last write.",
+                    report.image_bytes, report.changed_blocks
                 );
-                self.refresh_listing();
+                self.last_write = Some(report);
             }
             Err(error) => self.fail(
                 &format!("writing the project to {device}"),
@@ -245,45 +219,23 @@ impl StudioApp {
 
     fn read_project(&mut self) {
         let Some(session) = self.session.as_mut() else {
-            self.refuse("Connect a device first.");
+            self.refuse("Connect a radio first.");
             return;
         };
         let device = session.description().to_owned();
-        match session.backup() {
-            Ok(backup) => match ProjectModel::from_image(&backup.image) {
-                Ok(project) => {
-                    let channels = project.channels.len();
-                    let banks = project.banks.len();
-                    log::info!(
-                        "read {channels} channels and {banks} banks from {device} at generation {}",
-                        backup.generation
-                    );
-                    self.project = project;
-                    self.errors.clear();
-                    // An empty read is the ordinary state of a radio nobody has
-                    // programmed yet, and it is easy to mistake for a failure:
-                    // the channel and bank tabs stay empty either way.
-                    self.status = if channels == 0 && banks == 0 {
-                        format!(
-                            "The radio holds no programmed configuration at generation {}. \
-                             Anything it is showing is its own built-in set. \
-                             Edit the Channels and Banks tabs and write them to it.",
-                            backup.generation
-                        )
-                    } else {
-                        self.tab = Tab::Channels;
-                        format!(
-                            "Loaded {channels} channels and {banks} banks from generation {} \
-                             into the Channels and Banks tabs.",
-                            backup.generation
-                        )
-                    };
-                }
-                Err(error) => self.fail(
-                    &format!("decoding the configuration read from {device}"),
-                    error.to_string(),
-                ),
-            },
+        match session.read_project() {
+            Ok(project) => {
+                self.project = ProjectModel::from_project(&project);
+                self.errors.clear();
+                let (banks, channels) = (self.project.banks.len(), self.project.channel_count());
+                log::info!("read {channels} channels in {banks} banks from {device}");
+                self.tab = Tab::Banks;
+                self.status = format!(
+                    "Loaded {channels} channels in {banks} banks from the radio into {}. \
+                     Save to keep them.",
+                    self.projects.current().name
+                );
+            }
             Err(error) => self.fail(
                 &format!("reading the project from {device}"),
                 error.to_string(),
@@ -291,57 +243,107 @@ impl StudioApp {
         }
     }
 
+    /// Whether the project differs from what was last loaded or saved.
+    fn is_dirty(&self) -> bool {
+        self.project != self.saved
+    }
+
     fn save_project(&mut self) {
-        let path = self.project_path.trim().to_owned();
-        if path.is_empty() {
-            self.refuse("Enter a project file path.");
-            return;
-        }
-        match self.project.to_image() {
-            Ok(image) => match fs::write(&path, image) {
-                Ok(()) => {
-                    log::info!("saved project {path}");
-                    self.errors.clear();
-                    self.status = format!("Saved {path}.");
-                }
-                Err(error) => self.fail(
-                    "saving the project",
-                    format!("Could not save {path}: {error}"),
-                ),
-            },
-            Err(errors) => self.refuse_invalid("saving", errors),
+        let entry = self.projects.current().clone();
+        let image = match self.project.to_image() {
+            Ok(image) => image,
+            Err(errors) => {
+                self.refuse_invalid("saving", errors);
+                return;
+            }
+        };
+        let written = entry
+            .path
+            .parent()
+            .map_or(Ok(()), fs::create_dir_all)
+            .and_then(|()| fs::write(&entry.path, image));
+        match written {
+            Ok(()) => {
+                log::info!("saved project {} to {}", entry.name, entry.path.display());
+                self.errors.clear();
+                self.saved = self.project.clone();
+                self.status = format!("Saved {}.", entry.name);
+            }
+            Err(error) => self.fail(
+                "saving the project",
+                format!("Could not save {}: {error}", entry.path.display()),
+            ),
         }
     }
 
+    /// Loads the open project from its file; a project not saved yet is empty.
     fn load_project(&mut self) {
-        let path = self.project_path.trim().to_owned();
-        if path.is_empty() {
-            self.refuse("Enter a project file path.");
+        let entry = self.projects.current().clone();
+        let path = entry.path.as_path();
+        let loaded = if path.exists() {
+            match read_project_file(path) {
+                Ok(project) => project,
+                Err(message) => {
+                    self.fail(&format!("loading project {}", entry.name), message);
+                    return;
+                }
+            }
+        } else {
+            ProjectModel::new()
+        };
+        log::info!("opened project {} from {}", entry.name, path.display());
+        self.status = if path.exists() {
+            format!(
+                "Opened {}: {} channels in {} banks.",
+                entry.name,
+                loaded.channel_count(),
+                loaded.banks.len()
+            )
+        } else {
+            format!(
+                "Opened {}, which is saved to {} once it is first saved.",
+                entry.name,
+                path.display()
+            )
+        };
+        self.project = loaded.clone();
+        self.saved = loaded;
+        self.errors.clear();
+    }
+
+    /// Opens another project, unless this one has changes it would lose.
+    fn open_project(&mut self, index: usize) {
+        if index == self.projects.current_index() {
             return;
         }
-        match fs::read(&path) {
-            Ok(bytes) if bytes.len() > MAX_PROJECT_IMAGE_BYTES => self.fail(
-                "loading the project",
-                format!("{path} exceeds {MAX_PROJECT_IMAGE_BYTES} bytes."),
-            ),
-            Ok(bytes) => match ProjectModel::from_image(&bytes) {
-                Ok(project) => {
-                    log::info!("loaded project {path}");
-                    self.status = format!(
-                        "Loaded {} channels and {} banks from {path}.",
-                        project.channels.len(),
-                        project.banks.len()
-                    );
-                    self.project = project;
-                    self.errors.clear();
-                }
-                Err(error) => self.fail(&format!("decoding project {path}"), error.to_string()),
-            },
-            Err(error) => self.fail(
-                "loading the project",
-                format!("Could not read {path}: {error}"),
-            ),
+        if self.is_dirty() {
+            self.refuse(&format!(
+                "Save or revert {} before opening another project.",
+                self.projects.current().name
+            ));
+            return;
         }
+        self.projects.select(index);
+        self.load_project();
+    }
+
+    /// Creates an empty project with the typed name and opens it.
+    fn create_project(&mut self) {
+        if self.is_dirty() {
+            self.refuse(&format!(
+                "Save or revert {} before creating another project.",
+                self.projects.current().name
+            ));
+            return;
+        }
+        let name = self.new_project.clone();
+        if let Err(reason) = self.projects.create(&name) {
+            self.refuse(&reason);
+            return;
+        }
+        self.new_project.clear();
+        self.project = ProjectModel::new();
+        self.save_project();
     }
 
     /// Replaces the project with one preset default set.
@@ -352,16 +354,29 @@ impl StudioApp {
         let Some(preset) = PRESETS.get(self.preset) else {
             return;
         };
-        let replaced = self.project.channels.len() + self.project.banks.len();
+        let replaced = self.project.banks.len();
         self.project = preset.build();
         self.errors.clear();
         let (channels, banks) = preset.size();
         self.status = format!(
-            "Applied {}: {channels} channels in {banks} banks, replacing {replaced} rows. \
+            "Applied {}: {channels} channels in {banks} banks, replacing {replaced} banks. \
              Confirm every frequency against your own band plan before use.",
             preset.name()
         );
     }
+}
+
+/// Reads one project file, either format the editor reads.
+fn read_project_file(path: &Path) -> Result<ProjectModel, String> {
+    let bytes =
+        fs::read(path).map_err(|error| format!("Could not read {}: {error}", path.display()))?;
+    if bytes.len() > MAX_PROJECT_IMAGE_BYTES {
+        return Err(format!(
+            "{} exceeds {MAX_PROJECT_IMAGE_BYTES} bytes.",
+            path.display()
+        ));
+    }
+    ProjectModel::from_image(&bytes).map_err(|error| error.to_string())
 }
 
 impl eframe::App for StudioApp {
@@ -379,7 +394,6 @@ impl eframe::App for StudioApp {
 
         egui::TopBottomPanel::top("tabs").show(context, |ui| {
             ui.horizontal_wrapped(|ui| {
-                ui.selectable_value(&mut self.tab, Tab::Channels, "Channels");
                 ui.selectable_value(&mut self.tab, Tab::Banks, "Banks");
                 ui.selectable_value(&mut self.tab, Tab::Radio, "Radio");
                 ui.selectable_value(&mut self.tab, Tab::Device, "Device");
@@ -397,7 +411,6 @@ impl eframe::App for StudioApp {
         });
 
         egui::CentralPanel::default().show(context, |ui| match self.tab {
-            Tab::Channels => self.channels_tab(ui),
             Tab::Banks => self.banks_tab(ui),
             Tab::Radio => self.radio_tab(ui),
             Tab::Device => self.device_tab(ui),
@@ -409,13 +422,44 @@ impl eframe::App for StudioApp {
 impl StudioApp {
     fn project_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
-            ui.label("Project file:");
-            ui.add(TextEdit::singleline(&mut self.project_path).desired_width(320.0));
-            if ui.button("Load").clicked() {
-                self.load_project();
+            ui.label("Project:");
+            let mut chosen = self.projects.current_index();
+            ComboBox::from_id_salt("project")
+                .selected_text(self.projects.current().name.clone())
+                .width(200.0)
+                .show_ui(ui, |ui| {
+                    for (index, entry) in self.projects.entries().iter().enumerate() {
+                        ui.selectable_value(&mut chosen, index, &entry.name)
+                            .on_hover_text(entry.path.display().to_string());
+                    }
+                })
+                .response
+                .on_hover_text(self.projects.current().path.display().to_string());
+            if chosen != self.projects.current_index() {
+                self.open_project(chosen);
             }
             if ui.button("Save").clicked() {
                 self.save_project();
+            }
+            let dirty = self.is_dirty();
+            if ui
+                .add_enabled(dirty, egui::Button::new("Revert"))
+                .on_hover_text("Discard the changes since the project was last saved")
+                .clicked()
+            {
+                self.load_project();
+            }
+            if dirty {
+                ui.colored_label(WARNING_COLOUR, "unsaved changes");
+            }
+            ui.separator();
+            ui.add(
+                TextEdit::singleline(&mut self.new_project)
+                    .hint_text("new project name")
+                    .desired_width(160.0),
+            );
+            if ui.button("New project").clicked() {
+                self.create_project();
             }
         });
         ui.horizontal_wrapped(|ui| {
@@ -435,7 +479,7 @@ impl StudioApp {
             // Applying replaces the project, so it is never automatic.
             if ui
                 .button("Apply")
-                .on_hover_text("Replaces every channel and bank row")
+                .on_hover_text("Replaces every bank")
                 .clicked()
             {
                 self.apply_preset();
@@ -447,46 +491,39 @@ impl StudioApp {
         ui.separator();
     }
 
-    /// Returns the configuration bytes the connected radio declares, if any.
-    ///
-    /// Offline there is no radio to ask, and a project can be written to any of
-    /// them, so no capacity is claimed rather than one being invented.
-    fn configuration_capacity(&self) -> u32 {
-        self.session
-            .as_ref()
-            .map_or(0, |session| session.capabilities().configuration_bytes)
-    }
-
-    fn channels_tab(&mut self, ui: &mut egui::Ui) {
+    fn banks_tab(&mut self, ui: &mut egui::Ui) {
         self.project_bar(ui);
         ui.horizontal_wrapped(|ui| {
-            if ui.button("Add channel").clicked() {
-                self.project.add_channel();
+            if ui.button("Add channel bank").clicked() {
+                self.project.add_bank();
             }
-            ui.label(format!("{} channel rows", self.project.channels.len()));
+            if ui.button("Add generated plan").clicked() {
+                self.project.add_generated_bank();
+            }
+            ui.label(format!(
+                "{} banks, {} channel rows",
+                self.project.banks.len(),
+                self.project.channel_count()
+            ));
         });
         let summary = self.project.storage_summary();
         storage_summary_label(ui, &summary);
-        configuration_space_label(ui, self.configuration_capacity(), &summary);
+        radio_memory_label(ui, &summary);
         ui.separator();
 
-        // Membership only means something for a named bank, so each checkbox
-        // says which bank it joins, whether that bank exists yet, and whether
-        // the identifier already belongs to a plan the radio expands.
-        let bank_slots = self.project.bank_slots();
         let mut action = None;
-        ScrollArea::both().show(ui, |ui| {
-            for (row, channel) in self.project.channels.iter_mut().enumerate() {
+        ScrollArea::vertical().show(ui, |ui| {
+            for (row, bank) in self.project.banks.iter_mut().enumerate() {
                 ui.push_id(row, |ui| {
-                    // The header is keyed by row, not by its label: the label
-                    // shows the name and frequency being edited, and a key that
-                    // changed with them would drop focus after one keystroke.
-                    egui::CollapsingHeader::new(channel_row_label(row, channel))
+                    // Headers are keyed by row, not by their label: the label
+                    // shows what is being edited, and a key that changed with
+                    // it would drop focus after one keystroke.
+                    egui::CollapsingHeader::new(bank_row_label(row, bank))
                         .id_salt(row)
                         .default_open(true)
                         .show(ui, |ui| {
-                            if let Some(requested) = channel_row_editor(ui, channel, &bank_slots) {
-                                action = Some((requested, row));
+                            if let Some(requested) = bank_row_editor(ui, bank) {
+                                action = Some((row, requested));
                             }
                         });
                     ui.separator();
@@ -494,68 +531,19 @@ impl StudioApp {
             }
         });
         match action {
-            Some((RowAction::Duplicate, row)) => self.project.duplicate_channel(row),
-            Some((RowAction::Remove, row)) => {
-                self.project.channels.remove(row);
+            Some((row, BankAction::MoveUp)) => self.project.move_bank(row, true),
+            Some((row, BankAction::MoveDown)) => self.project.move_bank(row, false),
+            Some((row, BankAction::Remove)) => {
+                self.project.banks.remove(row);
+            }
+            Some((row, BankAction::AddChannel)) => self.project.add_channel(row),
+            Some((row, BankAction::Channel(channel, RowAction::Duplicate))) => {
+                self.project.duplicate_channel(row, channel);
+            }
+            Some((row, BankAction::Channel(channel, RowAction::Remove))) => {
+                self.project.banks[row].channels.remove(channel);
             }
             None => {}
-        }
-    }
-
-    fn banks_tab(&mut self, ui: &mut egui::Ui) {
-        self.project_bar(ui);
-        ui.horizontal_wrapped(|ui| {
-            if ui.button("Add named bank").clicked() {
-                self.project.add_bank();
-            }
-            if ui.button("Add generated plan").clicked() {
-                self.project.add_generated_bank();
-            }
-            ui.label(format!("{} banks", self.project.banks.len()));
-        });
-        let summary = self.project.storage_summary();
-        storage_summary_label(ui, &summary);
-        configuration_space_label(ui, self.configuration_capacity(), &summary);
-        // A compact plan is only storable on a target which advertises the
-        // encoding, so say so before the operator writes one.
-        if self
-            .project
-            .banks
-            .iter()
-            .any(|bank| matches!(bank.kind, BankKind::Generated))
-        {
-            if let Some(session) = self.session.as_ref() {
-                if !session.supports_generated_plans() {
-                    ui.colored_label(
-                        WARNING_COLOUR,
-                        format!(
-                            "{} does not advertise compact plan encodings; \
-                             generated plans can be saved but not written to it.",
-                            session.description()
-                        ),
-                    );
-                }
-            }
-        }
-        ui.separator();
-
-        let mut remove = None;
-        ScrollArea::vertical().show(ui, |ui| {
-            for (row, bank) in self.project.banks.iter_mut().enumerate() {
-                ui.push_id(row, |ui| {
-                    egui::CollapsingHeader::new(bank_row_label(row, bank))
-                        .id_salt(row)
-                        .default_open(true)
-                        .show(ui, |ui| {
-                            if bank_row_editor(ui, bank) {
-                                remove = Some(row);
-                            }
-                        });
-                });
-            }
-        });
-        if let Some(row) = remove {
-            self.project.banks.remove(row);
         }
     }
 
@@ -620,58 +608,37 @@ impl StudioApp {
         ui.separator();
 
         if let Some(session) = self.session.as_ref() {
-            let capabilities = session.capabilities();
             ui.label(format!(
-                "Connected to {}: protocol {}, storage {}, {} objects, {} object bytes.",
+                "Connected to {}, running {}.",
                 session.description(),
-                capabilities.protocol_version,
-                capabilities.storage_version,
-                capabilities.max_objects,
-                capabilities.max_object_size
+                session.firmware()
             ));
-            ui.label(if session.supports_generated_plans() {
-                "The target expands compact generated plans."
-            } else {
-                "The target stores explicit channels only, not compact plans."
-            });
         } else {
-            ui.label("No device is connected.");
+            ui.label("No radio is connected.");
         }
+        ui.label(
+            "The project is compiled into the image the radio runs, written into its \
+             memory and read back. The radio checks it again before it uses it.",
+        );
+        radio_memory_label(ui, &self.project.storage_summary());
 
         ui.horizontal_wrapped(|ui| {
-            if ui.button("Refresh listing").clicked() {
-                self.refresh_listing();
-            }
-            if ui.button("Read project from device").clicked() {
+            if ui.button("Read project from radio").clicked() {
                 self.read_project();
             }
-            if ui.button("Write project to device").clicked() {
+            if ui.button("Write project to radio").clicked() {
                 self.write_project();
             }
         });
-        ui.separator();
 
-        if let Some(report) = self.last_receipt {
+        if let Some(report) = &self.last_write {
             ui.label(format!(
-                "Last verified write: {} objects, {} bytes, {} channels, {} banks.",
-                report.object_count, report.storage_bytes, report.explicit_channels, report.banks
+                "Last verified write: {} bytes, {} blocks changed, on {}.",
+                report.image_bytes,
+                report.changed_blocks,
+                report.firmware.version()
             ));
         }
-
-        ScrollArea::vertical().show(ui, |ui| {
-            Grid::new("listing").num_columns(3).show(ui, |ui| {
-                ui.label(RichText::new("Kind").strong());
-                ui.label(RichText::new("Id").strong());
-                ui.label(RichText::new("Bytes").strong());
-                ui.end_row();
-                for (kind, id, bytes) in &self.listing {
-                    ui.label(kind);
-                    ui.label(id.to_string());
-                    ui.label(bytes.to_string());
-                    ui.end_row();
-                }
-            });
-        });
     }
 
     /// Draws detection, selection, and the connection controls.
@@ -762,17 +729,28 @@ enum RowAction {
     Remove,
 }
 
+/// What one bank asked the editor to do.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BankAction {
+    /// Move the bank one place earlier.
+    MoveUp,
+    /// Move the bank one place later.
+    MoveDown,
+    /// Delete the bank and its channels.
+    Remove,
+    /// Append a channel to the bank.
+    AddChannel,
+    /// Act on one of the bank's channels.
+    Channel(usize, RowAction),
+}
+
 /// Draws one channel row, returning the action its buttons requested.
-fn channel_row_editor(
-    ui: &mut egui::Ui,
-    channel: &mut ChannelDraft,
-    bank_slots: &[Option<(BankKind, String)>],
-) -> Option<RowAction> {
+fn channel_row_editor(ui: &mut egui::Ui, channel: &mut ChannelDraft) -> Option<RowAction> {
     Grid::new("channel").num_columns(4).show(ui, |ui| {
-        ui.label("Id");
-        ui.add(egui::DragValue::new(&mut channel.id));
         ui.label("Name");
         ui.add(TextEdit::singleline(&mut channel.name).desired_width(120.0));
+        ui.label("TX class");
+        tx_class_editor(ui, &mut channel.tx_class);
         ui.end_row();
 
         ui.label("Receive MHz");
@@ -801,31 +779,12 @@ fn channel_row_editor(
 
         ui.label("Squelch");
         ui.add(egui::DragValue::new(&mut channel.squelch).range(0..=MAX_SQUELCH_LEVEL));
-        ui.label("TX class");
-        tx_class_editor(ui, &mut channel.tx_class);
-        ui.end_row();
-
         ui.label("Flags");
         ui.horizontal_wrapped(|ui| {
             ui.checkbox(&mut channel.scan_skip, "Scan skip");
             ui.checkbox(&mut channel.busy_lockout, "Busy lockout");
             ui.checkbox(&mut channel.reverse, "Reverse");
             ui.checkbox(&mut channel.compander, "Compander");
-        });
-        ui.label("Banks");
-        ui.horizontal_wrapped(|ui| {
-            for bank in 0..BANK_COUNT {
-                let index = usize::from(bank);
-                let response = ui.checkbox(&mut channel.banks[index], format!("{bank}"));
-                match bank_slots.get(index).and_then(Option::as_ref) {
-                    Some((BankKind::Named, name)) => response.on_hover_text(name.clone()),
-                    Some((BankKind::Generated, name)) => response.on_hover_text(format!(
-                        "{name} is a generated plan; this channel is selected beside \
-                         the channels it expands, under the same bank filter"
-                    )),
-                    None => response.on_hover_text("no named bank defines this identifier"),
-                };
-            }
         });
         ui.end_row();
     });
@@ -841,17 +800,17 @@ fn channel_row_editor(
     action
 }
 
-/// Draws one bank row, reporting whether its removal was requested.
-fn bank_row_editor(ui: &mut egui::Ui, bank: &mut BankDraft) -> bool {
+/// Draws one bank and, for a channel bank, its channels.
+fn bank_row_editor(ui: &mut egui::Ui, bank: &mut BankDraft) -> Option<BankAction> {
+    let mut action = None;
     Grid::new("bank").num_columns(4).show(ui, |ui| {
-        ui.label("Id");
-        ui.add(egui::DragValue::new(&mut bank.id).range(0..=BANK_COUNT - 1));
         ui.label("Name");
         ui.add(TextEdit::singleline(&mut bank.name).desired_width(160.0));
-        ui.end_row();
-
         ui.label("Kind");
         bank_kind_editor(ui, &mut bank.kind);
+        ui.end_row();
+
+        ui.label("");
         ui.label(bank.kind.detail());
         ui.end_row();
 
@@ -864,10 +823,52 @@ fn bank_row_editor(ui: &mut egui::Ui, bank: &mut BankDraft) -> bool {
             BankKind::Generated => generated_plan_editor(ui, bank),
         }
     });
-    if matches!(bank.kind, BankKind::Generated) {
-        generated_expansion(ui, bank);
+    ui.horizontal_wrapped(|ui| {
+        if ui.button("Move up").clicked() {
+            action = Some(BankAction::MoveUp);
+        }
+        if ui.button("Move down").clicked() {
+            action = Some(BankAction::MoveDown);
+        }
+        if ui.button("Remove bank").clicked() {
+            action = Some(BankAction::Remove);
+        }
+    });
+    match bank.kind {
+        BankKind::Generated => {
+            generated_expansion(ui, bank);
+            if !bank.channels.is_empty() {
+                ui.colored_label(
+                    WARNING_COLOUR,
+                    format!(
+                        "{} channel rows are kept from when this was a channel bank; \
+                         switch back to Channels, or remove them, to write it.",
+                        bank.channels.len()
+                    ),
+                );
+            }
+        }
+        BankKind::Named => {
+            ui.indent("channels", |ui| {
+                for (row, channel) in bank.channels.iter_mut().enumerate() {
+                    ui.push_id(row, |ui| {
+                        egui::CollapsingHeader::new(channel_row_label(row, channel))
+                            .id_salt(row)
+                            .default_open(true)
+                            .show(ui, |ui| {
+                                if let Some(requested) = channel_row_editor(ui, channel) {
+                                    action = Some(BankAction::Channel(row, requested));
+                                }
+                            });
+                    });
+                }
+                if ui.button("Add channel").clicked() {
+                    action = Some(BankAction::AddChannel);
+                }
+            });
+        }
     }
-    ui.button("Remove bank").clicked()
+    action
 }
 
 /// Draws the editor for one generated plan.
@@ -1035,10 +1036,8 @@ fn generated_expansion(ui: &mut egui::Ui, bank: &BankDraft) {
         );
         return;
     }
-    let stored = bank.stored_bytes();
-    let explicit = usize::from(bank.channel_count) * CHANNEL_ENCODED_LEN;
     egui::CollapsingHeader::new(format!(
-        "Expands to {} channels on the radio: {stored} stored bytes instead of {explicit}",
+        "Expands to {} channels on the radio",
         bank.channel_count
     ))
     .default_open(false)
@@ -1060,50 +1059,33 @@ fn generated_expansion(ui: &mut egui::Ui, bank: &BankDraft) {
     });
 }
 
-/// Reports how much of a connected radio's configuration memory is left.
-///
-/// The capacity is the radio's own declared bound, not a host guess, so this
-/// says nothing at all when no radio is connected or when one declares none.
-fn configuration_space_label(ui: &mut egui::Ui, capacity: u32, summary: &StorageSummary) {
-    if capacity == 0 {
-        return;
-    }
-    let used = u32::try_from(summary.image_bytes()).unwrap_or(u32::MAX);
-    let remaining = capacity.saturating_sub(used);
-    let text =
-        format!("Radio configuration memory: {used} of {capacity} bytes used, {remaining} free.");
-    if used > capacity {
-        ui.colored_label(
-            WARNING_COLOUR,
-            format!(
-                "Radio configuration memory: {used} bytes needed, {capacity} available. \
-                 This project is {} bytes too large to write.",
-                used - capacity
-            ),
-        );
-    } else {
-        ui.label(text);
+/// Reports how much of a radio's configuration memory the project takes.
+fn radio_memory_label(ui: &mut egui::Ui, summary: &StorageSummary) {
+    match summary.image_bytes {
+        Some(bytes) => {
+            ui.label(format!(
+                "Radio memory: {bytes} of {RADIO_IMAGE_BYTES} bytes used, {} free.",
+                RADIO_IMAGE_BYTES - bytes
+            ));
+        }
+        None => {
+            ui.colored_label(
+                WARNING_COLOUR,
+                "Radio memory: the project does not compile into a radio image yet; \
+                 Save or Write lists what to fix.",
+            );
+        }
     }
 }
 
-/// Reports what the project costs a radio and what its plans saved.
+/// Reports how many channels the radio will offer.
 fn storage_summary_label(ui: &mut egui::Ui, summary: &StorageSummary) {
-    let saving = if summary.expanded_channels > 0 {
-        format!(
-            " Plans saved {} bytes against storing those channels.",
-            summary.bytes_saved()
-        )
-    } else {
-        String::new()
-    };
     ui.label(format!(
-        "{} selectable channels: {} stored, {} expanded from plans. \
-         {} objects, {} stored bytes.{saving}",
+        "{} selectable channels: {} stored, {} expanded from {} plans.",
         summary.selectable_channels(),
         summary.stored_channels,
         summary.expanded_channels,
-        summary.objects,
-        summary.bytes,
+        summary.plans,
     ));
 }
 
@@ -1204,13 +1186,13 @@ pub fn channel_row_label(row: usize, channel: &ChannelDraft) -> String {
 /// Returns the editor label for one bank row, used by tests and headers.
 pub fn bank_row_label(row: usize, bank: &BankDraft) -> String {
     let detail = match bank.kind {
-        BankKind::Named => "named channels".to_owned(),
+        BankKind::Named => format!("{} channels", bank.channels.len()),
         BankKind::Generated => match bank.generated_span() {
-            Some((first, last)) => format!("{first} to {last} MHz"),
+            Some((first, last)) => format!("plan, {first} to {last} MHz"),
             None => "generated plan".to_owned(),
         },
     };
-    format!("{}: {} [{}] ({detail})", row + 1, bank.name, bank.id)
+    format!("{}: {} ({detail})", row + 1, bank.name)
 }
 
 #[cfg(test)]
@@ -1218,92 +1200,151 @@ mod tests {
     use super::{
         bank_row_label, channel_row_label, scan_resume_label, tx_class_label, StudioApp, Tab,
     };
-    use crate::{model::BankKind, DeviceSelector, Options};
+    use crate::{model::BankKind, projects::ProjectStore, DeviceSelector, Options};
     use radio_domain::{ScanResume, TxClass};
+    use std::path::PathBuf;
 
-    #[test]
-    fn a_simulator_start_up_connects_and_lists_objects() {
-        let options = Options {
-            simulator: true,
-            ..Options::default()
-        };
-        let app = StudioApp::new(&options);
-        assert!(app.session.is_some());
-        assert_eq!(app.tab, Tab::Channels);
-        assert!(app.status.contains("0 objects"));
+    /// A project directory of the test's own, so nothing touches the
+    /// operator's projects or their last-project record.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("afik-studio-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    fn app_in(dir: &std::path::Path, options: &Options) -> StudioApp {
+        StudioApp::with_projects(
+            options,
+            ProjectStore::open_in(dir.join("projects"), Some(dir.join("last"))),
+        )
+    }
+
+    fn simulated(name: &str) -> StudioApp {
+        app_in(
+            &scratch(name),
+            &Options {
+                simulator: true,
+                ..Options::default()
+            },
+        )
     }
 
     #[test]
-    fn writing_an_invalid_project_reports_errors_without_contacting_the_device() {
-        let mut app = StudioApp::new(&Options {
-            simulator: true,
-            ..Options::default()
-        });
-        app.project.add_channel();
-        app.project.channels[0].receive_mhz = "nope".to_owned();
+    fn a_simulator_start_up_connects_and_opens_the_default_project() {
+        let app = simulated("startup");
+        assert!(app.session.is_some());
+        assert_eq!(app.tab, Tab::Banks);
+        assert!(
+            app.status.contains("Connected to simulator"),
+            "{}",
+            app.status
+        );
+        assert_eq!(app.projects.current().name, "default");
+        assert!(!app.is_dirty());
+    }
+
+    #[test]
+    fn writing_an_invalid_project_reports_errors_without_contacting_the_radio() {
+        let mut app = simulated("invalid");
+        app.project.add_bank();
+        app.project.add_channel(0);
+        app.project.banks[0].channels[0].receive_mhz = "nope".to_owned();
         app.write_project();
         assert!(!app.errors.is_empty());
-        assert!(app.last_receipt.is_none());
+        assert!(app.last_write.is_none());
+        assert_eq!(
+            app.session.as_ref().unwrap().simulator().unwrap().writes(),
+            0
+        );
     }
 
     #[test]
-    fn a_valid_project_writes_and_reads_back_through_the_simulator() {
-        let mut app = StudioApp::new(&Options {
-            simulator: true,
-            ..Options::default()
-        });
+    fn channels_and_a_plan_write_and_read_back_through_the_simulator() {
+        let mut app = simulated("write");
         app.project.add_bank();
-        app.project.add_channel();
-        app.project.channels[0].banks[0] = true;
+        app.project.add_channel(0);
+        app.project.add_generated_bank();
+        app.project.banks[1].name = "PMR446".to_owned();
+        app.project.banks[1].base_mhz = "446.006250".to_owned();
+        app.project.banks[1].designator = "PMR ".to_owned();
         app.write_project();
         assert!(app.errors.is_empty(), "{:?}", app.errors);
-        assert_eq!(app.last_receipt.unwrap().explicit_channels, 1);
+        assert!(app.last_write.as_ref().unwrap().changed_blocks > 0);
+        let index = app
+            .session
+            .as_ref()
+            .unwrap()
+            .simulator()
+            .unwrap()
+            .index()
+            .unwrap();
+        assert_eq!(index.len(), 17);
 
+        let written = app.project.clone();
         app.project = crate::model::ProjectModel::new();
         app.read_project();
-        assert_eq!(app.project.channels.len(), 1);
-        assert_eq!(app.project.banks.len(), 1);
+        assert_eq!(app.project, written);
+        assert_eq!(app.project.banks[1].kind, BankKind::Generated);
 
-        // Another device has not had this write, so its receipt is not shown.
+        // Another radio has not had this write, so its report is not shown.
         app.connect_simulator();
-        assert!(app.last_receipt.is_none());
+        assert!(app.last_write.is_none());
         app.write_project();
         app.disconnect();
-        assert!(app.last_receipt.is_none());
-        assert!(app.listing.is_empty());
+        assert!(app.last_write.is_none());
     }
 
     #[test]
-    fn a_generated_plan_writes_and_reads_back_through_the_simulator() {
-        let mut app = StudioApp::new(&Options {
-            simulator: true,
-            ..Options::default()
-        });
-        assert!(app.session.as_ref().unwrap().supports_generated_plans());
-        app.project.add_generated_bank();
-        app.project.banks[0].name = "PMR446".to_owned();
-        app.project.banks[0].base_mhz = "446.00625".to_owned();
-        app.write_project();
-        assert!(app.errors.is_empty(), "{:?}", app.errors);
-        let report = app.last_receipt.unwrap();
-        assert_eq!(report.generated_channels, 16);
-        assert_eq!(report.explicit_channels, 0);
+    fn projects_are_saved_by_name_and_reopened_at_start_up() {
+        let dir = scratch("projects");
+        let options = Options::default();
+        let mut app = app_in(&dir, &options);
+        app.project.add_bank();
+        assert!(app.is_dirty());
 
-        app.project = crate::model::ProjectModel::new();
-        app.read_project();
+        // A changed project is not dropped by opening or creating another.
+        app.new_project = "Club".to_owned();
+        app.create_project();
+        assert_eq!(app.projects.current().name, "default");
+        app.save_project();
+        assert!(!app.is_dirty());
+        assert!(dir.join("projects").join("default.afik").is_file());
+
+        app.new_project = "Club".to_owned();
+        app.create_project();
+        assert_eq!(app.projects.current().name, "Club");
+        assert!(app.project.banks.is_empty());
+        assert!(dir.join("projects").join("Club.afik").is_file());
+        app.project.add_generated_bank();
+        app.open_project(1);
+        assert_eq!(
+            app.projects.current().name,
+            "Club",
+            "unsaved changes keep it open"
+        );
+        app.load_project();
+        app.open_project(1);
+        assert_eq!(app.projects.current().name, "default");
         assert_eq!(app.project.banks.len(), 1);
-        assert_eq!(app.project.banks[0].kind, BankKind::Generated);
-        assert_eq!(app.project.banks[0].channel_count, 16);
+
+        // The next start opens the project opened last.
+        let app = app_in(&dir, &options);
+        assert_eq!(app.projects.current().name, "default");
+        assert_eq!(app.project.banks.len(), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn an_unopenable_start_up_device_is_reported_without_a_session() {
-        let app = StudioApp::new(&Options {
-            device: Some(DeviceSelector::Explicit(std::path::PathBuf::from(
-                "/definitely/missing",
-            ))),
-            ..Options::default()
-        });
+        let app = app_in(
+            &scratch("unopenable"),
+            &Options {
+                device: Some(DeviceSelector::Explicit(PathBuf::from(
+                    "/definitely/missing",
+                ))),
+                ..Options::default()
+            },
+        );
         assert!(app.session.is_none());
         assert!(app.status.contains("serial setup failed"), "{}", app.status);
         assert_eq!(app.chooser.manual_path, "/definitely/missing");
@@ -1314,25 +1355,25 @@ mod tests {
     fn bank_row_labels_name_the_kind_and_the_generated_span() {
         let mut project = crate::model::ProjectModel::new();
         project.add_bank();
+        project.add_channel(0);
         assert_eq!(
             bank_row_label(0, &project.banks[0]),
-            "1: Bank 0 [0] (named channels)"
+            "1: Bank 1 (1 channels)"
         );
         project.add_generated_bank();
         project.banks[1].base_mhz = "446.00625".to_owned();
         assert_eq!(
             bank_row_label(1, &project.banks[1]),
-            "2: Bank 1 [1] (446.006250 to 446.193750 MHz)"
+            "2: Bank 2 (plan, 446.006250 to 446.193750 MHz)"
         );
         project.banks[1].base_mhz = "nope".to_owned();
         assert!(bank_row_label(1, &project.banks[1]).contains("generated plan"));
     }
 
-    /// Draws one headless frame of a tab with the given input events.
+    /// Draws one headless frame of the Banks tab with the given input events.
     fn frame(
         context: &eframe::egui::Context,
         app: &mut StudioApp,
-        tab: Tab,
         events: Vec<eframe::egui::Event>,
     ) {
         use eframe::egui::{CentralPanel, Pos2, RawInput, Rect, Vec2};
@@ -1342,10 +1383,7 @@ mod tests {
             ..RawInput::default()
         };
         let _output = context.run(input, |context| {
-            CentralPanel::default().show(context, |ui| match tab {
-                Tab::Channels => app.channels_tab(ui),
-                _ => app.banks_tab(ui),
-            });
+            CentralPanel::default().show(context, |ui| app.banks_tab(ui));
         });
     }
 
@@ -1353,12 +1391,11 @@ mod tests {
     fn focus_field(
         context: &eframe::egui::Context,
         app: &mut StudioApp,
-        tab: Tab,
         probe: impl Fn(&StudioApp) -> String,
     ) {
         use eframe::egui::{Event, Key, Modifiers};
         let before = probe(app);
-        for _ in 0..40 {
+        for _ in 0..60 {
             let tab_key = Event::Key {
                 key: Key::Tab,
                 physical_key: None,
@@ -1366,8 +1403,8 @@ mod tests {
                 repeat: false,
                 modifiers: Modifiers::NONE,
             };
-            frame(context, app, tab, vec![tab_key]);
-            frame(context, app, tab, vec![Event::Text("Z".to_owned())]);
+            frame(context, app, vec![tab_key]);
+            frame(context, app, vec![Event::Text("Z".to_owned())]);
             if probe(app) != before {
                 return;
             }
@@ -1378,42 +1415,34 @@ mod tests {
     #[test]
     fn typing_into_a_row_keeps_focus_while_its_header_label_changes() {
         use eframe::egui::{Context, Event};
-        // The row header shows the name and frequency being edited. Typing
-        // must keep going to the same field, not stop after one character.
+        // Row headers show the name and frequency being edited. Typing must
+        // keep going to the same field, not stop after one character.
         let context = Context::default();
-        let mut app = StudioApp::default();
-        app.project.add_channel();
-        frame(&context, &mut app, Tab::Channels, Vec::new());
-        focus_field(&context, &mut app, Tab::Channels, |app| {
-            app.project.channels[0].receive_mhz.clone()
+        let mut app = app_in(&scratch("focus"), &Options::default());
+        app.project.add_bank();
+        app.project.add_channel(0);
+        frame(&context, &mut app, Vec::new());
+        focus_field(&context, &mut app, |app| {
+            app.project.banks[0].channels[0].receive_mhz.clone()
         });
         for text in ["Y", "X"] {
-            frame(
-                &context,
-                &mut app,
-                Tab::Channels,
-                vec![Event::Text(text.into())],
-            );
+            frame(&context, &mut app, vec![Event::Text(text.into())]);
         }
         assert!(
-            app.project.channels[0].receive_mhz.ends_with("ZYX"),
+            app.project.banks[0].channels[0]
+                .receive_mhz
+                .ends_with("ZYX"),
             "{}",
-            app.project.channels[0].receive_mhz
+            app.project.banks[0].channels[0].receive_mhz
         );
 
         let context = Context::default();
+        let mut app = app_in(&scratch("focus-plan"), &Options::default());
         app.project.add_generated_bank();
-        frame(&context, &mut app, Tab::Banks, Vec::new());
-        focus_field(&context, &mut app, Tab::Banks, |app| {
-            app.project.banks[0].name.clone()
-        });
+        frame(&context, &mut app, Vec::new());
+        focus_field(&context, &mut app, |app| app.project.banks[0].name.clone());
         for text in ["Y", "X"] {
-            frame(
-                &context,
-                &mut app,
-                Tab::Banks,
-                vec![Event::Text(text.into())],
-            );
+            frame(&context, &mut app, vec![Event::Text(text.into())]);
         }
         assert!(
             app.project.banks[0].name.ends_with("ZYX"),
@@ -1478,12 +1507,15 @@ mod tests {
         capture::install();
         let _earlier = capture::take();
 
-        let mut app = StudioApp::new(&Options {
-            device: Some(DeviceSelector::Explicit(std::path::PathBuf::from(
-                "/definitely/missing",
-            ))),
-            ..Options::default()
-        });
+        let mut app = app_in(
+            &scratch("logged"),
+            &Options {
+                device: Some(DeviceSelector::Explicit(PathBuf::from(
+                    "/definitely/missing",
+                ))),
+                ..Options::default()
+            },
+        );
         let logged = capture::take();
         assert!(
             logged.iter().any(|(level, text)| *level == Level::Error
@@ -1493,8 +1525,9 @@ mod tests {
         );
 
         // A refused write is a warning naming every field which failed.
-        app.project.add_channel();
-        app.project.channels[0].receive_mhz = "nope".to_owned();
+        app.project.add_bank();
+        app.project.add_channel(0);
+        app.project.banks[0].channels[0].receive_mhz = "nope".to_owned();
         app.write_project();
         let logged = capture::take();
         assert!(logged
@@ -1510,9 +1543,10 @@ mod tests {
         assert_eq!(tx_class_label(TxClass::Never), "Never");
         assert_eq!(scan_resume_label(ScanResume::Stop), "Stop on signal");
         let mut project = crate::model::ProjectModel::new();
-        project.add_channel();
+        project.add_bank();
+        project.add_channel(0);
         assert_eq!(
-            channel_row_label(0, &project.channels[0]),
+            channel_row_label(0, &project.banks[0].channels[0]),
             "1: CH1 (145.500000)"
         );
     }

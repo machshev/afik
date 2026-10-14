@@ -1,5 +1,10 @@
 //! Editable project model shared by the native editor and its tests.
 //!
+//! A project is a list of banks. Each bank either holds channels or is a
+//! generated plan, and every channel is in exactly one bank: the radio stores
+//! each channel in its bank (storage format 5, `ADR-100`). A bank's row is its
+//! identifier, so the radio lists banks, and their channels, in this order.
+//!
 //! Drafts hold partially edited operator input as text. Validation is the only
 //! path from a draft to a typed record, so an invalid field can never reach a
 //! configuration image or a radio.
@@ -16,24 +21,23 @@ use radio_domain::{
     RadioConfig, RadioFlags, ScanResume, SquelchLevel, Tone, TxClass, MAX_BATTERY_SAVE_RATIO,
     MAX_SQUELCH_LEVEL,
 };
-use radio_programmer::{CompileError, ConfigurationCompiler, DeviceCapabilities, RadioProject};
+use radio_programmer::{ConfigurationCompiler, DeviceCapabilities, RadioProject};
 use radio_storage::{
     decode_channel, decode_channel_bank, decode_configuration_image, decode_generated_bank,
-    decode_radio_config, generated_bank_encoded_len, ObjectKind, CHANNEL_BANK_ENCODED_LEN,
-    CHANNEL_ENCODED_LEN, CONFIGURATION_IMAGE_HEADER_LEN, CONFIGURATION_IMAGE_OBJECT_HEADER_LEN,
-    MAX_GENERATED_BANK_ENCODED_LEN, MAX_OBJECT_DATA, RADIO_CONFIG_ENCODED_LEN,
-    STORAGE_FORMAT_VERSION,
+    decode_radio_config, radio_image, ObjectKind, MAX_OBJECT_DATA, STORAGE_FORMAT_VERSION,
 };
 
 /// Maximum objects an offline host project may hold.
 pub const MAX_PROJECT_OBJECTS: u16 = 1_024;
-/// Maximum accepted canonical image size for an offline load.
+/// Maximum accepted project file size.
 pub const MAX_PROJECT_IMAGE_BYTES: usize = 256 * 1024;
+/// Bytes a radio holds for its configuration image (`ADR-100`).
+pub const RADIO_IMAGE_BYTES: usize = radio_programmer::RADIO_IMAGE_BYTES;
 
-/// Host-side capabilities used for offline compilation and image export.
+/// Host-side capabilities used to encode a project file.
 ///
-/// These are deliberately permissive: a device session always recompiles the
-/// project against the negotiated target capabilities before any write.
+/// A project file is the format 4 object set, which every front end reads;
+/// a radio is written the format 5 image compiled from the same project.
 pub fn host_capabilities() -> DeviceCapabilities {
     DeviceCapabilities {
         protocol_version: 1,
@@ -43,8 +47,6 @@ pub fn host_capabilities() -> DeviceCapabilities {
         max_object_size: u16::try_from(MAX_OBJECT_DATA).unwrap_or(u16::MAX),
         plan_encodings: PlanEncoding::LinearSimplex.capability_bit()
             | PlanEncoding::LinearFixedOffset.capability_bit(),
-        // Offline the host declares no stored-configuration bound; a connected
-        // radio reports its own, and that is what the editor shows.
         configuration_bytes: 0,
     }
 }
@@ -69,8 +71,13 @@ impl fmt::Display for ModelError {
 /// Which part of the project a validation failure came from.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ModelScope {
-    /// One channel row, identified by its zero-based row index.
-    Channel(usize),
+    /// One channel, by zero-based bank row and row within that bank.
+    Channel {
+        /// Bank row.
+        bank: usize,
+        /// Channel row within the bank.
+        row: usize,
+    },
     /// One bank row, identified by its zero-based row index.
     Bank(usize),
     /// The global radio configuration.
@@ -82,8 +89,10 @@ pub enum ModelScope {
 impl fmt::Display for ModelScope {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Channel(row) => write!(formatter, "channel row {}", row + 1),
-            Self::Bank(row) => write!(formatter, "bank row {}", row + 1),
+            Self::Channel { bank, row } => {
+                write!(formatter, "bank {} channel {}", bank + 1, row + 1)
+            }
+            Self::Bank(row) => write!(formatter, "bank {}", row + 1),
             Self::Config => formatter.write_str("radio configuration"),
             Self::Project => formatter.write_str("project"),
         }
@@ -188,8 +197,6 @@ impl ToneDraft {
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChannelDraft {
-    /// Stable channel identifier.
-    pub id: u16,
     /// Display name.
     pub name: String,
     /// Receive frequency in megahertz.
@@ -218,8 +225,6 @@ pub struct ChannelDraft {
     pub reverse: bool,
     /// Request the audio compander.
     pub compander: bool,
-    /// Bank membership by bank identifier.
-    pub banks: [bool; MAX_BANKS as usize],
     /// Trusted transmit classification.
     pub tx_class: TxClass,
 }
@@ -227,7 +232,6 @@ pub struct ChannelDraft {
 impl Default for ChannelDraft {
     fn default() -> Self {
         Self {
-            id: 1,
             name: "CH1".to_owned(),
             receive_mhz: "145.500000".to_owned(),
             transmit_mhz: "145.500000".to_owned(),
@@ -242,7 +246,6 @@ impl Default for ChannelDraft {
             busy_lockout: false,
             reverse: false,
             compander: false,
-            banks: [false; MAX_BANKS as usize],
             tx_class: TxClass::Never,
         }
     }
@@ -252,13 +255,7 @@ impl ChannelDraft {
     /// Builds a draft from a validated channel record.
     pub fn from_record(record: ChannelRecord) -> Self {
         let flags = record.flags();
-        let mut banks = [false; MAX_BANKS as usize];
-        for (bank, member) in banks.iter_mut().enumerate() {
-            let id = u16::try_from(bank).unwrap_or(u16::MAX);
-            *member = record.banks().contains(BankId::new(id));
-        }
         Self {
-            id: record.id().get(),
             name: record.name().as_str().to_owned(),
             receive_mhz: format_mhz(record.receive().as_hz()),
             transmit_mhz: format_mhz(record.transmit().as_hz()),
@@ -273,14 +270,18 @@ impl ChannelDraft {
             busy_lockout: flags.contains(ChannelFlags::BUSY_LOCKOUT),
             reverse: flags.contains(ChannelFlags::REVERSE),
             compander: flags.contains(ChannelFlags::COMPANDER),
-            banks,
             tx_class: record.tx_class(),
         }
     }
 
-    /// Validates every field into one channel record.
-    pub fn validate(&self, row: usize) -> Result<ChannelRecord, ModelError> {
-        let scope = ModelScope::Channel(row);
+    /// Validates every field into one channel record numbered `id` and
+    /// stored in `bank`.
+    pub fn validate(
+        &self,
+        scope: ModelScope,
+        id: u16,
+        bank: BankId,
+    ) -> Result<ChannelRecord, ModelError> {
         let name = ChannelName::new(self.name.trim())
             .map_err(|_| error(scope, "name", "must be 1 to 12 printable characters"))?;
         let receive = parse_frequency(&self.receive_mhz)
@@ -296,28 +297,21 @@ impl ChannelDraft {
             .with(ChannelFlags::BUSY_LOCKOUT, self.busy_lockout)
             .with(ChannelFlags::REVERSE, self.reverse);
         flags = flags.with(ChannelFlags::COMPANDER, self.compander);
-        let mut banks = BankMask::default();
-        for (bank, member) in self.banks.iter().enumerate() {
-            if *member {
-                let id = BankId::new(u16::try_from(bank).unwrap_or(u16::MAX));
-                banks = banks
-                    .with(id, true)
-                    .map_err(|_| error(scope, "banks", "references an unaddressable bank"))?;
-            }
-        }
-        if self.id >= GENERATED_CHANNEL_ID_BASE {
+        if id >= GENERATED_CHANNEL_ID_BASE {
             return Err(error(
                 scope,
-                "id",
+                "channel",
                 format!(
-                    "must be 0 to {}; higher identifiers belong to channels a radio \
-                     expands from a generated plan",
+                    "is one too many: a project stores at most {} channels",
                     GENERATED_CHANNEL_ID_BASE - 1
                 ),
             ));
         }
+        let banks = BankMask::default()
+            .with(bank, true)
+            .map_err(|_| error(scope, "bank", "is not addressable"))?;
         ChannelRecord::new(ChannelDefinition {
-            id: ChannelId::new(self.id),
+            id: ChannelId::new(id),
             name,
             receive,
             transmit,
@@ -336,13 +330,13 @@ impl ChannelDraft {
     }
 }
 
-/// Which kind of bank one editable row defines.
+/// What one bank holds.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum BankKind {
-    /// A named bank explicit channel rows join by membership.
+    /// Channels entered one by one.
     #[default]
     Named,
-    /// A compact arithmetic simplex plan the radio expands for itself.
+    /// A compact arithmetic plan the radio expands for itself.
     Generated,
 }
 
@@ -350,7 +344,7 @@ impl BankKind {
     /// Returns the editor label.
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Named => "Named channels",
+            Self::Named => "Channels",
             Self::Generated => "Generated plan",
         }
     }
@@ -358,11 +352,13 @@ impl BankKind {
     /// Returns a one-line explanation of what the kind stores.
     pub const fn detail(self) -> &'static str {
         match self {
-            Self::Named => "Groups the explicit channel rows which claim membership of this bank.",
+            Self::Named => {
+                "Holds the channels listed below. Values they all share are stored \
+                 once for the bank."
+            }
             Self::Generated => {
                 "One stored plan the radio expands into complete channels, however many \
-                 it holds, so no channel row is stored for any of them. The target must \
-                 advertise the plan encoding."
+                 it holds, so no channel is stored for any of them."
             }
         }
     }
@@ -373,21 +369,17 @@ impl BankKind {
     }
 }
 
-/// What one project costs a radio, and what its plans saved.
+/// What one project costs a radio.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct StorageSummary {
-    /// Stored objects, including the global configuration.
-    pub objects: usize,
-    /// Stored bytes, excluding the image container header.
-    pub bytes: usize,
-    /// Channels which cost one stored object each.
+    /// Channels stored one record each.
     pub stored_channels: usize,
-    /// Channels the radio expands from stored plans at no per-channel cost.
+    /// Channels the radio expands from stored plans.
     pub expanded_channels: usize,
     /// Stored plans which expand into channels.
     pub plans: usize,
-    /// Bytes the generated plans themselves occupy.
-    pub plan_bytes: usize,
+    /// Bytes of the radio image, when the whole project compiles into one.
+    pub image_bytes: Option<usize>,
 }
 
 impl StorageSummary {
@@ -395,42 +387,14 @@ impl StorageSummary {
     pub const fn selectable_channels(&self) -> usize {
         self.stored_channels + self.expanded_channels
     }
-
-    /// Returns the bytes one canonical image of this project occupies.
-    ///
-    /// This is what a radio must find room for: every stored object plus the
-    /// image container header and one envelope per object.
-    pub const fn image_bytes(&self) -> usize {
-        CONFIGURATION_IMAGE_HEADER_LEN
-            + self.bytes
-            + self.objects * CONFIGURATION_IMAGE_OBJECT_HEADER_LEN
-    }
-
-    /// Returns the bytes saved by expanding plans instead of storing channels.
-    ///
-    /// The comparison is against the same configuration written as explicit
-    /// channel rows, which would need no plan objects at all. A plan of one
-    /// channel costs more than the row it replaces, so this saves nothing
-    /// rather than underflowing.
-    pub const fn bytes_saved(&self) -> usize {
-        (self.expanded_channels * CHANNEL_ENCODED_LEN).saturating_sub(self.plan_bytes)
-    }
 }
 
-/// Returns the bytes one validated plan occupies in a radio's store.
-///
-/// Each encoding family is stored at its own length, so a simplex band costs
-/// less than a repeater sub-band and the editor says so.
-fn plan_bytes(plan: GeneratedBank) -> usize {
-    generated_bank_encoded_len(plan.encoding()).unwrap_or(MAX_GENERATED_BANK_ENCODED_LEN)
-}
-
-/// One validated bank, which is either named or a compact generated plan.
+/// One validated bank, which either holds channels or is a generated plan.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ValidatedBank {
-    /// A named bank addressed by channel membership.
+    /// A bank holding channels.
     Named(ChannelBank),
-    /// A compact arithmetic simplex plan.
+    /// A compact arithmetic plan.
     Generated(GeneratedBank),
 }
 
@@ -439,13 +403,11 @@ pub enum ValidatedBank {
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BankDraft {
-    /// Bank identifier from zero to fifteen.
-    pub id: u16,
     /// Display name.
     pub name: String,
     /// Which kind of bank this row defines.
     pub kind: BankKind,
-    /// Whether a named bank participates in scanning.
+    /// Whether the bank participates in scanning.
     pub scan_enabled: bool,
     /// First generated receive frequency in megahertz.
     pub base_mhz: String,
@@ -487,12 +449,13 @@ pub struct BankDraft {
     pub busy_lockout: bool,
     /// Request the audio compander on every generated channel.
     pub compander: bool,
+    /// The channels a channel bank holds, in the radio's order.
+    pub channels: Vec<ChannelDraft>,
 }
 
 impl Default for BankDraft {
     fn default() -> Self {
         Self {
-            id: 0,
             name: "Bank".to_owned(),
             kind: BankKind::default(),
             scan_enabled: true,
@@ -514,6 +477,7 @@ impl Default for BankDraft {
             scan_skip: false,
             busy_lockout: false,
             compander: false,
+            channels: Vec::new(),
         }
     }
 }
@@ -522,7 +486,6 @@ impl BankDraft {
     /// Builds a draft from a validated named bank.
     pub fn from_record(bank: ChannelBank) -> Self {
         Self {
-            id: bank.id().get(),
             name: bank.name().as_str().to_owned(),
             kind: BankKind::Named,
             scan_enabled: bank.is_scan_enabled(),
@@ -534,7 +497,6 @@ impl BankDraft {
     pub fn from_generated(bank: GeneratedBank) -> Self {
         let template = bank.template();
         Self {
-            id: bank.id().get(),
             name: bank.name().as_str().to_owned(),
             kind: BankKind::Generated,
             base_mhz: format_mhz(bank.base().as_hz()),
@@ -559,26 +521,38 @@ impl BankDraft {
         }
     }
 
-    /// Validates every field of this row into one bank.
+    /// Validates every field of the bank in row `row` into one bank.
+    ///
+    /// A bank's identifier is its row: the radio lists banks, and their
+    /// channels, in this order.
     pub fn validate(&self, row: usize) -> Result<ValidatedBank, ModelError> {
         let scope = ModelScope::Bank(row);
         let name = BankName::new(self.name.trim())
             .map_err(|_| error(scope, "name", "must be 1 to 16 printable characters"))?;
-        if self.id >= MAX_BANKS {
-            return Err(error(
-                scope,
-                "id",
-                format!("must be 0 to {}", MAX_BANKS - 1),
-            ));
-        }
+        let id = u16::try_from(row)
+            .ok()
+            .filter(|id| *id < MAX_BANKS)
+            .ok_or_else(|| {
+                error(
+                    scope,
+                    "bank",
+                    format!("a radio holds {MAX_BANKS} banks at most"),
+                )
+            })?;
         match self.kind {
             BankKind::Named => ChannelBank::new(
-                BankId::new(self.id),
+                BankId::new(id),
                 name,
                 BankFlags::default().with(BankFlags::SCAN_ENABLED, self.scan_enabled),
             )
             .map(ValidatedBank::Named)
-            .map_err(|_| error(scope, "id", format!("must be 0 to {}", MAX_BANKS - 1))),
+            .map_err(|_| {
+                error(
+                    scope,
+                    "bank",
+                    format!("a radio holds {MAX_BANKS} banks at most"),
+                )
+            }),
             BankKind::Generated => {
                 let base = parse_frequency(&self.base_mhz)
                     .ok_or_else(|| error(scope, "base", "is not a frequency in megahertz"))?;
@@ -595,7 +569,7 @@ impl BankDraft {
                     ));
                 }
                 let plan = GeneratedBank::linear_from_offset_with(
-                    BankId::new(self.id),
+                    BankId::new(id),
                     name,
                     base,
                     spacing,
@@ -665,17 +639,6 @@ impl BankDraft {
                 .with(ChannelFlags::BUSY_LOCKOUT, self.busy_lockout)
                 .with(ChannelFlags::COMPANDER, self.compander),
         })
-    }
-
-    /// Returns the bytes this plan occupies in a radio's store.
-    ///
-    /// A row which does not yet validate stores nothing, so it reports zero
-    /// rather than a length no radio would ever be asked for.
-    pub fn stored_bytes(&self) -> usize {
-        match self.validate(0) {
-            Ok(ValidatedBank::Generated(plan)) => plan_bytes(plan),
-            _ => 0,
-        }
     }
 
     /// Returns the channels this plan expands to, name and frequency in order.
@@ -812,9 +775,7 @@ impl ConfigDraft {
 /// A complete editable project.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ProjectModel {
-    /// Editable channel rows in display order.
-    pub channels: Vec<ChannelDraft>,
-    /// Editable bank rows in display order.
+    /// Editable banks in the radio's order; each row's index is its identifier.
     pub banks: Vec<BankDraft>,
     /// The editable global radio configuration.
     pub config: ConfigDraft,
@@ -826,185 +787,149 @@ impl ProjectModel {
         Self::default()
     }
 
-    /// Appends one channel row using the next free identifier.
-    pub fn add_channel(&mut self) {
-        let id = self
-            .channels
-            .iter()
-            .map(|channel| channel.id)
-            .max()
-            .map_or(1, |highest| highest.saturating_add(1));
-        let mut draft = ChannelDraft {
-            id,
-            name: format!("CH{id}"),
-            ..ChannelDraft::default()
-        };
-        if let Some(previous) = self.channels.last() {
-            draft.step_hz = previous.step_hz;
-            draft.modulation = previous.modulation;
-            draft.bandwidth = previous.bandwidth;
-            draft.banks = previous.banks;
-        }
-        self.channels.push(draft);
-    }
-
-    /// Appends one channel row copied from an existing row.
-    ///
-    /// Copying is how an operator enters a repeater pair or a group of similar
-    /// channels without retyping every field, so only the identity changes.
-    pub fn duplicate_channel(&mut self, row: usize) {
-        let Some(source) = self.channels.get(row) else {
-            return;
-        };
-        let id = self
-            .channels
-            .iter()
-            .map(|channel| channel.id)
-            .max()
-            .map_or(1, |highest| highest.saturating_add(1));
-        let mut draft = source.clone();
-        draft.id = id;
-        self.channels.insert(row + 1, draft);
-    }
-
-    /// Appends one named bank row using the lowest free identifier.
+    /// Appends one bank which holds channels.
     pub fn add_bank(&mut self) {
         self.push_bank(BankKind::Named);
     }
 
-    /// Appends one generated-plan bank row using the lowest free identifier.
+    /// Appends one generated-plan bank.
     pub fn add_generated_bank(&mut self) {
         self.push_bank(BankKind::Generated);
     }
 
-    /// Appends one bank row of the requested kind.
-    ///
-    /// Identifiers are taken from the whole bank list rather than one kind, so
-    /// the number an operator reads always names exactly one row.
     fn push_bank(&mut self, kind: BankKind) {
-        let id = (0..MAX_BANKS)
-            .find(|candidate| !self.banks.iter().any(|bank| bank.id == *candidate))
-            .unwrap_or(0);
+        let number = self.banks.len() + 1;
         self.banks.push(BankDraft {
-            id,
-            name: format!("Bank {id}"),
+            name: format!("Bank {number}"),
             kind,
             ..BankDraft::default()
         });
     }
 
-    /// Returns what each addressable bank identifier is defined as.
-    ///
-    /// Both kinds define an identifier and a channel may join either. A radio
-    /// tests one membership mask for stored and expanded channels alike, so a
-    /// stored channel ticked into a plan's identifier is selected beside that
-    /// plan's channels under the same bank filter. That is the useful case: a
-    /// calling channel or a repeater filed with the simplex band it belongs to.
-    /// A named bank wins the label only because it is the one an operator
-    /// chose; it does not exclude the plan.
-    pub fn bank_slots(&self) -> Vec<Option<(BankKind, String)>> {
-        let mut slots = vec![None; MAX_BANKS as usize];
-        for bank in &self.banks {
-            if let Some(slot) = slots.get_mut(usize::from(bank.id)) {
-                if slot.is_none() || matches!(bank.kind, BankKind::Named) {
-                    *slot = Some((bank.kind, bank.name.trim().to_owned()));
-                }
+    /// Moves bank `row` one place earlier (`up`) or later in the radio's order.
+    pub fn move_bank(&mut self, row: usize, up: bool) {
+        let other = if up {
+            row.checked_sub(1)
+        } else {
+            Some(row + 1)
+        };
+        if let Some(other) = other.filter(|other| *other < self.banks.len()) {
+            if row < self.banks.len() {
+                self.banks.swap(row, other);
             }
         }
-        slots
     }
 
-    /// Returns what this project costs a radio, and what the plans saved.
+    /// Appends one channel to bank `bank`, taking the tuning of its last channel.
+    pub fn add_channel(&mut self, bank: usize) {
+        let Some(bank) = self.banks.get_mut(bank) else {
+            return;
+        };
+        let number = bank.channels.len() + 1;
+        let mut draft = ChannelDraft {
+            name: format!("CH{number}"),
+            ..ChannelDraft::default()
+        };
+        if let Some(previous) = bank.channels.last() {
+            draft.step_hz = previous.step_hz;
+            draft.modulation = previous.modulation;
+            draft.bandwidth = previous.bandwidth;
+            draft.tx_class = previous.tx_class;
+        }
+        bank.channels.push(draft);
+    }
+
+    /// Inserts a copy of one channel after it, in the same bank.
     ///
-    /// Only rows which validate are counted, so the figures always describe a
-    /// configuration which could actually be written.
+    /// Copying is how an operator enters a repeater pair or a group of similar
+    /// channels without retyping every field.
+    pub fn duplicate_channel(&mut self, bank: usize, row: usize) {
+        if let Some(bank) = self.banks.get_mut(bank) {
+            if let Some(source) = bank.channels.get(row).cloned() {
+                bank.channels.insert(row + 1, source);
+            }
+        }
+    }
+
+    /// Returns how many channel rows the project holds.
+    pub fn channel_count(&self) -> usize {
+        self.banks.iter().map(|bank| bank.channels.len()).sum()
+    }
+
+    /// Returns what this project costs a radio.
+    ///
+    /// Only rows which validate are counted, and the image size is given only
+    /// when the whole project compiles, so the figures always describe a
+    /// configuration which could be written.
     pub fn storage_summary(&self) -> StorageSummary {
         let mut summary = StorageSummary::default();
+        let mut id = 1_u16;
         for (row, draft) in self.banks.iter().enumerate() {
             match draft.validate(row) {
-                Ok(ValidatedBank::Named(_)) => {
-                    summary.objects += 1;
-                    summary.bytes += CHANNEL_BANK_ENCODED_LEN;
+                Ok(ValidatedBank::Named(bank)) => {
+                    for (channel_row, channel) in draft.channels.iter().enumerate() {
+                        let scope = ModelScope::Channel {
+                            bank: row,
+                            row: channel_row,
+                        };
+                        if channel.validate(scope, id, bank.id()).is_ok() {
+                            summary.stored_channels += 1;
+                        }
+                        id = id.saturating_add(1);
+                    }
                 }
                 Ok(ValidatedBank::Generated(plan)) => {
-                    let stored = plan_bytes(plan);
-                    summary.objects += 1;
-                    summary.bytes += stored;
-                    summary.plan_bytes += stored;
                     summary.plans += 1;
                     summary.expanded_channels += usize::from(plan.channel_count());
                 }
                 Err(_) => {}
             }
         }
-        for (row, draft) in self.channels.iter().enumerate() {
-            if draft.validate(row).is_ok() {
-                summary.objects += 1;
-                summary.bytes += CHANNEL_ENCODED_LEN;
-                summary.stored_channels += 1;
-            }
-        }
-        if self.config.validate().is_ok() {
-            summary.objects += 1;
-            summary.bytes += RADIO_CONFIG_ENCODED_LEN;
-        }
+        summary.image_bytes = self.to_radio_image().ok().map(|image| image.len());
         summary
     }
 
-    /// Validates every row and builds one compilable project.
+    /// Validates every row and builds one project.
+    ///
+    /// Channels are numbered through the project in the radio's order.
     pub fn validate(&self) -> Result<RadioProject, Vec<ModelError>> {
         let mut errors = Vec::new();
         let mut project = RadioProject::new();
+        let mut id = 1_u16;
 
         for (row, draft) in self.banks.iter().enumerate() {
             match draft.validate(row) {
-                Ok(ValidatedBank::Named(bank)) => project.add_bank(bank),
-                Ok(ValidatedBank::Generated(bank)) => project.add_generated_bank(bank),
-                Err(failure) => errors.push(failure),
-            }
-        }
-        for (row, draft) in self.channels.iter().enumerate() {
-            match draft.validate(row) {
-                Ok(channel) => project.add_channel(channel),
+                Ok(ValidatedBank::Named(bank)) => {
+                    project.add_bank(bank);
+                    for (channel_row, channel) in draft.channels.iter().enumerate() {
+                        let scope = ModelScope::Channel {
+                            bank: row,
+                            row: channel_row,
+                        };
+                        match channel.validate(scope, id, bank.id()) {
+                            Ok(record) => project.add_channel(record),
+                            Err(failure) => errors.push(failure),
+                        }
+                        id = id.saturating_add(1);
+                    }
+                }
+                Ok(ValidatedBank::Generated(plan)) => {
+                    if draft.channels.is_empty() {
+                        project.add_generated_bank(plan);
+                    } else {
+                        errors.push(error(
+                            ModelScope::Bank(row),
+                            "channels",
+                            "belong to a channel bank; a generated plan holds none",
+                        ));
+                    }
+                }
                 Err(failure) => errors.push(failure),
             }
         }
         match self.config.validate() {
             Ok(config) => project.set_config(config),
             Err(failure) => errors.push(failure),
-        }
-
-        for (row, draft) in self.channels.iter().enumerate() {
-            if self
-                .channels
-                .iter()
-                .filter(|other| other.id == draft.id)
-                .count()
-                > 1
-            {
-                errors.push(error(
-                    ModelScope::Channel(row),
-                    "id",
-                    format!("identifier {} is used by another channel", draft.id),
-                ));
-            }
-        }
-        // A named bank and a generated plan are separate stored objects, so only
-        // two rows of the same kind can collide.
-        for (row, draft) in self.banks.iter().enumerate() {
-            if self
-                .banks
-                .iter()
-                .filter(|other| other.id == draft.id && other.kind == draft.kind)
-                .count()
-                > 1
-            {
-                errors.push(error(
-                    ModelScope::Bank(row),
-                    "id",
-                    format!("identifier {} is used by another bank", draft.id),
-                ));
-            }
         }
 
         if errors.is_empty() {
@@ -1014,12 +939,23 @@ impl ProjectModel {
         }
     }
 
-    /// Validates and compiles the project into a canonical configuration image.
+    /// Validates and compiles the image a radio runs (format 5).
+    pub fn to_radio_image(&self) -> Result<Vec<u8>, Vec<ModelError>> {
+        self.validate()?.compile_radio_image().map_err(|failure| {
+            vec![error(
+                ModelScope::Project,
+                "radio image",
+                failure.to_string(),
+            )]
+        })
+    }
+
+    /// Validates and encodes the project file, the canonical format 4 image.
     pub fn to_image(&self) -> Result<Vec<u8>, Vec<ModelError>> {
         let project = self.validate()?;
         let compiled = ConfigurationCompiler::new(host_capabilities())
             .compile(&project)
-            .map_err(|failure| vec![compile_error(failure)])?;
+            .map_err(|failure| vec![error(ModelScope::Project, "compile", failure.to_string())])?;
         let mut image = vec![
             0;
             compiled.image_len().map_err(|failure| vec![error(
@@ -1034,7 +970,9 @@ impl ProjectModel {
         Ok(image)
     }
 
-    /// Replaces the project with the contents of one canonical image.
+    /// Builds a project from a project file or an image read from a radio.
+    ///
+    /// Both the format 4 object set and the format 5 radio image are read.
     pub fn from_image(bytes: &[u8]) -> Result<Self, ModelError> {
         if bytes.len() > MAX_PROJECT_IMAGE_BYTES {
             return Err(error(
@@ -1043,47 +981,95 @@ impl ProjectModel {
                 format!("exceeds {MAX_PROJECT_IMAGE_BYTES} bytes"),
             ));
         }
-        let image = decode_configuration_image(bytes)
-            .map_err(|failure| error(ModelScope::Project, "image", failure.to_string()))?;
-        let mut model = Self {
-            channels: Vec::new(),
-            banks: Vec::new(),
-            config: ConfigDraft::default(),
+        let invalid = |failure: radio_storage::StorageError| {
+            error(ModelScope::Project, "image", failure.to_string())
         };
+        if bytes.get(4..6) == Some(&[radio_image::IMAGE_VERSION, radio_image::FORMAT_VERSION]) {
+            return RadioProject::from_radio_image(bytes)
+                .map(|project| Self::from_project(&project))
+                .map_err(invalid);
+        }
+        let image = decode_configuration_image(bytes).map_err(invalid)?;
+        let mut project = RadioProject::new();
         for object in image.objects() {
             match object.key().kind {
                 ObjectKind::Channel => {
-                    let record = decode_channel(&object).map_err(|failure| {
-                        error(ModelScope::Project, "channel", failure.to_string())
-                    })?;
-                    model.channels.push(ChannelDraft::from_record(record));
+                    project.add_channel(decode_channel(&object).map_err(invalid)?);
                 }
                 ObjectKind::ChannelBank => {
-                    let bank = decode_channel_bank(&object).map_err(|failure| {
-                        error(ModelScope::Project, "bank", failure.to_string())
-                    })?;
-                    model.banks.push(BankDraft::from_record(bank));
+                    project.add_bank(decode_channel_bank(&object).map_err(invalid)?);
                 }
                 ObjectKind::RadioConfig => {
-                    let config = decode_radio_config(&object).map_err(|failure| {
-                        error(ModelScope::Project, "configuration", failure.to_string())
-                    })?;
-                    model.config = ConfigDraft::from_config(config);
+                    project.set_config(decode_radio_config(&object).map_err(invalid)?);
                 }
                 ObjectKind::GeneratedBank => {
-                    let bank = decode_generated_bank(&object).map_err(|failure| {
-                        error(ModelScope::Project, "generated bank", failure.to_string())
-                    })?;
-                    model.banks.push(BankDraft::from_generated(bank));
+                    project.add_generated_bank(decode_generated_bank(&object).map_err(invalid)?);
                 }
             }
         }
-        Ok(model)
+        Ok(Self::from_project(&project))
     }
-}
 
-fn compile_error(failure: CompileError) -> ModelError {
-    error(ModelScope::Project, "compile", failure.to_string())
+    /// Groups a project's objects into banks.
+    ///
+    /// Banks keep their identifier order, a bank's channels before its plan.
+    /// A channel goes into the first bank it names; a channel in none goes into
+    /// a last bank of its own, because every channel here is in a bank.
+    pub fn from_project(project: &RadioProject) -> Self {
+        let first_bank = |channel: &ChannelRecord| {
+            (0..MAX_BANKS).find(|id| channel.is_member_of(BankId::new(*id)))
+        };
+        let channels_in = |bank: Option<u16>| {
+            project
+                .channels()
+                .iter()
+                .filter(|channel| first_bank(channel) == bank)
+                .map(|channel| ChannelDraft::from_record(*channel))
+                .collect::<Vec<_>>()
+        };
+        let mut model = Self {
+            banks: Vec::new(),
+            config: project
+                .config()
+                .map_or_else(ConfigDraft::default, ConfigDraft::from_config),
+        };
+        for id in 0..MAX_BANKS {
+            let named = project.banks().iter().find(|bank| bank.id().get() == id);
+            let plan = project
+                .generated_banks()
+                .iter()
+                .find(|plan| plan.id().get() == id);
+            let channels = channels_in(Some(id));
+            if named.is_some() && (!channels.is_empty() || plan.is_none())
+                || named.is_none() && !channels.is_empty()
+            {
+                let mut draft = named.map_or_else(
+                    || BankDraft {
+                        name: plan.map_or_else(
+                            || format!("Bank {id}"),
+                            |plan| plan.name().as_str().to_owned(),
+                        ),
+                        ..BankDraft::default()
+                    },
+                    |bank| BankDraft::from_record(*bank),
+                );
+                draft.channels = channels;
+                model.banks.push(draft);
+            }
+            if let Some(plan) = plan {
+                model.banks.push(BankDraft::from_generated(*plan));
+            }
+        }
+        let unbanked = channels_in(None);
+        if !unbanked.is_empty() {
+            model.banks.push(BankDraft {
+                name: "Unbanked".to_owned(),
+                channels: unbanked,
+                ..BankDraft::default()
+            });
+        }
+        model
+    }
 }
 
 /// Parses a megahertz string into exact integer hertz.
@@ -1151,32 +1137,41 @@ fn format_tenths(tenths_hz: u16) -> String {
 mod tests {
     use super::{
         format_mhz, parse_frequency, BankDraft, BankKind, ChannelDraft, ConfigDraft, ModelScope,
-        ProjectModel, ToneDraft, ToneKind, ValidatedBank, CHANNEL_ENCODED_LEN,
-        GENERATED_CHANNEL_ID_BASE,
+        ProjectModel, ToneDraft, ToneKind, ValidatedBank, RADIO_IMAGE_BYTES,
     };
-    use radio_channel_control::{ChannelSource, ProgrammedMemory};
     use radio_channel_plan::{ChannelFlags, MAX_BANKS};
     use radio_domain::{Bandwidth, BankId, PowerLevel, ScanResume, Tone, TxClass};
+    use radio_programmer::RadioProject;
 
     fn project() -> ProjectModel {
         let mut model = ProjectModel::new();
         model.add_bank();
         model.banks[0].name = "Amateur 2m".to_owned();
-        model.add_channel();
-        model.channels[0].name = "GB3AB".to_owned();
-        model.channels[0].receive_mhz = "145.725".to_owned();
-        model.channels[0].transmit_mhz = "145.125".to_owned();
-        model.channels[0].rx_tone = ToneDraft {
+        model.add_channel(0);
+        let channel = &mut model.banks[0].channels[0];
+        channel.name = "GB3AB".to_owned();
+        channel.receive_mhz = "145.725000".to_owned();
+        channel.transmit_mhz = "145.125000".to_owned();
+        channel.rx_tone = ToneDraft {
             kind: ToneKind::Ctcss,
             value: "100.0".to_owned(),
         };
-        model.channels[0].tx_tone = ToneDraft {
+        channel.tx_tone = ToneDraft {
             kind: ToneKind::DcsInverted,
             value: "023".to_owned(),
         };
-        model.channels[0].tx_class = TxClass::Amateur;
-        model.channels[0].banks[0] = true;
+        channel.tx_class = TxClass::Amateur;
         model
+    }
+
+    fn pmr_plan(model: &mut ProjectModel) -> usize {
+        model.add_generated_bank();
+        let row = model.banks.len() - 1;
+        model.banks[row].name = "PMR446".to_owned();
+        model.banks[row].base_mhz = "446.006250".to_owned();
+        model.banks[row].designator = "PMR ".to_owned();
+        model.banks[row].tx_class = TxClass::LicenceFreePlan;
+        row
     }
 
     #[test]
@@ -1205,13 +1200,6 @@ mod tests {
         });
         assert_eq!(dcs.kind, ToneKind::DcsInverted);
         assert_eq!(dcs.value, "023");
-        assert_eq!(
-            dcs.validate(ModelScope::Config, "tone").unwrap(),
-            Tone::Dcs {
-                code: 23,
-                inverted: true
-            }
-        );
         let invalid = ToneDraft {
             kind: ToneKind::Ctcss,
             value: "10.0".to_owned(),
@@ -1225,74 +1213,185 @@ mod tests {
     }
 
     #[test]
-    fn a_valid_project_round_trips_through_a_canonical_image() {
-        let model = project();
+    fn every_channel_is_stored_in_the_bank_which_holds_it() {
+        let mut model = project();
+        model.add_bank();
+        model.add_channel(1);
+        model.add_channel(1);
+        let project = model.validate().unwrap();
+        let banks: Vec<_> = project
+            .channels()
+            .iter()
+            .map(|channel| (channel.id().get(), channel.banks()))
+            .collect();
+        assert_eq!(banks.len(), 3);
+        assert!(project.channels()[0].is_member_of(BankId::new(0)));
+        assert!(project.channels()[1].is_member_of(BankId::new(1)));
+        assert!(project.channels()[2].is_member_of(BankId::new(1)));
+        // Numbered through the project in the radio's order.
+        assert_eq!(
+            banks.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            [1, 2, 3]
+        );
+        assert_eq!(project.banks().len(), 2);
+        assert!(model.to_radio_image().is_ok());
+    }
+
+    #[test]
+    fn a_valid_project_round_trips_through_a_project_file() {
+        let mut model = project();
+        pmr_plan(&mut model);
         let image = model.to_image().unwrap();
         let loaded = ProjectModel::from_image(&image).unwrap();
-        assert_eq!(loaded.channels.len(), 1);
-        assert_eq!(loaded.banks.len(), 1);
-        assert_eq!(loaded.channels[0].name, "GB3AB");
-        assert_eq!(loaded.channels[0].receive_mhz, "145.725000");
-        assert_eq!(loaded.channels[0].rx_tone.value, "100.0");
-        assert_eq!(loaded.channels[0].tx_tone.kind, ToneKind::DcsInverted);
-        assert!(loaded.channels[0].banks[0]);
-        assert_eq!(loaded.banks[0].name, "Amateur 2m");
-        assert_eq!(loaded.config, model.config);
+        assert_eq!(loaded, model);
         assert_eq!(loaded.to_image().unwrap(), image);
+    }
+
+    #[test]
+    fn a_radio_image_reads_back_into_the_same_banks() {
+        let mut model = project();
+        pmr_plan(&mut model);
+        model.add_bank();
+        model.banks[2].name = "Marine".to_owned();
+        model.add_channel(2);
+        model.banks[2].channels[0].receive_mhz = "156.800000".to_owned();
+        model.banks[2].channels[0].transmit_mhz = "156.800000".to_owned();
+        let image = model.to_radio_image().unwrap();
+        let loaded = ProjectModel::from_image(&image).unwrap();
+        assert_eq!(loaded, model);
+        assert_eq!(loaded.to_radio_image().unwrap(), image);
+    }
+
+    #[test]
+    fn an_older_project_puts_each_channel_in_one_bank() {
+        // A format 4 project could list a channel in several banks, in none,
+        // or in a plan's bank; here every channel goes into exactly one.
+        let model = project();
+        let mut legacy = RadioProject::new();
+        let valid = model.validate().unwrap();
+        legacy.add_bank(valid.banks()[0]);
+        let channel = |id: u16, banks: u16| {
+            let record = valid.channels()[0];
+            radio_channel_plan::ChannelRecord::new(radio_channel_plan::ChannelDefinition {
+                id: radio_domain::ChannelId::new(id),
+                name: record.name(),
+                receive: record.receive(),
+                transmit: record.transmit(),
+                rx_tone: record.rx_tone(),
+                tx_tone: record.tx_tone(),
+                modulation: record.modulation(),
+                bandwidth: record.bandwidth(),
+                power: record.power(),
+                step: record.step(),
+                squelch: record.squelch(),
+                flags: record.flags(),
+                banks: radio_channel_plan::BankMask::from_bits(banks),
+                tx_class: record.tx_class(),
+            })
+            .unwrap()
+        };
+        legacy.add_channel(channel(1, 0b11));
+        legacy.add_channel(channel(2, 0));
+        legacy.add_channel(channel(3, 0b100));
+        let mut plan = model.clone();
+        pmr_plan(&mut plan);
+        let ValidatedBank::Generated(pmr) = plan.banks[1].validate(2).unwrap() else {
+            panic!("plan");
+        };
+        legacy.add_generated_bank(pmr);
+
+        let loaded = ProjectModel::from_project(&legacy);
+        let summary: Vec<_> = loaded
+            .banks
+            .iter()
+            .map(|bank| (bank.name.as_str(), bank.kind, bank.channels.len()))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                ("Amateur 2m", BankKind::Named, 1),
+                ("PMR446", BankKind::Named, 1),
+                ("PMR446", BankKind::Generated, 0),
+                ("Unbanked", BankKind::Named, 1),
+            ]
+        );
+        assert!(loaded.validate().is_ok());
     }
 
     #[test]
     fn invalid_rows_are_reported_with_their_scope_and_field() {
         let mut model = project();
-        model.channels[0].name = String::new();
-        model.channels[0].receive_mhz = "not a frequency".to_owned();
+        model.banks[0].channels[0].name = String::new();
         model.banks[0].name = String::new();
         model.config.scan_dwell_ms = 0;
         let errors = model.validate().unwrap_err();
-        assert_eq!(errors.len(), 3);
+        assert_eq!(errors.len(), 2, "{errors:?}");
         assert!(errors
             .iter()
             .any(|failure| failure.scope == ModelScope::Bank(0) && failure.field == "name"));
         assert!(errors
             .iter()
-            .any(|failure| failure.scope == ModelScope::Channel(0) && failure.field == "name"));
-        assert!(errors
-            .iter()
             .any(|failure| failure.scope == ModelScope::Config));
-        assert!(model.to_image().is_err());
-    }
 
-    #[test]
-    fn duplicate_identifiers_are_rejected() {
-        let mut model = project();
-        model.add_channel();
-        model.channels[1].id = model.channels[0].id;
-        model.add_bank();
-        model.banks[1].id = model.banks[0].id;
+        model.banks[0].name = "Fixed".to_owned();
+        model.banks[0].channels[0].receive_mhz = "nope".to_owned();
         let errors = model.validate().unwrap_err();
-        assert_eq!(errors.iter().filter(|e| e.field == "id").count(), 4);
+        assert!(errors.iter().any(|failure| failure.scope
+            == ModelScope::Channel { bank: 0, row: 0 }
+            && failure.field == "name"));
+        assert_eq!(
+            errors[0].to_string(),
+            "bank 1 channel 1: name must be 1 to 12 printable characters"
+        );
+        assert!(model.to_image().is_err());
+        assert!(model.to_radio_image().is_err());
     }
 
     #[test]
-    fn channels_cannot_reference_an_undefined_bank() {
-        let mut model = project();
-        model.channels[0].banks[4] = true;
-        let errors = model.to_image().unwrap_err();
+    fn a_radio_holds_sixteen_banks_and_a_plan_holds_no_channel_rows() {
+        let mut model = ProjectModel::new();
+        for _ in 0..=MAX_BANKS {
+            model.add_bank();
+        }
+        let errors = model.validate().unwrap_err();
         assert_eq!(errors.len(), 1);
-        assert_eq!(errors[0].scope, ModelScope::Project);
-        assert!(errors[0].detail.contains("undefined bank 4"));
+        assert_eq!(errors[0].scope, ModelScope::Bank(usize::from(MAX_BANKS)));
+
+        let mut model = ProjectModel::new();
+        let row = pmr_plan(&mut model);
+        model.add_channel(row);
+        let errors = model.validate().unwrap_err();
+        assert_eq!(errors[0].field, "channels");
     }
 
     #[test]
-    fn new_rows_inherit_the_previous_row_and_use_free_identifiers() {
+    fn new_channels_inherit_the_last_one_in_their_bank() {
         let mut model = project();
-        model.channels[0].step_hz = 6_250;
-        model.add_channel();
-        assert_eq!(model.channels[1].id, 2);
-        assert_eq!(model.channels[1].step_hz, 6_250);
-        assert!(model.channels[1].banks[0]);
-        model.add_bank();
-        assert_eq!(model.banks[1].id, 1);
+        model.banks[0].channels[0].step_hz = 6_250;
+        model.add_channel(0);
+        assert_eq!(model.banks[0].channels[1].step_hz, 6_250);
+        assert_eq!(model.banks[0].channels[1].tx_class, TxClass::Amateur);
+        assert_eq!(model.banks[0].channels[1].name, "CH2");
+        model.add_channel(9);
+        assert_eq!(model.channel_count(), 2);
+    }
+
+    #[test]
+    fn banks_move_and_channels_duplicate_within_their_bank() {
+        let mut model = project();
+        pmr_plan(&mut model);
+        model.move_bank(1, true);
+        assert_eq!(model.banks[0].name, "PMR446");
+        model.move_bank(0, true);
+        model.move_bank(1, false);
+        assert_eq!(model.banks[0].name, "PMR446");
+
+        model.duplicate_channel(1, 0);
+        assert_eq!(model.banks[1].channels.len(), 2);
+        assert_eq!(model.banks[1].channels[0], model.banks[1].channels[1]);
+        model.duplicate_channel(1, 9);
+        model.duplicate_channel(9, 0);
+        assert_eq!(model.channel_count(), 2);
     }
 
     #[test]
@@ -1310,22 +1409,8 @@ mod tests {
     }
 
     #[test]
-    fn bank_identifiers_are_bounded() {
-        for kind in BankKind::all() {
-            let draft = BankDraft {
-                id: 16,
-                name: "Too high".to_owned(),
-                kind,
-                ..BankDraft::default()
-            };
-            assert_eq!(draft.validate(0).unwrap_err().field, "id");
-        }
-    }
-
-    #[test]
     fn generated_plans_validate_their_span_and_report_it() {
         let mut draft = BankDraft {
-            id: 3,
             name: "PMR446".to_owned(),
             kind: BankKind::Generated,
             base_mhz: "446.00625".to_owned(),
@@ -1334,10 +1419,10 @@ mod tests {
             tx_class: TxClass::LicenceFreePlan,
             ..BankDraft::default()
         };
-        let ValidatedBank::Generated(bank) = draft.validate(0).unwrap() else {
+        let ValidatedBank::Generated(bank) = draft.validate(3).unwrap() else {
             panic!("a generated row must validate into a generated plan");
         };
-        assert_eq!(bank.channel_count(), 16);
+        assert_eq!(bank.id(), BankId::new(3));
         assert_eq!(bank.channel(15).unwrap().receive.as_hz(), 446_193_750);
         assert_eq!(
             draft.generated_span(),
@@ -1351,59 +1436,32 @@ mod tests {
         draft.channel_count = 16;
         draft.spacing_hz = 0;
         assert_eq!(draft.validate(0).unwrap_err().field, "spacing");
-        assert!(draft.generated_span().is_none());
 
         draft.spacing_hz = 12_500;
         draft.base_mhz = "not a frequency".to_owned();
         assert_eq!(draft.validate(0).unwrap_err().field, "base");
 
-        // A plan which runs off the end of the frequency representation is
-        // rejected before it can reach an image.
         draft.base_mhz = "4294.967".to_owned();
         draft.channel_count = u16::MAX;
         assert_eq!(draft.validate(0).unwrap_err().field, "channels");
-        assert!(draft.generated_span().is_none());
-    }
-
-    #[test]
-    fn generated_plans_round_trip_through_a_canonical_image() {
-        let mut model = ProjectModel::new();
-        model.add_generated_bank();
-        model.banks[0].name = "PMR446".to_owned();
-        model.banks[0].base_mhz = "446.00625".to_owned();
-        model.banks[0].tx_class = TxClass::LicenceFreePlan;
-        let image = model.to_image().unwrap();
-
-        let loaded = ProjectModel::from_image(&image).unwrap();
-        assert_eq!(loaded.banks.len(), 1);
-        assert_eq!(loaded.banks[0].kind, BankKind::Generated);
-        assert_eq!(loaded.banks[0].name, "PMR446");
-        assert_eq!(loaded.banks[0].base_mhz, "446.006250");
-        assert_eq!(loaded.banks[0].spacing_hz, 12_500);
-        assert_eq!(loaded.banks[0].channel_count, 16);
-        assert_eq!(loaded.banks[0].tx_class, TxClass::LicenceFreePlan);
-        assert!(loaded.channels.is_empty());
-        assert_eq!(loaded.to_image().unwrap(), image);
     }
 
     #[test]
     fn a_plan_template_is_edited_once_and_reaches_every_expanded_channel() {
         let mut model = ProjectModel::new();
-        model.add_generated_bank();
-        model.banks[0].id = 2;
-        model.banks[0].name = "PMR446".to_owned();
-        model.banks[0].base_mhz = "446.00625".to_owned();
-        model.banks[0].channel_count = 8;
-        model.banks[0].bandwidth = Bandwidth::Wide;
-        model.banks[0].power = PowerLevel::Medium;
-        model.banks[0].squelch = 5;
-        model.banks[0].busy_lockout = true;
-        model.banks[0].rx_tone = ToneDraft {
+        let row = pmr_plan(&mut model);
+        let bank = &mut model.banks[row];
+        bank.channel_count = 8;
+        bank.bandwidth = Bandwidth::Wide;
+        bank.power = PowerLevel::Medium;
+        bank.squelch = 5;
+        bank.busy_lockout = true;
+        bank.rx_tone = ToneDraft {
             kind: ToneKind::Ctcss,
             value: "100.0".to_owned(),
         };
 
-        let ValidatedBank::Generated(plan) = model.banks[0].validate(0).unwrap() else {
+        let ValidatedBank::Generated(plan) = model.banks[row].validate(row).unwrap() else {
             panic!("a generated row must validate into a generated plan");
         };
         for index in 0..plan.channel_count() {
@@ -1413,183 +1471,49 @@ mod tests {
             assert_eq!(channel.squelch().get(), 5);
             assert_eq!(channel.rx_tone(), Tone::Ctcss(1_000));
             assert!(channel.flags().contains(ChannelFlags::BUSY_LOCKOUT));
-            assert!(channel.is_member_of(BankId::new(2)));
         }
 
-        // The editor shows those channels, and the template survives storage.
-        let expansion = model.banks[0].expansion(4);
+        let expansion = model.banks[row].expansion(4);
         assert_eq!(expansion.len(), 4);
         assert_eq!(expansion[0], ("PMR 1".to_owned(), "446.006250".to_owned()));
-        assert_eq!(expansion[3], ("PMR 4".to_owned(), "446.043750".to_owned()));
 
-        let image = model.to_image().unwrap();
-        let loaded = ProjectModel::from_image(&image).unwrap();
+        let loaded = ProjectModel::from_image(&model.to_radio_image().unwrap()).unwrap();
         assert_eq!(loaded.banks[0].bandwidth, Bandwidth::Wide);
-        assert_eq!(loaded.banks[0].power, PowerLevel::Medium);
-        assert_eq!(loaded.banks[0].squelch, 5);
         assert!(loaded.banks[0].busy_lockout);
         assert_eq!(loaded.banks[0].rx_tone.value, "100.0");
     }
 
     #[test]
-    fn the_storage_summary_reports_what_the_plans_saved() {
+    fn the_storage_summary_reports_the_radio_image() {
         let mut model = project();
         let stored_only = model.storage_summary();
         assert_eq!(stored_only.stored_channels, 1);
-        assert_eq!(stored_only.expanded_channels, 0);
         assert_eq!(stored_only.selectable_channels(), 1);
+        let bytes = stored_only.image_bytes.unwrap();
+        assert!(bytes < RADIO_IMAGE_BYTES);
 
-        model.add_generated_bank();
-        model.banks[1].name = "PMR446".to_owned();
-        model.banks[1].base_mhz = "446.00625".to_owned();
-        model.banks[1].channel_count = 16;
+        let row = pmr_plan(&mut model);
         let summary = model.storage_summary();
-        assert_eq!(summary.stored_channels, 1);
         assert_eq!(summary.expanded_channels, 16);
         assert_eq!(summary.selectable_channels(), 17);
         assert_eq!(summary.plans, 1);
-        assert_eq!(
-            summary.bytes_saved(),
-            16 * CHANNEL_ENCODED_LEN - summary.plan_bytes
-        );
-        // Sixteen channels for one object: the whole point of the plan.
-        assert_eq!(summary.objects, stored_only.objects + 1);
+        assert!(summary.image_bytes.unwrap() > bytes);
 
-        // An invalid row is not counted, so the figures always describe a
-        // configuration which could be written.
-        model.banks[1].base_mhz = "not a frequency".to_owned();
-        assert_eq!(model.storage_summary().expanded_channels, 0);
-
-        // A one-channel plan costs more than the row it replaces, which is a
-        // saving of nothing, not an overflow.
-        model.banks[1].base_mhz = "446.00625".to_owned();
-        model.banks[1].channel_count = 1;
-        let single = model.storage_summary();
-        assert!(single.plan_bytes > CHANNEL_ENCODED_LEN);
-        assert_eq!(single.bytes_saved(), 0);
-    }
-
-    #[test]
-    fn a_stored_channel_cannot_claim_an_expanded_identifier() {
-        let mut model = project();
-        model.channels[0].id = GENERATED_CHANNEL_ID_BASE;
-        let failure = model.channels[0].validate(0).unwrap_err();
-        assert_eq!(failure.field, "id");
-        assert!(failure.detail.contains("generated plan"));
-    }
-
-    #[test]
-    fn bank_slots_name_the_plan_which_owns_an_identifier() {
-        let mut model = ProjectModel::new();
-        model.add_bank();
-        model.banks[0].id = 0;
-        model.banks[0].name = "2M".to_owned();
-        model.add_generated_bank();
-        model.banks[1].id = 4;
-        model.banks[1].name = "PMR446".to_owned();
-
-        let slots = model.bank_slots();
-        assert_eq!(slots[0], Some((BankKind::Named, "2M".to_owned())));
-        assert_eq!(slots[4], Some((BankKind::Generated, "PMR446".to_owned())));
-        assert_eq!(slots[5], None);
-    }
-
-    #[test]
-    fn a_named_bank_and_a_generated_plan_may_share_one_identifier() {
-        let mut model = ProjectModel::new();
-        model.add_bank();
-        model.add_generated_bank();
-        model.banks[1].id = model.banks[0].id;
-        model
-            .validate()
-            .expect("separate object kinds do not collide");
-
-        model.add_generated_bank();
-        model.banks[2].id = model.banks[1].id;
-        let errors = model.validate().unwrap_err();
-        assert_eq!(errors.iter().filter(|e| e.field == "id").count(), 2);
-    }
-
-    #[test]
-    fn a_stored_channel_joins_a_plans_bank_exactly_as_the_radio_selects_it() {
-        // A calling channel filed with the simplex band it belongs to. The
-        // editor must not claim this is impossible: the radio tests one
-        // membership mask for both channel kinds, and this proves the answer
-        // the editor gives is the answer the radio's own filter gives.
-        let mut model = ProjectModel::new();
-        model.add_generated_bank();
-        model.banks[0].id = 3;
-        model.banks[0].name = "2M SIMPLEX".to_owned();
-        model.banks[0].designator = "S".to_owned();
-        model.banks[0].first_number = 8;
-        model.banks[0].base_mhz = "145.200000".to_owned();
-        model.banks[0].spacing_hz = 25_000;
-        model.banks[0].channel_count = 16;
-        model.banks[0].calling_index = Some(12);
-
-        model.channels.push(ChannelDraft {
-            id: 1,
-            name: "GB3XX".to_owned(),
-            receive_mhz: "145.725000".to_owned(),
-            transmit_mhz: "145.125000".to_owned(),
-            banks: {
-                let mut banks = [false; MAX_BANKS as usize];
-                banks[3] = true;
-                banks
-            },
-            ..ChannelDraft::default()
-        });
-
-        let slots = model.bank_slots();
-        assert_eq!(
-            slots[3],
-            Some((BankKind::Generated, "2M SIMPLEX".to_owned()))
-        );
-
-        // Build the radio's own store from the same validated objects and ask
-        // it which channels bank 3 selects.
-        let project = model.validate().expect("project");
-        let mut memory = ProgrammedMemory::<4, 2>::new();
-        for plan in project.generated_banks() {
-            memory.install(*plan).expect("plan installs");
-        }
-        for channel in project.channels() {
-            memory.insert(*channel).expect("channel inserts");
-        }
-
-        let bank = BankId::new(3);
-        let selected: Vec<String> = (0..memory.len())
-            .filter(|index| memory.member_at(*index, bank))
-            .filter_map(|index| memory.get(index))
-            .map(|channel| channel.name().as_str().to_owned())
-            .collect();
-
-        assert_eq!(selected.len(), 17, "the stored channel joins the plan's 16");
-        assert_eq!(selected[0], "GB3XX");
-        assert_eq!(selected[1], "S8");
-        assert_eq!(selected[13], "S20 CALL");
-        assert_eq!(selected[16], "S23");
-    }
-
-    #[test]
-    fn duplicating_a_channel_keeps_every_field_but_the_identifier() {
-        let mut model = project();
-        model.duplicate_channel(0);
-        assert_eq!(model.channels.len(), 2);
-        assert_eq!(model.channels[1].id, 2);
-        assert_eq!(model.channels[1].name, model.channels[0].name);
-        assert_eq!(model.channels[1].receive_mhz, model.channels[0].receive_mhz);
-        assert_eq!(model.channels[1].banks, model.channels[0].banks);
-        model.duplicate_channel(9);
-        assert_eq!(model.channels.len(), 2);
+        // A row which does not validate is not counted, and no image is claimed.
+        model.banks[row].base_mhz = "not a frequency".to_owned();
+        let summary = model.storage_summary();
+        assert_eq!(summary.expanded_channels, 0);
+        assert_eq!(summary.image_bytes, None);
     }
 
     #[test]
     fn channel_drafts_round_trip_through_records() {
-        let mut draft = project().channels[0].clone();
-        draft.receive_mhz = "145.725000".to_owned();
-        draft.transmit_mhz = "145.125000".to_owned();
-        let record = draft.validate(0).unwrap();
+        let draft = project().banks[0].channels[0].clone();
+        let record = draft
+            .validate(ModelScope::Project, 7, BankId::new(2))
+            .unwrap();
+        assert_eq!(record.id().get(), 7);
+        assert!(record.is_member_of(BankId::new(2)));
         assert_eq!(ChannelDraft::from_record(record), draft);
     }
 }

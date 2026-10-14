@@ -1700,8 +1700,11 @@ meaning.
   a linear block is a generated plan. The radio's RAM index is one entry per
   block (at most 48). The project and editing model stays the format 4 object
   set, compiled to format 5 for a radio; a channel in two banks is refused.
-- Studio direction (operator): the Banks and Channels tabs become one, where a
-  bank is added and holds explicit channels or a generator.
+- Studio (operator direction, done in `7.0.17`): one Banks tab; a bank holds
+  channels or is a generator, and every channel is in exactly one named bank.
+  Projects are kept by name under `$XDG_DATA_HOME/afik/projects` and the last
+  one opened is reopened. Project files stay the format 4 object set; radios
+  are written the format 5 image, only by AFIK `7.0.17` or later.
 - `0x1D00` holds the radio's own record of the operator's place and handset
   squelch, so the handset never rewrites the host's image. `0x1E00..0x2000`
   is vendor calibration, readable but never writable by a host.

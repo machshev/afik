@@ -241,9 +241,23 @@
   workspace clippy `-D warnings` clean, `cargo test --workspace` 669 passed
   0 failed, K5 and K1 build + verify pass. Not flashed: nothing changes on the
   radio until the studio writes an image.
-- Next: the studio's memory writer with the merged Banks/Channels editor
-  (operator direction), then flash the K5 and program it from the studio;
-  then the K1's NOR erase plan; then CTCSS/DCS with a tail tone.
+- Studio on format 5 (operator request), version `7.0.17`: one Banks tab in
+  which every channel is listed under, and stored in, one bank (a bank holds
+  channels or is a generated plan; its row is its identifier). The Device tab
+  writes the compiled format 5 image as memory over the stock protocol, changed
+  8-byte blocks only, each read back, then the whole image
+  (`radio_flasher::write_afik_image`, refused below AFIK `7.0.17`), and reads
+  it back (`RadioProject::from_radio_image`). `radio_sim::memory_radio`
+  answers with the radio's own `memory_link` code for tests and **Connect
+  simulator**. Projects are chosen by name from a drop-down over
+  `$XDG_DATA_HOME/afik/projects/*.afik`; the last opened is reopened from
+  `$XDG_STATE_HOME/afik/last-project`; **New project** creates one; unsaved
+  changes block switching. Gate: `cargo fmt --all --check` clean, workspace
+  clippy `-D warnings` clean, `cargo test --workspace --no-fail-fast` 675
+  passed 0 failed, `tool/build-k5.sh --release` (flash end `0x0000c7f0`) and
+  `tool/build-k1.sh --release` pass. Not flashed or tried on a radio yet.
+- Next: flash K5 `7.0.17` and program it from the studio (write, power-cycle,
+  read back); then the K1's NOR erase plan; then CTCSS/DCS with a tail tone.
 
 ## Previous work package: TXK5-058
 

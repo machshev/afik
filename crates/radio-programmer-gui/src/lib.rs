@@ -14,6 +14,7 @@ pub mod logging;
 pub mod model;
 pub mod paths;
 pub mod presets;
+pub mod projects;
 pub mod session;
 
 /// Command-line help for the native editor binary.
@@ -28,10 +29,13 @@ Options:\n\
   --device PATH      Serial device used for the configuration protocol.\n\
   --device auto      Detect one USB serial device and connect it.\n\
   --baud BAUD        Serial baud rate; defaults to 38400.\n\
-  --project FILE     Load a canonical AFIK configuration image at start-up.\n\
+  --project FILE     Open this project file instead of the last project.\n\
   --help             Print this message.\n\
 \n\
 Supported BAUD: 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200\n\
+\n\
+Projects are kept in $XDG_DATA_HOME/afik/projects and chosen by name;\n\
+the last one opened is opened again.\n\
 \n\
 Connecting at start-up is optional: the Device tab detects USB serial\n\
 devices, offers a single candidate as the selection, leaves an ambiguous\n\

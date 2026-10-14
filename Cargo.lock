@@ -2541,7 +2541,6 @@ version = "7.0.17"
 dependencies = [
  "eframe",
  "log",
- "radio-channel-control",
  "radio-channel-plan",
  "radio-domain",
  "radio-flasher",

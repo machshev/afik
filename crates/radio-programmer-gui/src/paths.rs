@@ -14,6 +14,10 @@ use std::{
 const APPLICATION_DIR: &str = "afik";
 /// Subdirectory holding EEPROM backups.
 const EEPROM_DIR: &str = "eeprom";
+/// Subdirectory holding projects.
+const PROJECTS_DIR: &str = "projects";
+/// State file naming the project opened last.
+const LAST_PROJECT_FILE: &str = "last-project";
 
 /// Returns the AFIK data directory, `$XDG_DATA_HOME/afik` or `~/.local/share/afik`.
 pub fn data_dir() -> Option<PathBuf> {
@@ -51,6 +55,16 @@ fn xdg_base(xdg: Option<OsString>, home: Option<OsString>, fallback: &[&str]) ->
                 .map(|home| fallback.iter().fold(home, |path, part| path.join(part)))
         })?;
     Some(base.join(APPLICATION_DIR))
+}
+
+/// Returns the directory projects are kept in, `$XDG_DATA_HOME/afik/projects`.
+pub fn projects_dir() -> Option<PathBuf> {
+    data_dir().map(|dir| dir.join(PROJECTS_DIR))
+}
+
+/// Returns the file naming the project opened last, under the state directory.
+pub fn last_project_file() -> Option<PathBuf> {
+    state_dir().map(|dir| dir.join(LAST_PROJECT_FILE))
 }
 
 /// Returns the directory EEPROM backups are written to by default.

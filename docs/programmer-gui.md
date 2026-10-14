@@ -19,11 +19,27 @@ cargo run --package radio-programmer-gui --bin afik-studio -- \
   --project plan.afik
 ```
 
-Start-up connection is optional. `--sim` connects the deterministic simulator,
+Start-up connection is optional. `--sim` connects a simulated radio,
 `--device auto` connects the one detected USB serial device, `--device PATH`
-connects an explicit port, and `--project FILE` loads a canonical AFIK
-configuration image. `--baud` defaults to 38400 and accepts only the supported
-rates. `--device` cannot be combined with `--sim`.
+connects an explicit port, and `--project FILE` opens a project file kept
+elsewhere. `--baud` defaults to 38400 and accepts only the supported rates.
+`--device` cannot be combined with `--sim`.
+
+## Projects
+
+Projects are kept by name in `$XDG_DATA_HOME/afik/projects`
+(`~/.local/share/afik/projects`), one `NAME.afik` file each, and chosen from
+the Project drop-down; no path is typed. The project opened last is recorded
+in `$XDG_STATE_HOME/afik/last-project` and opened again at start-up. With no
+projects yet, a project named `default` is opened, and its file is created on
+the first Save. **New project** creates an empty project with the typed name
+and opens it. A project with unsaved changes is never switched away from:
+Save it or Revert it first.
+
+A project file is the canonical format 4 object set, which every front end
+reads. The editor also opens a format 5 radio image, and an older project
+whose channels are in several banks, or in none, is grouped so each channel
+is in one bank (its first, or a last bank named `Unbanked`).
 
 ## Device detection
 
@@ -44,8 +60,8 @@ channels in three named banks, which is exactly what the K1 receive image holds;
 and one PMR446 generated plan, which is one stored object a target expands into
 sixteen channels.
 
-A set is a starting point, not an authority. Applying one replaces every channel
-and bank row, says how many rows it replaced, and asks the operator to confirm
+A set is a starting point, not an authority. Applying one replaces every
+bank, says how many it replaced, and asks the operator to confirm
 every frequency against their own national band plan.
 `tool/example-pmr-amateur-plan.sh` builds the same plan from the CLI, either to a
 file or straight to a radio.
@@ -53,7 +69,7 @@ file or straight to a radio.
 ## Model boundary
 
 Everything the editor decides lives in the library: `model` holds the editable
-drafts and their validation, `session` holds the programmer connection, and
+drafts and their validation, `session` holds the connection to a radio, and
 `flash` holds the guarded firmware and EEPROM operations. The `app` module only
 draws those decisions, so each is covered by host tests without a display.
 
@@ -66,42 +82,32 @@ floating point.
 
 ## Tabs
 
-- **Channels:** identifier, name, receive and transmit frequency, receive and
-  transmit tone, modulation, bandwidth, power, step, squelch, per-channel flags,
-  bank membership, and transmit class. Rows collapse, can be duplicated, and
-  name the bank each membership checkbox joins. Each row is one stored object;
-  identifiers stop below the range reserved for channels a radio expands from a
-  plan.
-- **Banks:** the sixteen addressable bank identifiers. A row is either a named
-  bank, which groups the channel rows claiming membership of it and carries the
-  scan flag, or a generated plan, which stores a base frequency, channel
-  spacing, channel count, transmit class, and the per-channel template every
-  channel of the plan shares — tones, modulation, bandwidth, power, step,
-  squelch, and flags — edited once for the whole bank. A generated row reports
-  the span it covers and expands, in place, into the channels the radio will
-  build from it: the same names, order, and frequencies the radio's own channel
-  list shows, with what the plan costs in stored bytes against what those
-  channels would have cost. The two kinds are separate stored objects, so one
-  identifier can hold one of each; a channel row cannot join a plan's bank,
-  because the plan already owns every channel in it. A target which advertises
-  no plan encoding is named as such before a write is attempted.
-
-Both tabs carry the same summary line: how many channels the radio can select,
-how many of them are stored against expanded, the object and byte cost, and the
-bytes the plans saved. It counts only rows which validate, so it always
-describes a configuration which could be written.
+- **Banks:** the project as a radio holds it: up to sixteen banks in order,
+  each either a list of channels or a generated plan. Every channel is in
+  exactly one bank, the one it is listed under, because the radio stores each
+  channel in its bank (storage format 5, `ADR-100`). A bank's place in the
+  list is its identifier and the order the radio shows it in; Move up and
+  Move down change it. A channel bank carries a name and the scan flag, and
+  its channels carry name, receive and transmit frequency, tones, modulation,
+  bandwidth, power, step, squelch, flags and transmit class; channels are
+  numbered by the radio from their position. A generated plan stores a base
+  frequency, spacing, channel count, naming, transmit class and the
+  per-channel template its channels share, and expands, in place, into the
+  channels the radio will build from it. The tab says how many channels the
+  radio can select and how much of its 7,424-byte image region
+  (`0x0000..0x1D00`) the compiled image takes.
 - **Radio:** squelch, backlight, scan resume mode and timings, dual watch,
   battery save, and the global behaviour flags.
 - **Device:** detect and select a serial device, choose the baud, connect or
-  disconnect it, connect the simulator, refresh the object
-  listing, read the project back from the radio, and write it. Writing compiles
-  against the negotiated target capabilities and uses the programmer library's
-  transactional write with read-back verification.
+  disconnect it, connect the simulated radio, read the project back from the
+  radio, and write it. Writing compiles the format 5 image, writes only the
+  eight-byte blocks which differ into the radio's memory over the stock
+  protocol, reads each back, then reads the whole image back
+  (`radio_flasher::write_afik_image`). Only AFIK `7.0.17` or later is written
+  to; stock firmware keeps its own settings where the image goes. The radio
+  checks the image again a second after the last write and runs no channels
+  from one which fails.
 - **Flash:** the guided flash flow described below.
-
-Project files are canonical AFIK configuration images, the same format the CLI
-and the loopback GUI produce, so a project saved here can be restored by any
-front end.
 
 ## Logging
 

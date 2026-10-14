@@ -111,6 +111,27 @@ pub enum CompileError {
     Storage(StorageError),
 }
 
+impl core::fmt::Display for CompileError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::MultipleBanks(id) => write!(
+                formatter,
+                "channel {} is in more than one bank; a radio stores each channel in one",
+                id.get()
+            ),
+            Self::DuplicatePlan(bank) => {
+                write!(formatter, "bank {} holds two generated plans", bank.get())
+            }
+            Self::TooManyBlocks => write!(
+                formatter,
+                "the image needs more than the {MAX_BLOCKS} blocks a radio indexes"
+            ),
+            Self::TooLarge => formatter.write_str("the image does not fit the radio's memory"),
+            Self::Storage(error) => write!(formatter, "{error}"),
+        }
+    }
+}
+
 impl From<StorageError> for CompileError {
     fn from(error: StorageError) -> Self {
         Self::Storage(error)

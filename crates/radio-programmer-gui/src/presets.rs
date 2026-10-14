@@ -18,7 +18,6 @@ use crate::model::{BankDraft, BankKind, ProjectModel};
 
 /// One generated plan a preset defines.
 struct PresetPlan {
-    id: u16,
     /// Full name, which is what this editor labels the bank with.
     name: &'static str,
     /// Prefix the radio names each expanded channel with.
@@ -49,7 +48,6 @@ pub struct Preset {
 
 /// The analogue PMR446 allocation: sixteen channels, 12.5 kHz from 446.00625.
 const PMR446: PresetPlan = PresetPlan {
-    id: 0,
     name: "PMR446",
     // A trailing space separates the number, so channels read `PMR 1`.
     designator: "PMR ",
@@ -69,7 +67,6 @@ const PMR446: PresetPlan = PresetPlan {
 
 /// UK 2 m FM simplex: S8 at 145.200 through S23, calling on S20 at 145.500.
 const TWO_METRE_SIMPLEX: PresetPlan = PresetPlan {
-    id: 1,
     name: "2M SIMPLEX",
     designator: "S",
     first_number: 8,
@@ -87,7 +84,6 @@ const TWO_METRE_SIMPLEX: PresetPlan = PresetPlan {
 
 /// UK 70 cm FM simplex: SU16 at 433.400 through SU23, calling on SU20.
 const SEVENTY_CENTIMETRE_SIMPLEX: PresetPlan = PresetPlan {
-    id: 2,
     name: "70CM SIMPLEX",
     designator: "SU",
     first_number: 16,
@@ -108,7 +104,6 @@ const SEVENTY_CENTIMETRE_SIMPLEX: PresetPlan = PresetPlan {
 /// This is the fixed-offset family: the outputs are arithmetic and the distance
 /// to the inputs is one constant, so a whole sub-band is one stored object.
 const TWO_METRE_REPEATERS: PresetPlan = PresetPlan {
-    id: 3,
     name: "2M REPEATERS",
     designator: "RV",
     first_number: 48,
@@ -130,7 +125,6 @@ const TWO_METRE_REPEATERS: PresetPlan = PresetPlan {
 /// refusal rather than a note in a manual. The 8.33 kHz channel numbering is
 /// not arithmetic and is deliberately not expressed here.
 const AIRBAND: PresetPlan = PresetPlan {
-    id: 0,
     name: "AIRBAND",
     designator: "AIR",
     first_number: 1,
@@ -208,7 +202,6 @@ impl Preset {
         let mut project = ProjectModel::new();
         for plan in self.plans {
             project.banks.push(BankDraft {
-                id: plan.id,
                 name: plan.name.to_owned(),
                 kind: BankKind::Generated,
                 designator: plan.designator.to_owned(),
@@ -234,7 +227,7 @@ impl Preset {
 #[cfg(test)]
 mod tests {
     use super::PRESETS;
-    use crate::model::{BankKind, ProjectModel, ValidatedBank};
+    use crate::model::{BankKind, ProjectModel, ValidatedBank, RADIO_IMAGE_BYTES};
     use radio_domain::TxClass;
 
     #[test]
@@ -243,13 +236,16 @@ mod tests {
             let project = preset.build();
             let (channels, plans) = preset.size();
             assert_eq!(project.banks.len(), plans, "{}", preset.name());
-            assert!(project.channels.is_empty(), "{}", preset.name());
+            assert_eq!(project.channel_count(), 0, "{}", preset.name());
             project
                 .validate()
                 .unwrap_or_else(|_| panic!("{} validates", preset.name()));
             project
                 .to_image()
                 .unwrap_or_else(|_| panic!("{} compiles", preset.name()));
+            project
+                .to_radio_image()
+                .unwrap_or_else(|_| panic!("{} fits a radio", preset.name()));
 
             let expanded: usize = project
                 .banks
@@ -261,7 +257,7 @@ mod tests {
     }
 
     #[test]
-    fn every_preset_is_plans_only_and_costs_far_less_than_its_channels() {
+    fn every_preset_is_plans_only_and_fits_a_radio() {
         for preset in PRESETS {
             let project = preset.build();
             assert!(
@@ -272,8 +268,8 @@ mod tests {
             let summary = project.storage_summary();
             assert_eq!(summary.stored_channels, 0);
             assert!(
-                summary.bytes_saved() > 0,
-                "{} saves bytes against explicit records",
+                summary.image_bytes.unwrap() < RADIO_IMAGE_BYTES,
+                "{} fits a radio",
                 preset.name()
             );
         }

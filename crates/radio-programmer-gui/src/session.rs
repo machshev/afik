@@ -1,41 +1,28 @@
-//! Persistent programmer session used by the native editor.
+//! Connection to a radio programmed as memory (`ADR-100`).
+//!
+//! The studio compiles and validates the format 5 image, then writes it into
+//! the radio's memory view over the stock protocol; the radio validates it
+//! again when it loads it.
 
-use std::{convert::Infallible, fmt, io, path::Path};
+use std::{fmt, io, path::Path};
 
-use radio_channel_plan::PlanEncoding;
-use radio_programmer::{
-    CompileError, ConfigurationBackup, DeviceCapabilities, ObjectListing, Programmer,
-    ProgrammerError, ProtocolTransport, RadioProject, RestoreError, VerifiedConfigurationReceipt,
-};
+use radio_flasher::{FlashError, ImageWriteReport};
+use radio_programmer::{RadioImageError, RadioProject};
 use radio_programmer_serial::{LinuxSerialTransport, SerialOpenError};
-use radio_sim::{SimDevice, SimTransport};
-
-/// Transport I/O failure after a backend is connected.
-#[derive(Debug)]
-pub enum TransportError {
-    /// Explicit serial byte I/O failed.
-    Serial(io::Error),
-}
-
-impl fmt::Display for TransportError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Serial(error) => write!(formatter, "serial I/O failed: {error}"),
-        }
-    }
-}
+use radio_sim::memory_radio::MemoryRadio;
+use radio_storage::StorageError;
 
 /// Session operation failure.
 #[derive(Debug)]
 pub enum SessionError {
-    /// Explicit serial setup failed before protocol negotiation.
+    /// The serial device could not be opened.
     SerialOpen(SerialOpenError),
-    /// Project compilation or target capability validation failed.
-    Compile(CompileError),
-    /// Programmer transport, protocol, device, storage, or verification failed.
-    Programmer(ProgrammerError<TransportError>),
-    /// Restore image validation or verified mutation failed.
-    Restore(RestoreError<TransportError>),
+    /// The project does not compile into a radio image.
+    Compile(RadioImageError),
+    /// The radio refused, did not answer, or read back differently.
+    Radio(FlashError),
+    /// The radio's memory holds no valid image.
+    Image(StorageError),
 }
 
 impl fmt::Display for SessionError {
@@ -43,59 +30,60 @@ impl fmt::Display for SessionError {
         match self {
             Self::SerialOpen(error) => write!(formatter, "serial setup failed: {error}"),
             Self::Compile(error) => write!(formatter, "compile failed: {error}"),
-            Self::Programmer(error) => write!(formatter, "programmer failed: {error}"),
-            Self::Restore(error) => write!(formatter, "{error}"),
+            Self::Radio(error) => write!(formatter, "{error}"),
+            Self::Image(error) => write!(formatter, "the radio holds no valid image: {error}"),
         }
     }
 }
 
 enum Transport {
-    Simulator(Box<SimTransport>),
+    Simulator(Box<MemoryRadio>),
     Serial(LinuxSerialTransport),
 }
 
-impl ProtocolTransport for Transport {
-    type Error = TransportError;
-
-    fn send(&mut self, frame: &[u8]) -> Result<(), Self::Error> {
+impl io::Read for Transport {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         match self {
-            Self::Simulator(transport) => transport.send(frame).map_err(infallible),
-            Self::Serial(transport) => transport.send(frame).map_err(TransportError::Serial),
-        }
-    }
-
-    fn receive(&mut self, buffer: &mut [u8]) -> Result<usize, Self::Error> {
-        match self {
-            Self::Simulator(transport) => transport.receive(buffer).map_err(infallible),
-            Self::Serial(transport) => transport.receive(buffer).map_err(TransportError::Serial),
+            Self::Simulator(radio) => radio.read(buffer),
+            Self::Serial(serial) => serial.read(buffer),
         }
     }
 }
 
-fn infallible(error: Infallible) -> TransportError {
-    match error {}
+impl io::Write for Transport {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        match self {
+            Self::Simulator(radio) => radio.write(buffer),
+            Self::Serial(serial) => serial.write(buffer),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            Self::Simulator(radio) => radio.flush(),
+            Self::Serial(serial) => serial.flush(),
+        }
+    }
 }
 
-/// One connected programmer backend.
+/// One connected radio.
 pub struct DeviceSession {
-    programmer: Programmer<Transport>,
+    transport: Transport,
     description: String,
+    firmware: String,
 }
 
 impl DeviceSession {
-    /// Connects one fresh deterministic simulator session.
+    /// Connects a simulated radio with erased memory.
     pub fn connect_simulator() -> Result<Self, SessionError> {
-        Self::connect(
-            Transport::Simulator(Box::new(SimTransport::new(SimDevice::new()))),
-            "simulator".to_owned(),
-        )
+        Self::connect(Transport::Simulator(Box::default()), "simulator".to_owned())
     }
 
     /// Connects one explicit serial path and baud.
     pub fn connect_serial(path: &Path, baud: u32) -> Result<Self, SessionError> {
-        let transport = LinuxSerialTransport::open(path, baud).map_err(SessionError::SerialOpen)?;
+        let serial = LinuxSerialTransport::open(path, baud).map_err(SessionError::SerialOpen)?;
         Self::connect(
-            Transport::Serial(transport),
+            Transport::Serial(serial),
             format!("{} at {baud} baud", path.display()),
         )
     }
@@ -105,94 +93,81 @@ impl DeviceSession {
         &self.description
     }
 
-    /// Returns the negotiated device capabilities.
-    pub fn capabilities(&self) -> DeviceCapabilities {
-        self.programmer.capabilities()
+    /// Returns the firmware the radio named when it connected.
+    pub fn firmware(&self) -> &str {
+        &self.firmware
     }
 
-    /// Reports whether the target accepts the compact generated-plan encoding.
-    ///
-    /// A target which expands no plan advertises no encoding bit, so the editor
-    /// can say why a generated bank cannot be written before it tries.
-    pub fn supports_generated_plans(&self) -> bool {
-        self.capabilities().plan_encodings & PlanEncoding::LinearSimplex.capability_bit() != 0
-    }
-
-    /// Reads the current generation-tagged object listing.
-    pub fn listing(&mut self) -> Result<ObjectListing, SessionError> {
-        self.programmer
-            .list_objects()
-            .map_err(SessionError::Programmer)
-    }
-
-    /// Compiles, transactionally writes, and verifies one project.
+    /// Compiles the project, writes it into the radio's memory and reads it
+    /// back.
     pub fn write_project(
         &mut self,
         project: &RadioProject,
-    ) -> Result<VerifiedConfigurationReceipt, SessionError> {
-        let configuration = self
-            .programmer
-            .compiler()
-            .compile(project)
+    ) -> Result<ImageWriteReport, SessionError> {
+        let image = project
+            .compile_radio_image()
             .map_err(SessionError::Compile)?;
-        self.programmer
-            .write_configuration_verified(&configuration)
-            .map_err(SessionError::Programmer)
+        let report = radio_flasher::write_afik_image(&mut self.transport, &image, |_, _| {})
+            .map_err(SessionError::Radio)?;
+        report.firmware.version().clone_into(&mut self.firmware);
+        Ok(report)
     }
 
-    /// Returns one validated canonical backup image.
-    pub fn backup(&mut self) -> Result<ConfigurationBackup, SessionError> {
-        self.programmer
-            .backup_configuration()
-            .map_err(SessionError::Programmer)
+    /// Reads the radio's image and decodes it as the radio would.
+    pub fn read_project(&mut self) -> Result<RadioProject, SessionError> {
+        let (firmware, region) =
+            radio_flasher::read_afik_image(&mut self.transport).map_err(SessionError::Radio)?;
+        firmware.version().clone_into(&mut self.firmware);
+        RadioProject::from_radio_image(&region).map_err(SessionError::Image)
     }
 
-    /// Validates, transactionally restores, and verifies one canonical image.
-    pub fn restore(&mut self, image: &[u8]) -> Result<VerifiedConfigurationReceipt, SessionError> {
-        self.programmer
-            .restore_configuration_image(image)
-            .map_err(SessionError::Restore)
+    /// The simulated radio, when that is what is connected.
+    pub fn simulator(&self) -> Option<&MemoryRadio> {
+        match &self.transport {
+            Transport::Simulator(radio) => Some(radio),
+            Transport::Serial(_) => None,
+        }
     }
 
-    fn connect(transport: Transport, description: String) -> Result<Self, SessionError> {
-        let programmer = Programmer::connect(transport).map_err(SessionError::Programmer)?;
+    fn connect(mut transport: Transport, description: String) -> Result<Self, SessionError> {
+        let firmware = radio_flasher::probe_normal_firmware(&mut transport)
+            .map_err(SessionError::Radio)?
+            .version()
+            .to_owned();
         Ok(Self {
-            programmer,
+            transport,
             description,
+            firmware,
         })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::DeviceSession;
+    use super::{DeviceSession, SessionError};
     use crate::model::ProjectModel;
 
     #[test]
-    fn a_simulator_session_writes_verifies_and_backs_up_a_banked_project() {
+    fn a_simulated_radio_loads_what_is_written_and_reads_it_back() {
         let mut model = ProjectModel::new();
         model.add_bank();
-        model.add_channel();
-        model.channels[0].banks[0] = true;
+        model.add_channel(0);
         let project = model.validate().unwrap();
 
         let mut session = DeviceSession::connect_simulator().unwrap();
         assert_eq!(session.description(), "simulator");
-        assert_eq!(session.listing().unwrap().objects.len(), 0);
+        assert!(session.firmware().starts_with("AFIK-K5-"));
+        assert!(matches!(
+            session.read_project(),
+            Err(SessionError::Image(_))
+        ));
 
-        let receipt = session.write_project(&project).unwrap();
-        assert_eq!(receipt.report.explicit_channels, 1);
-        assert_eq!(receipt.report.banks, 1);
-        assert!(receipt.report.has_radio_config);
-        assert_eq!(session.listing().unwrap().objects.len(), 3);
+        let report = session.write_project(&project).unwrap();
+        assert!(report.changed_blocks > 0);
+        let index = session.simulator().unwrap().index().unwrap();
+        assert_eq!(index.len(), 1);
 
-        let backup = session.backup().unwrap();
-        assert_eq!(backup.generation, receipt.generation);
-        let restored = ProjectModel::from_image(&backup.image).unwrap();
-        assert_eq!(restored.channels.len(), 1);
-        assert_eq!(restored.banks.len(), 1);
-
-        let receipt = session.restore(&backup.image).unwrap();
-        assert!(receipt.generation > backup.generation);
+        let read = ProjectModel::from_project(&session.read_project().unwrap());
+        assert_eq!(read, model);
     }
 }
