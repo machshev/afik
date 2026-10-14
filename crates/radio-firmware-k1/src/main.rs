@@ -13,6 +13,7 @@
 #![no_main]
 #![deny(unsafe_code)]
 
+use core::mem::MaybeUninit;
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -50,8 +51,8 @@ use radio_domain::{
 use radio_firmware_k1::battery::Calibration;
 use radio_firmware_k1::bk4819_bus::ThreeWireBus;
 use radio_firmware_k1::configuration::{
-    device_service, store_setting, Programmed, SettingChange, CONFIGURATION_STORE_BYTES,
-    RETAINED_IMAGE_BYTES,
+    device_service, store_setting, K1DeviceService, Programmed, SettingChange,
+    CONFIGURATION_STORE_BYTES, RETAINED_IMAGE_BYTES,
 };
 use radio_firmware_k1::display::{
     render_channel_list, render_info_screen, render_operating_screen, render_selector_list,
@@ -368,6 +369,7 @@ fn main() -> ! {
     // executor's complete lifetime and no other mutable reference is retained.
     #[allow(unsafe_code)]
     let executor: &'static mut Executor = unsafe { core::mem::transmute(&mut executor) };
+    let (service, image) = serial_state();
     executor.run(|spawner| {
         let Ok(serial) = serial_task(
             serial,
@@ -378,6 +380,8 @@ fn main() -> ! {
                 miso: p.PA2,
                 chip_select: p.PA3,
             },
+            service,
+            image,
         ) else {
             fail_closed();
         };
@@ -886,15 +890,47 @@ struct EepromPins {
     chip_select: PA3,
 }
 
+/// The serial task's two large values, kept out of its future (`RISK-033`).
+///
+/// Built in a task, a by-value service or image buffer lands in the task's
+/// poll frame before it is moved, and the size-optimised build kept a 4 KiB
+/// poll frame that overflowed the stack. These statics are filled once, by
+/// [`serial_state`], before the executor starts.
+static mut SERIAL_SERVICE: MaybeUninit<K1DeviceService> = MaybeUninit::uninit();
+static mut SERIAL_IMAGE: [u8; RETAINED_IMAGE_BYTES] = [0; RETAINED_IMAGE_BYTES];
+
+/// Fills the serial task's statics and hands them out, once.
+///
+/// Never inlined, so the service it builds on the stack is gone again before
+/// any task runs.
+#[allow(unsafe_code)]
+#[inline(never)]
+fn serial_state() -> (
+    &'static mut K1DeviceService,
+    &'static mut [u8; RETAINED_IMAGE_BYTES],
+) {
+    // SAFETY: called exactly once, from `main` before the executor starts, so
+    // these are the only references to either static for the image's life.
+    unsafe {
+        (
+            (*(&raw mut SERIAL_SERVICE)).write(device_service()),
+            &mut *(&raw mut SERIAL_IMAGE),
+        )
+    }
+}
+
 #[embassy_executor::task]
-async fn serial_task(mut uart: Uart<'static, Async>, memory: EepromPins) {
+async fn serial_task(
+    mut uart: Uart<'static, Async>,
+    memory: EepromPins,
+    service: &'static mut K1DeviceService,
+    image: &'static mut [u8; RETAINED_IMAGE_BYTES],
+) {
     // A radio which cannot reach its external memory is still a working
     // receiver, so an absent or unresponsive memory leaves the store empty
-    // rather than stopping the radio.
-    let mut image = [0_u8; RETAINED_IMAGE_BYTES];
-    // The device stores channels, named banks, plans, and the global
-    // configuration, in whatever mixture fits the bytes it declares.
-    let mut service = device_service();
+    // rather than stopping the radio. The device stores channels, named banks,
+    // plans, and the global configuration, in whatever mixture fits the bytes
+    // it declares.
 
     // Publish before touching the external memory. The interface task waits for
     // the first publication before it reads a key, so anything slow or broken
@@ -952,7 +988,7 @@ async fn serial_task(mut uart: Uart<'static, Async>, memory: EepromPins) {
     // store empty and the built-in channels in charge.
     let restored = retained.as_mut().is_some_and(|configuration| {
         configuration
-            .read(&mut image)
+            .read(image)
             .is_some_and(|length| service.load_image(&image[..length]).is_ok())
     });
     // The place is read beside the configuration it refers to and published
@@ -1005,9 +1041,9 @@ async fn serial_task(mut uart: Uart<'static, Async>, memory: EepromPins) {
                 // A handset setting which did not survive a battery change would
                 // not be worth the menu, so it is stored exactly like a host
                 // write and republished from the store rather than assumed.
-                if store_setting(&mut service, change).is_ok() {
+                if store_setting(service, change).is_ok() {
                     let mut retained_now = false;
-                    if let Ok(length) = service.encode_active_image(&mut image) {
+                    if let Ok(length) = service.encode_active_image(&mut image[..]) {
                         if let Some(configuration) = retained.as_mut() {
                             retained_now = configuration.write(&image, length).await.is_ok();
                         }
@@ -1097,7 +1133,7 @@ async fn serial_task(mut uart: Uart<'static, Async>, memory: EepromPins) {
                 // Retain the new configuration before answering, so a host told
                 // that a transaction committed can rely on it being stored.
                 let mut retained_now = false;
-                if let Ok(length) = service.encode_active_image(&mut image) {
+                if let Ok(length) = service.encode_active_image(&mut image[..]) {
                     if let Some(configuration) = retained.as_mut() {
                         retained_now = configuration.write(&image, length).await.is_ok();
                     }
@@ -1158,8 +1194,8 @@ static ACTIVE: Mutex<CriticalSectionRawMutex, RefCell<ObjectArena<CONFIGURATION_
 /// what the device is running rather than an object table rebuilt beside it.
 fn store_objects(payload: &[u8]) {
     ACTIVE.lock(|cell| {
-        let mut snapshot = cell.borrow_mut();
-        *snapshot = ObjectArena::from_payload(payload).unwrap_or_default();
+        // In place: a by-value arena here overflowed the stack (`RISK-033`).
+        let _ = cell.borrow_mut().load_payload(payload);
     });
 }
 

@@ -160,6 +160,14 @@
   the zero reserved slots), K1 build and image test pass. Not yet flashed:
   check boot, keys, receive audio, PTT/TX, and Connect plus backup in the
   studio.
+- `7.0.11`: K1 `7.0.10` (size-optimised) had a blank screen on the bench,
+  while the same source built with the default profile worked: a stack overflow
+  (`RISK-033` note). `ObjectArena::load_payload` fills the arena in place, and
+  the K1 serial task takes its service and image buffer from statics. Serial
+  poll frame 4,184 → 1,768 bytes, `publish` no longer has a 2.7 KB frame.
+  Gate: fmt clean, workspace clippy `-D warnings` clean, `cargo test
+  --workspace` 707 passed 0 failed, K1 build + `verify-k1-image.sh` (headroom
+  6,960 bytes) + `test-k1-image.sh` pass, K5 build + verify pass.
 - Next: flash `7.0.5` with `afik-flasher flash-afik` and check a 1 min over
   times out; flash K1 and check its speech level; then CTCSS/DCS with an
   end-of-transmission tail tone to remove the key-off squelch burst.

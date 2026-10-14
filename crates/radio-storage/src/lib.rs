@@ -382,25 +382,42 @@ impl<const BYTES: usize> ObjectArena<BYTES> {
     /// are out of order, overrun the payload, or name an unknown kind are
     /// refused rather than half copied.
     pub fn from_payload(payload: &[u8]) -> Result<Self, StorageError> {
+        let mut arena = Self::new();
+        arena.load_payload(payload)?;
+        Ok(arena)
+    }
+
+    /// Replaces this arena's contents with one packed payload, in place.
+    ///
+    /// The same checks as [`Self::from_payload`], without a second arena on the
+    /// stack: firmware keeps its arena in a static, and a by-value copy of a
+    /// kilobyte-sized arena is what overflowed the K1 stack. A refused payload
+    /// leaves the arena empty.
+    pub fn load_payload(&mut self, payload: &[u8]) -> Result<(), StorageError> {
+        self.len = 0;
         if payload.len() > BYTES {
             return Err(StorageError::StoreFull);
         }
-        let mut arena = Self::new();
-        arena.bytes[..payload.len()].copy_from_slice(payload);
-        arena.len = payload.len();
+        self.bytes[..payload.len()].copy_from_slice(payload);
+        self.len = payload.len();
         let mut previous = None;
         let mut seen = 0;
-        for object in &arena {
+        let mut checked = Ok(());
+        for object in &*self {
             if previous.is_some_and(|key| key >= object.key()) {
-                return Err(StorageError::NonCanonicalImage);
+                checked = Err(StorageError::NonCanonicalImage);
+                break;
             }
             previous = Some(object.key());
             seen += OBJECT_ENTRY_HEADER_LEN + object.len();
         }
-        if seen != payload.len() {
-            return Err(StorageError::MalformedImage);
+        if checked.is_ok() && seen != payload.len() {
+            checked = Err(StorageError::MalformedImage);
         }
-        Ok(arena)
+        if checked.is_err() {
+            self.len = 0;
+        }
+        checked
     }
 
     /// Returns the total bytes this arena can hold.
@@ -1765,6 +1782,40 @@ mod tests {
 
     /// A packed arena has to survive objects arriving in any order, changing
     /// length under replacement, and leaving.
+    #[test]
+    fn an_arena_loads_a_payload_in_place_and_empties_on_refusal() {
+        let mut source = ObjectArena::<512>::new();
+        source
+            .write(&encode_channel(channel(2, "TWO")).unwrap())
+            .unwrap();
+        source
+            .write(&encode_radio_config(RadioConfig::conservative()).unwrap())
+            .unwrap();
+
+        let mut arena = ObjectArena::<512>::new();
+        arena
+            .write(&encode_channel(channel(9, "NINE")).unwrap())
+            .unwrap();
+        arena.load_payload(source.payload()).unwrap();
+        assert_eq!(arena, source, "the old contents are replaced, not merged");
+
+        // Two entries in the wrong order are refused, and nothing is kept.
+        let first_len = OBJECT_ENTRY_HEADER_LEN + source.iter().next().unwrap().len();
+        let mut reversed = Vec::new();
+        reversed.extend_from_slice(&source.payload()[first_len..]);
+        reversed.extend_from_slice(&source.payload()[..first_len]);
+        assert_eq!(
+            arena.load_payload(&reversed),
+            Err(StorageError::NonCanonicalImage)
+        );
+        assert!(arena.payload().is_empty());
+
+        assert_eq!(
+            ObjectArena::<4>::new().load_payload(source.payload()),
+            Err(StorageError::StoreFull)
+        );
+    }
+
     #[test]
     fn the_arena_stays_packed_and_ordered_through_replacement_and_removal() {
         let mut arena = ObjectArena::<512>::new();

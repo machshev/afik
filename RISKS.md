@@ -700,6 +700,13 @@
   16 KiB of SRAM, leaving 8,196 bytes of stack. Nothing in the build tells us
   what peak stack use actually is, and an overflow would silently corrupt the
   top of `.bss`.
+- **2026-10-14 (`7.0.10`):** the size-optimised K1 build went blank with
+  6,976 bytes of headroom. `-Z emit-stack-sizes` showed a 4,184-byte serial
+  task poll frame calling a 2,728-byte `publish`: under `opt-level = "s"` the
+  task's by-value service and image buffer, and the by-value arena in
+  `publish`, sat in stack frames. `7.0.11` fills the arena in place and keeps
+  the serial task's large state in statics (poll frame 1,768 bytes). The
+  headroom floor alone did not catch this; per-frame sizes are the measure.
 - **Mitigation:** `crates/radio-firmware-k1/stack-headroom.x` asserts a 6,144-byte
   reserve at link time, so a build which eats the headroom fails to link rather
   than packaging; `tool/verify-k1-image.sh` checks the same bound and
