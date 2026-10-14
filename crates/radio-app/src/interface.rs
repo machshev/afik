@@ -489,6 +489,7 @@ fn adopt_settings(shell: &mut Shell, programmed: &Programmed) {
 fn adopt_place(shell: &mut Shell, programmed: &Programmed, place: Option<OperatorState>) {
     if let Some(place) = place {
         shell.restore_vfo(place.vfo_hz, usize::from(place.step_index));
+        shell.set_tx_disabled(place.tx_disabled);
     }
     if programmed.is_empty() {
         // The VFO is the only source this radio has, whatever it was left on.
@@ -665,6 +666,7 @@ pub async fn run<D, K, B, S, V, M>(
     // The programmed TX ranges decide every transmission, in channel and VFO
     // mode alike, and are taken again with each configuration (`ADR-101`).
     let mut tx_policy = TX_POLICY.with(|policy| *policy);
+    shell.set_tx_classes(tx_policy.classes());
     let mut tx_calibration: Option<[u8; 3]> = None;
     // Created once the receiver has a channel, so its startup restore has
     // something to restore.
@@ -793,6 +795,7 @@ pub async fn run<D, K, B, S, V, M>(
             activation = activate(&programmed, &shell, selected, memory);
             pending = activation.as_mut().and_then(|(_, setup)| setup.take());
             tx_policy = TX_POLICY.with(|policy| *policy);
+            shell.set_tx_classes(tx_policy.classes());
             // A configuration arriving replaces what a scan was walking.
             scan_timer = None;
             redraw = true;
@@ -830,6 +833,9 @@ pub async fn run<D, K, B, S, V, M>(
             tx = TxController::new(1, ptt.pressed(), tx_now).ok();
         }
         if let Some(controller) = tx.as_mut() {
+            // The handset's class switches narrow the programmed ranges, and
+            // apply from the next pass, mid-transmission included.
+            let tx_policy = tx_policy.restricted(shell.tx_enabled());
             let _ = controller.handle(tx_now, event, &tx_policy, &tx_request.0);
             let bias = tx_request.1;
             transmit::run_effects(controller, &tx_policy, &tx_request.0, tx_now, |effect| {
@@ -1027,6 +1033,7 @@ pub async fn run<D, K, B, S, V, M>(
             vfo_hz: shell.vfo_hz(),
             step_index: u8::try_from(shell.step_index()).unwrap_or(0),
             squelch: Some(shell.squelch()),
+            tx_disabled: shell.tx_disabled(),
         };
         if context.scanning {
             // A scan moves the selection several times a second and none of
@@ -1416,6 +1423,15 @@ fn render<B: RegisterBus, S: Speaker, M: Memory>(
                     Setting::Squelch => SelectorRow::squelch_setting(shell.squelch().get()),
                     Setting::TxPower => SelectorRow::tx_power_setting(shell.tx_power()),
                     Setting::TxTimeout => SelectorRow::tx_timeout_setting(shell.tx_timeout()),
+                    Setting::TxClasses => {
+                        let (list, programmed) = shell.tx_class_list();
+                        let on = list
+                            .iter()
+                            .flatten()
+                            .filter(|class| shell.tx_enabled().contains(**class))
+                            .count();
+                        SelectorRow::tx_classes_setting(on, programmed)
+                    }
                 };
                 count += 1;
             }
@@ -1448,6 +1464,21 @@ fn render<B: RegisterBus, S: Speaker, M: Memory>(
                 &rows[..count],
                 usize::from(shell.tx_timeout_cursor()),
             );
+        }
+        Screen::TxClassList => {
+            let mut rows = [SelectorRow::default(); LIST_ROWS];
+            let (list, programmed) = shell.tx_class_list();
+            let cursor = usize::from(shell.tx_class_cursor());
+            let first = cursor / LIST_ROWS * LIST_ROWS;
+            let mut count = 0;
+            for (row, class) in rows
+                .iter_mut()
+                .zip(list[first..programmed.max(first)].iter().flatten())
+            {
+                *row = SelectorRow::tx_class(*class, shell.tx_enabled().contains(*class));
+                count += 1;
+            }
+            render_selector_list(frame, b"TX CLASSES", &rows[..count], cursor - first);
         }
         Screen::SquelchList => {
             let mut rows = [SelectorRow::default(); LIST_ROWS];
@@ -1553,6 +1584,7 @@ mod tests {
             vfo_hz: VFO_HZ,
             step_index: 2,
             squelch: None,
+            tx_disabled: radio_tx_policy::ClassSet::NONE,
         }
     }
 
@@ -1594,6 +1626,32 @@ mod tests {
         assert!(matches!(shell.mode(), Mode::Vfo));
         assert_eq!(shell.vfo_hz(), VFO_HZ);
         assert_eq!(selected, None);
+    }
+
+    #[test]
+    fn classes_switched_off_stay_off_after_a_power_cycle() {
+        use radio_domain::TxClass;
+        use radio_tx_policy::ClassSet;
+
+        let lent = OperatorState {
+            tx_disabled: ClassSet::NONE.with(TxClass::Amateur, true),
+            ..place(false)
+        };
+        let (shell, _) = boot(Some(lent));
+        assert_eq!(shell.tx_disabled(), lent.tx_disabled);
+        assert!(!shell.tx_enabled().contains(TxClass::Amateur));
+
+        // A VFO-only radio, with no channels, keeps them too.
+        let mut shell = Shell::new();
+        let mut selected = None;
+        adopt_publication(
+            &mut shell,
+            &Programmed::empty(),
+            true,
+            Some(lent),
+            &mut selected,
+        );
+        assert_eq!(shell.tx_disabled(), lent.tx_disabled);
     }
 
     #[test]

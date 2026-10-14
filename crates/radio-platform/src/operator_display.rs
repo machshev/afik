@@ -4,7 +4,7 @@ use crate::display::{BootStage, ReceiveDiagnostic};
 use crate::operator_shell::TX_POWER_NOMINAL_MW;
 use crate::receive_app::Key;
 use radio_bk4819::SquelchThresholds;
-use radio_domain::SquelchLevel;
+use radio_domain::{SquelchLevel, TxClass};
 
 /// Visible display width in columns.
 pub const WIDTH: usize = 128;
@@ -389,6 +389,35 @@ impl SelectorRow {
         let mut label = *b"1 MIN";
         label[0] = b'1' + choice.min(8);
         Self::with_label(&label, active)
+    }
+
+    /// Builds the settings-menu row for the TX classes: how many of the
+    /// programmed ones are switched on, such as `TX CLASSES 1/2`.
+    #[must_use]
+    pub fn tx_classes_setting(on: usize, programmed: usize) -> Self {
+        let mut label = *b"TX CLASSES 0/0";
+        label[11] = b'0' + u8::try_from(on.min(9)).unwrap_or(9);
+        label[13] = b'0' + u8::try_from(programmed.min(9)).unwrap_or(9);
+        Self::with_label(&label, false)
+    }
+
+    /// Builds one TX class row with its switch, such as `AMATEUR    OFF`;
+    /// a class switched on is marked active.
+    #[must_use]
+    pub fn tx_class(class: TxClass, on: bool) -> Self {
+        let name: &[u8] = match class {
+            TxClass::LicenceFreePlan => b"LIC FREE",
+            TxClass::Amateur => b"AMATEUR",
+            TxClass::Marine => b"MARINE",
+            TxClass::Aeronautical => b"AERO",
+            TxClass::Business => b"BUSINESS",
+            TxClass::Experimental => b"EXPERIMENT",
+        };
+        let mut label = [b' '; LIST_NAME_BYTES];
+        label[..name.len()].copy_from_slice(name);
+        let state: &[u8] = if on { b"ON" } else { b"OFF" };
+        label[11..11 + state.len()].copy_from_slice(state);
+        Self::with_label(&label[..11 + state.len()], on)
     }
 
     /// Builds one squelch-level row.
@@ -1131,6 +1160,26 @@ mod receive_witness_tests {
 }
 
 #[cfg(test)]
+mod tx_class_rows {
+    use super::SelectorRow;
+    use radio_domain::TxClass;
+
+    #[test]
+    fn tx_class_rows_name_the_class_and_its_switch() {
+        assert_eq!(
+            SelectorRow::tx_classes_setting(1, 2).label(),
+            b"TX CLASSES 1/2"
+        );
+        let on = SelectorRow::tx_class(TxClass::Amateur, true);
+        assert_eq!(on.label(), b"AMATEUR    ON");
+        assert!(on.active);
+        let off = SelectorRow::tx_class(TxClass::Experimental, false);
+        assert_eq!(off.label(), b"EXPERIMENT OFF");
+        assert!(!off.active);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::{
         initialise, render_key_witness, render_witness, write_frame, DisplayBus, TransferKind,
@@ -1376,6 +1425,11 @@ mod operating_screen_tests {
         for choice in 0..crate::operator_shell::TX_TIMEOUT_CHOICES {
             fixed.extend_from_slice(SelectorRow::tx_timeout_setting(choice).label());
             fixed.extend_from_slice(SelectorRow::tx_timeout_choice(choice, false).label());
+        }
+        fixed.extend_from_slice(SelectorRow::tx_classes_setting(1, 2).label());
+        for class in crate::operator_shell::TX_CLASSES {
+            fixed.extend_from_slice(SelectorRow::tx_class(class, true).label());
+            fixed.extend_from_slice(SelectorRow::tx_class(class, false).label());
         }
 
         for byte in fixed {

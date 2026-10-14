@@ -40,6 +40,15 @@ programmed TX ranges protect channel and VFO mode alike.
   workspace clippy `-D warnings` clean, `cargo test --workspace` 690 passed
   0 failed, `tool/build-k5.sh --release` (flash end `0x0000cc50`) and
   `tool/build-k1.sh --release` pass. Not flashed.
+- Step 4b: handset class switch. Settings has a `TX CLASSES n/m` row; its list
+  shows only the programmed classes, and Menu switches the one under the
+  cursor on or off. The interface applies `TxPolicy::restricted` on every
+  pass, so a switch takes effect at once. The classes switched off are kept
+  in the radio's own place record (flag bits 2–7, clear in older records), so
+  a lent radio stays restricted across a power cycle and a reprogram. Gate:
+  `cargo fmt --all --check` clean, workspace clippy `-D warnings` clean,
+  `cargo test --workspace` 694 passed 0 failed, `tool/build-k5.sh --release`
+  (flash end `0x0000d100`) and `tool/build-k1.sh --release` pass. Not flashed.
 
 ## Previous work package: TXK5-059
 

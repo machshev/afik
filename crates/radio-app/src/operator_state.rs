@@ -15,6 +15,7 @@
 //! Nothing here mints transmit authority: it names a selection, not a channel.
 
 use radio_domain::{BankId, SquelchLevel};
+use radio_tx_policy::ClassSet;
 
 /// Bytes one retained record occupies.
 ///
@@ -37,6 +38,10 @@ const NO_SQUELCH: u8 = 0xFF;
 const MEMORY_MODE: u8 = 0b0000_0001;
 /// A bank filter was in force, and the identifier that follows is meaningful.
 const BANK_FILTERED: u8 = 0b0000_0010;
+/// The flag bits holding the TX classes switched off on the handset: class
+/// `n` (1 to 6) is bit `n + 1`. A record written before they existed has them
+/// clear, which is every class on.
+const TX_DISABLED_BITS: u8 = 0b1111_1100;
 
 /// Where the operator left the radio.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -63,6 +68,11 @@ pub struct OperatorState {
     /// The host's image carries a default; this is the operator's own choice,
     /// kept here so the handset never rewrites what the host programmed.
     pub squelch: Option<SquelchLevel>,
+    /// The TX classes the operator switched off on the handset (`ADR-101`).
+    ///
+    /// Kept here, beside the place, so lending the radio out survives a power
+    /// cycle; it can only narrow the programmed ranges.
+    pub tx_disabled: ClassSet,
 }
 
 impl OperatorState {
@@ -79,6 +89,7 @@ impl OperatorState {
             flags |= BANK_FILTERED;
             bytes[2..4].copy_from_slice(&bank.get().to_le_bytes());
         }
+        flags |= (self.tx_disabled.bits() << 1) & TX_DISABLED_BITS;
         bytes[1] = flags;
         bytes[4..6].copy_from_slice(&self.index.to_le_bytes());
         bytes[6..8].copy_from_slice(&self.channel_id.to_le_bytes());
@@ -122,6 +133,7 @@ impl OperatorState {
             } else {
                 None
             },
+            tx_disabled: ClassSet::from_bits((flags & TX_DISABLED_BITS) >> 1),
         })
     }
 }
@@ -158,7 +170,8 @@ fn crc16(bytes: &[u8]) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::{crc16, is_erased, OperatorState, OPERATOR_STATE_BYTES};
-    use radio_domain::{BankId, SquelchLevel};
+    use radio_domain::{BankId, SquelchLevel, TxClass};
+    use radio_tx_policy::ClassSet;
 
     fn state() -> OperatorState {
         OperatorState {
@@ -169,6 +182,7 @@ mod tests {
             vfo_hz: 433_500_000,
             step_index: 2,
             squelch: Some(SquelchLevel::new(4).expect("level")),
+            tx_disabled: ClassSet::NONE.with(TxClass::Amateur, true),
         }
     }
 
@@ -186,6 +200,25 @@ mod tests {
             },
             OperatorState {
                 squelch: None,
+                ..state()
+            },
+            OperatorState {
+                tx_disabled: ClassSet::NONE,
+                ..state()
+            },
+            OperatorState {
+                tx_disabled: [
+                    TxClass::LicenceFreePlan,
+                    TxClass::Amateur,
+                    TxClass::Marine,
+                    TxClass::Aeronautical,
+                    TxClass::Business,
+                    TxClass::Experimental,
+                ]
+                .into_iter()
+                .fold(ClassSet::NONE, |set, class| set.with(class, true)),
+                bank: None,
+                memory_mode: false,
                 ..state()
             },
             OperatorState {
@@ -229,6 +262,24 @@ mod tests {
                 "byte {index} was accepted"
             );
         }
+    }
+
+    /// A record written before the class switches existed has their bits
+    /// clear, which is every class on.
+    #[test]
+    fn an_older_record_switches_no_class_off() {
+        let older = OperatorState {
+            tx_disabled: ClassSet::NONE,
+            ..state()
+        };
+        let mut encoded = older.encode();
+        assert_eq!(encoded[1] & 0b1111_1100, 0);
+        let checksum = crc16(&encoded[..OPERATOR_STATE_BYTES - 2]);
+        encoded[OPERATOR_STATE_BYTES - 2..].copy_from_slice(&checksum.to_le_bytes());
+        assert_eq!(
+            OperatorState::decode(&encoded).map(|state| state.tx_disabled),
+            Some(ClassSet::NONE)
+        );
     }
 
     /// A record a future image writes must not be read as one of these.

@@ -13,7 +13,8 @@
 //! No intent can transmit. The set deliberately contains selection, bank
 //! filtering, VFO tuning, and monitoring only.
 
-use radio_domain::{BankId, SquelchLevel, MAX_SQUELCH_LEVEL};
+use radio_domain::{BankId, SquelchLevel, TxClass, MAX_SQUELCH_LEVEL};
+use radio_tx_policy::ClassSet;
 
 use crate::receive_app::Key;
 use radio_channel_plan::MAX_BANKS;
@@ -83,6 +84,8 @@ enum Cursor {
     TxPower,
     /// The TX timeout list.
     TxTimeout,
+    /// The programmed TX class list.
+    TxClass,
 }
 
 /// Which receive source the operator is listening to.
@@ -126,6 +129,8 @@ pub enum Screen {
     TxPowerList,
     /// The selectable TX timeouts, where the target can transmit.
     TxTimeoutList,
+    /// The programmed TX classes, each switched on or off on the handset.
+    TxClassList,
     /// Image identity and storage state.
     Info,
 }
@@ -144,6 +149,8 @@ pub enum Setting {
     TxPower,
     /// How long one press may transmit, where the target can transmit.
     TxTimeout,
+    /// Which programmed TX classes this handset may use (`ADR-101`).
+    TxClasses,
 }
 
 /// Every settings row, in the order the menu lists them.
@@ -159,8 +166,24 @@ pub const SETTINGS: [Setting; 1] = [Setting::Squelch];
 
 /// Settings rows on a target that can transmit. TX power qualifies for the
 /// same reason squelch does: the right level depends on where the operator is.
-/// The TX timeout does too: a net with long overs needs a longer one.
-pub const SETTINGS_WITH_TX: [Setting; 3] = [Setting::Squelch, Setting::TxPower, Setting::TxTimeout];
+/// The TX timeout does too: a net with long overs needs a longer one. The TX
+/// classes switch lets the owner narrow what a borrowed radio may transmit.
+pub const SETTINGS_WITH_TX: [Setting; 4] = [
+    Setting::Squelch,
+    Setting::TxPower,
+    Setting::TxTimeout,
+    Setting::TxClasses,
+];
+
+/// Every TX class, in the order the class list shows them.
+pub const TX_CLASSES: [TxClass; 6] = [
+    TxClass::LicenceFreePlan,
+    TxClass::Amateur,
+    TxClass::Marine,
+    TxClass::Aeronautical,
+    TxClass::Business,
+    TxClass::Experimental,
+];
 
 /// Selectable TX power levels. The programmed configuration names one of
 /// these, so the count lives with it.
@@ -292,6 +315,11 @@ pub struct Shell {
     tx_power_cursor: u8,
     tx_timeout: u8,
     tx_timeout_cursor: u8,
+    /// Classes of the programmed TX ranges.
+    tx_programmed: ClassSet,
+    /// Classes the operator switched off on the handset.
+    tx_disabled: ClassSet,
+    tx_class_cursor: u8,
     /// Whether a star press is still waiting to become a hold or a release.
     star_pending: bool,
     capabilities: Capabilities,
@@ -328,6 +356,9 @@ impl Shell {
             tx_power_cursor: 0,
             tx_timeout: TX_TIMEOUT_DEFAULT,
             tx_timeout_cursor: TX_TIMEOUT_DEFAULT,
+            tx_programmed: ClassSet::NONE,
+            tx_disabled: ClassSet::NONE,
+            tx_class_cursor: 0,
             star_pending: false,
             capabilities: Capabilities::K1,
         }
@@ -351,12 +382,16 @@ impl Shell {
                     | Screen::SquelchList
                     | Screen::TxPowerList
                     | Screen::TxTimeoutList
+                    | Screen::TxClassList
             )
         {
             self.screen = Screen::Operating;
         }
         if !capabilities.tx_power
-            && matches!(self.screen, Screen::TxPowerList | Screen::TxTimeoutList)
+            && matches!(
+                self.screen,
+                Screen::TxPowerList | Screen::TxTimeoutList | Screen::TxClassList
+            )
         {
             self.screen = Screen::Operating;
         }
@@ -440,6 +475,59 @@ impl Shell {
             self.tx_timeout = timeout;
             self.tx_timeout_cursor = timeout;
         }
+    }
+
+    /// Adopts the classes of the programmed TX ranges, which the class list
+    /// shows; the operator's switches are kept.
+    pub fn set_tx_classes(&mut self, programmed: ClassSet) {
+        self.tx_programmed = programmed;
+        let rows = self.tx_class_rows();
+        if usize::from(self.tx_class_cursor) >= rows {
+            self.tx_class_cursor = 0;
+        }
+    }
+
+    /// Restores the classes the operator switched off, as the radio's own
+    /// record kept them.
+    pub fn set_tx_disabled(&mut self, disabled: ClassSet) {
+        self.tx_disabled = disabled;
+    }
+
+    /// Returns the classes the operator switched off.
+    #[must_use]
+    pub const fn tx_disabled(&self) -> ClassSet {
+        self.tx_disabled
+    }
+
+    /// Returns the classes the operator has not switched off, for
+    /// [`radio_tx_policy::TxPolicy::restricted`].
+    #[must_use]
+    pub const fn tx_enabled(&self) -> ClassSet {
+        ClassSet::from_bits(!self.tx_disabled.bits())
+    }
+
+    /// Returns the programmed classes in list order, and how many there are.
+    #[must_use]
+    pub fn tx_class_list(&self) -> ([Option<TxClass>; TX_CLASSES.len()], usize) {
+        let mut list = [None; TX_CLASSES.len()];
+        let mut count = 0;
+        for class in TX_CLASSES {
+            if self.tx_programmed.contains(class) {
+                list[count] = Some(class);
+                count += 1;
+            }
+        }
+        (list, count)
+    }
+
+    fn tx_class_rows(&self) -> usize {
+        self.tx_class_list().1
+    }
+
+    /// Returns the TX class-list cursor row.
+    #[must_use]
+    pub const fn tx_class_cursor(&self) -> u8 {
+        self.tx_class_cursor
     }
 
     /// Returns the settings-menu cursor row.
@@ -802,6 +890,7 @@ impl Shell {
                 usize::from(TX_TIMEOUT_CHOICES),
                 Cursor::TxTimeout,
             ),
+            Screen::TxClassList => self.step_row(direction, self.tx_class_rows(), Cursor::TxClass),
             Screen::Info => Intent::Redraw,
         }
     }
@@ -815,6 +904,7 @@ impl Shell {
         let mut squelch_cursor = usize::from(self.squelch_cursor);
         let mut tx_power_cursor = usize::from(self.tx_power_cursor);
         let mut tx_timeout_cursor = usize::from(self.tx_timeout_cursor);
+        let mut tx_class_cursor = usize::from(self.tx_class_cursor);
         let cursor = match which {
             Cursor::Source => &mut self.source_cursor,
             Cursor::Step => &mut self.step_cursor,
@@ -822,6 +912,7 @@ impl Shell {
             Cursor::Squelch => &mut squelch_cursor,
             Cursor::TxPower => &mut tx_power_cursor,
             Cursor::TxTimeout => &mut tx_timeout_cursor,
+            Cursor::TxClass => &mut tx_class_cursor,
         };
         *cursor = match direction {
             Direction::Up => {
@@ -847,6 +938,9 @@ impl Shell {
         }
         if matches!(which, Cursor::TxTimeout) {
             self.tx_timeout_cursor = u8::try_from(tx_timeout_cursor).unwrap_or(0);
+        }
+        if matches!(which, Cursor::TxClass) {
+            self.tx_class_cursor = u8::try_from(tx_class_cursor).unwrap_or(0);
         }
         Intent::Redraw
     }
@@ -891,6 +985,10 @@ impl Shell {
                         self.screen = Screen::TxTimeoutList;
                         self.tx_timeout_cursor = self.tx_timeout;
                     }
+                    Some(Setting::TxClasses) => {
+                        self.screen = Screen::TxClassList;
+                        self.tx_class_cursor = 0;
+                    }
                     // A menu row with nothing behind it cannot open a screen the
                     // operator would then be stuck on.
                     None => self.screen = Screen::Operating,
@@ -923,6 +1021,18 @@ impl Shell {
                 self.screen = Screen::Operating;
                 if self.tx_timeout_cursor < TX_TIMEOUT_CHOICES {
                     self.tx_timeout = self.tx_timeout_cursor;
+                }
+                Intent::Redraw
+            }
+            // Menu switches the class under the cursor and stays on the list,
+            // so several can be changed at once. The interface applies the
+            // switches to the programmed policy on every pass and keeps them in
+            // the radio's own record, so they outlast a power cycle.
+            Screen::TxClassList => {
+                let (list, _) = self.tx_class_list();
+                if let Some(Some(class)) = list.get(usize::from(self.tx_class_cursor)).copied() {
+                    let off = self.tx_disabled.contains(class);
+                    self.tx_disabled = self.tx_disabled.with(class, !off);
                 }
                 Intent::Redraw
             }
@@ -990,7 +1100,7 @@ impl Shell {
         // it rather than throwing the operator all the way out.
         self.screen = if matches!(
             self.screen,
-            Screen::SquelchList | Screen::TxPowerList | Screen::TxTimeoutList
+            Screen::SquelchList | Screen::TxPowerList | Screen::TxTimeoutList | Screen::TxClassList
         ) {
             Screen::Settings
         } else {
@@ -1032,7 +1142,7 @@ impl Shell {
                 self.tx_timeout_cursor = choice;
                 return self.confirm(context);
             }
-            Screen::Settings => return Intent::Idle,
+            Screen::Settings | Screen::TxClassList => return Intent::Idle,
             _ => {}
         }
         let mut entry = self.entry.unwrap_or(Entry {
@@ -1113,7 +1223,11 @@ impl Shell {
         self.entry = None;
         if matches!(
             self.screen,
-            Screen::Settings | Screen::SquelchList | Screen::TxPowerList | Screen::TxTimeoutList
+            Screen::Settings
+                | Screen::SquelchList
+                | Screen::TxPowerList
+                | Screen::TxTimeoutList
+                | Screen::TxClassList
         ) {
             self.screen = Screen::Operating;
             return Intent::Redraw;
@@ -1563,6 +1677,65 @@ mod tests {
     }
 
     #[test]
+    fn tx_classes_switch_only_programmed_classes_off_and_on() {
+        use radio_domain::TxClass;
+        use radio_tx_policy::ClassSet;
+
+        let mut shell = Shell::new();
+        shell.set_capabilities(Capabilities::K5);
+        shell.select_memory();
+        let programmed = ClassSet::NONE
+            .with(TxClass::Amateur, true)
+            .with(TxClass::LicenceFreePlan, true);
+        shell.set_tx_classes(programmed);
+        let (list, count) = shell.tx_class_list();
+        assert_eq!(count, 2);
+        assert_eq!(
+            &list[..2],
+            &[Some(TxClass::LicenceFreePlan), Some(TxClass::Amateur)],
+            "list order, programmed classes only"
+        );
+        assert_eq!(shell.tx_enabled(), ClassSet::ALL);
+
+        // Settings, down to TX CLASSES, open it.
+        shell.press(Key::Menu, 0, context(16, 0));
+        for at in 1..=3 {
+            shell.press(Key::Down, at, context(16, 0));
+        }
+        shell.press(Key::Menu, 4, context(16, 0));
+        assert_eq!(shell.screen(), Screen::TxClassList);
+
+        // Down to Amateur and switch it off; the list stays open.
+        shell.press(Key::Down, 5, context(16, 0));
+        assert_eq!(shell.press(Key::Menu, 6, context(16, 0)), Intent::Redraw);
+        assert_eq!(shell.screen(), Screen::TxClassList);
+        assert_eq!(
+            shell.tx_disabled(),
+            ClassSet::NONE.with(TxClass::Amateur, true)
+        );
+        assert!(!shell.tx_enabled().contains(TxClass::Amateur));
+        assert!(shell.tx_enabled().contains(TxClass::LicenceFreePlan));
+        // Digits choose nothing here.
+        assert_eq!(shell.press(Key::Digit(1), 7, context(16, 0)), Intent::Idle);
+
+        // The cursor wraps within the two programmed rows.
+        shell.press(Key::Down, 8, context(16, 0));
+        assert_eq!(shell.tx_class_cursor(), 0);
+
+        // Menu again switches it back on; Exit returns to the settings.
+        shell.press(Key::Down, 9, context(16, 0));
+        shell.press(Key::Menu, 10, context(16, 0));
+        assert_eq!(shell.tx_disabled(), ClassSet::NONE);
+        shell.press(Key::Exit, 11, context(16, 0));
+        assert_eq!(shell.screen(), Screen::Settings);
+
+        // A record's switches survive a reprogram that keeps the class.
+        shell.set_tx_disabled(ClassSet::NONE.with(TxClass::Amateur, true));
+        shell.set_tx_classes(ClassSet::NONE.with(TxClass::Amateur, true));
+        assert!(!shell.tx_enabled().contains(TxClass::Amateur));
+    }
+
+    #[test]
     fn tx_timeout_is_a_setting_that_picks_the_timeout_in_force() {
         let mut shell = Shell::new();
         shell.set_capabilities(Capabilities::K5);
@@ -1587,11 +1760,12 @@ mod tests {
         // The digit is the minutes; others do nothing.
         shell.press(Key::Menu, 7, context(16, 0));
         shell.press(Key::Up, 8, context(16, 0));
+        shell.press(Key::Up, 8, context(16, 0));
         shell.press(Key::Menu, 9, context(16, 0));
         assert_eq!(
             shell.screen(),
             Screen::TxTimeoutList,
-            "Up wraps to the last row"
+            "Up wraps to the last row, TX classes, and on to the timeout"
         );
         assert_eq!(shell.press(Key::Digit(6), 10, context(16, 0)), Intent::Idle);
         assert_eq!(shell.press(Key::Digit(0), 10, context(16, 0)), Intent::Idle);
