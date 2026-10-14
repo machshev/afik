@@ -21,8 +21,9 @@ use crate::drivers::{Memory, SerialLink};
 use crate::state::{
     count, hold_bus_idle, Publication, TaskCell, BATTERY_CALIBRATION, INDEX, OPERATOR_PLACE,
     PROGRAMMED, SERIAL_ACTIVITY, SERIAL_ANSWERED, SERIAL_DISCARDED, SERIAL_ERRORS, SERIAL_RECEIVED,
-    TX_CALIBRATION,
+    TX_CALIBRATION, TX_POLICY,
 };
+use radio_tx_policy::TxPolicy;
 
 /// Milliseconds the link must stay quiet after a write before the image is
 /// loaded again.
@@ -178,6 +179,7 @@ pub async fn run<L: SerialLink, M: Memory>(
                         // interface reads it through, so the interface lets go
                         // of it until the new one is loaded.
                         written = true;
+                        TX_POLICY.with_mut(|policy| *policy = TxPolicy::deny_all());
                         generation = generation.wrapping_add(1);
                         PROGRAMMED.signal(Publication {
                             programmed: Programmed::empty(),
@@ -211,16 +213,20 @@ pub async fn run<L: SerialLink, M: Memory>(
 /// A missing, erased, torn, or corrupt image indexes as empty, so the radio
 /// runs on the VFO rather than on half a configuration.
 fn load<M: Memory>(memory: Option<&mut M>) -> (Programmed, bool) {
-    let index = memory
+    let (index, policy) = memory
         .and_then(|memory| {
             let mut header = [0_u8; HEADER_LEN];
             if !memory.read(IMAGE_ORIGIN, &mut header) {
                 return None;
             }
-            Index::build(&header, |offset, buffer| read_image(memory, offset, buffer)).ok()
+            let index =
+                Index::build(&header, |offset, buffer| read_image(memory, offset, buffer)).ok()?;
+            let policy = index.tx_policy(|offset, buffer| read_image(memory, offset, buffer));
+            Some((index, policy))
         })
-        .unwrap_or_else(Index::empty);
+        .unwrap_or_else(|| (Index::empty(), TxPolicy::deny_all()));
     INDEX.with_mut(|stored| *stored = index);
+    TX_POLICY.with_mut(|stored| *stored = policy);
     let programmed = Programmed::of(&index);
     (programmed, !programmed.is_empty())
 }
@@ -235,16 +241,18 @@ pub(crate) fn read_image<M: Memory>(memory: &mut M, offset: usize, buffer: &mut 
 mod tests {
     use super::load;
     use crate::drivers::Memory;
+    use crate::state::TX_POLICY;
     use radio_channel_plan::{
         BankMask, ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord,
     };
     use radio_domain::{
         Bandwidth, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, RadioConfig,
-        SquelchLevel, Tone,
+        SquelchLevel, Tone, TxClass,
     };
     use radio_platform::battery::Calibration;
     use radio_platform::memory_link::{VIEW_BYTES, WRITE_BYTES};
     use radio_storage::radio_image::compile;
+    use radio_tx_policy::{TxPolicy, TxRange};
 
     struct FakeMemory([u8; VIEW_BYTES as usize]);
 
@@ -296,10 +304,18 @@ mod tests {
     /// One test, because the copy it loads into is the image's one static.
     #[test]
     fn an_image_in_memory_loads_and_a_damaged_or_erased_one_does_not() {
+        let pmr = TxRange {
+            class: TxClass::LicenceFreePlan,
+            first_hz: 446_006_250,
+            last_hz: 446_193_750,
+            max_mw: 500,
+            wide_fm: false,
+            raster_hz: 12_500,
+        };
         let mut memory = FakeMemory([0xFF; VIEW_BYTES as usize]);
         let length = compile(
             RadioConfig::conservative(),
-            &[],
+            &[pmr],
             &[],
             &[channel(1), channel(2)],
             &[],
@@ -310,11 +326,21 @@ mod tests {
         let (programmed, loaded) = load(Some(&mut memory));
         assert!(loaded);
         assert_eq!(programmed.channel_count(), 2);
+        assert_eq!(
+            TX_POLICY.with(|policy| *policy),
+            TxPolicy::new(&[pmr]).unwrap(),
+            "the programmed ranges are the TX policy"
+        );
 
         memory.0[length - 1] ^= 0x01;
         let (programmed, loaded) = load(Some(&mut memory));
         assert!(!loaded, "a damaged image is refused");
         assert!(programmed.is_empty(), "and nothing of it is kept");
+        assert_eq!(
+            TX_POLICY.with(|policy| *policy),
+            TxPolicy::deny_all(),
+            "nor its TX ranges"
+        );
 
         let (programmed, loaded) = load(Some(&mut FakeMemory([0xFF; VIEW_BYTES as usize])));
         assert!(

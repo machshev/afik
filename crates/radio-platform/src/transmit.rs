@@ -1,7 +1,7 @@
-//! Experimental PMR446 transmit shared by the K5 and K1 adapters.
+//! Transmit shared by the K5 and K1 adapters.
 //!
 //! The PTT lifecycle is [`crate::tx_control`]; this module supplies what both
-//! targets build around it: the complete PMR446 request, the calibration-derived
+//! targets build around it: the complete request, the calibration-derived
 //! PA bias, and the effect executor over the BK4819/BK4829 sequence
 //! reimplemented from the pinned Armel sources (`EVID-TX056-003`). A target
 //! supplies only its identity and its power-level divider table.
@@ -13,27 +13,27 @@
 //! nominal outputs, not measurements.
 
 use radio_bk4819::{Bk4819, ReceiveSetup, RegisterBus};
-use radio_domain::{ActiveChannel, Bandwidth, Frequency, Modulation, TxClass};
-use radio_tx_policy::{
-    ConfigurationIdentity, RuleRange, TxEnvelope, TxPolicy, TxRange, TxRequest, TxState,
-};
+use radio_domain::{ActiveChannel, Bandwidth, Frequency, Modulation};
+use radio_tx_policy::{ConfigurationIdentity, RuleRange, TxEnvelope, TxPolicy, TxRequest, TxState};
 
 use crate::operator_shell::{TX_POWER_LEVELS, TX_POWER_NOMINAL_MW};
 use crate::tx_control::{Acknowledgement, Action, Controller, Effect, Event};
 
-/// PMR446 ceiling, which also bounds each target's hardware envelope.
-pub const PMR446_MAX_MW: u32 = 500;
+/// Highest nominal power of the levels offered, which bounds each target's
+/// hardware envelope.
+pub const HARDWARE_MAX_MW: u32 = 500;
 /// Most controller effects driven in one pass; a full entry or exit is four or
 /// three, so one pass completes either.
 const MAX_EFFECTS_PER_PASS: usize = 8;
 
-const PMR446_FIRST_HZ: u32 = 446_006_250;
-const PMR446_LAST_HZ: u32 = 446_193_750;
-const PMR446_RASTER_HZ: u32 = 12_500;
-
 /// `frequencyBandTable[BAND6_400MHz]` in both Armel sources, in 10 Hz units.
 const BAND_LOWER: i32 = 40_000_000;
 const BAND_UPPER: i32 = 47_000_000;
+/// The same band in hertz, inclusive; the upper bound is exclusive above.
+const BAND_LOWER_HZ: u32 = 400_000_000;
+const BAND_LAST_HZ: u32 = 469_999_990;
+/// The BK4819/BK4829 frequency word counts 10 Hz.
+const FREQUENCY_RESOLUTION_HZ: u32 = 10;
 
 /// Settling waits from `RADIO_SetTxParameters`, in milliseconds.
 const AFTER_CHIP_TX_MS: u32 = 10;
@@ -46,16 +46,16 @@ pub trait Delay {
     fn delay_ms(&mut self, milliseconds: u32);
 }
 
-/// One target's fixed PMR446 transmit facts.
+/// One target's fixed transmit facts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Pmr446Target {
+pub struct TxTarget {
     /// Opaque identity shared by this target's hardware and calibration envelopes.
     pub target_id: u64,
     /// Low1–Low4 bias divisors from the target's Armel `dividers` table.
     pub dividers: [i32; TX_POWER_LEVELS as usize],
 }
 
-impl Pmr446Target {
+impl TxTarget {
     /// Derives the PA bias for one power level (0 = Low1) from the three low
     /// calibration bytes, as `RADIO_ConfigureSquelchAndOutputPower` and
     /// `FREQUENCY_CalculateOutputPower` do.
@@ -93,16 +93,18 @@ impl Pmr446Target {
             evidence_id,
             ranges: [
                 Some(RuleRange {
-                    first_hz: PMR446_FIRST_HZ,
-                    last_hz: PMR446_LAST_HZ,
-                    max_conducted_mw: PMR446_MAX_MW,
-                    wide_fm: false,
+                    // The calibrated UHF band the PA bias is derived for;
+                    // the programmed ranges decide where in it TX may go.
+                    first_hz: BAND_LOWER_HZ,
+                    last_hz: BAND_LAST_HZ,
+                    max_conducted_mw: HARDWARE_MAX_MW,
+                    wide_fm: true,
                 }),
                 None,
                 None,
                 None,
             ],
-            resolution_hz: PMR446_RASTER_HZ,
+            resolution_hz: FREQUENCY_RESOLUTION_HZ,
         }
     }
 
@@ -110,8 +112,8 @@ impl Pmr446Target {
     ///
     /// The calibration envelope is present
     /// only when a bias for `level` was derived from this unit's calibration.
-    /// A frequency off the PMR446 raster, or a timeout over the policy
-    /// ceiling, is denied by policy, not here.
+    /// A frequency outside the programmed ranges, or a timeout over the
+    /// policy ceiling, is denied by policy, not here.
     #[must_use]
     pub fn request(
         &self,
@@ -145,22 +147,6 @@ impl Pmr446Target {
             calibration: bias.map(|_| self.envelope(2)),
         }
     }
-}
-
-/// PMR446 as one programmed range: the 16 channels, narrow FM, 500 mW.
-pub const PMR446_RANGE: TxRange = TxRange {
-    class: TxClass::LicenceFreePlan,
-    first_hz: PMR446_FIRST_HZ,
-    last_hz: PMR446_LAST_HZ,
-    max_mw: 500,
-    wide_fm: false,
-    raster_hz: 12_500,
-};
-
-/// The fixed experimental policy: licence-free PMR446 only.
-#[must_use]
-pub fn policy() -> TxPolicy {
-    TxPolicy::new(&[PMR446_RANGE]).unwrap_or_default()
 }
 
 /// Executes one controller effect against the radio, muting receive audio
@@ -236,16 +222,16 @@ pub fn run_effects(
 
 #[cfg(test)]
 mod tests {
-    use super::{policy, Pmr446Target};
+    use super::TxTarget;
     use crate::operator_shell::TX_TIMEOUT_CHOICES;
-    use radio_domain::Frequency;
-    use radio_tx_policy::{TxDenied, TxState};
+    use radio_domain::{Frequency, TxClass};
+    use radio_tx_policy::{TxDenied, TxPolicy, TxRange, TxState};
 
-    const K5: Pmr446Target = Pmr446Target {
+    const K5: TxTarget = TxTarget {
         target_id: 5,
         dividers: [25, 19, 13, 10],
     };
-    const K1: Pmr446Target = Pmr446Target {
+    const K1: TxTarget = TxTarget {
         target_id: 1,
         dividers: [25, 19, 13, 9],
     };
@@ -261,6 +247,30 @@ mod tests {
         assert_eq!(K1.bias(row, 446_006_250, 3), Some(42), "95 * 4 / 9");
         assert_eq!(K1.bias(row, 446_006_250, 0), Some(15));
         assert_eq!(K1.bias(row, 446_006_250, 4), None, "no Low5");
+    }
+
+    /// PMR446, part of 70 cm and 2 m, as a studio might program them.
+    fn policy() -> TxPolicy {
+        let range = |class, first_hz, last_hz, max_mw, raster_hz| TxRange {
+            class,
+            first_hz,
+            last_hz,
+            max_mw,
+            wide_fm: false,
+            raster_hz,
+        };
+        TxPolicy::new(&[
+            range(
+                TxClass::LicenceFreePlan,
+                446_006_250,
+                446_193_750,
+                500,
+                12_500,
+            ),
+            range(TxClass::Amateur, 433_000_000, 434_000_000, 5_000, 0),
+            range(TxClass::Amateur, 144_000_000, 146_000_000, 5_000, 0),
+        ])
+        .unwrap()
     }
 
     #[test]
@@ -281,7 +291,7 @@ mod tests {
     }
 
     #[test]
-    fn only_selected_pmr446_raster_frequencies_are_authorised() {
+    fn only_programmed_frequencies_inside_the_calibrated_band_are_authorised() {
         let policy = policy();
         let selected = |hz| K1.request(pmr(hz), TxState::Selected, 1, Some(15), 0, 30_000);
         assert!(policy.authorise(&selected(446_006_250)).is_ok());
@@ -289,11 +299,21 @@ mod tests {
         assert_eq!(
             policy.authorise(&selected(446_012_500)).unwrap_err(),
             TxDenied::Range,
-            "between raster channels"
+            "between PMR446 raster channels"
         );
         assert!(
-            policy.authorise(&selected(145_500_000)).is_err(),
-            "amateur VHF is not PMR446"
+            policy.authorise(&selected(433_412_500)).is_ok(),
+            "70 cm amateur, as the VFO could tune it"
+        );
+        assert_eq!(
+            policy.authorise(&selected(435_000_000)).unwrap_err(),
+            TxDenied::Range,
+            "inside the band but outside every programmed range"
+        );
+        // 2 m amateur is programmed, but this hardware path is UHF only.
+        assert_eq!(
+            policy.authorise(&selected(145_500_000)).unwrap_err(),
+            TxDenied::Hardware
         );
         let scanning = K1.request(pmr(446_006_250), TxState::Scanning, 1, Some(15), 0, 30_000);
         assert_eq!(policy.authorise(&scanning).unwrap_err(), TxDenied::State);

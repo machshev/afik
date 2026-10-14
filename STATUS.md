@@ -30,6 +30,16 @@ programmed TX ranges protect channel and VFO mode alike.
   policy (none programmed permits nothing). Gate: `cargo fmt --all --check`
   clean, workspace clippy `-D warnings` clean, `cargo test --workspace` 690
   passed 0 failed, K5 and K1 release images build.
+- Step 4a: the radio takes its TX policy from the programmed image
+  (`state::TX_POLICY`, set by `load()`, reset to permit-nothing when a host
+  starts writing, taken by the interface with each configuration), so the
+  same frequency check covers channel and VFO mode. The fixed PMR446 policy
+  is gone. The hardware envelope (`TxTarget`, was `Pmr446Target`) is now the
+  calibrated 400–470 MHz band at 10 Hz, 500 mW; 2 m stays refused by
+  hardware until the VHF bias exists. Gate: `cargo fmt --all --check` clean,
+  workspace clippy `-D warnings` clean, `cargo test --workspace` 690 passed
+  0 failed, `tool/build-k5.sh --release` (flash end `0x0000cc50`) and
+  `tool/build-k1.sh --release` pass. Not flashed.
 
 ## Previous work package: TXK5-059
 

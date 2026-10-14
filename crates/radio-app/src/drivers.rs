@@ -7,7 +7,7 @@
 
 use radio_platform::battery::Calibration;
 use radio_platform::operator_display::FRAME_BYTES;
-use radio_platform::transmit::Pmr446Target;
+use radio_platform::transmit::TxTarget;
 
 use radio_platform::memory_link::{PLACE_ORIGIN, WRITE_BYTES};
 
@@ -111,5 +111,5 @@ pub struct Target {
     /// Identity shown on the information screen.
     pub identity: &'static [u8],
     /// PMR446 TX constants for this radio.
-    pub tx: Pmr446Target,
+    pub tx: TxTarget,
 }

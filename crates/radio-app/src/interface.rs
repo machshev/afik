@@ -35,7 +35,7 @@ use radio_platform::ptt::PttFilter;
 use radio_platform::receive_app::{
     Effect as SharedEffect, Effects as SharedEffects, Event as SharedEvent, ReceiveApp,
 };
-use radio_platform::transmit::{self, Delay, Pmr446Target};
+use radio_platform::transmit::{self, Delay, TxTarget};
 use radio_platform::tx_control::{self, Action, Controller as TxController, State as TxPhase};
 use radio_tx_policy::{TxRequest, TxState};
 
@@ -47,7 +47,7 @@ use crate::serial::read_image;
 use crate::state::{
     bus_available, now_ms, peripheral_clock_khz, reset_cause, serial_counters, Publication,
     TaskCell, BATTERY_CALIBRATION, INDEX, OPERATOR_PLACE, PROGRAMMED, SERIAL_ACTIVITY,
-    TX_CALIBRATION,
+    TX_CALIBRATION, TX_POLICY,
 };
 use crate::unified_receive::{shared_channel, translate, ReceiverEffect};
 
@@ -662,7 +662,9 @@ pub async fn run<D, K, B, S, V, M>(
     // and chip TX are switched off before anything else uses the radio.
     let _ = receiver.radio.disable_pa();
     let _ = receiver.radio.disable_transmit();
-    let tx_policy = transmit::policy();
+    // The programmed TX ranges decide every transmission, in channel and VFO
+    // mode alike, and are taken again with each configuration (`ADR-101`).
+    let mut tx_policy = TX_POLICY.with(|policy| *policy);
     let mut tx_calibration: Option<[u8; 3]> = None;
     // Created once the receiver has a channel, so its startup restore has
     // something to restore.
@@ -790,6 +792,7 @@ pub async fn run<D, K, B, S, V, M>(
             }
             activation = activate(&programmed, &shell, selected, memory);
             pending = activation.as_mut().and_then(|(_, setup)| setup.take());
+            tx_policy = TX_POLICY.with(|policy| *policy);
             // A configuration arriving replaces what a scan was walking.
             scan_timer = None;
             redraw = true;
@@ -1284,7 +1287,7 @@ fn tx_request<B: RegisterBus, S: Speaker>(
     changing: bool,
     revision: u32,
     calibration: Option<[u8; 3]>,
-    tx: Pmr446Target,
+    tx: TxTarget,
     level: u8,
     timeout_ms: u32,
 ) -> (TxRequest, Option<u8>) {

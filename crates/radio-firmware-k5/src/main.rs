@@ -37,7 +37,7 @@ use radio_firmware_k5::drivers::{K5Battery, K5Keypad};
 use radio_firmware_k5::eeprom::{self, K5Bus};
 use radio_firmware_k5::memory::K5Memory;
 use radio_platform::operator_display::MemoryState;
-use radio_platform::transmit::{Delay, Pmr446Target};
+use radio_platform::transmit::{Delay, TxTarget};
 
 /// Initial stack pointer, per `EVID-K5-019`: the top of the evidenced RAM less
 /// the sixteen bytes the firmware running on these units leaves alone.
@@ -57,7 +57,7 @@ static MEMORY: TaskCell<Option<K5Memory<K5Bus>>> = TaskCell::new(None);
 /// 19, 13 and 10.
 const K5: Target = Target {
     identity: concat!("AFIK-K5-", env!("CARGO_PKG_VERSION")).as_bytes(),
-    tx: Pmr446Target {
+    tx: TxTarget {
         target_id: 0x4B35_5631,
         dividers: [25, 19, 13, 10],
     },

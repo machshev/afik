@@ -40,7 +40,7 @@ use radio_firmware_k1::py32f071_eeprom::{RetainError, RetainedConfiguration};
 use radio_firmware_k1::py32f071_runtime::{compose, K1RuntimePeripherals};
 use radio_firmware_k1::py32f071_runtime_init::init;
 use radio_platform::memory_link::{IMAGE_REGION_BYTES, WRITE_BYTES};
-use radio_platform::transmit::Pmr446Target;
+use radio_platform::transmit::TxTarget;
 
 const _: [(); 8] = [(); PAGES];
 const K1_VECTOR_TABLE_ORIGIN: u32 = 0x0800_2800;
@@ -63,7 +63,7 @@ const IMAGE_IDENTITY: &[u8] = radio_firmware_k1::protocol::APPLICATION_VERSION;
 /// are 25, 19, 13 and 9.
 const K1: Target = Target {
     identity: IMAGE_IDENTITY,
-    tx: Pmr446Target {
+    tx: TxTarget {
         target_id: 0x4B31_4B31,
         dividers: [25, 19, 13, 9],
     },

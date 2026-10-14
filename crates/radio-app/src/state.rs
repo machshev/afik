@@ -14,6 +14,7 @@ use radio_platform::battery::Calibration;
 use radio_platform::operator_display::{MemoryState, ResetCause, SerialCounters};
 
 use radio_storage::radio_image::Index;
+use radio_tx_policy::TxPolicy;
 
 use crate::configuration::Programmed;
 use crate::operator_state::OperatorState;
@@ -74,6 +75,14 @@ pub(crate) struct Publication {
 /// A few bytes per bank block: enough to answer counting, bank filtering and
 /// scan navigation from RAM, and to find any channel in memory.
 pub(crate) static INDEX: TaskCell<Index> = TaskCell::new(Index::empty());
+
+/// The programmed TX ranges as a policy, written when an image is loaded.
+///
+/// Nothing is permitted until an image says otherwise, and the serial task
+/// resets it to that the moment a host starts writing, so the interface never
+/// transmits under ranges read from a half-written image (`ADR-101`). The
+/// interface takes it with each configuration it adopts.
+pub(crate) static TX_POLICY: TaskCell<TxPolicy> = TaskCell::new(TxPolicy::deny_all());
 
 /// State shared by the tasks of one thread-mode executor.
 ///
