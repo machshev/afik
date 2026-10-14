@@ -1159,3 +1159,17 @@ lowered to the highest level within it (operator request), by nominal figures.
 - Experiment: feed a signal generator (or a known-attenuated carrier) at
   -93 dBm and -73 dBm on 145 and 446 MHz; expect S9 and S9+20 within one S
   unit, and record the error per band.
+
+## RISK-044 — TX outside 70 cm is unmeasured
+
+- **State:** open (2026-10-14, operator request).
+- The hardware envelope is now every calibrated Armel band, 18 MHz to
+  1.3 GHz less the chip's 630–840 MHz gap, as the reference allows with its
+  frequency lock off; the programmed ranges decide where TX goes. The bias
+  comes from the unit's own rows for that band, so an unprogrammed band is
+  refused. Output power, harmonics and spurious emissions are unmeasured on
+  every band but 70 cm, and the K5's PA and filters are designed for 2 m and
+  70 cm only: elsewhere expect little power and strong harmonics.
+- Experiment: on a dummy load through an attenuator, key Low1, Mid and High
+  on 145.500 MHz and record power and the second and third harmonics; then
+  one frequency per other programmed band before any range there goes on air.

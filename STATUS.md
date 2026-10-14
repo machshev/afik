@@ -185,6 +185,16 @@ programmed TX ranges protect channel and VFO mode alike.
   clippy --workspace --all-targets -- -D warnings` clean, `cargo test
   --workspace` 743 passed 0 failed, `tool/build-k5.sh --release` (flash end
   `0x0000e6b4`) and `tool/build-k1.sh --release` pass. Not flashed.
+- 2 m TX and NO TX BAND (operator report: S20 refused with Amateur on): the
+  hardware envelope was 70 cm only. The radio now reads every band's bias
+  rows (K5 `0x1ED0`, K1 `0x100D0`, 112 bytes) and allows Armel's bands from
+  18 MHz to 1.3 GHz less the chip's 630–840 MHz gap, the reference with its
+  frequency lock off; programmed ranges still decide. A hardware or
+  calibration refusal shows `NO TX BAND`, others `TX DISABLED`. Unmeasured
+  off 70 cm (`RISK-044`). Gate: `cargo fmt --all --check` clean, workspace
+  clippy `-D warnings` clean, `cargo test --workspace` 745 passed 0 failed,
+  `tool/build-k5.sh --release` (flash end `0x0000e808`) and
+  `tool/build-k1.sh --release` pass. Not flashed.
 - Next (step 5, hardware): with the 200 ms dwell; F 2 and F 3 on the keypad; put A
   and B in different banks; dual watch on, key a second radio on B and check
   the hold, hang, meter and that PTT goes out on A (`RISK-041`); power-cycle

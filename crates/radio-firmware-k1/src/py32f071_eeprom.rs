@@ -20,6 +20,7 @@ use radio_eeprom::{Eeprom, EepromError, JedecId, Region, RegionError};
 use crate::battery::{Calibration, CALIBRATION_ADDRESS, CALIBRATION_BYTES};
 use crate::eeprom_bus::{EepromPort, SpiEepromBus};
 use radio_app::operator_state::{is_erased, OperatorState, OPERATOR_STATE_BYTES};
+use radio_platform::transmit::{TxCalibration, TX_CALIBRATION_BYTES};
 
 /// First address of the region AFIK claims for its configuration.
 ///
@@ -42,8 +43,8 @@ pub const CONFIGURATION_BYTES: u32 = 4_096;
 /// channel list's erase cycles on a channel change, and would put the channels
 /// at risk in the window a place is being written.
 pub const OPERATOR_STATE_ORIGIN: u32 = 0x10_1000;
-/// Vendor address of the 400–470 MHz low-power TX bias bytes.
-pub const TX_CALIBRATION_ADDRESS: u32 = 0x1_0120;
+/// Vendor address of the TX bias table, every band's rows.
+pub const TX_CALIBRATION_ADDRESS: u32 = 0x1_00D0;
 /// Bytes claimed for the operator's place, one erase sector.
 pub const OPERATOR_STATE_REGION_BYTES: u32 = 4_096;
 
@@ -188,13 +189,13 @@ impl RetainedConfiguration {
         Calibration::from_vendor_block(&block)
     }
 
-    /// Reads the low, mid and high TX bias rows for the 400–470 MHz band.
+    /// Reads every band's low, mid and high TX bias rows.
     ///
     /// Armel K1 reads `0x100D0 + band * 16 + power * 3` from this memory
-    /// (`radio.c`); band 5 starts at `0x10120`, the low row first. Read-only,
-    /// like the battery calibration, and absent when the memory does not answer.
-    pub fn read_tx_calibration(&mut self) -> Option<[u8; 9]> {
-        let mut block = [0_u8; 9];
+    /// (`radio.c:601`). Read-only, like the battery calibration, and absent
+    /// when the memory does not answer.
+    pub fn read_tx_calibration(&mut self) -> Option<TxCalibration> {
+        let mut block = [0_u8; TX_CALIBRATION_BYTES];
         self.eeprom
             .read_vendor(TX_CALIBRATION_ADDRESS, &mut block)
             .ok()?;

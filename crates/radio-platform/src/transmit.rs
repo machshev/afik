@@ -7,9 +7,11 @@
 //! supplies only its identity and its power-level divider table.
 //!
 //! Power is one of the Armel F4HWN "Low1" to "Low4" levels, the unit's own low
-//! calibration bias for the 400–470 MHz band multiplied by 4 and divided by the
+//! calibration bias for the band in use multiplied by 4 and divided by the
 //! target's divider, or Mid or High, the unit's mid and high calibration rows as
-//! the reference uses them. The milliwatt figures in
+//! the reference uses them. The bands are Armel's seven with the wide receive
+//! range both sources build with, 18 MHz to 1.3 GHz less the chip's 630–840 MHz
+//! gap: what the reference transmits on with its frequency lock off. The milliwatt figures in
 //! [`crate::operator_shell::TX_POWER_NOMINAL_MW`] are Armel's documented
 //! nominal outputs, not measurements.
 
@@ -27,12 +29,23 @@ pub const HARDWARE_MAX_MW: u32 = 5_000;
 /// three, so one pass completes either.
 const MAX_EFFECTS_PER_PASS: usize = 8;
 
-/// `frequencyBandTable[BAND6_400MHz]` in both Armel sources, in 10 Hz units.
-const BAND_LOWER: i32 = 40_000_000;
-const BAND_UPPER: i32 = 47_000_000;
-/// The same band in hertz, inclusive; the upper bound is exclusive above.
-const BAND_LOWER_HZ: u32 = 400_000_000;
-const BAND_LAST_HZ: u32 = 469_999_990;
+/// `frequencyBandTable` in both Armel sources with `ENABLE_WIDE_RX`, in 10 Hz
+/// units, lower inclusive and upper exclusive. Band `n`'s calibration rows
+/// start `n * 16` bytes into [`TxCalibration`].
+const BANDS: [(i32, i32); 7] = [
+    (1_800_000, 10_800_000),
+    (10_800_000, 13_700_000),
+    (13_700_000, 17_400_000),
+    (17_400_000, 35_000_000),
+    (35_000_000, 40_000_000),
+    (40_000_000, 47_000_000),
+    (47_000_000, 130_000_000),
+];
+/// `BX4819_band1.upper` and `BX4819_band2.lower`: the chip does not tune
+/// between them, and `TX_freq_check` refuses it.
+const CHIP_GAP: (i32, i32) = (63_000_000, 84_000_000);
+/// Bytes of calibration each band has, its three rows and padding.
+const BAND_CALIBRATION_BYTES: usize = 16;
 /// The BK4819/BK4829 frequency word counts 10 Hz.
 const FREQUENCY_RESOLUTION_HZ: u32 = 10;
 
@@ -40,6 +53,11 @@ const FREQUENCY_RESOLUTION_HZ: u32 = 10;
 const AFTER_CHIP_TX_MS: u32 = 10;
 const AFTER_PA_ENABLE_MS: u32 = 5;
 const AFTER_BIAS_MS: u32 = 10;
+
+/// Converts a band edge in 10 Hz units to hertz.
+const fn band_hz(edge: i32) -> u32 {
+    edge.unsigned_abs() * FREQUENCY_RESOLUTION_HZ
+}
 
 /// Millisecond wait used for the source's settling delays.
 pub trait Delay {
@@ -56,10 +74,23 @@ pub struct TxTarget {
     pub dividers: [i32; LOW_POWER_LEVELS as usize],
 }
 
-/// The 400–470 MHz band's calibration: the low, mid and high power rows, each
-/// three bytes for the band's low, middle and high frequency points, as the
-/// reference reads them from `base + band * 16 + power * 3`.
-pub type TxCalibration = [u8; 9];
+/// Bytes of the TX calibration table, sixteen for each of the seven bands.
+pub const TX_CALIBRATION_BYTES: usize = BANDS.len() * BAND_CALIBRATION_BYTES;
+
+/// Every band's calibration as the reference reads it from
+/// `base + band * 16 + power * 3`: per band the low, mid and high power rows,
+/// each three bytes for the band's low, middle and high frequency points.
+pub type TxCalibration = [u8; TX_CALIBRATION_BYTES];
+
+/// Returns the band holding `frequency` (10 Hz units), if TX may use one.
+fn band(frequency: i32) -> Option<usize> {
+    if (CHIP_GAP.0..CHIP_GAP.1).contains(&frequency) {
+        return None;
+    }
+    BANDS
+        .iter()
+        .position(|(lower, upper)| (*lower..*upper).contains(&frequency))
+}
 
 /// The power level to transmit at: `selected`, lowered to the highest level
 /// whose nominal output a range ceiling of `max_mw` allows.
@@ -90,8 +121,8 @@ impl TxTarget {
     /// they are (`radio.c:456-482`).
     ///
     /// Returns `None` for an unprogrammed (`0x00`/`0xFF`) byte in the row it
-    /// uses, an unknown level, a frequency outside 400–470 MHz, or a zero
-    /// result, so TX is then denied by missing calibration.
+    /// uses, an unknown level, a frequency in no band, or a zero result, so
+    /// TX is then denied by missing calibration.
     #[must_use]
     pub fn bias(&self, calibration: TxCalibration, frequency_hz: u32, level: u8) -> Option<u8> {
         if level >= TX_POWER_LEVELS {
@@ -101,27 +132,27 @@ impl TxTarget {
             None => (0, Some(*self.dividers.get(usize::from(level))?)),
             Some(above) => (usize::from(above) + 1, None),
         };
-        let points: [u8; 3] = calibration.get(row * 3..row * 3 + 3)?.try_into().ok()?;
-        if points.iter().any(|byte| matches!(byte, 0x00 | 0xFF)) {
-            return None;
-        }
         let frequency = i32::try_from(frequency_hz / 10).ok()?;
-        if !(BAND_LOWER..BAND_UPPER).contains(&frequency) {
+        let band = band(frequency)?;
+        let (lower, upper) = BANDS[band];
+        let start = band * BAND_CALIBRATION_BYTES + row * 3;
+        let points: [u8; 3] = calibration.get(start..start + 3)?.try_into().ok()?;
+        if points.iter().any(|byte| matches!(byte, 0x00 | 0xFF)) {
             return None;
         }
         let [low, mid, high] = points.map(|byte| match scale {
             Some(divider) => i32::from(byte) * 4 / divider,
             None => i32::from(byte),
         });
-        let middle = (BAND_LOWER + BAND_UPPER) / 2;
+        let middle = (lower + upper) / 2;
         // The source's two interpolation branches, including its use of the
         // low-to-mid slope added to mid below the middle point.
-        let bias = if frequency <= BAND_LOWER {
+        let bias = if frequency <= lower {
             low
         } else if frequency <= middle {
-            mid + (mid - low) * (frequency - BAND_LOWER) / (middle - BAND_LOWER)
+            mid + (mid - low) * (frequency - lower) / (middle - lower)
         } else {
-            mid + (high - mid) * (frequency - middle) / (BAND_UPPER - middle)
+            mid + (high - mid) * (frequency - middle) / (upper - middle)
         };
         u8::try_from(bias).ok().filter(|bias| *bias != 0)
     }
@@ -130,16 +161,21 @@ impl TxTarget {
         TxEnvelope {
             target_id: self.target_id,
             evidence_id,
+            // Every calibrated band either side of the chip's gap; the
+            // programmed ranges decide where in them TX may go.
             ranges: [
                 Some(RuleRange {
-                    // The calibrated UHF band the PA bias is derived for;
-                    // the programmed ranges decide where in it TX may go.
-                    first_hz: BAND_LOWER_HZ,
-                    last_hz: BAND_LAST_HZ,
+                    first_hz: band_hz(BANDS[0].0),
+                    last_hz: band_hz(CHIP_GAP.0) - FREQUENCY_RESOLUTION_HZ,
                     max_conducted_mw: HARDWARE_MAX_MW,
                     wide_fm: true,
                 }),
-                None,
+                Some(RuleRange {
+                    first_hz: band_hz(CHIP_GAP.1),
+                    last_hz: band_hz(BANDS[BANDS.len() - 1].1) - FREQUENCY_RESOLUTION_HZ,
+                    max_conducted_mw: HARDWARE_MAX_MW,
+                    wide_fm: true,
+                }),
                 None,
                 None,
             ],
@@ -281,7 +317,22 @@ mod tests {
 
     /// A flat low row of 0x5F and mid and high rows of the kind a K5 backup
     /// holds (`EVID-K5-020` shows `32 32 32 64 64 64 8c 8c 8c` for one band).
-    const CALIBRATION: [u8; 9] = [0x5F, 0x5F, 0x5F, 0x64, 0x64, 0x64, 0x8C, 0x8C, 0x8C];
+    const ROWS: [u8; 9] = [0x5F, 0x5F, 0x5F, 0x64, 0x64, 0x64, 0x8C, 0x8C, 0x8C];
+
+    /// The table with `rows` in the 2 m (band 2) and 70 cm (band 5) bands
+    /// and every other band unprogrammed.
+    const fn table(rows: [u8; 9]) -> super::TxCalibration {
+        let mut table = [0xFF; super::TX_CALIBRATION_BYTES];
+        let mut index = 0;
+        while index < 9 {
+            table[2 * 16 + index] = rows[index];
+            table[5 * 16 + index] = rows[index];
+            index += 1;
+        }
+        table
+    }
+
+    const CALIBRATION: super::TxCalibration = table(ROWS);
 
     #[test]
     fn each_target_scales_by_its_own_divider_table() {
@@ -292,6 +343,57 @@ mod tests {
     }
 
     #[test]
+    fn each_band_uses_its_own_rows_and_edges() {
+        // Band 2 (137–174 MHz) has its own rows, interpolated over its edges.
+        let mut rows = CALIBRATION;
+        rows[2 * 16..2 * 16 + 9].copy_from_slice(&[40, 40, 40, 80, 100, 120, 1, 2, 3]);
+        assert_eq!(K5.bias(rows, 137_000_000, 4), Some(80), "the lower edge");
+        // The reference adds the low-to-mid slope to mid below the middle.
+        assert_eq!(K5.bias(rows, 155_500_000, 4), Some(120), "the middle");
+        assert_eq!(
+            K5.bias(rows, 173_999_990, 4),
+            Some(119),
+            "just below the top"
+        );
+        assert_eq!(
+            K5.bias(rows, 145_500_000, 5),
+            Some(2),
+            "High uses its own row"
+        );
+        assert_eq!(K5.bias(rows, 446_006_250, 4), Some(0x64), "70 cm unchanged");
+        // An unprogrammed band, the chip gap and beyond 1.3 GHz have none.
+        assert_eq!(K5.bias(rows, 220_000_000, 4), None, "band 3 unprogrammed");
+        assert_eq!(K5.bias(rows, 700_000_000, 4), None, "chip gap");
+        assert_eq!(K5.bias(rows, 1_300_000_000, 4), None);
+    }
+
+    #[test]
+    fn the_hardware_reaches_18_mhz_to_1_3_ghz_less_the_chip_gap() {
+        let wide = |first_hz, last_hz| TxRange {
+            class: TxClass::Experimental,
+            first_hz,
+            last_hz,
+            max_mw: 5_000,
+            wide_fm: true,
+            raster_hz: 0,
+        };
+        let policy = TxPolicy::new(&[wide(1_000_000, 1_400_000_000)]).unwrap();
+        let at = |hz| {
+            policy
+                .authorise(&K5.request(pmr(hz), TxState::Selected, 1, Some(15), 0, 30_000))
+                .map(|_| ())
+        };
+        assert!(at(18_000_000).is_ok());
+        assert!(at(629_999_990).is_ok());
+        assert_eq!(at(630_000_000).unwrap_err(), TxDenied::Hardware);
+        assert_eq!(at(839_999_990).unwrap_err(), TxDenied::Hardware);
+        assert!(at(840_000_000).is_ok());
+        assert!(at(1_299_999_990).is_ok());
+        assert_eq!(at(1_300_000_000).unwrap_err(), TxDenied::Hardware);
+        assert_eq!(at(17_999_990).unwrap_err(), TxDenied::Hardware);
+    }
+
+    #[test]
     fn mid_and_high_use_their_own_rows_unscaled() {
         for target in [K5, K1] {
             assert_eq!(target.bias(CALIBRATION, 446_006_250, 4), Some(0x64), "Mid");
@@ -299,8 +401,9 @@ mod tests {
             assert_eq!(target.bias(CALIBRATION, 446_006_250, 6), None, "no level 7");
         }
         // An unprogrammed high row refuses High alone.
-        let mut no_high = CALIBRATION;
+        let mut no_high = ROWS;
         no_high[7] = 0xFF;
+        let no_high = table(no_high);
         assert_eq!(K5.bias(no_high, 446_006_250, 5), None);
         assert_eq!(K5.bias(no_high, 446_006_250, 4), Some(0x64));
         assert_eq!(K5.bias(no_high, 446_006_250, 0), Some(15));
@@ -396,10 +499,9 @@ mod tests {
             TxDenied::Range,
             "inside the band but outside every programmed range"
         );
-        // 2 m amateur is programmed, but this hardware path is UHF only.
-        assert_eq!(
-            policy.authorise(&selected(145_500_000)).unwrap_err(),
-            TxDenied::Hardware
+        assert!(
+            policy.authorise(&selected(145_500_000)).is_ok(),
+            "2 m amateur"
         );
         let scanning = K1.request(pmr(446_006_250), TxState::Scanning, 1, Some(15), 0, 30_000);
         assert_eq!(policy.authorise(&scanning).unwrap_err(), TxDenied::State);

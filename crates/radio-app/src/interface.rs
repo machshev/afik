@@ -24,7 +24,7 @@ use radio_platform::configuration_change::{ConfigurationAcknowledgement, Configu
 use radio_platform::dual_watch::{DualWatch, Listening as Watching};
 use radio_platform::operator_display::{
     render_channel_list, render_info_screen, render_operating_screen, render_selector_list,
-    ListRow, MemoryState, OperatingView, SelectorRow, SlotChannel, SlotPlace, SlotView,
+    ListRow, MemoryState, OperatingView, SelectorRow, SlotChannel, SlotPlace, SlotView, TxRefusal,
     FRAME_BYTES, LIST_ROWS,
 };
 use radio_platform::operator_shell::{
@@ -38,7 +38,7 @@ use radio_platform::receive_app::{
 };
 use radio_platform::transmit::{self, Delay, TxCalibration, TxTarget};
 use radio_platform::tx_control::{self, Action, Controller as TxController, State as TxPhase};
-use radio_tx_policy::{TxRequest, TxState};
+use radio_tx_policy::{TxDenied, TxRequest, TxState};
 
 use crate::configuration::Programmed;
 use crate::drivers::{BatterySense, Display, Keypad, Memory, Speaker, Target};
@@ -809,7 +809,7 @@ pub async fn run<D, K, B, S, V, M>(
     let mut transmitted = false;
     // Whether PTT is held after the policy refused the press, so the screen
     // says why nothing went out.
-    let mut tx_disabled = false;
+    let mut tx_refused: Option<TxRefusal> = None;
     let mut quiet_retune = false;
     let mut power_save = PowerSave::new(now_ms());
     let mut next_sample = Instant::now();
@@ -976,9 +976,9 @@ pub async fn run<D, K, B, S, V, M>(
         if let Some(controller) = tx.as_mut() {
             let tx_policy = tx_policy_now;
             let handled = controller.handle(tx_now, event, &tx_policy, &tx_request.0);
-            let refused = tx_refusal(tx_disabled, event, handled);
-            if refused != tx_disabled {
-                tx_disabled = refused;
+            let refused = tx_refusal(tx_refused, event, handled);
+            if refused != tx_refused {
+                tx_refused = refused;
                 redraw = true;
             }
             let bias = tx_request.1;
@@ -1532,7 +1532,7 @@ pub async fn run<D, K, B, S, V, M>(
                 memory_state,
                 target.identity,
                 memory,
-                tx_disabled,
+                tx_refused,
             );
             if !display.frame(&frame).await {
                 return;
@@ -1579,16 +1579,21 @@ fn adopt_squelch(
     });
 }
 
-/// Whether the screen shows TX disabled after this PTT event: from a press
-/// the policy refused until PTT is released.
+/// What the screen says about TX after this PTT event: why the policy
+/// refused a press, until PTT is released.
 fn tx_refusal(
-    shown: bool,
+    shown: Option<TxRefusal>,
     event: tx_control::Event,
     handled: Result<(), tx_control::Error>,
-) -> bool {
+) -> Option<TxRefusal> {
     match (event, handled) {
-        (tx_control::Event::Pressed, Err(tx_control::Error::Policy(_))) => true,
-        (tx_control::Event::Released, _) => false,
+        (tx_control::Event::Pressed, Err(tx_control::Error::Policy(denied))) => {
+            Some(match denied {
+                TxDenied::Hardware | TxDenied::Calibration => TxRefusal::NoBand,
+                _ => TxRefusal::Disabled,
+            })
+        }
+        (tx_control::Event::Released, _) => None,
         _ => shown,
     }
 }
@@ -1647,7 +1652,7 @@ fn render<B: RegisterBus, S: Speaker, M: Memory>(
     memory_state: MemoryState,
     identity: &[u8],
     memory: &'static TaskCell<Option<M>>,
-    tx_disabled: bool,
+    tx_refused: Option<TxRefusal>,
 ) {
     // Only an empty memory has no controller: the VFO always has one.
     let visible = controller.map_or(0, BankedReceiveController::visible_channels);
@@ -1698,7 +1703,7 @@ fn render<B: RegisterBus, S: Speaker, M: Memory>(
                     function: shell.function_pending(),
                     entry: shell.entry(),
                     entry_vfo: matches!(shell.mode(), Mode::Vfo),
-                    tx_disabled,
+                    tx_refused,
                 },
             );
         }
@@ -2178,18 +2183,35 @@ mod tests {
         use radio_platform::tx_control::{Error, Event};
         use radio_tx_policy::TxDenied;
 
+        use radio_platform::operator_display::TxRefusal;
+
+        let disabled = Some(TxRefusal::Disabled);
         let refused = Err(Error::Policy(TxDenied::Range));
-        assert!(tx_refusal(false, Event::Pressed, refused));
-        assert!(tx_refusal(true, Event::Tick, Ok(())), "kept while held");
-        assert!(!tx_refusal(true, Event::Released, Ok(())));
-        assert!(
-            !tx_refusal(false, Event::Pressed, Ok(())),
+        assert_eq!(tx_refusal(None, Event::Pressed, refused), disabled);
+        assert_eq!(
+            tx_refusal(disabled, Event::Tick, Ok(())),
+            disabled,
+            "kept while held"
+        );
+        assert_eq!(tx_refusal(disabled, Event::Released, Ok(())), None);
+        assert_eq!(
+            tx_refusal(None, Event::Pressed, Ok(())),
+            None,
             "a permitted press"
         );
-        assert!(
-            !tx_refusal(false, Event::Pressed, Err(Error::StaleRequest)),
+        assert_eq!(
+            tx_refusal(None, Event::Pressed, Err(Error::StaleRequest)),
+            None,
             "only the policy disables TX"
         );
+        // A band the radio cannot transmit on says so rather than blaming the
+        // programmed ranges.
+        for denied in [TxDenied::Hardware, TxDenied::Calibration] {
+            assert_eq!(
+                tx_refusal(None, Event::Pressed, Err(Error::Policy(denied))),
+                Some(TxRefusal::NoBand)
+            );
+        }
     }
 
     fn context() -> radio_platform::operator_shell::Context {

@@ -316,8 +316,28 @@ pub struct OperatingView<'a> {
     pub entry: Option<u32>,
     /// Whether the selected slot is on the VFO, so an entry is kilohertz.
     pub entry_vfo: bool,
-    /// Whether PTT is held after the TX policy refused the press.
-    pub tx_disabled: bool,
+    /// Why the TX policy refused the press PTT is still held after, if it did.
+    pub tx_refused: Option<TxRefusal>,
+}
+
+/// Why a PTT press did not transmit, as the status row says it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TxRefusal {
+    /// The radio has no transmitter or calibration for this frequency.
+    NoBand,
+    /// The programmed ranges, a class switch, or the radio's state refused.
+    Disabled,
+}
+
+impl TxRefusal {
+    /// The status row text.
+    #[must_use]
+    pub const fn label(self) -> &'static [u8] {
+        match self {
+            Self::NoBand => b"NO TX BAND",
+            Self::Disabled => b"TX DISABLED",
+        }
+    }
 }
 
 /// One selector-list row, carrying the exact text the row shows.
@@ -569,8 +589,8 @@ pub fn render_operating_screen(frame: &mut [u8; FRAME_BYTES], view: &OperatingVi
     // radio will act on before it acts.
     if !view.receiver_ok {
         draw_text(frame, 0, 0, b"RX FAULT");
-    } else if view.tx_disabled {
-        draw_text(frame, 0, 0, b"TX DISABLED");
+    } else if let Some(refused) = view.tx_refused {
+        draw_text(frame, 0, 0, refused.label());
     } else if let Some(entry) = view.entry {
         draw_text(frame, 0, 0, &entry_label(entry, view.entry_vfo));
     } else {
@@ -1591,7 +1611,7 @@ mod operating_screen_tests {
             function: false,
             entry: None,
             entry_vfo: false,
-            tx_disabled: false,
+            tx_refused: None,
         }
     }
 
@@ -1655,7 +1675,8 @@ mod operating_screen_tests {
         fixed.extend_from_slice(b"SCAN");
         fixed.extend_from_slice(b"MON");
         fixed.extend_from_slice(b"RX FAULT");
-        fixed.extend_from_slice(b"TX DISABLED");
+        fixed.extend_from_slice(super::TxRefusal::Disabled.label());
+        fixed.extend_from_slice(super::TxRefusal::NoBand.label());
         fixed.extend_from_slice(b"NO CHANNELS");
         fixed.extend_from_slice(b"DUAL WATCH ON");
         fixed.extend_from_slice(b"DUAL WATCH OFF");
@@ -1820,15 +1841,21 @@ mod operating_screen_tests {
     /// A PTT press the TX policy refused says so in place of whatever the
     /// status row held, typed digits included.
     #[test]
-    fn a_refused_transmission_says_tx_disabled() {
+    fn a_refused_transmission_says_why() {
+        use super::TxRefusal;
         let base = render(&view());
         let disabled = render(&OperatingView {
-            tx_disabled: true,
+            tx_refused: Some(TxRefusal::Disabled),
+            ..view()
+        });
+        let no_band = render(&OperatingView {
+            tx_refused: Some(TxRefusal::NoBand),
             ..view()
         });
         assert_ne!(base, disabled);
+        assert_ne!(disabled, no_band);
         let typing_refused = render(&OperatingView {
-            tx_disabled: true,
+            tx_refused: Some(TxRefusal::Disabled),
             entry: Some(7),
             ..view()
         });
