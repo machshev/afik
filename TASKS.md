@@ -3058,3 +3058,19 @@
   5. Studio range editor with US, EU and UK presets. Done.
   6. Flash and check TX allowed and refused by range in channel and VFO mode,
      and with a class switched off.
+
+## BANKSET-063 — Radio-wide squelch and bank-shared channel settings
+
+- **Status:** active (2026-10-14), operator request.
+- **Objective:** squelch is radio-wide only; a channel is in one bank; a
+  channel bank can share modulation, bandwidth, step, power, TX offset and RX
+  and TX tones with its channels, each switched on or off by a bank bitfield,
+  and channels carry the rest.
+- **Steps (commit after each):**
+  1. Memory channels tune at the radio-wide squelch. Done.
+  2. Channels and plans carry no squelch level; old files load. Done.
+  3. One bank per channel. Done.
+  4. Bank shared settings in domain, project file, programmer check, studio
+     and presets. Done.
+  5. Firmware transmits at the channel's power, the handset TX POWER a
+     temporary override.

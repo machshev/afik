@@ -87,6 +87,27 @@ programmed TX ranges protect channel and VFO mode alike.
   refused. On the K1, repeat in VFO mode. Measure Mid/High on a dummy load
   (`RISK-040`). Then the K1's NOR erase plan; then CTCSS/DCS.
 
+**`BANKSET-063` is active alongside** (2026-10-14, operator request): squelch
+is radio-wide, a channel is in one bank, and a channel bank shares settings
+with its channels.
+
+- Steps 1–4 done: the controller tunes every memory channel at the radio-wide
+  SQL (it used each channel's stored level outside the PMR446 path); channels
+  and plans lose their squelch level (stored bytes reserved, old projects and
+  images load); `BankMask` becomes one optional `BankId` (an older multi-bank
+  channel loads into its lowest bank); `ChannelBank` carries `BankSettings`, a
+  `SharedSettings` bitfield over modulation, bandwidth, step, power, TX offset,
+  RX and TX tone plus the values (bank object 22 → 39 bytes, the old reserved
+  byte is the bitfield). The studio edits a switch per setting and channel
+  rows show shared settings as `from bank`; the programmer refuses a channel
+  disagreeing with its bank; preset lists share all but the frequency.
+- Gate after step 4: `cargo fmt --all --check` clean, workspace clippy
+  `-D warnings` clean, `cargo test --workspace` 709 passed 0 failed,
+  `tool/build-k5.sh --release` and `tool/build-k1.sh --release` pass.
+- Next (step 5): TX power from the channel or bank, the handset TX POWER a
+  temporary override. Blocked on mapping the three stored `PowerLevel`s to the
+  handset's six levels.
+
 ## Previous work package: TXK5-059
 
 **`TXK5-059` is paused** (2026-10-14) for `TXRANGE-062`; `TXK1-060` was started alongside.
