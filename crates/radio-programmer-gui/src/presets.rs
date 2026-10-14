@@ -153,6 +153,22 @@ const TWO_METRE_REPEATERS: PresetPlan = PresetPlan {
     power: PowerLevel::High,
 };
 
+/// UK 70 cm repeaters: outputs RU240 at 433.000 through RU270 at 433.375 MHz,
+/// inputs 1.6 MHz above.
+const SEVENTY_CENTIMETRE_REPEATERS: PresetPlan = PresetPlan {
+    name: "70CM REPEATERS",
+    designator: "RU",
+    first_number: 240,
+    base_hz: 433_000_000,
+    spacing_hz: 12_500,
+    channels: 31,
+    calling_index: None,
+    offset_hz: 1_600_000,
+    modulation: Modulation::Fm,
+    bandwidth: Bandwidth::Narrow,
+    power: PowerLevel::High,
+};
+
 /// The VHF civil airband at 25 kHz: 118.000 to 136.975, AM, receive only.
 ///
 /// No TX range covers it, so the radio refuses to transmit here. The 8.33 kHz
@@ -169,6 +185,34 @@ const AIRBAND: PresetPlan = PresetPlan {
     modulation: Modulation::Am,
     bandwidth: Bandwidth::Narrow,
     power: PowerLevel::Low1,
+};
+
+/// A receive-only AM airband plan on the 25 kHz grid.
+const fn air(name: &'static str, first_number: u16, base_hz: u32, channels: u16) -> PresetPlan {
+    PresetPlan {
+        modulation: Modulation::Am,
+        ..listen(name, "MIL", first_number, base_hz, 25_000, channels)
+    }
+}
+
+/// The military UHF airband, 225.000 to 399.975 MHz at 25 kHz: 7000 AM
+/// channels as four plans numbered `MIL1` through `MIL7000`.
+const MILITARY_AIRBAND: &[PresetPlan] = &[
+    air("MILITARY UHF 1", 1, 225_000_000, 2048),
+    air("MILITARY UHF 2", 2049, 276_200_000, 2048),
+    air("MILITARY UHF 3", 4097, 327_400_000, 2048),
+    air("MILITARY UHF 4", 6145, 378_600_000, 856),
+];
+
+/// The civil and military distress frequencies, both AM.
+const AIR_GUARD: PresetList = PresetList {
+    name: "AIR GUARD",
+    channels: &[("CIVIL GUARD", 121_500_000), ("MIL GUARD", 243_000_000)],
+    receive_offset_hz: 0,
+    modulation: Modulation::Am,
+    bandwidth: Bandwidth::Narrow,
+    power: PowerLevel::Low1,
+    step_hz: 25_000,
 };
 
 /// Ship transmit frequency of an ITU-R M.1084 marine VHF channel number.
@@ -349,6 +393,75 @@ const SRD_458: PresetPlan = listen("SRD 458", "T", 1, 458_500_000, 12_500, 37);
 /// The 868.000 to 868.600 MHz short range device band at 25 kHz.
 const SRD_868: PresetPlan = listen("SRD 868", "SRD", 1, 868_000_000, 25_000, 25);
 
+/// APRS: the IARU Region 1 frequency and the ISS digipeater.
+const APRS: PresetList = PresetList {
+    name: "APRS",
+    channels: &[("APRS", 144_800_000), ("ISS APRS", 145_825_000)],
+    receive_offset_hz: 0,
+    modulation: Modulation::Fm,
+    // 1200 baud AFSK packet runs on 25 kHz channels.
+    bandwidth: Bandwidth::Wide,
+    power: PowerLevel::High,
+    step_hz: 25_000,
+};
+
+/// UK 27/81 CB: forty FM channels at 10 kHz from 27.60125 MHz.
+const CB_UK: PresetPlan = listen("CB UK 27/81", "UK ", 1, 27_601_250, 10_000, 40);
+
+/// CEPT CB: forty channels from 26.965 MHz. The numbering skips the
+/// frequencies older radio control used and puts 23 above 24 and 25, so it is
+/// listed rather than generated.
+const CB_EU: PresetList = PresetList {
+    name: "CB EU",
+    channels: &[
+        ("EU 1", 26_965_000),
+        ("EU 2", 26_975_000),
+        ("EU 3", 26_985_000),
+        ("EU 4", 27_005_000),
+        ("EU 5", 27_015_000),
+        ("EU 6", 27_025_000),
+        ("EU 7", 27_035_000),
+        ("EU 8", 27_055_000),
+        ("EU 9", 27_065_000),
+        ("EU 10", 27_075_000),
+        ("EU 11", 27_085_000),
+        ("EU 12", 27_105_000),
+        ("EU 13", 27_115_000),
+        ("EU 14", 27_125_000),
+        ("EU 15", 27_135_000),
+        ("EU 16", 27_155_000),
+        ("EU 17", 27_165_000),
+        ("EU 18", 27_175_000),
+        ("EU 19", 27_185_000),
+        ("EU 20", 27_205_000),
+        ("EU 21", 27_215_000),
+        ("EU 22", 27_225_000),
+        ("EU 23", 27_255_000),
+        ("EU 24", 27_235_000),
+        ("EU 25", 27_245_000),
+        ("EU 26", 27_265_000),
+        ("EU 27", 27_275_000),
+        ("EU 28", 27_285_000),
+        ("EU 29", 27_295_000),
+        ("EU 30", 27_305_000),
+        ("EU 31", 27_315_000),
+        ("EU 32", 27_325_000),
+        ("EU 33", 27_335_000),
+        ("EU 34", 27_345_000),
+        ("EU 35", 27_355_000),
+        ("EU 36", 27_365_000),
+        ("EU 37", 27_375_000),
+        ("EU 38", 27_385_000),
+        ("EU 39", 27_395_000),
+        ("EU 40", 27_405_000),
+    ],
+    receive_offset_hz: 0,
+    modulation: Modulation::Fm,
+    bandwidth: Bandwidth::Narrow,
+    power: PowerLevel::Low1,
+    step_hz: 10_000,
+};
+
 /// CTCSS 67.0 Hz, which the ISS repeater and SO-50 want on their uplinks.
 const CTCSS_67: Option<u16> = Some(670);
 
@@ -401,13 +514,14 @@ pub const PRESETS: &[Preset] = &[
     },
     Preset {
         name: "UK simplex and repeaters",
-        detail: "The simplex set plus the 2 m repeater sub-band, which one plan \
-                 holds by offsetting every input 600 kHz below its output.",
+        detail: "The simplex set plus the 2 m and 70 cm repeater sub-bands, each \
+                 one plan: 2 m inputs 600 kHz below, 70 cm inputs 1.6 MHz above.",
         plans: &[
             PMR446,
             TWO_METRE_SIMPLEX,
             SEVENTY_CENTIMETRE_SIMPLEX,
             TWO_METRE_REPEATERS,
+            SEVENTY_CENTIMETRE_REPEATERS,
         ],
         lists: &[],
         splits: &[],
@@ -426,6 +540,14 @@ pub const PRESETS: &[Preset] = &[
                  object. No TX range covers them, so the radio never transmits.",
         plans: &[AIRBAND],
         lists: &[],
+        splits: &[],
+    },
+    Preset {
+        name: "Military airband receive",
+        detail: "225.000-399.975 MHz AM at 25 kHz, 7000 channels in four \
+                 stored plans, plus civil (121.5) and military (243.0) guard.",
+        plans: MILITARY_AIRBAND,
+        lists: &[AIR_GUARD],
         splits: &[],
     },
     Preset {
@@ -476,6 +598,22 @@ pub const PRESETS: &[Preset] = &[
         plans: &[],
         lists: &[],
         splits: &[SATELLITES],
+    },
+    Preset {
+        name: "APRS",
+        detail: "144.800 MHz, the Region 1 APRS frequency, and the ISS \
+                 digipeater on 145.825 MHz.",
+        plans: &[],
+        lists: &[APRS],
+        splits: &[],
+    },
+    Preset {
+        name: "CB 27 MHz receive",
+        detail: "UK 27/81 (27.60125-27.99125 MHz) and CEPT (26.965-27.405 MHz) \
+                 CB, forty FM channels each. The radio cannot transmit at 27 MHz.",
+        plans: &[CB_UK],
+        lists: &[CB_EU],
+        splits: &[],
     },
 ];
 
@@ -933,6 +1071,62 @@ mod tests {
         assert_eq!(first.receive().as_hz(), 145_600_000);
         assert_eq!(first.transmit().as_hz(), 145_000_000);
         assert_eq!(plan.channel_count(), 16);
+    }
+
+    #[test]
+    fn the_seventy_centimetre_repeaters_listen_low_and_transmit_high() {
+        let project = project_of("UK simplex and repeaters");
+        let ValidatedBank::Generated(plan) = project.banks[4].validate(4).expect("plan") else {
+            panic!("the 70 cm repeater row is a generated plan");
+        };
+        let first = plan.channel_record(0).expect("channel");
+        assert_eq!(first.name().as_str(), "RU240");
+        assert_eq!(first.receive().as_hz(), 433_000_000);
+        assert_eq!(first.transmit().as_hz(), 434_600_000);
+        let last = plan.channel_record(30).expect("channel");
+        assert_eq!(last.name().as_str(), "RU270");
+        assert_eq!(last.receive().as_hz(), 433_375_000);
+    }
+
+    #[test]
+    fn the_cb_preset_lands_on_both_channel_plans() {
+        let project = project_of("CB 27 MHz receive");
+        assert_eq!(plan_channel(&project, 0, 0), ("UK 1".into(), 27_601_250));
+        assert_eq!(plan_channel(&project, 0, 39), ("UK 40".into(), 27_991_250));
+        let eu = &project.banks[1].channels;
+        assert_eq!(eu.len(), 40);
+        let at = |name: &str| {
+            eu.iter()
+                .find(|c| c.name == name)
+                .unwrap()
+                .receive_mhz
+                .clone()
+        };
+        assert_eq!(at("EU 1"), "26.965000");
+        assert_eq!(at("EU 4"), "27.005000");
+        assert_eq!(at("EU 19"), "27.185000");
+        assert_eq!(at("EU 23"), "27.255000");
+        assert_eq!(at("EU 24"), "27.235000");
+        assert_eq!(at("EU 40"), "27.405000");
+    }
+
+    #[test]
+    fn the_military_airband_covers_225_to_400_mhz_in_am() {
+        let project = project_of("Military airband receive");
+        assert_eq!(plan_channel(&project, 0, 0), ("MIL1".into(), 225_000_000));
+        assert_eq!(plan_channel(&project, 0, 2047).1 + 25_000, 276_200_000);
+        assert_eq!(plan_channel(&project, 1, 2047).1 + 25_000, 327_400_000);
+        assert_eq!(plan_channel(&project, 2, 2047).1 + 25_000, 378_600_000);
+        assert_eq!(
+            plan_channel(&project, 3, 855),
+            ("MIL7000".into(), 399_975_000)
+        );
+        let guard = &project.banks[4];
+        assert_eq!(guard.channels[1].receive_mhz, "243.000000");
+        assert!(project
+            .banks
+            .iter()
+            .all(|bank| bank.modulation == radio_domain::Modulation::Am));
     }
 
     #[test]

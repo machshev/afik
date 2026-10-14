@@ -141,6 +141,14 @@ programmed TX ranges protect channel and VFO mode alike.
   is not tried on hardware. Gate: `cargo fmt --all --check` clean,
   workspace clippy `-D warnings` clean, `cargo test --workspace` 738 passed
   0 failed.
+- Studio (operator request): the UK repeater set adds the 70 cm sub-band
+  (RU240–RU270, 433.000–433.375 MHz, inputs +1.6 MHz), and three sets are
+  new: APRS (144.800, ISS 145.825), CB receive (UK 27/81 plan, CEPT 40 as a
+  list because its numbering is irregular) and military airband receive
+  (225–399.975 MHz AM, four plans, plus 121.5 and 243.0 guard). 27 MHz and
+  225–400 MHz reception is not tried on hardware. Gate: `cargo fmt --all
+  --check` clean, workspace clippy `-D warnings` clean, `cargo test
+  --workspace` 748 passed 0 failed.
 - Step 5 (hardware, partial): on `7.0.22` with PMR446 channels in A and B,
   the other slot was never heard and scan never stopped at the 90 ms dwell;
   programmed at 200 ms both work (`EVID-K5-036`). `RadioConfig::conservative()`
