@@ -698,8 +698,8 @@ impl Radio {
 
     const fn build_hint(self) -> &'static str {
         match self {
-            Self::K5V1 => "tool/build-k5.sh --release && tool/package-k5-image.sh",
-            Self::K1 => "tool/build-k1.sh --release && tool/package-k1-image.sh",
+            Self::K5V1 => "tool/build-k5.sh --release",
+            Self::K1 => "tool/build-k1.sh --release",
         }
     }
 }

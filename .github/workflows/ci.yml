@@ -28,15 +28,9 @@ jobs:
       - uses: DeterminateSystems/determinate-nix-action@v3.21.0
       - name: Evaluate locked environment
         run: nix flake check path:. --no-build
-      - name: Build and verify K5 image
+      - name: Build, verify and package K5 image
+        run: nix develop path:. -c tool/build-k5.sh --release
+      - name: Build, verify and package K1 image
         run: |
-          nix develop path:. -c tool/build-k5.sh --release
-          nix develop path:. -c tool/verify-k5-image.sh
-      - name: Package K5 image
-        run: nix develop path:. -c tool/package-k5-image.sh
-      - name: Build K1 image
-        run: nix develop path:. -c tool/build-k1.sh --release
-      - name: Package and verify K1 image
-        run: |
-          nix develop path:. -c tool/package-k1-image.sh
+          nix develop path:. -c tool/build-k1.sh --release
           nix develop path:. -c tool/test-k1-image.sh

@@ -183,7 +183,7 @@ image, and an image built for the other radio is refused before the prompt.
 The write is confirmed at a prompt naming the device, bootloader and CRC-32.
 
 ```sh
-tool/build-k5.sh --release && tool/package-k5-image.sh
+tool/build-k5.sh --release
 nix develop path:. -c cargo run --package radio-flasher-cli --bin afik-flasher -- flash-afik
 ```
 
@@ -204,7 +204,7 @@ all pages without interruption.
 
 The AFIK image for this target is
 `radio-firmware-k5`, originally the `K5DRV-048` application, built with
-`tool/build-k5.sh --release` and packaged with `tool/package-k5-image.sh`. It
+`tool/build-k5.sh --release`, which also packages it. It
 configures the clock, drives UART1 on the programming connector, sends
 `AFIK-K5-1.0 booted` in plain text once at power-on, and then answers the
 read-only hello. It drives no display, keypad, memory or radio.

@@ -136,12 +136,13 @@ cargo test --workspace
 ```sh
 nix develop
 tool/build-k5.sh --release
-tool/verify-k5-image.sh
-tool/package-k5-image.sh
 tool/build-k1.sh --release
-tool/package-k1-image.sh
 tool/test-k1-image.sh
 ```
+
+A release build also verifies the ELF and packages the raw image
+(`afik-k5-v1.raw`, `radio-firmware-k1.raw`) beside it, which is what
+`afik-flasher flash-afik` picks up by default.
 
 The target builds use the locked Nix compiler and standard-library sources.
 The K5 package is exactly the 60 KiB V1 application region.

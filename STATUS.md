@@ -54,6 +54,11 @@
   radio's packaged image from `target/thumbv6m-none-eabi/release/`. Gate: fmt
   clean, workspace clippy `-D warnings` clean, `cargo test --workspace` 669
   passed 0 failed.
+- `tool/build-{k5,k1}.sh --release` now also verify and package the raw image
+  (`--force`), so one command produces what `flash-afik` writes. Checked:
+  K5 packaged `afik-k5-v1.raw` (0xF000 bytes), K1 packaged
+  `radio-firmware-k1.raw` (109376 bytes), `tool/test-k1-image.sh` passes,
+  `cargo test -p radio-flasher-cli` 21 passed 0 failed.
 - Studio fixes (operator request): typing into a channel or bank row lost
   focus after one character (row headers were keyed by their changing label);
   a one-channel plan crashed the storage summary (`bytes_saved` underflow); a
