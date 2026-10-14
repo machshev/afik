@@ -129,10 +129,17 @@
   second): AFIK keyed on a single low PTT sample, and the cable shares the PTT
   jack. A new `radio-platform::ptt::PttFilter` follows the reference firmware:
   PTT has to stay pressed for 30 ms before it keys, and for 6 s after each
-  serial request PTT is ignored and any TX is released. K5 uses the filter; K1
-  still samples PTT raw. Gate: fmt clean, clippy `-D warnings` clean,
+  serial request PTT is ignored and any TX is released. K5 uses the filter. Gate: fmt clean, clippy `-D warnings` clean,
   `cargo test --workspace` 704 passed 0 failed, `tool/build-k5.sh --release`
   and `tool/verify-k5-image.sh` pass (flash end `0x0000eaf0`). Not yet flashed.
+- `7.0.8`: K1 uses the same filter, so both targets now share one PTT path.
+  `PttFilter::sample` returns the controller's press/release/tick, which
+  replaces each target's own edge detection. K1's serial task raises
+  `SERIAL_ACTIVITY` for every request it handles. Gate: fmt clean, clippy
+  `-D warnings` clean, `cargo test --workspace` 704 passed 0 failed, K5 build
+  and verify pass (flash end `0x0000eac0`), `tool/build-k1.sh --release`,
+  `tool/package-k1-image.sh --force` and `tool/test-k1-image.sh` pass. Not yet
+  flashed.
 - Next: flash `7.0.5` with `afik-flasher flash-afik` and check a 1 min over
   times out; flash K1 and check its speech level; then CTCSS/DCS with an
   end-of-transmission tail tone to remove the key-off squelch burst.

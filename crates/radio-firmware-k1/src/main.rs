@@ -72,6 +72,7 @@ use radio_firmware_k1::shell::{
 };
 use radio_firmware_k1::unified_receive::{shared_channel, translate, K1Effect};
 use radio_platform::configuration_change::{ConfigurationAcknowledgement, ConfigurationCandidate};
+use radio_platform::ptt::PttFilter;
 use radio_platform::receive_app::{
     Effect as SharedEffect, Effects as SharedEffects, Event as SharedEvent, ReceiveApp,
 };
@@ -193,6 +194,10 @@ static CONTROL_REQUEST: Signal<CriticalSectionRawMutex, ControlRequest> = Signal
 
 /// The answer to the request on [`CONTROL_REQUEST`].
 static CONTROL_ANSWER: Signal<CriticalSectionRawMutex, ControlAnswer> = Signal::new();
+
+/// Raised for every host request, so the interface task can ignore PTT while
+/// the cable that shares its jack is in use.
+static SERIAL_ACTIVITY: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 /// Milliseconds a host waits for the interface task to answer one request.
 ///
@@ -1048,7 +1053,11 @@ async fn serial_task(mut uart: Uart<'static, Async>, memory: EepromPins) {
                     );
                 }
             };
-            let length = match service.push_control(byte, &mut response, &mut observe) {
+            let pushed = service.push_control(byte, &mut response, &mut observe);
+            if !matches!(pushed, Push::Idle) {
+                SERIAL_ACTIVITY.signal(());
+            }
+            let length = match pushed {
                 Push::Idle => continue,
                 Push::Response(length) => length,
                 // The receiver belongs to the interface task, so the answer has
@@ -1407,7 +1416,7 @@ async fn ui_task(
     // Created once the receiver has a channel, so its startup restore has
     // something to restore.
     let mut tx: Option<TxController> = None;
-    let mut ptt_down = keypad.ptt.is_low();
+    let mut ptt = PttFilter::new(keypad.ptt.is_low(), Instant::now().as_millis());
     let mut tx_tuned_hz = 0_u32;
     let mut tx_revision = 1_u32;
     // Present only while the selected complete setup is one of the common
@@ -1541,16 +1550,14 @@ async fn ui_task(
             shell.tx_timeout_ms(),
         );
         let tx_now = Instant::now().as_millis();
-        let ptt = keypad.ptt.is_low();
+        if SERIAL_ACTIVITY.try_take().is_some() {
+            ptt.serial_activity(tx_now);
+        }
+        let event = ptt.sample(tx_now, keypad.ptt.is_low());
         if tx.is_none() && receiver.started && !receiver.faulted {
-            tx = TxController::new(1, ptt, tx_now).ok();
+            tx = TxController::new(1, ptt.pressed(), tx_now).ok();
         }
         if let Some(controller) = tx.as_mut() {
-            let event = match (ptt_down, ptt) {
-                (false, true) => tx_control::Event::Pressed,
-                (true, false) => tx_control::Event::Released,
-                _ => tx_control::Event::Tick,
-            };
             let _ = controller.handle(tx_now, event, &tx_policy, &tx_request.0);
             let bias = tx_request.1;
             transmit::run_effects(controller, &tx_policy, &tx_request.0, tx_now, |effect| {
@@ -1562,12 +1569,10 @@ async fn ui_task(
                 controller.state(),
                 TxPhase::Ready | TxPhase::ReleaseRequired
             ) {
-                ptt_down = ptt;
                 Timer::after(Duration::from_millis(LOOP_MILLISECONDS)).await;
                 continue;
             }
         }
-        ptt_down = ptt;
 
         // A host request reaches the same controller a key press does, and its
         // update is applied by the same call. The operator is not locked out

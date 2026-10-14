@@ -39,7 +39,7 @@ use radio_platform::display::show_boot_sequence;
 use radio_platform::operator_shell::{Capabilities, Context, Shell};
 use radio_platform::ptt::PttFilter;
 use radio_platform::receive_app::{Event, ReceiveApp};
-use radio_platform::tx_control::{self, Controller, State};
+use radio_platform::tx_control::{Controller, State};
 
 /// Initial stack pointer, per `EVID-K5-019`: the top of the evidenced RAM less
 /// the sixteen bytes the firmware running on these units leaves alone.
@@ -208,9 +208,8 @@ fn main() -> ! {
 
     let tx_policy = transmit::policy();
     let mut now_ms = 0_u64;
-    let mut ptt_filter = PttFilter::new(keypad.ptt_pressed(), now_ms);
-    let mut ptt_down = ptt_filter.pressed();
-    let mut tx = Controller::new(1, ptt_down, now_ms).expect("instance is non-zero");
+    let mut ptt = PttFilter::new(keypad.ptt_pressed(), now_ms);
+    let mut tx = Controller::new(1, ptt.pressed(), now_ms).expect("instance is non-zero");
     let mut selected = app.view().channel;
     let mut revision = 1_u32;
     loop {
@@ -227,13 +226,7 @@ fn main() -> ! {
                     transmit::level_bias(calibration, channel.frequency().as_hz(), level)
                 });
         let request = transmit::request(view, revision, bias, level, shell.tx_timeout_ms());
-        let ptt = ptt_filter.sample(now_ms, keypad.ptt_pressed());
-        let ptt_event = match (ptt_down, ptt) {
-            (false, true) => tx_control::Event::Pressed,
-            (true, false) => tx_control::Event::Released,
-            _ => tx_control::Event::Tick,
-        };
-        ptt_down = ptt;
+        let ptt_event = ptt.sample(now_ms, keypad.ptt_pressed());
         let _ = tx.handle(now_ms, ptt_event, &tx_policy, &request);
         let receive = Pmr446Channel::new(view.channel)
             .map(|channel| channel.setup_with_squelch(view.audio, app.squelch()));
@@ -259,7 +252,7 @@ fn main() -> ! {
             let Some(request) = service.push(byte) else {
                 continue;
             };
-            ptt_filter.serial_activity(now_ms);
+            ptt.serial_activity(now_ms);
             let length = match request {
                 NormalRequest::ReadEeprom { offset, length } => {
                     // PA10/PA11 are the keypad's rows between scans, and the
