@@ -34,12 +34,13 @@ use radio_firmware_k1::display::{
     MemoryState, ResetCause, COLUMN_OFFSET, FRAME_BYTES, PAGES, SETUP_COMMANDS, WIDTH,
 };
 use radio_firmware_k1::keypad::{decode, KeypadScan};
+use radio_firmware_k1::memory_view::{fill_place, locate, ViewSpan};
 use radio_firmware_k1::py32f071_battery::BatterySense;
 use radio_firmware_k1::py32f071_bk4819::Bk4819Pins;
 use radio_firmware_k1::py32f071_eeprom::{RetainError, RetainedConfiguration};
 use radio_firmware_k1::py32f071_runtime::{compose, K1RuntimePeripherals};
 use radio_firmware_k1::py32f071_runtime_init::init;
-use radio_platform::memory_link::{IMAGE_REGION_BYTES, WRITE_BYTES};
+use radio_platform::memory_link::WRITE_BYTES;
 use radio_platform::transmit::TxCalibration;
 use radio_platform::transmit::TxTarget;
 
@@ -428,17 +429,30 @@ fn open_memory(memory: EepromPins) -> (Option<Memory>, MemoryState) {
 
 /// The K1's external SPI memory behind the shared memory view.
 ///
-/// The image part of the view is the AFIK configuration region, so a K1
-/// programmed by an earlier image keeps its channels. The place keeps its own
-/// sector and slot rotation. Host writes are refused until the K1 has an erase
-/// plan for block writes.
+/// The view is laid out as the K5's (`memory_view`): the image part is the AFIK
+/// configuration region, so a K1 programmed by an earlier image keeps its
+/// channels; the place part is the latest record from its own sector and slot
+/// rotation; the calibration part reads the vendor block, so a host backup
+/// holds this unit's calibration. Host writes are refused until the K1 has an
+/// erase plan for block writes.
 struct Memory(RetainedConfiguration);
 
 impl radio_app::drivers::Memory for Memory {
     fn read(&mut self, address: u16, output: &mut [u8]) -> bool {
-        let end = usize::from(address) + output.len();
-        end <= usize::from(IMAGE_REGION_BYTES)
-            && self.0.read_configuration(u32::from(address), output)
+        match locate(address, output.len()) {
+            Some(ViewSpan::Image(offset)) => self.0.read_configuration(offset, output),
+            Some(ViewSpan::Unstored) => {
+                output.fill(0xFF);
+                true
+            }
+            Some(ViewSpan::Place(offset)) => {
+                let record = self.0.read_operator_state().map(|state| state.encode());
+                fill_place(offset, record, output);
+                true
+            }
+            Some(ViewSpan::Vendor(address)) => self.0.read_vendor(address, output),
+            None => false,
+        }
     }
 
     fn write(&mut self, _address: u16, _data: &[u8; WRITE_BYTES]) -> bool {

@@ -33,6 +33,8 @@ use radio_platform::transmit::{TxCalibration, TX_CALIBRATION_BYTES};
 pub const CONFIGURATION_ORIGIN: u32 = 0x10_0000;
 /// Bytes claimed for the configuration, one erase sector.
 pub const CONFIGURATION_BYTES: u32 = 4_096;
+// The memory view serves exactly this much of the image from the region.
+const _: () = assert!(CONFIGURATION_BYTES == crate::memory_view::STORED_IMAGE_BYTES as u32);
 
 /// First address of the region holding where the operator left the radio.
 ///
@@ -200,6 +202,14 @@ impl RetainedConfiguration {
             .read_vendor(TX_CALIBRATION_ADDRESS, &mut block)
             .ok()?;
         Some(block)
+    }
+
+    /// Reads the vendor's data at an absolute `address`, for a host backup.
+    ///
+    /// Read-only like the calibration reads above: it takes no region, so it
+    /// cannot become a write.
+    pub fn read_vendor(&mut self, address: u32, output: &mut [u8]) -> bool {
+        self.eeprom.read_vendor(address, output).is_ok()
     }
 
     /// Reads `output.len()` bytes at `offset` in the configuration region.
