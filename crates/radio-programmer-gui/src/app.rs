@@ -128,11 +128,7 @@ impl StudioApp {
 
     fn connect_simulator(&mut self) {
         match DeviceSession::connect_simulator() {
-            Ok(session) => {
-                self.status = format!("Connected to {}.", session.description());
-                self.session = Some(session);
-                self.refresh_listing();
-            }
+            Ok(session) => self.install_session(session),
             Err(error) => self.status = error.to_string(),
         }
     }
@@ -146,19 +142,25 @@ impl StudioApp {
             }
         };
         match DeviceSession::connect_serial(&path, baud) {
-            Ok(session) => {
-                self.status = format!("Connected to {}.", session.description());
-                self.session = Some(session);
-                self.refresh_listing();
-            }
+            Ok(session) => self.install_session(session),
             Err(error) => self.status = error.to_string(),
         }
+    }
+
+    /// Replaces the connected device, forgetting what the previous one reported.
+    fn install_session(&mut self, session: DeviceSession) {
+        self.status = format!("Connected to {}.", session.description());
+        self.session = Some(session);
+        self.last_receipt = None;
+        self.listing.clear();
+        self.refresh_listing();
     }
 
     fn disconnect(&mut self) {
         if let Some(session) = self.session.take() {
             self.status = format!("Disconnected from {}.", session.description());
             self.listing.clear();
+            self.last_receipt = None;
         }
     }
 
@@ -1480,6 +1482,14 @@ mod tests {
         app.read_project();
         assert_eq!(app.project.channels.len(), 1);
         assert_eq!(app.project.banks.len(), 1);
+
+        // Another device has not had this write, so its receipt is not shown.
+        app.connect_simulator();
+        assert!(app.last_receipt.is_none());
+        app.write_project();
+        app.disconnect();
+        assert!(app.last_receipt.is_none());
+        assert!(app.listing.is_empty());
     }
 
     #[test]
