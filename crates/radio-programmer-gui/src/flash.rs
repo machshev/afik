@@ -25,9 +25,9 @@ use std::{
 };
 
 use radio_flasher::{
-    crc32, detect_bootloader, flash_afik_application, identify_radio, k1, k1::K1RecoveryImage,
-    ApplicationImage, BootloaderFamily, EepromBackup, FirmwareVersion, FlashPrerequisites,
-    FlashPurpose, RadioPresence, DEFAULT_NEGOTIATION_VERSION, FLASH_PAGE_COUNT,
+    afik_image_version, crc32, detect_bootloader, flash_afik_application, identify_radio, k1,
+    k1::K1RecoveryImage, ApplicationImage, BootloaderFamily, EepromBackup, FirmwareVersion,
+    FlashPrerequisites, FlashPurpose, RadioPresence, DEFAULT_NEGOTIATION_VERSION, FLASH_PAGE_COUNT,
 };
 use radio_programmer_serial::LinuxSerialTransport;
 
@@ -307,6 +307,15 @@ type FileStamp = Option<(SystemTime, u64)>;
 /// One file's size and CRC-32, or why it could not be read.
 type Digest = Result<(usize, u32), FlashRequestError>;
 
+/// What one read of a file found.
+#[derive(Debug)]
+struct Facts {
+    stamp: FileStamp,
+    digest: Digest,
+    /// AFIK version the file carries, when it is an AFIK image.
+    version: Option<String>,
+}
+
 /// Digests of the selected artefacts, recomputed only when a file changes.
 ///
 /// The editor shows each digest on every frame, and reading up to 256 KiB per
@@ -314,33 +323,47 @@ type Digest = Result<(usize, u32), FlashRequestError>;
 /// A file is re-read when its size or modification time changes.
 #[derive(Debug, Default)]
 pub struct DigestCache {
-    entries: HashMap<PathBuf, (FileStamp, Digest)>,
+    entries: HashMap<PathBuf, Facts>,
     reads: usize,
 }
 
 impl DigestCache {
     /// Returns the digest of one file, reading it only if it has changed.
     pub fn digest(&mut self, path: &Path) -> Digest {
+        self.facts(path).digest.clone()
+    }
+
+    /// Returns the AFIK version an image carries, such as `AFIK-K5-7.0.22`.
+    pub fn version(&mut self, path: &Path) -> Option<String> {
+        self.facts(path).version.clone()
+    }
+
+    fn facts(&mut self, path: &Path) -> &Facts {
         let stamp = fs::metadata(path).ok().map(|metadata| {
             (
                 metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
                 metadata.len(),
             )
         });
-        if let Some((cached, outcome)) = self.entries.get(path) {
-            if *cached == stamp {
-                return outcome.clone();
+        let fresh = self
+            .entries
+            .get(path)
+            .is_some_and(|facts| facts.stamp == stamp);
+        if !fresh {
+            // A path typed one character at a time leaves a trail of prefixes.
+            if self.entries.len() >= MAX_CACHED_DIGESTS {
+                self.entries.clear();
             }
+            let bytes = read_bounded(path, MAX_FIRMWARE_BYTES, "artefact");
+            self.reads += 1;
+            let facts = Facts {
+                stamp,
+                version: bytes.as_deref().ok().and_then(afik_image_version),
+                digest: bytes.map(|bytes| (bytes.len(), crc32(&bytes))),
+            };
+            self.entries.insert(path.to_path_buf(), facts);
         }
-        // A path typed one character at a time leaves a trail of prefixes.
-        if self.entries.len() >= MAX_CACHED_DIGESTS {
-            self.entries.clear();
-        }
-        let outcome = artefact_digest(path);
-        self.reads += 1;
-        self.entries
-            .insert(path.to_path_buf(), (stamp, outcome.clone()));
-        outcome
+        &self.entries[path]
     }
 
     /// Returns how many times a file has actually been read.
@@ -998,6 +1021,13 @@ mod tests {
         assert_eq!(cache.reads(), 3);
         std::fs::write(&path, [3_u8; 4]).unwrap();
         assert_eq!(cache.digest(&path).unwrap().0, 4);
+        assert_eq!(cache.version(&path), None);
+
+        // An image's AFIK version is read along with its digest.
+        std::fs::write(&path, b"\0\0AFIK-K5-7.0.22\0").unwrap();
+        assert_eq!(cache.version(&path).as_deref(), Some("AFIK-K5-7.0.22"));
+        assert_eq!(cache.digest(&path).unwrap().0, 17);
+        assert_eq!(cache.reads(), 5);
         std::fs::remove_file(&path).unwrap();
     }
 

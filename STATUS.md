@@ -105,6 +105,13 @@ programmed TX ranges protect channel and VFO mode alike.
   passes (flash end `0x0000e140`). Flashed to the K5 (bootloader `2.00.06`,
   CRC-32 `cb3f3c70`, 240/240 pages acknowledged, not read back); not yet
   observed on the radio.
+- Studio (operator request): the Flash tab's image section shows the AFIK
+  version the image carries (`radio_flasher::afik_image_version`) beside the
+  version the radio runs, kept while the radio sits in flashing mode; when
+  they match it says there is no need to flash rather than asking for
+  flashing mode (the write stays allowed). Gate: `cargo fmt --all --check`
+  clean, workspace clippy `-D warnings` clean, `cargo test --workspace` 721
+  passed 0 failed.
 - Next (step 5, hardware): flash `7.0.22`; F 2 and F 3 on the keypad; put A
   and B in different banks; dual watch on, key a second radio on B and check
   the hold, hang, meter and that PTT goes out on A (`RISK-041`); power-cycle

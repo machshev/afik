@@ -1066,6 +1066,33 @@ pub fn serves_eeprom_reads(version: &str) -> bool {
     .is_ok()
 }
 
+/// Returns the AFIK version an application image will report in its hello,
+/// such as `AFIK-K5-7.0.22`, read from the identity string it carries.
+///
+/// The identity is not terminated in the image, so the release is the
+/// `major.minor.patch` run after the prefix; an identity without one, as in
+/// older or diagnostic images, is skipped. `None` when the image carries none.
+pub fn afik_image_version(raw: &[u8]) -> Option<String> {
+    [AFIK_K5_IDENTITY_PREFIX, AFIK_K1_IDENTITY_PREFIX]
+        .iter()
+        .find_map(|prefix| {
+            raw.windows(prefix.len())
+                .enumerate()
+                .filter(|(_, window)| *window == prefix.as_bytes())
+                .find_map(|(start, _)| {
+                    let rest = &raw[start + prefix.len()..];
+                    let length = rest
+                        .iter()
+                        .take_while(|byte| byte.is_ascii_digit() || **byte == b'.')
+                        .count();
+                    let text = core::str::from_utf8(&rest[..length]).ok()?;
+                    let text = text.trim_end_matches('.');
+                    release(text)?;
+                    Some(format!("{prefix}{text}"))
+                })
+        })
+}
+
 /// Reads one beacon and classifies only the pinned K1 or qualified K5 protocol.
 pub fn detect_bootloader<T: Read>(transport: &mut T) -> Result<BootloaderFamily, FlashError> {
     let (packet, response_crc) = receive_packet_with_response_crc(transport)?;
@@ -1730,13 +1757,14 @@ mod tests {
     };
 
     use super::{
-        apply_eeprom_restore, backup_eeprom, detect_bootloader, flash_afik_application,
-        flash_application, identify_radio, observe_bootloader, prepare_eeprom_restore,
-        probe_bootloader_v2, probe_clock_control, probe_clock_registers, probe_clock_snapshot,
-        probe_keypad_matrix, probe_normal_firmware, require_eeprom_service, serves_eeprom_reads,
-        BeaconProtocol, BootloaderFamily, EepromRestorePrerequisites, FirmwareVersion, FlashError,
-        FlashPrerequisites, FlashPurpose, NormalFirmwareInfo, RadioPresence, EEPROM_BLOCK_BYTES,
-        QUALIFIED_TARGET_CONFIRMATION, RECOVERY_REHEARSED_CONFIRMATION,
+        afik_image_version, apply_eeprom_restore, backup_eeprom, detect_bootloader,
+        flash_afik_application, flash_application, identify_radio, observe_bootloader,
+        prepare_eeprom_restore, probe_bootloader_v2, probe_clock_control, probe_clock_registers,
+        probe_clock_snapshot, probe_keypad_matrix, probe_normal_firmware, require_eeprom_service,
+        serves_eeprom_reads, BeaconProtocol, BootloaderFamily, EepromRestorePrerequisites,
+        FirmwareVersion, FlashError, FlashPrerequisites, FlashPurpose, NormalFirmwareInfo,
+        RadioPresence, EEPROM_BLOCK_BYTES, QUALIFIED_TARGET_CONFIRMATION,
+        RECOVERY_REHEARSED_CONFIRMATION,
     };
 
     const TEST_TRANSACTION_ID: u32 = 0xA55A_1234;
@@ -2271,6 +2299,20 @@ mod tests {
         ));
         assert!(serves_eeprom_reads("k5_2.01.23"));
         assert!(!serves_eeprom_reads("AFIK-K1-7.0.6"));
+    }
+
+    #[test]
+    fn an_image_reports_the_afik_version_it_carries() {
+        let mut raw = vec![0_u8; 64];
+        raw.extend_from_slice(b"AFIK-K5-7.0.22");
+        raw.extend_from_slice(&[0xC0, 0x46]);
+        assert_eq!(afik_image_version(&raw).as_deref(), Some("AFIK-K5-7.0.22"));
+        // Identities run into the next string; one without a release is skipped.
+        let k1 = b"AFIK-K1-RXDIAG..AFIK-K1-7.0.5staged".to_vec();
+        assert_eq!(afik_image_version(&k1).as_deref(), Some("AFIK-K1-7.0.5"));
+        assert_eq!(afik_image_version(b"AFIK-K5-2.3T"), None);
+        assert_eq!(afik_image_version(b"k5_2.01.26"), None);
+        assert_eq!(afik_image_version(b"AFIK-K5-"), None);
     }
 
     #[test]

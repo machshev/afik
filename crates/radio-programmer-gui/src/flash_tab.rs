@@ -119,6 +119,9 @@ pub struct FlashTab {
     device_chosen: bool,
     last_scan: Option<Instant>,
     finding: Option<(PathBuf, Finding)>,
+    /// The firmware version a device last answered with, kept while the radio
+    /// sits in flashing mode, where only the bootloader answers.
+    last_firmware: Option<(PathBuf, String)>,
     identify: Option<(IdentifyJob, PathBuf)>,
     last_identify: Option<Instant>,
     family_override: Option<RadioFamily>,
@@ -142,6 +145,7 @@ impl Default for FlashTab {
             device_chosen: false,
             last_scan: None,
             finding: None,
+            last_firmware: None,
             identify: None,
             last_identify: None,
             family_override: None,
@@ -272,6 +276,9 @@ impl FlashTab {
             // reports, so it is read rather than typed.
             self.advanced.request.bootloader_version.clone_from(version);
         }
+        if let Finding::Firmware { version, .. } = &finding {
+            self.last_firmware = Some((self.device.clone(), version.clone()));
+        }
         self.finding = Some((self.device.clone(), finding));
     }
 
@@ -300,6 +307,26 @@ impl FlashTab {
             self.family()
                 .map(|family| paths::packaged_image(family.image_name()))
         })
+    }
+
+    /// Returns the AFIK version the image to write carries, if it can be read.
+    fn image_version(&mut self) -> Option<String> {
+        let image = self.image().filter(|image| image.is_file())?;
+        self.digests.version(&image)
+    }
+
+    /// Returns the firmware version the selected radio runs, or last ran
+    /// before it was put into flashing mode.
+    pub fn radio_version(&self) -> Option<&str> {
+        self.last_firmware
+            .as_ref()
+            .filter(|(device, _)| *device == self.device)
+            .map(|(_, version)| version.as_str())
+    }
+
+    /// Reports whether the radio already runs the image's version.
+    fn up_to_date(&self, image_version: Option<&str>) -> bool {
+        image_version.is_some() && image_version == self.radio_version()
     }
 
     /// Returns where the backup step stands for the current family.
@@ -455,6 +482,10 @@ impl FlashTab {
         match outcome {
             Ok(summary) => {
                 log::info!("{what} on {}: {summary}", self.device.display());
+                if kind == JobKind::Flash {
+                    // The radio restarts into another version.
+                    self.last_firmware = None;
+                }
                 self.status = match kind {
                     JobKind::Flash => format!(
                         "Done: {summary}. The radio restarts into the new firmware; \
@@ -566,7 +597,8 @@ impl FlashTab {
             }
         });
 
-        let (colour, text) = self.radio_line();
+        let image_version = self.image_version();
+        let (colour, text) = self.radio_line(image_version.as_deref());
         ui.horizontal_wrapped(|ui| {
             ui.colored_label(colour, text);
             let checkable = !self.busy() && !self.device.as_os_str().is_empty();
@@ -604,7 +636,7 @@ impl FlashTab {
     }
 
     /// Returns the colour and sentence describing the selected radio.
-    fn radio_line(&self) -> (Color32, String) {
+    fn radio_line(&self, image_version: Option<&str>) -> (Color32, String) {
         if self.device.as_os_str().is_empty() {
             return (
                 WARNING_COLOUR,
@@ -623,6 +655,13 @@ impl FlashTab {
             Some(finding @ Finding::Bootloader { .. }) => (
                 READY_COLOUR,
                 format!("{}: ready to flash.", capitalise(&Self::describe(finding))),
+            ),
+            Some(finding @ Finding::Firmware { .. }) if self.up_to_date(image_version) => (
+                READY_COLOUR,
+                format!(
+                    "{}, the image's version: there is no need to flash it.",
+                    capitalise(&Self::describe(finding))
+                ),
             ),
             Some(finding @ Finding::Firmware { family, .. }) => {
                 let choose = if family.is_none() {
@@ -761,6 +800,7 @@ impl FlashTab {
         if let Some(image) = image {
             if image.is_file() {
                 digest_label(ui, &mut self.digests, &image);
+                self.versions(ui, &image);
             } else {
                 let hint = match (family, self.image_override.is_some()) {
                     (Some(family), false) => format!(
@@ -771,6 +811,31 @@ impl FlashTab {
                 };
                 ui.colored_label(WARNING_COLOUR, hint);
             }
+        }
+    }
+
+    /// Shows the image's AFIK version beside the radio's firmware version.
+    fn versions(&mut self, ui: &mut egui::Ui, image: &Path) {
+        let image_version = self.digests.version(image);
+        ui.label(format!(
+            "    Image version: {}",
+            image_version
+                .as_deref()
+                .unwrap_or("none found (not an AFIK image?)")
+        ));
+        let radio = match (self.radio_version(), self.ready_to_flash()) {
+            (Some(version), false) => format!("    Radio runs: {version}"),
+            (Some(version), true) => format!("    Radio ran: {version} before flashing mode"),
+            (None, _) => {
+                "    Radio runs: not seen yet; switch it on normally to read it".to_owned()
+            }
+        };
+        ui.label(radio);
+        if self.up_to_date(image_version.as_deref()) {
+            ui.colored_label(
+                READY_COLOUR,
+                "The radio already runs this version: there is no need to flash it.",
+            );
         }
     }
 
@@ -981,6 +1046,35 @@ mod tests {
         tab.select_device(PathBuf::from("/dev/ttyOTHER"), true);
         assert!(tab.finding().is_none());
         assert!(!tab.can_flash());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_radio_version_is_kept_through_flashing_mode_and_compared() {
+        let (mut tab, root) = tab("versions");
+        std::fs::create_dir_all(&root).unwrap();
+        let image = root.join("image.raw");
+        std::fs::write(&image, b"\0AFIK-K5-7.0.22\0").unwrap();
+        tab.image_override = Some(image);
+        assert_eq!(tab.image_version().as_deref(), Some("AFIK-K5-7.0.22"));
+        assert_eq!(tab.radio_version(), None);
+
+        tab.record_finding(firmware("AFIK-K5-7.0.21"));
+        let image_version = tab.image_version();
+        assert!(!tab.up_to_date(image_version.as_deref()));
+        tab.record_finding(firmware("AFIK-K5-7.0.22"));
+        assert!(tab.up_to_date(image_version.as_deref()));
+        assert!(tab
+            .radio_line(image_version.as_deref())
+            .1
+            .contains("no need"));
+
+        // In flashing mode only the bootloader answers: the version stays.
+        tab.record_finding(bootloader(RadioFamily::K5));
+        assert_eq!(tab.radio_version(), Some("AFIK-K5-7.0.22"));
+        assert!(tab.can_flash(), "the same version may still be written");
+        tab.select_device(PathBuf::from("/dev/ttyOTHER"), true);
+        assert_eq!(tab.radio_version(), None);
         std::fs::remove_dir_all(&root).unwrap();
     }
 
