@@ -15,6 +15,7 @@ pub mod model;
 pub mod paths;
 pub mod presets;
 pub mod projects;
+pub mod satellites;
 pub mod session;
 
 /// Command-line help for the native editor binary.

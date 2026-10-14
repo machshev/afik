@@ -1744,3 +1744,18 @@ meaning.
   hang is chosen, not taken from a reference. The host's `dual_watch` option
   and the controller's same-bank partner are not used by the firmware.
 - The place record grows to 32 bytes (version 3); versions 1 and 2 still read.
+
+## ADR-103 — The studio syncs satellites from SatNOGS on request
+
+- **Date:** 2026-10-14
+- **Status:** accepted, operator request.
+- The studio's only network access: Sync on the satellite set fetches the
+  SatNOGS DB transmitter and satellite lists over HTTPS (`ureq`, rustls) on a
+  worker, and caches both raw responses in `$XDG_CACHE_HOME/afik/satnogs`.
+  Start-up and adding the set read the cache only; nothing fetches on its own.
+- A response that does not parse leaves the cache untouched. With no cache
+  the built-in satellite bank applies.
+- Selection: active, FM both ways, satellite in orbit, both frequencies in
+  the BK4819 datasheet coverage; the uplink tone is read from the
+  description. The result is an ordinary bank, validated before any write,
+  and the TX ranges still decide what may transmit.

@@ -149,6 +149,15 @@ programmed TX ranges protect channel and VFO mode alike.
   225–400 MHz reception is not tried on hardware. Gate: `cargo fmt --all
   --check` clean, workspace clippy `-D warnings` clean, `cargo test
   --workspace` 748 passed 0 failed.
+- Studio (operator request, `ADR-103`): Sync from SatNOGS beside the ISS and
+  FM satellites set fetches the FM satellites on a worker and caches the raw
+  responses in `$XDG_CACHE_HOME/afik/satnogs`; start-up reads only the
+  cache, and adding the set uses the synced list (21 channels live today,
+  tones from the descriptions) instead of the built-in one. Not checked on
+  screen. Gate: `cargo fmt --all --check` clean, workspace clippy `-D
+  warnings` clean, `cargo test --workspace` 755 passed 0 failed 1 ignored;
+  `cargo test -p radio-programmer-gui the_live_satnogs -- --ignored` passed
+  against db.satnogs.org.
 - Step 5 (hardware, partial): on `7.0.22` with PMR446 channels in A and B,
   the other slot was never heard and scan never stopped at the 90 ms dwell;
   programmed at 200 ms both work (`EVID-K5-036`). `RadioConfig::conservative()`

@@ -1,0 +1,2 @@
+# Proper names that doc comments use as prose; ".." keeps the defaults.
+doc-valid-idents = ["SatNOGS", ".."]

@@ -44,6 +44,18 @@ pub fn state_dir_from(xdg_state_home: Option<OsString>, home: Option<OsString>) 
     xdg_base(xdg_state_home, home, &[".local", "state"])
 }
 
+/// Returns the AFIK cache directory, `$XDG_CACHE_HOME/afik` or `~/.cache/afik`.
+///
+/// What is kept here can be fetched again, such as the satellite list.
+pub fn cache_dir() -> Option<PathBuf> {
+    cache_dir_from(std::env::var_os("XDG_CACHE_HOME"), std::env::var_os("HOME"))
+}
+
+/// Resolves the cache directory from the two environment values, without I/O.
+pub fn cache_dir_from(xdg_cache_home: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
+    xdg_base(xdg_cache_home, home, &[".cache"])
+}
+
 /// Picks an absolute XDG base, or the given fallback under an absolute home.
 fn xdg_base(xdg: Option<OsString>, home: Option<OsString>, fallback: &[&str]) -> Option<PathBuf> {
     let base = xdg
@@ -245,7 +257,8 @@ const fn civil_from_days(days: u64) -> (u64, u64, u64) {
 #[cfg(test)]
 mod tests {
     use super::{
-        data_dir_from, eeprom_backup_name, newest_eeprom_backup, state_dir_from, utc_timestamp,
+        cache_dir_from, data_dir_from, eeprom_backup_name, newest_eeprom_backup, state_dir_from,
+        utc_timestamp,
     };
     use std::{ffi::OsString, path::PathBuf};
 
@@ -276,6 +289,14 @@ mod tests {
         assert_eq!(
             state_dir_from(Some(os("/state")), Some(os("/home/op"))),
             Some(PathBuf::from("/state/afik"))
+        );
+        assert_eq!(
+            cache_dir_from(None, Some(os("/home/op"))),
+            Some(PathBuf::from("/home/op/.cache/afik"))
+        );
+        assert_eq!(
+            cache_dir_from(Some(os("/cache")), Some(os("/home/op"))),
+            Some(PathBuf::from("/cache/afik"))
         );
         assert_eq!(data_dir_from(Some(os("")), Some(os(""))), None);
     }

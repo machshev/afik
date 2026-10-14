@@ -858,46 +858,79 @@ impl Preset {
             });
         }
         for list in self.splits {
-            let channels = list
-                .channels
-                .iter()
-                .map(|channel| ChannelDraft {
-                    name: channel.name.to_owned(),
-                    receive_mhz: format_mhz(channel.receive_hz),
-                    transmit_mhz: format_mhz(channel.transmit_hz),
-                    tx_tone: channel
-                        .tx_ctcss_tenths_hz
-                        .map_or_else(ToneDraft::default, |tenths| {
-                            ToneDraft::from_tone(Tone::Ctcss(tenths))
-                        }),
-                    modulation: list.modulation,
-                    bandwidth: list.bandwidth,
-                    power: list.power,
-                    step_hz: list.step_hz,
-                    ..ChannelDraft::default()
-                })
-                .collect();
-            // Each channel keeps its own split and tone; the rest is shared.
-            project.banks.push(BankDraft {
-                name: list.name.to_owned(),
-                kind: BankKind::Named,
-                scan_enabled: true,
-                shared: SharedSettings::from_bits(
-                    SharedSettings::MODULATION
-                        | SharedSettings::BANDWIDTH
-                        | SharedSettings::STEP
-                        | SharedSettings::POWER,
-                )
-                .unwrap_or_default(),
-                modulation: list.modulation,
-                bandwidth: list.bandwidth,
-                power: list.power,
-                step_hz: list.step_hz,
-                channels,
-                ..BankDraft::default()
-            });
+            project.banks.push(split_bank(
+                list,
+                list.channels.iter().map(|channel| {
+                    (
+                        channel.name,
+                        channel.receive_hz,
+                        channel.transmit_hz,
+                        channel.tx_ctcss_tenths_hz,
+                    )
+                }),
+            ));
         }
         project
+    }
+}
+
+/// Name of the preset whose satellite bank a SatNOGS sync replaces.
+pub const SATELLITE_PRESET: &str = "ISS and FM satellites";
+
+/// Builds the satellite bank from synced channels, with the built-in bank's
+/// settings (`crate::satellites`).
+pub fn satellite_bank(channels: &[crate::satellites::SatelliteChannel]) -> BankDraft {
+    split_bank(
+        &SATELLITES,
+        channels.iter().map(|channel| {
+            (
+                channel.name.as_str(),
+                channel.receive_hz,
+                channel.transmit_hz,
+                channel.tx_ctcss_tenths_hz,
+            )
+        }),
+    )
+}
+
+/// Builds one split bank: each channel keeps its own split and transmit tone,
+/// and the bank shares the rest.
+fn split_bank<'a>(
+    list: &PresetSplitList,
+    channels: impl Iterator<Item = (&'a str, u32, u32, Option<u16>)>,
+) -> BankDraft {
+    let channels = channels
+        .map(|(name, receive_hz, transmit_hz, tx_ctcss)| ChannelDraft {
+            name: name.to_owned(),
+            receive_mhz: format_mhz(receive_hz),
+            transmit_mhz: format_mhz(transmit_hz),
+            tx_tone: tx_ctcss.map_or_else(ToneDraft::default, |tenths| {
+                ToneDraft::from_tone(Tone::Ctcss(tenths))
+            }),
+            modulation: list.modulation,
+            bandwidth: list.bandwidth,
+            power: list.power,
+            step_hz: list.step_hz,
+            ..ChannelDraft::default()
+        })
+        .collect();
+    BankDraft {
+        name: list.name.to_owned(),
+        kind: BankKind::Named,
+        scan_enabled: true,
+        shared: SharedSettings::from_bits(
+            SharedSettings::MODULATION
+                | SharedSettings::BANDWIDTH
+                | SharedSettings::STEP
+                | SharedSettings::POWER,
+        )
+        .unwrap_or_default(),
+        modulation: list.modulation,
+        bandwidth: list.bandwidth,
+        power: list.power,
+        step_hz: list.step_hz,
+        channels,
+        ..BankDraft::default()
     }
 }
 
@@ -1293,7 +1326,7 @@ mod tests {
     fn the_satellite_preset_receives_downlinks_and_transmits_uplinks() {
         use radio_domain::Tone;
 
-        let project = project_of("ISS and FM satellites");
+        let project = project_of(super::SATELLITE_PRESET);
         let validated = project.validate().expect("validates");
         let channel = |name: &str| {
             validated

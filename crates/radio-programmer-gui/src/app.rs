@@ -23,8 +23,9 @@ use crate::{
         BankDraft, BankKind, ChannelDraft, ModelError, ProjectModel, StorageSummary, ToneDraft,
         ToneKind, TxRangeDraft, MAX_PROJECT_IMAGE_BYTES, RADIO_IMAGE_BYTES,
     },
-    presets::{PRESETS, TX_RANGE_PRESETS},
+    presets::{satellite_bank, PRESETS, SATELLITE_PRESET, TX_RANGE_PRESETS},
     projects::ProjectStore,
+    satellites::{SatelliteCache, SatelliteList, SyncJob},
     session::{DeviceJob, DeviceOutcome, DeviceSession, JobKind},
     DeviceSelector, Options,
 };
@@ -120,12 +121,94 @@ pub struct StudioApp {
     job: Option<DeviceJob>,
     /// A bank row to open the next time the Banks tab is drawn.
     expand_bank: Option<usize>,
+    /// Where SatNOGS responses are cached, and what was last read from it.
+    satellite_cache: SatelliteCache,
+    satellites: Option<SatelliteList>,
+    /// A SatNOGS fetch running on a worker.
+    satellite_sync: Option<SyncJob>,
 }
 
 impl StudioApp {
     /// Builds the editor from start-up options, opening the last project.
     pub fn new(options: &Options) -> Self {
-        Self::with_projects(options, ProjectStore::open())
+        let mut app = Self::with_projects(options, ProjectStore::open());
+        app.use_satellite_cache(SatelliteCache::open());
+        app
+    }
+
+    /// Reads the satellite list from `cache`, which a sync then writes.
+    ///
+    /// Reading never fetches: the network is used only when Sync is pressed.
+    pub fn use_satellite_cache(&mut self, cache: SatelliteCache) {
+        self.satellites = match cache.load() {
+            Ok(list) => list,
+            Err(error) => {
+                log::warn!("reading the satellite cache: {error}");
+                None
+            }
+        };
+        self.satellite_cache = cache;
+    }
+
+    /// Starts fetching the satellite list from SatNOGS.
+    fn sync_satellites(&mut self) {
+        if self.satellite_sync.is_some() {
+            return;
+        }
+        if self.satellite_cache.dir().is_none() {
+            self.refuse("Cannot sync satellites: no XDG cache directory or HOME is set.");
+            return;
+        }
+        log::info!("syncing satellites from SatNOGS");
+        "Syncing satellites from SatNOGS...".clone_into(&mut self.status);
+        self.satellite_sync = Some(SyncJob::start(self.satellite_cache.clone()));
+    }
+
+    /// Takes in a finished satellite sync.
+    fn poll_satellite_sync(&mut self) {
+        let Some(outcome) = self.satellite_sync.as_ref().and_then(SyncJob::poll) else {
+            return;
+        };
+        self.satellite_sync = None;
+        match outcome {
+            Ok(list) => {
+                self.status = format!(
+                    "Synced {} satellite channels from SatNOGS. Add the {SATELLITE_PRESET} set \
+                     to use them.",
+                    list.channels.len()
+                );
+                log::info!("{}", self.status);
+                self.satellites = Some(list);
+            }
+            // The cache is untouched, so the previous list still applies.
+            Err(error) => self.fail(
+                "syncing satellites",
+                format!("Satellite sync failed: {error}"),
+            ),
+        }
+    }
+
+    /// Describes where the satellite set's channels come from.
+    fn satellite_source(&self) -> String {
+        if self.satellite_sync.is_some() {
+            return "Syncing...".to_owned();
+        }
+        match &self.satellites {
+            Some(list) => {
+                let age = list.synced.elapsed().unwrap_or_default().as_secs();
+                let age = match age {
+                    0..=59 => "just now".to_owned(),
+                    60..=3599 => format!("{} min ago", age / 60),
+                    3600..=86_399 => format!("{} h ago", age / 3600),
+                    _ => format!("{} days ago", age / 86_400),
+                };
+                format!(
+                    "{} channels from SatNOGS, synced {age}.",
+                    list.channels.len()
+                )
+            }
+            None => "Built-in list; not synced.".to_owned(),
+        }
     }
 
     /// Builds the editor over an explicit project store.
@@ -147,6 +230,9 @@ impl StudioApp {
             tx_preset: 0,
             expand_bank: None,
             job: None,
+            satellite_cache: SatelliteCache::none(),
+            satellites: None,
+            satellite_sync: None,
         };
         if let Some(baud) = options.baud {
             app.chooser.baud = baud;
@@ -541,9 +627,14 @@ impl StudioApp {
         let Some(preset) = PRESETS.get(self.preset) else {
             return;
         };
-        let new: Vec<_> = preset
-            .build()
-            .banks
+        let mut banks = preset.build().banks;
+        // A synced satellite list replaces the built-in one.
+        if preset.name() == SATELLITE_PRESET {
+            if let Some(list) = self.satellites.as_ref().filter(|l| !l.channels.is_empty()) {
+                banks = vec![satellite_bank(&list.channels)];
+            }
+        }
+        let new: Vec<_> = banks
             .into_iter()
             .filter(|bank| !self.project.banks.iter().any(|b| b.name == bank.name))
             .collect();
@@ -588,7 +679,8 @@ impl eframe::App for StudioApp {
         // A write or read runs on a worker; the window keeps drawing and
         // checks for its end, wherever the operator is looking.
         self.poll_job();
-        if self.job.is_some() {
+        self.poll_satellite_sync();
+        if self.job.is_some() || self.satellite_sync.is_some() {
             context.request_repaint_after(std::time::Duration::from_millis(50));
         }
         // The Flash tab's automatic flow only runs while it is shown, so a
@@ -703,6 +795,20 @@ impl StudioApp {
             }
             if let Some(preset) = PRESETS.get(self.preset) {
                 ui.label(preset.detail());
+                if preset.name() == SATELLITE_PRESET {
+                    let idle = self.satellite_sync.is_none();
+                    if ui
+                        .add_enabled(idle, egui::Button::new("Sync from SatNOGS"))
+                        .on_hover_text(
+                            "Fetches the current FM satellites from db.satnogs.org and \
+                             caches them; the studio never fetches on its own",
+                        )
+                        .clicked()
+                    {
+                        self.sync_satellites();
+                    }
+                    ui.label(self.satellite_source());
+                }
             }
         });
         ui.separator();
@@ -2385,6 +2491,45 @@ mod tests {
             .iter()
             .position(|p| p.name() == name)
             .expect("preset")
+    }
+
+    #[test]
+    fn the_satellite_set_is_built_in_until_a_sync_replaces_it() {
+        use crate::presets::SATELLITE_PRESET;
+        use crate::satellites::{SatelliteChannel, SatelliteList};
+
+        let mut app = simulated("satellites");
+        assert!(app.satellites.is_none(), "tests never read the real cache");
+        assert_eq!(app.satellite_source(), "Built-in list; not synced.");
+        app.preset = preset_index(SATELLITE_PRESET);
+        app.add_preset();
+        let built_in = app.project.banks.last().unwrap();
+        assert_eq!(built_in.name, "SATELLITES");
+        assert!(built_in.channels.iter().any(|c| c.name == "ISS RPT"));
+
+        let mut app = simulated("satellites-synced");
+        app.satellites = Some(SatelliteList {
+            channels: vec![SatelliteChannel {
+                name: "SO-50".to_owned(),
+                receive_hz: 436_795_000,
+                transmit_hz: 145_850_000,
+                tx_ctcss_tenths_hz: Some(670),
+            }],
+            synced: std::time::SystemTime::now(),
+        });
+        assert!(app
+            .satellite_source()
+            .starts_with("1 channels from SatNOGS"));
+        app.preset = preset_index(SATELLITE_PRESET);
+        app.add_preset();
+        let synced = app.project.banks.last().unwrap();
+        assert_eq!(synced.name, "SATELLITES");
+        assert_eq!(synced.channels.len(), 1);
+        assert_eq!(synced.channels[0].name, "SO-50");
+        assert_eq!(synced.channels[0].receive_mhz, "436.795000");
+        assert_eq!(synced.channels[0].transmit_mhz, "145.850000");
+        assert_eq!(synced.channels[0].tx_tone.value, "67.0");
+        assert!(app.project.validate().is_ok());
     }
 
     #[test]
