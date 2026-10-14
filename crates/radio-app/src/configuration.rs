@@ -77,6 +77,13 @@ impl Programmed {
         self
     }
 
+    /// Returns this summary with dual watch programmed on or off.
+    #[cfg(test)]
+    pub(crate) const fn with_dual_watch(mut self, on: bool) -> Self {
+        self.config.dual_watch = on;
+        self
+    }
+
     /// Returns this summary with the radio-wide squelch replaced.
     ///
     /// The operator's handset choice is the radio's own and is kept beside

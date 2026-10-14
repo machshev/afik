@@ -489,6 +489,9 @@ fn adopt_settings(shell: &mut Shell, programmed: &Programmed) {
     let config = programmed.config();
     shell.set_squelch(config.squelch);
     shell.set_tx(config.tx_power, config.tx_timeout);
+    // A configuration written by the host sets dual watch; the handset's own
+    // switch, kept in the place, applies over it when the radio starts.
+    shell.set_dual_watch(config.dual_watch);
 }
 
 /// Points the shell at the source the operator was last listening to.
@@ -2023,6 +2026,44 @@ mod tests {
         assert_eq!(shell.bank_filter(), Some(BankId::new(1)));
         assert_eq!(selected.map(|kept| kept.index), Some(3));
     }
+    #[test]
+    fn programmed_dual_watch_applies_and_the_handset_switch_survives_a_restart() {
+        let mut shell = Shell::new();
+        adopt_publication(
+            &mut shell,
+            &Programmed::with_channels(4, 0b11).with_dual_watch(true),
+            true,
+            None,
+            &mut None,
+            &mut None,
+        );
+        assert!(shell.dual_watch(), "a host writing it on turns it on");
+        adopt_publication(
+            &mut shell,
+            &Programmed::with_channels(4, 0b11),
+            false,
+            None,
+            &mut None,
+            &mut None,
+        );
+        assert!(!shell.dual_watch(), "and writing it off turns it off");
+
+        // Switched on at the handset over a programmed off, then restarted.
+        let mut shell = Shell::new();
+        adopt_publication(
+            &mut shell,
+            &Programmed::with_channels(4, 0b11),
+            true,
+            Some(OperatorState {
+                dual_watch: true,
+                ..place(true)
+            }),
+            &mut None,
+            &mut None,
+        );
+        assert!(shell.dual_watch());
+    }
+
     #[test]
     fn a_programmed_tx_power_and_timeout_reach_the_handset_menu() {
         let mut shell = Shell::new();

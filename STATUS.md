@@ -124,6 +124,13 @@ programmed TX ranges protect channel and VFO mode alike.
   ranges), Scan and General (backlight, battery save, key beep). Not
   checked on screen. Gate: `cargo fmt --all --check` clean, workspace
   clippy `-D warnings` clean, `cargo test --workspace` 725 passed 0 failed.
+- Fix (operator report): the studio's Dual watch setting never reached the
+  handset, which took dual watch only from its place record, so programming
+  it did nothing and a power cycle kept the old value. Each configuration
+  now sets it; the handset switch, kept in the place, still applies over it
+  at start-up. Gate: `cargo fmt --all --check` clean, workspace clippy `-D
+  warnings` clean, `cargo test --workspace` 726 passed 0 failed, K5 and K1
+  release images build. Not flashed.
 - Next (step 5, hardware): flash `7.0.22`; F 2 and F 3 on the keypad; put A
   and B in different banks; dual watch on, key a second radio on B and check
   the hold, hang, meter and that PTT goes out on A (`RISK-041`); power-cycle
