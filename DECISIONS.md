@@ -1691,15 +1691,17 @@ meaning.
   packed objects, with generated banks as runtime generators. The studio
   compiles and validates it and writes it at `0x0000`; the region is
   `0x1D00` bytes. The radio keeps no copy: it validates the image in memory
-  object by object (`radio-storage::walk_image`) at boot and 1 s after a
-  host's last write, and keeps only an index of offsets plus one bank mask per
-  explicit channel. Channels are read from memory when shown or tuned. Any
+  at boot and 1 s after a host's last write, and keeps only its index. Channels are read from memory when shown or tuned. Any
   failed check leaves no channels rather than part of them, and the interface
   drops the old index as soon as a host starts writing.
-- Next format step (operator direction): storage v5 groups every channel into
-  a bank with shared properties and a bank-level presence bitfield, so
-  membership is the bank a channel is stored in and the RAM index is just the
-  bank starts. A channel then belongs to one bank.
+- Storage format 5 (operator direction), `radio-storage::radio_image`: every
+  channel is stored in one bank block. A list block keeps its channels' shared
+  values once, with a `fields` bitfield for what each fixed-size record carries;
+  a linear block is a generated plan. The radio's RAM index is one entry per
+  block (at most 48). The project and editing model stays the format 4 object
+  set, compiled to format 5 for a radio; a channel in two banks is refused.
+- Studio direction (operator): the Banks and Channels tabs become one, where a
+  bank is added and holds explicit channels or a generator.
 - `0x1D00` holds the radio's own record of the operator's place and handset
   squelch, so the handset never rewrites the host's image. `0x1E00..0x2000`
   is vendor calibration, readable but never writable by a host.

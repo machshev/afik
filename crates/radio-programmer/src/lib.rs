@@ -5,6 +5,7 @@
 use core::fmt;
 use radio_channel_plan::{ChannelBank, ChannelRecord, GeneratedBank, PlanEncoding};
 use radio_domain::{BankId, RadioConfig};
+use radio_platform::memory_link::IMAGE_REGION_BYTES;
 pub use radio_protocol::DeviceCapabilities;
 use radio_protocol::{
     encode_frame, encode_list_objects_request, Command, ControlRequest, DeviceErrorCode, Frame,
@@ -12,6 +13,7 @@ use radio_protocol::{
     ReceiveStateReport, Service, StreamDecoder, FLAG_ERROR, FLAG_RESPONSE, MAX_ENCODED_FRAME,
     MAX_PAYLOAD, PROTOCOL_VERSION,
 };
+use radio_storage::radio_image;
 use radio_storage::{
     configuration_image_len, decode_channel, decode_channel_bank, decode_configuration_image,
     decode_generated_bank, decode_radio_config, encode_channel, encode_channel_bank,
@@ -92,6 +94,8 @@ impl<E> From<StorageError> for ProgrammerError<E> {
     }
 }
 
+pub use radio_storage::radio_image::CompileError as RadioImageError;
+
 /// Rich host-side project input prior to device compilation.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RadioProject {
@@ -150,6 +154,24 @@ impl RadioProject {
     /// Returns the global radio configuration when one is set.
     pub const fn config(&self) -> Option<RadioConfig> {
         self.config
+    }
+
+    /// Compiles the project into the bank-grouped image a radio runs
+    /// (storage format 5, `ADR-100`), sized to the radio's image region.
+    ///
+    /// Each channel must be in at most one bank: in this format a channel is
+    /// stored in its bank. Channels in no bank are kept in a bankless block.
+    pub fn compile_radio_image(&self) -> Result<Vec<u8>, RadioImageError> {
+        let mut image = vec![0_u8; usize::from(IMAGE_REGION_BYTES)];
+        let len = radio_image::compile(
+            self.config.unwrap_or_else(RadioConfig::conservative),
+            &self.banks,
+            &self.channels,
+            &self.generated_banks,
+            &mut image,
+        )?;
+        image.truncate(len);
+        Ok(image)
     }
 
     /// Reports whether the project defines no objects at all.
@@ -1122,6 +1144,42 @@ mod tests {
             tx_class: TxClass::Amateur,
         })
         .unwrap()
+    }
+
+    #[test]
+    fn a_project_compiles_into_the_image_a_radio_runs() {
+        let mut project = RadioProject::new();
+        project.add_generated_bank(bank(1));
+        project.add_channel(channel(2, 0b0000_0010));
+        project.add_channel(channel(1, 0b0000_0010));
+        project.add_bank(named_bank(1));
+        let image = project.compile_radio_image().expect("radio image");
+        let mut header = [0_u8; radio_storage::radio_image::HEADER_LEN];
+        let (head, payload) = image.split_at(header.len());
+        header.copy_from_slice(head);
+        let index = radio_storage::radio_image::Index::build(&header, |offset, buffer| {
+            payload
+                .get(offset..offset + buffer.len())
+                .is_some_and(|bytes| {
+                    buffer.copy_from_slice(bytes);
+                    true
+                })
+        })
+        .expect("the radio accepts it");
+        assert_eq!(index.len(), 2 + bank(1).channel_count());
+        assert!(image.len() <= usize::from(super::IMAGE_REGION_BYTES));
+    }
+
+    #[test]
+    fn a_channel_in_two_banks_cannot_go_to_a_radio() {
+        let mut project = RadioProject::new();
+        project.add_channel(channel(7, 0b0000_0110));
+        assert_eq!(
+            project.compile_radio_image(),
+            Err(super::RadioImageError::MultipleBanks(
+                radio_domain::ChannelId::new(7)
+            ))
+        );
     }
 
     #[test]

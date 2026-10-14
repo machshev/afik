@@ -14,12 +14,12 @@ use radio_platform::memory_link::{
 };
 use radio_platform::operator_display::MemoryState;
 use radio_platform::serial::ApplicationIdentity;
-use radio_storage::CONFIGURATION_IMAGE_HEADER_LEN;
+use radio_storage::radio_image::{Index, HEADER_LEN};
 
 use crate::configuration::Programmed;
 use crate::drivers::{Memory, SerialLink};
 use crate::state::{
-    count, hold_bus_idle, Publication, TaskCell, BATTERY_CALIBRATION, MASKS, OPERATOR_PLACE,
+    count, hold_bus_idle, Publication, TaskCell, BATTERY_CALIBRATION, INDEX, OPERATOR_PLACE,
     PROGRAMMED, SERIAL_ACTIVITY, SERIAL_ANSWERED, SERIAL_DISCARDED, SERIAL_ERRORS, SERIAL_RECEIVED,
     TX_CALIBRATION,
 };
@@ -32,10 +32,6 @@ use crate::state::{
 /// configuration that is half old and half new; waiting for the burst to end
 /// loads only the finished one.
 const RELOAD_QUIET_MILLISECONDS: u64 = 1_000;
-
-/// The image header as a memory offset.
-#[allow(clippy::cast_possible_truncation)]
-const HEADER_BYTES: u16 = CONFIGURATION_IMAGE_HEADER_LEN as u16;
 
 /// Bytes collected per burst. A host sends one request and waits for its
 /// answer, and the largest request is 28 bytes.
@@ -215,27 +211,24 @@ pub async fn run<L: SerialLink, M: Memory>(
 /// A missing, erased, torn, or corrupt image indexes as empty, so the radio
 /// runs on the VFO rather than on half a configuration.
 fn load<M: Memory>(memory: Option<&mut M>) -> (Programmed, bool) {
-    let Some(memory) = memory else {
-        return (Programmed::empty(), false);
-    };
-    let mut header = [0_u8; CONFIGURATION_IMAGE_HEADER_LEN];
-    if !memory.read(IMAGE_ORIGIN, &mut header) {
-        return (Programmed::empty(), false);
-    }
-    let indexed = MASKS.with_mut(|masks| {
-        Programmed::from_image(
-            &header,
-            |offset, buffer| {
-                u16::try_from(offset)
-                    .is_ok_and(|offset| memory.read(IMAGE_ORIGIN + HEADER_BYTES + offset, buffer))
-            },
-            masks,
-        )
-    });
-    match indexed {
-        Ok(programmed) => (programmed, !programmed.is_empty()),
-        Err(_) => (Programmed::empty(), false),
-    }
+    let index = memory
+        .and_then(|memory| {
+            let mut header = [0_u8; HEADER_LEN];
+            if !memory.read(IMAGE_ORIGIN, &mut header) {
+                return None;
+            }
+            Index::build(&header, |offset, buffer| read_image(memory, offset, buffer)).ok()
+        })
+        .unwrap_or_else(Index::empty);
+    INDEX.with_mut(|stored| *stored = index);
+    let programmed = Programmed::of(&index);
+    (programmed, !programmed.is_empty())
+}
+
+/// Reads image payload bytes from the memory view.
+pub(crate) fn read_image<M: Memory>(memory: &mut M, offset: usize, buffer: &mut [u8]) -> bool {
+    u16::try_from(HEADER_LEN + offset)
+        .is_ok_and(|offset| memory.read(IMAGE_ORIGIN + offset, buffer))
 }
 
 #[cfg(test)]
@@ -246,12 +239,12 @@ mod tests {
         BankMask, ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord,
     };
     use radio_domain::{
-        Bandwidth, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, SquelchLevel, Tone,
-        TxClass,
+        Bandwidth, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, RadioConfig,
+        SquelchLevel, Tone, TxClass,
     };
     use radio_platform::battery::Calibration;
     use radio_platform::memory_link::{VIEW_BYTES, WRITE_BYTES};
-    use radio_storage::{encode_channel, encode_configuration_image};
+    use radio_storage::radio_image::compile;
 
     struct FakeMemory([u8; VIEW_BYTES as usize]);
 
@@ -304,12 +297,15 @@ mod tests {
     /// One test, because the copy it loads into is the image's one static.
     #[test]
     fn an_image_in_memory_loads_and_a_damaged_or_erased_one_does_not() {
-        let objects = [
-            encode_channel(channel(1)).expect("one"),
-            encode_channel(channel(2)).expect("two"),
-        ];
         let mut memory = FakeMemory([0xFF; VIEW_BYTES as usize]);
-        let length = encode_configuration_image(&objects, &mut memory.0).expect("image");
+        let length = compile(
+            RadioConfig::conservative(),
+            &[],
+            &[channel(1), channel(2)],
+            &[],
+            &mut memory.0,
+        )
+        .expect("image");
 
         let (programmed, loaded) = load(Some(&mut memory));
         assert!(loaded);

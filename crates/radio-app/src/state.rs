@@ -13,7 +13,9 @@ use embassy_time::Instant;
 use radio_platform::battery::Calibration;
 use radio_platform::operator_display::{MemoryState, ResetCause, SerialCounters};
 
-use crate::configuration::{Programmed, MAX_STORED_CHANNELS};
+use radio_storage::radio_image::Index;
+
+use crate::configuration::Programmed;
 use crate::operator_state::OperatorState;
 
 /// Milliseconds the radio bus stays idle after the last serial byte.
@@ -67,13 +69,11 @@ pub(crate) struct Publication {
     pub(crate) place: Option<OperatorState>,
 }
 
-/// The bank mask of each explicit channel, written when an image is loaded.
+/// The index of the image the radio runs, written when an image is loaded.
 ///
-/// A bank filter asks about every channel on every interface pass, which is
-/// too often to read memory for, so these two bytes per channel stay in RAM.
-/// Everything else about a channel is read from memory when it is needed.
-pub(crate) static MASKS: TaskCell<[u16; MAX_STORED_CHANNELS]> =
-    TaskCell::new([0; MAX_STORED_CHANNELS]);
+/// A few bytes per bank block: enough to answer counting, bank filtering and
+/// scan navigation from RAM, and to find any channel in memory.
+pub(crate) static INDEX: TaskCell<Index> = TaskCell::new(Index::empty());
 
 /// State shared by the tasks of one thread-mode executor.
 ///

@@ -2510,6 +2510,7 @@ version = "7.0.16"
 dependencies = [
  "radio-channel-plan",
  "radio-domain",
+ "radio-platform",
  "radio-protocol",
  "radio-storage",
 ]

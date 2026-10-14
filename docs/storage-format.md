@@ -1,5 +1,19 @@
 # Storage object model
 
+> **Radios run format 5 (`ADR-100`).** The object format below is the host's
+> project and editing format. A radio runs the bank-grouped image in
+> `radio-storage::radio_image`, compiled from a project by
+> `RadioProject::compile_radio_image`; its module documentation is the
+> byte-level reference. In short: a 16-byte header (image version 2, format 5,
+> block count, payload length, CRC-32), the 16-byte radio configuration, a
+> bank-name table, then one block per bank and kind. A *list* block stores the
+> values its channels share once and sets a `fields` bit for each value its
+> fixed-size records carry instead (a frequency is a `u16` count of rasters
+> when it fits). A *linear* block is a generated plan. Every channel is stored
+> in one bank, so a radio indexes a few bytes per block and reads channels from
+> memory. Sixteen named PMR446 channels cost 112 bytes of records, against 752
+> as format 4 objects.
+
 Device configuration is a bounded set of typed objects. Each object has a
 stable kind, numeric ID, encoded length, and encoded bytes. The first supported
 configuration object is a generated channel bank.

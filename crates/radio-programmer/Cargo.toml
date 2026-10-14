@@ -11,6 +11,7 @@ description = "Library-first radio configuration compiler and programmer"
 radio-channel-plan = { path = "../radio-channel-plan" }
 radio-domain = { path = "../radio-domain" }
 radio-protocol = { path = "../radio-protocol" }
+radio-platform = { path = "../radio-platform" }
 radio-storage = { path = "../radio-storage" }
 
 [lints]

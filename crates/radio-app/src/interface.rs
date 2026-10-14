@@ -42,14 +42,13 @@ use crate::configuration::Programmed;
 use crate::drivers::{BatterySense, Display, Keypad, Memory, Speaker, Target};
 use crate::keys::{Debouncer, Edge};
 use crate::operator_state::OperatorState;
+use crate::serial::read_image;
 use crate::state::{
     bus_available, now_ms, peripheral_clock_khz, reset_cause, serial_counters, Publication,
-    TaskCell, BATTERY_CALIBRATION, MASKS, OPERATOR_PLACE, PROGRAMMED, SERIAL_ACTIVITY,
+    TaskCell, BATTERY_CALIBRATION, INDEX, OPERATOR_PLACE, PROGRAMMED, SERIAL_ACTIVITY,
     TX_CALIBRATION,
 };
 use crate::unified_receive::{shared_channel, translate, ReceiverEffect};
-use radio_platform::memory_link::IMAGE_ORIGIN;
-use radio_storage::CONFIGURATION_IMAGE_HEADER_LEN;
 
 /// Interval between receive samples while audio is routed.
 ///
@@ -387,9 +386,11 @@ impl<M: Memory> ChannelSource for Listening<M> {
     fn get(&self, index: u16) -> Option<ChannelRecord> {
         match self {
             Self::Vfo(record) => (index == 0).then_some(*record),
-            Self::Memory(programmed, memory) => memory.with_mut(|cell| {
+            Self::Memory(_, memory) => memory.with_mut(|cell| {
                 let memory = cell.as_mut()?;
-                programmed.channel_at(|offset, buffer| read_image(memory, offset, buffer), index)
+                INDEX.with(|image| {
+                    image.channel_at(|offset, buffer| read_image(memory, offset, buffer), index)
+                })
             }),
         }
     }
@@ -397,9 +398,7 @@ impl<M: Memory> ChannelSource for Listening<M> {
     fn member_at(&self, index: u16, bank: BankId) -> bool {
         match self {
             Self::Vfo(_) => false,
-            Self::Memory(programmed, _) => {
-                MASKS.with(|masks| programmed.member_at(masks, index, bank))
-            }
+            Self::Memory(..) => INDEX.with(|image| image.member_at(index, bank)),
         }
     }
 }
@@ -1181,7 +1180,6 @@ pub async fn run<D, K, B, S, V, M>(
                 activation.as_ref().map(|(controller, _)| controller),
                 &receiver,
                 battery.percent(),
-                &programmed,
                 generation,
                 retained,
                 memory_state,
@@ -1271,7 +1269,6 @@ fn render<B: RegisterBus, S: Speaker, M: Memory>(
     controller: Option<&BankedReceiveController<Listening<M>>>,
     receiver: &Receiver<B, S>,
     battery_percent: Option<u8>,
-    programmed: &Programmed,
     generation: u32,
     retained: bool,
     memory_state: MemoryState,
@@ -1281,7 +1278,7 @@ fn render<B: RegisterBus, S: Speaker, M: Memory>(
     // Names are fixed-capacity values copied out of the configuration, so they
     // are held here for as long as the view borrows their bytes.
     let filter = shell.bank_filter();
-    let filter_name = filter.and_then(|bank| bank_name(programmed, bank, memory));
+    let filter_name = filter.and_then(|bank| bank_name(bank, memory));
     // Only an empty memory has no controller: the VFO always has one, so this is
     // the "you have selected channels but programmed none" case.
     let (visible, channel) = match controller {
@@ -1338,7 +1335,7 @@ fn render<B: RegisterBus, S: Speaker, M: Memory>(
                     Source::Vfo => SelectorRow::text(b"VFO", active),
                     Source::AllChannels => SelectorRow::text(b"ALL CHANNELS", active),
                     Source::Bank(bank) => {
-                        let name = bank_name(programmed, bank, memory);
+                        let name = bank_name(bank, memory);
                         SelectorRow::bank(
                             bank.get(),
                             name.as_ref()
@@ -1473,19 +1470,11 @@ fn render<B: RegisterBus, S: Speaker, M: Memory>(
 }
 
 /// Returns the host-programmed name of one bank, if the host named it.
-fn bank_name<M: Memory>(
-    programmed: &Programmed,
-    bank: BankId,
-    memory: &'static TaskCell<Option<M>>,
-) -> Option<BankName> {
+fn bank_name<M: Memory>(bank: BankId, memory: &'static TaskCell<Option<M>>) -> Option<BankName> {
     memory.with_mut(|cell| {
         let memory = cell.as_mut()?;
-        programmed.bank_name(|offset, buffer| read_image(memory, offset, buffer), bank)
+        INDEX.with(|image| {
+            image.bank_name(|offset, buffer| read_image(memory, offset, buffer), bank)
+        })
     })
-}
-
-/// Reads image payload bytes from the memory view.
-fn read_image<M: Memory>(memory: &mut M, offset: usize, buffer: &mut [u8]) -> bool {
-    u16::try_from(CONFIGURATION_IMAGE_HEADER_LEN + offset)
-        .is_ok_and(|offset| memory.read(IMAGE_ORIGIN + offset, buffer))
 }

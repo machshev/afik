@@ -226,11 +226,24 @@
   synchronous operations only (K1 place writes now block on the flash). Image
   region back to `0x1D00` (7,424 bytes). K5: text 49,827, static RAM end
   `0x200011d0` (about 11.8 KB of stack). K1: text 56,572, headroom 11,776.
-  K5 `7.0.16` flashed (240/240 pages) and confirmed working on the bench. Gate: fmt clean, workspace clippy `-D warnings` clean,
-  `cargo test --workspace` 666 passed 0 failed, K5 and K1 build + verify pass.
-- Next: flash `7.0.5` with `afik-flasher flash-afik` and check a 1 min over
-  times out; flash K1 and check its speech level; then CTCSS/DCS with an
-  end-of-transmission tail tone to remove the key-off squelch burst.
+  K5 `7.0.16` flashed (240/240 pages) and confirmed working on the bench.
+  Gate: fmt clean, workspace clippy `-D warnings` clean, `cargo test
+  --workspace` 666 passed 0 failed, K5 and K1 build + verify pass.
+- Storage format 5: `radio-storage::radio_image` compiles a project into bank
+  blocks (list blocks with shared values and a per-record `fields` bitfield,
+  short raster frequencies; linear blocks for plans) and indexes one in place
+  (`Index::build`, `channel_at`, `member_at`, `bank_name`). The radio's index
+  is one entry per block, replacing the per-channel masks. Sixteen named
+  PMR446 channels: 112 bytes of records (format 4: 752).
+  `RadioProject::compile_radio_image` refuses a channel in two banks. K5 text
+  50,571, static RAM end `0x20001128`; K1 text 57,484, headroom 11,948. A K1
+  configuration stored in format 4 is no longer read. Gate: fmt clean,
+  workspace clippy `-D warnings` clean, `cargo test --workspace` 669 passed
+  0 failed, K5 and K1 build + verify pass. Not flashed: nothing changes on the
+  radio until the studio writes an image.
+- Next: the studio's memory writer with the merged Banks/Channels editor
+  (operator direction), then flash the K5 and program it from the studio;
+  then the K1's NOR erase plan; then CTCSS/DCS with a tail tone.
 
 ## Previous work package: TXK5-058
 
