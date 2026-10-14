@@ -262,9 +262,11 @@ pub struct ReceiveApp {
     // queue effects across app replacement must supply a fresh value so an
     // old acknowledgement cannot be accepted by a new instance.
     instance_id: u16,
-    // Zero is reserved as the exhausted/synthetic rejection identity. IDs
-    // are never reused, so a delayed acknowledgement cannot apply to a later
-    // request carrying the same candidate.
+    // Zero is reserved as the synthetic rejection identity. IDs wrap past
+    // it rather than running out: dual watch retunes about ten times a
+    // second, which would exhaust them in under two hours. Only one change
+    // is pending at a time, so an acknowledgement could only be confused
+    // with one 65,535 changes old for the same candidate.
     next_change_id: u16,
     squelch_open: bool,
     receiver_ok: bool,
@@ -518,12 +520,7 @@ impl ReceiveApp {
                 ConfigurationAcknowledgement::rejected(rejected),
             ));
         }
-        let Some(change) = self.allocate_change(candidate) else {
-            let rejected = ConfigurationChange::new(0, candidate);
-            return Effects::one(Effect::ConfigurationAcknowledged(
-                ConfigurationAcknowledgement::rejected(rejected),
-            ));
-        };
+        let change = self.allocate_change(candidate);
         self.pending_configuration = Some(change);
         self.pending_retune(change)
     }
@@ -581,20 +578,10 @@ impl ReceiveApp {
         }
     }
 
-    fn allocate_change(
-        &mut self,
-        candidate: ConfigurationCandidate,
-    ) -> Option<ConfigurationChange> {
-        if self.next_change_id == 0 {
-            return None;
-        }
+    fn allocate_change(&mut self, candidate: ConfigurationCandidate) -> ConfigurationChange {
         let id = self.next_change_id;
-        self.next_change_id = self.next_change_id.checked_add(1).unwrap_or(0);
-        Some(ConfigurationChange::with_instance(
-            self.instance_id,
-            id,
-            candidate,
-        ))
+        self.next_change_id = self.next_change_id.checked_add(1).unwrap_or(1);
+        ConfigurationChange::with_instance(self.instance_id, id, candidate)
     }
 
     fn pending_retune(&mut self, change: ConfigurationChange) -> Effects {
@@ -948,6 +935,34 @@ mod tests {
         assert!(applied.iter().any(|effect| {
             matches!(effect, Effect::ConfigurationAcknowledged(ack) if ack.is_applied())
         }));
+    }
+
+    #[test]
+    fn change_identities_wrap_rather_than_run_out() {
+        // Dual watch retunes about ten times a second, for hours.
+        let mut app = ReceiveApp::new();
+        let mut sequences = [0_u32; 2];
+        for round in 0..=u32::from(u16::MAX) {
+            let channel = if round % 2 == 0 { 3 } else { 8 };
+            let candidate =
+                ConfigurationCandidate::from_channel(7, channel, true).expect("candidate");
+            let request = app.apply(Event::ConfigurationCandidate(candidate));
+            let change = request
+                .iter()
+                .find_map(|effect| match effect {
+                    Effect::ConfigurationChange(change) => Some(change),
+                    _ => None,
+                })
+                .expect("every retune is a change");
+            let sequence = change.id() & 0xFFFF;
+            assert_ne!(sequence, 0, "zero is the rejection identity");
+            app.apply(Event::ConfigurationAcknowledged(
+                ConfigurationAcknowledgement::applied(change),
+            ));
+            assert_eq!(app.view().channel, channel);
+            sequences = [sequences[1], sequence];
+        }
+        assert_eq!(sequences, [u32::from(u16::MAX), 1]);
     }
 
     #[test]
