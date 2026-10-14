@@ -314,6 +314,11 @@
   so as plans they would take about 12 of the 16 banks. Gate: `cargo fmt --all
   --check` clean, workspace clippy `-D warnings` clean, `cargo test
   --workspace` 696 passed 0 failed.
+- Studio default sets are now only added (operator request): Add appends a
+  set's banks after the existing ones, skips a bank name already present and
+  refuses a set that would pass `MAX_BANKS`; Apply, which replaced every bank,
+  is gone. Gate: `cargo fmt --all --check` clean, workspace clippy
+  `-D warnings` clean, `cargo test --workspace` 698 passed 0 failed.
 - Next: flash K5 `7.0.20`, check the backlight goes out after 10 s, a key
   brings it back and a received signal keeps it lit, then program it from the studio (non-default TX power,
   timeout and backlight; check the handset follows, power-cycle, read back);

@@ -60,9 +60,13 @@ channels in three named banks, which is exactly what the K1 receive image holds;
 and one PMR446 generated plan, which is one stored object a target expands into
 sixteen channels.
 
-A set is a starting point, not an authority. Applying one replaces every
-bank, says how many it replaced, and asks the operator to confirm
-every frequency against their own national band plan.
+The Marine VHF set adds an international duplex bank and a simplex bank (with
+UK M and M2) as named channels classed `Marine`.
+
+A set is a starting point, not an authority. Adding one appends its banks after
+the existing ones, skips a bank whose name is already present, refuses a set
+that would pass the radio's bank limit, and asks the operator to confirm every
+frequency against their own national band plan.
 `tool/example-pmr-amateur-plan.sh` builds the same plan from the CLI, either to a
 file or straight to a radio.
 

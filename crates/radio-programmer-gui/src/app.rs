@@ -5,7 +5,7 @@ use std::{fs, path::Path, time::Instant};
 use eframe::egui::{
     self, collapsing_header::CollapsingState, ComboBox, Grid, RichText, ScrollArea, TextEdit,
 };
-use radio_channel_plan::MAX_GENERATED_CHANNELS;
+use radio_channel_plan::{MAX_BANKS, MAX_GENERATED_CHANNELS};
 use radio_domain::{
     Bandwidth, Modulation, PowerLevel, ScanResume, TxClass, BACKLIGHT_ALWAYS_ON,
     MAX_BATTERY_SAVE_RATIO, MAX_SQUELCH_LEVEL, TX_POWER_LEVELS, TX_TIMEOUT_CHOICES,
@@ -454,20 +454,38 @@ impl StudioApp {
         self.save_project();
     }
 
-    /// Replaces the project with one preset default set.
+    /// Appends one preset default set's banks after the operator's own.
     ///
-    /// This discards the edited project, so the count it replaces is reported:
-    /// a preset is a starting point, not a merge.
-    fn apply_preset(&mut self) {
+    /// A bank whose name the project already has is skipped, so adding a set
+    /// twice does not duplicate it, and a set that would take the project past
+    /// the banks a radio holds is refused whole.
+    fn add_preset(&mut self) {
         let Some(preset) = PRESETS.get(self.preset) else {
             return;
         };
-        let replaced = self.project.banks.len();
-        self.project = preset.build();
-        self.errors.clear();
-        let (channels, banks) = preset.size();
+        let new: Vec<_> = preset
+            .build()
+            .banks
+            .into_iter()
+            .filter(|bank| !self.project.banks.iter().any(|b| b.name == bank.name))
+            .collect();
+        if new.is_empty() {
+            self.status = format!("{} is already in the project.", preset.name());
+            return;
+        }
+        if self.project.banks.len() + new.len() > usize::from(MAX_BANKS) {
+            self.status = format!(
+                "{} needs {} more banks; a radio holds {MAX_BANKS} and the project has {}.",
+                preset.name(),
+                new.len(),
+                self.project.banks.len()
+            );
+            return;
+        }
+        let added = new.len();
+        self.project.banks.extend(new);
         self.status = format!(
-            "Applied {}: {channels} channels in {banks} banks, replacing {replaced} banks. \
+            "Added {}: {added} banks after the existing ones. \
              Confirm every frequency against your own band plan before use.",
             preset.name()
         );
@@ -592,13 +610,13 @@ impl StudioApp {
                             .on_hover_text(preset.detail());
                     }
                 });
-            // Applying replaces the project, so it is never automatic.
+            // Choosing a set changes nothing until it is added.
             if ui
-                .button("Apply")
-                .on_hover_text("Replaces every bank")
+                .button("Add")
+                .on_hover_text("Adds the set's banks after the existing ones")
                 .clicked()
             {
-                self.apply_preset();
+                self.add_preset();
             }
             if let Some(preset) = PRESETS.get(self.preset) {
                 ui.label(preset.detail());
@@ -1998,5 +2016,46 @@ mod tests {
             channel_row_label(0, &project.banks[0].channels[0]),
             "1: CH1 (145.500000)"
         );
+    }
+
+    fn preset_index(name: &str) -> usize {
+        crate::presets::PRESETS
+            .iter()
+            .position(|p| p.name() == name)
+            .expect("preset")
+    }
+
+    #[test]
+    fn adding_a_preset_keeps_the_existing_banks() {
+        let mut app = simulated("add-preset");
+        app.preset = preset_index("UK and EU simplex");
+        app.add_preset();
+        let before: Vec<_> = app.project.banks.iter().map(|b| b.name.clone()).collect();
+
+        app.preset = preset_index("Marine VHF");
+        app.add_preset();
+        let after: Vec<_> = app.project.banks.iter().map(|b| b.name.clone()).collect();
+        assert_eq!(after[..before.len()], before[..]);
+        assert_eq!(after[before.len()..], ["MARINE DUPLEX", "MARINE SIMPLEX"]);
+        assert!(app.project.validate().is_ok());
+
+        // Adding the same set again duplicates nothing.
+        app.add_preset();
+        assert_eq!(app.project.banks.len(), after.len());
+    }
+
+    #[test]
+    fn adding_a_preset_past_the_bank_limit_adds_nothing() {
+        let mut app = simulated("add-preset-full");
+        while app.project.banks.len() < usize::from(radio_channel_plan::MAX_BANKS) - 1 {
+            app.project.add_bank();
+            let last = app.project.banks.len() - 1;
+            app.project.banks[last].name = format!("B{last}");
+        }
+        let full = app.project.banks.len();
+        app.preset = preset_index("Marine VHF");
+        app.add_preset();
+        assert_eq!(app.project.banks.len(), full);
+        assert!(app.status.contains("needs 2 more banks"), "{}", app.status);
     }
 }
