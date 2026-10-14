@@ -1134,4 +1134,4 @@ unit's mid and high calibration rows as the reference reads them
 the hardware envelope rises to 5 W and each programmed range's ceiling still
 applies, so PMR446 stays at 500 mW. Measure the real output on a dummy load
 before relying on it (experiment 2). A level above the range's ceiling is
-refused silently; the handset does not yet say why.
+lowered to the highest level within it (operator request), by nominal figures.

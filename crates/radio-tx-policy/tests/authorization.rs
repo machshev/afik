@@ -291,6 +291,28 @@ fn switching_a_class_off_only_ever_narrows_the_programmed_ranges() {
 }
 
 #[test]
+fn the_ceiling_at_a_frequency_is_the_lowest_containing_range() {
+    let policy = policy();
+    let at = |hz| policy.max_mw_at(Frequency::from_hz(hz).unwrap());
+    assert_eq!(at(446_006_250), Some(500));
+    assert_eq!(at(145_500_000), Some(5_000));
+    assert_eq!(at(156_800_000), None);
+    let strict = TxRange {
+        class: TxClass::Experimental,
+        first_hz: 145_000_000,
+        last_hz: 145_900_000,
+        max_mw: 50,
+        wide_fm: true,
+        raster_hz: 0,
+    };
+    let overlapping = TxPolicy::new(&[support::RANGES[1], strict]).unwrap();
+    assert_eq!(
+        overlapping.max_mw_at(Frequency::from_hz(145_500_000).unwrap()),
+        Some(50)
+    );
+}
+
+#[test]
 fn analog_fm_only() {
     let mut candidate = request();
     candidate.modulation = Modulation::Am;

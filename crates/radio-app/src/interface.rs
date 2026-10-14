@@ -805,6 +805,16 @@ pub async fn run<D, K, B, S, V, M>(
             tx_tuned_hz = receiver.frequency_hz;
             tx_revision = tx_revision.saturating_add(1);
         }
+        // The handset's class switches narrow the programmed ranges, and
+        // apply from the next pass, mid-transmission included.
+        let tx_policy_now = tx_policy.restricted(shell.tx_enabled());
+        // The selected power, lowered to what the range being used allows.
+        let tx_level = transmit::level_within(
+            shell.tx_power(),
+            Frequency::from_hz(receiver.frequency_hz)
+                .ok()
+                .and_then(|frequency| tx_policy_now.max_mw_at(frequency)),
+        );
         let tx_request = tx_request(
             &receiver,
             context.scanning,
@@ -812,7 +822,7 @@ pub async fn run<D, K, B, S, V, M>(
             tx_revision,
             tx_calibration,
             target.tx,
-            shell.tx_power(),
+            tx_level,
             shell.tx_timeout_ms(),
         );
         let tx_now = Instant::now().as_millis();
@@ -830,9 +840,7 @@ pub async fn run<D, K, B, S, V, M>(
             tx = TxController::new(1, ptt.pressed(), tx_now).ok();
         }
         if let Some(controller) = tx.as_mut() {
-            // The handset's class switches narrow the programmed ranges, and
-            // apply from the next pass, mid-transmission included.
-            let tx_policy = tx_policy.restricted(shell.tx_enabled());
+            let tx_policy = tx_policy_now;
             let _ = controller.handle(tx_now, event, &tx_policy, &tx_request.0);
             let bias = tx_request.1;
             transmit::run_effects(controller, &tx_policy, &tx_request.0, tx_now, |effect| {

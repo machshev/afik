@@ -66,11 +66,21 @@ programmed TX ranges protect channel and VFO mode alike.
   screen (no GUI driver here). Gate: `cargo fmt --all --check` clean,
   workspace clippy `-D warnings` clean, `cargo test --workspace` 698 passed
   0 failed.
+- Power follows the range (operator request): instead of refusing a level
+  above the ceiling, the radio transmits at the selected level or the
+  highest one within the ceiling of the range in use, whichever is lower
+  (High on PMR446 sends Low4). Below Low1 or outside every range the policy
+  still refuses. Gate (another session has uncommitted channel-plan work in
+  the tree, so per crate): `cargo fmt` clean, `cargo clippy -p
+  radio-tx-policy -p radio-platform -p radio-app --all-targets --no-deps -D
+  warnings` clean, `cargo test` on those crates 171 passed 0 failed,
+  `tool/build-k5.sh --release` (flash end `0x0000d1a8`) passes.
 - `7.0.21` is the image to flash (`Cargo.lock` and both targets rebuilt;
   K5 flash end `0x0000d138`). `cargo test --workspace` 698 passed 0 failed.
 - Next (step 6, hardware): flash K5 `7.0.21`; the old format 5 image is
   refused, so write the project again from the studio with the UK preset's
-  ranges. Check PMR446 keys up at Low1–Low4 and is refused at Mid/High; a
+  ranges. Check PMR446 keys up at Low1–Low4 and at Low4 when Mid/High is
+  selected; a
   70 cm amateur channel keys up; a frequency outside every range (e.g. a
   marine or airband channel) is refused; switch Amateur off in
   SETTINGS > TX CLASSES and check 70 cm is refused, power-cycle, still

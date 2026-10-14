@@ -183,6 +183,19 @@ impl TxPolicy {
         policy
     }
 
+    /// The most power the ranges containing `frequency` allow, if any does.
+    ///
+    /// Every containing range applies, so this is the lowest of their
+    /// ceilings. A caller uses it to choose a power before asking; the policy
+    /// itself still refuses anything above it rather than clamping.
+    #[must_use]
+    pub fn max_mw_at(&self, frequency: Frequency) -> Option<u16> {
+        self.ranges()
+            .filter(|range| range.contains(frequency))
+            .map(|range| range.max_mw)
+            .min()
+    }
+
     /// Finds the class of the range permitting `request`.
     ///
     /// Every range containing the frequency must permit it, so an overlapping

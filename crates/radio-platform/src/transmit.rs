@@ -61,6 +61,27 @@ pub struct TxTarget {
 /// reference reads them from `base + band * 16 + power * 3`.
 pub type TxCalibration = [u8; 9];
 
+/// The power level to transmit at: `selected`, lowered to the highest level
+/// whose nominal output a range ceiling of `max_mw` allows.
+///
+/// With no ceiling (no range covers the frequency) or one below the lowest
+/// level, `selected` is kept and the policy refuses the request, so a
+/// transmission is never made quieter than Low1 to slip past a ceiling.
+#[must_use]
+pub fn level_within(selected: u8, max_mw: Option<u16>) -> u8 {
+    let Some(max_mw) = max_mw else {
+        return selected;
+    };
+    (0..=selected.min(TX_POWER_LEVELS - 1))
+        .rev()
+        .find(|level| {
+            TX_POWER_NOMINAL_MW
+                .get(usize::from(*level))
+                .is_some_and(|mw| *mw <= u32::from(max_mw))
+        })
+        .unwrap_or(selected)
+}
+
 impl TxTarget {
     /// Derives the PA bias for one power level (0 = Low1) as
     /// `RADIO_ConfigureSquelchAndOutputPower` and
@@ -307,6 +328,35 @@ mod tests {
             range(TxClass::Amateur, 144_000_000, 146_000_000, 5_000, 0),
         ])
         .unwrap()
+    }
+
+    #[test]
+    fn power_is_lowered_to_the_range_ceiling_and_never_raised() {
+        use super::level_within;
+        assert_eq!(level_within(5, Some(500)), 3, "High on PMR446 is Low4");
+        assert_eq!(level_within(4, Some(2_000)), 4, "Mid fits a 2 W ceiling");
+        assert_eq!(level_within(5, Some(2_000)), 4, "High drops to Mid");
+        assert_eq!(level_within(1, Some(5_000)), 1, "never raised");
+        assert_eq!(level_within(5, Some(5_000)), 5);
+        assert_eq!(level_within(5, Some(130)), 1, "125 mW fits 130");
+        assert_eq!(level_within(5, None), 5, "no range: the policy refuses");
+        assert_eq!(
+            level_within(2, Some(10)),
+            2,
+            "below Low1: the policy refuses"
+        );
+        // The lowered level is then authorised on PMR446.
+        let policy = policy();
+        let level = level_within(5, policy.max_mw_at(pmr(446_006_250)));
+        let request = K5.request(
+            pmr(446_006_250),
+            TxState::Selected,
+            1,
+            Some(15),
+            level,
+            60_000,
+        );
+        assert!(policy.authorise(&request).is_ok());
     }
 
     #[test]

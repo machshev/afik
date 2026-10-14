@@ -14,6 +14,11 @@ range (class `Never`, an empty or zero span, zero power) or more than
 The frequency decides, so a programmed channel and the VFO are checked alike;
 the token reports the class of the permitting range. Channels carry no class.
 
+The radio lowers the selected power to the highest level whose nominal
+output the ranges at the frequency allow (`TxPolicy::max_mw_at`,
+`transmit::level_within`); the policy itself still refuses, never clamps, a
+request above a ceiling.
+
 The handset can switch programmed classes off and on again
 (`TxPolicy::restricted` with a `ClassSet`). It only drops ranges, so it can
 never permit more than the studio programmed. The built-in regional snapshot,
