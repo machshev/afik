@@ -131,6 +131,16 @@ programmed TX ranges protect channel and VFO mode alike.
   at start-up. Gate: `cargo fmt --all --check` clean, workspace clippy `-D
   warnings` clean, `cargo test --workspace` 726 passed 0 failed, K5 and K1
   release images build. Not flashed.
+- Studio (operator request): five more default sets. UK business radio
+  receive (136–174 and 400–470 MHz at 12.5 kHz, five plans numbered BV/BU
+  because one plan holds 2048), Simple UK light licence (VHF low and
+  mid/high), licence-exempt radio mics (five VHF frequencies, 863–865 MHz),
+  short range devices (LPD433, UK 458 MHz telemetry, 868 MHz), and ISS and
+  FM satellites, a new split-channel bank (downlink RX, Region 1 uplink TX,
+  67 Hz on the ISS repeater and SO-50). No new TX ranges. 840 MHz+ tuning
+  is not tried on hardware. Gate: `cargo fmt --all --check` clean,
+  workspace clippy `-D warnings` clean, `cargo test --workspace` 738 passed
+  0 failed.
 - Step 5 (hardware, partial): on `7.0.22` with PMR446 channels in A and B,
   the other slot was never heard and scan never stopped at the 90 ms dwell;
   programmed at 200 ms both work (`EVID-K5-036`). `RadioConfig::conservative()`

@@ -15,9 +15,11 @@
 //! numbering is not arithmetic, so it is stored as named channels.
 
 use radio_channel_plan::SharedSettings;
-use radio_domain::{Bandwidth, Modulation, PowerLevel, TxClass};
+use radio_domain::{Bandwidth, Modulation, PowerLevel, Tone, TxClass};
 
-use crate::model::{format_mhz, BankDraft, BankKind, ChannelDraft, ProjectModel, TxRangeDraft};
+use crate::model::{
+    format_mhz, BankDraft, BankKind, ChannelDraft, ProjectModel, ToneDraft, TxRangeDraft,
+};
 
 /// One generated plan a preset defines.
 struct PresetPlan {
@@ -52,6 +54,26 @@ struct PresetList {
     step_hz: u32,
 }
 
+/// One channel of a split list: its own receive and transmit frequencies.
+struct SplitChannel {
+    name: &'static str,
+    receive_hz: u32,
+    transmit_hz: u32,
+    /// CTCSS tone sent on transmit, in tenths of a hertz, if any.
+    tx_ctcss_tenths_hz: Option<u16>,
+}
+
+/// One bank of channels whose receive and transmit frequencies are unrelated,
+/// such as a satellite's downlink and uplink.
+struct PresetSplitList {
+    name: &'static str,
+    channels: &'static [SplitChannel],
+    modulation: Modulation,
+    bandwidth: Bandwidth,
+    power: PowerLevel,
+    step_hz: u32,
+}
+
 /// A named default set of plans and channel banks.
 pub struct Preset {
     /// Region or allocation this set belongs to.
@@ -60,6 +82,7 @@ pub struct Preset {
     detail: &'static str,
     plans: &'static [PresetPlan],
     lists: &'static [PresetList],
+    splits: &'static [PresetSplitList],
 }
 
 /// The analogue PMR446 allocation: sixteen channels, 12.5 kHz from 446.00625.
@@ -246,6 +269,126 @@ const MARINE_SIMPLEX: PresetList = PresetList {
     step_hz: 25_000,
 };
 
+/// A receive-only plan of narrow FM channels, for allocations which the
+/// operator listens to but which no preset TX range covers.
+const fn listen(
+    name: &'static str,
+    designator: &'static str,
+    first_number: u16,
+    base_hz: u32,
+    spacing_hz: u32,
+    channels: u16,
+) -> PresetPlan {
+    PresetPlan {
+        name,
+        designator,
+        first_number,
+        base_hz,
+        spacing_hz,
+        channels,
+        calling_index: None,
+        offset_hz: 0,
+        modulation: Modulation::Fm,
+        bandwidth: Bandwidth::Narrow,
+        power: PowerLevel::Low1,
+    }
+}
+
+/// UK business radio, 136.000 to 174.000 MHz and 400.000 to 470.000 MHz on
+/// the 12.5 kHz raster.
+///
+/// One plan holds at most 2048 channels, so each band is split into plans
+/// whose numbering continues: `BV1` is 136.000 and `BV3041` is 174.000, `BU1`
+/// is 400.000 and `BU5601` is 470.000.
+const BUSINESS_RECEIVE: &[PresetPlan] = &[
+    listen("BUSINESS VHF 1", "BV", 1, 136_000_000, 12_500, 2048),
+    listen("BUSINESS VHF 2", "BV", 2049, 161_600_000, 12_500, 993),
+    listen("BUSINESS UHF 1", "BU", 1, 400_000_000, 12_500, 2048),
+    listen("BUSINESS UHF 2", "BU", 2049, 425_600_000, 12_500, 2048),
+    listen("BUSINESS UHF 3", "BU", 4097, 451_200_000, 12_500, 1505),
+];
+
+/// Simple UK light licence, VHF low band: 77.6875 to 86.3750 MHz at 12.5 kHz.
+const SIMPLE_UK_LOW: PresetPlan = listen("SIMPLE UK LOW", "SL", 1, 77_687_500, 12_500, 696);
+
+/// Simple UK light licence, VHF mid/high band: 164.0500 to 173.0875 MHz.
+const SIMPLE_UK_HIGH: PresetPlan = listen("SIMPLE UK HIGH", "SH", 1, 164_050_000, 12_500, 724);
+
+/// Licence-exempt VHF radio microphones (173.700 to 175.100 MHz): the five
+/// frequencies UK licence-exempt VHF microphones commonly ship on.
+const RADIO_MIC_VHF: PresetList = PresetList {
+    name: "RADIO MIC VHF",
+    channels: &[
+        ("MIC 173.800", 173_800_000),
+        ("MIC 174.100", 174_100_000),
+        ("MIC 174.500", 174_500_000),
+        ("MIC 174.800", 174_800_000),
+        ("MIC 175.000", 175_000_000),
+    ],
+    receive_offset_hz: 0,
+    modulation: Modulation::Fm,
+    // Microphone FM deviates far wider than voice radio; wide is the nearest.
+    bandwidth: Bandwidth::Wide,
+    power: PowerLevel::Low1,
+    step_hz: 25_000,
+};
+
+/// Licence-exempt UHF radio microphones in channel 70, 863.000 to 865.000 MHz,
+/// on a 25 kHz grid for finding them by scan.
+const RADIO_MIC_UHF: PresetPlan = PresetPlan {
+    bandwidth: Bandwidth::Wide,
+    ..listen("RADIO MIC UHF", "MU", 1, 863_000_000, 25_000, 81)
+};
+
+/// LPD433: 69 channels at 25 kHz from 433.075 to 434.775 MHz.
+const LPD433: PresetPlan = listen("LPD433", "LPD", 1, 433_075_000, 25_000, 69);
+
+/// UK licence-exempt telemetry and telecommand, 458.500 to 458.950 MHz.
+const SRD_458: PresetPlan = listen("SRD 458", "T", 1, 458_500_000, 12_500, 37);
+
+/// The 868.000 to 868.600 MHz short range device band at 25 kHz.
+const SRD_868: PresetPlan = listen("SRD 868", "SRD", 1, 868_000_000, 25_000, 25);
+
+/// CTCSS 67.0 Hz, which the ISS repeater and SO-50 want on their uplinks.
+const CTCSS_67: Option<u16> = Some(670);
+
+/// The ISS and the amateur FM satellites, each receiving on the downlink and
+/// transmitting on the uplink. Uplinks are IARU Region 1's. Doppler moves the
+/// 70 cm downlinks by up to 10 kHz, which narrow FM partly tolerates.
+const SATELLITES: PresetSplitList = PresetSplitList {
+    name: "SATELLITES",
+    channels: &[
+        SplitChannel {
+            name: "ISS VOICE",
+            receive_hz: 145_800_000,
+            transmit_hz: 145_200_000,
+            tx_ctcss_tenths_hz: None,
+        },
+        SplitChannel {
+            name: "ISS APRS",
+            receive_hz: 145_825_000,
+            transmit_hz: 145_825_000,
+            tx_ctcss_tenths_hz: None,
+        },
+        SplitChannel {
+            name: "ISS RPT",
+            receive_hz: 437_800_000,
+            transmit_hz: 145_990_000,
+            tx_ctcss_tenths_hz: CTCSS_67,
+        },
+        SplitChannel {
+            name: "SO-50",
+            receive_hz: 436_795_000,
+            transmit_hz: 145_850_000,
+            tx_ctcss_tenths_hz: CTCSS_67,
+        },
+    ],
+    modulation: Modulation::Fm,
+    bandwidth: Bandwidth::Narrow,
+    power: PowerLevel::High,
+    step_hz: 5_000,
+};
+
 /// Every selectable preset in display order.
 pub const PRESETS: &[Preset] = &[
     Preset {
@@ -254,6 +397,7 @@ pub const PRESETS: &[Preset] = &[
                  in three stored plans, calling channels marked.",
         plans: &[PMR446, TWO_METRE_SIMPLEX, SEVENTY_CENTIMETRE_SIMPLEX],
         lists: &[],
+        splits: &[],
     },
     Preset {
         name: "UK simplex and repeaters",
@@ -266,6 +410,7 @@ pub const PRESETS: &[Preset] = &[
             TWO_METRE_REPEATERS,
         ],
         lists: &[],
+        splits: &[],
     },
     Preset {
         name: "PMR446 only",
@@ -273,6 +418,7 @@ pub const PRESETS: &[Preset] = &[
                  which advertises a compact plan encoding.",
         plans: &[PMR446],
         lists: &[],
+        splits: &[],
     },
     Preset {
         name: "VHF airband receive",
@@ -280,6 +426,7 @@ pub const PRESETS: &[Preset] = &[
                  object. No TX range covers them, so the radio never transmits.",
         plans: &[AIRBAND],
         lists: &[],
+        splits: &[],
     },
     Preset {
         name: "Marine VHF",
@@ -288,6 +435,47 @@ pub const PRESETS: &[Preset] = &[
                  M and M2. Transmit needs a Marine TX range.",
         plans: &[],
         lists: &[MARINE_DUPLEX, MARINE_SIMPLEX],
+        splits: &[],
+    },
+    Preset {
+        name: "UK business radio receive",
+        detail: "136-174 MHz and 400-470 MHz at 12.5 kHz: 8642 channels in \
+                 five stored plans, numbered BV and BU. Receive only.",
+        plans: BUSINESS_RECEIVE,
+        lists: &[],
+        splits: &[],
+    },
+    Preset {
+        name: "UK Simple light licence",
+        detail: "Simple UK business bands at 12.5 kHz: VHF low 77.6875-86.3750 \
+                 MHz (SL) and VHF mid/high 164.0500-173.0875 MHz (SH).",
+        plans: &[SIMPLE_UK_LOW, SIMPLE_UK_HIGH],
+        lists: &[],
+        splits: &[],
+    },
+    Preset {
+        name: "Licence-exempt radio mics",
+        detail: "The five common VHF microphone frequencies (173.7-175.1 MHz) \
+                 and channel 70 at 863-865 MHz on a 25 kHz grid. Receive only.",
+        plans: &[RADIO_MIC_UHF],
+        lists: &[RADIO_MIC_VHF],
+        splits: &[],
+    },
+    Preset {
+        name: "Licence-exempt short range devices",
+        detail: "LPD433 (69 channels), UK 458.5-458.95 MHz telemetry and \
+                 868.0-868.6 MHz SRD. Mostly data; for spotting activity.",
+        plans: &[LPD433, SRD_458, SRD_868],
+        lists: &[],
+        splits: &[],
+    },
+    Preset {
+        name: "ISS and FM satellites",
+        detail: "ISS voice, APRS and cross-band repeater, and SO-50: each \
+                 receives the downlink and transmits the Region 1 uplink.",
+        plans: &[],
+        lists: &[],
+        splits: &[SATELLITES],
     },
 ];
 
@@ -467,7 +655,15 @@ impl Preset {
             channels += self.lists[index].channels.len();
             index += 1;
         }
-        (channels, self.plans.len() + self.lists.len())
+        index = 0;
+        while index < self.splits.len() {
+            channels += self.splits[index].channels.len();
+            index += 1;
+        }
+        (
+            channels,
+            self.plans.len() + self.lists.len() + self.splits.len(),
+        )
     }
 
     /// Builds the project this preset describes, replacing nothing.
@@ -519,6 +715,46 @@ impl Preset {
                 power: list.power,
                 step_hz: list.step_hz,
                 offset_hz: -i32::try_from(list.receive_offset_hz).unwrap_or(0),
+                channels,
+                ..BankDraft::default()
+            });
+        }
+        for list in self.splits {
+            let channels = list
+                .channels
+                .iter()
+                .map(|channel| ChannelDraft {
+                    name: channel.name.to_owned(),
+                    receive_mhz: format_mhz(channel.receive_hz),
+                    transmit_mhz: format_mhz(channel.transmit_hz),
+                    tx_tone: channel
+                        .tx_ctcss_tenths_hz
+                        .map_or_else(ToneDraft::default, |tenths| {
+                            ToneDraft::from_tone(Tone::Ctcss(tenths))
+                        }),
+                    modulation: list.modulation,
+                    bandwidth: list.bandwidth,
+                    power: list.power,
+                    step_hz: list.step_hz,
+                    ..ChannelDraft::default()
+                })
+                .collect();
+            // Each channel keeps its own split and tone; the rest is shared.
+            project.banks.push(BankDraft {
+                name: list.name.to_owned(),
+                kind: BankKind::Named,
+                scan_enabled: true,
+                shared: SharedSettings::from_bits(
+                    SharedSettings::MODULATION
+                        | SharedSettings::BANDWIDTH
+                        | SharedSettings::STEP
+                        | SharedSettings::POWER,
+                )
+                .unwrap_or_default(),
+                modulation: list.modulation,
+                bandwidth: list.bandwidth,
+                power: list.power,
+                step_hz: list.step_hz,
                 channels,
                 ..BankDraft::default()
             });
@@ -586,7 +822,12 @@ mod tests {
             assert_eq!(project.banks.len(), banks, "{}", preset.name());
             assert_eq!(
                 project.channel_count(),
-                preset.lists.iter().map(|l| l.channels.len()).sum::<usize>(),
+                preset.lists.iter().map(|l| l.channels.len()).sum::<usize>()
+                    + preset
+                        .splits
+                        .iter()
+                        .map(|l| l.channels.len())
+                        .sum::<usize>(),
                 "{}",
                 preset.name()
             );
@@ -614,7 +855,10 @@ mod tests {
 
     #[test]
     fn every_arithmetic_preset_is_plans_only_and_fits_a_radio() {
-        for preset in PRESETS.iter().filter(|p| p.lists.is_empty()) {
+        for preset in PRESETS
+            .iter()
+            .filter(|p| p.lists.is_empty() && p.splits.is_empty())
+        {
             let project = preset.build();
             assert!(
                 project.banks.iter().all(|b| b.kind == BankKind::Generated),
@@ -785,6 +1029,99 @@ mod tests {
             );
             assert_eq!(channel.bandwidth(), Bandwidth::Wide);
         }
+    }
+
+    fn project_of(name: &str) -> ProjectModel {
+        PRESETS
+            .iter()
+            .find(|p| p.name() == name)
+            .unwrap_or_else(|| panic!("{name}"))
+            .build()
+    }
+
+    /// Receive frequency of a generated plan's channel, and its name.
+    fn plan_channel(project: &ProjectModel, row: usize, index: u16) -> (String, u32) {
+        let ValidatedBank::Generated(plan) = project.banks[row].validate(row).expect("plan") else {
+            panic!("row {row} is a generated plan");
+        };
+        let record = plan.channel_record(index).expect("channel");
+        (record.name().as_str().to_owned(), record.receive().as_hz())
+    }
+
+    #[test]
+    fn the_business_preset_covers_both_bands_continuously() {
+        let project = project_of("UK business radio receive");
+        assert_eq!(project.banks.len(), 5);
+        assert_eq!(plan_channel(&project, 0, 0), ("BV1".into(), 136_000_000));
+        assert_eq!(plan_channel(&project, 0, 2047).1 + 12_500, 161_600_000);
+        assert_eq!(plan_channel(&project, 1, 0), ("BV2049".into(), 161_600_000));
+        assert_eq!(
+            plan_channel(&project, 1, 992),
+            ("BV3041".into(), 174_000_000)
+        );
+        assert_eq!(plan_channel(&project, 2, 0), ("BU1".into(), 400_000_000));
+        assert_eq!(plan_channel(&project, 2, 2047).1 + 12_500, 425_600_000);
+        assert_eq!(plan_channel(&project, 3, 2047).1 + 12_500, 451_200_000);
+        assert_eq!(
+            plan_channel(&project, 4, 1504),
+            ("BU5601".into(), 470_000_000)
+        );
+    }
+
+    #[test]
+    fn the_simple_uk_preset_spans_the_published_band_edges() {
+        let project = project_of("UK Simple light licence");
+        assert_eq!(plan_channel(&project, 0, 0).1, 77_687_500);
+        assert_eq!(plan_channel(&project, 0, 695).1, 86_375_000);
+        assert_eq!(plan_channel(&project, 1, 0).1, 164_050_000);
+        assert_eq!(plan_channel(&project, 1, 723).1, 173_087_500);
+    }
+
+    #[test]
+    fn the_radio_mic_and_srd_presets_land_inside_their_allocations() {
+        let mics = project_of("Licence-exempt radio mics");
+        assert_eq!(plan_channel(&mics, 0, 0).1, 863_000_000);
+        assert_eq!(plan_channel(&mics, 0, 80).1, 865_000_000);
+        // Every rendering has the same width, so text order is frequency order.
+        assert!(mics.banks[1]
+            .channels
+            .iter()
+            .all(|c| ("173.700000".."175.100001").contains(&c.receive_mhz.as_str())));
+
+        let srd = project_of("Licence-exempt short range devices");
+        assert_eq!(plan_channel(&srd, 0, 0), ("LPD1".into(), 433_075_000));
+        assert_eq!(plan_channel(&srd, 0, 68), ("LPD69".into(), 434_775_000));
+        assert_eq!(plan_channel(&srd, 1, 36).1, 458_950_000);
+        assert_eq!(plan_channel(&srd, 2, 24).1, 868_600_000);
+    }
+
+    #[test]
+    fn the_satellite_preset_receives_downlinks_and_transmits_uplinks() {
+        use radio_domain::Tone;
+
+        let project = project_of("ISS and FM satellites");
+        let validated = project.validate().expect("validates");
+        let channel = |name: &str| {
+            validated
+                .channels()
+                .iter()
+                .find(|c| c.name().as_str() == name)
+                .copied()
+                .unwrap_or_else(|| panic!("{name}"))
+        };
+        let iss = channel("ISS VOICE");
+        assert_eq!(
+            (iss.receive().as_hz(), iss.transmit().as_hz()),
+            (145_800_000, 145_200_000)
+        );
+        let repeater = channel("ISS RPT");
+        assert_eq!(
+            (repeater.receive().as_hz(), repeater.transmit().as_hz()),
+            (437_800_000, 145_990_000)
+        );
+        assert_eq!(repeater.tx_tone(), Tone::Ctcss(670));
+        assert_eq!(channel("ISS APRS").tx_tone(), Tone::None);
+        assert_eq!(channel("SO-50").receive().as_hz(), 436_795_000);
     }
 
     #[test]
