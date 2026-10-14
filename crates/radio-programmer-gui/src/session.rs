@@ -4,7 +4,15 @@
 //! the radio's memory view over the stock protocol; the radio validates it
 //! again when it loads it.
 
-use std::{fmt, io, path::Path};
+use std::{
+    fmt, io,
+    path::Path,
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        mpsc, Arc,
+    },
+    thread,
+};
 
 use radio_flasher::{FlashError, ImageWriteReport};
 use radio_programmer::{RadioImageError, RadioProject};
@@ -99,15 +107,16 @@ impl DeviceSession {
     }
 
     /// Compiles the project, writes it into the radio's memory and reads it
-    /// back.
+    /// back. `progress` is told each written block and the number to write.
     pub fn write_project(
         &mut self,
         project: &RadioProject,
+        progress: impl FnMut(u16, u16),
     ) -> Result<ImageWriteReport, SessionError> {
         let image = project
             .compile_radio_image()
             .map_err(SessionError::Compile)?;
-        let report = radio_flasher::write_afik_image(&mut self.transport, &image, |_, _| {})
+        let report = radio_flasher::write_afik_image(&mut self.transport, &image, progress)
             .map_err(SessionError::Radio)?;
         report.firmware.version().clone_into(&mut self.firmware);
         Ok(report)
@@ -129,6 +138,23 @@ impl DeviceSession {
         }
     }
 
+    /// Writes `project` on a worker thread, which owns the session until the
+    /// write ends and hands it back with the outcome.
+    pub fn start_write(self, project: RadioProject) -> Result<DeviceJob, SessionError> {
+        DeviceJob::start(self, JobKind::Write, move |session, progress| {
+            DeviceOutcome::Wrote(session.write_project(&project, |done, total| {
+                progress.store(u32::from(done) << 16 | u32::from(total), Ordering::Relaxed);
+            }))
+        })
+    }
+
+    /// Reads the radio's project on a worker thread.
+    pub fn start_read(self) -> Result<DeviceJob, SessionError> {
+        DeviceJob::start(self, JobKind::Read, |session, _| {
+            DeviceOutcome::Read(session.read_project())
+        })
+    }
+
     fn connect(mut transport: Transport, description: String) -> Result<Self, SessionError> {
         let firmware = radio_flasher::probe_normal_firmware(&mut transport)
             .map_err(SessionError::Radio)?
@@ -139,6 +165,91 @@ impl DeviceSession {
             description,
             firmware,
         })
+    }
+}
+
+/// What a [`DeviceJob`] is doing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum JobKind {
+    /// Writing the project to the radio.
+    Write,
+    /// Reading the project from the radio.
+    Read,
+}
+
+/// How a [`DeviceJob`] ended.
+#[derive(Debug)]
+pub enum DeviceOutcome {
+    /// A write, verified or failed.
+    Wrote(Result<ImageWriteReport, SessionError>),
+    /// A read, decoded or failed.
+    Read(Result<RadioProject, SessionError>),
+}
+
+/// A write or read running off the calling thread.
+pub struct DeviceJob {
+    kind: JobKind,
+    description: String,
+    progress: Arc<AtomicU32>,
+    outcome: mpsc::Receiver<(DeviceSession, DeviceOutcome)>,
+}
+
+impl DeviceJob {
+    fn start(
+        mut session: DeviceSession,
+        kind: JobKind,
+        work: impl FnOnce(&mut DeviceSession, &AtomicU32) -> DeviceOutcome + Send + 'static,
+    ) -> Result<Self, SessionError> {
+        let description = session.description.clone();
+        let progress = Arc::new(AtomicU32::new(0));
+        let shared = Arc::clone(&progress);
+        let (sender, outcome) = mpsc::channel();
+        thread::Builder::new()
+            .name("afik-device".to_owned())
+            .spawn(move || {
+                let result = work(&mut session, &shared);
+                let _ignored = sender.send((session, result));
+            })
+            .map_err(|error| SessionError::Radio(FlashError::Io(error)))?;
+        Ok(Self {
+            kind,
+            description,
+            progress,
+            outcome,
+        })
+    }
+
+    /// What the job is doing.
+    pub const fn kind(&self) -> JobKind {
+        self.kind
+    }
+
+    /// The radio the job is talking to.
+    pub fn description(&self) -> &str {
+        &self.description
+    }
+
+    /// Blocks written so far and blocks to write; zero before the first.
+    pub fn progress(&self) -> (u16, u16) {
+        let packed = self.progress.load(Ordering::Relaxed);
+        ((packed >> 16) as u16, (packed & 0xFFFF) as u16)
+    }
+
+    /// The session and outcome once the job has ended.
+    ///
+    /// A worker which died without answering is reported as the session
+    /// lost; the radio has to be connected again.
+    pub fn poll(&self) -> Option<Result<(DeviceSession, DeviceOutcome), ()>> {
+        match self.outcome.try_recv() {
+            Ok(done) => Some(Ok(done)),
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => Some(Err(())),
+        }
+    }
+
+    /// Waits for the job to end.
+    pub fn wait(self) -> Option<(DeviceSession, DeviceOutcome)> {
+        self.outcome.recv().ok()
     }
 }
 
@@ -162,12 +273,38 @@ mod tests {
             Err(SessionError::Image(_))
         ));
 
-        let report = session.write_project(&project).unwrap();
+        let report = session.write_project(&project, |_, _| {}).unwrap();
         assert!(report.changed_blocks > 0);
         let index = session.simulator().unwrap().index().unwrap();
         assert_eq!(index.len(), 1);
 
         let read = ProjectModel::from_project(&session.read_project().unwrap());
         assert_eq!(read, model);
+    }
+
+    #[test]
+    fn a_write_and_a_read_run_off_the_calling_thread_and_hand_the_session_back() {
+        use super::{DeviceOutcome, JobKind};
+        let mut model = ProjectModel::new();
+        model.add_bank();
+        model.add_channel(0);
+        let session = DeviceSession::connect_simulator().unwrap();
+
+        let job = session.start_write(model.validate().unwrap()).unwrap();
+        assert_eq!(job.kind(), JobKind::Write);
+        assert_eq!(job.description(), "simulator");
+        let (session, outcome) = job.wait().unwrap();
+        let DeviceOutcome::Wrote(Ok(report)) = outcome else {
+            panic!("the write succeeds");
+        };
+        assert!(report.changed_blocks > 0);
+
+        let job = session.start_read().unwrap();
+        let (session, outcome) = job.wait().unwrap();
+        let DeviceOutcome::Read(Ok(project)) = outcome else {
+            panic!("the read succeeds");
+        };
+        assert_eq!(ProjectModel::from_project(&project), model);
+        assert_eq!(session.simulator().unwrap().index().unwrap().len(), 1);
     }
 }

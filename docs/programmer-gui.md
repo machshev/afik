@@ -106,7 +106,10 @@ floating point.
   radio, and write it. Writing compiles the format 5 image, writes only the
   eight-byte blocks which differ into the radio's memory over the stock
   protocol, reads each back, then reads the whole image back
-  (`radio_flasher::write_afik_image`). Only AFIK `7.0.17` or later is written
+  (`radio_flasher::write_afik_image`). Writes and reads run on a worker
+  thread, so the window keeps drawing: a write shows its blocks as a progress
+  bar, and connecting, disconnecting, or starting another read or write waits
+  until it ends. Only AFIK `7.0.17` or later is written
   to; stock firmware keeps its own settings where the image goes. The radio
   checks the image again a second after the last write and runs no channels
   from one which fails.

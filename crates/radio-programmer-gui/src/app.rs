@@ -23,7 +23,7 @@ use crate::{
     },
     presets::PRESETS,
     projects::ProjectStore,
-    session::DeviceSession,
+    session::{DeviceJob, DeviceOutcome, DeviceSession, JobKind},
     DeviceSelector, Options,
 };
 
@@ -63,6 +63,8 @@ pub struct StudioApp {
     last_write: Option<ImageWriteReport>,
     flash: FlashTab,
     preset: usize,
+    /// A write or read running on a worker, which holds the session meanwhile.
+    job: Option<DeviceJob>,
     /// A bank row to open the next time the Banks tab is drawn.
     expand_bank: Option<usize>,
 }
@@ -89,6 +91,7 @@ impl StudioApp {
             flash: FlashTab::default(),
             preset: 0,
             expand_bank: None,
+            job: None,
         };
         if let Some(baud) = options.baud {
             app.chooser.baud = baud;
@@ -138,7 +141,28 @@ impl StudioApp {
         self.status = format!("Fix the highlighted fields before {action}.");
     }
 
+    /// Refuses a connection change or a second job while one is running:
+    /// the worker owns the session until it ends.
+    fn refuse_while_busy(&mut self) -> bool {
+        let Some(job) = &self.job else {
+            return false;
+        };
+        let doing = match job.kind() {
+            JobKind::Write => "writing to",
+            JobKind::Read => "reading from",
+        };
+        let message = format!(
+            "Wait until the studio has finished {doing} {}.",
+            job.description()
+        );
+        self.refuse(&message);
+        true
+    }
+
     fn connect_simulator(&mut self) {
+        if self.refuse_while_busy() {
+            return;
+        }
         match DeviceSession::connect_simulator() {
             Ok(session) => self.install_session(session),
             Err(error) => self.fail("connecting the simulator", error.to_string()),
@@ -146,6 +170,9 @@ impl StudioApp {
     }
 
     fn connect_serial(&mut self) {
+        if self.refuse_while_busy() {
+            return;
+        }
         let (path, baud) = match self.chooser.resolve() {
             Ok(resolved) => resolved,
             Err(reason) => {
@@ -179,6 +206,9 @@ impl StudioApp {
     }
 
     fn disconnect(&mut self) {
+        if self.refuse_while_busy() {
+            return;
+        }
         if let Some(session) = self.session.take() {
             log::info!("disconnected from {}", session.description());
             self.status = format!("Disconnected from {}.", session.description());
@@ -186,7 +216,11 @@ impl StudioApp {
         }
     }
 
+    /// Starts writing the project to the radio on a worker thread.
     fn write_project(&mut self) {
+        if self.refuse_while_busy() {
+            return;
+        }
         let project = match self.project.validate() {
             Ok(project) => project,
             Err(errors) => {
@@ -195,13 +229,66 @@ impl StudioApp {
             }
         };
         self.errors.clear();
-        let Some(session) = self.session.as_mut() else {
+        let Some(session) = self.session.take() else {
             self.refuse("Connect a radio first.");
             return;
         };
         let device = session.description().to_owned();
-        match session.write_project(&project) {
-            Ok(report) => {
+        match session.start_write(project) {
+            Ok(job) => {
+                log::info!("writing the project to {device}");
+                self.status = format!("Writing the project to {device}…");
+                self.job = Some(job);
+            }
+            Err(error) => self.fail(&format!("starting a write to {device}"), error.to_string()),
+        }
+    }
+
+    /// Starts reading the project from the radio on a worker thread.
+    fn read_project(&mut self) {
+        if self.refuse_while_busy() {
+            return;
+        }
+        let Some(session) = self.session.take() else {
+            self.refuse("Connect a radio first.");
+            return;
+        };
+        let device = session.description().to_owned();
+        match session.start_read() {
+            Ok(job) => {
+                log::info!("reading the project from {device}");
+                self.status = format!("Reading the project from {device}…");
+                self.job = Some(job);
+            }
+            Err(error) => self.fail(&format!("starting a read from {device}"), error.to_string()),
+        }
+    }
+
+    /// Takes back the session and reports the outcome once the job has ended.
+    fn poll_job(&mut self) {
+        let Some(finished) = self.job.as_ref().and_then(DeviceJob::poll) else {
+            return;
+        };
+        let device = self
+            .job
+            .take()
+            .map(|job| job.description().to_owned())
+            .unwrap_or_default();
+        match finished {
+            Ok((session, outcome)) => {
+                self.session = Some(session);
+                self.finish_job(&device, outcome);
+            }
+            Err(()) => self.fail(
+                &format!("talking to {device}"),
+                format!("The connection to {device} was lost; connect it again."),
+            ),
+        }
+    }
+
+    fn finish_job(&mut self, device: &str, outcome: DeviceOutcome) {
+        match outcome {
+            DeviceOutcome::Wrote(Ok(report)) => {
                 log::info!(
                     "wrote and verified a {}-byte image on {device} running {}: {} blocks changed",
                     report.image_bytes,
@@ -215,21 +302,11 @@ impl StudioApp {
                 );
                 self.last_write = Some(report);
             }
-            Err(error) => self.fail(
+            DeviceOutcome::Wrote(Err(error)) => self.fail(
                 &format!("writing the project to {device}"),
                 error.to_string(),
             ),
-        }
-    }
-
-    fn read_project(&mut self) {
-        let Some(session) = self.session.as_mut() else {
-            self.refuse("Connect a radio first.");
-            return;
-        };
-        let device = session.description().to_owned();
-        match session.read_project() {
-            Ok(project) => {
+            DeviceOutcome::Read(Ok(project)) => {
                 self.project = ProjectModel::from_project(&project);
                 self.errors.clear();
                 let (banks, channels) = (self.project.banks.len(), self.project.channel_count());
@@ -241,7 +318,7 @@ impl StudioApp {
                     self.projects.current().name
                 );
             }
-            Err(error) => self.fail(
+            DeviceOutcome::Read(Err(error)) => self.fail(
                 &format!("reading the project from {device}"),
                 error.to_string(),
             ),
@@ -396,6 +473,12 @@ fn read_project_file(path: &Path) -> Result<ProjectModel, String> {
 
 impl eframe::App for StudioApp {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
+        // A write or read runs on a worker; the window keeps drawing and
+        // checks for its end, wherever the operator is looking.
+        self.poll_job();
+        if self.job.is_some() {
+            context.request_repaint_after(std::time::Duration::from_millis(50));
+        }
         // The Flash tab's automatic flow only runs while it is shown, so a
         // radio is never probed from a tab the operator is not looking at.
         if self.tab == Tab::Flash {
@@ -663,7 +746,27 @@ impl StudioApp {
         self.device_picker(ui);
         ui.separator();
 
-        if let Some(session) = self.session.as_ref() {
+        if let Some(job) = &self.job {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                match (job.kind(), job.progress()) {
+                    (JobKind::Write, (done, total)) if total > 0 => {
+                        ui.add(
+                            egui::ProgressBar::new(f32::from(done) / f32::from(total))
+                                .desired_width(240.0)
+                                .text(format!("{done} of {total} blocks")),
+                        );
+                        ui.label(format!("Writing to {}", job.description()));
+                    }
+                    (JobKind::Write, _) => {
+                        ui.label(format!("Comparing with what {} holds", job.description()));
+                    }
+                    (JobKind::Read, _) => {
+                        ui.label(format!("Reading from {}", job.description()));
+                    }
+                }
+            });
+        } else if let Some(session) = self.session.as_ref() {
             ui.label(format!(
                 "Connected to {}, running {}.",
                 session.description(),
@@ -678,13 +781,16 @@ impl StudioApp {
         );
         radio_memory_label(ui, &self.project.storage_summary());
 
-        ui.horizontal_wrapped(|ui| {
-            if ui.button("Read project from radio").clicked() {
-                self.read_project();
-            }
-            if ui.button("Write project to radio").clicked() {
-                self.write_project();
-            }
+        let idle = self.job.is_none();
+        ui.add_enabled_ui(idle && self.session.is_some(), |ui| {
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("Read project from radio").clicked() {
+                    self.read_project();
+                }
+                if ui.button("Write project to radio").clicked() {
+                    self.write_project();
+                }
+            });
         });
 
         if let Some(report) = &self.last_write {
@@ -703,16 +809,20 @@ impl StudioApp {
             if ui.button("Detect devices").clicked() {
                 self.status = self.chooser.detect();
             }
-            if ui.button("Connect").clicked() {
+            let idle = self.job.is_none();
+            if ui.add_enabled(idle, egui::Button::new("Connect")).clicked() {
                 self.connect_serial();
             }
-            ui.add_enabled_ui(self.session.is_some(), |ui| {
+            ui.add_enabled_ui(idle && self.session.is_some(), |ui| {
                 if ui.button("Disconnect").clicked() {
                     self.disconnect();
                 }
             });
             ui.separator();
-            if ui.button("Connect simulator").clicked() {
+            if ui
+                .add_enabled(idle, egui::Button::new("Connect simulator"))
+                .clicked()
+            {
                 self.connect_simulator();
             }
         });
@@ -1287,6 +1397,14 @@ mod tests {
         )
     }
 
+    /// Lets a running write or read end and takes in its outcome.
+    fn settle(app: &mut StudioApp) {
+        while app.job.is_some() {
+            app.poll_job();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
     fn simulated(name: &str) -> StudioApp {
         app_in(
             &scratch(name),
@@ -1336,6 +1454,12 @@ mod tests {
         app.project.banks[1].base_mhz = "446.006250".to_owned();
         app.project.banks[1].designator = "PMR ".to_owned();
         app.write_project();
+        // The write runs on a worker, which holds the session meanwhile, so
+        // nothing else may use or replace the connection until it ends.
+        assert!(app.job.is_some() && app.session.is_none());
+        app.read_project();
+        assert!(app.status.contains("Wait until"), "{}", app.status);
+        settle(&mut app);
         assert!(app.errors.is_empty(), "{:?}", app.errors);
         assert!(app.last_write.as_ref().unwrap().changed_blocks > 0);
         let index = app
@@ -1351,6 +1475,7 @@ mod tests {
         let written = app.project.clone();
         app.project = crate::model::ProjectModel::new();
         app.read_project();
+        settle(&mut app);
         assert_eq!(app.project, written);
         assert_eq!(app.project.banks[1].kind, BankKind::Generated);
 
@@ -1359,7 +1484,12 @@ mod tests {
         assert!(app.last_write.is_none());
         app.write_project();
         app.disconnect();
+        assert!(app.status.contains("Wait until"), "{}", app.status);
+        settle(&mut app);
+        assert!(app.last_write.is_some());
+        app.disconnect();
         assert!(app.last_write.is_none());
+        assert!(app.session.is_none());
     }
 
     #[test]
