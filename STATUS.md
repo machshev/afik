@@ -160,6 +160,12 @@ programmed TX ranges protect channel and VFO mode alike.
   warnings` clean, `cargo test --workspace` 734 passed 0 failed,
   `tool/build-k5.sh --release` (flash end `0x0000e514`) and
   `tool/build-k1.sh --release` pass. Not flashed.
+- `7.0.23` flashed to the K5 (bootloader `2.00.06`, CRC-32 `ea5bcd27`,
+  240/240 pages acknowledged, not read back; K5 flash end `0x0000e50c`, K1
+  release builds). It carries TX DISABLED, programmed dual watch, battery
+  save, F 9 Call, the 200 ms dwell and the change-identity wrap. The image
+  format is unchanged, so the programmed configuration still loads. Not yet
+  observed on the radio.
 - Next (step 5, hardware): with the 200 ms dwell; F 2 and F 3 on the keypad; put A
   and B in different banks; dual watch on, key a second radio on B and check
   the hold, hang, meter and that PTT goes out on A (`RISK-041`); power-cycle
