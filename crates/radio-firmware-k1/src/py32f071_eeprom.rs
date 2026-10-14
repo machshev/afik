@@ -57,7 +57,10 @@ pub const OPERATOR_STATE_REGION_BYTES: u32 = 4_096;
 const OPERATOR_STATE_SLOTS: u32 = OPERATOR_STATE_REGION_BYTES / OPERATOR_STATE_SLOT_BYTES;
 
 /// One record's slot size as the memory addresses it.
-const OPERATOR_STATE_SLOT_BYTES: u32 = 16;
+///
+/// Records were sixteen bytes before the second slot; such a record still
+/// reads from the front of a slot, so an upgraded radio keeps a place.
+const OPERATOR_STATE_SLOT_BYTES: u32 = 32;
 
 // A slot which did not hold a whole record would silently truncate one.
 const _: () = assert!(OPERATOR_STATE_SLOT_BYTES as usize == OPERATOR_STATE_BYTES);
@@ -217,8 +220,8 @@ impl RetainedConfiguration {
     /// the damage. Nothing is written here, so a radio which cannot read its
     /// memory simply starts where an unprogrammed one does.
     ///
-    /// One record is sixteen bytes and there are two hundred and fifty-six
-    /// slots, so this costs a bounded set of short reads at start-up and no
+    /// One record is thirty-two bytes and there are one hundred and
+    /// twenty-eight slots, so this costs a bounded set of short reads at start-up and no
     /// buffer larger than one record.
     pub fn read_operator_state(&mut self) -> Option<OperatorState> {
         let mut latest = None;
@@ -289,7 +292,7 @@ impl RetainedConfiguration {
     ///
     /// The memory is shared by both tasks through synchronous calls, so this
     /// blocks. A page program takes about a millisecond; the sector erase,
-    /// once every 256 saved places, tens of milliseconds.
+    /// once every 128 saved places, tens of milliseconds.
     fn await_ready(&mut self) -> Result<(), RetainError> {
         for _ in 0..READY_POLL_ATTEMPTS {
             if self.eeprom.is_ready().map_err(RetainError::Memory)? {

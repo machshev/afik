@@ -2,8 +2,9 @@
 //!
 //! A radio which forgets its channel every time the battery is changed is a
 //! radio the operator has to set up again before every use. This is the record
-//! that stops that: the source in force, the bank filtering it, the channel
-//! selected, and the frequency the VFO was on.
+//! that stops that: for each of the two slots, the source in force, the bank
+//! filtering it, the channel selected, and the frequency the VFO was on; which
+//! slot was selected; and whether dual watch was on.
 //!
 //! It is deliberately not a configuration object. Configuration is what a host
 //! programmed and is retained as one canonical image; this is what the operator
@@ -21,14 +22,21 @@ use radio_tx_policy::ClassSet;
 ///
 /// A whole number of these divides both a program page and an erase sector, so
 /// a record is written in one page program and never straddles two of them.
-pub const OPERATOR_STATE_BYTES: usize = 16;
+pub const OPERATOR_STATE_BYTES: usize = 32;
+
+/// Bytes of a version 1 or 2 record, which an older image wrote and this one
+/// still reads from the front of a slot.
+const LEGACY_BYTES: usize = 16;
 
 /// Record version this image writes.
 ///
 /// An erased byte is `0xFF`, so a version which is never `0xFF` is also how an
-/// unwritten slot is told from a written one. Version 2 adds the handset
-/// squelch; a version 1 record is still read, without one.
-const RECORD_VERSION: u8 = 2;
+/// unwritten slot is told from a written one. Version 3 is two slots wide and
+/// adds the selected slot and dual watch; version 2 added the handset squelch.
+/// Versions 1 and 2 are still read, as slot A with dual watch off.
+const RECORD_VERSION: u8 = 3;
+/// The sixteen-byte version with the squelch.
+const RECORD_VERSION_WITH_SQUELCH: u8 = 2;
 /// The version before the squelch was kept here.
 const RECORD_VERSION_WITHOUT_SQUELCH: u8 = 1;
 /// The squelch byte of a record which holds none.
@@ -42,6 +50,33 @@ const BANK_FILTERED: u8 = 0b0000_0010;
 /// `n` (1 to 6) is bit `n + 1`. A record written before they existed has them
 /// clear, which is every class on.
 const TX_DISABLED_BITS: u8 = 0b1111_1100;
+
+/// Second flags byte: the slot not selected listened to channels.
+const OTHER_MEMORY_MODE: u8 = 0b0000_0001;
+/// Second flags byte: a bank filtered the slot not selected.
+const OTHER_BANK_FILTERED: u8 = 0b0000_0010;
+/// Second flags byte: slot B was the selected one.
+const B_SELECTED: u8 = 0b0000_0100;
+/// Second flags byte: dual watch was on.
+const DUAL_WATCH: u8 = 0b0000_1000;
+
+/// Where the slot not selected was left.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OtherSlot {
+    /// Whether it listened to channels rather than its VFO.
+    pub memory_mode: bool,
+    /// The bank filtering its channels, if one was.
+    pub bank: Option<BankId>,
+    /// Zero-based selection index of its channel.
+    pub index: u16,
+    /// Identifier of the channel that index named, checked as
+    /// [`OperatorState::channel_id`] is.
+    pub channel_id: u16,
+    /// Its VFO frequency in hertz.
+    pub vfo_hz: u32,
+    /// Index into the selectable tuning steps.
+    pub step_index: u8,
+}
 
 /// Where the operator left the radio.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -73,6 +108,13 @@ pub struct OperatorState {
     /// Kept here, beside the place, so lending the radio out survives a power
     /// cycle; it can only narrow the programmed ranges.
     pub tx_disabled: ClassSet,
+    /// The slot not selected; absent in a record an older image wrote.
+    pub other: Option<OtherSlot>,
+    /// Whether slot B rather than A was the selected one; the fields above
+    /// describe whichever was.
+    pub b_selected: bool,
+    /// Whether dual watch was on.
+    pub dual_watch: bool,
 }
 
 impl OperatorState {
@@ -96,6 +138,31 @@ impl OperatorState {
         bytes[8..12].copy_from_slice(&self.vfo_hz.to_le_bytes());
         bytes[12] = self.step_index;
         bytes[13] = self.squelch.map_or(NO_SQUELCH, SquelchLevel::get);
+        let mut flags = 0;
+        if let Some(other) = self.other {
+            if other.memory_mode {
+                flags |= OTHER_MEMORY_MODE;
+            }
+            if let Some(bank) = other.bank {
+                flags |= OTHER_BANK_FILTERED;
+                bytes[15..17].copy_from_slice(&bank.get().to_le_bytes());
+            }
+            bytes[17..19].copy_from_slice(&other.index.to_le_bytes());
+            bytes[19..21].copy_from_slice(&other.channel_id.to_le_bytes());
+            bytes[21..25].copy_from_slice(&other.vfo_hz.to_le_bytes());
+            bytes[25] = other.step_index;
+        } else {
+            // No other slot is written as an out-of-range step, which decodes
+            // back to none.
+            bytes[25] = 0xFF;
+        }
+        if self.b_selected {
+            flags |= B_SELECTED;
+        }
+        if self.dual_watch {
+            flags |= DUAL_WATCH;
+        }
+        bytes[14] = flags;
         let checksum = crc16(&bytes[..OPERATOR_STATE_BYTES - 2]);
         bytes[OPERATOR_STATE_BYTES - 2..].copy_from_slice(&checksum.to_le_bytes());
         bytes
@@ -109,18 +176,17 @@ impl OperatorState {
     /// falls back to the last complete record instead of restoring rubbish.
     #[must_use]
     pub fn decode(bytes: &[u8; OPERATOR_STATE_BYTES]) -> Option<Self> {
-        if bytes[0] != RECORD_VERSION && bytes[0] != RECORD_VERSION_WITHOUT_SQUELCH {
-            return None;
-        }
-        let expected = u16::from_le_bytes([
-            bytes[OPERATOR_STATE_BYTES - 2],
-            bytes[OPERATOR_STATE_BYTES - 1],
-        ]);
-        if crc16(&bytes[..OPERATOR_STATE_BYTES - 2]) != expected {
+        let covered = match bytes[0] {
+            RECORD_VERSION => OPERATOR_STATE_BYTES,
+            RECORD_VERSION_WITH_SQUELCH | RECORD_VERSION_WITHOUT_SQUELCH => LEGACY_BYTES,
+            _ => return None,
+        };
+        let expected = u16::from_le_bytes([bytes[covered - 2], bytes[covered - 1]]);
+        if crc16(&bytes[..covered - 2]) != expected {
             return None;
         }
         let flags = bytes[1];
-        Some(Self {
+        let mut state = Self {
             memory_mode: flags & MEMORY_MODE != 0,
             bank: (flags & BANK_FILTERED != 0)
                 .then(|| BankId::new(u16::from_le_bytes([bytes[2], bytes[3]]))),
@@ -128,13 +194,31 @@ impl OperatorState {
             channel_id: u16::from_le_bytes([bytes[6], bytes[7]]),
             vfo_hz: u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]),
             step_index: bytes[12],
-            squelch: if bytes[0] == RECORD_VERSION {
-                SquelchLevel::new(bytes[13]).ok()
-            } else {
+            squelch: if bytes[0] == RECORD_VERSION_WITHOUT_SQUELCH {
                 None
+            } else {
+                SquelchLevel::new(bytes[13]).ok()
             },
             tx_disabled: ClassSet::from_bits((flags & TX_DISABLED_BITS) >> 1),
-        })
+            other: None,
+            b_selected: false,
+            dual_watch: false,
+        };
+        if bytes[0] == RECORD_VERSION {
+            let flags = bytes[14];
+            state.b_selected = flags & B_SELECTED != 0;
+            state.dual_watch = flags & DUAL_WATCH != 0;
+            state.other = (bytes[25] != 0xFF).then(|| OtherSlot {
+                memory_mode: flags & OTHER_MEMORY_MODE != 0,
+                bank: (flags & OTHER_BANK_FILTERED != 0)
+                    .then(|| BankId::new(u16::from_le_bytes([bytes[15], bytes[16]]))),
+                index: u16::from_le_bytes([bytes[17], bytes[18]]),
+                channel_id: u16::from_le_bytes([bytes[19], bytes[20]]),
+                vfo_hz: u32::from_le_bytes([bytes[21], bytes[22], bytes[23], bytes[24]]),
+                step_index: bytes[25],
+            });
+        }
+        Some(state)
     }
 }
 
@@ -149,8 +233,7 @@ pub fn is_erased(bytes: &[u8; OPERATOR_STATE_BYTES]) -> bool {
 
 /// CRC-16/CCITT-FALSE over one record's covered bytes.
 ///
-/// Sixteen bits over fourteen bytes, which is what the record has room for and
-/// far more than it needs: this is guarding against a write cut short by a flat
+/// Sixteen bits over thirty bytes, which is far more than the record needs: this is guarding against a write cut short by a flat
 /// battery, not against a hostile one.
 fn crc16(bytes: &[u8]) -> u16 {
     let mut crc = 0xFFFF_u16;
@@ -169,7 +252,7 @@ fn crc16(bytes: &[u8]) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use super::{crc16, is_erased, OperatorState, OPERATOR_STATE_BYTES};
+    use super::{crc16, is_erased, OperatorState, OtherSlot, LEGACY_BYTES, OPERATOR_STATE_BYTES};
     use radio_domain::{BankId, SquelchLevel, TxClass};
     use radio_tx_policy::ClassSet;
 
@@ -183,7 +266,31 @@ mod tests {
             step_index: 2,
             squelch: Some(SquelchLevel::new(4).expect("level")),
             tx_disabled: ClassSet::NONE.with(TxClass::Amateur, true),
+            other: Some(OtherSlot {
+                memory_mode: true,
+                bank: Some(BankId::new(7)),
+                index: 5,
+                channel_id: 0x8207,
+                vfo_hz: 145_500_000,
+                step_index: 1,
+            }),
+            b_selected: true,
+            dual_watch: true,
         }
+    }
+
+    /// Encodes `state` as an older image would have: sixteen bytes, version
+    /// `version`, the rest of the slot erased.
+    fn legacy(state: OperatorState, version: u8) -> [u8; OPERATOR_STATE_BYTES] {
+        let mut encoded = state.encode();
+        encoded[0] = version;
+        if version == 1 {
+            encoded[13] = 0;
+        }
+        encoded[14..].fill(0xFF);
+        let checksum = crc16(&encoded[..LEGACY_BYTES - 2]);
+        encoded[LEGACY_BYTES - 2..LEGACY_BYTES].copy_from_slice(&checksum.to_le_bytes());
+        encoded
     }
 
     #[test]
@@ -233,6 +340,23 @@ mod tests {
                 channel_id: u16::MAX,
                 vfo_hz: u32::MAX,
                 step_index: u8::MAX,
+                ..state()
+            },
+            OperatorState {
+                other: None,
+                b_selected: false,
+                dual_watch: false,
+                ..state()
+            },
+            OperatorState {
+                other: Some(OtherSlot {
+                    memory_mode: false,
+                    bank: None,
+                    index: 0,
+                    channel_id: 0,
+                    vfo_hz: 433_500_000,
+                    step_index: 0,
+                }),
                 ..state()
             },
         ] {
@@ -286,22 +410,35 @@ mod tests {
     #[test]
     fn a_foreign_version_is_refused() {
         let mut encoded = state().encode();
-        encoded[0] = 3;
+        encoded[0] = 4;
         assert_eq!(OperatorState::decode(&encoded), None);
     }
 
     /// A radio upgraded from an image without the squelch keeps its place.
     #[test]
     fn a_version_one_record_is_read_without_a_squelch() {
-        let mut encoded = state().encode();
-        encoded[0] = 1;
-        encoded[13] = 0;
-        let checksum = crc16(&encoded[..OPERATOR_STATE_BYTES - 2]);
-        encoded[OPERATOR_STATE_BYTES - 2..].copy_from_slice(&checksum.to_le_bytes());
         assert_eq!(
-            OperatorState::decode(&encoded),
+            OperatorState::decode(&legacy(state(), 1)),
             Some(OperatorState {
                 squelch: None,
+                other: None,
+                b_selected: false,
+                dual_watch: false,
+                ..state()
+            })
+        );
+    }
+
+    /// A radio upgraded from a one-slot image keeps its place as slot A, with
+    /// dual watch off.
+    #[test]
+    fn a_version_two_record_is_read_as_slot_a() {
+        assert_eq!(
+            OperatorState::decode(&legacy(state(), 2)),
+            Some(OperatorState {
+                other: None,
+                b_selected: false,
+                dual_watch: false,
                 ..state()
             })
         );

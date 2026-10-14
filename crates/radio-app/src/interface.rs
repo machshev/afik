@@ -42,7 +42,7 @@ use radio_tx_policy::{TxRequest, TxState};
 use crate::configuration::Programmed;
 use crate::drivers::{BatterySense, Display, Keypad, Memory, Speaker, Target};
 use crate::keys::{Debouncer, Edge};
-use crate::operator_state::OperatorState;
+use crate::operator_state::{OperatorState, OtherSlot};
 use crate::serial::read_image;
 use crate::state::{
     bus_available, now_ms, peripheral_clock_khz, reset_cause, serial_counters, Publication,
@@ -422,6 +422,17 @@ impl Selected {
             channel_id: place.channel_id,
         })
     }
+
+    /// Returns the memory selection of the slot not selected, if it had one.
+    fn from_other(place: OperatorState) -> Option<Self> {
+        place
+            .other
+            .filter(|other| other.memory_mode)
+            .map(|other| Self {
+                index: other.index,
+                channel_id: other.channel_id,
+            })
+    }
 }
 
 /// Applies one controller update: the tuning it asks for, and the timer it arms.
@@ -490,6 +501,25 @@ fn adopt_place(shell: &mut Shell, programmed: &Programmed, place: Option<Operato
     if let Some(place) = place {
         shell.restore_vfo(place.vfo_hz, usize::from(place.step_index));
         shell.set_tx_disabled(place.tx_disabled);
+        shell.set_dual_watch(place.dual_watch);
+        if let Some(other) = place.other {
+            let active = if place.b_selected {
+                SlotId::B
+            } else {
+                SlotId::A
+            };
+            // With no channels the VFO is all either slot can have.
+            let memory = other.memory_mode && !programmed.is_empty();
+            shell.restore_other(
+                active,
+                Slot {
+                    mode: if memory { Mode::Memory } else { Mode::Vfo },
+                    bank_filter: other.bank,
+                    vfo_hz: other.vfo_hz,
+                    step_index: usize::from(other.step_index),
+                },
+            );
+        }
     }
     if programmed.is_empty() {
         // The VFO is the only source this radio has, whatever it was left on.
@@ -515,14 +545,17 @@ fn adopt_publication(
     was_empty: bool,
     place: Option<OperatorState>,
     selected: &mut Option<Selected>,
+    other_selected: &mut Option<Selected>,
 ) {
     adopt_settings(shell, programmed);
     if place.is_some() {
         adopt_place(shell, programmed, place);
         *selected = place.and_then(Selected::from_place);
+        *other_selected = place.and_then(Selected::from_other);
     } else if was_empty && !programmed.is_empty() {
         shell.select_memory();
         *selected = None;
+        *other_selected = None;
     }
 }
 
@@ -684,12 +717,19 @@ pub async fn run<D, K, B, S, V, M>(
     // The retained place is where the operator left this radio, and it is the
     // only thing which knows on the pass that adopts it.
     let mut selected = None;
-    adopt_publication(&mut shell, &programmed, true, place, &mut selected);
-    let mut activation = activate(&programmed, &shell, selected, memory);
-    let mut pending = activation.as_mut().and_then(|(_, setup)| setup.take());
     // The slot not selected has a controller of its own, which keeps its
     // channel and bank while the operator uses the other.
-    let mut other_selected: Option<Selected> = None;
+    let mut other_selected = None;
+    adopt_publication(
+        &mut shell,
+        &programmed,
+        true,
+        place,
+        &mut selected,
+        &mut other_selected,
+    );
+    let mut activation = activate(&programmed, &shell, selected, memory);
+    let mut pending = activation.as_mut().and_then(|(_, setup)| setup.take());
     let mut other_activation = activate_other(&programmed, &shell, other_selected, memory);
 
     let mut receiver = Receiver::new(radio, speaker);
@@ -823,6 +863,7 @@ pub async fn run<D, K, B, S, V, M>(
                 was_empty,
                 publication.place,
                 &mut selected,
+                &mut other_selected,
             );
             if let Some(on) = backlight.set_seconds(programmed.config().backlight_seconds, now_ms())
             {
@@ -1159,7 +1200,17 @@ pub async fn run<D, K, B, S, V, M>(
                 });
             }
         }
+        let other_slot = shell.other_slot();
+        if let Some((controller, _)) = other_activation.as_ref() {
+            if matches!(other_slot.mode, Mode::Memory) {
+                other_selected = Some(Selected {
+                    index: controller.index(),
+                    channel_id: controller.channel().id().get(),
+                });
+            }
+        }
         let kept = selected.unwrap_or_default();
+        let other_kept = other_selected.unwrap_or_default();
         let place = OperatorState {
             memory_mode: matches!(shell.mode(), Mode::Memory),
             bank: shell.bank_filter(),
@@ -1169,6 +1220,16 @@ pub async fn run<D, K, B, S, V, M>(
             step_index: u8::try_from(shell.step_index()).unwrap_or(0),
             squelch: Some(shell.squelch()),
             tx_disabled: shell.tx_disabled(),
+            other: Some(OtherSlot {
+                memory_mode: matches!(other_slot.mode, Mode::Memory),
+                bank: other_slot.bank_filter,
+                index: other_kept.index,
+                channel_id: other_kept.channel_id,
+                vfo_hz: other_slot.vfo_hz,
+                step_index: u8::try_from(other_slot.step_index).unwrap_or(0),
+            }),
+            b_selected: shell.active_slot() == SlotId::B,
+            dual_watch: shell.dual_watch(),
         };
         if context.scanning {
             // A scan moves the selection several times a second and none of
@@ -1789,6 +1850,9 @@ mod tests {
             step_index: 2,
             squelch: None,
             tx_disabled: radio_tx_policy::ClassSet::NONE,
+            other: None,
+            b_selected: false,
+            dual_watch: false,
         }
     }
 
@@ -1797,13 +1861,21 @@ mod tests {
     fn boot(place: Option<OperatorState>) -> (Shell, Option<Selected>) {
         let mut shell = Shell::new();
         let mut selected = None;
-        adopt_publication(&mut shell, &Programmed::empty(), true, None, &mut selected);
+        adopt_publication(
+            &mut shell,
+            &Programmed::empty(),
+            true,
+            None,
+            &mut selected,
+            &mut None,
+        );
         adopt_publication(
             &mut shell,
             &Programmed::with_channels(4, 0b11),
             true,
             place,
             &mut selected,
+            &mut None,
         );
         (shell, selected)
     }
@@ -1820,6 +1892,51 @@ mod tests {
             Some(Selected {
                 index: 3,
                 channel_id: 9
+            })
+        );
+    }
+
+    #[test]
+    fn both_slots_and_dual_watch_come_back_after_a_power_cycle() {
+        use crate::operator_state::OtherSlot;
+        use radio_platform::operator_shell::SlotId;
+
+        let two_slots = OperatorState {
+            other: Some(OtherSlot {
+                memory_mode: true,
+                bank: Some(BankId::new(1)),
+                index: 2,
+                channel_id: 7,
+                vfo_hz: 433_500_000,
+                step_index: 0,
+            }),
+            b_selected: true,
+            dual_watch: true,
+            ..place(false)
+        };
+        let mut shell = Shell::new();
+        let mut selected = None;
+        let mut other_selected = None;
+        adopt_publication(
+            &mut shell,
+            &Programmed::with_channels(4, 0b11),
+            true,
+            Some(two_slots),
+            &mut selected,
+            &mut other_selected,
+        );
+        assert_eq!(shell.active_slot(), SlotId::B);
+        assert!(shell.dual_watch());
+        assert!(matches!(shell.mode(), Mode::Vfo), "B was on its VFO");
+        let a = shell.other_slot();
+        assert!(matches!(a.mode, Mode::Memory));
+        assert_eq!(a.bank_filter, Some(BankId::new(1)));
+        assert_eq!(a.vfo_hz, 433_500_000);
+        assert_eq!(
+            other_selected,
+            Some(Selected {
+                index: 2,
+                channel_id: 7
             })
         );
     }
@@ -1854,6 +1971,7 @@ mod tests {
             true,
             Some(lent),
             &mut selected,
+            &mut None,
         );
         assert_eq!(shell.tx_disabled(), lent.tx_disabled);
     }
@@ -1875,6 +1993,7 @@ mod tests {
             false,
             None,
             &mut selected,
+            &mut None,
         );
         assert_eq!(shell.bank_filter(), Some(BankId::new(1)));
         assert_eq!(selected.map(|kept| kept.index), Some(3));
@@ -1889,6 +2008,7 @@ mod tests {
             true,
             None,
             &mut selected,
+            &mut None,
         );
         assert_eq!(shell.tx_power(), 3);
         assert_eq!(shell.tx_timeout_ms(), 300_000);
