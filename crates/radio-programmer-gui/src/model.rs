@@ -409,9 +409,11 @@ impl StorageSummary {
     /// Returns the bytes saved by expanding plans instead of storing channels.
     ///
     /// The comparison is against the same configuration written as explicit
-    /// channel rows, which would need no plan objects at all.
+    /// channel rows, which would need no plan objects at all. A plan of one
+    /// channel costs more than the row it replaces, so this saves nothing
+    /// rather than underflowing.
     pub const fn bytes_saved(&self) -> usize {
-        self.expanded_channels * CHANNEL_ENCODED_LEN - self.plan_bytes
+        (self.expanded_channels * CHANNEL_ENCODED_LEN).saturating_sub(self.plan_bytes)
     }
 }
 
@@ -1457,6 +1459,14 @@ mod tests {
         // configuration which could be written.
         model.banks[1].base_mhz = "not a frequency".to_owned();
         assert_eq!(model.storage_summary().expanded_channels, 0);
+
+        // A one-channel plan costs more than the row it replaces, which is a
+        // saving of nothing, not an overflow.
+        model.banks[1].base_mhz = "446.00625".to_owned();
+        model.banks[1].channel_count = 1;
+        let single = model.storage_summary();
+        assert!(single.plan_bytes > CHANNEL_ENCODED_LEN);
+        assert_eq!(single.bytes_saved(), 0);
     }
 
     #[test]
