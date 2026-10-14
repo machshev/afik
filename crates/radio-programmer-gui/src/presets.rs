@@ -6,15 +6,16 @@
 //! own national band plan, and for the transmit classification every channel
 //! carries. Nothing here is applied without an explicit request.
 //!
-//! Every set is expressed as generated plans rather than explicit channels,
-//! because every one of them is arithmetic. A plan is one stored object however
-//! many channels it holds, so a radio which would not fit these as records
-//! holds all of them and the operator reads the designators a published band
-//! plan uses: `S20 CALL` rather than a truncated bank name and a position.
+//! A set is expressed as generated plans wherever its allocation is
+//! arithmetic. A plan is one stored object however many channels it holds, so
+//! a radio which would not fit these as records holds all of them and the
+//! operator reads the designators a published band plan uses: `S20 CALL`
+//! rather than a truncated bank name and a position. The marine channel
+//! numbering is not arithmetic, so it is stored as named channels.
 
 use radio_domain::{Bandwidth, Modulation, PowerLevel, TxClass};
 
-use crate::model::{BankDraft, BankKind, ProjectModel};
+use crate::model::{format_mhz, BankDraft, BankKind, ChannelDraft, ProjectModel};
 
 /// One generated plan a preset defines.
 struct PresetPlan {
@@ -37,13 +38,28 @@ struct PresetPlan {
     power: PowerLevel,
 }
 
-/// A named default set of plans.
+/// One bank of explicitly listed channels a preset defines.
+struct PresetList {
+    name: &'static str,
+    /// Channel name and the frequency the radio transmits on.
+    channels: &'static [(&'static str, u32)],
+    /// Receive offset from the transmit frequency. Zero is simplex.
+    receive_offset_hz: u32,
+    tx_class: TxClass,
+    modulation: Modulation,
+    bandwidth: Bandwidth,
+    power: PowerLevel,
+    step_hz: u32,
+}
+
+/// A named default set of plans and channel banks.
 pub struct Preset {
     /// Region or allocation this set belongs to.
     name: &'static str,
     /// One-line description of what applying it produces.
     detail: &'static str,
     plans: &'static [PresetPlan],
+    lists: &'static [PresetList],
 }
 
 /// The analogue PMR446 allocation: sixteen channels, 12.5 kHz from 446.00625.
@@ -139,6 +155,106 @@ const AIRBAND: PresetPlan = PresetPlan {
     power: PowerLevel::Low,
 };
 
+/// Ship transmit frequency of an ITU-R M.1084 marine VHF channel number.
+///
+/// Channels 1 to 28 run from 156.050 MHz and 60 to 88 from 156.025 MHz, both
+/// at 50 kHz, interleaving at 25 kHz.
+const fn marine_hz(channel: u32) -> u32 {
+    if channel >= 60 {
+        156_025_000 + (channel - 60) * 50_000
+    } else {
+        156_000_000 + channel * 50_000
+    }
+}
+
+/// Coast stations transmit 4.6 MHz above the ship on a duplex channel.
+const MARINE_DUPLEX_OFFSET_HZ: u32 = 4_600_000;
+
+/// The international duplex channels of ITU Radio Regulations Appendix 18,
+/// used for public correspondence and port operations through coast stations.
+/// Channel 70 (DSC) and the AIS channels are not voice channels and are left
+/// out.
+const MARINE_DUPLEX: PresetList = PresetList {
+    name: "MARINE DUPLEX",
+    channels: &[
+        ("1", marine_hz(1)),
+        ("2", marine_hz(2)),
+        ("3", marine_hz(3)),
+        ("4", marine_hz(4)),
+        ("5", marine_hz(5)),
+        ("7", marine_hz(7)),
+        ("18", marine_hz(18)),
+        ("19", marine_hz(19)),
+        ("20", marine_hz(20)),
+        ("21", marine_hz(21)),
+        ("22", marine_hz(22)),
+        ("23", marine_hz(23)),
+        ("24", marine_hz(24)),
+        ("25", marine_hz(25)),
+        ("26", marine_hz(26)),
+        ("27", marine_hz(27)),
+        ("28", marine_hz(28)),
+        ("60", marine_hz(60)),
+        ("61", marine_hz(61)),
+        ("62", marine_hz(62)),
+        ("63", marine_hz(63)),
+        ("64", marine_hz(64)),
+        ("65", marine_hz(65)),
+        ("66", marine_hz(66)),
+        ("78", marine_hz(78)),
+        ("79", marine_hz(79)),
+        ("80", marine_hz(80)),
+        ("81", marine_hz(81)),
+        ("82", marine_hz(82)),
+        ("83", marine_hz(83)),
+        ("84", marine_hz(84)),
+        ("85", marine_hz(85)),
+        ("86", marine_hz(86)),
+    ],
+    receive_offset_hz: MARINE_DUPLEX_OFFSET_HZ,
+    tx_class: TxClass::Marine,
+    modulation: Modulation::Fm,
+    // Marine VHF is 25 kHz FM.
+    bandwidth: Bandwidth::Wide,
+    power: PowerLevel::Low,
+    step_hz: 25_000,
+};
+
+/// The international simplex channels of Appendix 18, distress and calling on
+/// 16, plus the UK marina channels M (157.850) and M2 (161.425).
+const MARINE_SIMPLEX: PresetList = PresetList {
+    name: "MARINE SIMPLEX",
+    channels: &[
+        ("6", marine_hz(6)),
+        ("8", marine_hz(8)),
+        ("9", marine_hz(9)),
+        ("10", marine_hz(10)),
+        ("11", marine_hz(11)),
+        ("12", marine_hz(12)),
+        ("13", marine_hz(13)),
+        ("14", marine_hz(14)),
+        ("15", marine_hz(15)),
+        ("16 CALL", marine_hz(16)),
+        ("17", marine_hz(17)),
+        ("67", marine_hz(67)),
+        ("68", marine_hz(68)),
+        ("69", marine_hz(69)),
+        ("71", marine_hz(71)),
+        ("72", marine_hz(72)),
+        ("73", marine_hz(73)),
+        ("74", marine_hz(74)),
+        ("77", marine_hz(77)),
+        ("M", 157_850_000),
+        ("M2", 161_425_000),
+    ],
+    receive_offset_hz: 0,
+    tx_class: TxClass::Marine,
+    modulation: Modulation::Fm,
+    bandwidth: Bandwidth::Wide,
+    power: PowerLevel::Low,
+    step_hz: 25_000,
+};
+
 /// Every selectable preset in display order.
 pub const PRESETS: &[Preset] = &[
     Preset {
@@ -146,6 +262,7 @@ pub const PRESETS: &[Preset] = &[
         detail: "PMR446 plus 2 m and 70 cm amateur FM simplex: forty channels \
                  in three stored plans, calling channels marked.",
         plans: &[PMR446, TWO_METRE_SIMPLEX, SEVENTY_CENTIMETRE_SIMPLEX],
+        lists: &[],
     },
     Preset {
         name: "UK simplex and repeaters",
@@ -157,18 +274,29 @@ pub const PRESETS: &[Preset] = &[
             SEVENTY_CENTIMETRE_SIMPLEX,
             TWO_METRE_REPEATERS,
         ],
+        lists: &[],
     },
     Preset {
         name: "PMR446 only",
         detail: "All sixteen PMR446 channels as one stored plan, for a target \
                  which advertises a compact plan encoding.",
         plans: &[PMR446],
+        lists: &[],
     },
     Preset {
         name: "VHF airband receive",
         detail: "760 AM channels from 118.000 to 136.975 MHz in one stored \
                  object, classified so the radio will never transmit on them.",
         plans: &[AIRBAND],
+        lists: &[],
+    },
+    Preset {
+        name: "Marine VHF",
+        detail: "The international marine channels: a duplex bank receiving \
+                 4.6 MHz above the ship frequency and a simplex bank with 16, \
+                 M and M2. Transmit needs a ship licence grant.",
+        plans: &[],
+        lists: &[MARINE_DUPLEX, MARINE_SIMPLEX],
     },
 ];
 
@@ -183,9 +311,9 @@ impl Preset {
         self.detail
     }
 
-    /// Returns how many channels and plans applying this preset produces.
+    /// Returns how many channels and banks applying this preset produces.
     ///
-    /// The channel count is what the radio expands to, and the plan count is
+    /// The channel count is what the radio expands to, and the bank count is
     /// what it stores, which is the comparison worth showing.
     pub const fn size(&self) -> (usize, usize) {
         let mut channels = 0;
@@ -194,7 +322,12 @@ impl Preset {
             channels += self.plans[index].channels as usize;
             index += 1;
         }
-        (channels, self.plans.len())
+        index = 0;
+        while index < self.lists.len() {
+            channels += self.lists[index].channels.len();
+            index += 1;
+        }
+        (channels, self.plans.len() + self.lists.len())
     }
 
     /// Builds the project this preset describes, replacing nothing.
@@ -206,7 +339,7 @@ impl Preset {
                 kind: BankKind::Generated,
                 designator: plan.designator.to_owned(),
                 first_number: plan.first_number,
-                base_mhz: crate::model::format_mhz(plan.base_hz),
+                base_mhz: format_mhz(plan.base_hz),
                 spacing_hz: plan.spacing_hz,
                 channel_count: plan.channels,
                 calling_index: plan.calling_index,
@@ -220,6 +353,35 @@ impl Preset {
                 ..BankDraft::default()
             });
         }
+        for list in self.lists {
+            let channels = list
+                .channels
+                .iter()
+                .map(|&(name, transmit_hz)| ChannelDraft {
+                    name: name.to_owned(),
+                    receive_mhz: format_mhz(transmit_hz + list.receive_offset_hz),
+                    transmit_mhz: format_mhz(transmit_hz),
+                    modulation: list.modulation,
+                    bandwidth: list.bandwidth,
+                    power: list.power,
+                    step_hz: list.step_hz,
+                    tx_class: list.tx_class,
+                    ..ChannelDraft::default()
+                })
+                .collect();
+            project.banks.push(BankDraft {
+                name: list.name.to_owned(),
+                kind: BankKind::Named,
+                tx_class: list.tx_class,
+                scan_enabled: true,
+                modulation: list.modulation,
+                bandwidth: list.bandwidth,
+                power: list.power,
+                step_hz: list.step_hz,
+                channels,
+                ..BankDraft::default()
+            });
+        }
         project
     }
 }
@@ -228,15 +390,20 @@ impl Preset {
 mod tests {
     use super::PRESETS;
     use crate::model::{BankKind, ProjectModel, ValidatedBank, RADIO_IMAGE_BYTES};
-    use radio_domain::TxClass;
+    use radio_domain::{Bandwidth, TxClass};
 
     #[test]
     fn every_preset_validates_and_compiles_to_an_image() {
         for preset in PRESETS {
             let project = preset.build();
-            let (channels, plans) = preset.size();
-            assert_eq!(project.banks.len(), plans, "{}", preset.name());
-            assert_eq!(project.channel_count(), 0, "{}", preset.name());
+            let (channels, banks) = preset.size();
+            assert_eq!(project.banks.len(), banks, "{}", preset.name());
+            assert_eq!(
+                project.channel_count(),
+                preset.lists.iter().map(|l| l.channels.len()).sum::<usize>(),
+                "{}",
+                preset.name()
+            );
             project
                 .validate()
                 .unwrap_or_else(|_| panic!("{} validates", preset.name()));
@@ -250,15 +417,18 @@ mod tests {
             let expanded: usize = project
                 .banks
                 .iter()
-                .map(|bank| usize::from(bank.channel_count))
+                .map(|bank| match bank.kind {
+                    BankKind::Generated => usize::from(bank.channel_count),
+                    BankKind::Named => bank.channels.len(),
+                })
                 .sum();
             assert_eq!(expanded, channels, "{}", preset.name());
         }
     }
 
     #[test]
-    fn every_preset_is_plans_only_and_fits_a_radio() {
-        for preset in PRESETS {
+    fn every_arithmetic_preset_is_plans_only_and_fits_a_radio() {
+        for preset in PRESETS.iter().filter(|p| p.lists.is_empty()) {
             let project = preset.build();
             assert!(
                 project.banks.iter().all(|b| b.kind == BankKind::Generated),
@@ -357,6 +527,70 @@ mod tests {
             plan.channel_record(759).unwrap().receive().as_hz(),
             136_975_000
         );
+    }
+
+    #[test]
+    fn the_marine_preset_has_a_duplex_and_a_simplex_bank_classed_marine() {
+        let preset = PRESETS
+            .iter()
+            .find(|p| p.name() == "Marine VHF")
+            .expect("preset");
+        let project = preset.build();
+        assert_eq!(project.banks.len(), 2);
+        assert!(
+            project.storage_summary().image_bytes.unwrap() < RADIO_IMAGE_BYTES,
+            "both marine banks fit a radio"
+        );
+        let channel = |row: usize, name: &str| {
+            project.banks[row]
+                .channels
+                .iter()
+                .find(|c| c.name == name)
+                .unwrap_or_else(|| panic!("{name}"))
+                .clone()
+        };
+
+        let duplex = &project.banks[0];
+        assert_eq!(duplex.name, "MARINE DUPLEX");
+        assert_eq!(duplex.kind, BankKind::Named);
+        assert_eq!(duplex.channels.len(), 33);
+        // The ship transmits low and hears the coast station 4.6 MHz above.
+        let one = channel(0, "1");
+        assert_eq!(
+            (one.transmit_mhz.as_str(), one.receive_mhz.as_str()),
+            ("156.050000", "160.650000")
+        );
+        let twenty_six = channel(0, "26");
+        assert_eq!(twenty_six.transmit_mhz, "157.300000");
+        assert_eq!(twenty_six.receive_mhz, "161.900000");
+        let eighty_six = channel(0, "86");
+        assert_eq!(eighty_six.transmit_mhz, "157.325000");
+        assert_eq!(eighty_six.receive_mhz, "161.925000");
+
+        let simplex = &project.banks[1];
+        assert_eq!(simplex.name, "MARINE SIMPLEX");
+        assert_eq!(simplex.channels.len(), 21);
+        assert!(simplex
+            .channels
+            .iter()
+            .all(|c| c.receive_mhz == c.transmit_mhz));
+        assert_eq!(channel(1, "16 CALL").receive_mhz, "156.800000");
+        assert_eq!(channel(1, "6").receive_mhz, "156.300000");
+        assert_eq!(channel(1, "67").receive_mhz, "156.375000");
+        assert_eq!(channel(1, "72").receive_mhz, "156.625000");
+        assert_eq!(channel(1, "77").receive_mhz, "156.875000");
+        assert_eq!(channel(1, "M").receive_mhz, "157.850000");
+        assert_eq!(channel(1, "M2").receive_mhz, "161.425000");
+
+        // Transmit needs a marine grant, which the TX policy checks.
+        assert!(project
+            .banks
+            .iter()
+            .all(|bank| bank.tx_class == TxClass::Marine
+                && bank
+                    .channels
+                    .iter()
+                    .all(|c| c.tx_class == TxClass::Marine && c.bandwidth == Bandwidth::Wide)));
     }
 
     #[test]

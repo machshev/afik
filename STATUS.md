@@ -306,6 +306,14 @@
   clippy `-D warnings` clean, `cargo test --workspace` 695 passed 0 failed,
   `tool/build-k5.sh --release` (flash end `0x0000cad8`) and
   `tool/build-k1.sh --release` pass. Not yet flashed.
+- Studio "Marine VHF" default set (operator request): an ITU Appendix 18
+  duplex bank (33 channels, receive 4.6 MHz above the ship frequency) and a
+  simplex bank (19 channels with 16 CALL, plus UK M and M2), wide FM, class
+  `Marine` so TX needs a grant. These are named channels, not plans: the ship
+  frequencies are arithmetic, but the duplex and simplex sets are broken runs,
+  so as plans they would take about 12 of the 16 banks. Gate: `cargo fmt --all
+  --check` clean, workspace clippy `-D warnings` clean, `cargo test
+  --workspace` 696 passed 0 failed.
 - Next: flash K5 `7.0.20`, check the backlight goes out after 10 s, a key
   brings it back and a received signal keeps it lit, then program it from the studio (non-default TX power,
   timeout and backlight; check the handset follows, power-cycle, read back);
