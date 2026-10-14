@@ -9,6 +9,7 @@ pub mod battery;
 pub mod configuration;
 pub mod configuration_change;
 pub mod display;
+pub mod memory_link;
 pub mod operator_display;
 pub mod operator_shell;
 pub mod ptt;

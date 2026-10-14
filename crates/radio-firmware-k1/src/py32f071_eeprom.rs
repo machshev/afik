@@ -15,12 +15,10 @@ use py32_hal::gpio::{Level, Output, Speed};
 use py32_hal::pac::spi::vals::Br;
 use py32_hal::peripherals::{PA0, PA1, PA2, PA3, SPI2};
 use py32_hal::spi::{Error as SpiError, Spi};
-use radio_eeprom::{page_span, Eeprom, EepromError, JedecId, Region, RegionError};
-use radio_storage::{configuration_image_len_from_header, CONFIGURATION_IMAGE_HEADER_LEN};
+use radio_eeprom::{Eeprom, EepromError, JedecId, Region, RegionError};
 
 use crate::battery::{Calibration, CALIBRATION_ADDRESS, CALIBRATION_BYTES};
 use crate::eeprom_bus::{EepromPort, SpiEepromBus};
-use radio_app::configuration::RETAINED_IMAGE_BYTES;
 use radio_app::operator_state::{is_erased, OperatorState, OPERATOR_STATE_BYTES};
 
 /// First address of the region AFIK claims for its configuration.
@@ -63,10 +61,6 @@ const OPERATOR_STATE_SLOT_BYTES: u32 = 16;
 
 // A slot which did not hold a whole record would silently truncate one.
 const _: () = assert!(OPERATOR_STATE_SLOT_BYTES as usize == OPERATOR_STATE_BYTES);
-
-// A region which cannot hold the largest programmable configuration would fail
-// only after the operator had already programmed the radio.
-const _: () = assert!(RETAINED_IMAGE_BYTES <= CONFIGURATION_BYTES as usize);
 
 /// Divider applied to the peripheral clock for the memory.
 ///
@@ -204,76 +198,13 @@ impl RetainedConfiguration {
         Some(block)
     }
 
-    /// Reads a retained image into `buffer` and returns its exact length.
+    /// Reads `output.len()` bytes at `offset` in the configuration region.
     ///
-    /// Only the container header is inspected here so the exact image length
-    /// can be read back; the complete checksum, ordering, and object validation
-    /// happen when the caller loads it. An erased or foreign region yields
-    /// `None` rather than an error, because an unprogrammed radio is normal.
-    pub fn read(&mut self, buffer: &mut [u8; RETAINED_IMAGE_BYTES]) -> Option<usize> {
-        // The header alone gives the exact length, so an erased region or an
-        // unresponsive memory is discovered after sixteen bytes rather than
-        // after a whole image of timeouts.
-        self.eeprom
-            .read(
-                self.region,
-                0,
-                &mut buffer[..CONFIGURATION_IMAGE_HEADER_LEN],
-            )
-            .ok()?;
-        let length = configuration_image_len_from_header(buffer).ok()?;
-        if length > RETAINED_IMAGE_BYTES {
-            return None;
-        }
-        self.eeprom
-            .read(
-                self.region,
-                u32::try_from(CONFIGURATION_IMAGE_HEADER_LEN).ok()?,
-                &mut buffer[CONFIGURATION_IMAGE_HEADER_LEN..length],
-            )
-            .ok()?;
-        Some(length)
-    }
-
-    /// Replaces the retained image with the first `length` bytes of `buffer`,
-    /// yielding to the executor while the memory works.
-    ///
-    /// The whole claimed region is erased before programming, so no part of a
-    /// previous image can survive to be read back beside this one. An erase
-    /// takes far longer than a program, and this core runs one task at a time,
-    /// so the wait is a yield rather than a spin: the receive path and the
-    /// operator interface keep running while a configuration is stored.
-    pub async fn write(
-        &mut self,
-        buffer: &[u8; RETAINED_IMAGE_BYTES],
-        length: usize,
-    ) -> Result<(), RetainError> {
-        if length > RETAINED_IMAGE_BYTES || length as u32 > CONFIGURATION_BYTES {
-            return Err(RetainError::TooLarge);
-        }
-
-        for sector in 0..self.region.sectors() {
-            self.eeprom
-                .issue_erase(self.region, sector)
-                .map_err(RetainError::Memory)?;
-            self.await_ready().await?;
-        }
-
-        let mut offset = 0_usize;
-        while offset < length {
-            let span = page_span(self.region.origin() + u32::try_from(offset).unwrap_or(u32::MAX))
-                .min(length - offset);
-            self.eeprom
-                .issue_program(
-                    self.region,
-                    u32::try_from(offset).map_err(|_| RetainError::TooLarge)?,
-                    &buffer[offset..offset + span],
-                )
-                .map_err(RetainError::Memory)?;
-            self.await_ready().await?;
-            offset += span;
-        }
-        Ok(())
+    /// This is the K1's backing for the image part of the memory view. Writes
+    /// to it are not served yet: this NOR memory erases a whole sector at a
+    /// time, and block writes from a host need their own erase plan.
+    pub fn read_configuration(&mut self, offset: u32, output: &mut [u8]) -> bool {
+        self.eeprom.read(self.region, offset, output).is_ok()
     }
 
     /// Reads back where the operator left the radio.

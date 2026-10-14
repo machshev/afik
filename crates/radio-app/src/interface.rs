@@ -16,7 +16,6 @@ use radio_channel_control::{
 use radio_channel_plan::{
     BankMask, BankName, ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord,
 };
-use radio_device::ControlAnswer;
 use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, SquelchLevel,
     Tone, TxClass,
@@ -37,19 +36,15 @@ use radio_platform::receive_app::{
 };
 use radio_platform::transmit::{self, Delay, Pmr446Target};
 use radio_platform::tx_control::{self, Action, Controller as TxController, State as TxPhase};
-use radio_protocol::{ControlRequest, DeviceErrorCode, ReceiveMetricsReport};
 use radio_tx_policy::{TxRequest, TxState};
 
-use crate::common;
-use crate::configuration::{Programmed, SettingChange};
+use crate::configuration::Programmed;
 use crate::drivers::{BatterySense, Display, Keypad, Speaker, Target};
-use crate::host_control;
 use crate::keys::{Debouncer, Edge};
 use crate::operator_state::OperatorState;
 use crate::state::{
-    bus_available, now_ms, peripheral_clock_khz, reset_cause, serial_counters, ACTIVE,
-    BATTERY_CALIBRATION, CONTROL_ANSWER, CONTROL_REQUEST, OPERATOR_PLACE, PROGRAMMED,
-    SERIAL_ACTIVITY, SETTING_CHOICE, TX_CALIBRATION,
+    bus_available, now_ms, peripheral_clock_khz, reset_cause, serial_counters, Publication, ACTIVE,
+    BATTERY_CALIBRATION, OPERATOR_PLACE, PROGRAMMED, SERIAL_ACTIVITY, TX_CALIBRATION,
 };
 use crate::unified_receive::{shared_channel, translate, ReceiverEffect};
 
@@ -127,15 +122,6 @@ struct Receiver<B: RegisterBus, S: Speaker> {
     frequency_hz: u32,
     rssi_raw: u16,
     squelch_open: bool,
-    /// Completed metric samples since boot, saturating.
-    ///
-    /// A host cannot otherwise tell a fresh reading from the one it already
-    /// had. The receiver needs an unmeasured settling time after a retune —
-    /// `RISK-008` — so a reading taken too soon measures settling rather than
-    /// signal, and a host which wants a settled one waits for this to advance.
-    samples: u16,
-    /// The most recent complete sample, as a host would read it.
-    last_metrics: Option<ReceiveMetricsReport>,
     /// The last tuned setup and radio-wide squelch, restored after TX.
     last_tune: Option<(ChannelReceiveSetup, SquelchLevel)>,
 }
@@ -151,8 +137,6 @@ impl<B: RegisterBus, S: Speaker> Receiver<B, S> {
             frequency_hz: 0,
             rssi_raw: 0,
             squelch_open: false,
-            samples: 0,
-            last_metrics: None,
             last_tune: None,
         }
     }
@@ -296,20 +280,6 @@ impl<B: RegisterBus, S: Speaker> Receiver<B, S> {
             Ok(metrics) => {
                 self.rssi_raw = u16::try_from(metrics.rssi_dbm_x2 + 320).unwrap_or(0);
                 self.squelch_open = metrics.squelch_open;
-                // Saturating, so a long-running radio stops counting rather
-                // than wrapping past a value a host is waiting to see pass.
-                self.samples = self.samples.saturating_add(1);
-                self.last_metrics = Some(ReceiveMetricsReport {
-                    // The frequency this sample was actually taken at, which is
-                    // the one the receiver is tuned to and not necessarily the
-                    // one the controller has most recently been asked for.
-                    frequency_hz: self.frequency_hz,
-                    samples: self.samples,
-                    rssi_dbm_x2: metrics.rssi_dbm_x2,
-                    glitch: metrics.glitch,
-                    noise: metrics.noise,
-                    squelch_open: metrics.squelch_open,
-                });
                 if gate_locally {
                     self.gate_audio();
                 }
@@ -407,9 +377,7 @@ impl ChannelSource for Listening {
     fn get(&self, index: u16) -> Option<ChannelRecord> {
         match self {
             Self::Vfo(record) => (index == 0).then_some(*record),
-            Self::Memory(programmed) => {
-                ACTIVE.lock(|cell| programmed.channel_at(&*cell.borrow(), index))
-            }
+            Self::Memory(programmed) => ACTIVE.with(|arena| programmed.channel_at(arena, index)),
         }
     }
 
@@ -417,7 +385,7 @@ impl ChannelSource for Listening {
         match self {
             Self::Vfo(_) => false,
             Self::Memory(programmed) => {
-                ACTIVE.lock(|cell| programmed.member_at(&*cell.borrow(), index, bank))
+                ACTIVE.with(|arena| programmed.member_at(arena, index, bank))
             }
         }
     }
@@ -818,38 +786,6 @@ pub async fn run<D, K, B, S, V>(
             }
         }
 
-        // A host request reaches the same controller a key press does, and its
-        // update is applied by the same call. The operator is not locked out
-        // while this happens and nothing here is suspended: both peers drive
-        // one controller, and whichever arrives first is served first.
-        if let Some(request) = CONTROL_REQUEST.try_take() {
-            let answer = if pending_operator_squelch.is_some() {
-                ControlAnswer::Refused(DeviceErrorCode::InvalidState)
-            } else {
-                match request {
-                    ControlRequest::CommonApplication { payload } => {
-                        common::answer(payload, shared_receive.as_mut())
-                    }
-                    request => match activation.as_mut() {
-                        Some((controller, _)) => {
-                            let performed =
-                                host_control::perform(controller, request, receiver.last_metrics);
-                            if let Some(update) = performed.update {
-                                apply(update, &mut pending, &mut scan_timer);
-                                redraw = true;
-                            }
-                            performed.answer
-                        }
-                        // No controller yet means no channels and no VFO: the radio has
-                        // not finished starting. That is a state the request cannot be
-                        // performed from, not a fault.
-                        None => ControlAnswer::Refused(DeviceErrorCode::InvalidState),
-                    },
-                }
-            };
-            CONTROL_ANSWER.signal(answer);
-        }
-
         let sample = keypad.scan().await;
         let now = now_ms();
 
@@ -1020,6 +956,7 @@ pub async fn run<D, K, B, S, V>(
             channel_id: kept.channel_id,
             vfo_hz: shell.vfo_hz(),
             step_index: u8::try_from(shell.step_index()).unwrap_or(0),
+            squelch: Some(shell.squelch()),
         };
         if context.scanning {
             // A scan moves the selection several times a second and none of
@@ -1083,7 +1020,7 @@ pub async fn run<D, K, B, S, V>(
                     let _ = apply_shared_effects(app.apply(acknowledgement), &mut receiver);
                     if outcome.complete && app.squelch() == level {
                         let _ = shell.accept_squelch(level);
-                        SETTING_CHOICE.signal(SettingChange::Squelch(level));
+                        adopt_squelch(&programmed, generation, retained, memory_state, level);
                     } else {
                         shell.reject_squelch();
                     }
@@ -1131,7 +1068,7 @@ pub async fn run<D, K, B, S, V>(
                     if let Some(level) = operator_squelch {
                         if outcome.complete && app.squelch() == level {
                             let _ = shell.accept_squelch(level);
-                            SETTING_CHOICE.signal(SettingChange::Squelch(level));
+                            adopt_squelch(&programmed, generation, retained, memory_state, level);
                         } else {
                             shell.reject_squelch();
                         }
@@ -1145,7 +1082,7 @@ pub async fn run<D, K, B, S, V>(
                         shell.reject_squelch();
                     } else {
                         let _ = shell.accept_squelch(level);
-                        SETTING_CHOICE.signal(SettingChange::Squelch(level));
+                        adopt_squelch(&programmed, generation, retained, memory_state, level);
                     }
                 }
             }
@@ -1247,6 +1184,28 @@ pub async fn run<D, K, B, S, V>(
         }))
         .await;
     }
+}
+
+/// Adopts a squelch level the operator accepted on the handset.
+///
+/// It is the operator's own setting, so it is kept in the place record rather
+/// than written into the host's image. Republishing the configuration with it
+/// rebuilds the controller exactly as a new configuration would, so every later
+/// tune uses it.
+fn adopt_squelch(
+    programmed: &Programmed,
+    generation: u32,
+    retained: bool,
+    memory: MemoryState,
+    level: SquelchLevel,
+) {
+    PROGRAMMED.signal(Publication {
+        programmed: programmed.with_squelch(level),
+        generation,
+        retained,
+        memory,
+        place: None,
+    });
 }
 
 /// Builds the TX request from what the receiver is tuned to, and the bias it
@@ -1497,5 +1456,5 @@ fn render<B: RegisterBus, S: Speaker>(
 
 /// Returns the host-programmed name of one bank, if the host named it.
 fn bank_name(programmed: &Programmed, bank: BankId) -> Option<BankName> {
-    ACTIVE.lock(|cell| programmed.bank_name(&*cell.borrow(), bank))
+    ACTIVE.with(|arena| programmed.bank_name(arena, bank))
 }

@@ -9,9 +9,10 @@ use radio_platform::battery::Calibration;
 use radio_platform::operator_display::FRAME_BYTES;
 use radio_platform::transmit::Pmr446Target;
 
-use crate::configuration::RETAINED_IMAGE_BYTES;
+use radio_platform::memory_link::{PLACE_ORIGIN, WRITE_BYTES};
+
 use crate::keys::Sample;
-use crate::operator_state::OperatorState;
+use crate::operator_state::{OperatorState, OPERATOR_STATE_BYTES};
 
 /// The 128×64 operator display.
 #[allow(async_fn_in_trait)]
@@ -60,22 +61,43 @@ pub trait SerialLink {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LinkError;
 
-/// Non-volatile memory holding the configuration, the operator's place, and
-/// the vendor calibration the application reads.
+/// The radio's 8 KiB memory view (`radio_platform::memory_link`).
+///
+/// The configuration image, the operator's place, and the vendor calibration
+/// all live here at the addresses the memory map gives. A target maps the view
+/// onto whatever memory it has.
 #[allow(async_fn_in_trait)]
-pub trait RetainedMemory {
+pub trait Memory {
+    /// Reads `output.len()` bytes from `address`.
+    fn read(&mut self, address: u16, output: &mut [u8]) -> bool;
+    /// Stores one block at an aligned `address` and reports whether it took.
+    async fn write(&mut self, address: u16, data: &[u8; WRITE_BYTES]) -> bool;
     /// Reads the battery calibration from the vendor block.
     fn read_battery_calibration(&mut self) -> Option<Calibration>;
     /// Reads the PMR446 low-power TX bias bytes from the vendor block.
     fn read_tx_calibration(&mut self) -> Option<[u8; 3]>;
-    /// Reads the retained configuration image and returns its length.
-    fn read(&mut self, image: &mut [u8; RETAINED_IMAGE_BYTES]) -> Option<usize>;
-    /// Replaces the retained configuration image.
-    async fn write(&mut self, image: &[u8; RETAINED_IMAGE_BYTES], length: usize) -> bool;
+
     /// Reads where the operator left the radio.
-    fn read_operator_state(&mut self) -> Option<OperatorState>;
+    fn read_operator_state(&mut self) -> Option<OperatorState> {
+        let mut bytes = [0_u8; OPERATOR_STATE_BYTES];
+        if !self.read(PLACE_ORIGIN, &mut bytes) {
+            return None;
+        }
+        OperatorState::decode(&bytes)
+    }
+
     /// Records where the operator left the radio.
-    async fn write_operator_state(&mut self, state: OperatorState) -> bool;
+    async fn write_operator_state(&mut self, state: OperatorState) -> bool {
+        let bytes = state.encode();
+        let mut stored = true;
+        for (index, block) in bytes.chunks_exact(WRITE_BYTES).enumerate() {
+            let mut data = [0_u8; WRITE_BYTES];
+            data.copy_from_slice(block);
+            let offset = u16::try_from(index * WRITE_BYTES).unwrap_or(0);
+            stored &= self.write(PLACE_ORIGIN + offset, &data).await;
+        }
+        stored
+    }
 }
 
 /// What differs between targets beyond their drivers.

@@ -194,7 +194,8 @@ pub fn crc16_xmodem(bytes: &[u8]) -> u16 {
     crc
 }
 
-fn xor(bytes: &mut [u8]) {
+/// Applies the stock payload obfuscation, which is its own inverse.
+pub fn xor(bytes: &mut [u8]) {
     for (index, byte) in bytes.iter_mut().enumerate() {
         *byte ^= XOR_KEY[index % XOR_KEY.len()];
     }

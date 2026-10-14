@@ -13,7 +13,9 @@ only on the current work package named in `STATUS.md`.
 - Keep hardware-independent radio crates independent of UV-K5 hardware.
 - Embedded crates are `no_std`, heap-free, bounded, and use integer units.
 - All TX paths go through `radio-tx-policy`; invalid state denies TX.
-- Serial configuration uses validated object-level transactions, not raw writes.
+- The studio compiles and validates the configuration image before writing it;
+  radios take it as raw memory blocks over the stock protocol and validate it
+  again on load (`ADR-100`).
 - The programmer library owns programming logic; front ends remain thin.
 - Simulation uses deterministic virtual time. Flashing hardware is not the
   primary debugging loop.

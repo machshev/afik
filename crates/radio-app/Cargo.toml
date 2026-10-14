@@ -11,10 +11,8 @@ description = "The AFIK radio application, shared by every target behind driver 
 radio-bk4819 = { path = "../radio-bk4819" }
 radio-channel-control = { path = "../radio-channel-control" }
 radio-channel-plan = { path = "../radio-channel-plan" }
-radio-device = { path = "../radio-device" }
 radio-domain = { path = "../radio-domain" }
 radio-platform = { path = "../radio-platform" }
-radio-protocol = { path = "../radio-protocol" }
 radio-storage = { path = "../radio-storage" }
 radio-tx-policy = { path = "../radio-tx-policy" }
 # The same pinned Embassy both targets run. No `tick-hz` feature is set here,
@@ -22,9 +20,6 @@ radio-tx-policy = { path = "../radio-tx-policy" }
 embassy-time = { version = "=0.5.1", default-features = false }
 embassy-sync = { version = "=0.7.2", default-features = false }
 embassy-futures = { version = "=0.1.2", default-features = false }
-
-[dev-dependencies]
-radio-programmer = { path = "../radio-programmer" }
 
 [lints.rust]
 unsafe_code = "deny"

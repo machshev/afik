@@ -2384,11 +2384,8 @@ dependencies = [
  "radio-bk4819",
  "radio-channel-control",
  "radio-channel-plan",
- "radio-device",
  "radio-domain",
  "radio-platform",
- "radio-programmer",
- "radio-protocol",
  "radio-storage",
  "radio-tx-policy",
 ]

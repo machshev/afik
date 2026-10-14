@@ -23,6 +23,8 @@ meaning.
 
 ## ADR-003 — Object-level candidate transactions
 
+- **Superseded by `ADR-100`** for radio programming (2026-10-14).
+
 - **Date:** 2026-08-05
 - **Status:** accepted
 - Writes are staged in a candidate snapshot, validated as a whole, and made
@@ -30,6 +32,8 @@ meaning.
   addresses.
 
 ## ADR-004 — Simulated transport implements the programmer contract
+
+- **Superseded by `ADR-100`** for radio programming (2026-10-14).
 
 - **Date:** 2026-08-05
 - **Status:** accepted
@@ -1316,6 +1320,8 @@ meaning.
 
 ## ADR-079 — Serial control shares application meaning, not wire or storage
 
+- **Superseded by `ADR-100`** for radio programming (2026-10-14).
+
 - **Date:** 2026-08-13
 - **Status:** accepted for `APP-052`
 - `radio-platform::serial_control` accepts only requests which have already
@@ -1438,6 +1444,8 @@ meaning.
   next task is simulator object transport, not physical allocation.
 
 ## ADR-090 — K5 object transport is an explicit simulator boundary
+
+- **Superseded by `ADR-100`** for radio programming (2026-10-14).
 
 - **Date:** 2026-08-14
 - **Status:** accepted for APP-052 Milestone 3 simulator/host evidence only
@@ -1664,6 +1672,29 @@ meaning.
 - Step 2 (`7.0.14`): `radio-app` holds the interface and serial tasks
   (`interface::run`, `serial::run`), the configuration service, the operator
   place, host control, and key debounce. Targets implement `radio-app::drivers`
-  (`Display`, `Keypad`, `Speaker`, `BatterySense`, `SerialLink`,
-  `RetainedMemory`) and pass a `Target` with their identity and PMR446 TX
+  (`Display`, `Keypad`, `Speaker`, `BatterySense`, `SerialLink`, `Memory`)
+  and pass a `Target` with their identity and PMR446 TX
   constants. The K1 is the first target on it.
+
+## ADR-100 — Radios are programmed as memory; the studio validates
+
+- **Date:** 2026-10-14
+- **Status:** accepted, operator decision. Supersedes `ADR-003`, `ADR-004`,
+  `ADR-079` and `ADR-090` for radio programming.
+- The on-radio object protocol (framing, transactions, encoding, live control)
+  cost about 21 KB of K1 text, which the 60 KiB K5 cannot carry beside the
+  application. Radios now speak the stock memory protocol only: hello
+  `0x0514`, read `0x051B` (up to 128 bytes), write `0x051D` (8 aligned bytes,
+  acknowledged with `0x051E` once stored), over an 8 KiB memory view
+  (`radio-platform::memory_link`).
+- The compact storage format stays: the image is the existing header plus
+  packed objects, with generated banks as runtime generators. The studio
+  compiles and validates it and writes it at `0x0000`; the region is
+  `0x1700` bytes, set by the one RAM copy the radio keeps. The radio loads it
+  at boot and 1 s after a host's last write, checking header, checksum, order
+  and every object; anything else leaves no channels rather than part of them.
+- `0x1D00` holds the radio's own record of the operator's place and handset
+  squelch, so the handset never rewrites the host's image. `0x1E00..0x2000`
+  is vendor calibration, readable but never writable by a host.
+- The studio's live tune, scan and metrics controls are dropped.
+

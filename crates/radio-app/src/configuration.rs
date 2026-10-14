@@ -1,23 +1,21 @@
 //! Bounded programmed configuration this image accepts and retains.
 //!
-//! The host tooling programs configuration objects through the shared device
-//! service. This module turns one active object snapshot into exactly what the
-//! receive path and the user interface need: ordered channel records, the named
-//! banks they belong to, and the global receive configuration.
+//! The host compiles and validates a configuration image and writes it into
+//! the radio's memory (`ADR-100`). This module turns the loaded objects into
+//! exactly what the receive path and the user interface need: ordered channel
+//! records, the named banks they belong to, and the global receive
+//! configuration.
 //!
 //! Nothing here mints transmit authority. Channels keep the transmit class the
 //! host programmed, and the image constructs no transmit path, so a channel
 //! programmed as transmittable still cannot key this radio.
 
-use radio_channel_plan::{
-    BankName, ChannelBank, ChannelRecord, GeneratedBank, PlanEncoding, MAX_BANKS,
-};
-use radio_device::DeviceService;
+use radio_channel_plan::{BankName, ChannelBank, ChannelRecord, GeneratedBank, MAX_BANKS};
 use radio_domain::{BankId, RadioConfig, SquelchLevel};
+use radio_platform::memory_link::IMAGE_REGION_BYTES;
 use radio_storage::{
-    decode_channel, decode_channel_bank, decode_generated_bank, decode_radio_config,
-    encode_radio_config, Object, ObjectKind, ObjectRef, StorageError,
-    CONFIGURATION_IMAGE_HEADER_LEN,
+    decode_channel, decode_channel_bank, decode_generated_bank, decode_radio_config, Object,
+    ObjectKind, ObjectRef, StorageError, CONFIGURATION_IMAGE_HEADER_LEN,
 };
 
 /// Packed configuration bytes this image stores.
@@ -28,79 +26,10 @@ use radio_storage::{
 /// generated plans, each of which costs one object however many channels it
 /// expands to. Nothing here counts objects of a kind.
 ///
-/// The number is set by RAM. The store holds an active and a candidate copy,
-/// the interface holds a third for the channels it is showing, and all of it
-/// has to fit the evidenced 16 KiB of SRAM beside the executor, the
-/// framebuffer, and the retained-image buffer.
-pub const CONFIGURATION_STORE_BYTES: usize = 1_264;
-
-/// Bytes reserved for the retained canonical configuration image.
-///
-/// This is a whole number of write pages so a retained image can be written
-/// without a read-modify-write cycle, and it is exactly what the store it
-/// retains can hold.
-pub const RETAINED_IMAGE_BYTES: usize = CONFIGURATION_IMAGE_HEADER_LEN + CONFIGURATION_STORE_BYTES;
-
-// A retained region which cannot hold the largest programmable configuration
-// would fail only after the operator had already programmed the radio.
-const _: () = assert!(RETAINED_IMAGE_BYTES == 1_280);
-
-/// The configuration service this image exposes over serial.
-pub type AppDeviceService = DeviceService<CONFIGURATION_STORE_BYTES>;
-
-/// Constructs the configuration service this image exposes over serial.
-#[must_use]
-pub fn device_service() -> AppDeviceService {
-    // This image expands both arithmetic plan families itself, so it advertises
-    // them and the host may compile either for it. A fixed-offset plan is
-    // honestly supported here: its receive frequencies are what this image
-    // tunes, and it constructs no transmit path for any channel, stored or
-    // expanded. Everything else the device advertises — the stored-byte bound
-    // it accepts and the object count that bound implies — is derived from the
-    // store itself, so it cannot claim a capacity it does not have.
-    DeviceService::with_plan_encodings(
-        PlanEncoding::LinearSimplex.capability_bit()
-            | PlanEncoding::LinearFixedOffset.capability_bit(),
-    )
-}
-
-/// One radio-wide setting the operator changed on the handset.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SettingChange {
-    /// The squelch level applied when no channel overrides it.
-    Squelch(SquelchLevel),
-}
-
-/// Applies one handset setting to the stored radio-wide configuration.
-///
-/// The operator can change these on the handset, and a setting which did not
-/// survive a battery change would not be worth the menu. The one object being
-/// changed is rewritten through the ordinary validating path, so a rejected
-/// value leaves the radio exactly as it was rather than half reconfigured — and
-/// a zero dwell is rejected there rather than here, because the domain owns
-/// what a valid configuration is. A radio which was never programmed gains a
-/// configuration object carrying the conservative defaults and the one chosen
-/// value.
-///
-/// The caller is responsible for retaining the resulting image; this changes
-/// what the radio is running, not what its memory holds.
-pub fn store_setting<const BYTES: usize>(
-    service: &mut DeviceService<BYTES>,
-    change: SettingChange,
-) -> Result<u32, StorageError> {
-    let mut config = service
-        .active_objects()
-        .find(|object| object.key().kind == ObjectKind::RadioConfig)
-        .map_or_else(
-            || Ok(RadioConfig::conservative()),
-            |object| decode_radio_config(&object),
-        )?;
-    match change {
-        SettingChange::Squelch(squelch) => config.squelch = squelch,
-    }
-    let replacement = encode_radio_config(config)?;
-    service.store_object(&replacement)
-}
+/// It is the image region of the memory view less the image header: the radio
+/// holds one RAM copy of exactly what the host can write.
+pub const CONFIGURATION_STORE_BYTES: usize =
+    IMAGE_REGION_BYTES as usize - CONFIGURATION_IMAGE_HEADER_LEN;
 
 /// Why an active object snapshot cannot become a programmed configuration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -218,6 +147,16 @@ impl Programmed {
             return Err(ConfigurationError::TooManyExpanded);
         }
         Ok(programmed)
+    }
+
+    /// Returns this index with the radio-wide squelch replaced.
+    ///
+    /// The operator's handset choice is the radio's own and is kept beside
+    /// the place, not written into the host's image.
+    #[must_use]
+    pub const fn with_squelch(mut self, squelch: SquelchLevel) -> Self {
+        self.config.squelch = squelch;
+        self
     }
 
     /// Returns the global receive configuration.
@@ -407,10 +346,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        device_service, store_setting, ConfigurationError, Programmed, SettingChange,
-        CONFIGURATION_STORE_BYTES,
-    };
+    use super::{ConfigurationError, Programmed, CONFIGURATION_STORE_BYTES};
     use radio_channel_plan::{
         BankFlags, BankMask, BankName, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
         ChannelRecord, GeneratedBank,
@@ -420,7 +356,7 @@ mod tests {
         RadioConfig, SquelchLevel, Tone, TxClass,
     };
     use radio_storage::{
-        encode_channel, encode_channel_bank, encode_generated_bank, encode_radio_config, Object,
+        encode_channel, encode_channel_bank, encode_generated_bank, encode_radio_config,
         ObjectArena, ObjectKey, ObjectKind, StorageObject,
     };
 
@@ -618,78 +554,6 @@ mod tests {
                 .get(),
             stored,
             "the last channel the bytes had room for is selectable"
-        );
-    }
-
-    /// A level chosen on the handset has to become part of what is stored.
-    #[test]
-    fn storing_a_squelch_level_keeps_every_other_object_and_field() {
-        let mut service = device_service();
-        let bank = BankId::new(2);
-        let mask = BankMask::default().with(bank, true).expect("mask");
-        service
-            .load([
-                encode_channel(channel(7, 433_500_000, mask)).expect("channel"),
-                encode_channel(channel(3, 145_500_000, mask)).expect("channel"),
-                encode_radio_config(RadioConfig {
-                    backlight_seconds: 30,
-                    squelch: SquelchLevel::new(2).expect("level"),
-                    ..RadioConfig::conservative()
-                })
-                .expect("config"),
-            ])
-            .expect("load");
-        let before = service.generation();
-
-        store_setting(
-            &mut service,
-            SettingChange::Squelch(SquelchLevel::new(8).expect("level")),
-        )
-        .expect("store");
-        assert_ne!(service.generation(), before, "the change is a new snapshot");
-
-        let programmed = Programmed::index(service.active_objects()).expect("programmed");
-        assert_eq!(programmed.config().squelch, SquelchLevel::new(8).unwrap());
-        assert_eq!(
-            programmed.config().backlight_seconds,
-            30,
-            "no other field is disturbed"
-        );
-        assert_eq!(programmed.channel_count(), 2, "no channel is lost");
-        assert_eq!(
-            service
-                .active_objects()
-                .filter(|object| object.key().kind == ObjectKind::RadioConfig)
-                .count(),
-            1,
-            "the configuration is replaced, not duplicated"
-        );
-    }
-
-    /// An unprogrammed radio still has to be able to set its own squelch.
-    #[test]
-    fn storing_a_squelch_level_on_an_empty_radio_creates_the_configuration() {
-        let mut service = device_service();
-        assert_eq!(service.active_objects().count(), 0);
-
-        store_setting(
-            &mut service,
-            SettingChange::Squelch(SquelchLevel::new(6).expect("level")),
-        )
-        .expect("store");
-
-        let programmed = Programmed::index(service.active_objects()).expect("programmed");
-        assert_eq!(programmed.config().squelch, SquelchLevel::new(6).unwrap());
-        assert_eq!(
-            RadioConfig {
-                squelch: programmed.config().squelch,
-                ..programmed.config()
-            },
-            RadioConfig {
-                squelch: SquelchLevel::new(6).unwrap(),
-                ..RadioConfig::conservative()
-            },
-            "everything else stays at the conservative defaults"
         );
     }
 

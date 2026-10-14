@@ -23,8 +23,7 @@ use py32_hal::pac::RCC;
 use py32_hal::peripherals::{PA0, PA1, PA2, PA3, PA8, SPI1, SPI2};
 use py32_hal::spi::SpiTx;
 use py32_hal::usart::Uart;
-use radio_app::configuration::RETAINED_IMAGE_BYTES;
-use radio_app::drivers::{Display, Keypad, LinkError, RetainedMemory, SerialLink, Speaker, Target};
+use radio_app::drivers::{Display, Keypad, LinkError, SerialLink, Speaker, Target};
 use radio_app::keys::Sample;
 use radio_app::operator_state::OperatorState;
 use radio_bk4819::{Bk4819, BK4829_PROFILE};
@@ -39,6 +38,7 @@ use radio_firmware_k1::py32f071_bk4819::Bk4819Pins;
 use radio_firmware_k1::py32f071_eeprom::{RetainError, RetainedConfiguration};
 use radio_firmware_k1::py32f071_runtime::{compose, K1RuntimePeripherals};
 use radio_firmware_k1::py32f071_runtime_init::init;
+use radio_platform::memory_link::{IMAGE_REGION_BYTES, WRITE_BYTES};
 use radio_platform::transmit::Pmr446Target;
 
 const _: [(); 8] = [(); PAGES];
@@ -133,7 +133,6 @@ fn main() -> ! {
     // executor's complete lifetime and no other mutable reference is retained.
     #[allow(unsafe_code)]
     let executor: &'static mut Executor = unsafe { core::mem::transmute(&mut executor) };
-    let serial_state = radio_app::serial::state();
     executor.run(|spawner| {
         let Ok(serial) = serial_task(
             serial,
@@ -144,7 +143,6 @@ fn main() -> ! {
                 miso: p.PA2,
                 chip_select: p.PA3,
             },
-            serial_state,
         ) else {
             fail_closed();
         };
@@ -169,12 +167,8 @@ fn main() -> ! {
 // around them. A wrapper builds the inner future in its own poll frame before
 // moving it, which cost a 2.8 KB frame on the interface task (`RISK-033`).
 #[embassy_executor::task]
-fn serial_task(
-    link: Link,
-    memory: EepromPins,
-    state: radio_app::serial::State,
-) -> impl Future<Output = ()> {
-    radio_app::serial::run(link, move || open_memory(memory), state)
+fn serial_task(link: Link, memory: EepromPins) -> impl Future<Output = ()> {
+    radio_app::serial::run(link, move || open_memory(memory), IMAGE_IDENTITY)
 }
 
 #[embassy_executor::task]
@@ -420,24 +414,31 @@ fn open_memory(memory: EepromPins) -> (Option<Memory>, MemoryState) {
     (retained, state)
 }
 
-/// The K1's external SPI memory.
+/// The K1's external SPI memory behind the shared memory view.
+///
+/// The image part of the view is the AFIK configuration region, so a K1
+/// programmed by an earlier image keeps its channels. The place keeps its own
+/// sector and slot rotation. Host writes are refused until the K1 has an erase
+/// plan for block writes.
 struct Memory(RetainedConfiguration);
 
-impl RetainedMemory for Memory {
+impl radio_app::drivers::Memory for Memory {
+    fn read(&mut self, address: u16, output: &mut [u8]) -> bool {
+        let end = usize::from(address) + output.len();
+        end <= usize::from(IMAGE_REGION_BYTES)
+            && self.0.read_configuration(u32::from(address), output)
+    }
+
+    async fn write(&mut self, _address: u16, _data: &[u8; WRITE_BYTES]) -> bool {
+        false
+    }
+
     fn read_battery_calibration(&mut self) -> Option<Calibration> {
         self.0.read_battery_calibration()
     }
 
     fn read_tx_calibration(&mut self) -> Option<[u8; 3]> {
         self.0.read_tx_calibration()
-    }
-
-    fn read(&mut self, image: &mut [u8; RETAINED_IMAGE_BYTES]) -> Option<usize> {
-        self.0.read(image)
-    }
-
-    async fn write(&mut self, image: &[u8; RETAINED_IMAGE_BYTES], length: usize) -> bool {
-        self.0.write(image, length).await.is_ok()
     }
 
     fn read_operator_state(&mut self) -> Option<OperatorState> {

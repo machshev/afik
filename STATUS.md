@@ -194,6 +194,19 @@
   0 failed, `tool/build-k1.sh --release` + `tool/verify-k1-image.sh` +
   `tool/test-k1-image.sh` pass, `tool/build-k5.sh --release` +
   `tool/verify-k5-image.sh` pass. Not yet flashed.
+- K1 `7.0.14` flashed (272/272 pages); not yet checked on the bench.
+- `ADR-100` (operator decision): radios are programmed as memory. Step 1,
+  radio side: `radio-platform::memory_link` (hello, `0x051B` read, `0x051D`
+  write, memory map), `ObjectArena::load_image` (fills the RAM copy straight
+  from memory and validates it in place), and `radio-app::serial` answering
+  the memory protocol and reloading the image 1 s after a host's last write.
+  Device service, transactions, host control and common requests are gone
+  from the radio; the handset squelch lives in the place record (version 2).
+  K1 text 69,484 → 56,368 bytes; static RAM 9,884, headroom 6,500. The K1
+  serves reads of its existing configuration region but refuses writes until
+  its NOR erase plan. Gate: fmt clean, workspace clippy `-D warnings` clean,
+  `cargo test --workspace` 698 passed 0 failed, K1 build + verify pass. Not
+  flashed. Next: K5 drivers on `radio-app`, then the studio's memory writer.
 - Next: flash `7.0.5` with `afik-flasher flash-afik` and check a 1 min over
   times out; flash K1 and check its speech level; then CTCSS/DCS with an
   end-of-transmission tail tone to remove the key-off squelch burst.

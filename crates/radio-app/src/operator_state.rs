@@ -14,7 +14,7 @@
 //!
 //! Nothing here mints transmit authority: it names a selection, not a channel.
 
-use radio_domain::BankId;
+use radio_domain::{BankId, SquelchLevel};
 
 /// Bytes one retained record occupies.
 ///
@@ -22,11 +22,16 @@ use radio_domain::BankId;
 /// a record is written in one page program and never straddles two of them.
 pub const OPERATOR_STATE_BYTES: usize = 16;
 
-/// Record version this image writes and accepts.
+/// Record version this image writes.
 ///
 /// An erased byte is `0xFF`, so a version which is never `0xFF` is also how an
-/// unwritten slot is told from a written one.
-const RECORD_VERSION: u8 = 1;
+/// unwritten slot is told from a written one. Version 2 adds the handset
+/// squelch; a version 1 record is still read, without one.
+const RECORD_VERSION: u8 = 2;
+/// The version before the squelch was kept here.
+const RECORD_VERSION_WITHOUT_SQUELCH: u8 = 1;
+/// The squelch byte of a record which holds none.
+const NO_SQUELCH: u8 = 0xFF;
 
 /// The operator was listening to programmed channels rather than the VFO.
 const MEMORY_MODE: u8 = 0b0000_0001;
@@ -53,6 +58,11 @@ pub struct OperatorState {
     pub vfo_hz: u32,
     /// Index into the selectable tuning steps.
     pub step_index: u8,
+    /// The radio-wide squelch the operator chose on the handset.
+    ///
+    /// The host's image carries a default; this is the operator's own choice,
+    /// kept here so the handset never rewrites what the host programmed.
+    pub squelch: Option<SquelchLevel>,
 }
 
 impl OperatorState {
@@ -74,6 +84,7 @@ impl OperatorState {
         bytes[6..8].copy_from_slice(&self.channel_id.to_le_bytes());
         bytes[8..12].copy_from_slice(&self.vfo_hz.to_le_bytes());
         bytes[12] = self.step_index;
+        bytes[13] = self.squelch.map_or(NO_SQUELCH, SquelchLevel::get);
         let checksum = crc16(&bytes[..OPERATOR_STATE_BYTES - 2]);
         bytes[OPERATOR_STATE_BYTES - 2..].copy_from_slice(&checksum.to_le_bytes());
         bytes
@@ -87,7 +98,7 @@ impl OperatorState {
     /// falls back to the last complete record instead of restoring rubbish.
     #[must_use]
     pub fn decode(bytes: &[u8; OPERATOR_STATE_BYTES]) -> Option<Self> {
-        if bytes[0] != RECORD_VERSION {
+        if bytes[0] != RECORD_VERSION && bytes[0] != RECORD_VERSION_WITHOUT_SQUELCH {
             return None;
         }
         let expected = u16::from_le_bytes([
@@ -106,6 +117,11 @@ impl OperatorState {
             channel_id: u16::from_le_bytes([bytes[6], bytes[7]]),
             vfo_hz: u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]),
             step_index: bytes[12],
+            squelch: if bytes[0] == RECORD_VERSION {
+                SquelchLevel::new(bytes[13]).ok()
+            } else {
+                None
+            },
         })
     }
 }
@@ -141,8 +157,8 @@ fn crc16(bytes: &[u8]) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_erased, OperatorState, OPERATOR_STATE_BYTES};
-    use radio_domain::BankId;
+    use super::{crc16, is_erased, OperatorState, OPERATOR_STATE_BYTES};
+    use radio_domain::{BankId, SquelchLevel};
 
     fn state() -> OperatorState {
         OperatorState {
@@ -152,6 +168,7 @@ mod tests {
             channel_id: 0x8103,
             vfo_hz: 433_500_000,
             step_index: 2,
+            squelch: Some(SquelchLevel::new(4).expect("level")),
         }
     }
 
@@ -165,6 +182,10 @@ mod tests {
             },
             OperatorState {
                 memory_mode: false,
+                ..state()
+            },
+            OperatorState {
+                squelch: None,
                 ..state()
             },
             OperatorState {
@@ -214,7 +235,24 @@ mod tests {
     #[test]
     fn a_foreign_version_is_refused() {
         let mut encoded = state().encode();
-        encoded[0] = 2;
+        encoded[0] = 3;
         assert_eq!(OperatorState::decode(&encoded), None);
+    }
+
+    /// A radio upgraded from an image without the squelch keeps its place.
+    #[test]
+    fn a_version_one_record_is_read_without_a_squelch() {
+        let mut encoded = state().encode();
+        encoded[0] = 1;
+        encoded[13] = 0;
+        let checksum = crc16(&encoded[..OPERATOR_STATE_BYTES - 2]);
+        encoded[OPERATOR_STATE_BYTES - 2..].copy_from_slice(&checksum.to_le_bytes());
+        assert_eq!(
+            OperatorState::decode(&encoded),
+            Some(OperatorState {
+                squelch: None,
+                ..state()
+            })
+        );
     }
 }

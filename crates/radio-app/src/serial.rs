@@ -1,137 +1,119 @@
-//! The serial task: the configuration service, the link, and the memory.
+//! The serial task: the memory protocol, the link, and the memory.
 //!
-//! It runs the shared AFIK configuration protocol, so the host tooling programs
-//! a radio exactly as it programs the simulator. It owns the retained memory,
-//! restores the configuration from it at boot, and writes it back whenever the
-//! host or the operator changes it.
+//! A host programs the radio the stock way (`ADR-100`): it reads and writes
+//! the 8 KiB memory view in small blocks, and it compiled and validated the
+//! configuration image before writing any of it. This task answers those
+//! requests, loads the image from memory at boot and again once a host has
+//! finished writing, and records where the operator left the radio.
 
-use core::mem::MaybeUninit;
-use core::sync::atomic::{AtomicBool, Ordering};
-
-use embassy_futures::select::{select, select3, Either, Either3};
+use embassy_futures::select::{select3, Either3};
 use embassy_time::Timer;
-use radio_device::{ControlAnswer, DeviceEvent, DeviceService, Push};
+use radio_platform::memory_link::{
+    encode_hello_response, encode_read_response, encode_write_response, host_may_write, Decoder,
+    Push, Request, IMAGE_ORIGIN, RESPONSE_FRAME_BYTES,
+};
 use radio_platform::operator_display::MemoryState;
-use radio_protocol::{DeviceErrorCode, MAX_ENCODED_FRAME};
+use radio_platform::serial::ApplicationIdentity;
+use radio_storage::CONFIGURATION_IMAGE_HEADER_LEN;
 
-use crate::configuration::{
-    device_service, store_setting, AppDeviceService, Programmed, RETAINED_IMAGE_BYTES,
-};
-use crate::drivers::{RetainedMemory, SerialLink};
-use crate::operator_state::OperatorState;
+use crate::configuration::Programmed;
+use crate::drivers::{Memory, SerialLink};
 use crate::state::{
-    count, hold_bus_idle, store_objects, Publication, BATTERY_CALIBRATION, CONTROL_ANSWER,
-    CONTROL_REQUEST, OPERATOR_PLACE, PROGRAMMED, SERIAL_ACTIVITY, SERIAL_ANSWERED,
-    SERIAL_DISCARDED, SERIAL_ERRORS, SERIAL_RECEIVED, SETTING_CHOICE, TX_CALIBRATION,
+    count, hold_bus_idle, Publication, ACTIVE, BATTERY_CALIBRATION, OPERATOR_PLACE, PROGRAMMED,
+    SERIAL_ACTIVITY, SERIAL_ANSWERED, SERIAL_DISCARDED, SERIAL_ERRORS, SERIAL_RECEIVED,
+    TX_CALIBRATION,
 };
 
-/// Milliseconds a host waits for the interface task to answer one request.
+/// Milliseconds the link must stay quiet after a write before the image is
+/// loaded again.
 ///
-/// The interface task answers from the controller alone and needs no bus, so
-/// this is generous rather than tight. It exists so a host cannot be left
-/// waiting forever by an interface task which has stopped: the link keeps
-/// working and says the radio did not answer, rather than going silent.
-const CONTROL_ANSWER_MILLISECONDS: u64 = 200;
+/// A host writes an image as hundreds of blocks and reads it back to verify,
+/// all in one burst. Loading after every block would show the operator a
+/// configuration that is half old and half new; waiting for the burst to end
+/// loads only the finished one.
+const RELOAD_QUIET_MILLISECONDS: u64 = 1_000;
 
-/// The serial task's two large values, kept out of its future (`RISK-033`).
-///
-/// Built in a task, a by-value service or image buffer lands in the task's
-/// poll frame before it is moved, and the size-optimised build kept a 4 KiB
-/// poll frame that overflowed the stack. These statics are filled once, by
-/// [`state`], before the executor starts.
-static mut SERVICE: MaybeUninit<AppDeviceService> = MaybeUninit::uninit();
-static mut IMAGE: [u8; RETAINED_IMAGE_BYTES] = [0; RETAINED_IMAGE_BYTES];
+/// The image header as a memory offset.
+#[allow(clippy::cast_possible_truncation)]
+const HEADER_BYTES: u16 = CONFIGURATION_IMAGE_HEADER_LEN as u16;
 
-/// The serial task's service and image buffer.
-pub struct State {
-    service: &'static mut AppDeviceService,
-    image: &'static mut [u8; RETAINED_IMAGE_BYTES],
-}
-
-/// Fills the serial task's statics and hands them out.
-///
-/// Call it once, before the executor starts. It is never inlined, so the
-/// service it builds on the stack is gone again before any task runs.
-///
-/// # Panics
-///
-/// On a second call, which would alias the statics.
-#[allow(unsafe_code)]
-#[inline(never)]
-pub fn state() -> State {
-    // A load and a store: Cortex-M0 has no atomic swap, and this runs before
-    // the executor, so nothing can interleave.
-    static TAKEN: AtomicBool = AtomicBool::new(false);
-    assert!(!TAKEN.load(Ordering::Relaxed), "serial state is taken once");
-    TAKEN.store(true, Ordering::Relaxed);
-    // SAFETY: the flag above lets this run once, so these are the only
-    // references to either static for the image's life.
-    unsafe {
-        let service = &raw mut SERVICE;
-        let image = &raw mut IMAGE;
-        State {
-            service: (*service).write(device_service()),
-            image: &mut *image,
-        }
-    }
-}
+/// Bytes collected per burst. A host sends one request and waits for its
+/// answer, and the largest request is 28 bytes.
+const RECEIVE_BYTES: usize = 64;
 
 /// Runs the serial task for ever.
 ///
-/// `open` takes the retained memory and reports what it found. It runs after
-/// the first publication, so a slow or broken memory never holds up the
-/// operator interface.
-pub async fn run<L: SerialLink, M: RetainedMemory>(
+/// `open` takes the memory and reports what it found. It runs after the first
+/// publication, so a slow or broken memory never holds up the operator
+/// interface. `identity` is what hello answers.
+///
+/// # Panics
+///
+/// If `identity` is not a printable string of at most 32 bytes.
+#[allow(clippy::too_many_lines)]
+pub async fn run<L: SerialLink, M: Memory>(
     mut link: L,
     open: impl FnOnce() -> (Option<M>, MemoryState),
-    state: State,
+    identity: &'static [u8],
 ) {
-    let State { service, image } = state;
-    // Publish before touching the memory. The interface task adopts whatever
-    // arrives, so anything slow or broken in the memory path would otherwise
-    // leave the operator with an empty radio for longer than it has to. An
-    // empty configuration is the honest state until a restore succeeds.
-    publish(service, false, MemoryState::Unknown, None);
+    let identity = ApplicationIdentity::new(identity).expect("printable bounded identity");
+    // Publish before touching the memory, so the interface starts on the VFO
+    // at once rather than waiting on a slow or broken memory.
+    PROGRAMMED.signal(Publication {
+        programmed: Programmed::empty(),
+        generation: 0,
+        retained: false,
+        memory: MemoryState::Unknown,
+        place: None,
+    });
 
-    let (mut retained, memory_state) = open();
+    let (mut memory, memory_state) = open();
 
     // The calibration is the radio's own data and never changes, so it is read
     // once, here, while the memory is already in hand.
-    BATTERY_CALIBRATION.signal(retained.as_mut().and_then(M::read_battery_calibration));
-    TX_CALIBRATION.signal(retained.as_mut().and_then(M::read_tx_calibration));
+    BATTERY_CALIBRATION.signal(memory.as_mut().and_then(M::read_battery_calibration));
+    TX_CALIBRATION.signal(memory.as_mut().and_then(M::read_tx_calibration));
 
-    // Restore the retained configuration before the host or the operator can
-    // see this radio. A missing, erased, or corrupt region simply leaves the
-    // store empty and the VFO in charge.
-    let restored = retained.as_mut().is_some_and(|memory| {
-        memory
-            .read(image)
-            .is_some_and(|length| service.load_image(&image[..length]).is_ok())
-    });
     // The place is read beside the configuration it refers to and published
     // with it, so the interface never restores a channel into a channel list it
-    // has not adopted. A radio which has never been used simply has none.
-    let place = retained.as_mut().and_then(M::read_operator_state);
-    publish(service, restored, memory_state, place);
+    // has not adopted. Its squelch is the operator's own choice and replaces
+    // the image's default.
+    let place = memory.as_mut().and_then(M::read_operator_state);
+    let mut generation = 1_u32;
+    let (programmed, loaded) = load(memory.as_mut());
+    let programmed = match place.and_then(|place| place.squelch) {
+        Some(squelch) => programmed.with_squelch(squelch),
+        None => programmed,
+    };
+    PROGRAMMED.signal(Publication {
+        programmed,
+        generation,
+        retained: loaded,
+        memory: memory_state,
+        place,
+    });
 
-    let mut response = [0_u8; MAX_ENCODED_FRAME];
-    // A whole frame at a time, collected by the link and delimited by the idle
-    // line. Reading one byte per await lost bytes while the interface task held
-    // the core for a bit-banged transfer (`EVID-K1-061`).
-    let mut received = [0_u8; MAX_ENCODED_FRAME];
+    let mut decoder = Decoder::new();
+    let mut response = [0_u8; RESPONSE_FRAME_BYTES];
+    let mut received = [0_u8; RECEIVE_BYTES];
+    // Whether a host has written since the image was last loaded.
+    let mut written = false;
     loop {
-        // The host and the operator are two sources of change for one store, so
-        // this task waits on both and serves whichever arrives. Nothing here
-        // interrupts a frame in progress: `read_until_idle` has already returned
-        // by the time a handset choice can be taken.
-        let count_received = match select3(
+        let reload = async {
+            if written {
+                Timer::after_millis(RELOAD_QUIET_MILLISECONDS).await;
+            } else {
+                core::future::pending::<()>().await;
+            }
+        };
+        let received_count = match select3(
             link.read_until_idle(&mut received),
-            SETTING_CHOICE.wait(),
             OPERATOR_PLACE.wait(),
+            reload,
         )
         .await
         {
-            Either3::First(Ok(count_received)) => count_received,
+            Either3::First(Ok(received_count)) => received_count,
             Either3::First(Err(_)) => {
                 // This arm firing while nothing is received is what a wrong
                 // baud rate looks like.
@@ -141,115 +123,187 @@ pub async fn run<L: SerialLink, M: RetainedMemory>(
                 Timer::after_millis(1).await;
                 continue;
             }
-            Either3::Second(change) => {
-                // A handset setting which did not survive a battery change would
-                // not be worth the menu, so it is stored exactly like a host
-                // write and republished from the store rather than assumed.
-                if store_setting(service, change).is_ok() {
-                    let retained_now = retain(service, image, retained.as_mut()).await;
-                    publish(service, retained_now, memory_state, None);
-                }
-                continue;
-            }
-            Either3::Third(place) => {
-                if let Some(memory) = retained.as_mut() {
+            Either3::Second(place) => {
+                if let Some(memory) = memory.as_mut() {
                     let _ = memory.write_operator_state(place).await;
                 }
                 continue;
             }
+            Either3::Third(()) => {
+                // The host has finished. What it wrote is the configuration
+                // now, squelch included, so nothing of the old one is kept.
+                written = false;
+                generation = generation.wrapping_add(1);
+                let (programmed, loaded) = load(memory.as_mut());
+                PROGRAMMED.signal(Publication {
+                    programmed,
+                    generation,
+                    retained: loaded,
+                    memory: memory_state,
+                    place: None,
+                });
+                continue;
+            }
         };
-        for &byte in &received[..count_received] {
+        for &byte in &received[..received_count] {
             count(&SERIAL_RECEIVED);
             hold_bus_idle();
-
             // `RISK-036`: with this feature the byte is counted and dropped,
             // and nothing below this line runs.
             if cfg!(feature = "serial-drop-bytes") {
                 continue;
             }
-
-            let before = service.generation();
-            let mut observe = |event| {
-                if matches!(event, DeviceEvent::PacketDiscarded(_)) {
-                    count(&SERIAL_DISCARDED);
-                }
-            };
-            let pushed = service.push_control(byte, &mut response, &mut observe);
-            if !matches!(pushed, Push::Idle) {
-                SERIAL_ACTIVITY.signal(());
-            }
-            let length = match pushed {
+            let request = match decoder.push(byte) {
                 Push::Idle => continue,
-                Push::Response(length) => length,
-                // The receiver belongs to the interface task, so the answer has
-                // to come from there. Nothing is held while waiting.
-                Push::Control(control) => {
-                    CONTROL_REQUEST.signal(control.request());
-                    let answer = match select(
-                        CONTROL_ANSWER.wait(),
-                        Timer::after_millis(CONTROL_ANSWER_MILLISECONDS),
-                    )
-                    .await
-                    {
-                        Either::First(answer) => answer,
-                        // An interface task which did not answer leaves the
-                        // link working and the host told.
-                        Either::Second(()) => ControlAnswer::Refused(DeviceErrorCode::Internal),
+                Push::Rejected => {
+                    count(&SERIAL_DISCARDED);
+                    continue;
+                }
+                Push::Request(request) => request,
+            };
+            SERIAL_ACTIVITY.signal(());
+            let length = match request {
+                Request::Hello => Some(encode_hello_response(identity, &mut response)),
+                Request::Read { address, length } => memory.as_mut().and_then(|memory| {
+                    encode_read_response(address, length, &mut response, |data| {
+                        memory.read(address, data)
+                    })
+                }),
+                Request::Write { address, data } => {
+                    let stored = match memory.as_mut() {
+                        Some(memory) if host_may_write(address) => {
+                            written = true;
+                            memory.write(address, &data).await
+                        }
+                        _ => false,
                     };
-                    let Some(length) =
-                        service.answer_control(control, answer, &mut response, &mut observe)
-                    else {
-                        continue;
-                    };
-                    length
+                    // A refused or failed write is not acknowledged, so the
+                    // host's write times out and it stops.
+                    stored.then(|| encode_write_response(address, &mut response))
                 }
             };
-            if service.generation() != before {
-                // Retain the new configuration before answering, so a host told
-                // that a transaction committed can rely on it being stored.
-                let retained_now = retain(service, image, retained.as_mut()).await;
-                publish(service, retained_now, memory_state, None);
+            if let Some(length) = length {
+                count(&SERIAL_ANSWERED);
+                link.write(&response[..length]).await;
             }
-            count(&SERIAL_ANSWERED);
-            link.write(&response[..length]).await;
             hold_bus_idle();
         }
     }
 }
 
-/// Writes the active configuration to the memory and reports whether it took.
-async fn retain<M: RetainedMemory>(
-    service: &AppDeviceService,
-    image: &mut [u8; RETAINED_IMAGE_BYTES],
-    memory: Option<&mut M>,
-) -> bool {
-    let Ok(length) = service.encode_active_image(&mut image[..]) else {
-        return false;
-    };
-    match memory {
-        Some(memory) => memory.write(image, length).await,
-        None => false,
+/// Loads the configuration image from memory into the shared copy.
+///
+/// A missing, erased, torn, or corrupt image leaves the copy empty, so the
+/// radio runs on the VFO rather than on half a configuration.
+fn load<M: Memory>(memory: Option<&mut M>) -> (Programmed, bool) {
+    let loaded = memory.is_some_and(|memory| {
+        let mut header = [0_u8; CONFIGURATION_IMAGE_HEADER_LEN];
+        memory.read(IMAGE_ORIGIN, &mut header)
+            && ACTIVE.with_mut(|arena| {
+                arena
+                    .load_image(&header, |payload| {
+                        memory.read(IMAGE_ORIGIN + HEADER_BYTES, payload)
+                    })
+                    .is_ok()
+            })
+    });
+    if !loaded {
+        ACTIVE.with_mut(|arena| {
+            let _ = arena.load_payload(&[]);
+        });
     }
+    let programmed = ACTIVE.with(|arena| Programmed::index(arena).unwrap_or_default());
+    (programmed, loaded && !programmed.is_empty())
 }
 
-/// Publishes the active configuration for the user interface task.
-///
-/// A snapshot the interface cannot use is published as an empty configuration
-/// rather than dropped, so the display always reports what the radio really
-/// holds and falls back to the VFO.
-fn publish<const BYTES: usize>(
-    service: &DeviceService<BYTES>,
-    retained: bool,
-    memory: MemoryState,
-    place: Option<OperatorState>,
-) {
-    store_objects(service.active_payload());
-    let programmed = Programmed::index(service.active_objects()).unwrap_or_default();
-    PROGRAMMED.signal(Publication {
-        programmed,
-        generation: service.generation(),
-        retained: retained && !programmed.is_empty(),
-        memory,
-        place,
-    });
+#[cfg(test)]
+mod tests {
+    use super::load;
+    use crate::drivers::Memory;
+    use radio_channel_plan::{
+        BankMask, ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord,
+    };
+    use radio_domain::{
+        Bandwidth, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, SquelchLevel, Tone,
+        TxClass,
+    };
+    use radio_platform::battery::Calibration;
+    use radio_platform::memory_link::{VIEW_BYTES, WRITE_BYTES};
+    use radio_storage::{encode_channel, encode_configuration_image};
+
+    struct FakeMemory([u8; VIEW_BYTES as usize]);
+
+    impl Memory for FakeMemory {
+        fn read(&mut self, address: u16, output: &mut [u8]) -> bool {
+            let start = usize::from(address);
+            let Some(bytes) = self.0.get(start..start + output.len()) else {
+                return false;
+            };
+            output.copy_from_slice(bytes);
+            true
+        }
+
+        async fn write(&mut self, address: u16, data: &[u8; WRITE_BYTES]) -> bool {
+            let start = usize::from(address);
+            self.0[start..start + WRITE_BYTES].copy_from_slice(data);
+            true
+        }
+
+        fn read_battery_calibration(&mut self) -> Option<Calibration> {
+            None
+        }
+
+        fn read_tx_calibration(&mut self) -> Option<[u8; 3]> {
+            None
+        }
+    }
+
+    fn channel(id: u16) -> ChannelRecord {
+        let frequency = Frequency::from_hz(446_006_250).expect("frequency");
+        ChannelRecord::new(ChannelDefinition {
+            id: ChannelId::new(id),
+            name: ChannelName::new("PMR").expect("name"),
+            receive: frequency,
+            transmit: frequency,
+            rx_tone: Tone::None,
+            tx_tone: Tone::None,
+            modulation: Modulation::Fm,
+            bandwidth: Bandwidth::Narrow,
+            power: PowerLevel::Low,
+            step: FrequencyStep::from_hz(12_500).expect("step"),
+            squelch: SquelchLevel::new(3).expect("level"),
+            flags: ChannelFlags::default(),
+            banks: BankMask::default(),
+            tx_class: TxClass::Never,
+        })
+        .expect("channel")
+    }
+
+    /// One test, because the copy it loads into is the image's one static.
+    #[test]
+    fn an_image_in_memory_loads_and_a_damaged_or_erased_one_does_not() {
+        let objects = [
+            encode_channel(channel(1)).expect("one"),
+            encode_channel(channel(2)).expect("two"),
+        ];
+        let mut memory = FakeMemory([0xFF; VIEW_BYTES as usize]);
+        let length = encode_configuration_image(&objects, &mut memory.0).expect("image");
+
+        let (programmed, loaded) = load(Some(&mut memory));
+        assert!(loaded);
+        assert_eq!(programmed.channel_count(), 2);
+
+        memory.0[length - 1] ^= 0x01;
+        let (programmed, loaded) = load(Some(&mut memory));
+        assert!(!loaded, "a damaged image is refused");
+        assert!(programmed.is_empty(), "and nothing of it is kept");
+
+        let (programmed, loaded) = load(Some(&mut FakeMemory([0xFF; VIEW_BYTES as usize])));
+        assert!(
+            !loaded && programmed.is_empty(),
+            "erased memory is no image"
+        );
+        let (_, loaded) = load::<FakeMemory>(None);
+        assert!(!loaded);
+    }
 }

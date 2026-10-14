@@ -420,6 +420,54 @@ impl<const BYTES: usize> ObjectArena<BYTES> {
         checked
     }
 
+    /// Replaces this arena's contents with the payload of one canonical image
+    /// whose header has already been read, filling it in place.
+    ///
+    /// `fill` reads the payload straight into the arena, so a device holding
+    /// its image in memory needs no second buffer the size of the image. The
+    /// checksum, order, length, and every object are then validated exactly as
+    /// [`decode_configuration_image`] does. A refused image leaves the arena
+    /// empty, and so does a `fill` which reports failure.
+    pub fn load_image(
+        &mut self,
+        header: &[u8; CONFIGURATION_IMAGE_HEADER_LEN],
+        fill: impl FnOnce(&mut [u8]) -> bool,
+    ) -> Result<(), StorageError> {
+        self.len = 0;
+        let payload_len =
+            configuration_image_len_from_header(header)? - CONFIGURATION_IMAGE_HEADER_LEN;
+        if payload_len > BYTES {
+            return Err(StorageError::StoreFull);
+        }
+        if !fill(&mut self.bytes[..payload_len]) {
+            return Err(StorageError::MalformedImage);
+        }
+        let payload = &self.bytes[..payload_len];
+        let expected = u32::from_le_bytes([header[12], header[13], header[14], header[15]]);
+        if configuration_image_crc(&header[..12], payload) != expected {
+            return Err(StorageError::ImageIntegrity);
+        }
+        let declared = u16::from_le_bytes([header[6], header[7]]);
+        let mut offset = 0;
+        let mut previous = None;
+        for _ in 0..declared {
+            let (object, next) = decode_image_entry(payload, offset)?;
+            if previous.is_some_and(|key| key >= object.key()) {
+                return Err(StorageError::NonCanonicalImage);
+            }
+            if !validate_object(&object) {
+                return Err(StorageError::MalformedObject);
+            }
+            previous = Some(object.key());
+            offset = next;
+        }
+        if offset != payload_len {
+            return Err(StorageError::MalformedImage);
+        }
+        self.len = payload_len;
+        Ok(())
+    }
+
     /// Returns the total bytes this arena can hold.
     #[must_use]
     pub const fn capacity(&self) -> usize {
@@ -1812,6 +1860,56 @@ mod tests {
 
         assert_eq!(
             ObjectArena::<4>::new().load_payload(source.payload()),
+            Err(StorageError::StoreFull)
+        );
+    }
+
+    #[test]
+    fn an_arena_loads_an_image_in_place_and_refuses_a_damaged_one() {
+        let objects = [
+            encode_channel(channel(2, "TWO")).unwrap(),
+            encode_channel(channel(9, "NINE")).unwrap(),
+        ];
+        let mut image = [0_u8; 256];
+        let len = super::encode_configuration_image(&objects, &mut image).unwrap();
+        let image = &image[..len];
+        let mut header = [0_u8; CONFIGURATION_IMAGE_HEADER_LEN];
+        header.copy_from_slice(&image[..CONFIGURATION_IMAGE_HEADER_LEN]);
+        let payload = &image[CONFIGURATION_IMAGE_HEADER_LEN..];
+
+        let mut arena = ObjectArena::<512>::new();
+        arena
+            .load_image(&header, |buffer| {
+                buffer.copy_from_slice(payload);
+                true
+            })
+            .unwrap();
+        assert_eq!(arena.payload(), payload);
+        assert_eq!(arena.object_count(), 2);
+
+        // One flipped payload bit fails the checksum and empties the arena.
+        assert_eq!(
+            arena.load_image(&header, |buffer| {
+                buffer.copy_from_slice(payload);
+                buffer[3] ^= 1;
+                true
+            }),
+            Err(StorageError::ImageIntegrity)
+        );
+        assert!(arena.payload().is_empty());
+
+        // A reader which fails leaves nothing behind either.
+        assert_eq!(
+            arena.load_image(&header, |_| false),
+            Err(StorageError::MalformedImage)
+        );
+        // Erased memory is not an image.
+        assert_eq!(
+            arena.load_image(&[0xFF; CONFIGURATION_IMAGE_HEADER_LEN], |_| true),
+            Err(StorageError::MalformedImage)
+        );
+        assert_eq!(
+            ObjectArena::<8>::new().load_image(&header, |_| true),
             Err(StorageError::StoreFull)
         );
     }

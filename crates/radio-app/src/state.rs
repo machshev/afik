@@ -8,16 +8,13 @@ use core::cell::RefCell;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::signal::Signal;
 use embassy_time::Instant;
-use radio_device::ControlAnswer;
 use radio_platform::battery::Calibration;
 use radio_platform::operator_display::{MemoryState, ResetCause, SerialCounters};
-use radio_protocol::ControlRequest;
 use radio_storage::ObjectArena;
 
-use crate::configuration::{Programmed, SettingChange, CONFIGURATION_STORE_BYTES};
+use crate::configuration::{Programmed, CONFIGURATION_STORE_BYTES};
 use crate::operator_state::OperatorState;
 
 /// Milliseconds the radio bus stays idle after the last serial byte.
@@ -43,24 +40,6 @@ pub(crate) static BATTERY_CALIBRATION: Signal<CriticalSectionRawMutex, Option<Ca
 
 /// The PMR446 low-power TX bias bytes, read once by the serial task.
 pub(crate) static TX_CALIBRATION: Signal<CriticalSectionRawMutex, Option<[u8; 3]>> = Signal::new();
-
-/// A radio-wide setting the operator changed on the handset.
-///
-/// The serial task owns the store and the memory, so the interface asks
-/// rather than writes. A choice the operator makes while a host is
-/// mid-exchange waits its turn instead of racing it.
-pub(crate) static SETTING_CHOICE: Signal<CriticalSectionRawMutex, SettingChange> = Signal::new();
-
-/// One host runtime-control request, for the task which owns the controller.
-///
-/// The serial task owns the link and the interface task owns the receive
-/// controller, so a host request crosses here and its answer comes back on
-/// [`CONTROL_ANSWER`]. This is the same shape as the place going the other way:
-/// the task which can do the work does it, and neither reaches into the other.
-pub(crate) static CONTROL_REQUEST: Signal<CriticalSectionRawMutex, ControlRequest> = Signal::new();
-
-/// The answer to the request on [`CONTROL_REQUEST`].
-pub(crate) static CONTROL_ANSWER: Signal<CriticalSectionRawMutex, ControlAnswer> = Signal::new();
 
 /// Raised for every host request, so the interface task can ignore PTT while
 /// the cable that shares its jack is in use.
@@ -91,24 +70,41 @@ pub(crate) struct Publication {
 
 /// The one RAM copy of the configuration, as the memory stores it.
 ///
-/// The serial task owns the device service and republishes here; the interface
-/// task reads. Nothing decoded is held anywhere: a channel is built from these
-/// objects on the lookup that needs it and dropped again, so what a radio can
-/// hold is bounded by the storage it advertises rather than by its SRAM.
-pub(crate) static ACTIVE: Mutex<
-    CriticalSectionRawMutex,
-    RefCell<ObjectArena<CONFIGURATION_STORE_BYTES>>,
-> = Mutex::new(RefCell::new(ObjectArena::new()));
+/// The serial task loads it from memory; the interface task reads. Nothing
+/// decoded is held anywhere: a channel is built from these objects on the
+/// lookup that needs it and dropped again, so what a radio can hold is bounded
+/// by the storage it advertises rather than by its SRAM.
+pub(crate) static ACTIVE: TaskCell<ObjectArena<CONFIGURATION_STORE_BYTES>> =
+    TaskCell::new(ObjectArena::new());
 
-/// Replaces the shared object snapshot from one packed payload.
+/// State shared by the tasks of one thread-mode executor.
 ///
-/// The store keeps its objects packed and ordered, so this is a byte copy of
-/// what the device is running rather than an object table rebuilt beside it.
-pub(crate) fn store_objects(payload: &[u8]) {
-    ACTIVE.lock(|cell| {
-        // In place: a by-value arena here overflowed the stack (`RISK-033`).
-        let _ = cell.borrow_mut().load_payload(payload);
-    });
+/// A critical-section mutex would mask interrupts for as long as the serial
+/// task spends reading an image out of memory, which on the K5's bit-banged
+/// bus is long enough to lose timer ticks. Tasks on one executor never preempt
+/// one another, and neither task holds a borrow across an `await`, so a plain
+/// `RefCell` is enough; a broken rule panics rather than corrupting.
+pub(crate) struct TaskCell<T>(RefCell<T>);
+
+// SAFETY: only the tasks of one thread-mode executor touch a `TaskCell`, and no
+// interrupt handler does, so it is never accessed from two contexts at once.
+#[allow(unsafe_code)]
+unsafe impl<T> Sync for TaskCell<T> {}
+
+impl<T> TaskCell<T> {
+    const fn new(value: T) -> Self {
+        Self(RefCell::new(value))
+    }
+
+    /// Runs `f` with shared access.
+    pub(crate) fn with<R>(&self, f: impl FnOnce(&T) -> R) -> R {
+        f(&self.0.borrow())
+    }
+
+    /// Runs `f` with exclusive access.
+    pub(crate) fn with_mut<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+        f(&mut self.0.borrow_mut())
+    }
 }
 
 pub(crate) fn now_ms() -> u32 {
