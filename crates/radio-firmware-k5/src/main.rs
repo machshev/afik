@@ -28,8 +28,8 @@ use radio_firmware_k5::eeprom::{self, K5Bus};
 use radio_firmware_k5::k5_display::K5BootDisplay;
 use radio_firmware_k5::keypad::{self, K5Matrix, MatrixIo};
 use radio_firmware_k5::protocol::{
-    encode_common_response, encode_common_view_response, encode_hello_response, NormalRequest,
-    NormalService, RESPONSE_FRAME_BYTES,
+    encode_common_response, encode_common_view_response, encode_hello_response, serve_eeprom_read,
+    NormalRequest, NormalService, EEPROM_RESPONSE_FRAME_BYTES, RESPONSE_FRAME_BYTES,
 };
 use radio_firmware_k5::receive::Pmr446Channel;
 use radio_firmware_k5::transmit;
@@ -203,6 +203,7 @@ fn main() -> ! {
 
     let mut service = NormalService::new();
     let mut response = [0_u8; RESPONSE_FRAME_BYTES];
+    let mut eeprom_response = [0_u8; EEPROM_RESPONSE_FRAME_BYTES];
 
     let tx_policy = transmit::policy();
     let mut ptt_down = keypad.ptt_pressed();
@@ -257,6 +258,24 @@ fn main() -> ! {
                 continue;
             };
             let length = match request {
+                NormalRequest::ReadEeprom { offset, length } => {
+                    // PA10/PA11 are the keypad's rows between scans, and the
+                    // scan has just left them high, the bus's idle state. Take
+                    // them for one read and give them straight back, as the
+                    // reference firmware does (EVID-K5-025, EVID-K5-026).
+                    let served = serve_eeprom_read(
+                        &mut K5Bus::initialise(),
+                        offset,
+                        length,
+                        &mut eeprom_response,
+                    );
+                    keypad = K5Matrix::initialise();
+                    if let Some(length) = served {
+                        UART1.write(&eeprom_response[..length]);
+                        UART1.flush();
+                    }
+                    continue;
+                }
                 NormalRequest::Hello => {
                     encode_hello_response(&mut response);
                     RESPONSE_FRAME_BYTES

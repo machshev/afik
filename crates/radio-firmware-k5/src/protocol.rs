@@ -92,22 +92,48 @@ pub enum NormalRequest {
     Hello,
     /// A common request mapped through the target-owned command assignment.
     Common(shared_wire::Request),
+    /// The stock `0x051B` EEPROM read, which is how a host takes a backup.
+    ReadEeprom {
+        /// First EEPROM address.
+        offset: u16,
+        /// Bytes requested, from one to [`MAX_EEPROM_READ_BYTES`].
+        length: u8,
+    },
 }
+
+/// Stock read-EEPROM request command.
+pub const READ_EEPROM_COMMAND: u16 = 0x051B;
+/// Stock read-EEPROM response command.
+pub const READ_EEPROM_RESPONSE_COMMAND: u16 = 0x051C;
+/// Largest block one read request may ask for, as hosts read 128 at a time.
+pub const MAX_EEPROM_READ_BYTES: usize = 0x80;
+/// Complete encoded frame for the largest EEPROM read response.
+///
+/// Header and length (4), command and declared length (4), offset, length and
+/// pad (4), the data, the trailer (2), and the footer (2).
+pub const EEPROM_RESPONSE_FRAME_BYTES: usize = 4 + 8 + MAX_EEPROM_READ_BYTES + 2 + 2;
+/// Declared length of a read request: offset, length, pad, and session word.
+const READ_EEPROM_DECLARED_BYTES: u16 = 8;
+/// Encoded read-request body: twelve payload bytes plus two CRC bytes.
+const READ_EEPROM_BODY_BYTES: usize = 14;
+/// Session word every observed host request carries.
+const SESSION_WORD: u32 = 0x6457_396A;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum State {
     Header { previous_was_header: bool },
     Length { first: Option<u8> },
-    Body { index: usize },
-    Footer { first: Option<u8> },
+    Body { index: usize, size: usize },
+    Footer { first: Option<u8>, size: usize },
     Discard { remaining: usize },
 }
 
-/// Bounded K5 normal-mode envelope decoder for hello and common requests.
+/// Bounded K5 normal-mode envelope decoder for hello, common, and EEPROM-read
+/// requests.
 #[derive(Clone, Copy, Debug)]
 pub struct NormalService {
     state: State,
-    body: [u8; REQUEST_BODY_BYTES],
+    body: [u8; READ_EEPROM_BODY_BYTES],
 }
 
 impl NormalService {
@@ -117,7 +143,7 @@ impl NormalService {
             state: State::Header {
                 previous_was_header: false,
             },
-            body: [0; REQUEST_BODY_BYTES],
+            body: [0; READ_EEPROM_BODY_BYTES],
         }
     }
 
@@ -138,31 +164,49 @@ impl NormalService {
             State::Length { first: None } => self.state = State::Length { first: Some(byte) },
             State::Length { first: Some(low) } => {
                 let declared = usize::from(u16::from_le_bytes([low, byte]));
-                self.state = if declared == REQUEST_BODY_BYTES - 2 {
-                    State::Body { index: 0 }
+                // The frame length counts the payload; the body adds its CRC.
+                let size = declared + 2;
+                self.state = if size == REQUEST_BODY_BYTES || size == READ_EEPROM_BODY_BYTES {
+                    State::Body { index: 0, size }
                 } else {
                     State::Discard {
                         remaining: declared.saturating_add(4).min(276),
                     }
                 };
             }
-            State::Body { index } => {
+            State::Body { index, size } => {
                 self.body[index] = byte;
-                self.state = if index + 1 == REQUEST_BODY_BYTES {
-                    State::Footer { first: None }
+                self.state = if index + 1 == size {
+                    State::Footer { first: None, size }
                 } else {
-                    State::Body { index: index + 1 }
+                    State::Body {
+                        index: index + 1,
+                        size,
+                    }
                 };
             }
-            State::Footer { first: None } => self.state = State::Footer { first: Some(byte) },
-            State::Footer { first: Some(low) } => {
+            State::Footer { first: None, size } => {
+                self.state = State::Footer {
+                    first: Some(byte),
+                    size,
+                };
+            }
+            State::Footer {
+                first: Some(low),
+                size,
+            } => {
                 self.state = State::Header {
                     previous_was_header: false,
                 };
                 if [low, byte] != [0xDC, 0xBA] {
                     return None;
                 }
-                let command = radio_platform::serial::decode_command(&mut self.body)?;
+                if size == READ_EEPROM_BODY_BYTES {
+                    return decode_read_eeprom(&mut self.body);
+                }
+                let mut body = [0_u8; REQUEST_BODY_BYTES];
+                body.copy_from_slice(&self.body[..REQUEST_BODY_BYTES]);
+                let command = radio_platform::serial::decode_command(&mut body)?;
                 return decode_normal_command(command);
             }
             State::Discard { remaining } => {
@@ -185,6 +229,76 @@ impl Default for NormalService {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Validates one read-EEPROM body: CRC, declared length, session word, and a
+/// length the response can carry. The address range is the driver's to check.
+fn decode_read_eeprom(body: &mut [u8; READ_EEPROM_BODY_BYTES]) -> Option<NormalRequest> {
+    xor(body);
+    let (payload, crc) = body.split_at(12);
+    if radio_platform::serial::crc16_xmodem(payload) != u16::from_le_bytes([crc[0], crc[1]]) {
+        return None;
+    }
+    let command = u16::from_le_bytes([payload[0], payload[1]]);
+    let declared = u16::from_le_bytes([payload[2], payload[3]]);
+    let session = u32::from_le_bytes([payload[8], payload[9], payload[10], payload[11]]);
+    let length = payload[6];
+    if command != READ_EEPROM_COMMAND
+        || declared != READ_EEPROM_DECLARED_BYTES
+        || session != SESSION_WORD
+        || length == 0
+        || usize::from(length) > MAX_EEPROM_READ_BYTES
+    {
+        return None;
+    }
+    Some(NormalRequest::ReadEeprom {
+        offset: u16::from_le_bytes([payload[4], payload[5]]),
+        length,
+    })
+}
+
+/// Encodes the stock `0x051C` response to one EEPROM read and returns its size.
+///
+/// The payload echoes the offset and length before the data, which is what a
+/// host checks every block against.
+pub fn encode_eeprom_response(
+    offset: u16,
+    data: &[u8],
+    frame: &mut [u8; EEPROM_RESPONSE_FRAME_BYTES],
+) -> usize {
+    let length = data.len().min(MAX_EEPROM_READ_BYTES);
+    let payload_bytes = 8 + length;
+    frame.fill(0);
+    frame[0..2].copy_from_slice(&[0xAB, 0xCD]);
+    frame[2..4].copy_from_slice(&u16::try_from(payload_bytes).unwrap_or(0).to_le_bytes());
+    let payload = &mut frame[4..4 + payload_bytes];
+    payload[0..2].copy_from_slice(&READ_EEPROM_RESPONSE_COMMAND.to_le_bytes());
+    payload[2..4].copy_from_slice(&u16::try_from(length + 4).unwrap_or(0).to_le_bytes());
+    payload[4..6].copy_from_slice(&offset.to_le_bytes());
+    payload[6] = u8::try_from(length).unwrap_or(0);
+    payload[8..].copy_from_slice(&data[..length]);
+    let trailer = 4 + payload_bytes;
+    frame[trailer..trailer + 2].copy_from_slice(&0xFFFF_u16.to_le_bytes());
+    xor(&mut frame[4..trailer + 2]);
+    frame[trailer + 2..trailer + 4].copy_from_slice(&[0xDC, 0xBA]);
+    trailer + 4
+}
+
+/// Serves one validated EEPROM read: reads the block and encodes the response.
+///
+/// Returns the frame length, or `None` when the driver refused the range or the
+/// device did not acknowledge, in which case nothing is sent and the host's
+/// read times out rather than receiving data it did not ask for.
+pub fn serve_eeprom_read<B: crate::eeprom::Bus>(
+    bus: &mut B,
+    offset: u16,
+    length: u8,
+    frame: &mut [u8; EEPROM_RESPONSE_FRAME_BYTES],
+) -> Option<usize> {
+    let mut data = [0_u8; MAX_EEPROM_READ_BYTES];
+    let data = data.get_mut(..usize::from(length))?;
+    crate::eeprom::read(bus, offset, data).ok()?;
+    Some(encode_eeprom_response(offset, data, frame))
 }
 
 fn decode_normal_command(command: u16) -> Option<NormalRequest> {
@@ -283,7 +397,8 @@ mod tests {
 
     use super::{
         apply_shared_wire_request, encode_common_response, encode_common_view_response,
-        NormalRequest, NormalService, COMMON_RESPONSE_COMMAND,
+        encode_eeprom_response, NormalRequest, NormalService, COMMON_RESPONSE_COMMAND,
+        EEPROM_RESPONSE_FRAME_BYTES,
     };
     use radio_platform::receive_app::{ReceiveApp, View};
     use radio_platform::serial_control::{wire, Capabilities, Result as SerialResult};
@@ -315,6 +430,87 @@ mod tests {
         super::xor(&mut frame[4..14]);
         frame[14..].copy_from_slice(&[0xDC, 0xBA]);
         frame
+    }
+
+    fn read_eeprom_request(offset: u16, length: u8, session: u32) -> std::vec::Vec<u8> {
+        let mut frame = vec![0_u8; 20];
+        frame[..4].copy_from_slice(&[0xAB, 0xCD, 12, 0]);
+        frame[4..6].copy_from_slice(&0x051B_u16.to_le_bytes());
+        frame[6..8].copy_from_slice(&8_u16.to_le_bytes());
+        frame[8..10].copy_from_slice(&offset.to_le_bytes());
+        frame[10] = length;
+        frame[12..16].copy_from_slice(&session.to_le_bytes());
+        let crc = crc16(&frame[4..16]);
+        frame[16..18].copy_from_slice(&crc.to_le_bytes());
+        super::xor(&mut frame[4..18]);
+        frame[18..].copy_from_slice(&[0xDC, 0xBA]);
+        frame
+    }
+
+    fn decode(stream: &[u8]) -> Option<NormalRequest> {
+        let mut service = NormalService::new();
+        let mut seen = None;
+        for byte in stream {
+            seen = service.push(*byte).or(seen);
+        }
+        seen
+    }
+
+    #[test]
+    fn the_stock_eeprom_read_request_is_decoded_and_bounded() {
+        assert_eq!(
+            decode(&read_eeprom_request(0x1F80, 0x80, 0x6457_396A)),
+            Some(NormalRequest::ReadEeprom {
+                offset: 0x1F80,
+                length: 0x80
+            })
+        );
+        // Lengths the response cannot carry, and a foreign session, are dropped.
+        assert_eq!(decode(&read_eeprom_request(0, 0, 0x6457_396A)), None);
+        assert_eq!(decode(&read_eeprom_request(0, 0x81, 0x6457_396A)), None);
+        assert_eq!(decode(&read_eeprom_request(0, 0x80, 0x1234_5678)), None);
+        let mut corrupt = read_eeprom_request(0, 0x80, 0x6457_396A);
+        corrupt[16] ^= 1;
+        assert_eq!(decode(&corrupt), None);
+
+        // A hello still decodes after a read, on the same service.
+        let mut stream = read_eeprom_request(0x40, 8, 0x6457_396A);
+        stream.extend(request(0x0514));
+        let mut service = NormalService::new();
+        let seen: std::vec::Vec<_> = stream
+            .iter()
+            .filter_map(|byte| service.push(*byte))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                NormalRequest::ReadEeprom {
+                    offset: 0x40,
+                    length: 8
+                },
+                NormalRequest::Hello
+            ]
+        );
+    }
+
+    #[test]
+    fn the_eeprom_response_is_the_stock_051c_envelope() {
+        let data: std::vec::Vec<u8> = (0..0x80).collect();
+        let mut frame = [0_u8; EEPROM_RESPONSE_FRAME_BYTES];
+        let length = encode_eeprom_response(0x0100, &data, &mut frame);
+        assert_eq!(length, EEPROM_RESPONSE_FRAME_BYTES);
+        assert_eq!(&frame[..4], &[0xAB, 0xCD, 0x88, 0x00]);
+        assert_eq!(&frame[length - 2..length], &[0xDC, 0xBA]);
+        super::xor(&mut frame[4..length - 2]);
+        assert_eq!(&frame[4..8], &[0x1C, 0x05, 0x84, 0x00]);
+        assert_eq!(&frame[8..12], &[0x00, 0x01, 0x80, 0x00]);
+        assert_eq!(&frame[12..12 + 0x80], data.as_slice());
+        assert_eq!(&frame[length - 4..length - 2], &[0xFF, 0xFF]);
+
+        // A short read is framed at its own size.
+        let short = encode_eeprom_response(8, &data[..8], &mut frame);
+        assert_eq!(short, 4 + 8 + 8 + 4);
+        assert_eq!(&frame[..4], &[0xAB, 0xCD, 16, 0]);
     }
 
     #[test]

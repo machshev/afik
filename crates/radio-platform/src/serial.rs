@@ -178,7 +178,8 @@ impl<'a> HelloService<'a> {
     }
 }
 
-fn crc16_xmodem(bytes: &[u8]) -> u16 {
+/// CRC-16/XMODEM, which every normal-mode request body carries.
+pub fn crc16_xmodem(bytes: &[u8]) -> u16 {
     let mut crc = 0_u16;
     for byte in bytes {
         crc ^= u16::from(*byte) << 8;

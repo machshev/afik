@@ -215,8 +215,8 @@ impl fmt::Display for FlashError {
             ),
             Self::EepromNotServed(version) => write!(
                 formatter,
-                "the radio runs {version}, which serves no EEPROM reads; take the EEPROM \
-                 backup while it still runs stock firmware"
+                "the radio runs {version}, which serves no EEPROM reads; stock firmware \
+                 and AFIK-K5 7.0.6 or later do"
             ),
             Self::InvalidTransactionId => {
                 formatter.write_str("flash transaction identifier must be nonzero")
@@ -1176,16 +1176,37 @@ fn parse_clock_register_response(
 
 /// Identity prefix every AFIK application reports in its hello.
 const AFIK_IDENTITY_PREFIX: &str = "AFIK-";
+/// Identity prefix of the AFIK K5 application.
+const AFIK_K5_IDENTITY_PREFIX: &str = "AFIK-K5-";
+/// First AFIK K5 version which serves the stock `0x051B` EEPROM read.
+const AFIK_K5_EEPROM_SINCE: [u32; 3] = [7, 0, 6];
 
 /// Refuses before an EEPROM read that the running firmware would never answer.
 ///
-/// AFIK's applications answer the hello but carry no `0x051B` handler, so a read
-/// would only time out. The backup belongs to the stock firmware, before AFIK.
+/// Stock firmware serves `0x051B`, and so does AFIK K5 from
+/// [`AFIK_K5_EEPROM_SINCE`]. Earlier AFIK K5 images and the K1 answer the hello
+/// but have no read handler, so a read would only time out.
 fn require_eeprom_service(firmware: &NormalFirmwareInfo) -> Result<(), FlashError> {
-    if firmware.version().starts_with(AFIK_IDENTITY_PREFIX) {
-        return Err(FlashError::EepromNotServed(firmware.version().to_owned()));
+    let version = firmware.version();
+    let Some(afik) = version.strip_prefix(AFIK_IDENTITY_PREFIX) else {
+        return Ok(());
+    };
+    let serves = afik
+        .strip_prefix(&AFIK_K5_IDENTITY_PREFIX[AFIK_IDENTITY_PREFIX.len()..])
+        .and_then(release)
+        .is_some_and(|release| release >= AFIK_K5_EEPROM_SINCE);
+    if serves {
+        Ok(())
+    } else {
+        Err(FlashError::EepromNotServed(version.to_owned()))
     }
-    Ok(())
+}
+
+/// Parses a plain `major.minor.patch` release; anything else is `None`.
+fn release(text: &str) -> Option<[u32; 3]> {
+    let mut parts = text.split('.').map(|part| part.parse::<u32>().ok());
+    let release = [parts.next()??, parts.next()??, parts.next()??];
+    parts.next().is_none().then_some(release)
 }
 
 fn parse_hello_response(packet: &Packet) -> Result<NormalFirmwareInfo, FlashError> {
@@ -1527,9 +1548,10 @@ mod tests {
         apply_eeprom_restore, backup_eeprom, detect_bootloader, flash_afik_application,
         flash_application, observe_bootloader, prepare_eeprom_restore, probe_bootloader_v2,
         probe_clock_control, probe_clock_registers, probe_clock_snapshot, probe_keypad_matrix,
-        probe_normal_firmware, BeaconProtocol, BootloaderFamily, EepromRestorePrerequisites,
-        FirmwareVersion, FlashError, FlashPrerequisites, FlashPurpose, EEPROM_BLOCK_BYTES,
-        QUALIFIED_TARGET_CONFIRMATION, RECOVERY_REHEARSED_CONFIRMATION,
+        probe_normal_firmware, require_eeprom_service, BeaconProtocol, BootloaderFamily,
+        EepromRestorePrerequisites, FirmwareVersion, FlashError, FlashPrerequisites, FlashPurpose,
+        NormalFirmwareInfo, EEPROM_BLOCK_BYTES, QUALIFIED_TARGET_CONFIRMATION,
+        RECOVERY_REHEARSED_CONFIRMATION,
     };
 
     const TEST_TRANSACTION_ID: u32 = 0xA55A_1234;
@@ -1968,18 +1990,41 @@ mod tests {
     }
 
     #[test]
-    fn an_eeprom_backup_is_refused_on_afik_firmware_before_any_read() {
-        let mut hello = vec![0_u8; 40];
-        hello[0..4].copy_from_slice(&[0x15, 0x05, 0x24, 0x00]);
-        hello[4..18].copy_from_slice(b"AFIK-K5-7.0.5\0");
-        let mut transport = ScriptedTransport::new(encode_response(&hello), 1);
-        let error = backup_eeprom(&mut transport).unwrap_err();
-        assert!(
-            matches!(&error, FlashError::EepromNotServed(version) if version == "AFIK-K5-7.0.5"),
-            "{error}"
-        );
-        // Only the hello was sent: no read the firmware would never answer.
-        assert_eq!(decode_requests(&transport.writes).len(), 1);
+    fn an_eeprom_backup_is_refused_on_afik_firmware_which_cannot_serve_it() {
+        for identity in [
+            "AFIK-K5-7.0.5",
+            "AFIK-K5-2.3T",
+            "AFIK-K1-7.0.6",
+            "AFIK-K5-7.0",
+        ] {
+            let mut hello = vec![0_u8; 40];
+            hello[0..4].copy_from_slice(&[0x15, 0x05, 0x24, 0x00]);
+            hello[4..4 + identity.len()].copy_from_slice(identity.as_bytes());
+            let mut transport = ScriptedTransport::new(encode_response(&hello), 1);
+            let error = backup_eeprom(&mut transport).unwrap_err();
+            assert!(
+                matches!(&error, FlashError::EepromNotServed(version) if version == identity),
+                "{identity}: {error}"
+            );
+            // Only the hello was sent: no read the firmware would never answer.
+            assert_eq!(decode_requests(&transport.writes).len(), 1);
+        }
+    }
+
+    #[test]
+    fn afik_k5_serves_eeprom_reads_from_7_0_6() {
+        for (identity, serves) in [
+            ("AFIK-K5-7.0.6", true),
+            ("AFIK-K5-7.1.0", true),
+            ("AFIK-K5-10.0.0", true),
+            ("AFIK-K5-7.0.5", false),
+            ("k5_2.01.23", true),
+        ] {
+            let info = NormalFirmwareInfo {
+                version: identity.to_owned(),
+            };
+            assert_eq!(require_eeprom_service(&info).is_ok(), serves, "{identity}");
+        }
     }
 
     #[test]

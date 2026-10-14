@@ -91,6 +91,18 @@
   backup log line now names its output, not an empty image. Gate: fmt clean,
   clippy `-D warnings` clean, `cargo test --workspace --no-fail-fast` 681
   passed 0 failed.
+- `7.0.6`: AFIK K5 serves the stock `0x051B` EEPROM read, so a backup can be
+  taken from a radio running AFIK. The request decoder accepts the 12-byte read
+  (CRC, session word, length 1-128 checked); the main loop borrows PA10/PA11
+  from the keypad between scans for one bounded `eeprom::read` and hands them
+  back (`EVID-K5-025/026`); the reply is the stock `0x051C` envelope. Reads
+  only, never while transmitting. `radio-flasher` accepts AFIK-K5 from 7.0.6
+  and still refuses older AFIK and the K1. `tests/eeprom_backup.rs` runs the
+  real `backup_eeprom` through the image's decoder, encoder and driver. Gate:
+  fmt clean, clippy `-D warnings` clean, `cargo test --workspace
+  --no-fail-fast` 686 passed 0 failed, K5 image verifies (flash end
+  `0x0000e9d0`), K1 image builds. Not yet flashed: next, flash 7.0.6 and take
+  a studio backup from it, comparing it with the retained stock backup.
 - Next: flash `7.0.5` with `afik-flasher flash-afik` and check a 1 min over
   times out; flash K1 and check its speech level; then CTCSS/DCS with an
   end-of-transmission tail tone to remove the key-off squelch burst.
