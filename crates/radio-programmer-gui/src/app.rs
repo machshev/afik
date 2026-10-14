@@ -47,6 +47,10 @@ const TX_HINT: &str = "What the radio starts on after it is programmed or \
 switched on. The operator can change it from the handset settings menu until \
 the radio is next switched off.";
 
+/// What the backlight timeout does, said once.
+const BACKLIGHT_HINT: &str = "How long the display stays lit after a key or PTT \
+press. 0 keeps it off; 255 keeps it on.";
+
 /// Which editor tab is visible.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum Tab {
@@ -647,13 +651,19 @@ impl StudioApp {
                                 }
                                 ui.add_space((width - response.rect.width()).max(0.0));
                             }
-                            if ui
-                                .button("Delete")
-                                .on_hover_text("Delete this bank and every channel in it")
-                                .clicked()
-                            {
-                                action = Some((row, BankAction::Remove));
-                            }
+                            // The header runs the full width, Delete at its right.
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .button("Delete")
+                                        .on_hover_text("Delete this bank and every channel in it")
+                                        .clicked()
+                                    {
+                                        action = Some((row, BankAction::Remove));
+                                    }
+                                },
+                            );
                         })
                         .body(|ui| {
                             if let Some(requested) = bank_row_editor(ui, bank) {
@@ -733,10 +743,11 @@ impl StudioApp {
                 });
             ui.end_row();
 
-            ui.label("Backlight seconds");
+            ui.label("Backlight seconds").on_hover_text(BACKLIGHT_HINT);
             ui.add(
                 egui::DragValue::new(&mut config.backlight_seconds).range(0..=BACKLIGHT_ALWAYS_ON),
-            );
+            )
+            .on_hover_text(BACKLIGHT_HINT);
             ui.end_row();
 
             ui.label("Scan resume");
@@ -1708,7 +1719,7 @@ mod tests {
     }
 
     #[test]
-    fn bank_header_columns_line_up_whatever_the_name_length() {
+    fn bank_header_columns_line_up_and_delete_sits_at_the_right() {
         let context = eframe::egui::Context::default();
         let mut app = app_in(&scratch("columns"), &Options::default());
         app.add_bank(BankKind::Named);
@@ -1730,6 +1741,11 @@ mod tests {
         assert!((counts[0][0] - counts[2][0]).abs() < 0.5, "{counts:?}");
         let longest = text_left_edges(&output, "2: A much longer");
         assert!(counts[0][0] > longest[0] + 100.0);
+
+        // Delete sits at the right edge of the 1100-point window on every row.
+        let deletes = text_left_edges(&output, "Delete");
+        assert_eq!(deletes.len(), 3, "{deletes:?}");
+        assert!(deletes.iter().all(|x| *x > 1_000.0), "{deletes:?}");
     }
 
     /// Tabs through the widgets until typed text lands in the probed field.
