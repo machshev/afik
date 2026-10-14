@@ -140,6 +140,14 @@
   and verify pass (flash end `0x0000eac0`), `tool/build-k1.sh --release`,
   `tool/package-k1-image.sh --force` and `tool/test-k1-image.sh` pass. Not yet
   flashed.
+- `7.0.9` (start of the K5/K1 unification, operator request): firmware builds
+  were using the default release profile. `tool/build-k{5,1}.sh` now set
+  `opt-level = "s"`, fat LTO and one codegen unit, so K5 text drops from 60,096
+  to 27,951 bytes (flash end `0x0000eac0` → `0x00006d30`) and the K1 image from
+  109,488 to 68,712 bytes. That frees the room shared application code needs on
+  the 60 KiB K5. Gate: `tool/build-k5.sh --release` + `tool/verify-k5-image.sh`
+  pass, `tool/build-k1.sh --release` + `tool/test-k1-image.sh` pass. Not yet
+  flashed; bit-banged bus timing must be rechecked on both radios.
 - Next: flash `7.0.5` with `afik-flasher flash-afik` and check a 1 min over
   times out; flash K1 and check its speech level; then CTCSS/DCS with an
   end-of-transmission tail tone to remove the key-off squelch burst.
