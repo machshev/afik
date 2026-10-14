@@ -774,7 +774,7 @@ pub fn encode_generated_bank(bank: GeneratedBank) -> Result<StorageObject, Stora
     data[39] = template.bandwidth as u8;
     data[40] = template.power as u8;
     data[41..45].copy_from_slice(&template.step.as_hz().to_le_bytes());
-    data[45] = template.squelch.get();
+    // data[45] held a squelch level; squelch is radio-wide, so it is reserved.
     data[46] = template.flags.bits();
     data[47] = bank.designator().len();
     data[48..48 + MAX_DESIGNATOR_LEN].copy_from_slice(&bank.designator().field());
@@ -846,7 +846,8 @@ pub fn decode_generated_bank(object: &impl Object) -> Result<GeneratedBank, Stor
         FrequencyStep::from_hz(u32::from_le_bytes([data[25], data[26], data[27], data[28]]))
             .map_err(|_| StorageError::MalformedObject)?;
     let channel_count = u16::from_le_bytes([data[29], data[30]]);
-    // data[31] was the TX class; older projects carry one and it is ignored.
+    // data[31] was the TX class and data[45] a squelch level; older projects
+    // carry them and both are ignored.
     let template = ChannelTemplate {
         rx_tone: decode_tone(&data[32..35])?,
         tx_tone: decode_tone(&data[35..38])?,
@@ -855,7 +856,6 @@ pub fn decode_generated_bank(object: &impl Object) -> Result<GeneratedBank, Stor
         power: PowerLevel::try_from(data[40]).map_err(|_| StorageError::MalformedObject)?,
         step: FrequencyStep::from_hz(u32::from_le_bytes([data[41], data[42], data[43], data[44]]))
             .map_err(|_| StorageError::MalformedObject)?,
-        squelch: SquelchLevel::new(data[45]).map_err(|_| StorageError::MalformedObject)?,
         flags: ChannelFlags::from_bits(data[46]).map_err(|_| StorageError::MalformedObject)?,
     };
     let mut designator_field = [0_u8; MAX_DESIGNATOR_LEN];
@@ -907,7 +907,7 @@ pub fn encode_channel(channel: ChannelRecord) -> Result<StorageObject, StorageEr
     data[31] = channel.bandwidth() as u8;
     data[32] = channel.power() as u8;
     data[33..37].copy_from_slice(&channel.step().as_hz().to_le_bytes());
-    data[37] = channel.squelch().get();
+    // data[37] held a squelch level; squelch is radio-wide, so it is reserved.
     data[38] = channel.flags().bits();
     // data[39] held a TX class before `ADR-101`; it is reserved and zero.
     data[40..42].copy_from_slice(&channel.banks().bits().to_le_bytes());
@@ -949,7 +949,7 @@ pub fn decode_channel(object: &impl Object) -> Result<ChannelRecord, StorageErro
     let power = PowerLevel::try_from(data[32]).map_err(|_| StorageError::MalformedObject)?;
     let step = FrequencyStep::from_hz(u32::from_le_bytes([data[33], data[34], data[35], data[36]]))
         .map_err(|_| StorageError::MalformedObject)?;
-    let squelch = SquelchLevel::new(data[37]).map_err(|_| StorageError::MalformedObject)?;
+    // data[37] was a squelch level; older projects carry one and it is ignored.
     let flags = ChannelFlags::from_bits(data[38]).map_err(|_| StorageError::MalformedObject)?;
     // data[39] was the TX class; older projects carry one and it is ignored.
     let banks = BankMask::from_bits(u16::from_le_bytes([data[40], data[41]]));
@@ -964,7 +964,6 @@ pub fn decode_channel(object: &impl Object) -> Result<ChannelRecord, StorageErro
         bandwidth,
         power,
         step,
-        squelch,
         flags,
         banks,
     })
@@ -1505,7 +1504,7 @@ mod tests {
     };
     use radio_domain::{
         Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, Offset, PowerLevel,
-        RadioConfig, RadioFlags, ScanResume, SquelchLevel, Tone,
+        RadioConfig, RadioFlags, ScanResume, Tone,
     };
     use std::{vec, vec::Vec};
 
@@ -1525,7 +1524,6 @@ mod tests {
                     inverted: true,
                 },
                 power: PowerLevel::Medium,
-                squelch: SquelchLevel::new(4).unwrap(),
                 flags: ChannelFlags::default().with(ChannelFlags::BUSY_LOCKOUT, true),
                 ..ChannelTemplate::narrow_fm(FrequencyStep::from_hz(12_500).unwrap())
             },
@@ -1647,7 +1645,6 @@ mod tests {
             bandwidth: Bandwidth::Narrow,
             power: PowerLevel::High,
             step: FrequencyStep::from_hz(12_500).unwrap(),
-            squelch: SquelchLevel::new(9).unwrap(),
             flags: ChannelFlags::from_bits(ChannelFlags::SCAN_SKIP | ChannelFlags::REVERSE)
                 .unwrap(),
             banks: BankMask::from_bits(0b0000_0000_0000_0101),
@@ -1725,6 +1722,21 @@ mod tests {
     }
 
     #[test]
+    fn a_channel_saved_with_a_squelch_level_still_loads() {
+        // Squelch is radio-wide; the byte that held a level is ignored.
+        let encoded = encode_channel(channel(12, "GB3AB")).unwrap();
+        assert_eq!(encoded.data()[37], 0);
+        for old_squelch in [0, 9, 10] {
+            let mut data = encoded.data().to_vec();
+            data[37] = old_squelch;
+            assert_eq!(
+                decode_channel(&StorageObject::new(encoded.key(), &data).unwrap()),
+                Ok(channel(12, "GB3AB"))
+            );
+        }
+    }
+
+    #[test]
     fn channel_and_configuration_decoding_rejects_every_invalid_field() {
         let encoded = encode_channel(channel(12, "GB3AB")).unwrap();
         let mutate = |index: usize, value: u8| {
@@ -1734,7 +1746,7 @@ mod tests {
         };
 
         // version, identity, name length, tone kind, tone code, modulation,
-        // bandwidth, power, squelch, and reserved flag are all checked.
+        // bandwidth, power, and reserved flag are all checked.
         for (index, value) in [
             (0, STORAGE_FORMAT_VERSION + 1),
             (1, 13),
@@ -1744,7 +1756,6 @@ mod tests {
             (30, 3),
             (31, 2),
             (32, 3),
-            (37, 10),
             (38, 0x20),
         ] {
             assert_eq!(
@@ -2073,11 +2084,11 @@ mod tests {
         assert_eq!(
             &image[..image_len],
             &[
-                0x41, 0x46, 0x49, 0x4B, 0x01, 0x04, 0x01, 0x00, 0x3D, 0x00, 0x00, 0x00, 0x05, 0x98,
-                0xF1, 0x2A, 0x01, 0x04, 0x00, 0x38, 0x00, 0x04, 0x00, 0x04, 0x00, 0x01, 0x41, 0x00,
+                0x41, 0x46, 0x49, 0x4B, 0x01, 0x04, 0x01, 0x00, 0x3D, 0x00, 0x00, 0x00, 0x87, 0xEB,
+                0x28, 0x9A, 0x01, 0x04, 0x00, 0x38, 0x00, 0x04, 0x00, 0x04, 0x00, 0x01, 0x41, 0x00,
                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                 0xEA, 0x83, 0x95, 0x1A, 0xD4, 0x30, 0x00, 0x00, 0x10, 0x00, 0x00, 0x01, 0xE8, 0x03,
-                0x03, 0x17, 0x00, 0x00, 0x00, 0x01, 0xD4, 0x30, 0x00, 0x00, 0x04, 0x02, 0x02, 0x41,
+                0x03, 0x17, 0x00, 0x00, 0x00, 0x01, 0xD4, 0x30, 0x00, 0x00, 0x00, 0x02, 0x02, 0x41,
                 0x20, 0x00, 0x00, 0x01, 0x00, 0xFF, 0xFF,
             ]
         );
@@ -2212,8 +2223,7 @@ mod image_writer_tests {
         BankMask, ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord,
     };
     use radio_domain::{
-        Bandwidth, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, RadioConfig,
-        SquelchLevel, Tone,
+        Bandwidth, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, RadioConfig, Tone,
     };
 
     fn channel(id: u16) -> ChannelRecord {
@@ -2229,7 +2239,6 @@ mod image_writer_tests {
             bandwidth: Bandwidth::Narrow,
             power: PowerLevel::Low,
             step: FrequencyStep::from_hz(12_500).expect("step"),
-            squelch: SquelchLevel::new(3).expect("squelch"),
             flags: ChannelFlags::default(),
             banks: BankMask::default(),
         })

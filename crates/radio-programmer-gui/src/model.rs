@@ -220,8 +220,6 @@ pub struct ChannelDraft {
     pub power: PowerLevel,
     /// Manual tuning step in hertz.
     pub step_hz: u32,
-    /// Squelch level.
-    pub squelch: u8,
     /// Skip this channel while scanning.
     pub scan_skip: bool,
     /// Inhibit transmission while the channel is busy.
@@ -244,7 +242,6 @@ impl Default for ChannelDraft {
             bandwidth: Bandwidth::Narrow,
             power: PowerLevel::Low,
             step_hz: 12_500,
-            squelch: 3,
             scan_skip: false,
             busy_lockout: false,
             reverse: false,
@@ -267,7 +264,6 @@ impl ChannelDraft {
             bandwidth: record.bandwidth(),
             power: record.power(),
             step_hz: record.step().as_hz(),
-            squelch: record.squelch().get(),
             scan_skip: flags.contains(ChannelFlags::SCAN_SKIP),
             busy_lockout: flags.contains(ChannelFlags::BUSY_LOCKOUT),
             reverse: flags.contains(ChannelFlags::REVERSE),
@@ -291,8 +287,6 @@ impl ChannelDraft {
             .ok_or_else(|| error(scope, "transmit", "is not a frequency in megahertz"))?;
         let step = FrequencyStep::from_hz(self.step_hz)
             .map_err(|_| error(scope, "step", "must be a non-zero number of hertz"))?;
-        let squelch = SquelchLevel::new(self.squelch)
-            .map_err(|_| error(scope, "squelch", "must be 0 to 9"))?;
         let mut flags = ChannelFlags::default()
             .with(ChannelFlags::SCAN_SKIP, self.scan_skip)
             .with(ChannelFlags::BUSY_LOCKOUT, self.busy_lockout)
@@ -322,7 +316,6 @@ impl ChannelDraft {
             bandwidth: self.bandwidth,
             power: self.power,
             step,
-            squelch,
             flags,
             banks,
         })
@@ -450,8 +443,6 @@ pub struct BankDraft {
     pub power: PowerLevel,
     /// Manual tuning step used from a generated channel.
     pub step_hz: u32,
-    /// Squelch level shared by every generated channel.
-    pub squelch: u8,
     /// Skip every generated channel while scanning.
     pub scan_skip: bool,
     /// Inhibit transmission on a busy generated channel.
@@ -481,7 +472,6 @@ impl Default for BankDraft {
             bandwidth: Bandwidth::Narrow,
             power: PowerLevel::Low,
             step_hz: 12_500,
-            squelch: 3,
             scan_skip: false,
             busy_lockout: false,
             compander: false,
@@ -520,7 +510,6 @@ impl BankDraft {
             bandwidth: template.bandwidth,
             power: template.power,
             step_hz: template.step.as_hz(),
-            squelch: template.squelch.get(),
             scan_skip: template.flags.contains(ChannelFlags::SCAN_SKIP),
             busy_lockout: template.flags.contains(ChannelFlags::BUSY_LOCKOUT),
             compander: template.flags.contains(ChannelFlags::COMPANDER),
@@ -638,8 +627,6 @@ impl BankDraft {
             power: self.power,
             step: FrequencyStep::from_hz(self.step_hz)
                 .map_err(|_| error(scope, "step", "must be a non-zero number of hertz"))?,
-            squelch: SquelchLevel::new(self.squelch)
-                .map_err(|_| error(scope, "squelch", "must be 0 to 9"))?,
             flags: ChannelFlags::default()
                 .with(ChannelFlags::SCAN_SKIP, self.scan_skip)
                 .with(ChannelFlags::BUSY_LOCKOUT, self.busy_lockout)
@@ -1432,7 +1419,6 @@ mod tests {
                 bandwidth: record.bandwidth(),
                 power: record.power(),
                 step: record.step(),
-                squelch: record.squelch(),
                 flags: record.flags(),
                 banks: radio_channel_plan::BankMask::from_bits(banks),
             })
@@ -1639,7 +1625,6 @@ mod tests {
         bank.channel_count = 8;
         bank.bandwidth = Bandwidth::Wide;
         bank.power = PowerLevel::Medium;
-        bank.squelch = 5;
         bank.busy_lockout = true;
         bank.rx_tone = ToneDraft {
             kind: ToneKind::Ctcss,
@@ -1653,7 +1638,6 @@ mod tests {
             let channel = plan.channel_record(index).unwrap();
             assert_eq!(channel.bandwidth(), Bandwidth::Wide);
             assert_eq!(channel.power(), PowerLevel::Medium);
-            assert_eq!(channel.squelch().get(), 5);
             assert_eq!(channel.rx_tone(), Tone::Ctcss(1_000));
             assert!(channel.flags().contains(ChannelFlags::BUSY_LOCKOUT));
         }

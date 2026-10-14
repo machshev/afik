@@ -246,8 +246,8 @@ mod tests {
         BankMask, ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord,
     };
     use radio_domain::{
-        Bandwidth, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, RadioConfig,
-        SquelchLevel, Tone, TxClass,
+        Bandwidth, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, RadioConfig, Tone,
+        TxClass,
     };
     use radio_platform::battery::Calibration;
     use radio_platform::memory_link::{VIEW_BYTES, WRITE_BYTES};
@@ -295,7 +295,6 @@ mod tests {
             bandwidth: Bandwidth::Narrow,
             power: PowerLevel::Low,
             step: FrequencyStep::from_hz(12_500).expect("step"),
-            squelch: SquelchLevel::new(3).expect("level"),
             flags: ChannelFlags::default(),
             banks: BankMask::default(),
         })

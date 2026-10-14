@@ -1607,7 +1607,6 @@ mod tests {
                 bandwidth: Bandwidth::Wide,
                 power: PowerLevel::Medium,
                 step: FrequencyStep::from_hz(12_500).unwrap(),
-                squelch: SquelchLevel::new(6).unwrap(),
                 flags: radio_channel_plan::ChannelFlags::default(),
                 banks: radio_channel_plan::BankMask::from_bits(1 << 1),
             })

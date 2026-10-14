@@ -505,10 +505,9 @@ closes the menu from either screen.
 
 The chosen level is stored exactly as a host write is, through the validating
 path and into external memory, so it survives the battery going flat. It applies
-to every channel: a stored channel's own squelch level is kept in the project but
-does not override the radio-wide setting, because a global control a channel
-could veto would not be one. Holding side key two still forces the squelch open
-regardless of both.
+to every channel. Channels and plans carry no squelch level of their own,
+because a global control a channel could veto would not be one. Holding side
+key two still forces the squelch open.
 
 Level zero is the pinned squelch-off threshold set and never shuts. Levels one to
 nine are AFIK's own thresholds, not this unit's calibration: only the carrier

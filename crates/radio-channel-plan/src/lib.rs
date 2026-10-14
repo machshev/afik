@@ -6,7 +6,7 @@
 use core::{fmt, str};
 use radio_domain::{
     ActiveChannel, Bandwidth, BankId, ChannelId, DomainError, Frequency, FrequencyStep, Modulation,
-    Offset, PowerLevel, SquelchLevel, Tone,
+    Offset, PowerLevel, Tone,
 };
 
 /// Maximum encoded byte length of a generated bank name.
@@ -225,8 +225,6 @@ pub struct ChannelTemplate {
     pub power: PowerLevel,
     /// Manual tuning step used from an expanded channel.
     pub step: FrequencyStep,
-    /// Channel squelch level.
-    pub squelch: SquelchLevel,
     /// Channel behaviour flags.
     pub flags: ChannelFlags,
 }
@@ -245,7 +243,6 @@ impl ChannelTemplate {
             bandwidth: Bandwidth::Narrow,
             power: PowerLevel::Low,
             step: spacing,
-            squelch: SquelchLevel::CONSERVATIVE,
             flags: ChannelFlags::empty(),
         }
     }
@@ -568,7 +565,6 @@ impl GeneratedBank {
             bandwidth: self.template.bandwidth,
             power: self.template.power,
             step: self.template.step,
-            squelch: self.template.squelch,
             flags: self.template.flags.with(ChannelFlags::CALLING, calling),
             banks: BankMask::default().with(self.id, true)?,
         })
@@ -822,7 +818,6 @@ pub struct ChannelRecord {
     bandwidth: Bandwidth,
     power: PowerLevel,
     step: FrequencyStep,
-    squelch: SquelchLevel,
     flags: ChannelFlags,
     banks: BankMask,
 }
@@ -850,8 +845,6 @@ pub struct ChannelDefinition {
     pub power: PowerLevel,
     /// Manual tuning step used from this channel.
     pub step: FrequencyStep,
-    /// Channel squelch level.
-    pub squelch: SquelchLevel,
     /// Channel behaviour flags.
     pub flags: ChannelFlags,
     /// Bank membership mask.
@@ -886,7 +879,6 @@ impl ChannelRecord {
             bandwidth: definition.bandwidth,
             power: definition.power,
             step: definition.step,
-            squelch: definition.squelch,
             flags: definition.flags,
             banks: definition.banks,
         })
@@ -940,11 +932,6 @@ impl ChannelRecord {
     /// Returns the manual tuning step.
     pub const fn step(self) -> FrequencyStep {
         self.step
-    }
-
-    /// Returns the channel squelch level.
-    pub const fn squelch(self) -> SquelchLevel {
-        self.squelch
     }
 
     /// Returns the channel behaviour flags.
@@ -1084,7 +1071,7 @@ mod tests {
         ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord, ChannelTemplate,
         GENERATED_CHANNEL_ID_BASE, MAX_GENERATED_CHANNELS,
     };
-    use radio_domain::{Bandwidth, ChannelId, Modulation, PowerLevel, SquelchLevel, Tone};
+    use radio_domain::{Bandwidth, ChannelId, Modulation, PowerLevel, Tone};
 
     use super::{
         generated_channel_parts, BankName, Designator, GeneratedBank, PlanEncoding, PlanError,
@@ -1331,7 +1318,6 @@ mod tests {
             bandwidth: Bandwidth::Wide,
             power: PowerLevel::Medium,
             step: FrequencyStep::from_hz(12_500).unwrap(),
-            squelch: SquelchLevel::new(4).unwrap(),
             flags: ChannelFlags::default(),
             banks: BankMask::default().with(BankId::new(2), true).unwrap(),
         }

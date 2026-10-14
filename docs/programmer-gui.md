@@ -96,7 +96,7 @@ floating point.
   and Delete on the header removes a bank with its channels (Revert undoes it
   until the project is saved). A channel bank carries a name and the scan flag, and
   its channels carry name, receive and transmit frequency, tones, modulation,
-  bandwidth, power, step, squelch, flags and transmit class; channels are
+  bandwidth, power, step and flags; channels are
   numbered by the radio from their position. A generated plan stores a base
   frequency, spacing, channel count, naming, transmit class and the
   per-channel template its channels share, and expands, in place, into the

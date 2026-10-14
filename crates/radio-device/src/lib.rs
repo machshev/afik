@@ -915,7 +915,7 @@ mod tests {
         BankMask, ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord,
     };
     use radio_domain::{
-        Bandwidth, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, SquelchLevel, Tone,
+        Bandwidth, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, Tone,
     };
 
     /// A store with room for four channels and nothing else to say about it.
@@ -975,7 +975,6 @@ mod tests {
             bandwidth: Bandwidth::Narrow,
             power: PowerLevel::Low,
             step: FrequencyStep::from_hz(12_500).expect("step"),
-            squelch: SquelchLevel::new(3).expect("squelch"),
             flags: ChannelFlags::default(),
             banks: BankMask::default(),
         })

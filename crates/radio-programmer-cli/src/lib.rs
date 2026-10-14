@@ -481,8 +481,6 @@ fn parse_channel(spec: &str) -> Result<ChannelRecord, CliError> {
         power: PowerLevel::Low,
         step: FrequencyStep::from_hz(12_500)
             .map_err(|error| CliError::Usage(format!("invalid step: {error}")))?,
-        squelch: SquelchLevel::new(3)
-            .map_err(|error| CliError::Usage(format!("invalid squelch: {error}")))?,
         flags: ChannelFlags::default(),
         banks,
     })

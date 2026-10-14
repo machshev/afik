@@ -1072,7 +1072,6 @@ mod tests {
             bandwidth: Bandwidth::Narrow,
             power: PowerLevel::Low,
             step: FrequencyStep::from_hz(12_500).unwrap(),
-            squelch: SquelchLevel::new(4).unwrap(),
             flags: ChannelFlags::from_bits(flags).unwrap(),
             banks: BankMask::from_bits(banks),
         })

@@ -26,9 +26,9 @@
 //! linear  : the format 4 generated-bank object bytes
 //! list    : fields u16, name width u8, count u16, base Hz u32, raster Hz u32,
 //!           TX offset i32, step Hz u32, RX tone 3, TX tone 3, mode u8,
-//!           flags u8, squelch u8; then `count` records
+//!           flags u8, reserved u8 (was squelch); then `count` records
 //! record  : name (name width), RX, [TX], [RX tone], [TX tone], [mode],
-//!           [flags], [squelch], [step], as `fields` says
+//!           [flags], [squelch, ignored], [step], as `fields` says
 //! ```
 //!
 //! A frequency is a `u16` count of rasters above the base when
@@ -42,7 +42,7 @@ use radio_channel_plan::{
 };
 use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, RadioConfig,
-    SquelchLevel, Tone,
+    Tone,
 };
 
 use radio_tx_policy::{RangeError, TxPolicy, TxRange, MAX_TX_RANGES};
@@ -81,7 +81,10 @@ pub const TX_TONE: u16 = 1 << 3;
 pub const MODE: u16 = 1 << 4;
 /// Records carry their own channel flags.
 pub const FLAGS: u16 = 1 << 5;
-/// Records carry their own squelch level.
+/// Records carried their own squelch level.
+///
+/// Squelch is radio-wide, so the compiler never sets it; an image an older
+/// studio wrote may, and the radio skips the byte.
 pub const SQUELCH: u16 = 1 << 6;
 /// Records carry their own tuning step.
 pub const STEP: u16 = 1 << 7;
@@ -233,7 +236,6 @@ impl ListLayout {
                 (channel.tx_tone() != template.tx_tone(), TX_TONE),
                 (mode_byte(channel) != mode_byte(&template), MODE),
                 (channel.flags() != template.flags(), FLAGS),
-                (channel.squelch() != template.squelch(), SQUELCH),
                 (channel.step() != template.step(), STEP),
             ] {
                 if differs {
@@ -325,7 +327,8 @@ fn write_list<'a>(
     writer.tone(template.tx_tone())?;
     writer.u8(mode_byte(&template))?;
     writer.u8(template.flags().bits())?;
-    writer.u8(template.squelch().get())?;
+    // Squelch is radio-wide; this byte held a level and is reserved.
+    writer.u8(0)?;
     let frequency = |writer: &mut Writer<'_>, hz: u32| {
         if layout.fields & SHORT_FREQUENCY != 0 {
             writer.u16(u16::try_from((hz - layout.base) / layout.raster).unwrap_or(0))
@@ -352,9 +355,6 @@ fn write_list<'a>(
         }
         if fields & FLAGS != 0 {
             writer.u8(channel.flags().bits())?;
-        }
-        if fields & SQUELCH != 0 {
-            writer.u8(channel.squelch().get())?;
         }
         if fields & STEP != 0 {
             writer.u32(channel.step().as_hz())?;
@@ -519,7 +519,6 @@ struct ListHeader {
     tx_tone: [u8; 3],
     mode: u8,
     flags: u8,
-    squelch: u8,
 }
 
 impl ListHeader {
@@ -539,7 +538,6 @@ impl ListHeader {
             tx_tone: [bytes[24], bytes[25], bytes[26]],
             mode: bytes[27],
             flags: bytes[28],
-            squelch: bytes[29],
         };
         if header.fields & !KNOWN_FIELDS != 0
             || usize::from(header.name_width) > MAX_CHANNEL_NAME_LEN
@@ -572,7 +570,9 @@ impl ListHeader {
         let tx_tone = cursor.field(self.fields & TX_TONE != 0, &self.tx_tone);
         let [mode] = cursor.field(self.fields & MODE != 0, &[self.mode]);
         let [flags] = cursor.field(self.fields & FLAGS != 0, &[self.flags]);
-        let [squelch] = cursor.field(self.fields & SQUELCH != 0, &[self.squelch]);
+        // An older studio may have stored a squelch level per record; squelch
+        // is radio-wide, so it is skipped.
+        let _ = cursor.field(self.fields & SQUELCH != 0, &[0]);
         let step =
             u32::from_le_bytes(cursor.field(self.fields & STEP != 0, &self.step.to_le_bytes()));
         let banks = if bank == NO_BANK {
@@ -593,7 +593,6 @@ impl ListHeader {
             bandwidth: Bandwidth::try_from((mode >> 2) & 1).map_err(malformed)?,
             power: PowerLevel::try_from(mode >> 3).map_err(malformed)?,
             step: FrequencyStep::from_hz(step).map_err(malformed)?,
-            squelch: SquelchLevel::new(squelch).map_err(malformed)?,
             flags: ChannelFlags::from_bits(flags).map_err(malformed)?,
             banks,
         })
@@ -1008,7 +1007,7 @@ mod tests {
     };
     use radio_domain::{
         Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel,
-        RadioConfig, SquelchLevel, Tone, TxClass,
+        RadioConfig, Tone, TxClass,
     };
     use radio_tx_policy::{RangeError, TxPolicy, TxRange, MAX_TX_RANGES};
     use std::vec::Vec;
@@ -1025,7 +1024,6 @@ mod tests {
             bandwidth: Bandwidth::Narrow,
             power: PowerLevel::Low,
             step: FrequencyStep::from_hz(12_500).unwrap(),
-            squelch: SquelchLevel::new(3).unwrap(),
             flags: ChannelFlags::default(),
             banks: bank.map_or(BankMask::default(), |bank| {
                 BankMask::default().with(BankId::new(bank), true).unwrap()
@@ -1236,7 +1234,6 @@ mod tests {
         assert_eq!(a.bandwidth(), b.bandwidth());
         assert_eq!(a.power(), b.power());
         assert_eq!(a.step(), b.step());
-        assert_eq!(a.squelch(), b.squelch());
         assert_eq!(a.flags(), b.flags());
         assert_eq!(a.banks(), b.banks());
     }
@@ -1306,6 +1303,35 @@ mod tests {
         // header 4, list header 30, then 16 records of a 5-byte name and a
         // 2-byte frequency.
         assert_eq!(image.len(), 16 + 16 + 1 + 1 + 3 + 6 + 4 + 30 + 16 * (5 + 2));
+    }
+
+    #[test]
+    fn an_image_with_per_record_squelch_still_loads_and_ignores_it() {
+        // An older studio could store a squelch level in each record. Rebuild
+        // the PMR list that way: the level is the last field of each record,
+        // so one byte follows each 7-byte record.
+        let image = compiled(&pmr(), &[]);
+        let block = 16 + 16 + 1 + 1 + 3 + 6;
+        let records = block + 4 + 30;
+        let mut old = image[..records].to_vec();
+        let fields = u16::from_le_bytes([old[block + 4], old[block + 5]]) | super::SQUELCH;
+        old[block + 4..block + 6].copy_from_slice(&fields.to_le_bytes());
+        let body = u16::from_le_bytes([old[block + 2], old[block + 3]]) + 16;
+        old[block + 2..block + 4].copy_from_slice(&body.to_le_bytes());
+        let payload = u32::from_le_bytes([old[8], old[9], old[10], old[11]]) + 16;
+        old[8..12].copy_from_slice(&payload.to_le_bytes());
+        for record in image[records..].chunks(7) {
+            old.extend_from_slice(record);
+            old.push(9);
+        }
+        reseal(&mut old);
+
+        let index = index(&old).expect("index");
+        for (position, want) in pmr().iter().enumerate() {
+            let position = u16::try_from(position).unwrap();
+            let got = index.channel_at(reader(&old), position).expect("channel");
+            same_channel(&got, want);
+        }
     }
 
     #[test]

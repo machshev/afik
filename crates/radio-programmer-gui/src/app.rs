@@ -43,8 +43,7 @@ const WARNING_COLOUR: egui::Color32 = egui::Color32::from_rgb(0xB7, 0x6E, 0x00);
 /// What the radio-wide squelch level actually governs, said once.
 const SQUELCH_HINT: &str = "Applies to every channel on the radio. The operator \
 can change it from the handset settings menu, and the radio stores what they \
-chose. A channel's own squelch level is kept in the project but does not \
-override this.";
+chose.";
 
 /// What the TX power and timeout settings govern, said once.
 const TX_HINT: &str = "What the radio starts on after it is programmed or \
@@ -1152,8 +1151,6 @@ fn channel_row_editor(ui: &mut egui::Ui, channel: &mut ChannelDraft) -> Option<R
         ui.add(egui::DragValue::new(&mut channel.step_hz).speed(125.0));
         ui.end_row();
 
-        ui.label("Squelch");
-        ui.add(egui::DragValue::new(&mut channel.squelch).range(0..=MAX_SQUELCH_LEVEL));
         ui.label("Flags");
         ui.horizontal_wrapped(|ui| {
             ui.checkbox(&mut channel.scan_skip, "Scan skip");
@@ -1312,8 +1309,6 @@ fn generated_plan_editor(ui: &mut egui::Ui, bank: &mut BankDraft) {
     ui.add(egui::DragValue::new(&mut bank.step_hz).speed(125.0));
     ui.end_row();
 
-    ui.label("Squelch");
-    ui.add(egui::DragValue::new(&mut bank.squelch).range(0..=MAX_SQUELCH_LEVEL));
     ui.label("Flags");
     ui.horizontal_wrapped(|ui| {
         ui.checkbox(&mut bank.scan_skip, "Scan skip");

@@ -542,7 +542,7 @@ fn activate<M: Memory>(
     Option<ChannelReceiveSetup>,
 )> {
     let (memory, bank) = match shell.mode() {
-        Mode::Vfo => (vfo_source(shell, programmed.config().squelch)?, None),
+        Mode::Vfo => (vfo_source(shell)?, None),
         Mode::Memory => {
             if programmed.is_empty() {
                 return None;
@@ -564,7 +564,7 @@ fn activate<M: Memory>(
 /// The VFO is expressed as an ordinary receive-only channel record so it reuses
 /// the whole programmed receive path unchanged. It is `TxClass::Never` like
 /// everything else this image constructs.
-fn vfo_source<M>(shell: &Shell, squelch: SquelchLevel) -> Option<Listening<M>> {
+fn vfo_source<M>(shell: &Shell) -> Option<Listening<M>> {
     let receive = Frequency::from_hz(shell.vfo_hz()).ok()?;
     let step = FrequencyStep::from_hz(shell.vfo_step_hz()).ok()?;
     let record = ChannelRecord::new(ChannelDefinition {
@@ -580,7 +580,6 @@ fn vfo_source<M>(shell: &Shell, squelch: SquelchLevel) -> Option<Listening<M>> {
         bandwidth: Bandwidth::Narrow,
         power: PowerLevel::Low,
         step,
-        squelch,
         flags: ChannelFlags::default(),
         banks: BankMask::default(),
     })
