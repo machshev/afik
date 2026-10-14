@@ -94,6 +94,12 @@ impl DeviceChooser {
     /// Exactly one candidate is selected for the operator. Several are listed
     /// without choosing, so the wrong radio is never programmed by default.
     pub fn accept(&mut self, candidates: Vec<DeviceCandidate>) -> String {
+        // A choice names a device, not a position: a replug can reorder the
+        // list, and an index kept across it would point at another radio.
+        let previous = match self.choice {
+            DeviceChoice::Detected(index) => self.candidates.get(index).cloned(),
+            DeviceChoice::Manual => None,
+        };
         self.candidates = candidates;
         self.detected = true;
         match self.candidates.len() {
@@ -106,10 +112,11 @@ impl DeviceChooser {
                 format!("Detected {}.", self.candidates[0].label())
             }
             count => {
-                // More than one candidate is ambiguous: the operator chooses.
-                if !matches!(self.choice, DeviceChoice::Detected(index) if index < count) {
-                    self.choice = DeviceChoice::Manual;
-                }
+                // More than one candidate is ambiguous: the operator chooses,
+                // and a device they already chose stays chosen if still present.
+                self.choice = previous
+                    .and_then(|chosen| self.candidates.iter().position(|entry| *entry == chosen))
+                    .map_or(DeviceChoice::Manual, DeviceChoice::Detected);
                 format!("Detected {count} serial devices. Choose the radio to connect.")
             }
         }
@@ -204,7 +211,19 @@ mod tests {
         assert_eq!(chooser.choice, DeviceChoice::Detected(1));
         assert_eq!(chooser.resolve().unwrap().0, PathBuf::from("/dev/ttyACM1"));
 
-        // A choice which no longer exists is dropped rather than reused.
+        // The choice follows the device when a replug reorders the list.
+        chooser.accept(candidates(&[
+            "/dev/ttyACM1",
+            "/dev/ttyUSB2",
+            "/dev/ttyUSB0",
+        ]));
+        assert_eq!(chooser.choice, DeviceChoice::Detected(0));
+        assert_eq!(chooser.resolve().unwrap().0, PathBuf::from("/dev/ttyACM1"));
+
+        // A chosen device which has gone is dropped, not replaced by whatever
+        // now sits at its index.
+        chooser.accept(candidates(&["/dev/ttyUSB2", "/dev/ttyUSB0"]));
+        assert_eq!(chooser.choice, DeviceChoice::Manual);
         chooser.choice = DeviceChoice::Detected(5);
         chooser.accept(candidates(&["/dev/ttyUSB0", "/dev/ttyACM1"]));
         assert_eq!(chooser.choice, DeviceChoice::Manual);
