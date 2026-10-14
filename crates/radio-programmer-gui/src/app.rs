@@ -1386,9 +1386,16 @@ fn bandwidth_editor(ui: &mut egui::Ui, bandwidth: &mut Bandwidth) {
 
 /// One TX power level as the handset lists it: its nominal output.
 fn tx_power_label(level: u8) -> String {
-    TX_POWER_NOMINAL_MW
-        .get(usize::from(level))
-        .map_or_else(|| format!("Level {level}"), |mw| format!("{mw} mW"))
+    TX_POWER_NOMINAL_MW.get(usize::from(level)).map_or_else(
+        || format!("Level {level}"),
+        |mw| {
+            if *mw >= 1_000 {
+                format!("{} W", mw / 1_000)
+            } else {
+                format!("{mw} mW")
+            }
+        },
+    )
 }
 
 /// One TX timeout choice in whole minutes.
@@ -1502,7 +1509,10 @@ mod tests {
         let powers: Vec<_> = (0..radio_domain::TX_POWER_LEVELS)
             .map(tx_power_label)
             .collect();
-        assert_eq!(powers, ["20 mW", "125 mW", "250 mW", "500 mW"]);
+        assert_eq!(
+            powers,
+            ["20 mW", "125 mW", "250 mW", "500 mW", "2 W", "5 W"]
+        );
         assert_eq!(tx_timeout_label(0), "1 minute");
         assert_eq!(tx_timeout_label(4), "5 minutes");
     }

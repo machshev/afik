@@ -251,6 +251,7 @@ mod tests {
     };
     use radio_platform::battery::Calibration;
     use radio_platform::memory_link::{VIEW_BYTES, WRITE_BYTES};
+    use radio_platform::transmit::TxCalibration;
     use radio_storage::radio_image::compile;
     use radio_tx_policy::{TxPolicy, TxRange};
 
@@ -276,7 +277,7 @@ mod tests {
             None
         }
 
-        fn read_tx_calibration(&mut self) -> Option<[u8; 3]> {
+        fn read_tx_calibration(&mut self) -> Option<TxCalibration> {
             None
         }
     }

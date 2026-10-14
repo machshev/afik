@@ -190,8 +190,13 @@ pub const TX_CLASSES: [TxClass; 6] = [
 pub use radio_domain::TX_POWER_LEVELS;
 
 /// Nominal output of each TX power level, in milliwatts: Armel F4HWN Low1 to
-/// Low4 as its README documents them. Nominal, not measured by AFIK.
-pub const TX_POWER_NOMINAL_MW: [u32; TX_POWER_LEVELS as usize] = [20, 125, 250, 500];
+/// Low4, Mid and High as its README documents them. Nominal, not measured by
+/// AFIK. A programmed TX range's ceiling refuses any level above it.
+pub const TX_POWER_NOMINAL_MW: [u32; TX_POWER_LEVELS as usize] = [20, 125, 250, 500, 2_000, 5_000];
+
+/// The low levels, each the calibration's low row scaled by a target divider;
+/// the levels above are the mid and high rows as the reference reads them.
+pub const LOW_POWER_LEVELS: u8 = 4;
 
 /// Selectable TX timeouts: one to five whole minutes, the last being the TX
 /// policy's ceiling; and the one a radio arrives with.

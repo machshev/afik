@@ -1784,7 +1784,7 @@ mod tests {
             data[index] = value;
             StorageObject::new(config.key(), &data).unwrap()
         };
-        for (index, value) in [(1, 10), (3, 3), (12, 2), (14, 0x10), (15, 0x04), (15, 0x50)] {
+        for (index, value) in [(1, 10), (3, 3), (12, 2), (14, 0x10), (15, 0x06), (15, 0x50)] {
             assert_eq!(
                 decode_radio_config(&mutate_config(index, value)),
                 Err(StorageError::MalformedObject),

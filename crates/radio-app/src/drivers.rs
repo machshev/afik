@@ -7,7 +7,7 @@
 
 use radio_platform::battery::Calibration;
 use radio_platform::operator_display::FRAME_BYTES;
-use radio_platform::transmit::TxTarget;
+use radio_platform::transmit::{TxCalibration, TxTarget};
 
 use radio_platform::memory_link::{PLACE_ORIGIN, WRITE_BYTES};
 
@@ -80,7 +80,7 @@ pub trait Memory {
     /// Reads the battery calibration from the vendor block.
     fn read_battery_calibration(&mut self) -> Option<Calibration>;
     /// Reads the PMR446 low-power TX bias bytes from the vendor block.
-    fn read_tx_calibration(&mut self) -> Option<[u8; 3]>;
+    fn read_tx_calibration(&mut self) -> Option<TxCalibration>;
 
     /// Reads where the operator left the radio.
     fn read_operator_state(&mut self) -> Option<OperatorState> {

@@ -6,14 +6,15 @@
 use radio_app::drivers::Memory;
 use radio_platform::battery::{Calibration, CALIBRATION_BYTES};
 use radio_platform::memory_link::WRITE_BYTES;
+use radio_platform::transmit::TxCalibration;
 
 use crate::eeprom::{self, Bus};
 
 /// EEPROM address of the six calibration half-words the stock firmware reads
 /// (`EVID-K5-034`).
 pub const BATTERY_CALIBRATION_ADDRESS: u16 = 0x1F40;
-/// The three low-power bias bytes for the 400–470 MHz band:
-/// `0x1ED0 + band 5 * 16 + low * 3` (`radio.c:555`).
+/// The low, mid and high bias rows for the 400–470 MHz band, three bytes
+/// each: `0x1ED0 + band 5 * 16 + power * 3` (`radio.c:456-482`).
 pub const TX_CALIBRATION_ADDRESS: u16 = 0x1F20;
 
 const _: () = assert!(WRITE_BYTES == eeprom::WRITE_BLOCK_BYTES);
@@ -57,8 +58,8 @@ impl<B: Bus> Memory for K5Memory<B> {
             .flatten()
     }
 
-    fn read_tx_calibration(&mut self) -> Option<[u8; 3]> {
-        let mut bias = [0_u8; 3];
+    fn read_tx_calibration(&mut self) -> Option<TxCalibration> {
+        let mut bias = [0_u8; 9];
         self.read(TX_CALIBRATION_ADDRESS, &mut bias).then_some(bias)
     }
 }

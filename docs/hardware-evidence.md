@@ -3261,6 +3261,18 @@ the proven hardware reference.
   the operator had unplugged the cable, so the running identity was not read
   back over serial.
 
+### EVID-TX062-001 — Mid and High bias come from their own calibration rows
+
+- **Source:** `uv-k5-firmware-custom` `radio.c:456-482` reads three bytes at
+  `0x1ED0 + Band * 16 + OUTPUT_POWER * 3` with `OUTPUT_POWER` Low 0, Mid 1,
+  High 2, and interpolates them with `FREQUENCY_CalculateOutputPower` as the
+  low row is. The low/mid reduction is behind an opt-in build flag. AFIK reads
+  the nine bytes of band 5 (`0x1F20` on K5, `0x10120` on K1) and uses rows 1
+  and 2 unscaled for Mid and High.
+- **Confidence:** high for the source behaviour; output power is unmeasured
+  and the 2 W / 5 W figures are Armel's nominal ones. This source has no
+  Low5, so AFIK offers none.
+
 ### EVID-TX059-001 — K5 TX speech level follows Armel's register state
 
 - **Observations, 2026-10-13, operator:** `AFIK-K5-7.0.0` (mic gain written)

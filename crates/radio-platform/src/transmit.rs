@@ -6,9 +6,10 @@
 //! reimplemented from the pinned Armel sources (`EVID-TX056-003`). A target
 //! supplies only its identity and its power-level divider table.
 //!
-//! Power is one of the Armel F4HWN "Low1" to "Low4" levels: the unit's own low
+//! Power is one of the Armel F4HWN "Low1" to "Low4" levels, the unit's own low
 //! calibration bias for the 400–470 MHz band multiplied by 4 and divided by the
-//! target's divider. The milliwatt figures in
+//! target's divider, or Mid or High, the unit's mid and high calibration rows as
+//! the reference uses them. The milliwatt figures in
 //! [`crate::operator_shell::TX_POWER_NOMINAL_MW`] are Armel's documented
 //! nominal outputs, not measurements.
 
@@ -16,12 +17,12 @@ use radio_bk4819::{Bk4819, ReceiveSetup, RegisterBus};
 use radio_domain::{ActiveChannel, Bandwidth, Frequency, Modulation};
 use radio_tx_policy::{ConfigurationIdentity, RuleRange, TxEnvelope, TxPolicy, TxRequest, TxState};
 
-use crate::operator_shell::{TX_POWER_LEVELS, TX_POWER_NOMINAL_MW};
+use crate::operator_shell::{LOW_POWER_LEVELS, TX_POWER_LEVELS, TX_POWER_NOMINAL_MW};
 use crate::tx_control::{Acknowledgement, Action, Controller, Effect, Event};
 
-/// Highest nominal power of the levels offered, which bounds each target's
-/// hardware envelope.
-pub const HARDWARE_MAX_MW: u32 = 500;
+/// Highest nominal power of the levels offered (High), which bounds each
+/// target's hardware envelope; each programmed range's ceiling still applies.
+pub const HARDWARE_MAX_MW: u32 = 5_000;
 /// Most controller effects driven in one pass; a full entry or exit is four or
 /// three, so one pass completes either.
 const MAX_EFFECTS_PER_PASS: usize = 8;
@@ -52,28 +53,45 @@ pub struct TxTarget {
     /// Opaque identity shared by this target's hardware and calibration envelopes.
     pub target_id: u64,
     /// Low1–Low4 bias divisors from the target's Armel `dividers` table.
-    pub dividers: [i32; TX_POWER_LEVELS as usize],
+    pub dividers: [i32; LOW_POWER_LEVELS as usize],
 }
 
+/// The 400–470 MHz band's calibration: the low, mid and high power rows, each
+/// three bytes for the band's low, middle and high frequency points, as the
+/// reference reads them from `base + band * 16 + power * 3`.
+pub type TxCalibration = [u8; 9];
+
 impl TxTarget {
-    /// Derives the PA bias for one power level (0 = Low1) from the three low
-    /// calibration bytes, as `RADIO_ConfigureSquelchAndOutputPower` and
-    /// `FREQUENCY_CalculateOutputPower` do.
+    /// Derives the PA bias for one power level (0 = Low1) as
+    /// `RADIO_ConfigureSquelchAndOutputPower` and
+    /// `FREQUENCY_CalculateOutputPower` do: Low1–Low4 from the low row scaled
+    /// by this target's divider, Mid and High from the mid and high rows as
+    /// they are (`radio.c:456-482`).
     ///
-    /// Returns `None` for an unprogrammed (`0x00`/`0xFF`) byte, an unknown
-    /// level, a frequency outside 400–470 MHz, or a zero result, so TX is then
-    /// denied by missing calibration.
+    /// Returns `None` for an unprogrammed (`0x00`/`0xFF`) byte in the row it
+    /// uses, an unknown level, a frequency outside 400–470 MHz, or a zero
+    /// result, so TX is then denied by missing calibration.
     #[must_use]
-    pub fn bias(&self, calibration: [u8; 3], frequency_hz: u32, level: u8) -> Option<u8> {
-        if calibration.iter().any(|byte| matches!(byte, 0x00 | 0xFF)) {
+    pub fn bias(&self, calibration: TxCalibration, frequency_hz: u32, level: u8) -> Option<u8> {
+        if level >= TX_POWER_LEVELS {
             return None;
         }
-        let divider = *self.dividers.get(usize::from(level))?;
+        let (row, scale): (usize, Option<i32>) = match level.checked_sub(LOW_POWER_LEVELS) {
+            None => (0, Some(*self.dividers.get(usize::from(level))?)),
+            Some(above) => (usize::from(above) + 1, None),
+        };
+        let points: [u8; 3] = calibration.get(row * 3..row * 3 + 3)?.try_into().ok()?;
+        if points.iter().any(|byte| matches!(byte, 0x00 | 0xFF)) {
+            return None;
+        }
         let frequency = i32::try_from(frequency_hz / 10).ok()?;
         if !(BAND_LOWER..BAND_UPPER).contains(&frequency) {
             return None;
         }
-        let [low, mid, high] = calibration.map(|byte| i32::from(byte) * 4 / divider);
+        let [low, mid, high] = points.map(|byte| match scale {
+            Some(divider) => i32::from(byte) * 4 / divider,
+            None => i32::from(byte),
+        });
         let middle = (BAND_LOWER + BAND_UPPER) / 2;
         // The source's two interpolation branches, including its use of the
         // low-to-mid slope added to mid below the middle point.
@@ -240,13 +258,31 @@ mod tests {
         Frequency::from_hz(hz).unwrap()
     }
 
+    /// A flat low row of 0x5F and mid and high rows of the kind a K5 backup
+    /// holds (`EVID-K5-020` shows `32 32 32 64 64 64 8c 8c 8c` for one band).
+    const CALIBRATION: [u8; 9] = [0x5F, 0x5F, 0x5F, 0x64, 0x64, 0x64, 0x8C, 0x8C, 0x8C];
+
     #[test]
     fn each_target_scales_by_its_own_divider_table() {
-        let row = [0x5F, 0x5F, 0x5F];
+        let row = CALIBRATION;
         assert_eq!(K5.bias(row, 446_006_250, 3), Some(38), "95 * 4 / 10");
         assert_eq!(K1.bias(row, 446_006_250, 3), Some(42), "95 * 4 / 9");
         assert_eq!(K1.bias(row, 446_006_250, 0), Some(15));
-        assert_eq!(K1.bias(row, 446_006_250, 4), None, "no Low5");
+    }
+
+    #[test]
+    fn mid_and_high_use_their_own_rows_unscaled() {
+        for target in [K5, K1] {
+            assert_eq!(target.bias(CALIBRATION, 446_006_250, 4), Some(0x64), "Mid");
+            assert_eq!(target.bias(CALIBRATION, 446_006_250, 5), Some(0x8C), "High");
+            assert_eq!(target.bias(CALIBRATION, 446_006_250, 6), None, "no level 7");
+        }
+        // An unprogrammed high row refuses High alone.
+        let mut no_high = CALIBRATION;
+        no_high[7] = 0xFF;
+        assert_eq!(K5.bias(no_high, 446_006_250, 5), None);
+        assert_eq!(K5.bias(no_high, 446_006_250, 4), Some(0x64));
+        assert_eq!(K5.bias(no_high, 446_006_250, 0), Some(15));
     }
 
     /// PMR446, part of 70 cm and 2 m, as a studio might program them.

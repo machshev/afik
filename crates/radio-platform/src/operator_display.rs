@@ -463,13 +463,18 @@ impl SelectorRow {
     }
 }
 
-/// A five-byte nominal power label such as ` 20MW` or `500MW`.
+/// A five-byte nominal power label such as ` 20MW`, `500MW` or `   5W`.
 fn milliwatts_label(level: u8) -> [u8; 5] {
     let milliwatts = TX_POWER_NOMINAL_MW
         .get(usize::from(level))
         .copied()
-        .unwrap_or(0)
-        .min(999);
+        .unwrap_or(0);
+    if milliwatts >= 1_000 {
+        let mut label = *b"    W";
+        label[3] = b'0' + u8::try_from((milliwatts / 1_000).min(9)).unwrap_or(9);
+        return label;
+    }
+    let milliwatts = milliwatts.min(999);
     let mut label = *b"   MW";
     let digits = [milliwatts / 100, milliwatts / 10 % 10, milliwatts % 10];
     let mut started = false;

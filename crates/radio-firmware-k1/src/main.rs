@@ -40,6 +40,7 @@ use radio_firmware_k1::py32f071_eeprom::{RetainError, RetainedConfiguration};
 use radio_firmware_k1::py32f071_runtime::{compose, K1RuntimePeripherals};
 use radio_firmware_k1::py32f071_runtime_init::init;
 use radio_platform::memory_link::{IMAGE_REGION_BYTES, WRITE_BYTES};
+use radio_platform::transmit::TxCalibration;
 use radio_platform::transmit::TxTarget;
 
 const _: [(); 8] = [(); PAGES];
@@ -448,7 +449,7 @@ impl radio_app::drivers::Memory for Memory {
         self.0.read_battery_calibration()
     }
 
-    fn read_tx_calibration(&mut self) -> Option<[u8; 3]> {
+    fn read_tx_calibration(&mut self) -> Option<TxCalibration> {
         self.0.read_tx_calibration()
     }
 

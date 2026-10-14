@@ -185,13 +185,13 @@ impl RetainedConfiguration {
         Calibration::from_vendor_block(&block)
     }
 
-    /// Reads the three low-power TX bias bytes for the 400–470 MHz band.
+    /// Reads the low, mid and high TX bias rows for the 400–470 MHz band.
     ///
     /// Armel K1 reads `0x100D0 + band * 16 + power * 3` from this memory
-    /// (`radio.c`); band 5 at the low row is `0x10120`. Read-only, like the
-    /// battery calibration, and absent when the memory does not answer.
-    pub fn read_tx_calibration(&mut self) -> Option<[u8; 3]> {
-        let mut block = [0_u8; 3];
+    /// (`radio.c`); band 5 starts at `0x10120`, the low row first. Read-only,
+    /// like the battery calibration, and absent when the memory does not answer.
+    pub fn read_tx_calibration(&mut self) -> Option<[u8; 9]> {
+        let mut block = [0_u8; 9];
         self.eeprom
             .read_vendor(TX_CALIBRATION_ADDRESS, &mut block)
             .ok()?;

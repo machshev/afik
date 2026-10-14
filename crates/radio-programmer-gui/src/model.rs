@@ -1467,7 +1467,7 @@ mod tests {
         assert!(draft.validate().is_err());
         draft.tx_timeout = radio_domain::TX_TIMEOUT_CHOICES - 1;
         let config = draft.validate().unwrap();
-        assert_eq!((config.tx_power, config.tx_timeout), (3, 4));
+        assert_eq!((config.tx_power, config.tx_timeout), (5, 4));
     }
 
     /// The handset's TX settings go to the radio and come back from it.

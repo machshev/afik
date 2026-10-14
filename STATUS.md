@@ -49,6 +49,15 @@ programmed TX ranges protect channel and VFO mode alike.
   `cargo fmt --all --check` clean, workspace clippy `-D warnings` clean,
   `cargo test --workspace` 694 passed 0 failed, `tool/build-k5.sh --release`
   (flash end `0x0000d100`) and `tool/build-k1.sh --release` pass. Not flashed.
+- Full power (operator request): TX power adds Mid and High, from the
+  unit's mid and high calibration rows unscaled (`EVID-TX062-001`), nominally
+  2 W and 5 W; Low1–Low4 are unchanged. The hardware envelope rises to 5 W
+  and every programmed range's ceiling still applies, so PMR446 stays at
+  500 mW while an amateur range can allow 5 W. The handset power list pages
+  its six rows. Unmeasured (`RISK-040`). Gate: `cargo fmt --all --check`
+  clean, workspace clippy `-D warnings` clean, `cargo test --workspace` 695
+  passed 0 failed, `tool/build-k5.sh --release` (flash end `0x0000d138`) and
+  `tool/build-k1.sh --release` pass. Not flashed.
 
 ## Previous work package: TXK5-059
 

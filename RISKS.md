@@ -1127,3 +1127,11 @@ What still matters: the lowest power, a dummy load or a frequency the operator
 may use (PMR446 for `TXK5-058`), a short timeout, and actually seeing the
 carrier stop. If the carrier does not stop on release or timeout, stop and fix
 that before anything else.
+
+**Update 2026-10-14 (`TXRANGE-062`):** Mid and High are now offered, from the
+unit's mid and high calibration rows as the reference reads them
+(`radio.c:456-482`), with Armel's nominal 2 W and 5 W. They are unmeasured;
+the hardware envelope rises to 5 W and each programmed range's ceiling still
+applies, so PMR446 stays at 500 mW. Measure the real output on a dummy load
+before relying on it (experiment 2). A level above the range's ceiling is
+refused silently; the handset does not yet say why.

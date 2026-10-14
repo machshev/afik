@@ -35,7 +35,7 @@ use radio_platform::ptt::PttFilter;
 use radio_platform::receive_app::{
     Effect as SharedEffect, Effects as SharedEffects, Event as SharedEvent, ReceiveApp,
 };
-use radio_platform::transmit::{self, Delay, TxTarget};
+use radio_platform::transmit::{self, Delay, TxCalibration, TxTarget};
 use radio_platform::tx_control::{self, Action, Controller as TxController, State as TxPhase};
 use radio_tx_policy::{TxRequest, TxState};
 
@@ -667,7 +667,7 @@ pub async fn run<D, K, B, S, V, M>(
     // mode alike, and are taken again with each configuration (`ADR-101`).
     let mut tx_policy = TX_POLICY.with(|policy| *policy);
     shell.set_tx_classes(tx_policy.classes());
-    let mut tx_calibration: Option<[u8; 3]> = None;
+    let mut tx_calibration: Option<TxCalibration> = None;
     // Created once the receiver has a channel, so its startup restore has
     // something to restore.
     let mut tx: Option<TxController> = None;
@@ -1293,7 +1293,7 @@ fn tx_request<B: RegisterBus, S: Speaker>(
     scanning: bool,
     changing: bool,
     revision: u32,
-    calibration: Option<[u8; 3]>,
+    calibration: Option<TxCalibration>,
     tx: TxTarget,
     level: u8,
     timeout_ms: u32,
@@ -1438,18 +1438,17 @@ fn render<B: RegisterBus, S: Speaker, M: Memory>(
             render_selector_list(frame, b"SETTINGS", &rows[..count], shell.settings_cursor());
         }
         Screen::TxPowerList => {
+            // Six levels and five rows: page by whole screens, as the squelch
+            // list does.
             let mut rows = [SelectorRow::default(); LIST_ROWS];
+            let cursor = usize::from(shell.tx_power_cursor());
+            let first = cursor / LIST_ROWS * LIST_ROWS;
             let mut count = 0;
-            for (level, row) in (0..TX_POWER_LEVELS).zip(rows.iter_mut()) {
+            for (level, row) in (0..TX_POWER_LEVELS).skip(first).zip(rows.iter_mut()) {
                 *row = SelectorRow::tx_power_level(level, level == shell.tx_power());
                 count += 1;
             }
-            render_selector_list(
-                frame,
-                b"TX POWER",
-                &rows[..count],
-                usize::from(shell.tx_power_cursor()),
-            );
+            render_selector_list(frame, b"TX POWER", &rows[..count], cursor - first);
         }
         Screen::TxTimeoutList => {
             let mut rows = [SelectorRow::default(); LIST_ROWS];

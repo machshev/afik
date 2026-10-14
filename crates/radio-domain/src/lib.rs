@@ -289,7 +289,7 @@ pub const MAX_BATTERY_SAVE_RATIO: u8 = 5;
 /// Backlight timeout value meaning the backlight never switches off.
 pub const BACKLIGHT_ALWAYS_ON: u8 = u8::MAX;
 /// Selectable TX power levels, indexed from zero (the lowest).
-pub const TX_POWER_LEVELS: u8 = 4;
+pub const TX_POWER_LEVELS: u8 = 6;
 /// Selectable TX timeouts: index `n` is `n + 1` whole minutes.
 pub const TX_TIMEOUT_CHOICES: u8 = 5;
 /// Index of the TX timeout a radio arrives with: one minute.
