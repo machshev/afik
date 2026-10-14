@@ -61,6 +61,11 @@ level is refused there. With no range the radio never transmits.";
 const BACKLIGHT_HINT: &str = "How long the display stays lit after a key or PTT \
 press, or after a received signal ends. 0 keeps it off; 255 keeps it on.";
 
+/// What battery save does, said once.
+const BATTERY_SAVE_HINT: &str = "After 10 s with no key, signal or scan, the \
+receiver sleeps this many times 100 ms, then listens for 100 ms. 0 is off. \
+Off while dual watch runs.";
+
 /// Which editor tab is visible.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum Tab {
@@ -920,11 +925,14 @@ impl StudioApp {
             .on_hover_text(BACKLIGHT_HINT);
             ui.end_row();
 
-            ui.label("Battery save ratio");
+            ui.label("Battery save ratio")
+                .on_hover_text(BATTERY_SAVE_HINT);
             ui.add(
                 egui::DragValue::new(&mut config.battery_save_ratio)
-                    .range(0..=MAX_BATTERY_SAVE_RATIO),
-            );
+                    .range(0..=MAX_BATTERY_SAVE_RATIO)
+                    .prefix("1:"),
+            )
+            .on_hover_text(BATTERY_SAVE_HINT);
             ui.end_row();
 
             ui.label("Options");

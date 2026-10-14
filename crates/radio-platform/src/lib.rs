@@ -14,6 +14,7 @@ pub mod dual_watch;
 pub mod memory_link;
 pub mod operator_display;
 pub mod operator_shell;
+pub mod power_save;
 pub mod ptt;
 pub mod receive_app;
 pub mod serial;

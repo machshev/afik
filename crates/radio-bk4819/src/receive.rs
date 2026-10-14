@@ -55,6 +55,8 @@ const CRYSTAL_INIT: u16 = 0x0022;
 const AGC_FIX_INDEX: u16 = 3 << 12;
 const AGC_AUTO_MODE_BIT: u16 = 1 << 15;
 const AGC_INDEX_MASK: u16 = 0b111 << 12;
+/// `REG_37` written by `BK4819_Sleep`, the same in the K5 and K1 trees.
+const SLEEP_POWER_BLOCKS: u16 = 0x1D00;
 /// Default `REG_33` output word the pinned source establishes at power on.
 pub const GPIO_OUT_DEFAULT: u16 = 0x9000;
 /// Receive-side DTMF detection coefficients written to `REG_09` at power on.
@@ -630,6 +632,23 @@ impl<B: RegisterBus> Bk4819<B> {
         Ok(())
     }
 
+    /// Puts the chip to sleep for battery save, from standby or receive.
+    ///
+    /// `BK4819_Sleep` in both pinned trees: every mode block off, then the
+    /// power blocks down to `0x1D00`. [`Self::configure_receive`] wakes it.
+    pub fn sleep(&mut self) -> Result<(), DriverError<B::Error>> {
+        if !matches!(
+            self.state,
+            DriverState::Standby | DriverState::Receiving { .. }
+        ) {
+            return Err(DriverError::InvalidState(self.state));
+        }
+        self.write(REG_MODE_CONTROL, MODE_STANDBY)?;
+        self.write(REG_POWER_BLOCKS, SLEEP_POWER_BLOCKS)?;
+        self.state = DriverState::Standby;
+        Ok(())
+    }
+
     /// Routes or mutes demodulated audio while receiving.
     pub fn set_af_output(
         &mut self,
@@ -918,6 +937,33 @@ mod tests {
             squelch: thresholds(),
             af: AfOutput::Demodulated,
         }
+    }
+
+    #[test]
+    fn sleep_matches_the_pinned_source_and_receive_wakes_it() {
+        use super::{REG_POWER_BLOCKS, SLEEP_POWER_BLOCKS};
+        use crate::{DriverState, MODE_STANDBY, REG_MODE_CONTROL};
+
+        let mut radio = Bk4819::new(FakeBus::new(None));
+        assert!(
+            radio.sleep().is_err(),
+            "an unknown chip is not put to sleep"
+        );
+        radio.recover_to_standby().unwrap();
+        let tuned = setup(Modulation::Fm, Tone::None, 145_500_000);
+        radio.configure_receive(&tuned).unwrap();
+        radio.bus_mut().operations.clear();
+        radio.sleep().unwrap();
+        assert_eq!(
+            radio.bus().operations,
+            [
+                Operation::Write(REG_MODE_CONTROL, MODE_STANDBY),
+                Operation::Write(REG_POWER_BLOCKS, SLEEP_POWER_BLOCKS),
+            ]
+        );
+        assert_eq!(radio.state(), DriverState::Standby);
+        radio.configure_receive(&tuned).unwrap();
+        assert!(matches!(radio.state(), DriverState::Receiving { .. }));
     }
 
     #[test]

@@ -31,6 +31,7 @@ use radio_platform::operator_shell::{
     Context, Intent, Mode, Screen, Setting, Shell, Slot, SlotId, Source, HOLD_MILLISECONDS,
     SQUELCH_LEVELS, TX_POWER_ROWS, TX_TIMEOUT_CHOICES, VFO_STEPS_HZ,
 };
+use radio_platform::power_save::{self, PowerSave};
 use radio_platform::ptt::PttFilter;
 use radio_platform::receive_app::{
     Effect as SharedEffect, Effects as SharedEffects, Event as SharedEvent, ReceiveApp,
@@ -125,6 +126,8 @@ struct Receiver<B: RegisterBus, S: Speaker> {
     frequency_hz: u32,
     rssi_raw: u16,
     squelch_open: bool,
+    /// Battery save has the chip asleep; the next tune wakes it.
+    asleep: bool,
     /// The last tuned setup and radio-wide squelch, restored after TX.
     last_tune: Option<(ChannelReceiveSetup, SquelchLevel)>,
 }
@@ -140,6 +143,7 @@ impl<B: RegisterBus, S: Speaker> Receiver<B, S> {
             frequency_hz: 0,
             rssi_raw: 0,
             squelch_open: false,
+            asleep: false,
             last_tune: None,
         }
     }
@@ -266,6 +270,7 @@ impl<B: RegisterBus, S: Speaker> Receiver<B, S> {
             return;
         }
         self.last_tune = Some((setup, radio_wide));
+        self.asleep = false;
         self.frequency_hz = setup.frequency.as_hz();
         // The previous channel's link result says nothing about this one.
         self.squelch_open = false;
@@ -294,6 +299,29 @@ impl<B: RegisterBus, S: Speaker> Receiver<B, S> {
             Err(_) => {
                 self.faulted = true;
                 None
+            }
+        }
+    }
+
+    /// Sleeps the chip for battery save, silencing the speaker first.
+    fn sleep(&mut self) {
+        if self.faulted || !self.started || self.asleep {
+            return;
+        }
+        self.set_speaker(false);
+        if self.radio.sleep().is_err() {
+            self.faulted = true;
+            return;
+        }
+        self.asleep = true;
+        self.squelch_open = false;
+    }
+
+    /// Wakes the chip on the channel it slept on.
+    fn wake(&mut self) {
+        if let Some((setup, squelch)) = self.last_tune {
+            if self.asleep {
+                self.tune(setup, squelch);
             }
         }
     }
@@ -783,6 +811,7 @@ pub async fn run<D, K, B, S, V, M>(
     // says why nothing went out.
     let mut tx_disabled = false;
     let mut quiet_retune = false;
+    let mut power_save = PowerSave::new(now_ms());
     let mut next_sample = Instant::now();
     // Whether the receiver has produced a reading on the channel it is now on.
     let mut settled = false;
@@ -1277,6 +1306,37 @@ pub async fn run<D, K, B, S, V, M>(
                 &mut pending_operator_squelch,
             );
         }
+        // Battery save sleeps the receiver once nothing has happened for a
+        // while, waking it briefly to listen; anything happening wakes it.
+        if bus_available() {
+            let active = !matches!(edge, Edge::None)
+                || debounce.held_key().is_some()
+                || ptt.pressed()
+                || tx
+                    .as_ref()
+                    .is_some_and(|controller| controller.state() != TxPhase::Ready)
+                || receiver.squelch_open
+                || watching
+                || context.scanning
+                || activation
+                    .as_ref()
+                    .is_some_and(|(controller, _)| controller.is_monitoring())
+                || shell.screen() != Screen::Operating
+                || shell.entry().is_some()
+                || pending.is_some()
+                || pending_operator_squelch.is_some()
+                || !receiver.audio_routed;
+            let save_ratio = programmed.config().battery_save_ratio;
+            match power_save.poll(now, save_ratio, active) {
+                Some(power_save::Action::Sleep) => receiver.sleep(),
+                Some(power_save::Action::Wake) => {
+                    receiver.wake();
+                    next_sample = Instant::now();
+                    settled = false;
+                }
+                None => {}
+            }
+        }
         if let Some(setup) = pending.filter(|_| bus_available()) {
             if let Some(channel) = shared_channel(setup) {
                 let had_shared = shared_receive.is_some();
@@ -1379,7 +1439,11 @@ pub async fn run<D, K, B, S, V, M>(
             settled = false;
             watched_busy = false;
             redraw |= !core::mem::take(&mut quiet_retune);
-        } else if receiver.audio_routed && Instant::now() >= next_sample && bus_available() {
+        } else if receiver.audio_routed
+            && !receiver.asleep
+            && Instant::now() >= next_sample
+            && bus_available()
+        {
             let was_open = receiver.squelch_open;
             let scanning = activation.as_ref().is_some_and(|(controller, _)| {
                 matches!(controller.state(), ReceiveState::Scanning(_))

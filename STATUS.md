@@ -139,6 +139,16 @@ programmed TX ranges protect channel and VFO mode alike.
   two hours. Gate: `cargo fmt --all --check` clean, `cargo clippy --workspace
   --all-targets -- -D warnings` clean, `cargo test --workspace` 727 passed 0
   failed. Not flashed; the wrap fix goes into the next image (bump then).
+- Battery save (operator request): the programmed ratio now runs on the
+  radio, as Armel's `FUNCTION_PowerSave` (`EVID-TX056-003`): after 10 s with
+  no key, PTT, signal, scan, menu or retune, the chip sleeps (`REG_30 = 0`,
+  `REG_37 = 0x1D00`, both trees) for ratio × 100 ms, wakes on the same
+  channel for 100 ms, and stays awake if the squelch opens. Dual watch keeps
+  it awake (Armel interleaves the two; not done here). Wake-up latency and
+  current saved are unmeasured. Gate: `cargo fmt --all --check` clean,
+  workspace clippy `-D warnings` clean, `cargo test --workspace` 732 passed
+  0 failed, `tool/build-k5.sh --release` (flash end `0x0000e46c`) and
+  `tool/build-k1.sh --release` pass. Not flashed.
 - Next (step 5, hardware): with the 200 ms dwell; F 2 and F 3 on the keypad; put A
   and B in different banks; dual watch on, key a second radio on B and check
   the hold, hang, meter and that PTT goes out on A (`RISK-041`); power-cycle
