@@ -131,7 +131,15 @@ programmed TX ranges protect channel and VFO mode alike.
   at start-up. Gate: `cargo fmt --all --check` clean, workspace clippy `-D
   warnings` clean, `cargo test --workspace` 726 passed 0 failed, K5 and K1
   release images build. Not flashed.
-- Next (step 5, hardware): flash `7.0.22`; F 2 and F 3 on the keypad; put A
+- Step 5 (hardware, partial): on `7.0.22` with PMR446 channels in A and B,
+  the other slot was never heard and scan never stopped at the 90 ms dwell;
+  programmed at 200 ms both work (`EVID-K5-036`). `RadioConfig::conservative()`
+  now has a 200 ms dwell. Shared receive change identities now wrap instead of
+  running out, which would have stopped PMR446 dual watch retuning after under
+  two hours. Gate: `cargo fmt --all --check` clean, `cargo clippy --workspace
+  --all-targets -- -D warnings` clean, `cargo test --workspace` 727 passed 0
+  failed. Not flashed; the wrap fix goes into the next image (bump then).
+- Next (step 5, hardware): with the 200 ms dwell; F 2 and F 3 on the keypad; put A
   and B in different banks; dual watch on, key a second radio on B and check
   the hold, hang, meter and that PTT goes out on A (`RISK-041`); power-cycle
   and check both slots and DW come back.

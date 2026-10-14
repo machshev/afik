@@ -1139,9 +1139,10 @@ lowered to the highest level within it (operator request), by nominal figures.
 ## RISK-041 — Dual watch timing and the two-slot screen are unobserved
 
 - **State:** open (2026-10-14, `DUALW-064`).
-- The receiver retunes every scan dwell (90 ms default) and judges a slot busy
-  on settled readings only, as a scan does; whether that misses short
-  transmissions, or false-holds on settling noise, is unmeasured
+- The receiver retunes every scan dwell and judges a slot busy on settled
+  readings only, as a scan does. On the K5 a 90 ms dwell heard nothing on the
+  other slot and 200 ms works (`EVID-K5-036`, now the default); the floor
+  between them, and whether 200 ms misses short transmissions, is unmeasured
   (`RISK-008`). PMR446 slots retune through the shared receive app each time.
 - The two-slot layout and meter scale (-130 to -50 dBm) were checked only as
   host-rendered pixels.
