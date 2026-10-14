@@ -118,6 +118,12 @@ programmed TX ranges protect channel and VFO mode alike.
   flashing mode (the write stays allowed). Gate: `cargo fmt --all --check`
   clean, workspace clippy `-D warnings` clean, `cargo test --workspace` 721
   passed 0 failed.
+- Studio (operator request): the default-set chooser is on the Banks tab
+  only, and the Radio tab groups its settings under Receive (squelch, dual
+  watch, AM fix, tone tail), Transmit (VFO power, timeout, busy lockout, TX
+  ranges), Scan and General (backlight, battery save, key beep). Not
+  checked on screen. Gate: `cargo fmt --all --check` clean, workspace
+  clippy `-D warnings` clean, `cargo test --workspace` 725 passed 0 failed.
 - Next (step 5, hardware): flash `7.0.22`; F 2 and F 3 on the keypad; put A
   and B in different banks; dual watch on, key a second radio on B and check
   the hold, hang, meter and that PTT goes out on A (`RISK-041`); power-cycle

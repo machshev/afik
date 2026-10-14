@@ -71,9 +71,33 @@ enum Tab {
     Flash,
 }
 
+/// Which group of radio settings the Radio tab shows.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum RadioSection {
+    #[default]
+    Receive,
+    Transmit,
+    Scan,
+    General,
+}
+
+impl RadioSection {
+    const ALL: [Self; 4] = [Self::Receive, Self::Transmit, Self::Scan, Self::General];
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Receive => "Receive",
+            Self::Transmit => "Transmit",
+            Self::Scan => "Scan",
+            Self::General => "General",
+        }
+    }
+}
+
 /// The complete native editor.
 pub struct StudioApp {
     tab: Tab,
+    radio_section: RadioSection,
     project: ProjectModel,
     /// The project as last loaded or saved, to tell whether it has changed.
     saved: ProjectModel,
@@ -103,6 +127,7 @@ impl StudioApp {
     pub fn with_projects(options: &Options, projects: ProjectStore) -> Self {
         let mut app = Self {
             tab: Tab::default(),
+            radio_section: RadioSection::default(),
             project: ProjectModel::new(),
             saved: ProjectModel::new(),
             projects,
@@ -644,6 +669,11 @@ impl StudioApp {
                 self.create_project();
             }
         });
+        ui.separator();
+    }
+
+    /// Default sets add banks, so they are offered only on the Banks tab.
+    fn default_set_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             ui.label("Default set:");
             let selected = PRESETS
@@ -675,6 +705,7 @@ impl StudioApp {
 
     fn banks_tab(&mut self, ui: &mut egui::Ui) {
         self.project_bar(ui);
+        self.default_set_bar(ui);
         ui.horizontal_wrapped(|ui| {
             if ui.button("Add channel bank").clicked() {
                 self.add_bank(BankKind::Named);
@@ -783,13 +814,45 @@ impl StudioApp {
 
     fn radio_tab(&mut self, ui: &mut egui::Ui) {
         self.project_bar(ui);
+        ui.horizontal_wrapped(|ui| {
+            for section in RadioSection::ALL {
+                ui.selectable_value(&mut self.radio_section, section, section.label());
+            }
+        });
+        ui.separator();
+        match self.radio_section {
+            RadioSection::Receive => self.receive_settings(ui),
+            RadioSection::Transmit => {
+                self.transmit_settings(ui);
+                ui.separator();
+                self.tx_ranges_editor(ui);
+            }
+            RadioSection::Scan => self.scan_settings(ui),
+            RadioSection::General => self.general_settings(ui),
+        }
+    }
+
+    fn receive_settings(&mut self, ui: &mut egui::Ui) {
         let config = &mut self.project.config;
-        Grid::new("radio").num_columns(2).show(ui, |ui| {
+        Grid::new("radio-receive").num_columns(2).show(ui, |ui| {
             ui.label("Squelch level").on_hover_text(SQUELCH_HINT);
             ui.add(egui::DragValue::new(&mut config.squelch).range(0..=MAX_SQUELCH_LEVEL))
                 .on_hover_text(SQUELCH_HINT);
             ui.end_row();
 
+            ui.label("Options");
+            ui.vertical(|ui| {
+                ui.checkbox(&mut config.dual_watch, "Dual watch");
+                ui.checkbox(&mut config.am_fix, "AM gain compensation");
+                ui.checkbox(&mut config.tone_tail_elimination, "Tone tail elimination");
+            });
+            ui.end_row();
+        });
+    }
+
+    fn transmit_settings(&mut self, ui: &mut egui::Ui) {
+        let config = &mut self.project.config;
+        Grid::new("radio-transmit").num_columns(2).show(ui, |ui| {
             ui.label("VFO TX power").on_hover_text(TX_HINT);
             ComboBox::from_id_salt("tx-power")
                 .selected_text(tx_power_label(config.tx_power))
@@ -814,13 +877,15 @@ impl StudioApp {
                 });
             ui.end_row();
 
-            ui.label("Backlight seconds").on_hover_text(BACKLIGHT_HINT);
-            ui.add(
-                egui::DragValue::new(&mut config.backlight_seconds).range(0..=BACKLIGHT_ALWAYS_ON),
-            )
-            .on_hover_text(BACKLIGHT_HINT);
+            ui.label("Options");
+            ui.checkbox(&mut config.busy_lockout_default, "Busy lockout by default");
             ui.end_row();
+        });
+    }
 
+    fn scan_settings(&mut self, ui: &mut egui::Ui) {
+        let config = &mut self.project.config;
+        Grid::new("radio-scan").num_columns(2).show(ui, |ui| {
             ui.label("Scan resume");
             ComboBox::from_id_salt("scan-resume")
                 .selected_text(scan_resume_label(config.scan_resume))
@@ -842,6 +907,18 @@ impl StudioApp {
             ui.label("Scan hold ms");
             ui.add(egui::DragValue::new(&mut config.scan_hold_ms).range(1..=600_000));
             ui.end_row();
+        });
+    }
+
+    fn general_settings(&mut self, ui: &mut egui::Ui) {
+        let config = &mut self.project.config;
+        Grid::new("radio-general").num_columns(2).show(ui, |ui| {
+            ui.label("Backlight seconds").on_hover_text(BACKLIGHT_HINT);
+            ui.add(
+                egui::DragValue::new(&mut config.backlight_seconds).range(0..=BACKLIGHT_ALWAYS_ON),
+            )
+            .on_hover_text(BACKLIGHT_HINT);
+            ui.end_row();
 
             ui.label("Battery save ratio");
             ui.add(
@@ -851,17 +928,9 @@ impl StudioApp {
             ui.end_row();
 
             ui.label("Options");
-            ui.vertical(|ui| {
-                ui.checkbox(&mut config.dual_watch, "Dual watch");
-                ui.checkbox(&mut config.key_beep, "Key beep");
-                ui.checkbox(&mut config.busy_lockout_default, "Busy lockout by default");
-                ui.checkbox(&mut config.am_fix, "AM gain compensation");
-                ui.checkbox(&mut config.tone_tail_elimination, "Tone tail elimination");
-            });
+            ui.checkbox(&mut config.key_beep, "Key beep");
             ui.end_row();
         });
-        ui.separator();
-        self.tx_ranges_editor(ui);
     }
 
     fn tx_ranges_editor(&mut self, ui: &mut egui::Ui) {
@@ -1739,7 +1808,7 @@ mod tests {
         bank_row_columns, channel_row_label, column_gap, memory_percent, scan_resume_label,
         tx_power_label, tx_timeout_label, StudioApp, Tab, MIN_COLUMN_GAP,
     };
-    use super::{TxClass, TxRangeDraft, MAX_TX_RANGES};
+    use super::{RadioSection, TxClass, TxRangeDraft, MAX_TX_RANGES};
     use crate::{model::BankKind, projects::ProjectStore, DeviceSelector, Options};
     use radio_domain::ScanResume;
     use std::path::PathBuf;
@@ -1965,6 +2034,64 @@ mod tests {
         context.run(input, |context| {
             CentralPanel::default().show(context, |ui| app.banks_tab(ui));
         })
+    }
+
+    /// Draws one headless frame of the Radio tab.
+    fn radio_frame(
+        context: &eframe::egui::Context,
+        app: &mut StudioApp,
+    ) -> eframe::egui::FullOutput {
+        use eframe::egui::{CentralPanel, Pos2, RawInput, Rect, Vec2};
+        let input = RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1100.0, 4000.0))),
+            ..RawInput::default()
+        };
+        context.run(input, |context| {
+            CentralPanel::default().show(context, |ui| app.radio_tab(ui));
+        })
+    }
+
+    #[test]
+    fn default_sets_are_offered_on_the_banks_tab_only() {
+        let context = eframe::egui::Context::default();
+        let mut app = app_in(&scratch("default-set"), &Options::default());
+        let banks = frame(&context, &mut app, Vec::new());
+        assert_eq!(text_left_edges(&banks, "Default set").len(), 1);
+        let radio = radio_frame(&context, &mut app);
+        assert!(text_left_edges(&radio, "Default set").is_empty());
+    }
+
+    #[test]
+    fn the_radio_tab_shows_one_group_of_settings_at_a_time() {
+        let context = eframe::egui::Context::default();
+        let mut app = app_in(&scratch("radio-sections"), &Options::default());
+        // Every section is offered, and each setting appears in exactly one.
+        let expected = [
+            (RadioSection::Receive, "Squelch level"),
+            (RadioSection::Transmit, "TX timeout"),
+            (RadioSection::Transmit, "TX ranges"),
+            (RadioSection::Scan, "Scan dwell ms"),
+            (RadioSection::General, "Backlight seconds"),
+        ];
+        for section in RadioSection::ALL {
+            app.radio_section = section;
+            let output = radio_frame(&context, &mut app);
+            for other in RadioSection::ALL {
+                let tabs = output
+                    .shapes
+                    .iter()
+                    .filter(|clipped| {
+                        matches!(&clipped.shape, eframe::egui::Shape::Text(text)
+                            if text.galley.text() == other.label())
+                    })
+                    .count();
+                assert_eq!(tabs, 1, "{section:?} offers {other:?}");
+            }
+            for (owner, label) in expected {
+                let shown = text_left_edges(&output, label).len();
+                assert_eq!(shown, usize::from(owner == section), "{section:?} {label}");
+            }
+        }
     }
 
     /// Returns where each drawn text starting with `prefix` begins.
