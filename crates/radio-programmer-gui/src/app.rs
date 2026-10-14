@@ -498,7 +498,11 @@ impl StudioApp {
         ScrollArea::both().show(ui, |ui| {
             for (row, channel) in self.project.channels.iter_mut().enumerate() {
                 ui.push_id(row, |ui| {
+                    // The header is keyed by row, not by its label: the label
+                    // shows the name and frequency being edited, and a key that
+                    // changed with them would drop focus after one keystroke.
                     egui::CollapsingHeader::new(channel_row_label(row, channel))
+                        .id_salt(row)
                         .default_open(true)
                         .show(ui, |ui| {
                             if let Some(requested) = channel_row_editor(ui, channel, &bank_slots) {
@@ -560,6 +564,7 @@ impl StudioApp {
             for (row, bank) in self.project.banks.iter_mut().enumerate() {
                 ui.push_id(row, |ui| {
                     egui::CollapsingHeader::new(bank_row_label(row, bank))
+                        .id_salt(row)
                         .default_open(true)
                         .show(ui, |ui| {
                             if bank_row_editor(ui, bank) {
@@ -1530,6 +1535,100 @@ mod tests {
         );
         project.banks[1].base_mhz = "nope".to_owned();
         assert!(bank_row_label(1, &project.banks[1]).contains("generated plan"));
+    }
+
+    /// Draws one headless frame of a tab with the given input events.
+    fn frame(
+        context: &eframe::egui::Context,
+        app: &mut StudioApp,
+        tab: Tab,
+        events: Vec<eframe::egui::Event>,
+    ) {
+        use eframe::egui::{CentralPanel, Pos2, RawInput, Rect, Vec2};
+        let input = RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1100.0, 4000.0))),
+            events,
+            ..RawInput::default()
+        };
+        let _output = context.run(input, |context| {
+            CentralPanel::default().show(context, |ui| match tab {
+                Tab::Channels => app.channels_tab(ui),
+                _ => app.banks_tab(ui),
+            });
+        });
+    }
+
+    /// Tabs through the widgets until typed text lands in the probed field.
+    fn focus_field(
+        context: &eframe::egui::Context,
+        app: &mut StudioApp,
+        tab: Tab,
+        probe: impl Fn(&StudioApp) -> String,
+    ) {
+        use eframe::egui::{Event, Key, Modifiers};
+        let before = probe(app);
+        for _ in 0..40 {
+            let tab_key = Event::Key {
+                key: Key::Tab,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            };
+            frame(context, app, tab, vec![tab_key]);
+            frame(context, app, tab, vec![Event::Text("Z".to_owned())]);
+            if probe(app) != before {
+                return;
+            }
+        }
+        panic!("the probed field never took keyboard focus");
+    }
+
+    #[test]
+    fn typing_into_a_row_keeps_focus_while_its_header_label_changes() {
+        use eframe::egui::{Context, Event};
+        // The row header shows the name and frequency being edited. Typing
+        // must keep going to the same field, not stop after one character.
+        let context = Context::default();
+        let mut app = StudioApp::default();
+        app.project.add_channel();
+        frame(&context, &mut app, Tab::Channels, Vec::new());
+        focus_field(&context, &mut app, Tab::Channels, |app| {
+            app.project.channels[0].receive_mhz.clone()
+        });
+        for text in ["Y", "X"] {
+            frame(
+                &context,
+                &mut app,
+                Tab::Channels,
+                vec![Event::Text(text.into())],
+            );
+        }
+        assert!(
+            app.project.channels[0].receive_mhz.ends_with("ZYX"),
+            "{}",
+            app.project.channels[0].receive_mhz
+        );
+
+        let context = Context::default();
+        app.project.add_generated_bank();
+        frame(&context, &mut app, Tab::Banks, Vec::new());
+        focus_field(&context, &mut app, Tab::Banks, |app| {
+            app.project.banks[0].name.clone()
+        });
+        for text in ["Y", "X"] {
+            frame(
+                &context,
+                &mut app,
+                Tab::Banks,
+                vec![Event::Text(text.into())],
+            );
+        }
+        assert!(
+            app.project.banks[0].name.ends_with("ZYX"),
+            "{}",
+            app.project.banks[0].name
+        );
     }
 
     #[test]
