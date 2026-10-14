@@ -7,5 +7,14 @@ license.workspace = true
 repository.workspace = true
 description = "Recovery-gated host flashing library for qualified UV-K5 V1 and UV-K1 radios"
 
+[dependencies]
+radio-platform = { path = "../radio-platform" }
+
+[dev-dependencies]
+radio-channel-plan = { path = "../radio-channel-plan" }
+radio-domain = { path = "../radio-domain" }
+radio-sim = { path = "../radio-sim" }
+radio-storage = { path = "../radio-storage" }
+
 [lints]
 workspace = true

@@ -145,6 +145,13 @@ pub enum FlashError {
     },
     /// The complete restore read-back did not equal the requested image.
     EepromRestoreVerificationFailed,
+    /// The radio runs no AFIK application which loads a format 5
+    /// configuration image; it carries this version.
+    NotAfikMemory(String),
+    /// A configuration image is longer than the radio's image region.
+    ConfigurationImageTooLarge(usize),
+    /// The configuration image read back differs from the one written.
+    ConfigurationVerificationFailed,
     /// A page acknowledgement named the wrong transaction or page.
     PageAcknowledgementMismatch {
         /// Sequential page that was awaiting acknowledgement.
@@ -263,6 +270,19 @@ impl fmt::Display for FlashError {
             ),
             Self::EepromRestoreVerificationFailed => {
                 formatter.write_str("complete EEPROM restore read-back failed")
+            }
+            Self::NotAfikMemory(version) => write!(
+                formatter,
+                "the radio runs {version}; only AFIK {}.{}.{} or later loads a \
+                 configuration image written as memory",
+                AFIK_MEMORY_SINCE[0], AFIK_MEMORY_SINCE[1], AFIK_MEMORY_SINCE[2]
+            ),
+            Self::ConfigurationImageTooLarge(len) => write!(
+                formatter,
+                "the configuration image is {len} bytes; the radio holds {IMAGE_REGION} at most"
+            ),
+            Self::ConfigurationVerificationFailed => {
+                formatter.write_str("the configuration image read back differs from the one written")
             }
             Self::PageAcknowledgementMismatch { expected_page } => write!(
                 formatter,
@@ -717,6 +737,100 @@ pub fn apply_eeprom_restore<T: Read + Write>(
         changed_blocks,
         verified_read_back: true,
     })
+}
+
+/// Result of writing a configuration image into an AFIK radio's memory.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ImageWriteReport {
+    /// Firmware identity returned by the hello.
+    pub firmware: NormalFirmwareInfo,
+    /// Eight-byte blocks which differed and were written.
+    pub changed_blocks: u16,
+    /// Bytes of the image, all of which read back equal.
+    pub image_bytes: usize,
+}
+
+/// Reads the configuration image region of an AFIK radio (`ADR-100`).
+///
+/// Returns the whole region; the image's own header says how much of it is
+/// the image. Nothing is written.
+pub fn read_afik_image<T: Read + Write>(
+    transport: &mut T,
+) -> Result<(NormalFirmwareInfo, Vec<u8>), FlashError> {
+    let firmware = afik_memory_hello(transport)?;
+    let region = read_memory(transport, IMAGE_REGION)?;
+    Ok((firmware, region))
+}
+
+/// Writes a compiled configuration image at the start of an AFIK radio's
+/// memory view and reads it back (`ADR-100`).
+///
+/// Only blocks which differ are written, each acknowledged and read back
+/// before the next. The radio validates the image itself a second after the
+/// last write. `progress` is told each written block and the number to write.
+pub fn write_afik_image<T, F>(
+    transport: &mut T,
+    image: &[u8],
+    mut progress: F,
+) -> Result<ImageWriteReport, FlashError>
+where
+    T: Read + Write,
+    F: FnMut(u16, u16),
+{
+    if image.len() > IMAGE_REGION {
+        return Err(FlashError::ConfigurationImageTooLarge(image.len()));
+    }
+    let firmware = afik_memory_hello(transport)?;
+    // The image is written in whole blocks; a short last block keeps the
+    // bytes after the image as they are.
+    let span = image.len().div_ceil(EEPROM_WRITE_BYTES) * EEPROM_WRITE_BYTES;
+    let live = read_memory(transport, span)?;
+    let mut wanted = live.clone();
+    wanted[..image.len()].copy_from_slice(image);
+    let changed = (0..span)
+        .step_by(EEPROM_WRITE_BYTES)
+        .filter(|at| live[*at..*at + EEPROM_WRITE_BYTES] != wanted[*at..*at + EEPROM_WRITE_BYTES])
+        .collect::<Vec<_>>();
+    let total = u16::try_from(changed.len()).map_err(|_| FlashError::PacketTooLarge(span))?;
+    for (done, &at) in changed.iter().enumerate() {
+        let offset = u16::try_from(at).map_err(|_| FlashError::PacketTooLarge(at))?;
+        let mut block = [0_u8; EEPROM_WRITE_BYTES];
+        block.copy_from_slice(&wanted[at..at + EEPROM_WRITE_BYTES]);
+        send_packet(transport, &eeprom_write_request(offset, block))?;
+        parse_eeprom_write_response(&receive_packet(transport)?, offset)?;
+        let mut verified = [0_u8; EEPROM_WRITE_BYTES];
+        read_eeprom_bytes(transport, offset, &mut verified)?;
+        if verified != block {
+            return Err(FlashError::EepromBlockVerificationFailed { offset });
+        }
+        progress(u16::try_from(done + 1).unwrap_or(total), total);
+    }
+    if read_memory(transport, span)?[..image.len()] != *image {
+        return Err(FlashError::ConfigurationVerificationFailed);
+    }
+    Ok(ImageWriteReport {
+        firmware,
+        changed_blocks: total,
+        image_bytes: image.len(),
+    })
+}
+
+fn afik_memory_hello<T: Read + Write>(transport: &mut T) -> Result<NormalFirmwareInfo, FlashError> {
+    send_packet(transport, &hello_request())?;
+    let firmware = parse_hello_response(&receive_packet(transport)?)?;
+    require_afik_memory(&firmware)?;
+    Ok(firmware)
+}
+
+/// Reads `len` bytes from the start of the memory view.
+fn read_memory<T: Read + Write>(transport: &mut T, len: usize) -> Result<Vec<u8>, FlashError> {
+    let mut bytes = vec![0_u8; len];
+    for (block, chunk) in bytes.chunks_mut(EEPROM_BLOCK_BYTES).enumerate() {
+        let offset = block * EEPROM_BLOCK_BYTES;
+        let offset = u16::try_from(offset).map_err(|_| FlashError::PacketTooLarge(offset))?;
+        read_eeprom_bytes(transport, offset, chunk)?;
+    }
+    Ok(bytes)
 }
 
 /// Sends the observed read-only normal-firmware hello and returns its identity.
@@ -1225,8 +1339,32 @@ fn parse_clock_register_response(
 const AFIK_IDENTITY_PREFIX: &str = "AFIK-";
 /// Identity prefix of the AFIK K5 application.
 const AFIK_K5_IDENTITY_PREFIX: &str = "AFIK-K5-";
+/// Identity prefix of the AFIK K1 application.
+const AFIK_K1_IDENTITY_PREFIX: &str = "AFIK-K1-";
 /// First AFIK K5 version which serves the stock `0x051B` EEPROM read.
 const AFIK_K5_EEPROM_SINCE: [u32; 3] = [7, 0, 6];
+/// First AFIK version, K5 or K1, which loads a format 5 image from memory.
+const AFIK_MEMORY_SINCE: [u32; 3] = [7, 0, 17];
+/// Bytes of the configuration image region at the start of an AFIK radio's
+/// memory view (`ADR-100`).
+const IMAGE_REGION: usize = radio_platform::memory_link::IMAGE_REGION_BYTES as usize;
+
+/// Refuses before a configuration read or write that the running firmware
+/// would not understand: stock firmware keeps its own settings where the
+/// image goes, and an older AFIK reads another format.
+fn require_afik_memory(firmware: &NormalFirmwareInfo) -> Result<(), FlashError> {
+    let version = firmware.version();
+    let serves = version
+        .strip_prefix(AFIK_K5_IDENTITY_PREFIX)
+        .or_else(|| version.strip_prefix(AFIK_K1_IDENTITY_PREFIX))
+        .and_then(release)
+        .is_some_and(|release| release >= AFIK_MEMORY_SINCE);
+    if serves {
+        Ok(())
+    } else {
+        Err(FlashError::NotAfikMemory(version.to_owned()))
+    }
+}
 
 /// Refuses before an EEPROM read that the running firmware would never answer.
 ///
@@ -2705,5 +2843,92 @@ mod tests {
             offset = end;
         }
         packets
+    }
+
+    mod memory {
+        use radio_channel_plan::{BankName, GeneratedBank};
+        use radio_domain::{BankId, Frequency, FrequencyStep, RadioConfig, TxClass};
+        use radio_sim::memory_radio::MemoryRadio;
+        use radio_storage::radio_image;
+
+        use super::super::{read_afik_image, write_afik_image, FlashError, IMAGE_REGION};
+
+        fn image(channels: u16) -> Vec<u8> {
+            let plan = GeneratedBank::linear_simplex(
+                BankId::new(0),
+                BankName::new("PMR446").unwrap(),
+                Frequency::from_hz(446_006_250).unwrap(),
+                FrequencyStep::from_hz(12_500).unwrap(),
+                channels,
+                TxClass::LicenceFreePlan,
+            )
+            .unwrap();
+            let mut image = vec![0_u8; IMAGE_REGION];
+            let len =
+                radio_image::compile(RadioConfig::conservative(), &[], &[], &[plan], &mut image)
+                    .unwrap();
+            image.truncate(len);
+            image
+        }
+
+        #[test]
+        fn an_image_written_as_memory_is_one_the_radio_loads() {
+            let mut radio = MemoryRadio::default();
+            let mut steps = Vec::new();
+            let written = image(16);
+            let report = write_afik_image(&mut radio, &written, |done, total| {
+                steps.push((done, total));
+            })
+            .unwrap();
+            let blocks = written.len().div_ceil(8);
+            assert_eq!(usize::from(report.changed_blocks), blocks);
+            assert_eq!(report.image_bytes, written.len());
+            assert_eq!(
+                steps.last(),
+                Some(&(report.changed_blocks, report.changed_blocks))
+            );
+            assert_eq!(radio.index().unwrap().len(), 16);
+            // Bytes past the image's last block are left as they were.
+            assert!(radio.memory()[blocks * 8..]
+                .iter()
+                .all(|byte| *byte == 0xFF));
+
+            let (firmware, region) = read_afik_image(&mut radio).unwrap();
+            assert!(firmware.version().starts_with("AFIK-K5-"));
+            assert_eq!(region.len(), IMAGE_REGION);
+            assert_eq!(&region[..written.len()], written.as_slice());
+
+            // Writing it again changes nothing; a new plan changes only what
+            // differs.
+            let writes = radio.writes();
+            let again = write_afik_image(&mut radio, &written, |_, _| {}).unwrap();
+            assert_eq!(again.changed_blocks, 0);
+            assert_eq!(radio.writes(), writes);
+            let changed = write_afik_image(&mut radio, &image(8), |_, _| {}).unwrap();
+            assert!(usize::from(changed.changed_blocks) < blocks);
+            assert_eq!(radio.index().unwrap().len(), 8);
+        }
+
+        #[test]
+        fn only_an_afik_which_loads_format_5_is_written_or_read() {
+            for identity in [&b"F4HWN v4.3"[..], b"AFIK-K5-7.0.16", b"AFIK-K1-7.0.5"] {
+                let mut radio = MemoryRadio::new(identity);
+                let error = write_afik_image(&mut radio, &image(16), |_, _| {}).unwrap_err();
+                assert!(matches!(error, FlashError::NotAfikMemory(_)), "{error}");
+                assert!(read_afik_image(&mut radio).is_err());
+                assert_eq!(radio.writes(), 0);
+            }
+            let mut radio = MemoryRadio::new(b"AFIK-K1-7.0.17");
+            write_afik_image(&mut radio, &image(16), |_, _| {}).unwrap();
+        }
+
+        #[test]
+        fn an_image_larger_than_the_region_is_refused_before_any_request() {
+            let mut radio = MemoryRadio::default();
+            let error =
+                write_afik_image(&mut radio, &vec![0; IMAGE_REGION + 1], |_, _| {}).unwrap_err();
+            assert!(matches!(error, FlashError::ConfigurationImageTooLarge(_)));
+            assert_eq!(radio.writes(), 0);
+        }
     }
 }

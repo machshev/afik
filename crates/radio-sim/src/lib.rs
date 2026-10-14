@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod memory_radio;
 pub mod tx_control;
 
 use core::{cmp, convert::Infallible};
