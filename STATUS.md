@@ -83,6 +83,14 @@
   clippy `-D warnings` clean, `cargo test --workspace --no-fail-fast` 679
   passed 0 failed; a display-less run logged its start and the window failure
   to both stderr and the file.
+  The first bench backup failed with `unexpected response for normal-firmware
+  hello: command=Some(1304)`: `0x0518` is the bootloader beacon, so the radio
+  was in flashing mode. `backup_eeprom` and the EEPROM restore preflight now
+  name that case (`InBootloader`) and refuse AFIK firmware, which answers the
+  hello but has no `0x051B` handler (`EepromNotServed`), before any read. The
+  backup log line now names its output, not an empty image. Gate: fmt clean,
+  clippy `-D warnings` clean, `cargo test --workspace --no-fail-fast` 681
+  passed 0 failed.
 - Next: flash `7.0.5` with `afik-flasher flash-afik` and check a 1 min over
   times out; flash K1 and check its speech level; then CTCSS/DCS with an
   end-of-transmission tail tone to remove the key-off squelch burst.

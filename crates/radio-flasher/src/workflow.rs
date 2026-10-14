@@ -99,6 +99,10 @@ pub enum FlashError {
     InvalidTransactionId,
     /// The default application flash accepts only an image naming itself AFIK.
     NotAfikImage,
+    /// A normal-firmware request was answered by the bootloader's beacon.
+    InBootloader,
+    /// The running firmware serves no EEPROM reads; it carries this version.
+    EepromNotServed(String),
     /// An EEPROM block response did not match the exact requested range.
     EepromBlockMismatch {
         /// Requested EEPROM offset.
@@ -205,6 +209,15 @@ impl fmt::Display for FlashError {
                 "AFIK application and recovery image must be distinct",
             ),
             Self::NotAfikImage => formatter.write_str("image carries no AFIK-K5- identity"),
+            Self::InBootloader => formatter.write_str(
+                "the radio is in bootloader (flashing) mode; switch it on normally, \
+                 without holding PTT, to talk to its firmware",
+            ),
+            Self::EepromNotServed(version) => write!(
+                formatter,
+                "the radio runs {version}, which serves no EEPROM reads; take the EEPROM \
+                 backup while it still runs stock firmware"
+            ),
             Self::InvalidTransactionId => {
                 formatter.write_str("flash transaction identifier must be nonzero")
             }
@@ -613,6 +626,7 @@ pub fn backup_eeprom<T: Read + Write>(
     let hello = hello_request();
     send_packet(transport, &hello)?;
     let info = parse_hello_response(&receive_packet(transport)?)?;
+    require_eeprom_service(&info)?;
 
     let backup = read_eeprom_image(transport)?;
     Ok((info, backup))
@@ -627,6 +641,7 @@ pub fn prepare_eeprom_restore<T: Read + Write>(
     let hello = hello_request();
     send_packet(transport, &hello)?;
     let firmware = parse_hello_response(&receive_packet(transport)?)?;
+    require_eeprom_service(&firmware)?;
     if firmware.version() != prerequisites.expected_firmware.as_str() {
         return Err(FlashError::EepromFirmwareMismatch);
     }
@@ -1159,8 +1174,27 @@ fn parse_clock_register_response(
     ))
 }
 
+/// Identity prefix every AFIK application reports in its hello.
+const AFIK_IDENTITY_PREFIX: &str = "AFIK-";
+
+/// Refuses before an EEPROM read that the running firmware would never answer.
+///
+/// AFIK's applications answer the hello but carry no `0x051B` handler, so a read
+/// would only time out. The backup belongs to the stock firmware, before AFIK.
+fn require_eeprom_service(firmware: &NormalFirmwareInfo) -> Result<(), FlashError> {
+    if firmware.version().starts_with(AFIK_IDENTITY_PREFIX) {
+        return Err(FlashError::EepromNotServed(firmware.version().to_owned()));
+    }
+    Ok(())
+}
+
 fn parse_hello_response(packet: &Packet) -> Result<NormalFirmwareInfo, FlashError> {
     let payload = packet.as_slice();
+    // A K5 bootloader announces itself unprompted, so the first packet after a
+    // hello is its beacon when the radio was powered on into flashing mode.
+    if packet_command(payload) == Some(COMMAND_V2_BEACON) {
+        return Err(FlashError::InBootloader);
+    }
     require_packet(
         payload,
         COMMAND_HELLO_RESPONSE,
@@ -1923,6 +1957,29 @@ mod tests {
             )),
             Err(FlashError::InvalidText("bootloader version"))
         ));
+    }
+
+    #[test]
+    fn an_eeprom_backup_names_a_radio_in_bootloader_mode() {
+        let mut transport = ScriptedTransport::new(beacon(), 1);
+        let error = backup_eeprom(&mut transport).unwrap_err();
+        assert!(matches!(error, FlashError::InBootloader), "{error}");
+        assert!(error.to_string().contains("bootloader (flashing) mode"));
+    }
+
+    #[test]
+    fn an_eeprom_backup_is_refused_on_afik_firmware_before_any_read() {
+        let mut hello = vec![0_u8; 40];
+        hello[0..4].copy_from_slice(&[0x15, 0x05, 0x24, 0x00]);
+        hello[4..18].copy_from_slice(b"AFIK-K5-7.0.5\0");
+        let mut transport = ScriptedTransport::new(encode_response(&hello), 1);
+        let error = backup_eeprom(&mut transport).unwrap_err();
+        assert!(
+            matches!(&error, FlashError::EepromNotServed(version) if version == "AFIK-K5-7.0.5"),
+            "{error}"
+        );
+        // Only the hello was sent: no read the firmware would never answer.
+        assert_eq!(decode_requests(&transport.writes).len(), 1);
     }
 
     #[test]

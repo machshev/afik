@@ -504,11 +504,15 @@ impl StudioApp {
                     job.operation().label(),
                     self.flash_request.transaction_id
                 );
+                let file = if self.flash_operation.is_write() {
+                    format!("image {}", self.flash_request.firmware.display())
+                } else {
+                    format!("output {}", self.flash_request.eeprom_output.display())
+                };
                 log::info!(
-                    "{} on {}: image {}",
+                    "{} on {}: {file}",
                     self.flash_status,
-                    self.flash_request.device.display(),
-                    self.flash_request.firmware.display()
+                    self.flash_request.device.display()
                 );
                 self.flash_progress = None;
                 self.flash_job = Some(job);
@@ -954,6 +958,10 @@ impl StudioApp {
                     ui,
                     "EEPROM backup output",
                     &mut self.flash_request.eeprom_output,
+                );
+                ui.label(
+                    "Switch the radio on normally, running its stock firmware: the \
+                     bootloader cannot read EEPROM, and AFIK firmware does not serve it.",
                 );
                 if ui
                     .button("New default name")
