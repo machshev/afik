@@ -37,8 +37,8 @@
 //! modulation | bandwidth << 2 | power << 3.
 
 use radio_channel_plan::{
-    BankFlags, BankMask, BankName, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
-    ChannelRecord, GeneratedBank, MAX_BANKS, MAX_BANK_NAME_LEN, MAX_CHANNEL_NAME_LEN,
+    BankFlags, BankName, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord,
+    GeneratedBank, MAX_BANKS, MAX_BANK_NAME_LEN, MAX_CHANNEL_NAME_LEN,
 };
 use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, RadioConfig,
@@ -103,9 +103,6 @@ const ABSENT: u16 = u16::MAX;
 /// Why a project cannot become a radio image.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CompileError {
-    /// A channel is in more than one bank; in this format a channel belongs to
-    /// the one bank it is stored in.
-    MultipleBanks(ChannelId),
     /// Two generated plans claim one bank.
     DuplicatePlan(BankId),
     /// More blocks than a radio indexes.
@@ -121,11 +118,6 @@ pub enum CompileError {
 impl core::fmt::Display for CompileError {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::MultipleBanks(id) => write!(
-                formatter,
-                "channel {} is in more than one bank; a radio stores each channel in one",
-                id.get()
-            ),
             Self::DuplicatePlan(bank) => {
                 write!(formatter, "bank {} holds two generated plans", bank.get())
             }
@@ -183,13 +175,11 @@ impl Writer<'_> {
 }
 
 /// The single bank a channel is stored in, or [`NO_BANK`].
-fn bank_of(channel: &ChannelRecord) -> Result<u8, CompileError> {
-    let bits = channel.banks().bits();
-    match bits.count_ones() {
-        0 => Ok(NO_BANK),
-        1 => Ok(u8::try_from(bits.trailing_zeros()).unwrap_or(NO_BANK)),
-        _ => Err(CompileError::MultipleBanks(channel.id())),
-    }
+fn bank_of(channel: &ChannelRecord) -> u8 {
+    channel
+        .bank()
+        .and_then(|bank| u8::try_from(bank.get()).ok())
+        .unwrap_or(NO_BANK)
 }
 
 const fn mode_byte(channel: &ChannelRecord) -> u8 {
@@ -376,9 +366,6 @@ pub fn compile(
     plans: &[GeneratedBank],
     output: &mut [u8],
 ) -> Result<usize, CompileError> {
-    for channel in channels {
-        bank_of(channel)?;
-    }
     for (index, plan) in plans.iter().enumerate() {
         if plans[..index].iter().any(|other| other.id() == plan.id()) {
             return Err(CompileError::DuplicatePlan(plan.id()));
@@ -407,7 +394,7 @@ pub fn compile(
     for bank in bank_ids {
         let members = channels
             .iter()
-            .filter(move |channel| bank_of(channel).ok() == Some(bank));
+            .filter(move |channel| bank_of(channel) == bank);
         if write_list(&mut writer, bank, members)? {
             blocks += 1;
         }
@@ -575,13 +562,7 @@ impl ListHeader {
         let _ = cursor.field(self.fields & SQUELCH != 0, &[0]);
         let step =
             u32::from_le_bytes(cursor.field(self.fields & STEP != 0, &self.step.to_le_bytes()));
-        let banks = if bank == NO_BANK {
-            BankMask::default()
-        } else {
-            BankMask::default()
-                .with(BankId::new(u16::from(bank)), true)
-                .map_err(malformed)?
-        };
+        let bank = (bank != NO_BANK).then(|| BankId::new(u16::from(bank)));
         ChannelRecord::new(ChannelDefinition {
             id: ChannelId::new(id),
             name,
@@ -594,7 +575,7 @@ impl ListHeader {
             power: PowerLevel::try_from(mode >> 3).map_err(malformed)?,
             step: FrequencyStep::from_hz(step).map_err(malformed)?,
             flags: ChannelFlags::from_bits(flags).map_err(malformed)?,
-            banks,
+            bank,
         })
         .map_err(malformed)
     }
@@ -1002,7 +983,7 @@ mod tests {
         configuration_image_crc, StorageError, RADIO_CONFIG_ENCODED_LEN, TX_RANGE_ENCODED_LEN,
     };
     use radio_channel_plan::{
-        BankFlags, BankMask, BankName, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
+        BankFlags, BankName, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
         ChannelRecord, GeneratedBank,
     };
     use radio_domain::{
@@ -1025,9 +1006,7 @@ mod tests {
             power: PowerLevel::Low,
             step: FrequencyStep::from_hz(12_500).unwrap(),
             flags: ChannelFlags::default(),
-            banks: bank.map_or(BankMask::default(), |bank| {
-                BankMask::default().with(BankId::new(bank), true).unwrap()
-            }),
+            bank: bank.map(BankId::new),
         }
     }
 
@@ -1235,7 +1214,7 @@ mod tests {
         assert_eq!(a.power(), b.power());
         assert_eq!(a.step(), b.step());
         assert_eq!(a.flags(), b.flags());
-        assert_eq!(a.banks(), b.banks());
+        assert_eq!(a.bank(), b.bank());
     }
 
     #[test]
@@ -1332,24 +1311,6 @@ mod tests {
             let got = index.channel_at(reader(&old), position).expect("channel");
             same_channel(&got, want);
         }
-    }
-
-    #[test]
-    fn a_channel_in_two_banks_is_refused() {
-        let mut definition = channel(1, "BOTH", 446_006_250, 446_006_250, Some(0));
-        definition.banks = definition.banks.with(BankId::new(3), true).unwrap();
-        let mut image = [0_u8; 512];
-        assert_eq!(
-            compile(
-                RadioConfig::conservative(),
-                &[],
-                &[],
-                &[record(definition)],
-                &[],
-                &mut image
-            ),
-            Err(CompileError::MultipleBanks(ChannelId::new(1)))
-        );
     }
 
     #[test]

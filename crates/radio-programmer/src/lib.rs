@@ -425,13 +425,11 @@ impl ConfigurationCompiler {
 
     fn require_defined_banks(project: &RadioProject) -> Result<(), CompileError> {
         for channel in &project.channels {
-            let membership = channel.banks();
-            for bank in 0..radio_channel_plan::MAX_BANKS {
-                let id = BankId::new(bank);
-                if membership.contains(id) && !project.banks.iter().any(|named| named.id() == id) {
+            if let Some(id) = channel.bank() {
+                if !project.banks.iter().any(|named| named.id() == id) {
                     return Err(CompileError::UnknownBank {
                         channel: channel.id().get(),
-                        bank,
+                        bank: id.get(),
                     });
                 }
             }
@@ -1202,7 +1200,7 @@ mod tests {
         .unwrap()
     }
 
-    fn channel(id: u16, banks: u16) -> ChannelRecord {
+    fn channel(id: u16, bank: u16) -> ChannelRecord {
         ChannelRecord::new(radio_channel_plan::ChannelDefinition {
             id: radio_domain::ChannelId::new(id),
             name: radio_channel_plan::ChannelName::new("GB3AB").unwrap(),
@@ -1215,7 +1213,7 @@ mod tests {
             power: radio_domain::PowerLevel::Medium,
             step: FrequencyStep::from_hz(12_500).unwrap(),
             flags: radio_channel_plan::ChannelFlags::default(),
-            banks: radio_channel_plan::BankMask::from_bits(banks),
+            bank: Some(BankId::new(bank)),
         })
         .unwrap()
     }
@@ -1224,8 +1222,8 @@ mod tests {
     fn a_project_compiles_into_the_image_a_radio_runs() {
         let mut project = RadioProject::new();
         project.add_generated_bank(bank(1));
-        project.add_channel(channel(2, 0b0000_0010));
-        project.add_channel(channel(1, 0b0000_0010));
+        project.add_channel(channel(2, 1));
+        project.add_channel(channel(1, 1));
         project.add_bank(named_bank(1));
         let image = project.compile_radio_image().expect("radio image");
         let mut header = [0_u8; radio_storage::radio_image::HEADER_LEN];
@@ -1248,7 +1246,7 @@ mod tests {
     fn a_radio_image_reads_back_into_the_project_it_came_from() {
         let mut project = RadioProject::new();
         project.add_generated_bank(bank(1));
-        project.add_channel(channel(2, 0b0000_0010));
+        project.add_channel(channel(2, 1));
         project.add_bank(named_bank(1));
         let image = project.compile_radio_image().expect("radio image");
         let read = RadioProject::from_radio_image(&image).expect("reads back");
@@ -1256,7 +1254,7 @@ mod tests {
         assert_eq!(read.generated_banks(), project.generated_banks());
         assert_eq!(read.channels().len(), 1);
         assert_eq!(read.channels()[0].name(), project.channels()[0].name());
-        assert_eq!(read.channels()[0].banks(), project.channels()[0].banks());
+        assert_eq!(read.channels()[0].bank(), project.channels()[0].bank());
         assert_eq!(read.config(), Some(RadioConfig::conservative()));
         assert_eq!(read.compile_radio_image(), Ok(image.clone()));
 
@@ -1331,23 +1329,11 @@ mod tests {
     }
 
     #[test]
-    fn a_channel_in_two_banks_cannot_go_to_a_radio() {
-        let mut project = RadioProject::new();
-        project.add_channel(channel(7, 0b0000_0110));
-        assert_eq!(
-            project.compile_radio_image(),
-            Err(super::RadioImageError::MultipleBanks(
-                radio_domain::ChannelId::new(7)
-            ))
-        );
-    }
-
-    #[test]
     fn banked_projects_compile_into_one_canonical_configuration() {
         let mut project = RadioProject::new();
         project.add_generated_bank(bank(1));
-        project.add_channel(channel(2, 0b0000_0010));
-        project.add_channel(channel(1, 0b0000_0010));
+        project.add_channel(channel(2, 1));
+        project.add_channel(channel(1, 1));
         project.add_bank(named_bank(1));
         project.set_config(RadioConfig::conservative());
         assert!(!project.is_empty());
@@ -1392,7 +1378,7 @@ mod tests {
     #[test]
     fn channels_cannot_reference_an_undefined_bank() {
         let mut project = RadioProject::new();
-        project.add_channel(channel(1, 0b0000_0100));
+        project.add_channel(channel(1, 2));
         project.add_bank(named_bank(1));
         assert_eq!(
             ConfigurationCompiler::new(capabilities_for(8)).compile(&project),

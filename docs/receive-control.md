@@ -22,7 +22,7 @@ Selection, bank filtering, dual watch, and scanning cannot tell a stored channel
 from an expanded one.
 
 The controller holds an optional bank filter. With a filter set, only channels
-whose membership mask contains that bank are selectable, navigable, or
+stored in that bank are selectable, navigable, or
 scannable. Setting a filter which selects no channel is refused and leaves the
 current selection untouched.
 

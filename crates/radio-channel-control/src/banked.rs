@@ -1052,15 +1052,14 @@ mod tests {
     use crate::{TimerDirective, TimerToken};
     use core::cell::Cell;
     use radio_channel_plan::{
-        BankMask, BankName, ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord,
-        GeneratedBank,
+        BankName, ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord, GeneratedBank,
     };
     use radio_domain::{
         Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel,
         RadioConfig, ScanResume, SquelchLevel, Tone,
     };
 
-    fn channel(id: u16, hertz: u32, banks: u16, flags: u8) -> ChannelRecord {
+    fn channel(id: u16, hertz: u32, bank: Option<u16>, flags: u8) -> ChannelRecord {
         ChannelRecord::new(ChannelDefinition {
             id: ChannelId::new(id),
             name: ChannelName::new("CH").unwrap(),
@@ -1073,7 +1072,7 @@ mod tests {
             power: PowerLevel::Low,
             step: FrequencyStep::from_hz(12_500).unwrap(),
             flags: ChannelFlags::from_bits(flags).unwrap(),
-            banks: BankMask::from_bits(banks),
+            bank: bank.map(BankId::new),
         })
         .unwrap()
     }
@@ -1092,8 +1091,8 @@ mod tests {
     #[test]
     fn stored_channels_and_expanded_plans_share_one_selection_space() {
         let mut memory = ProgrammedMemory::<8, 2>::new();
-        memory.insert(channel(2, 145_200_000, 0b0010, 0)).unwrap();
-        memory.insert(channel(1, 145_100_000, 0b0010, 0)).unwrap();
+        memory.insert(channel(2, 145_200_000, Some(1), 0)).unwrap();
+        memory.insert(channel(1, 145_100_000, Some(1), 0)).unwrap();
         memory.install(plan(3, "PMR446", 446_006_250, 16)).unwrap();
         memory.install(plan(1, "Marine", 156_050_000, 4)).unwrap();
 
@@ -1133,7 +1132,7 @@ mod tests {
     #[test]
     fn a_bank_filter_selects_and_scans_expanded_channels() {
         let mut memory = ProgrammedMemory::<8, 4>::new();
-        memory.insert(channel(1, 145_100_000, 0b0010, 0)).unwrap();
+        memory.insert(channel(1, 145_100_000, Some(1), 0)).unwrap();
         memory.install(plan(3, "PMR446", 446_006_250, 4)).unwrap();
 
         let (mut controller, _) = BankedReceiveController::activate(
@@ -1161,11 +1160,12 @@ mod tests {
 
     fn memory() -> ChannelMemory<8> {
         let mut memory = ChannelMemory::new();
-        memory.insert(channel(3, 145_300_000, 0b0010, 0)).unwrap();
-        memory.insert(channel(1, 145_100_000, 0b0011, 0)).unwrap();
+        memory.insert(channel(3, 145_300_000, Some(1), 0)).unwrap();
+        memory.insert(channel(1, 145_100_000, Some(1), 0)).unwrap();
         memory
-            .insert(channel(2, 145_200_000, 0b0010, ChannelFlags::SCAN_SKIP))
+            .insert(channel(2, 145_200_000, Some(1), ChannelFlags::SCAN_SKIP))
             .unwrap();
+        memory.insert(channel(4, 145_400_000, Some(0), 0)).unwrap();
         memory
     }
 
@@ -1188,23 +1188,26 @@ mod tests {
     #[test]
     fn memory_keeps_identifier_order_and_replaces_in_place() {
         let memory = memory();
-        assert_eq!(memory.len(), 3);
+        assert_eq!(memory.len(), 4);
         assert_eq!(memory.get(0).unwrap().id(), ChannelId::new(1));
         assert_eq!(memory.get(1).unwrap().id(), ChannelId::new(2));
         assert_eq!(memory.get(2).unwrap().id(), ChannelId::new(3));
-        assert_eq!(memory.get(3), None);
+        assert_eq!(memory.get(3).unwrap().id(), ChannelId::new(4));
+        assert_eq!(memory.get(4), None);
 
         let mut replaced = memory;
-        replaced.insert(channel(2, 145_250_000, 0b0010, 0)).unwrap();
-        assert_eq!(replaced.len(), 3);
+        replaced
+            .insert(channel(2, 145_250_000, Some(1), 0))
+            .unwrap();
+        assert_eq!(replaced.len(), 4);
         assert_eq!(
             replaced.find(ChannelId::new(2)).unwrap().receive().as_hz(),
             145_250_000
         );
 
         let mut full = ChannelMemory::<1>::new();
-        full.insert(channel(1, 145_100_000, 0, 0)).unwrap();
-        assert!(full.insert(channel(2, 145_200_000, 0, 0)).is_err());
+        full.insert(channel(1, 145_100_000, None, 0)).unwrap();
+        assert!(full.insert(channel(2, 145_200_000, None, 0)).is_err());
     }
 
     #[test]
@@ -1213,13 +1216,13 @@ mod tests {
         assert_eq!(
             controller.selection(),
             ChannelSelection::Memory {
-                index: 0,
-                id: ChannelId::new(1)
+                index: 3,
+                id: ChannelId::new(4)
             }
         );
-        // Bank 0 contains only channel 1, so navigation stays in place.
+        // Bank 0 contains only channel 4, so navigation stays in place.
         assert!(controller.select_next().unwrap().activation.is_some());
-        assert_eq!(controller.index(), 0);
+        assert_eq!(controller.index(), 3);
 
         let update = controller.set_bank(Some(BankId::new(1))).unwrap();
         assert_eq!(
@@ -1400,11 +1403,11 @@ mod tests {
         // Bank 0 holds one eligible channel, so the scan stays on it.
         let token = armed(controller.start_scanning().unwrap().timer);
         controller.timer_elapsed(token).unwrap();
-        assert_eq!(controller.channel().id(), ChannelId::new(1));
+        assert_eq!(controller.channel().id(), ChannelId::new(4));
 
         let mut skipped = ChannelMemory::<8>::new();
         skipped
-            .insert(channel(1, 145_100_000, 0b0001, ChannelFlags::SCAN_SKIP))
+            .insert(channel(1, 145_100_000, Some(0), ChannelFlags::SCAN_SKIP))
             .unwrap();
         let (mut only_skipped, _) =
             BankedReceiveController::activate(skipped, RadioConfig::conservative(), None).unwrap();
@@ -1462,7 +1465,7 @@ mod tests {
     #[test]
     fn view_positions_follow_the_bank_filter_and_select_what_they_name() {
         let mut controller = controller(RadioConfig::conservative(), None);
-        assert_eq!(controller.visible_channels(), 3);
+        assert_eq!(controller.visible_channels(), 4);
         assert_eq!(controller.visible_position(), 0);
         assert_eq!(
             controller.visible_channel(2).unwrap().id(),
@@ -1481,7 +1484,7 @@ mod tests {
         );
         assert_eq!(controller.visible_position(), 2);
 
-        // Bank 1 holds only channel 1, so the view collapses to one position.
+        // Bank 0 holds only channel 4, so the view collapses to one position.
         controller.set_bank(Some(BankId::new(0))).unwrap();
         assert_eq!(controller.visible_channels(), 1);
         assert_eq!(controller.visible_position(), 0);
@@ -1495,7 +1498,12 @@ mod tests {
         let mut memory = ChannelMemory::<8>::new();
         for id in 1..=4 {
             memory
-                .insert(channel(id, 145_000_000 + u32::from(id) * 12_500, 0b0001, 0))
+                .insert(channel(
+                    id,
+                    145_000_000 + u32::from(id) * 12_500,
+                    Some(0),
+                    0,
+                ))
                 .unwrap();
         }
         let config = RadioConfig::conservative();
@@ -1544,8 +1552,8 @@ mod tests {
         // A kept channel outside the active bank filter is not eligible, so the
         // filter wins and the operator lands inside the view they asked for.
         let mut banked = ChannelMemory::<8>::new();
-        banked.insert(channel(1, 145_100_000, 0b0001, 0)).unwrap();
-        banked.insert(channel(2, 145_200_000, 0b0010, 0)).unwrap();
+        banked.insert(channel(1, 145_100_000, Some(0), 0)).unwrap();
+        banked.insert(channel(2, 145_200_000, Some(1), 0)).unwrap();
         let (filtered, _) = BankedReceiveController::activate_at(
             banked,
             config,
@@ -1569,12 +1577,12 @@ mod tests {
     impl CountingSource {
         /// Eight channels, evens in bank zero and odds in bank one.
         fn new() -> Self {
-            let mut channels = [channel(1, 145_000_000, 0b0001, 0); 8];
+            let mut channels = [channel(1, 145_000_000, Some(0), 0); 8];
             for (index, slot) in channels.iter_mut().enumerate() {
                 let id = u16::try_from(index).unwrap() + 1;
                 let hertz = 145_000_000 + u32::try_from(index).unwrap() * 12_500;
-                let banks = if index % 2 == 0 { 0b0001 } else { 0b0010 };
-                *slot = channel(id, hertz, banks, 0);
+                let bank = u16::from(index % 2 != 0);
+                *slot = channel(id, hertz, Some(bank), 0);
             }
             Self {
                 channels,

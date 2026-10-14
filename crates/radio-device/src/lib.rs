@@ -911,9 +911,7 @@ mod tests {
         MAX_OBJECT_DATA, MIN_OBJECT_ENCODED_LEN, OBJECT_ENTRY_HEADER_LEN,
     };
 
-    use radio_channel_plan::{
-        BankMask, ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord,
-    };
+    use radio_channel_plan::{ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord};
     use radio_domain::{
         Bandwidth, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, Tone,
     };
@@ -976,7 +974,7 @@ mod tests {
             power: PowerLevel::Low,
             step: FrequencyStep::from_hz(12_500).expect("step"),
             flags: ChannelFlags::default(),
-            banks: BankMask::default(),
+            bank: None,
         })
         .expect("channel record")
     }

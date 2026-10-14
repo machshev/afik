@@ -13,7 +13,7 @@ use radio_channel_control::{
     BankedReceiveController, ChannelMemory, ChannelReceiveSetup, ChannelSource, ReceiveObservation,
     TimerDirective,
 };
-use radio_channel_plan::{BankMask, ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord};
+use radio_channel_plan::{ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord};
 use std::{cell::RefCell, rc::Rc};
 
 use radio_domain::{
@@ -145,7 +145,7 @@ fn channel(id: u16, hertz: u32, tone: Tone, flags: u8) -> ChannelRecord {
         power: PowerLevel::Low,
         step: FrequencyStep::from_hz(12_500).expect("step"),
         flags: ChannelFlags::from_bits(flags).expect("flags"),
-        banks: BankMask::from_bits(0b0000_0001),
+        bank: Some(radio_domain::BankId::new(0)),
     })
     .expect("channel record")
 }

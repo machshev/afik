@@ -223,10 +223,12 @@ The TX settings byte was reserved zero before, so an older image reads as the
 lowest power and a one-minute timeout. They are the values the radio adopts
 when programmed; the handset menu can change them until the next power cycle.
 
-Bank membership is a mask on the channel rather than a member list on the bank,
-so every object stays fixed size and a channel may belong to several banks. See
-`ADR-050`. The configuration compiler rejects any channel whose mask names a
-bank the project does not define, before any device mutation begins.
+Bank membership is on the channel rather than a member list on the bank, so
+every object stays fixed size. A channel is in at most one bank: the 16-bit
+field once a membership mask (`ADR-050`) now carries at most one bit, and an
+older project naming several banks loads into the lowest. The configuration
+compiler rejects any channel naming a bank the project does not define, before
+any device mutation begins.
 
 Reserved bytes and reserved flag bits must be zero. Decoding revalidates every
 constrained field, including tone envelopes, squelch levels, enumerations, and

@@ -5,8 +5,8 @@
 
 use core::fmt;
 use radio_channel_plan::{
-    BankFlags, BankMask, BankName, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
-    ChannelRecord, ChannelTemplate, Designator, GeneratedBank, PlanEncoding, MAX_BANK_NAME_LEN,
+    BankFlags, BankName, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord,
+    ChannelTemplate, Designator, GeneratedBank, PlanEncoding, MAX_BANK_NAME_LEN,
     MAX_CHANNEL_NAME_LEN, MAX_DESIGNATOR_LEN,
 };
 use radio_domain::{
@@ -910,7 +910,10 @@ pub fn encode_channel(channel: ChannelRecord) -> Result<StorageObject, StorageEr
     // data[37] held a squelch level; squelch is radio-wide, so it is reserved.
     data[38] = channel.flags().bits();
     // data[39] held a TX class before `ADR-101`; it is reserved and zero.
-    data[40..42].copy_from_slice(&channel.banks().bits().to_le_bytes());
+    // A membership bit field once allowed several banks; a channel is now in
+    // one, so at most one bit is set.
+    let membership = channel.bank().map_or(0, |bank| 1_u16 << bank.get());
+    data[40..42].copy_from_slice(&membership.to_le_bytes());
     StorageObject::new(
         ObjectKey {
             kind: ObjectKind::Channel,
@@ -952,7 +955,12 @@ pub fn decode_channel(object: &impl Object) -> Result<ChannelRecord, StorageErro
     // data[37] was a squelch level; older projects carry one and it is ignored.
     let flags = ChannelFlags::from_bits(data[38]).map_err(|_| StorageError::MalformedObject)?;
     // data[39] was the TX class; older projects carry one and it is ignored.
-    let banks = BankMask::from_bits(u16::from_le_bytes([data[40], data[41]]));
+    // An older project may name several banks; the channel stays in the first.
+    let membership = u16::from_le_bytes([data[40], data[41]]);
+    let bank = (membership != 0)
+        .then(|| u16::try_from(membership.trailing_zeros()).ok())
+        .flatten()
+        .map(BankId::new);
     ChannelRecord::new(ChannelDefinition {
         id: ChannelId::new(id),
         name,
@@ -965,7 +973,7 @@ pub fn decode_channel(object: &impl Object) -> Result<ChannelRecord, StorageErro
         power,
         step,
         flags,
-        banks,
+        bank,
     })
     .map_err(|_| StorageError::MalformedObject)
 }
@@ -1499,7 +1507,7 @@ mod tests {
         OBJECT_ENTRY_HEADER_LEN, RADIO_CONFIG_ENCODED_LEN, STORAGE_FORMAT_VERSION,
     };
     use radio_channel_plan::{
-        BankFlags, BankMask, BankName, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
+        BankFlags, BankName, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
         ChannelRecord, ChannelTemplate, GeneratedBank, PlanEncoding, GENERATED_CHANNEL_ID_BASE,
     };
     use radio_domain::{
@@ -1647,7 +1655,7 @@ mod tests {
             step: FrequencyStep::from_hz(12_500).unwrap(),
             flags: ChannelFlags::from_bits(ChannelFlags::SCAN_SKIP | ChannelFlags::REVERSE)
                 .unwrap(),
-            banks: BankMask::from_bits(0b0000_0000_0000_0101),
+            bank: Some(BankId::new(2)),
         })
         .unwrap()
     }
@@ -1719,6 +1727,19 @@ mod tests {
                 "index {index} value {value}"
             );
         }
+    }
+
+    #[test]
+    fn a_channel_is_stored_in_one_bank_and_an_older_multi_bank_one_keeps_its_first() {
+        let encoded = encode_channel(channel(12, "GB3AB")).unwrap();
+        assert_eq!(&encoded.data()[40..42], &0b0100_u16.to_le_bytes());
+        let mut data = encoded.data().to_vec();
+        data[40..42].copy_from_slice(&0b0110_u16.to_le_bytes());
+        let decoded = decode_channel(&StorageObject::new(encoded.key(), &data).unwrap()).unwrap();
+        assert_eq!(decoded.bank(), Some(BankId::new(1)));
+        data[40..42].copy_from_slice(&0_u16.to_le_bytes());
+        let decoded = decode_channel(&StorageObject::new(encoded.key(), &data).unwrap()).unwrap();
+        assert_eq!(decoded.bank(), None);
     }
 
     #[test]
@@ -2219,9 +2240,7 @@ mod image_writer_tests {
         encode_configuration_image, encode_radio_config, ConfigurationImageWriter, StorageError,
         CONFIGURATION_IMAGE_HEADER_LEN,
     };
-    use radio_channel_plan::{
-        BankMask, ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord,
-    };
+    use radio_channel_plan::{ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord};
     use radio_domain::{
         Bandwidth, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, RadioConfig, Tone,
     };
@@ -2240,7 +2259,7 @@ mod image_writer_tests {
             power: PowerLevel::Low,
             step: FrequencyStep::from_hz(12_500).expect("step"),
             flags: ChannelFlags::default(),
-            banks: BankMask::default(),
+            bank: None,
         })
         .expect("channel")
     }

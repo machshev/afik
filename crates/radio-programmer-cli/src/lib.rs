@@ -3,8 +3,8 @@
 #![forbid(unsafe_code)]
 
 use radio_channel_plan::{
-    BankFlags, BankMask, BankName, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
-    ChannelRecord, ChannelTemplate, Designator, GeneratedBank,
+    BankFlags, BankName, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord,
+    ChannelTemplate, Designator, GeneratedBank,
 };
 use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, Offset, PowerLevel,
@@ -459,13 +459,10 @@ fn parse_channel(spec: &str) -> Result<ChannelRecord, CliError> {
         .map_err(|error| CliError::Usage(format!("invalid receive frequency: {error}")))?;
     // A single dash means the channel belongs to no bank, which needs no bank
     // object to be defined alongside it.
-    let banks = if fields[3] == "-" {
-        BankMask::default()
+    let bank = if fields[3] == "-" {
+        None
     } else {
-        let bank = parse_integer::<u16>(fields[3], "bank")?;
-        BankMask::default()
-            .with(BankId::new(bank), true)
-            .map_err(|error| CliError::Usage(format!("invalid bank: {error}")))?
+        Some(BankId::new(parse_integer::<u16>(fields[3], "bank")?))
     };
     ChannelRecord::new(ChannelDefinition {
         id: ChannelId::new(id),
@@ -482,7 +479,7 @@ fn parse_channel(spec: &str) -> Result<ChannelRecord, CliError> {
         step: FrequencyStep::from_hz(12_500)
             .map_err(|error| CliError::Usage(format!("invalid step: {error}")))?,
         flags: ChannelFlags::default(),
-        banks,
+        bank,
     })
     .map_err(|error| CliError::Usage(format!("invalid channel: {error}")))
 }

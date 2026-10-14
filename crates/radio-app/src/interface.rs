@@ -13,9 +13,7 @@ use radio_channel_control::{
     BankedReceiveController, ChannelReceiveSetup, ChannelSource, ReceiveObservation, ReceiveState,
     ReceiveUpdate, TimerDirective, TimerToken,
 };
-use radio_channel_plan::{
-    BankMask, BankName, ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord,
-};
+use radio_channel_plan::{BankName, ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord};
 use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, SquelchLevel,
     Tone,
@@ -581,7 +579,7 @@ fn vfo_source<M>(shell: &Shell) -> Option<Listening<M>> {
         power: PowerLevel::Low,
         step,
         flags: ChannelFlags::default(),
-        banks: BankMask::default(),
+        bank: None,
     })
     .ok()?;
     Some(Listening::Vfo(record))

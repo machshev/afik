@@ -12,9 +12,9 @@
 use std::fmt;
 
 use radio_channel_plan::{
-    BankFlags, BankMask, BankName, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
-    ChannelRecord, ChannelTemplate, Designator, GeneratedBank, PlanEncoding,
-    GENERATED_CHANNEL_ID_BASE, MAX_BANKS, MAX_DESIGNATOR_LEN, MAX_GENERATED_CHANNELS,
+    BankFlags, BankName, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord,
+    ChannelTemplate, Designator, GeneratedBank, PlanEncoding, GENERATED_CHANNEL_ID_BASE, MAX_BANKS,
+    MAX_DESIGNATOR_LEN, MAX_GENERATED_CHANNELS,
 };
 use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, Offset, PowerLevel,
@@ -302,9 +302,6 @@ impl ChannelDraft {
                 ),
             ));
         }
-        let banks = BankMask::default()
-            .with(bank, true)
-            .map_err(|_| error(scope, "bank", "is not addressable"))?;
         ChannelRecord::new(ChannelDefinition {
             id: ChannelId::new(id),
             name,
@@ -317,7 +314,7 @@ impl ChannelDraft {
             power: self.power,
             step,
             flags,
-            banks,
+            bank: Some(bank),
         })
         .map_err(|failure| error(scope, "channel", failure.to_string()))
     }
@@ -1146,12 +1143,10 @@ impl ProjectModel {
     /// Groups a project's objects into banks.
     ///
     /// Banks keep their identifier order, a bank's channels before its plan.
-    /// A channel goes into the first bank it names; a channel in none goes into
+    /// A channel goes into the bank it names; a channel in none goes into
     /// a last bank of its own, because every channel here is in a bank.
     pub fn from_project(project: &RadioProject) -> Self {
-        let first_bank = |channel: &ChannelRecord| {
-            (0..MAX_BANKS).find(|id| channel.is_member_of(BankId::new(*id)))
-        };
+        let first_bank = |channel: &ChannelRecord| channel.bank().map(BankId::get);
         let channels_in = |bank: Option<u16>| {
             project
                 .channels()
@@ -1358,7 +1353,7 @@ mod tests {
         let banks: Vec<_> = project
             .channels()
             .iter()
-            .map(|channel| (channel.id().get(), channel.banks()))
+            .map(|channel| (channel.id().get(), channel.bank()))
             .collect();
         assert_eq!(banks.len(), 3);
         assert!(project.channels()[0].is_member_of(BankId::new(0)));
@@ -1400,13 +1395,14 @@ mod tests {
 
     #[test]
     fn an_older_project_puts_each_channel_in_one_bank() {
-        // A format 4 project could list a channel in several banks, in none,
-        // or in a plan's bank; here every channel goes into exactly one.
+        // A format 4 project could put a channel in no bank or in a plan's
+        // bank; here every channel goes into exactly one. (One naming several
+        // banks is read into its first by the storage decoder.)
         let model = project();
         let mut legacy = RadioProject::new();
         let valid = model.validate().unwrap();
         legacy.add_bank(valid.banks()[0]);
-        let channel = |id: u16, banks: u16| {
+        let channel = |id: u16, bank: Option<u16>| {
             let record = valid.channels()[0];
             radio_channel_plan::ChannelRecord::new(radio_channel_plan::ChannelDefinition {
                 id: radio_domain::ChannelId::new(id),
@@ -1420,13 +1416,13 @@ mod tests {
                 power: record.power(),
                 step: record.step(),
                 flags: record.flags(),
-                banks: radio_channel_plan::BankMask::from_bits(banks),
+                bank: bank.map(BankId::new),
             })
             .unwrap()
         };
-        legacy.add_channel(channel(1, 0b11));
-        legacy.add_channel(channel(2, 0));
-        legacy.add_channel(channel(3, 0b100));
+        legacy.add_channel(channel(1, Some(0)));
+        legacy.add_channel(channel(2, None));
+        legacy.add_channel(channel(3, Some(2)));
         let mut plan = model.clone();
         pmr_plan(&mut plan);
         let ValidatedBank::Generated(pmr) = plan.banks[1].validate(2).unwrap() else {

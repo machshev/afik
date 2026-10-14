@@ -242,9 +242,7 @@ mod tests {
     use super::load;
     use crate::drivers::Memory;
     use crate::state::TX_POLICY;
-    use radio_channel_plan::{
-        BankMask, ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord,
-    };
+    use radio_channel_plan::{ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord};
     use radio_domain::{
         Bandwidth, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, RadioConfig, Tone,
         TxClass,
@@ -296,7 +294,7 @@ mod tests {
             power: PowerLevel::Low,
             step: FrequencyStep::from_hz(12_500).expect("step"),
             flags: ChannelFlags::default(),
-            banks: BankMask::default(),
+            bank: None,
         })
         .expect("channel")
     }

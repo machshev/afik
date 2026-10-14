@@ -1608,7 +1608,7 @@ mod tests {
                 power: PowerLevel::Medium,
                 step: FrequencyStep::from_hz(12_500).unwrap(),
                 flags: radio_channel_plan::ChannelFlags::default(),
-                banks: radio_channel_plan::BankMask::from_bits(1 << 1),
+                bank: Some(radio_domain::BankId::new(1)),
             })
             .unwrap(),
         );

@@ -566,7 +566,7 @@ impl GeneratedBank {
             power: self.template.power,
             step: self.template.step,
             flags: self.template.flags.with(ChannelFlags::CALLING, calling),
-            banks: BankMask::default().with(self.id, true)?,
+            bank: Some(self.id),
         })
     }
 
@@ -752,59 +752,6 @@ impl ChannelFlags {
     }
 }
 
-/// Membership of one channel in up to [`MAX_BANKS`] banks.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct BankMask {
-    bits: u16,
-}
-
-impl BankMask {
-    /// Constructs a membership mask from its raw bit field.
-    pub const fn from_bits(bits: u16) -> Self {
-        Self { bits }
-    }
-
-    /// Returns the raw membership bit field.
-    pub const fn bits(self) -> u16 {
-        self.bits
-    }
-
-    /// Reports whether the channel belongs to the bank.
-    pub const fn contains(self, bank: BankId) -> bool {
-        match Self::bit(bank) {
-            Ok(bit) => self.bits & bit != 0,
-            Err(_) => false,
-        }
-    }
-
-    /// Returns this mask with one addressable bank added or removed.
-    pub const fn with(self, bank: BankId, member: bool) -> Result<Self, PlanError> {
-        let bit = match Self::bit(bank) {
-            Ok(bit) => bit,
-            Err(error) => return Err(error),
-        };
-        let bits = if member {
-            self.bits | bit
-        } else {
-            self.bits & !bit
-        };
-        Ok(Self { bits })
-    }
-
-    /// Reports whether the channel belongs to no bank.
-    pub const fn is_empty(self) -> bool {
-        self.bits == 0
-    }
-
-    const fn bit(bank: BankId) -> Result<u16, PlanError> {
-        if bank.get() >= MAX_BANKS {
-            Err(PlanError::BankOutOfRange)
-        } else {
-            Ok(1_u16 << bank.get())
-        }
-    }
-}
-
 /// A complete explicit channel definition independent of any radio hardware.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ChannelRecord {
@@ -819,7 +766,7 @@ pub struct ChannelRecord {
     power: PowerLevel,
     step: FrequencyStep,
     flags: ChannelFlags,
-    banks: BankMask,
+    bank: Option<BankId>,
 }
 
 /// Complete validated input required to construct a [`ChannelRecord`].
@@ -847,8 +794,8 @@ pub struct ChannelDefinition {
     pub step: FrequencyStep,
     /// Channel behaviour flags.
     pub flags: ChannelFlags,
-    /// Bank membership mask.
-    pub banks: BankMask,
+    /// The one bank the channel is stored in, if any.
+    pub bank: Option<BankId>,
 }
 
 impl ChannelRecord {
@@ -868,6 +815,9 @@ impl ChannelRecord {
     fn expanded(definition: ChannelDefinition) -> Result<Self, PlanError> {
         validate_tone(definition.rx_tone)?;
         validate_tone(definition.tx_tone)?;
+        if definition.bank.is_some_and(|bank| bank.get() >= MAX_BANKS) {
+            return Err(PlanError::BankOutOfRange);
+        }
         Ok(Self {
             id: definition.id,
             name: definition.name,
@@ -880,7 +830,7 @@ impl ChannelRecord {
             power: definition.power,
             step: definition.step,
             flags: definition.flags,
-            banks: definition.banks,
+            bank: definition.bank,
         })
     }
 
@@ -939,9 +889,9 @@ impl ChannelRecord {
         self.flags
     }
 
-    /// Returns the bank membership mask.
-    pub const fn banks(self) -> BankMask {
-        self.banks
+    /// Returns the one bank the channel is stored in, if any.
+    pub const fn bank(self) -> Option<BankId> {
+        self.bank
     }
 
     /// Reports whether the radio expanded this channel from a generated plan.
@@ -951,7 +901,10 @@ impl ChannelRecord {
 
     /// Reports whether the channel belongs to a bank.
     pub const fn is_member_of(self, bank: BankId) -> bool {
-        self.banks.contains(bank)
+        match self.bank {
+            Some(own) => own.get() == bank.get(),
+            None => false,
+        }
     }
 
     /// Reports whether bank scanning skips this channel.
@@ -1067,9 +1020,9 @@ fn validate_tone(tone: Tone) -> Result<(), PlanError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        generated_channel_id, is_generated_channel_id, BankFlags, BankMask, ChannelBank,
-        ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord, ChannelTemplate,
-        GENERATED_CHANNEL_ID_BASE, MAX_GENERATED_CHANNELS,
+        generated_channel_id, is_generated_channel_id, BankFlags, ChannelBank, ChannelDefinition,
+        ChannelFlags, ChannelName, ChannelRecord, ChannelTemplate, GENERATED_CHANNEL_ID_BASE,
+        MAX_BANKS, MAX_GENERATED_CHANNELS,
     };
     use radio_domain::{Bandwidth, ChannelId, Modulation, PowerLevel, Tone};
 
@@ -1319,7 +1272,7 @@ mod tests {
             power: PowerLevel::Medium,
             step: FrequencyStep::from_hz(12_500).unwrap(),
             flags: ChannelFlags::default(),
-            banks: BankMask::default().with(BankId::new(2), true).unwrap(),
+            bank: Some(BankId::new(2)),
         }
     }
 
@@ -1350,15 +1303,15 @@ mod tests {
     }
 
     #[test]
-    fn membership_masks_and_flags_are_bounded() {
-        assert_eq!(
-            BankMask::default().with(BankId::new(16), true),
-            Err(PlanError::BankOutOfRange)
-        );
-        assert!(!BankMask::default().contains(BankId::new(16)));
-        let mask = BankMask::default().with(BankId::new(0), true).unwrap();
-        assert_eq!(mask.bits(), 1);
-        assert!(mask.with(BankId::new(0), false).unwrap().is_empty());
+    fn bank_membership_and_flags_are_bounded() {
+        let mut beyond = definition();
+        beyond.bank = Some(BankId::new(MAX_BANKS));
+        assert_eq!(ChannelRecord::new(beyond), Err(PlanError::BankOutOfRange));
+        let mut unbanked = definition();
+        unbanked.bank = None;
+        assert!(!ChannelRecord::new(unbanked)
+            .unwrap()
+            .is_member_of(BankId::new(2)));
 
         assert_eq!(ChannelFlags::from_bits(0x20), Err(PlanError::ReservedFlag));
         assert_eq!(ChannelFlags::from_bits(0x1F).unwrap().bits(), 0x1F);

@@ -38,8 +38,8 @@ Save it or Revert it first.
 
 A project file is the canonical format 4 object set, which every front end
 reads. The editor also opens a format 6 radio image, and an older project
-whose channels are in several banks, or in none, is grouped so each channel
-is in one bank (its first, or a last bank named `Unbanked`).
+whose channels are in no bank is grouped so each channel is in one bank (a
+last bank named `Unbanked`).
 
 ## Device detection
 
