@@ -256,6 +256,11 @@
   clippy `-D warnings` clean, `cargo test --workspace --no-fail-fast` 675
   passed 0 failed, `tool/build-k5.sh --release` (flash end `0x0000c7f0`) and
   `tool/build-k1.sh --release` pass. Not flashed or tried on a radio yet.
+- Studio (operator request): banks open collapsed, with a Delete button on
+  each bank's header; a newly added bank opens, and open banks stay open as
+  rows move or are deleted. Gate: `cargo fmt --all --check` clean, workspace
+  clippy `-D warnings` clean, `cargo test --workspace --no-fail-fast` 677
+  passed 0 failed.
 - Next: flash K5 `7.0.17` and program it from the studio (write, power-cycle,
   read back); then the K1's NOR erase plan; then CTCSS/DCS with a tail tone.
 

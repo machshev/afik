@@ -2,7 +2,9 @@
 
 use std::{fs, path::Path, time::Instant};
 
-use eframe::egui::{self, ComboBox, Grid, RichText, ScrollArea, TextEdit};
+use eframe::egui::{
+    self, collapsing_header::CollapsingState, ComboBox, Grid, RichText, ScrollArea, TextEdit,
+};
 use radio_channel_plan::MAX_GENERATED_CHANNELS;
 use radio_domain::{
     Bandwidth, Modulation, PowerLevel, ScanResume, TxClass, BACKLIGHT_ALWAYS_ON,
@@ -61,6 +63,8 @@ pub struct StudioApp {
     last_write: Option<ImageWriteReport>,
     flash: FlashTab,
     preset: usize,
+    /// A bank row to open the next time the Banks tab is drawn.
+    expand_bank: Option<usize>,
 }
 
 impl StudioApp {
@@ -84,6 +88,7 @@ impl StudioApp {
             last_write: None,
             flash: FlashTab::default(),
             preset: 0,
+            expand_bank: None,
         };
         if let Some(baud) = options.baud {
             app.chooser.baud = baud;
@@ -241,6 +246,16 @@ impl StudioApp {
                 error.to_string(),
             ),
         }
+    }
+
+    /// Appends a bank of `kind` and opens it for editing; other banks stay
+    /// as they are, collapsed unless the operator opened them.
+    fn add_bank(&mut self, kind: BankKind) {
+        match kind {
+            BankKind::Named => self.project.add_bank(),
+            BankKind::Generated => self.project.add_generated_bank(),
+        }
+        self.expand_bank = Some(self.project.banks.len() - 1);
     }
 
     /// Whether the project differs from what was last loaded or saved.
@@ -495,10 +510,10 @@ impl StudioApp {
         self.project_bar(ui);
         ui.horizontal_wrapped(|ui| {
             if ui.button("Add channel bank").clicked() {
-                self.project.add_bank();
+                self.add_bank(BankKind::Named);
             }
             if ui.button("Add generated plan").clicked() {
-                self.project.add_generated_bank();
+                self.add_bank(BankKind::Generated);
             }
             ui.label(format!(
                 "{} banks, {} channel rows",
@@ -512,16 +527,38 @@ impl StudioApp {
         ui.separator();
 
         let mut action = None;
+        let mut toggle = None;
+        let mut ids = Vec::with_capacity(self.project.banks.len());
+        let expand = self.expand_bank.take();
         ScrollArea::vertical().show(ui, |ui| {
             for (row, bank) in self.project.banks.iter_mut().enumerate() {
                 ui.push_id(row, |ui| {
-                    // Headers are keyed by row, not by their label: the label
+                    // Banks are keyed by row, not by their label: the label
                     // shows what is being edited, and a key that changed with
                     // it would drop focus after one keystroke.
-                    egui::CollapsingHeader::new(bank_row_label(row, bank))
-                        .id_salt(row)
-                        .default_open(true)
-                        .show(ui, |ui| {
+                    let id = ui.make_persistent_id("bank");
+                    ids.push(id);
+                    let mut state = CollapsingState::load_with_default_open(ui.ctx(), id, false);
+                    if expand == Some(row) {
+                        state.set_open(true);
+                    }
+                    state
+                        .show_header(ui, |ui| {
+                            let label =
+                                egui::Label::new(RichText::new(bank_row_label(row, bank)).strong())
+                                    .sense(egui::Sense::click());
+                            if ui.add(label).clicked() {
+                                toggle = Some(id);
+                            }
+                            if ui
+                                .button("Delete")
+                                .on_hover_text("Delete this bank and every channel in it")
+                                .clicked()
+                            {
+                                action = Some((row, BankAction::Remove));
+                            }
+                        })
+                        .body(|ui| {
                             if let Some(requested) = bank_row_editor(ui, bank) {
                                 action = Some((row, requested));
                             }
@@ -530,6 +567,25 @@ impl StudioApp {
                 });
             }
         });
+        let context = ui.ctx().clone();
+        if let Some(id) = toggle {
+            let mut state = CollapsingState::load_with_default_open(&context, id, false);
+            state.toggle(ui);
+            state.store(&context);
+        }
+        // Open and collapsed banks stay so when their rows move.
+        if let Some((row, change)) = action {
+            let mut open: Vec<bool> = ids
+                .iter()
+                .map(|id| CollapsingState::load_with_default_open(&context, *id, false).is_open())
+                .collect();
+            reorder_open(&mut open, row, change);
+            for (id, open) in ids.iter().zip(open) {
+                let mut state = CollapsingState::load_with_default_open(&context, *id, false);
+                state.set_open(open);
+                state.store(&context);
+            }
+        }
         match action {
             Some((row, BankAction::MoveUp)) => self.project.move_bank(row, true),
             Some((row, BankAction::MoveDown)) => self.project.move_bank(row, false),
@@ -744,6 +800,21 @@ enum BankAction {
     Channel(usize, RowAction),
 }
 
+/// Moves the open flags of bank rows the way `action` on `row` moves the rows.
+fn reorder_open(open: &mut [bool], row: usize, action: BankAction) {
+    match action {
+        BankAction::MoveUp if row > 0 && row < open.len() => open.swap(row, row - 1),
+        BankAction::MoveDown if row + 1 < open.len() => open.swap(row, row + 1),
+        BankAction::Remove if row < open.len() => {
+            open[row..].rotate_left(1);
+            if let Some(last) = open.last_mut() {
+                *last = false;
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Draws one channel row, returning the action its buttons requested.
 fn channel_row_editor(ui: &mut egui::Ui, channel: &mut ChannelDraft) -> Option<RowAction> {
     Grid::new("channel").num_columns(4).show(ui, |ui| {
@@ -829,9 +900,6 @@ fn bank_row_editor(ui: &mut egui::Ui, bank: &mut BankDraft) -> Option<BankAction
         }
         if ui.button("Move down").clicked() {
             action = Some(BankAction::MoveDown);
-        }
-        if ui.button("Remove bank").clicked() {
-            action = Some(BankAction::Remove);
         }
     });
     match bank.kind {
@@ -1419,7 +1487,7 @@ mod tests {
         // keep going to the same field, not stop after one character.
         let context = Context::default();
         let mut app = app_in(&scratch("focus"), &Options::default());
-        app.project.add_bank();
+        app.add_bank(BankKind::Named);
         app.project.add_channel(0);
         frame(&context, &mut app, Vec::new());
         focus_field(&context, &mut app, |app| {
@@ -1438,7 +1506,7 @@ mod tests {
 
         let context = Context::default();
         let mut app = app_in(&scratch("focus-plan"), &Options::default());
-        app.project.add_generated_bank();
+        app.add_bank(BankKind::Generated);
         frame(&context, &mut app, Vec::new());
         focus_field(&context, &mut app, |app| app.project.banks[0].name.clone());
         for text in ["Y", "X"] {
@@ -1536,6 +1604,51 @@ mod tests {
         assert!(logged
             .iter()
             .any(|(level, text)| *level == Level::Warn && text.contains("receive")));
+    }
+
+    #[test]
+    fn banks_keep_their_open_state_when_rows_move_or_go() {
+        use super::{reorder_open, BankAction};
+        let mut open = vec![true, false, false, true];
+        reorder_open(&mut open, 1, BankAction::MoveUp);
+        assert_eq!(open, [false, true, false, true]);
+        reorder_open(&mut open, 2, BankAction::MoveDown);
+        assert_eq!(open, [false, true, true, false]);
+        reorder_open(&mut open, 0, BankAction::Remove);
+        assert_eq!(open, [true, true, false, false]);
+        reorder_open(&mut open, 0, BankAction::MoveUp);
+        reorder_open(&mut open, 3, BankAction::MoveDown);
+        reorder_open(&mut open, 0, BankAction::AddChannel);
+        assert_eq!(open, [true, true, false, false]);
+    }
+
+    #[test]
+    fn banks_open_collapsed_and_a_new_bank_opens_for_editing() {
+        use eframe::egui::{Context, Event};
+        // A loaded bank is collapsed: typing reaches none of its fields.
+        let context = Context::default();
+        let mut app = app_in(&scratch("collapsed"), &Options::default());
+        app.project.add_bank();
+        let name = app.project.banks[0].name.clone();
+        frame(&context, &mut app, Vec::new());
+        for _ in 0..40 {
+            let tab_key = Event::Key {
+                key: eframe::egui::Key::Tab,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: eframe::egui::Modifiers::NONE,
+            };
+            frame(&context, &mut app, vec![tab_key]);
+            frame(&context, &mut app, vec![Event::Text("Z".to_owned())]);
+        }
+        assert_eq!(app.project.banks[0].name, name);
+
+        // A bank the operator adds is opened, so its name can be typed.
+        app.add_bank(BankKind::Named);
+        frame(&context, &mut app, Vec::new());
+        focus_field(&context, &mut app, |app| app.project.banks[1].name.clone());
+        assert_eq!(app.project.banks[0].name, name);
     }
 
     #[test]

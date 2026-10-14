@@ -87,7 +87,10 @@ floating point.
   exactly one bank, the one it is listed under, because the radio stores each
   channel in its bank (storage format 5, `ADR-100`). A bank's place in the
   list is its identifier and the order the radio shows it in; Move up and
-  Move down change it. A channel bank carries a name and the scan flag, and
+  Move down change it. Banks open collapsed, showing only their name and
+  summary; clicking the name opens one, a newly added bank opens for editing,
+  and Delete on the header removes a bank with its channels (Revert undoes it
+  until the project is saved). A channel bank carries a name and the scan flag, and
   its channels carry name, receive and transmit frequency, tones, modulation,
   bandwidth, power, step, squelch, flags and transmit class; channels are
   numbered by the radio from their position. A generated plan stores a base
