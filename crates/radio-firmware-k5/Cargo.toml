@@ -12,7 +12,12 @@ autobins = false
 path = "src/lib.rs"
 
 [features]
-firmware = []
+firmware = [
+    "dep:cortex-m",
+    "dep:embassy-executor",
+    "dep:embassy-time",
+    "radio-dp32g030/time-driver",
+]
 
 [dependencies]
 radio-bk4819 = { path = "../radio-bk4819" }
@@ -20,6 +25,11 @@ radio-domain = { path = "../radio-domain" }
 radio-dp32g030 = { path = "../radio-dp32g030" }
 radio-platform = { path = "../radio-platform" }
 radio-tx-policy = { path = "../radio-tx-policy" }
+# The same pinned Embassy the K1 runs; cortex-m supplies the single-core
+# critical section the time driver and executor use.
+cortex-m = { version = "=0.7.8", features = ["critical-section-single-core"], optional = true }
+embassy-executor = { version = "=0.10.0", default-features = false, features = ["executor-thread", "platform-cortex-m"], optional = true }
+embassy-time = { version = "=0.5.1", default-features = false, optional = true }
 
 [dev-dependencies]
 radio-flasher = { path = "../radio-flasher" }

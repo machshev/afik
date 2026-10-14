@@ -24,7 +24,7 @@ pub mod pwm_plus;
 pub mod saradc;
 pub mod spi;
 pub mod syscon;
-pub mod systick;
+pub mod time_driver;
 pub mod uart;
 
 /// SYSCON base address, per `EVID-DP32-004`.

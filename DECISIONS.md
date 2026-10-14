@@ -1644,3 +1644,20 @@ meaning.
   (`7.03.*`), refusing an image whose vectors belong to the other radio before
   the prompt. The K1 form no longer takes the optional, validation-only
   `--recovery`/`--backup` files; `--version` is refused for a K1.
+
+## ADR-099 — One firmware application, targets differ only in drivers
+
+- **Date:** 2026-10-14
+- **Status:** accepted, operator request.
+- K5 and K1 converge on one shared application. The application logic (UI,
+  receive, TX, serial service, persistence, scanning) lives in shared crates and
+  runs as the same Embassy tasks on both radios. Each target crate supplies
+  drivers behind shared traits and a `main` that starts them.
+- K5 runs Embassy too: the same pinned executor as the K1, with a 1 MHz time
+  driver on SysTick (`radio-dp32g030::time_driver`, 1 ms exception). K1 keeps
+  the `py32-hal` TIM15 driver. Neither target sets an Embassy `tick-hz`
+  feature, so a workspace build cannot unify two different rates.
+- Firmware is built for size (`opt-level = "s"`, fat LTO, one codegen unit,
+  set in `tool/build-k{5,1}.sh`), because the K5 application region is 60 KiB.
+- Order: K5 executor; shared application crate from the K1's tasks; K5 drivers
+  behind its traits; then features such as the EEPROM backup are written once.

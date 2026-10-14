@@ -148,6 +148,18 @@
   the 60 KiB K5. Gate: `tool/build-k5.sh --release` + `tool/verify-k5-image.sh`
   pass, `tool/build-k1.sh --release` + `tool/test-k1-image.sh` pass. Not yet
   flashed; bit-banged bus timing must be rechecked on both radios.
+- `7.0.10` (`ADR-099` step 1): K5 now runs the Embassy executor. A new
+  `radio-dp32g030::time_driver` gives Embassy 1 MHz time from SysTick with a
+  1 ms exception, which the K5 vector table (now all sixteen system vectors)
+  routes to it. The K5 loop is an Embassy task paced by a 50 ms `Ticker`. The
+  TX settle delay is `embassy_time::block_for`, as on K1. The polled `systick`
+  module is gone. Image: flash end `0x000071e0`, static RAM end `0x20000aa8`.
+  Gate: fmt clean, workspace clippy `-D warnings` clean, clippy with
+  `radio-dp32g030/time-driver` clean, `cargo test --workspace` 706 passed
+  0 failed, K5 build and verify pass (verify now checks all sixteen vectors and
+  the zero reserved slots), K1 build and image test pass. Not yet flashed:
+  check boot, keys, receive audio, PTT/TX, and Connect plus backup in the
+  studio.
 - Next: flash `7.0.5` with `afik-flasher flash-afik` and check a 1 min over
   times out; flash K1 and check its speech level; then CTCSS/DCS with an
   end-of-transmission tail tone to remove the key-off squelch burst.

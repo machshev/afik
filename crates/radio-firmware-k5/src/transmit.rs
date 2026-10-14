@@ -25,15 +25,6 @@ const K5: Pmr446Target = Pmr446Target {
     dividers: [25, 19, 13, 10],
 };
 
-/// The K5 `SysTick` as the shared settling delay.
-pub struct TickDelay<'a>(pub &'a mut radio_dp32g030::systick::PeriodicTick);
-
-impl Delay for TickDelay<'_> {
-    fn delay_ms(&mut self, milliseconds: u32) {
-        self.0.delay_ms(milliseconds);
-    }
-}
-
 /// Derives the PA bias for one power level (0 = Low1); see [`Pmr446Target::bias`].
 pub fn level_bias(calibration: [u8; 3], frequency_hz: u32, level: u8) -> Option<u8> {
     K5.bias(calibration, frequency_hz, level)

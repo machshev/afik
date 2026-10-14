@@ -9,7 +9,12 @@
 #![no_main]
 #![deny(unsafe_code)]
 
+use core::mem::MaybeUninit;
 use core::panic::PanicInfo;
+// Linked for its single-core critical section, which nothing names directly.
+use cortex_m as _;
+use embassy_executor::Executor;
+use embassy_time::{Duration, Ticker};
 use radio_bk4819::Bk4819;
 use radio_dp32g030::clock;
 use radio_dp32g030::dma::CircularReceiver;
@@ -17,7 +22,7 @@ use radio_dp32g030::gpio::{self, Port};
 use radio_dp32g030::portcon;
 use radio_dp32g030::saradc;
 use radio_dp32g030::syscon::{self, Peripheral};
-use radio_dp32g030::systick::PeriodicTick;
+use radio_dp32g030::time_driver;
 use radio_dp32g030::uart::{k5_programming_divider, Uart};
 use radio_dp32g030::UART1_BASE;
 use radio_firmware_k5::application::{apply_effects, apply_event, UiDispatcher};
@@ -39,6 +44,7 @@ use radio_platform::display::show_boot_sequence;
 use radio_platform::operator_shell::{Capabilities, Context, Shell};
 use radio_platform::ptt::PttFilter;
 use radio_platform::receive_app::{Event, ReceiveApp};
+use radio_platform::transmit::Delay;
 use radio_platform::tx_control::{Controller, State};
 
 /// Initial stack pointer, per `EVID-K5-019`: the top of the evidenced RAM less
@@ -51,13 +57,21 @@ const DMA_BYTES: usize = 256;
 const SAMPLE_MILLISECONDS: u32 = 50;
 
 static mut DMA_BUFFER: [u8; DMA_BYTES] = [0; DMA_BYTES];
+static mut EXECUTOR: MaybeUninit<Executor> = MaybeUninit::uninit();
 
+/// The sixteen Cortex-M0 system vectors, ending with `SysTick`, which drives
+/// the Embassy time driver. Reserved slots are zero.
 #[repr(C)]
 struct VectorTable {
     initial_stack_pointer: u32,
     reset: extern "C" fn() -> !,
     non_maskable_interrupt: extern "C" fn() -> !,
     hard_fault: extern "C" fn() -> !,
+    reserved_4_10: [u32; 7],
+    supervisor_call: extern "C" fn() -> !,
+    reserved_12_13: [u32; 2],
+    pend_supervisor: extern "C" fn() -> !,
+    system_tick: extern "C" fn(),
 }
 
 // SAFETY: the linker script owns this section, retains this one table, asserts
@@ -70,6 +84,11 @@ static VECTOR_TABLE: VectorTable = VectorTable {
     reset,
     non_maskable_interrupt: fault,
     hard_fault: fault,
+    reserved_4_10: [0; 7],
+    supervisor_call: fault,
+    reserved_12_13: [0; 2],
+    pend_supervisor: fault,
+    system_tick,
 };
 
 // SAFETY: this is the single linker entry symbol named by link.x. The name is
@@ -81,8 +100,8 @@ extern "C" fn reset() -> ! {
     main()
 }
 
-// SAFETY: as `reset`. No interrupt is ever enabled, so these two vectors can
-// only be reached by a fault, which this image cannot recover from and must not
+// SAFETY: as `reset`. Only SysTick is enabled, so the other vectors can only
+// be reached by a fault, which this image cannot recover from and must not
 // pretend to.
 #[allow(unsafe_code)]
 #[unsafe(export_name = "Fault")]
@@ -90,6 +109,23 @@ extern "C" fn fault() -> ! {
     best_effort_transmit_off();
     loop {
         core::hint::spin_loop();
+    }
+}
+
+// SAFETY: as `reset`; the exception body only touches the time driver's
+// critical-section state.
+#[allow(unsafe_code)]
+#[unsafe(export_name = "SysTick")]
+extern "C" fn system_tick() {
+    time_driver::on_systick();
+}
+
+/// Busy-waits on the time driver, for the TX controller's settle times.
+struct BlockingDelay;
+
+impl Delay for BlockingDelay {
+    fn delay_ms(&mut self, milliseconds: u32) {
+        embassy_time::block_for(Duration::from_millis(u64::from(milliseconds)));
     }
 }
 
@@ -111,13 +147,23 @@ fn main() -> ! {
     portcon::enable_pull_up(Port::A, 8);
 
     let clock = clock::configure();
-    let mut sample_tick = PeriodicTick::start(clock.hertz(), SAMPLE_MILLISECONDS)
-        .expect("50 ms fits the Cortex-M0 SysTick reload at the configured clock");
+    time_driver::start(clock.hertz()).expect("the K5 clock is a whole number of MHz");
+
+    // SAFETY: `main` never returns and is the only code to touch this static,
+    // so the executor lives for the rest of the image and is borrowed once.
+    #[allow(unsafe_code)]
+    let executor = unsafe { (*(&raw mut EXECUTOR)).write(Executor::new()) };
+    executor.run(|spawner| spawner.spawn(operate(clock.hertz()).expect("one task instance")));
+}
+
+#[embassy_executor::task]
+async fn operate(clock_hz: u32) {
+    let mut sample_tick = Ticker::every(Duration::from_millis(u64::from(SAMPLE_MILLISECONDS)));
     portcon::select_pa7_uart1_tx();
     portcon::select_pa8_uart1_rx();
     portcon::select_k5_battery_saradc();
     saradc::initialise();
-    UART1.prepare_receive_dma_with_divider(k5_programming_divider(clock.hertz()));
+    UART1.prepare_receive_dma_with_divider(k5_programming_divider(clock_hz));
     // SAFETY: this single-core image gives the static buffer exclusively to
     // this receiver for the rest of its lifetime.
     #[allow(unsafe_code)]
@@ -237,14 +283,14 @@ fn main() -> ! {
                 receive,
                 &mut radio,
                 &mut speaker,
-                &mut transmit::TickDelay(&mut sample_tick),
+                &mut BlockingDelay,
             )
         });
         // Serial, keypad and receive sampling all touch the radio, so they
         // pause until the controller has restored receive.
         if !matches!(tx.state(), State::Ready | State::ReleaseRequired) {
             now_ms = now_ms.saturating_add(u64::from(SAMPLE_MILLISECONDS));
-            sample_tick.wait();
+            sample_tick.next().await;
             continue;
         }
 
@@ -336,7 +382,7 @@ fn main() -> ! {
         );
         ui_now = ui_now.wrapping_add(SAMPLE_MILLISECONDS);
         now_ms = now_ms.saturating_add(u64::from(SAMPLE_MILLISECONDS));
-        sample_tick.wait();
+        sample_tick.next().await;
         if let Ok(sample) = radio.receive_metrics(radio_domain::Tone::None) {
             metrics = Some(sample);
             apply_event(

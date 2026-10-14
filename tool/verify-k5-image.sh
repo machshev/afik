@@ -83,29 +83,36 @@ trap 'rm -rf "$temporary_directory"' EXIT
 vector_bytes="$temporary_directory/vector-table.bin"
 llvm-objcopy --dump-section ".vector_table=$vector_bytes" "$image_path"
 
-if [[ "$(stat -c %s "$vector_bytes")" -ne 16 ]]; then
-  echo "vector table is not exactly sixteen bytes" >&2
+if [[ "$(stat -c %s "$vector_bytes")" -ne 64 ]]; then
+  echo "vector table is not exactly the sixteen system vectors" >&2
   exit 1
 fi
 
-read -r initial_stack reset_vector nmi_vector hard_fault_vector \
-  < <(od -An -v -tx4 "$vector_bytes")
+read -r -a vectors < <(od -An -v -tx4 -w64 "$vector_bytes")
+initial_stack="${vectors[0]}"
+reset_vector="${vectors[1]}"
+nmi_vector="${vectors[2]}"
+hard_fault_vector="${vectors[3]}"
+systick_vector="${vectors[15]}"
 if [[ "$initial_stack" != "20003ff0" ]]; then
   echo "unexpected initial stack vector: $initial_stack" >&2
   exit 1
 fi
-for vector_name in reset nmi hard_fault; do
-  case "$vector_name" in
-    reset) vector="$reset_vector" ;;
-    nmi) vector="$nmi_vector" ;;
-    hard_fault) vector="$hard_fault_vector" ;;
-  esac
-  if (( (16#$vector & 1) == 0 )); then
-    echo "$vector_name vector does not select Thumb code: $vector" >&2
+# Slots 4-10 and 12-13 are reserved on Cortex-M0 and must stay zero.
+for slot in 4 5 6 7 8 9 10 12 13; do
+  if [[ "${vectors[$slot]}" != "00000000" ]]; then
+    echo "reserved vector $slot is not zero: ${vectors[$slot]}" >&2
     exit 1
   fi
-  if (( 16#$vector < 16 || 16#$vector >= 16#0000f000 )); then
-    echo "$vector_name vector is outside the qualified K5 V1 application: $vector" >&2
+done
+for slot in 1 2 3 11 14 15; do
+  vector="${vectors[$slot]}"
+  if (( (16#$vector & 1) == 0 )); then
+    echo "vector $slot does not select Thumb code: $vector" >&2
+    exit 1
+  fi
+  if (( 16#$vector < 64 || 16#$vector >= 16#0000f000 )); then
+    echo "vector $slot is outside the qualified K5 V1 application: $vector" >&2
     exit 1
   fi
 done
@@ -115,6 +122,7 @@ echo "  initial SP: 0x$initial_stack"
 echo "  Reset vector: 0x$reset_vector"
 echo "  NMI vector: 0x$nmi_vector"
 echo "  HardFault vector: 0x$hard_fault_vector"
+echo "  SysTick vector: 0x$systick_vector"
 echo "  flash image end: 0x$flash_end"
 echo "  static RAM end: 0x$ram_end"
 echo "  stack top: 0x$stack_top"

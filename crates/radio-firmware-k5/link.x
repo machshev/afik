@@ -71,8 +71,8 @@ SECTIONS
 
   ASSERT(ADDR(.vector_table) == ORIGIN(FLASH),
          "vector table must start at flash origin")
-  ASSERT(SIZEOF(.vector_table) == 16,
-         "K5 vector table must contain exactly SP, Reset, NMI and HardFault")
+  ASSERT(SIZEOF(.vector_table) == 64,
+         "K5 vector table must contain exactly the sixteen system vectors")
   ASSERT(__flash_image_end <= ORIGIN(FLASH) + LENGTH(FLASH),
          "target image exceeds the application region below the bootloader")
   ASSERT(__data_start % 4 == 0 && __data_end % 4 == 0,
