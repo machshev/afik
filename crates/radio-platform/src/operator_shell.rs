@@ -10,6 +10,12 @@
 //! the VFO, which is a directly tuned frequency. A radio nobody has programmed
 //! is simply in VFO, so there is no separate unprogrammed mode.
 //!
+//! The radio has two slots, A and B, as the stock and Armel firmware do. Each
+//! is a source of its own: a channel in any bank, or the VFO. One is selected,
+//! and it is the one keys act on and PTT transmits on; dual watch listens to
+//! the other between signals. F then 2 (A/B) selects the other slot and F then
+//! 3 (VFO/MR) switches the selected one between its channels and the VFO.
+//!
 //! No intent can transmit. The set deliberately contains selection, bank
 //! filtering, VFO tuning, and monitoring only.
 
@@ -98,6 +104,59 @@ pub enum Mode {
     Vfo,
 }
 
+/// One of the radio's two slots.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SlotId {
+    /// The upper slot.
+    #[default]
+    A,
+    /// The lower slot.
+    B,
+}
+
+impl SlotId {
+    /// Returns the other slot.
+    #[must_use]
+    pub const fn other(self) -> Self {
+        match self {
+            Self::A => Self::B,
+            Self::B => Self::A,
+        }
+    }
+}
+
+/// What one slot listens to: its source, bank filter and VFO.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Slot {
+    /// Programmed channels or the VFO.
+    pub mode: Mode,
+    /// The bank filtering the channels, if one is.
+    pub bank_filter: Option<BankId>,
+    /// The VFO frequency in hertz.
+    pub vfo_hz: u32,
+    /// Index into [`VFO_STEPS_HZ`].
+    pub step_index: usize,
+}
+
+impl Slot {
+    /// A slot on the default VFO frequency and step.
+    pub const VFO: Self = Self {
+        mode: Mode::Vfo,
+        bank_filter: None,
+        vfo_hz: VFO_DEFAULT_HZ,
+        step_index: 1,
+    };
+
+    /// Returns the VFO tuning step in hertz.
+    #[must_use]
+    pub fn vfo_step_hz(&self) -> u32 {
+        VFO_STEPS_HZ
+            .get(self.step_index)
+            .copied()
+            .unwrap_or(VFO_STEPS_HZ[1])
+    }
+}
+
 /// One row of the source list.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Source {
@@ -151,6 +210,8 @@ pub enum Setting {
     TxTimeout,
     /// Which programmed TX classes this handset may use (`ADR-101`).
     TxClasses,
+    /// Whether the radio listens to the other slot between signals.
+    DualWatch,
 }
 
 /// Every settings row, in the order the menu lists them.
@@ -162,17 +223,21 @@ pub enum Setting {
 /// wanted 90 ms, which `EVID-K1-071` records — so it belongs in the
 /// configuration a programmer writes, where it can be given whole
 /// milliseconds instead of a menu's worth of rows.
-pub const SETTINGS: [Setting; 1] = [Setting::Squelch];
+///
+/// Dual watch qualifies because whether a second channel is worth hearing
+/// depends on what the operator is doing at the time.
+pub const SETTINGS: [Setting; 2] = [Setting::Squelch, Setting::DualWatch];
 
 /// Settings rows on a target that can transmit. TX power qualifies for the
 /// same reason squelch does: the right level depends on where the operator is.
 /// The TX timeout does too: a net with long overs needs a longer one. The TX
 /// classes switch lets the owner narrow what a borrowed radio may transmit.
-pub const SETTINGS_WITH_TX: [Setting; 4] = [
+pub const SETTINGS_WITH_TX: [Setting; 5] = [
     Setting::Squelch,
     Setting::TxPower,
     Setting::TxTimeout,
     Setting::TxClasses,
+    Setting::DualWatch,
 ];
 
 /// Every TX class, in the order the class list shows them.
@@ -232,6 +297,11 @@ pub enum Intent {
     StartScan,
     /// Stop walking and stay on the channel the scan reached.
     StopScan,
+    /// The other slot is now the selected one (F then 2, A/B).
+    SwapSlot,
+    /// The selected slot switched between its channels and the VFO (F then
+    /// 3, VFO/MR); its memory selection is kept.
+    ToggleVfo,
 }
 
 /// Target capabilities which gate operator screens without changing their
@@ -264,9 +334,11 @@ impl Capabilities {
         tx_power: true,
     };
 
-    /// The currently evidenced K5 capability set, including PMR446 TX.
+    /// The currently evidenced K5 capability set, including PMR446 TX. The VFO
+    /// is one more channel record on the same receive path the programmed
+    /// channels already use.
     pub const K5: Self = Self {
-        vfo: false,
+        vfo: true,
         settings: true,
         sources: true,
         scan: false,
@@ -332,6 +404,14 @@ pub struct Shell {
     tx_class_cursor: u8,
     /// Whether a star press is still waiting to become a hold or a release.
     star_pending: bool,
+    /// Whether F was pressed and the next key takes its F meaning.
+    function: bool,
+    /// Which slot the fields above describe.
+    active: SlotId,
+    /// The slot not selected.
+    other: Slot,
+    /// Whether the radio listens to the other slot between signals.
+    dual_watch: bool,
     capabilities: Capabilities,
 }
 
@@ -371,6 +451,10 @@ impl Shell {
             tx_disabled: ClassSet::NONE,
             tx_class_cursor: 0,
             star_pending: false,
+            function: false,
+            active: SlotId::A,
+            other: Slot::VFO,
+            dual_watch: false,
             capabilities: Capabilities::K1,
         }
     }
@@ -382,6 +466,10 @@ impl Shell {
             self.mode = Mode::Memory;
             self.bank_filter = None;
             self.source_cursor = self.source_row();
+        }
+        if !capabilities.vfo && self.other.mode == Mode::Vfo {
+            self.other.mode = Mode::Memory;
+            self.other.bank_filter = None;
         }
         if !capabilities.sources && self.screen == Screen::SourceList {
             self.screen = Screen::Operating;
@@ -577,6 +665,61 @@ impl Shell {
         self.mode
     }
 
+    /// Returns which slot is selected.
+    #[must_use]
+    pub const fn active_slot(&self) -> SlotId {
+        self.active
+    }
+
+    /// Returns what the selected slot listens to.
+    #[must_use]
+    pub const fn slot(&self) -> Slot {
+        Slot {
+            mode: self.mode,
+            bank_filter: self.bank_filter,
+            vfo_hz: self.vfo_hz,
+            step_index: self.step_index,
+        }
+    }
+
+    /// Returns what the slot not selected listens to.
+    #[must_use]
+    pub const fn other_slot(&self) -> Slot {
+        self.other
+    }
+
+    /// Reports whether dual watch is on.
+    #[must_use]
+    pub const fn dual_watch(&self) -> bool {
+        self.dual_watch
+    }
+
+    /// Switches dual watch, as a configuration or the retained place says.
+    pub fn set_dual_watch(&mut self, on: bool) {
+        self.dual_watch = on;
+    }
+
+    /// Reports whether F was pressed and waits for the key it modifies.
+    #[must_use]
+    pub const fn function_pending(&self) -> bool {
+        self.function
+    }
+
+    /// Makes the other slot the selected one.
+    fn swap_slots(&mut self) {
+        let selected = self.slot();
+        self.mode = self.other.mode;
+        self.bank_filter = self.other.bank_filter;
+        self.vfo_hz = self.other.vfo_hz;
+        self.step_index = self.other.step_index;
+        self.step_cursor = self.step_index;
+        self.other = selected;
+        self.active = self.active.other();
+        self.entry = None;
+        self.cursor = 0;
+        self.source_cursor = self.source_row();
+    }
+
     /// Returns the VFO frequency in hertz.
     #[must_use]
     pub const fn vfo_hz(&self) -> u32 {
@@ -680,6 +823,7 @@ impl Shell {
     /// leaves the VFO for them rather than waiting to be told twice.
     pub fn select_memory(&mut self) {
         self.mode = Mode::Memory;
+        self.other.mode = Mode::Memory;
         self.entry = None;
         self.cursor = 0;
         self.source_cursor = self.source_row();
@@ -698,6 +842,27 @@ impl Shell {
         self.mode = if memory_mode { Mode::Memory } else { Mode::Vfo };
         self.bank_filter = bank.filter(|bank| self.banks[..self.bank_count].contains(&Some(*bank)));
         self.source_cursor = self.source_row();
+    }
+
+    /// Restores the slot that was not selected, and which slot was.
+    ///
+    /// Checked as [`Shell::restore_source`] and [`Shell::restore_vfo`] check
+    /// theirs; [`Shell::set_banks`] must have run first.
+    pub fn restore_other(&mut self, active: SlotId, other: Slot) {
+        self.active = active;
+        self.other.mode = other.mode;
+        self.other.bank_filter = other
+            .bank_filter
+            .filter(|bank| self.banks[..self.bank_count].contains(&Some(*bank)));
+        if (VFO_MINIMUM_HZ..=VFO_MAXIMUM_HZ).contains(&other.vfo_hz) {
+            self.other.vfo_hz = other.vfo_hz;
+        }
+        if other.step_index < VFO_STEPS_HZ.len() {
+            self.other.step_index = other.step_index;
+        }
+        if !self.capabilities.vfo && self.other.mode == Mode::Vfo {
+            self.other.mode = Mode::Memory;
+        }
     }
 
     /// Restores the VFO frequency and tuning step the operator last used.
@@ -724,6 +889,13 @@ impl Shell {
         self.bank_count = count.min(MAX_BANKS as usize);
         self.entry = None;
         self.cursor = 0;
+        if self
+            .other
+            .bank_filter
+            .is_some_and(|filter| !self.banks[..self.bank_count].contains(&Some(filter)))
+        {
+            self.other.bank_filter = None;
+        }
         if self
             .bank_filter
             .is_some_and(|filter| !self.banks[..self.bank_count].contains(&Some(filter)))
@@ -765,7 +937,11 @@ impl Shell {
         if context.scanning {
             self.entry = None;
             self.star_pending = false;
+            self.function = false;
             return Intent::StopScan;
+        }
+        if self.function && key != Key::Function {
+            return self.function_key(key);
         }
         match key {
             // Menu opens settings from the operating screen, as on the stock
@@ -775,15 +951,10 @@ impl Shell {
             Key::Side2 => Intent::ToggleMonitor,
             // Receive-only: the image constructs no transmit path, so the
             // push-to-talk input cannot reach the radio.
-            Key::Function if self.capabilities.info => {
-                self.entry = None;
-                self.screen = if self.screen == Screen::Info {
-                    Screen::Operating
-                } else {
-                    Screen::Info
-                };
-                Intent::Redraw
-            }
+            // F gives the next key the meaning printed beneath it, as on the
+            // stock and Armel firmware. Pressed twice it opens the Info screen,
+            // and on that screen it closes it again.
+            Key::Function => self.press_function(),
             // The star key does two things, so it commits on release rather
             // than on the way down: a tap opens the source list and a hold
             // scans it. Deciding on the press would either open a list the
@@ -811,7 +982,53 @@ impl Shell {
             Key::Digit(7) => self.digit(7, now_ms, context),
             Key::Digit(8) => self.digit(8, now_ms, context),
             Key::Digit(9) => self.digit(9, now_ms, context),
-            Key::Ptt | Key::Function | Key::Star | Key::Digit(_) => Intent::Idle,
+            Key::Ptt | Key::Star | Key::Digit(_) => Intent::Idle,
+        }
+    }
+
+    /// Arms F on the operating screen, or opens and closes Info.
+    fn press_function(&mut self) -> Intent {
+        match self.screen {
+            Screen::Info => {
+                self.screen = Screen::Operating;
+                Intent::Redraw
+            }
+            Screen::Operating if self.function => {
+                self.function = false;
+                if self.capabilities.info {
+                    self.screen = Screen::Info;
+                }
+                Intent::Redraw
+            }
+            Screen::Operating => {
+                self.entry = None;
+                self.function = true;
+                Intent::Redraw
+            }
+            _ => Intent::Idle,
+        }
+    }
+
+    /// Applies the key pressed after F. A key with no F meaning only clears F.
+    fn function_key(&mut self, key: Key) -> Intent {
+        self.function = false;
+        self.star_pending = false;
+        match key {
+            Key::Digit(2) => {
+                self.swap_slots();
+                Intent::SwapSlot
+            }
+            Key::Digit(3) if self.capabilities.vfo => {
+                self.mode = match self.mode {
+                    Mode::Memory => Mode::Vfo,
+                    Mode::Vfo => Mode::Memory,
+                };
+                self.entry = None;
+                self.cursor = 0;
+                self.source_cursor = self.source_row();
+                Intent::ToggleVfo
+            }
+            _ => Intent::Redraw,
         }
     }
 
@@ -1017,6 +1234,12 @@ impl Shell {
                     Some(Setting::TxClasses) => {
                         self.screen = Screen::TxClassList;
                         self.tx_class_cursor = 0;
+                    }
+                    // Menu switches it and shows the operating screen, where
+                    // both slots are.
+                    Some(Setting::DualWatch) => {
+                        self.dual_watch = !self.dual_watch;
+                        self.screen = Screen::Operating;
                     }
                     // A menu row with nothing behind it cannot open a screen the
                     // operator would then be stuck on.
@@ -1308,8 +1531,9 @@ impl Shell {
 #[cfg(test)]
 mod tests {
     use super::{
-        Capabilities, Context, Intent, Mode, Screen, Shell, Source, ENTRY_TIMEOUT_MILLISECONDS,
-        SETTINGS, SETTINGS_WITH_TX, VFO_DEFAULT_HZ, VFO_MAXIMUM_HZ, VFO_STEPS_HZ,
+        Capabilities, Context, Intent, Mode, Screen, Setting, Shell, SlotId, Source,
+        ENTRY_TIMEOUT_MILLISECONDS, SETTINGS, SETTINGS_WITH_TX, VFO_DEFAULT_HZ, VFO_MAXIMUM_HZ,
+        VFO_STEPS_HZ,
     };
     use crate::receive_app::Key;
     use radio_channel_plan::MAX_BANKS;
@@ -1929,6 +2153,10 @@ mod tests {
     fn the_info_screen_toggles_and_leaves_the_selection_alone() {
         let mut shell = Shell::new();
         assert_eq!(shell.press(Key::Function, 0, context(4, 0)), Intent::Redraw);
+        assert!(shell.function_pending());
+        assert_eq!(shell.screen(), Screen::Operating);
+        assert_eq!(shell.press(Key::Function, 5, context(4, 0)), Intent::Redraw);
+        assert!(!shell.function_pending());
         assert_eq!(shell.screen(), Screen::Info);
         assert_eq!(
             shell.press(Key::Function, 10, context(4, 0)),
@@ -1936,6 +2164,114 @@ mod tests {
         );
         assert_eq!(shell.screen(), Screen::Operating);
         assert_eq!(shell.vfo_hz(), VFO_DEFAULT_HZ);
+    }
+
+    #[test]
+    fn f_then_2_selects_the_other_slot_and_each_keeps_its_own_source() {
+        let (banks, count) = bank_table(&[3, 7]);
+        let mut shell = Shell::new();
+        shell.set_banks(banks, count);
+        shell.select_memory();
+        // A on bank 3.
+        tap_star(&mut shell, 0, context(4, 0));
+        shell.press(Key::Down, 1, context(4, 0));
+        assert_eq!(
+            shell.press(Key::Menu, 3, context(4, 0)),
+            Intent::SetSource(Source::Bank(BankId::new(3)))
+        );
+        assert_eq!(shell.active_slot(), SlotId::A);
+
+        assert_eq!(shell.press(Key::Function, 4, context(4, 0)), Intent::Redraw);
+        assert_eq!(
+            shell.press(Key::Digit(2), 5, context(4, 0)),
+            Intent::SwapSlot
+        );
+        assert!(!shell.function_pending());
+        assert_eq!(shell.active_slot(), SlotId::B);
+        // B was given the channels when the radio was programmed, unfiltered.
+        assert_eq!(shell.mode(), Mode::Memory);
+        assert_eq!(shell.bank_filter(), None);
+        assert_eq!(shell.other_slot().bank_filter, Some(BankId::new(3)));
+
+        // B on bank 7; A keeps bank 3.
+        tap_star(&mut shell, 6, context(4, 0));
+        shell.press(Key::Down, 7, context(4, 0));
+        shell.press(Key::Down, 8, context(4, 0));
+        assert_eq!(
+            shell.press(Key::Menu, 10, context(4, 0)),
+            Intent::SetSource(Source::Bank(BankId::new(7)))
+        );
+        shell.press(Key::Function, 11, context(4, 0));
+        assert_eq!(
+            shell.press(Key::Digit(2), 12, context(4, 0)),
+            Intent::SwapSlot
+        );
+        assert_eq!(shell.active_slot(), SlotId::A);
+        assert_eq!(shell.bank_filter(), Some(BankId::new(3)));
+        assert_eq!(shell.other_slot().bank_filter, Some(BankId::new(7)));
+    }
+
+    #[test]
+    fn f_then_3_switches_the_selected_slot_between_channels_and_vfo() {
+        let mut shell = memory_shell(&[]);
+        assert_eq!(shell.mode(), Mode::Memory);
+        let b = shell.other_slot();
+        shell.press(Key::Function, 0, context(4, 2));
+        assert_eq!(
+            shell.press(Key::Digit(3), 1, context(4, 2)),
+            Intent::ToggleVfo
+        );
+        assert_eq!(shell.mode(), Mode::Vfo);
+        assert_eq!(shell.other_slot(), b, "B is untouched");
+        shell.press(Key::Function, 2, context(0, 0));
+        assert_eq!(
+            shell.press(Key::Digit(3), 3, context(0, 0)),
+            Intent::ToggleVfo
+        );
+        assert_eq!(shell.mode(), Mode::Memory);
+
+        // Without a VFO there is nothing to switch to, and F is only cleared.
+        let mut k5 = memory_shell(&[]);
+        k5.set_capabilities(Capabilities {
+            vfo: false,
+            ..Capabilities::K5
+        });
+        k5.press(Key::Function, 0, context(4, 0));
+        assert_eq!(k5.press(Key::Digit(3), 1, context(4, 0)), Intent::Redraw);
+        assert_eq!(k5.mode(), Mode::Memory);
+    }
+
+    #[test]
+    fn a_key_with_no_f_meaning_only_clears_f() {
+        let mut shell = memory_shell(&[]);
+        shell.press(Key::Function, 0, context(4, 1));
+        assert_eq!(shell.press(Key::Up, 1, context(4, 1)), Intent::Redraw);
+        assert!(!shell.function_pending());
+        assert_eq!(
+            shell.press(Key::Up, 2, context(4, 1)),
+            Intent::SelectPrevious
+        );
+        // F only arms on the operating screen.
+        shell.press(Key::Menu, 3, context(4, 1));
+        assert_eq!(shell.press(Key::Function, 4, context(4, 1)), Intent::Idle);
+        assert!(!shell.function_pending());
+    }
+
+    #[test]
+    fn the_settings_menu_switches_dual_watch() {
+        let mut shell = memory_shell(&[]);
+        assert!(!shell.dual_watch());
+        let row = SETTINGS_WITH_TX
+            .iter()
+            .position(|setting| *setting == Setting::DualWatch)
+            .expect("dual watch row");
+        shell.press(Key::Menu, 0, context(4, 0));
+        for at in 0..row {
+            shell.press(Key::Down, 1 + u32::try_from(at).unwrap(), context(4, 0));
+        }
+        assert_eq!(shell.press(Key::Menu, 20, context(4, 0)), Intent::Redraw);
+        assert!(shell.dual_watch());
+        assert_eq!(shell.screen(), Screen::Operating);
     }
 
     #[test]
@@ -2008,12 +2344,14 @@ mod tests {
         let context = context(16, 0);
 
         assert_eq!(shell.mode(), Mode::Memory);
-        assert_eq!(shell.source_rows(), 1);
-        assert_eq!(shell.source_at(0), Some(Source::AllChannels));
+        assert_eq!(shell.source_rows(), 2);
+        assert_eq!(shell.source_at(0), Some(Source::Vfo));
+        assert_eq!(shell.source_at(1), Some(Source::AllChannels));
         assert_eq!(shell.press(Key::Star, 0, context), Intent::Redraw);
         assert_eq!(shell.screen(), Screen::SourceList);
         assert_eq!(shell.press(Key::Exit, 1, context), Intent::Redraw);
         assert_eq!(shell.screen(), Screen::Operating);
+        assert_eq!(shell.press(Key::Function, 2, context), Intent::Redraw);
         assert_eq!(shell.press(Key::Function, 2, context), Intent::Redraw);
         assert_eq!(shell.screen(), Screen::Info);
         assert_eq!(shell.press(Key::Exit, 3, context), Intent::Redraw);
@@ -2024,7 +2362,6 @@ mod tests {
         assert_eq!(shell.screen(), Screen::Operating);
         assert_eq!(shell.press(Key::Star, 6, context), Intent::Redraw);
         assert_eq!(shell.screen(), Screen::SourceList);
-        assert_eq!(shell.press(Key::Up, 7, context), Intent::Redraw);
         assert_eq!(shell.press(Key::Menu, 8, context), Intent::Redraw);
         assert_eq!(shell.press(Key::Up, 9, context), Intent::SelectPrevious);
     }

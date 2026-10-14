@@ -26,7 +26,7 @@ use radio_platform::operator_display::{
     BankIndicator, ListRow, MemoryState, OperatingView, SelectorRow, FRAME_BYTES, LIST_ROWS,
 };
 use radio_platform::operator_shell::{
-    Context, Intent, Mode, Screen, Setting, Shell, Source, HOLD_MILLISECONDS, SQUELCH_LEVELS,
+    Context, Intent, Mode, Screen, Setting, Shell, Slot, Source, HOLD_MILLISECONDS, SQUELCH_LEVELS,
     TX_POWER_ROWS, TX_TIMEOUT_CHOICES, VFO_STEPS_HZ,
 };
 use radio_platform::ptt::PttFilter;
@@ -524,7 +524,13 @@ fn adopt_publication(
     }
 }
 
-/// Builds the receive controller for whatever the shell says is in force.
+/// One slot's receive controller, and the tune it asked for when built.
+type Activation<M> = (
+    BankedReceiveController<Listening<M>>,
+    Option<ChannelReceiveSetup>,
+);
+
+/// Builds the receive controller for the selected slot.
 ///
 /// `keep` is the memory channel the operator is on, which survives the rebuild
 /// if the configuration still has it. Every caller has one except the first: a
@@ -535,17 +541,41 @@ fn activate<M: Memory>(
     shell: &Shell,
     keep: Option<Selected>,
     memory: &'static TaskCell<Option<M>>,
-) -> Option<(
-    BankedReceiveController<Listening<M>>,
-    Option<ChannelReceiveSetup>,
-)> {
-    let (memory, bank) = match shell.mode() {
-        Mode::Vfo => (vfo_source(shell)?, None),
+) -> Option<Activation<M>> {
+    activate_slot(programmed, shell.slot(), shell.tx_power(), keep, memory)
+}
+
+/// Builds the receive controller for the slot not selected.
+fn activate_other<M: Memory>(
+    programmed: &Programmed,
+    shell: &Shell,
+    keep: Option<Selected>,
+    memory: &'static TaskCell<Option<M>>,
+) -> Option<Activation<M>> {
+    activate_slot(
+        programmed,
+        shell.other_slot(),
+        shell.tx_power(),
+        keep,
+        memory,
+    )
+}
+
+/// Builds the receive controller for one slot; `tx_power` is the VFO's level.
+fn activate_slot<M: Memory>(
+    programmed: &Programmed,
+    slot: Slot,
+    tx_power: u8,
+    keep: Option<Selected>,
+    memory: &'static TaskCell<Option<M>>,
+) -> Option<Activation<M>> {
+    let (memory, bank) = match slot.mode {
+        Mode::Vfo => (vfo_source(slot, tx_power)?, None),
         Mode::Memory => {
             if programmed.is_empty() {
                 return None;
             }
-            (Listening::Memory(*programmed, memory), shell.bank_filter())
+            (Listening::Memory(*programmed, memory), slot.bank_filter)
         }
     };
     let keep = keep.map(|kept| (kept.index, ChannelId::new(kept.channel_id)));
@@ -562,9 +592,9 @@ fn activate<M: Memory>(
 /// The VFO is expressed as an ordinary receive-only channel record so it reuses
 /// the whole programmed receive path unchanged. It is `TxClass::Never` like
 /// everything else this image constructs.
-fn vfo_source<M>(shell: &Shell) -> Option<Listening<M>> {
-    let receive = Frequency::from_hz(shell.vfo_hz()).ok()?;
-    let step = FrequencyStep::from_hz(shell.vfo_step_hz()).ok()?;
+fn vfo_source<M>(slot: Slot, tx_power: u8) -> Option<Listening<M>> {
+    let receive = Frequency::from_hz(slot.vfo_hz).ok()?;
+    let step = FrequencyStep::from_hz(slot.vfo_step_hz()).ok()?;
     let record = ChannelRecord::new(ChannelDefinition {
         id: ChannelId::new(1),
         name: ChannelName::new("VFO").ok()?,
@@ -577,7 +607,7 @@ fn vfo_source<M>(shell: &Shell) -> Option<Listening<M>> {
         modulation: Modulation::Fm,
         bandwidth: Bandwidth::Narrow,
         // The VFO has no programmed power of its own, so it takes the default.
-        power: PowerLevel::try_from(shell.tx_power()).unwrap_or(PowerLevel::Low1),
+        power: PowerLevel::try_from(tx_power).unwrap_or(PowerLevel::Low1),
         step,
         flags: ChannelFlags::default(),
         bank: None,
@@ -655,6 +685,10 @@ pub async fn run<D, K, B, S, V, M>(
     adopt_publication(&mut shell, &programmed, true, place, &mut selected);
     let mut activation = activate(&programmed, &shell, selected, memory);
     let mut pending = activation.as_mut().and_then(|(_, setup)| setup.take());
+    // The slot not selected has a controller of its own, which keeps its
+    // channel and bank while the operator uses the other.
+    let mut other_selected: Option<Selected> = None;
+    let mut other_activation = activate_other(&programmed, &shell, other_selected, memory);
 
     let mut receiver = Receiver::new(radio, speaker);
     // A reset can follow a panic in the middle of a transmission, so the PA
@@ -792,6 +826,7 @@ pub async fn run<D, K, B, S, V, M>(
             }
             activation = activate(&programmed, &shell, selected, memory);
             pending = activation.as_mut().and_then(|(_, setup)| setup.take());
+            other_activation = activate_other(&programmed, &shell, other_selected, memory);
             tx_policy = TX_POLICY.with(|policy| *policy);
             shell.set_tx_classes(tx_policy.classes());
             // A configuration arriving replaces what a scan was walking.
@@ -917,6 +952,38 @@ pub async fn run<D, K, B, S, V, M>(
                 let _ = pending.take();
                 activation = activate(&programmed, &shell, None, memory);
                 pending = activation.as_mut().and_then(|(_, setup)| setup.take());
+                redraw = true;
+            }
+            // VFO/MR rebuilds the same way but keeps the memory selection, so
+            // switching back lands on the channel the operator left.
+            Intent::ToggleVfo => {
+                cancel_pending_squelch(
+                    &mut shell,
+                    &mut shared_receive,
+                    &mut pending_shared_squelch,
+                    &mut pending_operator_squelch,
+                );
+                let _ = pending.take();
+                activation = activate(&programmed, &shell, selected, memory);
+                pending = activation.as_mut().and_then(|(_, setup)| setup.take());
+                scan_timer = None;
+                redraw = true;
+            }
+            // A/B: the two controllers change places and the receiver tunes the
+            // newly selected one.
+            Intent::SwapSlot => {
+                cancel_pending_squelch(
+                    &mut shell,
+                    &mut shared_receive,
+                    &mut pending_shared_squelch,
+                    &mut pending_operator_squelch,
+                );
+                core::mem::swap(&mut activation, &mut other_activation);
+                core::mem::swap(&mut selected, &mut other_selected);
+                pending = activation
+                    .as_ref()
+                    .map(|(controller, _)| controller.setup());
+                scan_timer = None;
                 redraw = true;
             }
             // Every remaining intent acts on a channel. An empty memory has
@@ -1452,6 +1519,7 @@ fn render<B: RegisterBus, S: Speaker, M: Memory>(
                             .count();
                         SelectorRow::tx_classes_setting(on, programmed)
                     }
+                    Setting::DualWatch => SelectorRow::dual_watch_setting(shell.dual_watch()),
                 };
                 count += 1;
             }
@@ -1722,7 +1790,7 @@ mod tests {
         shell.set_capabilities(radio_platform::operator_shell::Capabilities::K5);
         shell.set_tx(2, 0);
         // The VFO's record carries the programmed default as its own power.
-        let Some(Listening::Vfo(vfo)) = vfo_source::<()>(&shell) else {
+        let Some(Listening::Vfo(vfo)) = vfo_source::<()>(shell.slot(), shell.tx_power()) else {
             panic!("a VFO source");
         };
         assert_eq!(vfo.power(), PowerLevel::Low3);

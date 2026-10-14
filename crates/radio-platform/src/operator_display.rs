@@ -408,6 +408,19 @@ impl SelectorRow {
         Self::with_label(&label, false)
     }
 
+    /// Builds the settings-menu row for dual watch, with its switch.
+    #[must_use]
+    pub fn dual_watch_setting(on: bool) -> Self {
+        Self::with_label(
+            if on {
+                b"DUAL WATCH ON"
+            } else {
+                b"DUAL WATCH OFF"
+            },
+            false,
+        )
+    }
+
     /// Builds one TX class row with its switch, such as `AMATEUR    OFF`;
     /// a class switched on is marked active.
     #[must_use]
