@@ -1129,6 +1129,14 @@ mod tests {
             }
         ));
         assert!(matches!(
+            firmware("AFIK-K1-7.0.25"),
+            Finding::Firmware {
+                family: Some(RadioFamily::K1),
+                serves_backup: true,
+                ..
+            }
+        ));
+        assert!(matches!(
             firmware("F4HWN v4.3"),
             Finding::Firmware { family: None, .. }
         ));

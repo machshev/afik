@@ -103,6 +103,8 @@ pub enum FlashError {
     InBootloader,
     /// The running firmware serves no EEPROM reads; it carries this version.
     EepromNotServed(String),
+    /// The running firmware cannot store an EEPROM restore.
+    EepromRestoreNotServed(String),
     /// An EEPROM block response did not match the exact requested range.
     EepromBlockMismatch {
         /// Requested EEPROM offset.
@@ -222,8 +224,13 @@ impl fmt::Display for FlashError {
             ),
             Self::EepromNotServed(version) => write!(
                 formatter,
-                "the radio runs {version}, which serves no EEPROM reads; stock firmware \
-                 and AFIK-K5 7.0.6 or later do"
+                "the radio runs {version}, which serves no EEPROM backup; stock firmware, \
+                 AFIK-K5 7.0.6 or later, and AFIK-K1 7.0.25 or later do"
+            ),
+            Self::EepromRestoreNotServed(version) => write!(
+                formatter,
+                "the radio runs {version}, which refuses host writes; restore its EEPROM \
+                 under stock firmware"
             ),
             Self::InvalidTransactionId => {
                 formatter.write_str("flash transaction identifier must be nonzero")
@@ -661,7 +668,7 @@ pub fn prepare_eeprom_restore<T: Read + Write>(
     let hello = hello_request();
     send_packet(transport, &hello)?;
     let firmware = parse_hello_response(&receive_packet(transport)?)?;
-    require_eeprom_service(&firmware)?;
+    require_eeprom_restore(&firmware)?;
     if firmware.version() != prerequisites.expected_firmware.as_str() {
         return Err(FlashError::EepromFirmwareMismatch);
     }
@@ -1370,6 +1377,9 @@ const AFIK_K5_IDENTITY_PREFIX: &str = "AFIK-K5-";
 const AFIK_K1_IDENTITY_PREFIX: &str = "AFIK-K1-";
 /// First AFIK K5 version which serves the stock `0x051B` EEPROM read.
 const AFIK_K5_EEPROM_SINCE: [u32; 3] = [7, 0, 6];
+/// First AFIK K1 version whose memory view carries its calibration, so a read
+/// of it is a backup.
+const AFIK_K1_EEPROM_SINCE: [u32; 3] = [7, 0, 25];
 /// First AFIK version, K5 or K1, which loads a format 5 image from memory.
 const AFIK_MEMORY_SINCE: [u32; 3] = [7, 0, 17];
 /// Bytes of the configuration image region at the start of an AFIK radio's
@@ -1396,22 +1406,40 @@ fn require_afik_memory(firmware: &NormalFirmwareInfo) -> Result<(), FlashError> 
 /// Refuses before an EEPROM read that the running firmware would never answer.
 ///
 /// Stock firmware serves `0x051B`, and so does AFIK K5 from
-/// [`AFIK_K5_EEPROM_SINCE`]. Earlier AFIK K5 images and the K1 answer the hello
-/// but have no read handler, so a read would only time out.
+/// [`AFIK_K5_EEPROM_SINCE`] and AFIK K1 from [`AFIK_K1_EEPROM_SINCE`]. Earlier
+/// AFIK K5 images have no read handler, so a read would only time out; earlier
+/// K1 images serve only their configuration, which is no backup.
 fn require_eeprom_service(firmware: &NormalFirmwareInfo) -> Result<(), FlashError> {
     let version = firmware.version();
-    let Some(afik) = version.strip_prefix(AFIK_IDENTITY_PREFIX) else {
+    if !version.starts_with(AFIK_IDENTITY_PREFIX) {
         return Ok(());
+    }
+    let since = |prefix: &str, since: [u32; 3]| {
+        version
+            .strip_prefix(prefix)
+            .and_then(release)
+            .is_some_and(|release| release >= since)
     };
-    let serves = afik
-        .strip_prefix(&AFIK_K5_IDENTITY_PREFIX[AFIK_IDENTITY_PREFIX.len()..])
-        .and_then(release)
-        .is_some_and(|release| release >= AFIK_K5_EEPROM_SINCE);
-    if serves {
+    if since(AFIK_K5_IDENTITY_PREFIX, AFIK_K5_EEPROM_SINCE)
+        || since(AFIK_K1_IDENTITY_PREFIX, AFIK_K1_EEPROM_SINCE)
+    {
         Ok(())
     } else {
         Err(FlashError::EepromNotServed(version.to_owned()))
     }
+}
+
+/// Refuses before an EEPROM restore the running firmware could not store.
+///
+/// The K1 serves reads of its view but refuses host writes until it has an
+/// erase plan for its NOR memory, so a restore is K5 or stock only.
+fn require_eeprom_restore(firmware: &NormalFirmwareInfo) -> Result<(), FlashError> {
+    if firmware.version().starts_with(AFIK_K1_IDENTITY_PREFIX) {
+        return Err(FlashError::EepromRestoreNotServed(
+            firmware.version().to_owned(),
+        ));
+    }
+    require_eeprom_service(firmware)
 }
 
 /// Parses a plain `major.minor.patch` release; anything else is `None`.
@@ -1760,10 +1788,10 @@ mod tests {
         afik_image_version, apply_eeprom_restore, backup_eeprom, detect_bootloader,
         flash_afik_application, flash_application, identify_radio, observe_bootloader,
         prepare_eeprom_restore, probe_bootloader_v2, probe_clock_control, probe_clock_registers,
-        probe_clock_snapshot, probe_keypad_matrix, probe_normal_firmware, require_eeprom_service,
-        serves_eeprom_reads, BeaconProtocol, BootloaderFamily, EepromRestorePrerequisites,
-        FirmwareVersion, FlashError, FlashPrerequisites, FlashPurpose, NormalFirmwareInfo,
-        RadioPresence, EEPROM_BLOCK_BYTES, QUALIFIED_TARGET_CONFIRMATION,
+        probe_clock_snapshot, probe_keypad_matrix, probe_normal_firmware, require_eeprom_restore,
+        require_eeprom_service, serves_eeprom_reads, BeaconProtocol, BootloaderFamily,
+        EepromRestorePrerequisites, FirmwareVersion, FlashError, FlashPrerequisites, FlashPurpose,
+        NormalFirmwareInfo, RadioPresence, EEPROM_BLOCK_BYTES, QUALIFIED_TARGET_CONFIRMATION,
         RECOVERY_REHEARSED_CONFIRMATION,
     };
 
@@ -2299,6 +2327,7 @@ mod tests {
         ));
         assert!(serves_eeprom_reads("k5_2.01.23"));
         assert!(!serves_eeprom_reads("AFIK-K1-7.0.6"));
+        assert!(serves_eeprom_reads("AFIK-K1-7.0.25"));
     }
 
     #[test]
@@ -2316,18 +2345,42 @@ mod tests {
     }
 
     #[test]
-    fn afik_k5_serves_eeprom_reads_from_7_0_6() {
+    fn afik_serves_eeprom_reads_from_its_release() {
         for (identity, serves) in [
             ("AFIK-K5-7.0.6", true),
             ("AFIK-K5-7.1.0", true),
             ("AFIK-K5-10.0.0", true),
             ("AFIK-K5-7.0.5", false),
             ("k5_2.01.23", true),
+            ("AFIK-K1-7.0.24", false),
+            ("AFIK-K1-7.0.25", true),
+            ("AFIK-K1-7.1.0", true),
+            ("AFIK-K1-RXDIAG", false),
+            ("AFIK-X9-7.0.25", false),
         ] {
             let info = NormalFirmwareInfo {
                 version: identity.to_owned(),
             };
             assert_eq!(require_eeprom_service(&info).is_ok(), serves, "{identity}");
+        }
+    }
+
+    #[test]
+    fn only_a_radio_which_stores_host_writes_is_restored() {
+        for (identity, restores) in [
+            ("k5_2.01.23", true),
+            ("AFIK-K5-7.0.25", true),
+            ("AFIK-K1-7.0.25", false),
+            ("AFIK-K5-7.0.5", false),
+        ] {
+            let info = NormalFirmwareInfo {
+                version: identity.to_owned(),
+            };
+            assert_eq!(
+                require_eeprom_restore(&info).is_ok(),
+                restores,
+                "{identity}"
+            );
         }
     }
 
