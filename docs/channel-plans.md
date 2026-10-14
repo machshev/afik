@@ -98,10 +98,15 @@ SU23, calling SU20), UK 2 m repeaters (RV48 upwards, inputs 600 kHz below), and
 the 25 kHz civil airband (760 AM channels, classified `Never`). The simplex set
 is forty channels in three stored objects against twelve channels in fifteen.
 
-Marine VHF and UK business radio are deliberately absent: marine numbering is
-two interleaved runs with duplex ship/shore pairs, and business allocations are
-spot frequencies. Neither is arithmetic, so both need a table encoding rather
-than a linear plan, and inventing one would be worse than omitting them.
+Marine VHF is the exception and ships as two named-channel banks, `MARINE
+DUPLEX` (coast receives 4.6 MHz above the ship) and `MARINE SIMPLEX` (with 16
+CALL and the UK marina channels M and M2). Its numbering is two interleaved
+50 kHz runs, 1–28 from 156.050 and 60–88 from 156.025, with duplex and simplex
+channels alternating inside each run and DSC/AIS channels omitted. A linear
+plan carries one offset over a contiguous run, so marine would need about
+eleven small plans plus explicit M and M2; a table encoding is the proper
+form. UK business radio is still absent: its allocations are spot
+frequencies.
 
 The protocol capability bit for an encoding is `1 << encoding_discriminant`.
 The remaining declared encodings are model vocabulary only and cannot yet be
