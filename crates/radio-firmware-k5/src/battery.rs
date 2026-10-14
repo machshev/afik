@@ -4,13 +4,6 @@
 
 use radio_platform::battery::{Battery, Curve};
 
-/// EEPROM address of the six calibration half-words the stock firmware reads.
-pub const CALIBRATION_ADDRESS: u16 = 0x1F40;
-
-/// Loop passes between conversions: one second at the 50 ms loop, which is
-/// the reference firmware's cadence.
-pub const SAMPLE_PASSES: u32 = 20;
-
 /// Discharge curve for the stock 1600 mAh K5 pack, in hundredths of a volt
 /// and percent, copied from the reference firmware's default battery type.
 pub const CURVE: Curve = &[(828, 100), (814, 97), (760, 25), (729, 6), (630, 0)];

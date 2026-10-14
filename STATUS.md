@@ -207,6 +207,17 @@
   its NOR erase plan. Gate: fmt clean, workspace clippy `-D warnings` clean,
   `cargo test --workspace` 698 passed 0 failed, K1 build + verify pass. Not
   flashed. Next: K5 drivers on `radio-app`, then the studio's memory writer.
+- `7.0.15` (`ADR-099` step 3): the K5 runs `radio-app`. New K5 drivers:
+  `display::K5Display`, `drivers::{K5Keypad, K5Battery}`, `SpeakerGate` as the
+  speaker, `memory::K5Memory` (the EEPROM is the memory view address for
+  address; unchanged blocks are skipped) and a DMA-polled serial link that
+  holds bytes across a cancelled read. The keypad retakes its rows before every
+  scan because the EEPROM shares them. The K5's own renderer, application and
+  protocol modules are gone. Image: text 49,427 bytes (region 61,440), flash
+  end `0x0000c178`, static RAM end `0x20002680` (6,512 bytes of stack; deepest
+  runtime path about 2.5 KB). Gate: fmt clean, workspace clippy `-D warnings`
+  clean, `cargo test --workspace` 666 passed 0 failed, K5 build + verify pass,
+  including the flasher's backup and stock writes against the K5 memory view.
 - Next: flash `7.0.5` with `afik-flasher flash-afik` and check a 1 min over
   times out; flash K1 and check its speech level; then CTCSS/DCS with an
   end-of-transmission tail tone to remove the key-off squelch burst.

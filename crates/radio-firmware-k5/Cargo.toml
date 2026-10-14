@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Evidence-backed UV-K5 V1 serial-witness application"
+description = "UV-K5 V1 (DP32G030) drivers and image for the shared AFIK application"
 autobins = false
 
 [lib]
@@ -20,6 +20,7 @@ firmware = [
 ]
 
 [dependencies]
+radio-app = { path = "../radio-app" }
 radio-bk4819 = { path = "../radio-bk4819" }
 radio-domain = { path = "../radio-domain" }
 radio-dp32g030 = { path = "../radio-dp32g030" }

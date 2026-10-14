@@ -1,17 +1,15 @@
-//! Hardware-independent pieces of the UV-K5 V1 target image.
+//! UV-K5 V1 (DP32G030) drivers for the shared AFIK application.
 
 #![no_std]
 
 #[cfg(test)]
 extern crate std;
 
-pub mod application;
 pub mod audio;
 pub mod battery;
 pub mod bk4819_bus;
+pub mod display;
+pub mod drivers;
 pub mod eeprom;
-pub mod k5_display;
 pub mod keypad;
-pub mod protocol;
-pub mod receive;
-pub mod transmit;
+pub mod memory;

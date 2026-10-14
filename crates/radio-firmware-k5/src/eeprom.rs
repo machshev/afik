@@ -23,6 +23,9 @@ pub trait Bus {
     fn write(&mut self, byte: u8) -> bool;
     /// Reads one byte, acknowledging it unless `final_byte` is true.
     fn read(&mut self, final_byte: bool) -> u8;
+    /// Takes the bus pins back before a transaction. The K5's keypad shares
+    /// them, so they may have been reconfigured since the last one.
+    fn claim(&mut self) {}
 }
 
 /// Why an EEPROM operation was refused.
@@ -52,6 +55,7 @@ pub fn read<B: Bus>(bus: &mut B, address: u16, output: &mut [u8]) -> Result<(), 
     {
         return Err(Error::OutOfRange);
     }
+    bus.claim();
     bus.start();
     let address_bytes = address.to_be_bytes();
     if !bus.write(WRITE_ADDRESS) || !bus.write(address_bytes[0]) || !bus.write(address_bytes[1]) {
@@ -146,6 +150,9 @@ impl K5Bus {
 }
 
 impl Bus for K5Bus {
+    fn claim(&mut self) {
+        *self = Self::initialise();
+    }
     fn start(&mut self) {
         high(11);
         delay();
