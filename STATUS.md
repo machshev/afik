@@ -280,7 +280,8 @@
 - Studio (operator request): a status bar under every tab shows banks,
   selectable channels, and image bytes and percent of the radio's memory
   (`StorageSummary::used_per_mille`); it replaces the Banks and Device tab
-  summary lines. Each bank header, plans included, shows its channel count. Gate: `cargo fmt --all
+  summary lines. Bank headers show name, `N Ch`, kind and frequency span in
+  columns aligned across banks. Gate: `cargo fmt --all
   --check` clean, workspace clippy `-D warnings` clean, `cargo test
   --workspace` 683 passed 0 failed.
 - `7.0.19` (operator report: studio Radio settings did not match the handset

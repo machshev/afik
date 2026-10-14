@@ -1681,16 +1681,55 @@ mod tests {
         context: &eframe::egui::Context,
         app: &mut StudioApp,
         events: Vec<eframe::egui::Event>,
-    ) {
+    ) -> eframe::egui::FullOutput {
         use eframe::egui::{CentralPanel, Pos2, RawInput, Rect, Vec2};
         let input = RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1100.0, 4000.0))),
             events,
             ..RawInput::default()
         };
-        let _output = context.run(input, |context| {
+        context.run(input, |context| {
             CentralPanel::default().show(context, |ui| app.banks_tab(ui));
-        });
+        })
+    }
+
+    /// Returns where each drawn text starting with `prefix` begins.
+    fn text_left_edges(output: &eframe::egui::FullOutput, prefix: &str) -> Vec<f32> {
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                eframe::egui::Shape::Text(text) if text.galley.text().starts_with(prefix) => {
+                    Some(text.pos.x)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn bank_header_columns_line_up_whatever_the_name_length() {
+        let context = eframe::egui::Context::default();
+        let mut app = app_in(&scratch("columns"), &Options::default());
+        app.add_bank(BankKind::Named);
+        app.project.banks[0].name = "A".to_owned();
+        app.project.add_channel(0);
+        app.add_bank(BankKind::Named);
+        app.project.banks[1].name = "A much longer bank name".to_owned();
+        app.add_bank(BankKind::Generated);
+        frame(&context, &mut app, Vec::new());
+        let output = frame(&context, &mut app, Vec::new());
+
+        let counts = [
+            text_left_edges(&output, "1 Ch"),
+            text_left_edges(&output, "0 Ch"),
+            text_left_edges(&output, "16 Ch"),
+        ];
+        assert!(counts.iter().all(|edges| edges.len() == 1), "{counts:?}");
+        assert!((counts[0][0] - counts[1][0]).abs() < 0.5, "{counts:?}");
+        assert!((counts[0][0] - counts[2][0]).abs() < 0.5, "{counts:?}");
+        let longest = text_left_edges(&output, "2: A much longer");
+        assert!(counts[0][0] > longest[0] + 100.0);
     }
 
     /// Tabs through the widgets until typed text lands in the probed field.
