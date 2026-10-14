@@ -174,6 +174,47 @@ impl RadioProject {
         Ok(image)
     }
 
+    /// Reads back an image [`Self::compile_radio_image`] produced, as a radio
+    /// would: checksum and every block first, then each bank, plan and stored
+    /// channel. Stored channels are numbered by their position on the radio.
+    pub fn from_radio_image(image: &[u8]) -> Result<Self, StorageError> {
+        let mut header = [0_u8; radio_image::HEADER_LEN];
+        header.copy_from_slice(
+            image
+                .get(..radio_image::HEADER_LEN)
+                .ok_or(StorageError::MalformedImage)?,
+        );
+        let payload = &image[radio_image::HEADER_LEN..];
+        let read = |offset: usize, buffer: &mut [u8]| {
+            payload
+                .get(offset..offset + buffer.len())
+                .is_some_and(|bytes| {
+                    buffer.copy_from_slice(bytes);
+                    true
+                })
+        };
+        let index = radio_image::Index::build(&header, read)?;
+        let mut project = Self::new();
+        project.set_config(index.config());
+        for id in 0..radio_channel_plan::MAX_BANKS {
+            let bank = BankId::new(id);
+            if let Some(named) = index.bank(read, bank) {
+                project.add_bank(named);
+            }
+            if let Some(plan) = index.plan(read, bank) {
+                project.add_generated_bank(plan);
+            }
+        }
+        for position in (0..index.len()).filter(|position| !index.is_generated(*position)) {
+            project.add_channel(
+                index
+                    .channel_at(read, position)
+                    .ok_or(StorageError::MalformedObject)?,
+            );
+        }
+        Ok(project)
+    }
+
     /// Reports whether the project defines no objects at all.
     pub fn is_empty(&self) -> bool {
         self.generated_banks.is_empty()
@@ -1168,6 +1209,28 @@ mod tests {
         .expect("the radio accepts it");
         assert_eq!(index.len(), 2 + bank(1).channel_count());
         assert!(image.len() <= usize::from(super::IMAGE_REGION_BYTES));
+    }
+
+    #[test]
+    fn a_radio_image_reads_back_into_the_project_it_came_from() {
+        let mut project = RadioProject::new();
+        project.add_generated_bank(bank(1));
+        project.add_channel(channel(2, 0b0000_0010));
+        project.add_bank(named_bank(1));
+        let image = project.compile_radio_image().expect("radio image");
+        let read = RadioProject::from_radio_image(&image).expect("reads back");
+        assert_eq!(read.banks(), project.banks());
+        assert_eq!(read.generated_banks(), project.generated_banks());
+        assert_eq!(read.channels().len(), 1);
+        assert_eq!(read.channels()[0].name(), project.channels()[0].name());
+        assert_eq!(read.channels()[0].banks(), project.channels()[0].banks());
+        assert_eq!(read.config(), Some(RadioConfig::conservative()));
+        assert_eq!(read.compile_radio_image(), Ok(image.clone()));
+
+        let mut damaged = image;
+        damaged[20] ^= 1;
+        assert!(RadioProject::from_radio_image(&damaged).is_err());
+        assert!(RadioProject::from_radio_image(&[0; 4]).is_err());
     }
 
     #[test]

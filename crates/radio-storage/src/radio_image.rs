@@ -866,20 +866,36 @@ impl Index {
         list.channel(&record[..stride], index + 1, block.bank).ok()
     }
 
-    /// The name to show for `bank`: its own name, else its plan's.
-    pub fn bank_name(
+    /// Whether the channel at `index` is expanded from a generated plan
+    /// rather than stored as a record.
+    #[must_use]
+    pub fn is_generated(&self, index: u16) -> bool {
+        self.block_of(index)
+            .is_some_and(|(block, _)| block.kind == KIND_LINEAR)
+    }
+
+    /// The named bank `bank`, as the image's bank table stores it.
+    pub fn bank(
         &self,
         mut read: impl FnMut(usize, &mut [u8]) -> bool,
         bank: BankId,
-    ) -> Option<BankName> {
-        let slot = usize::from(bank.get());
-        if let Some(&at) = self.names.get(slot).filter(|at| **at != ABSENT) {
-            let at = usize::from(at);
-            let entry = read_array::<BANK_ENTRY_HEADER_LEN>(&mut read, at).ok()?;
-            return Self::read_bank(&mut read, at, entry)
-                .ok()
-                .map(ChannelBank::name);
-        }
+    ) -> Option<ChannelBank> {
+        let at = usize::from(
+            *self
+                .names
+                .get(usize::from(bank.get()))
+                .filter(|at| **at != ABSENT)?,
+        );
+        let entry = read_array::<BANK_ENTRY_HEADER_LEN>(&mut read, at).ok()?;
+        Self::read_bank(&mut read, at, entry).ok()
+    }
+
+    /// The generated plan stored in `bank`, if it has one.
+    pub fn plan(
+        &self,
+        mut read: impl FnMut(usize, &mut [u8]) -> bool,
+        bank: BankId,
+    ) -> Option<GeneratedBank> {
         let block = self.blocks[..self.block_count]
             .iter()
             .find(|block| block.kind == KIND_LINEAR && u16::from(block.bank) == bank.get())?;
@@ -890,7 +906,17 @@ impl Index {
             block.bank,
         )
         .ok()
-        .map(GeneratedBank::name)
+    }
+
+    /// The name to show for `bank`: its own name, else its plan's.
+    pub fn bank_name(
+        &self,
+        mut read: impl FnMut(usize, &mut [u8]) -> bool,
+        bank: BankId,
+    ) -> Option<BankName> {
+        self.bank(&mut read, bank)
+            .map(ChannelBank::name)
+            .or_else(|| self.plan(&mut read, bank).map(GeneratedBank::name))
     }
 }
 
@@ -1076,6 +1102,19 @@ mod tests {
             "a plan names its own bank"
         );
         assert!(index.bank_name(reader(&image), BankId::new(1)).is_none());
+    }
+
+    #[test]
+    fn a_host_reads_back_each_bank_and_plan_it_wrote() {
+        let image = compiled(&pmr(), &[plan()]);
+        let index = index(&image).expect("index");
+        assert_eq!(index.bank(reader(&image), BankId::new(0)), Some(banks()[0]));
+        assert_eq!(index.bank(reader(&image), BankId::new(2)), None);
+        assert_eq!(index.plan(reader(&image), BankId::new(2)), Some(plan()));
+        assert_eq!(index.plan(reader(&image), BankId::new(0)), None);
+        assert!(!index.is_generated(15));
+        assert!(index.is_generated(16));
+        assert!(!index.is_generated(16 + 40));
     }
 
     #[test]
