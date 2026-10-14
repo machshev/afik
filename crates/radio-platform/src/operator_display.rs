@@ -315,6 +315,8 @@ pub struct OperatingView<'a> {
     pub entry: Option<u32>,
     /// Whether the selected slot is on the VFO, so an entry is kilohertz.
     pub entry_vfo: bool,
+    /// Whether PTT is held after the TX policy refused the press.
+    pub tx_disabled: bool,
 }
 
 /// One selector-list row, carrying the exact text the row shows.
@@ -561,10 +563,13 @@ pub fn render_operating_screen(frame: &mut [u8; FRAME_BYTES], view: &OperatingVi
     // The status row carries what the operator is doing on the left, and the
     // battery in the right corner, where nothing else appears. A failed
     // receiver must not resemble a quiet but healthy channel, so it takes the
-    // row over; typed digits come next, so the operator sees what the radio
-    // will act on before it acts.
+    // row over; a refused PTT press must not resemble a silent transmission,
+    // so it comes next; typed digits follow, so the operator sees what the
+    // radio will act on before it acts.
     if !view.receiver_ok {
         draw_text(frame, 0, 0, b"RX FAULT");
+    } else if view.tx_disabled {
+        draw_text(frame, 0, 0, b"TX DISABLED");
     } else if let Some(entry) = view.entry {
         draw_text(frame, 0, 0, &entry_label(entry, view.entry_vfo));
     } else {
@@ -1562,6 +1567,7 @@ mod operating_screen_tests {
             function: false,
             entry: None,
             entry_vfo: false,
+            tx_disabled: false,
         }
     }
 
@@ -1625,6 +1631,7 @@ mod operating_screen_tests {
         fixed.extend_from_slice(b"SCAN");
         fixed.extend_from_slice(b"MON");
         fixed.extend_from_slice(b"RX FAULT");
+        fixed.extend_from_slice(b"TX DISABLED");
         fixed.extend_from_slice(b"NO CHANNELS");
         fixed.extend_from_slice(b"DUAL WATCH ON");
         fixed.extend_from_slice(b"DUAL WATCH OFF");
@@ -1784,6 +1791,24 @@ mod operating_screen_tests {
         ] {
             assert_ne!(base, render(&changed), "state must be visible on screen");
         }
+    }
+
+    /// A PTT press the TX policy refused says so in place of whatever the
+    /// status row held, typed digits included.
+    #[test]
+    fn a_refused_transmission_says_tx_disabled() {
+        let base = render(&view());
+        let disabled = render(&OperatingView {
+            tx_disabled: true,
+            ..view()
+        });
+        assert_ne!(base, disabled);
+        let typing_refused = render(&OperatingView {
+            tx_disabled: true,
+            entry: Some(7),
+            ..view()
+        });
+        assert_eq!(disabled, typing_refused);
     }
 
     /// The meter is the squelch indicator: present while open, absent while

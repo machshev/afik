@@ -776,6 +776,9 @@ pub async fn run<D, K, B, S, V, M>(
     let mut watch = DualWatch::new();
     let mut watched_busy = false;
     let mut transmitted = false;
+    // Whether PTT is held after the policy refused the press, so the screen
+    // says why nothing went out.
+    let mut tx_disabled = false;
     let mut quiet_retune = false;
     let mut next_sample = Instant::now();
     // Whether the receiver has produced a reading on the channel it is now on.
@@ -940,7 +943,12 @@ pub async fn run<D, K, B, S, V, M>(
         }
         if let Some(controller) = tx.as_mut() {
             let tx_policy = tx_policy_now;
-            let _ = controller.handle(tx_now, event, &tx_policy, &tx_request.0);
+            let handled = controller.handle(tx_now, event, &tx_policy, &tx_request.0);
+            let refused = tx_refusal(tx_disabled, event, handled);
+            if refused != tx_disabled {
+                tx_disabled = refused;
+                redraw = true;
+            }
             let bias = tx_request.1;
             transmit::run_effects(controller, &tx_policy, &tx_request.0, tx_now, |effect| {
                 receiver.transmit_effect(effect, bias)
@@ -1453,6 +1461,7 @@ pub async fn run<D, K, B, S, V, M>(
                 memory_state,
                 target.identity,
                 memory,
+                tx_disabled,
             );
             if !display.frame(&frame).await {
                 return;
@@ -1497,6 +1506,20 @@ fn adopt_squelch(
         memory,
         place: None,
     });
+}
+
+/// Whether the screen shows TX disabled after this PTT event: from a press
+/// the policy refused until PTT is released.
+fn tx_refusal(
+    shown: bool,
+    event: tx_control::Event,
+    handled: Result<(), tx_control::Error>,
+) -> bool {
+    match (event, handled) {
+        (tx_control::Event::Pressed, Err(tx_control::Error::Policy(_))) => true,
+        (tx_control::Event::Released, _) => false,
+        _ => shown,
+    }
 }
 
 /// Builds the TX request for the selected slot's frequency, and the bias it
@@ -1553,6 +1576,7 @@ fn render<B: RegisterBus, S: Speaker, M: Memory>(
     memory_state: MemoryState,
     identity: &[u8],
     memory: &'static TaskCell<Option<M>>,
+    tx_disabled: bool,
 ) {
     // Only an empty memory has no controller: the VFO always has one.
     let visible = controller.map_or(0, BankedReceiveController::visible_channels);
@@ -1603,6 +1627,7 @@ fn render<B: RegisterBus, S: Speaker, M: Memory>(
                     function: shell.function_pending(),
                     entry: shell.entry(),
                     entry_vfo: matches!(shell.mode(), Mode::Vfo),
+                    tx_disabled,
                 },
             );
         }
@@ -2036,6 +2061,26 @@ mod tests {
         shell.press(Key::Digit(6), 3, context());
         assert_eq!(chosen_power(&shell, Some(vfo)), 5);
         assert_eq!(chosen_power(&shell, None), 5);
+    }
+
+    #[test]
+    fn a_refused_press_shows_tx_disabled_until_ptt_is_released() {
+        use super::tx_refusal;
+        use radio_platform::tx_control::{Error, Event};
+        use radio_tx_policy::TxDenied;
+
+        let refused = Err(Error::Policy(TxDenied::Range));
+        assert!(tx_refusal(false, Event::Pressed, refused));
+        assert!(tx_refusal(true, Event::Tick, Ok(())), "kept while held");
+        assert!(!tx_refusal(true, Event::Released, Ok(())));
+        assert!(
+            !tx_refusal(false, Event::Pressed, Ok(())),
+            "a permitted press"
+        );
+        assert!(
+            !tx_refusal(false, Event::Pressed, Err(Error::StaleRequest)),
+            "only the policy disables TX"
+        );
     }
 
     fn context() -> radio_platform::operator_shell::Context {

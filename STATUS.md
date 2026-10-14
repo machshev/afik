@@ -75,6 +75,12 @@ programmed TX ranges protect channel and VFO mode alike.
   radio-tx-policy -p radio-platform -p radio-app --all-targets --no-deps -D
   warnings` clean, `cargo test` on those crates 171 passed 0 failed,
   `tool/build-k5.sh --release` (flash end `0x0000d1a8`) passes.
+- TX disabled (operator request): a PTT press the policy refuses, such as
+  on a frequency outside every range, shows `TX DISABLED` on the status row
+  until PTT is released. Gate: `cargo fmt --all --check` clean, workspace
+  clippy `-D warnings` clean, `cargo test --workspace` 723 passed 0 failed,
+  `tool/build-k5.sh --release` and `tool/build-k1.sh --release` pass. Not
+  flashed; needs a version bump before it is.
 - `7.0.21` is the image to flash (`Cargo.lock` and both targets rebuilt;
   K5 flash end `0x0000d138`). `cargo test --workspace` 698 passed 0 failed.
 - Next (step 6, hardware): flash K5 `7.0.21`; the old format 5 image is
