@@ -490,7 +490,7 @@ impl<C: ChannelSource> BankedReceiveController<C> {
             None => first_member(&source, bank).ok_or(ReceiveError::NoEligibleChannel)?,
         };
         let channel = source.get(index).ok_or(ReceiveError::NoEligibleChannel)?;
-        let vfo = channel_setup(&channel, false);
+        let vfo = channel_setup(&channel, config.squelch, false);
         let mut controller = Self {
             source,
             config,
@@ -569,7 +569,7 @@ impl<C: ChannelSource> BankedReceiveController<C> {
     /// Returns the complete receive settings for the current selection.
     pub fn setup(&self) -> ChannelReceiveSetup {
         match self.mode {
-            ReceiveMode::Memory => channel_setup(&self.channel, self.monitor),
+            ReceiveMode::Memory => channel_setup(&self.channel, self.config.squelch, self.monitor),
             ReceiveMode::Vfo => ChannelReceiveSetup {
                 squelch: effective_squelch(self.vfo.squelch, self.monitor),
                 ..self.vfo
@@ -675,7 +675,7 @@ impl<C: ChannelSource> BankedReceiveController<C> {
         if matches!(self.state, ReceiveState::Scanning(_)) {
             return Err(ReceiveError::InvalidState(self.state));
         }
-        self.vfo = channel_setup(&self.channel, false);
+        self.vfo = channel_setup(&self.channel, self.config.squelch, false);
         self.mode = ReceiveMode::Vfo;
         self.audio_open = self.monitor;
         Ok(ReceiveUpdate {
@@ -1027,13 +1027,18 @@ fn effective_squelch(squelch: SquelchLevel, monitor: bool) -> SquelchLevel {
     }
 }
 
-fn channel_setup(channel: &ChannelRecord, monitor: bool) -> ChannelReceiveSetup {
+/// Squelch is radio-wide: the level is the configuration's, never the channel's.
+fn channel_setup(
+    channel: &ChannelRecord,
+    squelch: SquelchLevel,
+    monitor: bool,
+) -> ChannelReceiveSetup {
     ChannelReceiveSetup {
         frequency: channel.active().receive,
         modulation: channel.modulation(),
         bandwidth: channel.bandwidth(),
         tone: channel.rx_tone(),
-        squelch: effective_squelch(channel.squelch(), monitor),
+        squelch: effective_squelch(squelch, monitor),
         step: channel.step(),
     }
 }
@@ -1260,10 +1265,20 @@ mod tests {
     }
 
     #[test]
+    fn squelch_is_radio_wide_whatever_the_channel_stores() {
+        let mut config = RadioConfig::conservative();
+        config.squelch = SquelchLevel::new(7).unwrap();
+        let mut controller = controller(config, None);
+        assert_eq!(controller.setup().squelch, config.squelch);
+        controller.enter_vfo().unwrap();
+        assert_eq!(controller.setup().squelch, config.squelch);
+    }
+
+    #[test]
     fn monitor_opens_audio_and_forces_the_open_squelch_level() {
         let mut controller = controller(RadioConfig::conservative(), None);
         assert!(!controller.is_audio_open());
-        assert_eq!(controller.setup().squelch, SquelchLevel::new(4).unwrap());
+        assert_eq!(controller.setup().squelch, SquelchLevel::CONSERVATIVE);
 
         let update = controller.set_monitor(true);
         assert!(update.audio_open);
