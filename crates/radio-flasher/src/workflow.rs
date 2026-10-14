@@ -905,6 +905,43 @@ pub fn observe_bootloader<T: Read>(transport: &mut T) -> Result<BeaconObservatio
     Ok(BeaconObservation { command, version })
 }
 
+/// What answered on a serial port.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RadioPresence {
+    /// A radio in bootloader (flashing) mode, announcing itself by beacon.
+    Bootloader(BootloaderFamily),
+    /// A radio running its normal firmware, which answered the hello.
+    Firmware(NormalFirmwareInfo),
+}
+
+/// Finds out what is on the other end of the cable, writing nothing to it.
+///
+/// It first listens for a bootloader beacon, which needs no request at all, so
+/// a radio in flashing mode is never sent anything. Only when no beacon arrives
+/// does it send the read-only normal-firmware hello.
+pub fn identify_radio<T: Read + Write>(transport: &mut T) -> Result<RadioPresence, FlashError> {
+    let silent = match detect_bootloader(transport) {
+        Ok(family) => return Ok(RadioPresence::Bootloader(family)),
+        Err(error) => error,
+    };
+    match probe_normal_firmware(transport) {
+        Ok(info) => Ok(RadioPresence::Firmware(info)),
+        // A beacon arriving now is a bootloader the listen missed or could not
+        // classify; its own error says more than the hello's.
+        Err(FlashError::InBootloader) => Err(silent),
+        Err(error) => Err(error),
+    }
+}
+
+/// Reports whether firmware with this hello version serves the `0x051B` EEPROM
+/// read, which is what an EEPROM backup needs.
+pub fn serves_eeprom_reads(version: &str) -> bool {
+    require_eeprom_service(&NormalFirmwareInfo {
+        version: version.to_owned(),
+    })
+    .is_ok()
+}
+
 /// Reads one beacon and classifies only the pinned K1 or qualified K5 protocol.
 pub fn detect_bootloader<T: Read>(transport: &mut T) -> Result<BootloaderFamily, FlashError> {
     let (packet, response_crc) = receive_packet_with_response_crc(transport)?;
@@ -1546,12 +1583,12 @@ mod tests {
 
     use super::{
         apply_eeprom_restore, backup_eeprom, detect_bootloader, flash_afik_application,
-        flash_application, observe_bootloader, prepare_eeprom_restore, probe_bootloader_v2,
-        probe_clock_control, probe_clock_registers, probe_clock_snapshot, probe_keypad_matrix,
-        probe_normal_firmware, require_eeprom_service, BeaconProtocol, BootloaderFamily,
-        EepromRestorePrerequisites, FirmwareVersion, FlashError, FlashPrerequisites, FlashPurpose,
-        NormalFirmwareInfo, EEPROM_BLOCK_BYTES, QUALIFIED_TARGET_CONFIRMATION,
-        RECOVERY_REHEARSED_CONFIRMATION,
+        flash_application, identify_radio, observe_bootloader, prepare_eeprom_restore,
+        probe_bootloader_v2, probe_clock_control, probe_clock_registers, probe_clock_snapshot,
+        probe_keypad_matrix, probe_normal_firmware, require_eeprom_service, serves_eeprom_reads,
+        BeaconProtocol, BootloaderFamily, EepromRestorePrerequisites, FirmwareVersion, FlashError,
+        FlashPrerequisites, FlashPurpose, NormalFirmwareInfo, RadioPresence, EEPROM_BLOCK_BYTES,
+        QUALIFIED_TARGET_CONFIRMATION, RECOVERY_REHEARSED_CONFIRMATION,
     };
 
     const TEST_TRANSACTION_ID: u32 = 0xA55A_1234;
@@ -2009,6 +2046,71 @@ mod tests {
             // Only the hello was sent: no read the firmware would never answer.
             assert_eq!(decode_requests(&transport.writes).len(), 1);
         }
+    }
+
+    /// A radio which is silent until it is sent a request, then answers it.
+    struct AnswersWhenAsked {
+        response: Vec<u8>,
+        asked: bool,
+        position: usize,
+    }
+
+    impl Read for AnswersWhenAsked {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            if !self.asked || self.position == self.response.len() || buffer.is_empty() {
+                return Ok(0);
+            }
+            buffer[0] = self.response[self.position];
+            self.position += 1;
+            Ok(1)
+        }
+    }
+
+    impl Write for AnswersWhenAsked {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            self.asked = true;
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn identification_hears_a_bootloader_without_sending_anything() {
+        let mut transport = ScriptedTransport::new(beacon(), 1);
+        let presence = identify_radio(&mut transport).unwrap();
+        assert!(matches!(
+            presence,
+            RadioPresence::Bootloader(BootloaderFamily::K5V1(ref info)) if info.version() == "2.00.06"
+        ));
+        assert!(
+            transport.writes.is_empty(),
+            "a bootloader is never written to"
+        );
+    }
+
+    #[test]
+    fn identification_asks_running_firmware_only_after_hearing_no_beacon() {
+        let mut radio = AnswersWhenAsked {
+            response: hello_response(),
+            asked: false,
+            position: 0,
+        };
+        let presence = identify_radio(&mut radio).unwrap();
+        assert!(
+            matches!(presence, RadioPresence::Firmware(ref info) if info.version() == "F4HWN v4.3")
+        );
+
+        // Nothing on the cable at all is the listen's timeout.
+        let mut nothing = ScriptedTransport::new(Vec::new(), 1);
+        assert!(matches!(
+            identify_radio(&mut nothing),
+            Err(FlashError::Timeout)
+        ));
+        assert!(serves_eeprom_reads("k5_2.01.23"));
+        assert!(!serves_eeprom_reads("AFIK-K1-7.0.6"));
     }
 
     #[test]
