@@ -58,6 +58,14 @@ programmed TX ranges protect channel and VFO mode alike.
   clean, workspace clippy `-D warnings` clean, `cargo test --workspace` 695
   passed 0 failed, `tool/build-k5.sh --release` (flash end `0x0000d138`) and
   `tool/build-k1.sh --release` pass. Not flashed.
+- Step 5: the studio's Radio tab edits the TX ranges (class, first and last
+  MHz, max mW, wide, raster Hz) and adds presets after the existing ranges,
+  skipping ones already there and refusing past 16: UK, EU (CEPT) (PMR446,
+  2 m, 70 cm), US (FRS, MURS, 2 m, 70 cm) and Marine VHF. Ranges load from
+  and save to projects and radio images. The layout was not checked on
+  screen (no GUI driver here). Gate: `cargo fmt --all --check` clean,
+  workspace clippy `-D warnings` clean, `cargo test --workspace` 698 passed
+  0 failed.
 
 ## Previous work package: TXK5-059
 

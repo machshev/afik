@@ -18,7 +18,7 @@ use radio_channel_plan::{
 };
 use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, Offset, PowerLevel,
-    RadioConfig, RadioFlags, ScanResume, SquelchLevel, Tone, MAX_BATTERY_SAVE_RATIO,
+    RadioConfig, RadioFlags, ScanResume, SquelchLevel, Tone, TxClass, MAX_BATTERY_SAVE_RATIO,
     MAX_SQUELCH_LEVEL, TX_POWER_LEVELS, TX_TIMEOUT_CHOICES,
 };
 use radio_programmer::{ConfigurationCompiler, DeviceCapabilities, RadioProject};
@@ -27,7 +27,7 @@ use radio_storage::{
     decode_radio_config, decode_tx_range, radio_image, ObjectKind, MAX_OBJECT_DATA,
     STORAGE_FORMAT_VERSION,
 };
-use radio_tx_policy::TxRange;
+use radio_tx_policy::{TxRange, MAX_TX_RANGES};
 
 /// Maximum objects an offline host project may hold.
 pub const MAX_PROJECT_OBJECTS: u16 = 1_024;
@@ -84,6 +84,8 @@ pub enum ModelScope {
     Bank(usize),
     /// The global radio configuration.
     Config,
+    /// One programmed TX range, by zero-based row.
+    TxRange(usize),
     /// The whole project.
     Project,
 }
@@ -96,6 +98,7 @@ impl fmt::Display for ModelScope {
             }
             Self::Bank(row) => write!(formatter, "bank {}", row + 1),
             Self::Config => formatter.write_str("radio configuration"),
+            Self::TxRange(row) => write!(formatter, "TX range {}", row + 1),
             Self::Project => formatter.write_str("project"),
         }
     }
@@ -825,7 +828,84 @@ pub struct ProjectModel {
     /// The editable global radio configuration.
     pub config: ConfigDraft,
     /// The programmed TX ranges, in order (`ADR-101`).
-    pub tx_ranges: Vec<TxRange>,
+    pub tx_ranges: Vec<TxRangeDraft>,
+}
+
+/// One editable programmed TX range (`ADR-101`): where this radio may
+/// transmit, as which class, and how loud.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TxRangeDraft {
+    /// Service the range belongs to; the handset can switch it off.
+    pub class: TxClass,
+    /// Lowest permitted frequency in megahertz, inclusive.
+    pub first_mhz: String,
+    /// Highest permitted frequency in megahertz, inclusive.
+    pub last_mhz: String,
+    /// Highest permitted power in milliwatts.
+    pub max_mw: u16,
+    /// Whether wide FM is permitted.
+    pub wide_fm: bool,
+    /// Channel raster in hertz from the first frequency; zero permits any.
+    pub raster_hz: u16,
+}
+
+impl Default for TxRangeDraft {
+    fn default() -> Self {
+        Self {
+            class: TxClass::Amateur,
+            first_mhz: String::new(),
+            last_mhz: String::new(),
+            max_mw: 5_000,
+            wide_fm: true,
+            raster_hz: 0,
+        }
+    }
+}
+
+impl TxRangeDraft {
+    /// Copies a validated range into editable fields.
+    pub fn from_range(range: TxRange) -> Self {
+        Self {
+            class: range.class,
+            first_mhz: format_mhz(range.first_hz),
+            last_mhz: format_mhz(range.last_hz),
+            max_mw: range.max_mw,
+            wide_fm: range.wide_fm,
+            raster_hz: range.raster_hz,
+        }
+    }
+
+    /// Validates the fields as range `row`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first field that does not hold.
+    pub fn validate(&self, row: usize) -> Result<TxRange, ModelError> {
+        let scope = ModelScope::TxRange(row);
+        let first = parse_frequency(&self.first_mhz)
+            .ok_or_else(|| error(scope, "first", "enter a frequency in MHz"))?;
+        let last = parse_frequency(&self.last_mhz)
+            .ok_or_else(|| error(scope, "last", "enter a frequency in MHz"))?;
+        let range = TxRange {
+            class: self.class,
+            first_hz: first.as_hz(),
+            last_hz: last.as_hz(),
+            max_mw: self.max_mw,
+            wide_fm: self.wide_fm,
+            raster_hz: self.raster_hz,
+        };
+        range
+            .validate()
+            .map_err(|failure| error(scope, "range", failure.to_string()))?;
+        Ok(range)
+    }
+
+    /// Whether this is the same range as `other`, whatever its settings.
+    pub fn same_span(&self, other: &Self) -> bool {
+        self.class == other.class
+            && parse_frequency(&self.first_mhz) == parse_frequency(&other.first_mhz)
+            && parse_frequency(&self.last_mhz) == parse_frequency(&other.last_mhz)
+    }
 }
 
 impl ProjectModel {
@@ -980,8 +1060,18 @@ impl ProjectModel {
             Ok(config) => project.set_config(config),
             Err(failure) => errors.push(failure),
         }
-        for range in &self.tx_ranges {
-            project.add_tx_range(*range);
+        if self.tx_ranges.len() > MAX_TX_RANGES {
+            errors.push(error(
+                ModelScope::Project,
+                "TX ranges",
+                format!("a radio holds at most {MAX_TX_RANGES}"),
+            ));
+        }
+        for (row, range) in self.tx_ranges.iter().enumerate() {
+            match range.validate(row) {
+                Ok(range) => project.add_tx_range(range),
+                Err(failure) => errors.push(failure),
+            }
         }
 
         if errors.is_empty() {
@@ -1088,7 +1178,11 @@ impl ProjectModel {
             config: project
                 .config()
                 .map_or_else(ConfigDraft::default, ConfigDraft::from_config),
-            tx_ranges: project.tx_ranges().to_vec(),
+            tx_ranges: project
+                .tx_ranges()
+                .iter()
+                .map(|range| TxRangeDraft::from_range(*range))
+                .collect(),
         };
         for id in 0..MAX_BANKS {
             let named = project.banks().iter().find(|bank| bank.id().get() == id);

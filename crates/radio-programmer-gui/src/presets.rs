@@ -14,9 +14,9 @@
 //! rather than a truncated bank name and a position. The marine channel
 //! numbering is not arithmetic, so it is stored as named channels.
 
-use radio_domain::{Bandwidth, Modulation, PowerLevel};
+use radio_domain::{Bandwidth, Modulation, PowerLevel, TxClass};
 
-use crate::model::{format_mhz, BankDraft, BankKind, ChannelDraft, ProjectModel};
+use crate::model::{format_mhz, BankDraft, BankKind, ChannelDraft, ProjectModel, TxRangeDraft};
 
 /// One generated plan a preset defines.
 struct PresetPlan {
@@ -276,7 +276,7 @@ pub const PRESETS: &[Preset] = &[
     Preset {
         name: "VHF airband receive",
         detail: "760 AM channels from 118.000 to 136.975 MHz in one stored \
-                 object, classified so the radio will never transmit on them.",
+                 object. No TX range covers them, so the radio never transmits.",
         plans: &[AIRBAND],
         lists: &[],
     },
@@ -289,6 +289,155 @@ pub const PRESETS: &[Preset] = &[
         lists: &[MARINE_DUPLEX, MARINE_SIMPLEX],
     },
 ];
+
+/// One TX range a TX preset adds.
+struct PresetRange {
+    class: TxClass,
+    first_hz: u32,
+    last_hz: u32,
+    max_mw: u16,
+    wide_fm: bool,
+    raster_hz: u16,
+}
+
+/// A named set of TX ranges for one region or service (`ADR-101`).
+///
+/// Like the channel sets, a starting point: the operator confirms each range
+/// against their own licence and national rules before writing it.
+pub struct TxRangePreset {
+    name: &'static str,
+    detail: &'static str,
+    ranges: &'static [PresetRange],
+}
+
+/// PMR446: sixteen 12.5 kHz channels, narrow FM, 500 mW ERP.
+const PMR446_RANGE: PresetRange = PresetRange {
+    class: TxClass::LicenceFreePlan,
+    first_hz: 446_006_250,
+    last_hz: 446_193_750,
+    max_mw: 500,
+    wide_fm: false,
+    raster_hz: 12_500,
+};
+
+const fn amateur(first_hz: u32, last_hz: u32) -> PresetRange {
+    PresetRange {
+        class: TxClass::Amateur,
+        first_hz,
+        last_hz,
+        max_mw: 5_000,
+        wide_fm: true,
+        raster_hz: 0,
+    }
+}
+
+/// Every selectable TX range preset in display order.
+pub const TX_RANGE_PRESETS: &[TxRangePreset] = &[
+    TxRangePreset {
+        name: "UK",
+        detail: "PMR446, and 2 m (144-146 MHz) and 70 cm (430-440 MHz) amateur.",
+        ranges: &[
+            PMR446_RANGE,
+            amateur(144_000_000, 146_000_000),
+            amateur(430_000_000, 440_000_000),
+        ],
+    },
+    TxRangePreset {
+        name: "EU (CEPT)",
+        detail: "PMR446, and IARU Region 1 2 m (144-146 MHz) and 70 cm \
+                 (430-440 MHz) amateur.",
+        ranges: &[
+            PMR446_RANGE,
+            amateur(144_000_000, 146_000_000),
+            amateur(430_000_000, 440_000_000),
+        ],
+    },
+    TxRangePreset {
+        name: "US",
+        detail: "FRS (2 W, 0.5 W on 8-14), MURS (2 W), and 2 m (144-148 MHz) \
+                 and 70 cm (420-450 MHz) amateur.",
+        ranges: &[
+            // FRS 1-7 and 15-22 interleave on a 12.5 kHz grid.
+            PresetRange {
+                class: TxClass::LicenceFreePlan,
+                first_hz: 462_550_000,
+                last_hz: 462_725_000,
+                max_mw: 2_000,
+                wide_fm: false,
+                raster_hz: 12_500,
+            },
+            // FRS 8-14.
+            PresetRange {
+                class: TxClass::LicenceFreePlan,
+                first_hz: 467_562_500,
+                last_hz: 467_712_500,
+                max_mw: 500,
+                wide_fm: false,
+                raster_hz: 25_000,
+            },
+            // MURS 1-3, narrow.
+            PresetRange {
+                class: TxClass::LicenceFreePlan,
+                first_hz: 151_820_000,
+                last_hz: 151_940_000,
+                max_mw: 2_000,
+                wide_fm: false,
+                raster_hz: 60_000,
+            },
+            // MURS 4-5, which may be wide.
+            PresetRange {
+                class: TxClass::LicenceFreePlan,
+                first_hz: 154_570_000,
+                last_hz: 154_600_000,
+                max_mw: 2_000,
+                wide_fm: true,
+                raster_hz: 30_000,
+            },
+            amateur(144_000_000, 148_000_000),
+            amateur(420_000_000, 450_000_000),
+        ],
+    },
+    TxRangePreset {
+        name: "Marine VHF",
+        detail: "Ship transmit channels 156.025-157.425 MHz on the 25 kHz \
+                 grid; needs a ship radio licence.",
+        ranges: &[PresetRange {
+            class: TxClass::Marine,
+            first_hz: 156_025_000,
+            last_hz: 157_425_000,
+            max_mw: 5_000,
+            wide_fm: true,
+            raster_hz: 25_000,
+        }],
+    },
+];
+
+impl TxRangePreset {
+    /// Returns the editor label.
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// Returns the one-line description.
+    pub const fn detail(&self) -> &'static str {
+        self.detail
+    }
+
+    /// Returns the ranges as editable drafts.
+    pub fn drafts(&self) -> Vec<TxRangeDraft> {
+        self.ranges
+            .iter()
+            .map(|range| TxRangeDraft {
+                class: range.class,
+                first_mhz: format_mhz(range.first_hz),
+                last_mhz: format_mhz(range.last_hz),
+                max_mw: range.max_mw,
+                wide_fm: range.wide_fm,
+                raster_hz: range.raster_hz,
+            })
+            .collect()
+    }
+}
 
 impl Preset {
     /// Returns the editor label.
@@ -378,6 +527,51 @@ mod tests {
     use super::PRESETS;
     use crate::model::{BankKind, ProjectModel, ValidatedBank, RADIO_IMAGE_BYTES};
     use radio_domain::Bandwidth;
+
+    #[test]
+    fn every_tx_range_preset_validates_and_covers_its_calling_frequencies() {
+        use super::TX_RANGE_PRESETS;
+        use radio_tx_policy::TxPolicy;
+
+        for preset in TX_RANGE_PRESETS {
+            let mut project = ProjectModel::new();
+            project.tx_ranges = preset.drafts();
+            let compiled = project
+                .validate()
+                .unwrap_or_else(|_| panic!("{} validates", preset.name()));
+            assert!(TxPolicy::new(compiled.tx_ranges()).is_ok());
+        }
+        let policy_of = |name: &str| {
+            let preset = TX_RANGE_PRESETS.iter().find(|p| p.name() == name).unwrap();
+            let mut project = ProjectModel::new();
+            project.tx_ranges = preset.drafts();
+            TxPolicy::new(project.validate().unwrap().tx_ranges()).unwrap()
+        };
+        let contains = |policy: &TxPolicy, hz: u32| {
+            policy
+                .ranges()
+                .any(|range| (range.first_hz..=range.last_hz).contains(&hz))
+        };
+        let uk = policy_of("UK");
+        for hz in [446_006_250, 446_193_750, 145_500_000, 433_500_000] {
+            assert!(contains(&uk, hz), "UK {hz}");
+        }
+        assert!(!contains(&uk, 147_000_000));
+        let us = policy_of("US");
+        for hz in [
+            462_562_500,
+            462_550_000,
+            467_712_500,
+            151_940_000,
+            146_520_000,
+        ] {
+            assert!(contains(&us, hz), "US {hz}");
+        }
+        assert!(
+            contains(&policy_of("Marine VHF"), 156_800_000),
+            "channel 16"
+        );
+    }
 
     #[test]
     fn every_preset_validates_and_compiles_to_an_image() {

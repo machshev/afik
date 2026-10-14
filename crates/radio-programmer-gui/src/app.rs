@@ -7,11 +7,12 @@ use eframe::egui::{
 };
 use radio_channel_plan::{MAX_BANKS, MAX_GENERATED_CHANNELS};
 use radio_domain::{
-    Bandwidth, Modulation, PowerLevel, ScanResume, BACKLIGHT_ALWAYS_ON, MAX_BATTERY_SAVE_RATIO,
-    MAX_SQUELCH_LEVEL, TX_POWER_LEVELS, TX_TIMEOUT_CHOICES,
+    Bandwidth, Modulation, PowerLevel, ScanResume, TxClass, BACKLIGHT_ALWAYS_ON,
+    MAX_BATTERY_SAVE_RATIO, MAX_SQUELCH_LEVEL, TX_POWER_LEVELS, TX_TIMEOUT_CHOICES,
 };
 use radio_flasher::ImageWriteReport;
-use radio_platform::operator_shell::TX_POWER_NOMINAL_MW;
+use radio_platform::operator_shell::{TX_CLASSES, TX_POWER_NOMINAL_MW};
+use radio_tx_policy::MAX_TX_RANGES;
 
 use radio_programmer_serial::SUPPORTED_BAUDS;
 
@@ -20,9 +21,9 @@ use crate::{
     flash_tab::FlashTab,
     model::{
         BankDraft, BankKind, ChannelDraft, ModelError, ProjectModel, StorageSummary, ToneDraft,
-        ToneKind, MAX_PROJECT_IMAGE_BYTES, RADIO_IMAGE_BYTES,
+        ToneKind, TxRangeDraft, MAX_PROJECT_IMAGE_BYTES, RADIO_IMAGE_BYTES,
     },
-    presets::PRESETS,
+    presets::{PRESETS, TX_RANGE_PRESETS},
     projects::ProjectStore,
     session::{DeviceJob, DeviceOutcome, DeviceSession, JobKind},
     DeviceSelector, Options,
@@ -49,6 +50,12 @@ override this.";
 const TX_HINT: &str = "What the radio starts on after it is programmed or \
 switched on. The operator can change it from the handset settings menu until \
 the radio is next switched off.";
+
+/// What the TX ranges do, said once.
+const TX_RANGES_HINT: &str = "The only frequencies this radio may transmit on, \
+in channel and VFO mode alike. Each range names its class, which the handset \
+can switch off to lend the radio, and the most power it allows; a higher power \
+level is refused there. With no range the radio never transmits.";
 
 /// What the backlight timeout does, said once.
 const BACKLIGHT_HINT: &str = "How long the display stays lit after a key or PTT \
@@ -79,6 +86,7 @@ pub struct StudioApp {
     last_write: Option<ImageWriteReport>,
     flash: FlashTab,
     preset: usize,
+    tx_preset: usize,
     /// A write or read running on a worker, which holds the session meanwhile.
     job: Option<DeviceJob>,
     /// A bank row to open the next time the Banks tab is drawn.
@@ -106,6 +114,7 @@ impl StudioApp {
             last_write: None,
             flash: FlashTab::default(),
             preset: 0,
+            tx_preset: 0,
             expand_bank: None,
             job: None,
         };
@@ -452,6 +461,45 @@ impl StudioApp {
         self.new_project.clear();
         self.project = ProjectModel::new();
         self.save_project();
+    }
+
+    /// Appends one TX range preset's ranges after the operator's own.
+    ///
+    /// A range the project already has is skipped, and a preset that would take
+    /// the project past the ranges a radio holds is refused whole.
+    fn add_tx_preset(&mut self) {
+        let Some(preset) = TX_RANGE_PRESETS.get(self.tx_preset) else {
+            return;
+        };
+        let new: Vec<_> = preset
+            .drafts()
+            .into_iter()
+            .filter(|range| !self.project.tx_ranges.iter().any(|r| r.same_span(range)))
+            .collect();
+        if new.is_empty() {
+            self.status = format!(
+                "The {} TX ranges are already in the project.",
+                preset.name()
+            );
+            return;
+        }
+        if self.project.tx_ranges.len() + new.len() > MAX_TX_RANGES {
+            self.status = format!(
+                "{} needs {} more TX ranges; a radio holds {MAX_TX_RANGES} and the \
+                 project has {}.",
+                preset.name(),
+                new.len(),
+                self.project.tx_ranges.len()
+            );
+            return;
+        }
+        let added = new.len();
+        self.project.tx_ranges.extend(new);
+        self.status = format!(
+            "Added {added} {} TX ranges. Confirm each against your own licence \
+             before writing the radio.",
+            preset.name()
+        );
     }
 
     /// Appends one preset default set's banks after the operator's own.
@@ -812,6 +860,83 @@ impl StudioApp {
             });
             ui.end_row();
         });
+        ui.separator();
+        self.tx_ranges_editor(ui);
+    }
+
+    fn tx_ranges_editor(&mut self, ui: &mut egui::Ui) {
+        ui.label(RichText::new("TX ranges").strong())
+            .on_hover_text(TX_RANGES_HINT);
+        ui.horizontal_wrapped(|ui| {
+            let selected = TX_RANGE_PRESETS
+                .get(self.tx_preset)
+                .map_or("none", |preset| preset.name());
+            ComboBox::from_id_salt("tx-preset")
+                .selected_text(selected)
+                .show_ui(ui, |ui| {
+                    for (index, preset) in TX_RANGE_PRESETS.iter().enumerate() {
+                        ui.selectable_value(&mut self.tx_preset, index, preset.name())
+                            .on_hover_text(preset.detail());
+                    }
+                });
+            if ui
+                .button("Add preset")
+                .on_hover_text("Adds the preset's ranges after the existing ones")
+                .clicked()
+            {
+                self.add_tx_preset();
+            }
+            if ui.button("Add range").clicked() && self.project.tx_ranges.len() < MAX_TX_RANGES {
+                self.project.tx_ranges.push(TxRangeDraft::default());
+            }
+            if let Some(preset) = TX_RANGE_PRESETS.get(self.tx_preset) {
+                ui.label(preset.detail());
+            }
+        });
+        if self.project.tx_ranges.is_empty() {
+            ui.label("No TX range: this radio will never transmit.");
+            return;
+        }
+        let mut remove = None;
+        Grid::new("tx-ranges")
+            .num_columns(7)
+            .striped(true)
+            .show(ui, |ui| {
+                for heading in [
+                    "Class",
+                    "First MHz",
+                    "Last MHz",
+                    "Max power",
+                    "Wide",
+                    "Raster Hz",
+                    "",
+                ] {
+                    ui.label(RichText::new(heading).strong());
+                }
+                ui.end_row();
+                for (row, range) in self.project.tx_ranges.iter_mut().enumerate() {
+                    ui.push_id(row, |ui| {
+                        tx_class_editor(ui, &mut range.class);
+                    });
+                    ui.add(TextEdit::singleline(&mut range.first_mhz).desired_width(90.0));
+                    ui.add(TextEdit::singleline(&mut range.last_mhz).desired_width(90.0));
+                    ui.add(
+                        egui::DragValue::new(&mut range.max_mw)
+                            .range(1..=u16::MAX)
+                            .suffix(" mW"),
+                    );
+                    ui.checkbox(&mut range.wide_fm, "");
+                    ui.add(egui::DragValue::new(&mut range.raster_hz))
+                        .on_hover_text("Channel spacing from the first frequency; 0 allows any");
+                    if ui.button("Delete").clicked() {
+                        remove = Some(row);
+                    }
+                    ui.end_row();
+                }
+            });
+        if let Some(row) = remove {
+            self.project.tx_ranges.remove(row);
+        }
     }
 
     fn device_tab(&mut self, ui: &mut egui::Ui) {
@@ -1384,6 +1509,27 @@ fn bandwidth_editor(ui: &mut egui::Ui, bandwidth: &mut Bandwidth) {
         });
 }
 
+fn tx_class_editor(ui: &mut egui::Ui, class: &mut TxClass) {
+    ComboBox::from_id_salt("tx-class")
+        .selected_text(tx_class_label(*class))
+        .show_ui(ui, |ui| {
+            for candidate in TX_CLASSES {
+                ui.selectable_value(class, candidate, tx_class_label(candidate));
+            }
+        });
+}
+
+const fn tx_class_label(class: TxClass) -> &'static str {
+    match class {
+        TxClass::LicenceFreePlan => "Licence free",
+        TxClass::Amateur => "Amateur",
+        TxClass::Marine => "Marine",
+        TxClass::Aeronautical => "Aeronautical",
+        TxClass::Business => "Business",
+        TxClass::Experimental => "Experimental",
+    }
+}
+
 /// One TX power level as the handset lists it: its nominal output.
 fn tx_power_label(level: u8) -> String {
     TX_POWER_NOMINAL_MW.get(usize::from(level)).map_or_else(
@@ -1499,6 +1645,7 @@ mod tests {
         bank_row_columns, channel_row_label, column_gap, memory_percent, scan_resume_label,
         tx_power_label, tx_timeout_label, StudioApp, Tab, MIN_COLUMN_GAP,
     };
+    use super::{TxClass, TxRangeDraft, MAX_TX_RANGES};
     use crate::{model::BankKind, projects::ProjectStore, DeviceSelector, Options};
     use radio_domain::ScanResume;
     use std::path::PathBuf;
@@ -2032,5 +2179,52 @@ mod tests {
         app.add_preset();
         assert_eq!(app.project.banks.len(), full);
         assert!(app.status.contains("needs 2 more banks"), "{}", app.status);
+    }
+
+    fn tx_preset_index(name: &str) -> usize {
+        crate::presets::TX_RANGE_PRESETS
+            .iter()
+            .position(|p| p.name() == name)
+            .expect("TX preset")
+    }
+
+    #[test]
+    fn tx_range_presets_add_after_the_existing_ranges_without_duplicates() {
+        let mut app = simulated("add-tx-preset");
+        app.tx_preset = tx_preset_index("UK");
+        app.add_tx_preset();
+        assert_eq!(app.project.tx_ranges.len(), 3);
+        // EU shares all three with UK, so nothing is added.
+        app.tx_preset = tx_preset_index("EU (CEPT)");
+        app.add_tx_preset();
+        assert_eq!(app.project.tx_ranges.len(), 3);
+        assert!(app.status.contains("already"), "{}", app.status);
+
+        app.tx_preset = tx_preset_index("Marine VHF");
+        app.add_tx_preset();
+        assert_eq!(app.project.tx_ranges.len(), 4);
+        assert_eq!(app.project.tx_ranges[3].class, TxClass::Marine);
+        let compiled = app.project.validate().expect("validates");
+        assert_eq!(compiled.tx_ranges().len(), 4);
+    }
+
+    #[test]
+    fn a_tx_preset_past_the_range_limit_adds_nothing() {
+        let mut app = simulated("add-tx-preset-full");
+        for index in 0..MAX_TX_RANGES - 1 {
+            app.project.tx_ranges.push(TxRangeDraft {
+                first_mhz: format!("{}.000000", 430 + index),
+                last_mhz: format!("{}.500000", 430 + index),
+                ..TxRangeDraft::default()
+            });
+        }
+        app.tx_preset = tx_preset_index("UK");
+        app.add_tx_preset();
+        assert_eq!(app.project.tx_ranges.len(), MAX_TX_RANGES - 1);
+        assert!(
+            app.status.contains("needs 3 more TX ranges"),
+            "{}",
+            app.status
+        );
     }
 }

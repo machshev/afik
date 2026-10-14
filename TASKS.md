@@ -3055,6 +3055,6 @@
      unit's mid/high calibration rows (nominally 1, 2 and 5 W); the hardware
      envelope rises to match and each range's ceiling still applies, so
      PMR446 stays at 500 mW. Done for Mid and High; the reference has no Low5.
-  5. Studio range editor with US, EU and UK presets.
+  5. Studio range editor with US, EU and UK presets. Done.
   6. Flash and check TX allowed and refused by range in channel and VFO mode,
      and with a class switched off.
