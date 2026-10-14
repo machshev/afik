@@ -77,7 +77,7 @@ const PMR446: PresetPlan = PresetPlan {
     modulation: Modulation::Fm,
     // Analogue PMR446 is narrow FM at low power by allocation.
     bandwidth: Bandwidth::Narrow,
-    power: PowerLevel::Low,
+    power: PowerLevel::Low4,
 };
 
 /// UK 2 m FM simplex: S8 at 145.200 through S23, calling on S20 at 145.500.
@@ -93,7 +93,7 @@ const TWO_METRE_SIMPLEX: PresetPlan = PresetPlan {
     offset_hz: 0,
     modulation: Modulation::Fm,
     bandwidth: Bandwidth::Narrow,
-    power: PowerLevel::Low,
+    power: PowerLevel::High,
 };
 
 /// UK 70 cm FM simplex: SU16 at 433.400 through SU23, calling on SU20.
@@ -109,7 +109,7 @@ const SEVENTY_CENTIMETRE_SIMPLEX: PresetPlan = PresetPlan {
     offset_hz: 0,
     modulation: Modulation::Fm,
     bandwidth: Bandwidth::Narrow,
-    power: PowerLevel::Low,
+    power: PowerLevel::High,
 };
 
 /// UK 2 m repeaters: outputs from 145.600 at 12.5 kHz, inputs 600 kHz below.
@@ -127,7 +127,7 @@ const TWO_METRE_REPEATERS: PresetPlan = PresetPlan {
     offset_hz: -600_000,
     modulation: Modulation::Fm,
     bandwidth: Bandwidth::Narrow,
-    power: PowerLevel::Low,
+    power: PowerLevel::High,
 };
 
 /// The VHF civil airband at 25 kHz: 118.000 to 136.975, AM, receive only.
@@ -145,7 +145,7 @@ const AIRBAND: PresetPlan = PresetPlan {
     offset_hz: 0,
     modulation: Modulation::Am,
     bandwidth: Bandwidth::Narrow,
-    power: PowerLevel::Low,
+    power: PowerLevel::Low1,
 };
 
 /// Ship transmit frequency of an ITU-R M.1084 marine VHF channel number.
@@ -208,7 +208,7 @@ const MARINE_DUPLEX: PresetList = PresetList {
     modulation: Modulation::Fm,
     // Marine VHF is 25 kHz FM.
     bandwidth: Bandwidth::Wide,
-    power: PowerLevel::Low,
+    power: PowerLevel::High,
     step_hz: 25_000,
 };
 
@@ -242,7 +242,7 @@ const MARINE_SIMPLEX: PresetList = PresetList {
     receive_offset_hz: 0,
     modulation: Modulation::Fm,
     bandwidth: Bandwidth::Wide,
-    power: PowerLevel::Low,
+    power: PowerLevel::High,
     step_hz: 25_000,
 };
 

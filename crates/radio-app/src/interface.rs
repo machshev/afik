@@ -27,7 +27,7 @@ use radio_platform::operator_display::{
 };
 use radio_platform::operator_shell::{
     Context, Intent, Mode, Screen, Setting, Shell, Source, HOLD_MILLISECONDS, SQUELCH_LEVELS,
-    TX_POWER_LEVELS, TX_TIMEOUT_CHOICES, VFO_STEPS_HZ,
+    TX_POWER_ROWS, TX_TIMEOUT_CHOICES, VFO_STEPS_HZ,
 };
 use radio_platform::ptt::PttFilter;
 use radio_platform::receive_app::{
@@ -576,7 +576,8 @@ fn vfo_source<M>(shell: &Shell) -> Option<Listening<M>> {
         tx_tone: Tone::None,
         modulation: Modulation::Fm,
         bandwidth: Bandwidth::Narrow,
-        power: PowerLevel::Low,
+        // The VFO has no programmed power of its own, so it takes the default.
+        power: PowerLevel::try_from(shell.tx_power()).unwrap_or(PowerLevel::Low1),
         step,
         flags: ChannelFlags::default(),
         bank: None,
@@ -808,9 +809,15 @@ pub async fn run<D, K, B, S, V, M>(
         // The handset's class switches narrow the programmed ranges, and
         // apply from the next pass, mid-transmission included.
         let tx_policy_now = tx_policy.restricted(shell.tx_enabled());
-        // The selected power, lowered to what the range being used allows.
+        // The power chosen for this channel, lowered to what the range being
+        // used allows.
         let tx_level = transmit::level_within(
-            shell.tx_power(),
+            chosen_power(
+                &shell,
+                activation
+                    .as_ref()
+                    .map(|(controller, _)| controller.channel()),
+            ),
             Frequency::from_hz(receiver.frequency_hz)
                 .ok()
                 .and_then(|frequency| tx_policy_now.max_mw_at(frequency)),
@@ -1268,6 +1275,14 @@ pub async fn run<D, K, B, S, V, M>(
     }
 }
 
+/// Returns the TX power level for `channel`: the handset override if the
+/// operator chose one, otherwise the channel's own. The VFO's record carries
+/// the programmed default as its own, which is also the level with nothing
+/// tuned.
+fn chosen_power(shell: &Shell, channel: Option<ChannelRecord>) -> u8 {
+    shell.tx_level(channel.map_or(shell.tx_power(), |channel| channel.power() as u8))
+}
+
 /// Adopts a squelch level the operator accepted on the handset.
 ///
 /// It is the operator's own setting, so it is kept in the place record rather
@@ -1426,7 +1441,7 @@ fn render<B: RegisterBus, S: Speaker, M: Memory>(
             for (offset, setting) in shell.settings().iter().take(LIST_ROWS).enumerate() {
                 rows[offset] = match setting {
                     Setting::Squelch => SelectorRow::squelch_setting(shell.squelch().get()),
-                    Setting::TxPower => SelectorRow::tx_power_setting(shell.tx_power()),
+                    Setting::TxPower => SelectorRow::tx_power_setting(shell.tx_override()),
                     Setting::TxTimeout => SelectorRow::tx_timeout_setting(shell.tx_timeout()),
                     Setting::TxClasses => {
                         let (list, programmed) = shell.tx_class_list();
@@ -1443,14 +1458,19 @@ fn render<B: RegisterBus, S: Speaker, M: Memory>(
             render_selector_list(frame, b"SETTINGS", &rows[..count], shell.settings_cursor());
         }
         Screen::TxPowerList => {
-            // Six levels and five rows: page by whole screens, as the squelch
-            // list does.
+            // CHANNEL and six levels in five rows: page by whole screens, as
+            // the squelch list does.
             let mut rows = [SelectorRow::default(); LIST_ROWS];
             let cursor = usize::from(shell.tx_power_cursor());
             let first = cursor / LIST_ROWS * LIST_ROWS;
             let mut count = 0;
-            for (level, row) in (0..TX_POWER_LEVELS).skip(first).zip(rows.iter_mut()) {
-                *row = SelectorRow::tx_power_level(level, level == shell.tx_power());
+            for (list_row, row) in (0..TX_POWER_ROWS).skip(first).zip(rows.iter_mut()) {
+                *row = match list_row.checked_sub(1) {
+                    None => SelectorRow::tx_power_channel(shell.tx_override().is_none()),
+                    Some(level) => {
+                        SelectorRow::tx_power_level(level, shell.tx_override() == Some(level))
+                    }
+                };
                 count += 1;
             }
             render_selector_list(frame, b"TX POWER", &rows[..count], cursor - first);
@@ -1571,11 +1591,13 @@ fn bank_name<M: Memory>(bank: BankId, memory: &'static TaskCell<Option<M>>) -> O
 
 #[cfg(test)]
 mod tests {
-    use super::{adopt_publication, Selected};
+    use super::{adopt_publication, chosen_power, vfo_source, Listening, Selected};
     use crate::configuration::Programmed;
     use crate::operator_state::OperatorState;
     use radio_domain::BankId;
+    use radio_domain::PowerLevel;
     use radio_platform::operator_shell::{Mode, Shell};
+    use radio_platform::receive_app::Key;
 
     const VFO_HZ: u32 = 145_500_000;
 
@@ -1692,5 +1714,37 @@ mod tests {
         );
         assert_eq!(shell.tx_power(), 3);
         assert_eq!(shell.tx_timeout_ms(), 300_000);
+    }
+
+    #[test]
+    fn a_channel_transmits_at_its_own_power_unless_the_handset_overrides_it() {
+        let mut shell = Shell::new();
+        shell.set_capabilities(radio_platform::operator_shell::Capabilities::K5);
+        shell.set_tx(2, 0);
+        // The VFO's record carries the programmed default as its own power.
+        let Some(Listening::Vfo(vfo)) = vfo_source::<()>(&shell) else {
+            panic!("a VFO source");
+        };
+        assert_eq!(vfo.power(), PowerLevel::Low3);
+        // A channel's own power wins over the default.
+        shell.set_tx(4, 0);
+        assert_eq!(chosen_power(&shell, Some(vfo)), 2);
+        assert_eq!(chosen_power(&shell, None), 4);
+
+        // Choose 5 W on the handset: every source transmits at it.
+        shell.press(Key::Menu, 0, context());
+        shell.press(Key::Down, 1, context());
+        shell.press(Key::Menu, 2, context());
+        shell.press(Key::Digit(6), 3, context());
+        assert_eq!(chosen_power(&shell, Some(vfo)), 5);
+        assert_eq!(chosen_power(&shell, None), 5);
+    }
+
+    fn context() -> radio_platform::operator_shell::Context {
+        radio_platform::operator_shell::Context {
+            visible_channels: 0,
+            active_index: 0,
+            scanning: false,
+        }
     }
 }

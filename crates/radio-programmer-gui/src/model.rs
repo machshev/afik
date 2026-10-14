@@ -240,7 +240,7 @@ impl Default for ChannelDraft {
             tx_tone: ToneDraft::default(),
             modulation: Modulation::Fm,
             bandwidth: Bandwidth::Narrow,
-            power: PowerLevel::Low,
+            power: PowerLevel::Low1,
             step_hz: 12_500,
             scan_skip: false,
             busy_lockout: false,
@@ -504,7 +504,7 @@ impl Default for BankDraft {
             tx_tone: ToneDraft::default(),
             modulation: Modulation::Fm,
             bandwidth: Bandwidth::Narrow,
-            power: PowerLevel::Low,
+            power: PowerLevel::Low1,
             step_hz: 12_500,
             scan_skip: false,
             busy_lockout: false,
@@ -1707,7 +1707,7 @@ mod tests {
         let bank = &mut model.banks[row];
         bank.channel_count = 8;
         bank.bandwidth = Bandwidth::Wide;
-        bank.power = PowerLevel::Medium;
+        bank.power = PowerLevel::Mid;
         bank.busy_lockout = true;
         bank.rx_tone = ToneDraft {
             kind: ToneKind::Ctcss,
@@ -1720,7 +1720,7 @@ mod tests {
         for index in 0..plan.channel_count() {
             let channel = plan.channel_record(index).unwrap();
             assert_eq!(channel.bandwidth(), Bandwidth::Wide);
-            assert_eq!(channel.power(), PowerLevel::Medium);
+            assert_eq!(channel.power(), PowerLevel::Mid);
             assert_eq!(channel.rx_tone(), Tone::Ctcss(1_000));
             assert!(channel.flags().contains(ChannelFlags::BUSY_LOCKOUT));
         }
@@ -1785,7 +1785,7 @@ mod tests {
         };
         // A row's own value for a shared setting is neither used nor checked.
         bank.channels[0].transmit_mhz = "not a frequency".to_owned();
-        bank.channels[0].power = PowerLevel::Low;
+        bank.channels[0].power = PowerLevel::Low1;
         bank.channels[1].receive_mhz = "145.725000".to_owned();
         bank.channels[1].modulation = Modulation::Am;
 

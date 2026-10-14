@@ -46,9 +46,10 @@ can change it from the handset settings menu, and the radio stores what they \
 chose.";
 
 /// What the TX power and timeout settings govern, said once.
-const TX_HINT: &str = "What the radio starts on after it is programmed or \
-switched on. The operator can change it from the handset settings menu until \
-the radio is next switched off.";
+const TX_HINT: &str = "TX power is the VFO's, since it has no channel; a \
+channel transmits at its own or its bank's. The operator can override it for \
+every channel from the handset settings menu until the radio is next switched \
+off.";
 
 /// What the TX ranges do, said once.
 const TX_RANGES_HINT: &str = "The only frequencies this radio may transmit on, \
@@ -789,7 +790,7 @@ impl StudioApp {
                 .on_hover_text(SQUELCH_HINT);
             ui.end_row();
 
-            ui.label("TX power").on_hover_text(TX_HINT);
+            ui.label("VFO TX power").on_hover_text(TX_HINT);
             ComboBox::from_id_salt("tx-power")
                 .selected_text(tx_power_label(config.tx_power))
                 .show_ui(ui, |ui| {
@@ -1646,17 +1647,16 @@ fn tx_timeout_label(choice: u8) -> String {
     }
 }
 
+/// Chooses one of the radio's six power levels, labelled as the handset does.
 fn power_editor(ui: &mut egui::Ui, power: &mut PowerLevel) {
     ComboBox::from_id_salt("power")
-        .selected_text(match power {
-            PowerLevel::Low => "Low",
-            PowerLevel::Medium => "Medium",
-            PowerLevel::High => "High",
-        })
+        .selected_text(tx_power_label(*power as u8))
         .show_ui(ui, |ui| {
-            ui.selectable_value(power, PowerLevel::Low, "Low");
-            ui.selectable_value(power, PowerLevel::Medium, "Medium");
-            ui.selectable_value(power, PowerLevel::High, "High");
+            for level in 0..radio_domain::TX_POWER_LEVELS {
+                if let Ok(choice) = PowerLevel::try_from(level) {
+                    ui.selectable_value(power, choice, tx_power_label(level));
+                }
+            }
         });
 }
 

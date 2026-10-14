@@ -1069,7 +1069,7 @@ mod tests {
             tx_tone: Tone::None,
             modulation: Modulation::Fm,
             bandwidth: Bandwidth::Narrow,
-            power: PowerLevel::Low,
+            power: PowerLevel::Low1,
             step: FrequencyStep::from_hz(12_500).unwrap(),
             flags: ChannelFlags::from_bits(flags).unwrap(),
             bank: bank.map(BankId::new),

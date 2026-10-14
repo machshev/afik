@@ -774,7 +774,7 @@ pub fn encode_generated_bank(bank: GeneratedBank) -> Result<StorageObject, Stora
     encode_tone(template.tx_tone, &mut data[35..38]);
     data[38] = template.modulation as u8;
     data[39] = template.bandwidth as u8;
-    data[40] = template.power as u8;
+    data[40] = encode_power(template.power);
     data[41..45].copy_from_slice(&template.step.as_hz().to_le_bytes());
     // data[45] held a squelch level; squelch is radio-wide, so it is reserved.
     data[46] = template.flags.bits();
@@ -855,7 +855,7 @@ pub fn decode_generated_bank(object: &impl Object) -> Result<GeneratedBank, Stor
         tx_tone: decode_tone(&data[35..38])?,
         modulation: Modulation::try_from(data[38]).map_err(|_| StorageError::MalformedObject)?,
         bandwidth: Bandwidth::try_from(data[39]).map_err(|_| StorageError::MalformedObject)?,
-        power: PowerLevel::try_from(data[40]).map_err(|_| StorageError::MalformedObject)?,
+        power: decode_power(data[40])?,
         step: FrequencyStep::from_hz(u32::from_le_bytes([data[41], data[42], data[43], data[44]]))
             .map_err(|_| StorageError::MalformedObject)?,
         flags: ChannelFlags::from_bits(data[46]).map_err(|_| StorageError::MalformedObject)?,
@@ -907,7 +907,7 @@ pub fn encode_channel(channel: ChannelRecord) -> Result<StorageObject, StorageEr
     encode_tone(channel.tx_tone(), &mut data[27..30]);
     data[30] = channel.modulation() as u8;
     data[31] = channel.bandwidth() as u8;
-    data[32] = channel.power() as u8;
+    data[32] = encode_power(channel.power());
     data[33..37].copy_from_slice(&channel.step().as_hz().to_le_bytes());
     // data[37] held a squelch level; squelch is radio-wide, so it is reserved.
     data[38] = channel.flags().bits();
@@ -951,7 +951,7 @@ pub fn decode_channel(object: &impl Object) -> Result<ChannelRecord, StorageErro
     let tx_tone = decode_tone(&data[27..30])?;
     let modulation = Modulation::try_from(data[30]).map_err(|_| StorageError::MalformedObject)?;
     let bandwidth = Bandwidth::try_from(data[31]).map_err(|_| StorageError::MalformedObject)?;
-    let power = PowerLevel::try_from(data[32]).map_err(|_| StorageError::MalformedObject)?;
+    let power = decode_power(data[32])?;
     let step = FrequencyStep::from_hz(u32::from_le_bytes([data[33], data[34], data[35], data[36]]))
         .map_err(|_| StorageError::MalformedObject)?;
     // data[37] was a squelch level; older projects carry one and it is ignored.
@@ -995,7 +995,7 @@ pub fn encode_channel_bank(bank: ChannelBank) -> Result<StorageObject, StorageEr
     data[21] = settings.shared.bits();
     data[22] = settings.modulation as u8;
     data[23] = settings.bandwidth as u8;
-    data[24] = settings.power as u8;
+    data[24] = encode_power(settings.power);
     data[25..29].copy_from_slice(&settings.step.as_hz().to_le_bytes());
     data[29..33].copy_from_slice(&settings.offset.as_hz().to_le_bytes());
     encode_tone(settings.rx_tone, &mut data[33..36]);
@@ -1042,7 +1042,7 @@ pub fn decode_channel_bank(object: &impl Object) -> Result<ChannelBank, StorageE
         shared: SharedSettings::from_bits(data[21]).map_err(malformed)?,
         modulation: Modulation::try_from(data[22]).map_err(|_| StorageError::MalformedObject)?,
         bandwidth: Bandwidth::try_from(data[23]).map_err(|_| StorageError::MalformedObject)?,
-        power: PowerLevel::try_from(data[24]).map_err(|_| StorageError::MalformedObject)?,
+        power: decode_power(data[24])?,
         step: FrequencyStep::from_hz(u32::from_le_bytes([data[25], data[26], data[27], data[28]]))
             .map_err(|_| StorageError::MalformedObject)?,
         offset: Offset::from_hz(i32::from_le_bytes([data[29], data[30], data[31], data[32]])),
@@ -1105,6 +1105,25 @@ pub fn decode_radio_config(object: &impl Object) -> Result<RadioConfig, StorageE
         tx_timeout: data[15] >> 4,
     }
     .validate()
+    .map_err(|_| StorageError::MalformedObject)
+}
+
+/// Marks a power byte as one of the radio's six levels.
+///
+/// A byte without it was written when there were three levels, so 1 meant
+/// medium rather than the second-lowest; [`decode_power`] reads either.
+const POWER_LEVEL_TAG: u8 = 0x80;
+
+const fn encode_power(power: PowerLevel) -> u8 {
+    POWER_LEVEL_TAG | power as u8
+}
+
+fn decode_power(byte: u8) -> Result<PowerLevel, StorageError> {
+    if byte & POWER_LEVEL_TAG == 0 {
+        PowerLevel::from_legacy(byte)
+    } else {
+        PowerLevel::try_from(byte & !POWER_LEVEL_TAG)
+    }
     .map_err(|_| StorageError::MalformedObject)
 }
 
@@ -1567,7 +1586,7 @@ mod tests {
                     code: 23,
                     inverted: true,
                 },
-                power: PowerLevel::Medium,
+                power: PowerLevel::Mid,
                 flags: ChannelFlags::default().with(ChannelFlags::BUSY_LOCKOUT, true),
                 ..ChannelTemplate::narrow_fm(FrequencyStep::from_hz(12_500).unwrap())
             },
@@ -1799,6 +1818,25 @@ mod tests {
         data[40..42].copy_from_slice(&0_u16.to_le_bytes());
         let decoded = decode_channel(&StorageObject::new(encoded.key(), &data).unwrap()).unwrap();
         assert_eq!(decoded.bank(), None);
+    }
+
+    #[test]
+    fn power_is_one_of_six_levels_and_an_older_three_level_byte_still_loads() {
+        let encoded = encode_channel(channel(12, "GB3AB")).unwrap();
+        let with_power = |byte: u8| {
+            let mut data = encoded.data().to_vec();
+            data[32] = byte;
+            decode_channel(&StorageObject::new(encoded.key(), &data).unwrap())
+                .map(ChannelRecord::power)
+        };
+        assert_eq!(with_power(encoded.data()[32]), Ok(PowerLevel::High));
+        assert_eq!(with_power(0x82), Ok(PowerLevel::Low3));
+        // Before six levels, 0, 1 and 2 were low, medium and high.
+        assert_eq!(with_power(0), Ok(PowerLevel::Low1));
+        assert_eq!(with_power(1), Ok(PowerLevel::Mid));
+        assert_eq!(with_power(2), Ok(PowerLevel::High));
+        assert_eq!(with_power(3), Err(StorageError::MalformedObject));
+        assert_eq!(with_power(0x86), Err(StorageError::MalformedObject));
     }
 
     #[test]
@@ -2173,11 +2211,11 @@ mod tests {
         assert_eq!(
             &image[..image_len],
             &[
-                0x41, 0x46, 0x49, 0x4B, 0x01, 0x04, 0x01, 0x00, 0x3D, 0x00, 0x00, 0x00, 0x87, 0xEB,
-                0x28, 0x9A, 0x01, 0x04, 0x00, 0x38, 0x00, 0x04, 0x00, 0x04, 0x00, 0x01, 0x41, 0x00,
+                0x41, 0x46, 0x49, 0x4B, 0x01, 0x04, 0x01, 0x00, 0x3D, 0x00, 0x00, 0x00, 0x65, 0xDB,
+                0x8C, 0xBC, 0x01, 0x04, 0x00, 0x38, 0x00, 0x04, 0x00, 0x04, 0x00, 0x01, 0x41, 0x00,
                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                 0xEA, 0x83, 0x95, 0x1A, 0xD4, 0x30, 0x00, 0x00, 0x10, 0x00, 0x00, 0x01, 0xE8, 0x03,
-                0x03, 0x17, 0x00, 0x00, 0x00, 0x01, 0xD4, 0x30, 0x00, 0x00, 0x00, 0x02, 0x02, 0x41,
+                0x03, 0x17, 0x00, 0x00, 0x00, 0x84, 0xD4, 0x30, 0x00, 0x00, 0x00, 0x02, 0x02, 0x41,
                 0x20, 0x00, 0x00, 0x01, 0x00, 0xFF, 0xFF,
             ]
         );
@@ -2324,7 +2362,7 @@ mod image_writer_tests {
             tx_tone: Tone::None,
             modulation: Modulation::Fm,
             bandwidth: Bandwidth::Narrow,
-            power: PowerLevel::Low,
+            power: PowerLevel::Low1,
             step: FrequencyStep::from_hz(12_500).expect("step"),
             flags: ChannelFlags::default(),
             bank: None,

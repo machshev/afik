@@ -142,7 +142,7 @@ fn channel(id: u16, hertz: u32, tone: Tone, flags: u8) -> ChannelRecord {
         tx_tone: tone,
         modulation: Modulation::Fm,
         bandwidth: Bandwidth::Narrow,
-        power: PowerLevel::Low,
+        power: PowerLevel::Low1,
         step: FrequencyStep::from_hz(12_500).expect("step"),
         flags: ChannelFlags::from_bits(flags).expect("flags"),
         bank: Some(radio_domain::BankId::new(0)),

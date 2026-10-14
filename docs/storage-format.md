@@ -92,7 +92,7 @@ TX tone kind   : u8
 TX tone value  : u16 little endian
 modulation     : u8
 bandwidth      : u8
-power level    : u8
+power level    : u8  (as on a channel)
 step Hz        : u32 little endian
 reserved       : u8  (was a squelch level; written 0, ignored)
 channel flags  : u8
@@ -183,7 +183,9 @@ TX tone kind   : u8
 TX tone value  : u16 little endian
 modulation     : u8  (0 FM, 1 AM, 2 USB)
 bandwidth      : u8  (0 narrow, 1 wide)
-power          : u8  (0 low, 1 medium, 2 high)
+power          : u8  (0x80 | level 0-5: 20, 125, 250, 500 mW, 2, 5 W;
+                      untagged 0, 1, 2 is an older low, medium, high:
+                      20 mW, 2 W, 5 W)
 step Hz        : u32 little endian
 reserved       : u8  (was a squelch level; squelch is radio-wide; written 0, ignored)
 flags          : u8  (bit 0 scan skip, 1 busy lockout, 2 reverse, 3 compander)
@@ -204,7 +206,7 @@ shared         : u8  (bit 0 modulation, 1 bandwidth, 2 step, 3 power,
                       4 TX offset, 5 RX tone, 6 TX tone; bit 7 must be zero)
 modulation     : u8
 bandwidth      : u8
-power          : u8
+power          : u8  (as on a channel)
 step Hz        : u32 little endian
 TX offset Hz   : i32 little endian (TX minus RX)
 RX tone        : 3 bytes, as on a channel
@@ -228,13 +230,16 @@ dual watch        : u8  (0 or 1)
 battery save      : u8  (0 through 5)
 flags             : u8  (bit 0 key beep, 1 busy lockout default, 2 AM fix,
                          3 tone tail elimination)
-TX settings       : u8  (bits 0-3 TX power level 0 through 3, bits 4-7 TX
+TX settings       : u8  (bits 0-3 VFO TX power level 0 through 5, bits 4-7 TX
                          timeout index 0 through 4, i.e. 1 to 5 minutes)
 ```
 
 The TX settings byte was reserved zero before, so an older image reads as the
-lowest power and a one-minute timeout. They are the values the radio adopts
-when programmed; the handset menu can change them until the next power cycle.
+lowest power and a one-minute timeout. A channel transmits at its own power
+level and the VFO at this one; the handset TX POWER menu can override every
+channel's until the next power cycle, and its CHANNEL row drops the override.
+The timeout is what the radio adopts when programmed; the handset menu can
+change it until the next power cycle.
 
 Bank membership is on the channel rather than a member list on the bank, so
 every object stays fixed size. A channel is in at most one bank: the 16-bit

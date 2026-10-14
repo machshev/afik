@@ -103,7 +103,7 @@ floating point.
   frequency, spacing, channel count, naming, transmit class and the
   per-channel template its channels share, and expands, in place, into the
   channels the radio will build from it.
-- **Radio:** squelch, TX power, TX timeout (the three handset settings),
+- **Radio:** squelch, VFO TX power, TX timeout (the three handset settings),
   backlight, scan resume mode and timings, dual watch,
   battery save, and the global behaviour flags.
 - **Device:** detect and select a serial device, choose the baud, connect or

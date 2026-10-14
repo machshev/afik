@@ -355,13 +355,20 @@ impl SelectorRow {
         Self::with_label(&label, false)
     }
 
-    /// Builds the settings-menu row for the TX power level, with its value.
+    /// Builds the settings-menu row for TX power: the override's level, or
+    /// `CHAN` while each channel transmits at its own.
     #[must_use]
-    pub fn tx_power_setting(level: u8) -> Self {
+    pub fn tx_power_setting(level: Option<u8>) -> Self {
         let mut label = [b' '; LIST_NAME_BYTES];
         label[..8].copy_from_slice(b"TX POWER");
-        label[9..].copy_from_slice(&milliwatts_label(level));
+        label[9..].copy_from_slice(&level.map_or(*b" CHAN", milliwatts_label));
         Self::with_label(&label, false)
+    }
+
+    /// Builds the TX power row which drops the override, numbered zero.
+    #[must_use]
+    pub fn tx_power_channel(active: bool) -> Self {
+        Self::with_label(b"0  CHANNEL", active)
     }
 
     /// Builds one TX power-level row, numbered from one.
@@ -1423,8 +1430,10 @@ mod operating_screen_tests {
         }
         fixed.extend_from_slice(SelectorRow::squelch_setting(0).label());
         fixed.extend_from_slice(SelectorRow::squelch_setting(5).label());
+        fixed.extend_from_slice(SelectorRow::tx_power_setting(None).label());
+        fixed.extend_from_slice(SelectorRow::tx_power_channel(false).label());
         for level in 0..crate::operator_shell::TX_POWER_LEVELS {
-            fixed.extend_from_slice(SelectorRow::tx_power_setting(level).label());
+            fixed.extend_from_slice(SelectorRow::tx_power_setting(Some(level)).label());
             fixed.extend_from_slice(SelectorRow::tx_power_level(level, false).label());
         }
         for choice in 0..crate::operator_shell::TX_TIMEOUT_CHOICES {

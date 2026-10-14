@@ -234,16 +234,37 @@ impl TryFrom<u8> for Bandwidth {
     }
 }
 
-/// A hardware-independent requested power level.
+/// A transmit power level: the radio's six, lowest first.
+///
+/// The discriminant is the level's index, as the handset numbers them from
+/// one; [`TX_POWER_LEVELS`] counts them.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum PowerLevel {
-    /// Lowest available radio power.
-    Low = 0,
-    /// Intermediate radio power.
-    Medium = 1,
-    /// Highest available radio power.
-    High = 2,
+    /// Nominally 20 mW.
+    Low1 = 0,
+    /// Nominally 125 mW.
+    Low2 = 1,
+    /// Nominally 250 mW.
+    Low3 = 2,
+    /// Nominally 500 mW.
+    Low4 = 3,
+    /// Nominally 2 W.
+    Mid = 4,
+    /// Nominally 5 W.
+    High = 5,
+}
+
+impl PowerLevel {
+    /// Reads a level stored when there were three: low, medium and high.
+    pub const fn from_legacy(value: u8) -> Result<Self, DomainError> {
+        match value {
+            0 => Ok(Self::Low1),
+            1 => Ok(Self::Mid),
+            2 => Ok(Self::High),
+            _ => Err(DomainError::OutOfRange),
+        }
+    }
 }
 
 impl TryFrom<u8> for PowerLevel {
@@ -251,13 +272,19 @@ impl TryFrom<u8> for PowerLevel {
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
-            0 => Ok(Self::Low),
-            1 => Ok(Self::Medium),
-            2 => Ok(Self::High),
+            0 => Ok(Self::Low1),
+            1 => Ok(Self::Low2),
+            2 => Ok(Self::Low3),
+            3 => Ok(Self::Low4),
+            4 => Ok(Self::Mid),
+            5 => Ok(Self::High),
             _ => Err(DomainError::OutOfRange),
         }
     }
 }
+
+// Every level is one the handset offers.
+const _: () = assert!(PowerLevel::High as u8 + 1 == TX_POWER_LEVELS);
 
 /// Behaviour after a scan stops on an occupied channel.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -569,8 +596,13 @@ mod tests {
         assert_eq!(Modulation::try_from(3), Err(DomainError::OutOfRange));
         assert_eq!(Bandwidth::try_from(1), Ok(Bandwidth::Wide));
         assert_eq!(Bandwidth::try_from(2), Err(DomainError::OutOfRange));
-        assert_eq!(PowerLevel::try_from(2), Ok(PowerLevel::High));
-        assert_eq!(PowerLevel::try_from(3), Err(DomainError::OutOfRange));
+        assert_eq!(PowerLevel::try_from(5), Ok(PowerLevel::High));
+        assert_eq!(PowerLevel::try_from(6), Err(DomainError::OutOfRange));
+        // Three levels were stored before the radio's six were.
+        assert_eq!(PowerLevel::from_legacy(0), Ok(PowerLevel::Low1));
+        assert_eq!(PowerLevel::from_legacy(1), Ok(PowerLevel::Mid));
+        assert_eq!(PowerLevel::from_legacy(2), Ok(PowerLevel::High));
+        assert_eq!(PowerLevel::from_legacy(3), Err(DomainError::OutOfRange));
     }
 
     #[test]

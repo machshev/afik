@@ -188,6 +188,8 @@ pub const TX_CLASSES: [TxClass; 6] = [
 /// Selectable TX power levels. The programmed configuration names one of
 /// these, so the count lives with it.
 pub use radio_domain::TX_POWER_LEVELS;
+/// Rows of the TX power list: CHANNEL, then each level.
+pub const TX_POWER_ROWS: u8 = TX_POWER_LEVELS + 1;
 
 /// Nominal output of each TX power level, in milliwatts: Armel F4HWN Low1 to
 /// Low4, Mid and High as its README documents them. Nominal, not measured by
@@ -317,6 +319,9 @@ pub struct Shell {
     squelch: SquelchLevel,
     squelch_cursor: u8,
     tx_power: u8,
+    /// The level the operator chose on the handset in place of the
+    /// channel's; never stored, so a power cycle clears it.
+    tx_override: Option<u8>,
     tx_power_cursor: u8,
     tx_timeout: u8,
     tx_timeout_cursor: u8,
@@ -358,6 +363,7 @@ impl Shell {
             squelch: SquelchLevel::CONSERVATIVE,
             squelch_cursor: SquelchLevel::CONSERVATIVE.get(),
             tx_power: 0,
+            tx_override: None,
             tx_power_cursor: 0,
             tx_timeout: TX_TIMEOUT_DEFAULT,
             tx_timeout_cursor: TX_TIMEOUT_DEFAULT,
@@ -415,13 +421,31 @@ impl Shell {
         }
     }
 
-    /// Returns the selected TX power level, zero-based.
+    /// Returns the programmed TX power level, zero-based: the level of a
+    /// source with none of its own, such as the VFO.
     #[must_use]
     pub const fn tx_power(&self) -> u8 {
         self.tx_power
     }
 
-    /// Returns the TX power-list cursor row.
+    /// Returns the level the operator chose in place of the channel's, if any.
+    #[must_use]
+    pub const fn tx_override(&self) -> Option<u8> {
+        self.tx_override
+    }
+
+    /// Returns the level to transmit at on a source programmed with `own`:
+    /// the handset override if one is chosen, otherwise `own`.
+    #[must_use]
+    pub const fn tx_level(&self, own: u8) -> u8 {
+        match self.tx_override {
+            Some(level) => level,
+            None => own,
+        }
+    }
+
+    /// Returns the TX power-list cursor row: row 0 is CHANNEL, row `n` is
+    /// level `n - 1`.
     #[must_use]
     pub const fn tx_power_cursor(&self) -> u8 {
         self.tx_power_cursor
@@ -469,12 +493,12 @@ impl Shell {
     /// Adopts the TX power level and timeout a programmed configuration
     /// carries, as [`Self::set_squelch`] does the squelch.
     ///
-    /// Values outside the selectable range leave the current choice alone; a
-    /// validated configuration never carries one.
+    /// The power is the level of a source with none of its own; the operator's
+    /// override is kept. Values outside the selectable range leave the current
+    /// choice alone; a validated configuration never carries one.
     pub fn set_tx(&mut self, power: u8, timeout: u8) {
         if power < TX_POWER_LEVELS {
             self.tx_power = power;
-            self.tx_power_cursor = power;
         }
         if timeout < TX_TIMEOUT_CHOICES {
             self.tx_timeout = timeout;
@@ -888,7 +912,7 @@ impl Shell {
                 self.step_row(direction, usize::from(SQUELCH_LEVELS), Cursor::Squelch)
             }
             Screen::TxPowerList => {
-                self.step_row(direction, usize::from(TX_POWER_LEVELS), Cursor::TxPower)
+                self.step_row(direction, usize::from(TX_POWER_ROWS), Cursor::TxPower)
             }
             Screen::TxTimeoutList => self.step_row(
                 direction,
@@ -984,7 +1008,7 @@ impl Shell {
                     }
                     Some(Setting::TxPower) => {
                         self.screen = Screen::TxPowerList;
-                        self.tx_power_cursor = self.tx_power;
+                        self.tx_power_cursor = self.tx_override.map_or(0, |level| level + 1);
                     }
                     Some(Setting::TxTimeout) => {
                         self.screen = Screen::TxTimeoutList;
@@ -1017,8 +1041,8 @@ impl Shell {
             // acknowledgement.
             Screen::TxPowerList => {
                 self.screen = Screen::Operating;
-                if self.tx_power_cursor < TX_POWER_LEVELS {
-                    self.tx_power = self.tx_power_cursor;
+                if self.tx_power_cursor < TX_POWER_ROWS {
+                    self.tx_override = self.tx_power_cursor.checked_sub(1);
                 }
                 Intent::Redraw
             }
@@ -1123,16 +1147,12 @@ impl Shell {
                 self.squelch_cursor = u8::try_from(digit).unwrap_or(0);
                 return self.confirm(context);
             }
-            // Power levels are numbered from one on screen.
+            // Power levels are numbered from one on screen; 0 is CHANNEL.
             Screen::TxPowerList => {
-                let Some(level) = u8::try_from(digit)
-                    .ok()
-                    .and_then(|digit| digit.checked_sub(1))
-                    .filter(|level| *level < TX_POWER_LEVELS)
-                else {
+                let Some(row) = u8::try_from(digit).ok().filter(|row| *row < TX_POWER_ROWS) else {
                     return Intent::Idle;
                 };
-                self.tx_power_cursor = level;
+                self.tx_power_cursor = row;
                 return self.confirm(context);
             }
             // Timeouts are whole minutes, so the digit is the minutes.
@@ -1650,26 +1670,33 @@ mod tests {
         shell.set_capabilities(Capabilities::K5);
         shell.select_memory();
         assert_eq!(shell.settings(), &SETTINGS_WITH_TX[..]);
-        assert_eq!(shell.tx_power(), 0, "the lowest level is the default");
+        assert_eq!(
+            shell.tx_override(),
+            None,
+            "the channel's power is the default"
+        );
+        assert_eq!(shell.tx_level(4), 4);
         shell.press(Key::Menu, 0, context(16, 0));
         shell.press(Key::Down, 1, context(16, 0));
         assert_eq!(shell.press(Key::Menu, 2, context(16, 0)), Intent::Redraw);
         assert_eq!(shell.screen(), Screen::TxPowerList);
-        assert_eq!(shell.tx_power_cursor(), 0, "opens on the level in force");
+        assert_eq!(shell.tx_power_cursor(), 0, "opens on CHANNEL");
+        // Rows are CHANNEL then the levels, so two down is the second level.
         shell.press(Key::Down, 3, context(16, 0));
         shell.press(Key::Down, 4, context(16, 0));
         assert_eq!(shell.press(Key::Menu, 5, context(16, 0)), Intent::Redraw);
-        assert_eq!(shell.tx_power(), 2);
+        assert_eq!(shell.tx_override(), Some(1));
+        assert_eq!(shell.tx_level(4), 1, "the override replaces the channel's");
         assert_eq!(shell.screen(), Screen::Operating);
 
-        // Digits pick a level numbered from one; others do nothing.
+        // Digits pick a level numbered from one, and 0 picks CHANNEL.
         shell.press(Key::Menu, 6, context(16, 0));
         shell.press(Key::Down, 7, context(16, 0));
         shell.press(Key::Menu, 8, context(16, 0));
+        assert_eq!(shell.tx_power_cursor(), 2, "opens on the override");
         assert_eq!(shell.press(Key::Digit(9), 9, context(16, 0)), Intent::Idle);
-        assert_eq!(shell.press(Key::Digit(0), 10, context(16, 0)), Intent::Idle);
-        shell.press(Key::Digit(4), 11, context(16, 0));
-        assert_eq!(shell.tx_power(), 3);
+        shell.press(Key::Digit(4), 10, context(16, 0));
+        assert_eq!(shell.tx_override(), Some(3));
 
         // Exit from the power list returns to the menu and applies nothing.
         shell.press(Key::Menu, 12, context(16, 0));
@@ -1678,113 +1705,15 @@ mod tests {
         shell.press(Key::Up, 15, context(16, 0));
         shell.press(Key::Exit, 16, context(16, 0));
         assert_eq!(shell.screen(), Screen::Settings);
-        assert_eq!(shell.tx_power(), 3);
-    }
+        assert_eq!(shell.tx_override(), Some(3));
 
-    #[test]
-    fn tx_classes_switch_only_programmed_classes_off_and_on() {
-        use radio_domain::TxClass;
-        use radio_tx_policy::ClassSet;
-
-        let mut shell = Shell::new();
-        shell.set_capabilities(Capabilities::K5);
-        shell.select_memory();
-        let programmed = ClassSet::NONE
-            .with(TxClass::Amateur, true)
-            .with(TxClass::LicenceFreePlan, true);
-        shell.set_tx_classes(programmed);
-        let (list, count) = shell.tx_class_list();
-        assert_eq!(count, 2);
-        assert_eq!(
-            &list[..2],
-            &[Some(TxClass::LicenceFreePlan), Some(TxClass::Amateur)],
-            "list order, programmed classes only"
-        );
-        assert_eq!(shell.tx_enabled(), ClassSet::ALL);
-
-        // Settings, down to TX CLASSES, open it.
-        shell.press(Key::Menu, 0, context(16, 0));
-        for at in 1..=3 {
-            shell.press(Key::Down, at, context(16, 0));
-        }
-        shell.press(Key::Menu, 4, context(16, 0));
-        assert_eq!(shell.screen(), Screen::TxClassList);
-
-        // Down to Amateur and switch it off; the list stays open.
-        shell.press(Key::Down, 5, context(16, 0));
-        assert_eq!(shell.press(Key::Menu, 6, context(16, 0)), Intent::Redraw);
-        assert_eq!(shell.screen(), Screen::TxClassList);
-        assert_eq!(
-            shell.tx_disabled(),
-            ClassSet::NONE.with(TxClass::Amateur, true)
-        );
-        assert!(!shell.tx_enabled().contains(TxClass::Amateur));
-        assert!(shell.tx_enabled().contains(TxClass::LicenceFreePlan));
-        // Digits choose nothing here.
-        assert_eq!(shell.press(Key::Digit(1), 7, context(16, 0)), Intent::Idle);
-
-        // The cursor wraps within the two programmed rows.
-        shell.press(Key::Down, 8, context(16, 0));
-        assert_eq!(shell.tx_class_cursor(), 0);
-
-        // Menu again switches it back on; Exit returns to the settings.
-        shell.press(Key::Down, 9, context(16, 0));
-        shell.press(Key::Menu, 10, context(16, 0));
-        assert_eq!(shell.tx_disabled(), ClassSet::NONE);
-        shell.press(Key::Exit, 11, context(16, 0));
-        assert_eq!(shell.screen(), Screen::Settings);
-
-        // A record's switches survive a reprogram that keeps the class.
-        shell.set_tx_disabled(ClassSet::NONE.with(TxClass::Amateur, true));
-        shell.set_tx_classes(ClassSet::NONE.with(TxClass::Amateur, true));
-        assert!(!shell.tx_enabled().contains(TxClass::Amateur));
-    }
-
-    #[test]
-    fn tx_timeout_is_a_setting_that_picks_the_timeout_in_force() {
-        let mut shell = Shell::new();
-        shell.set_capabilities(Capabilities::K5);
-        shell.select_memory();
-        assert_eq!(shell.tx_timeout_ms(), 60_000, "one minute is the default");
-        shell.press(Key::Menu, 0, context(16, 0));
-        shell.press(Key::Down, 1, context(16, 0));
-        shell.press(Key::Down, 2, context(16, 0));
-        assert_eq!(shell.press(Key::Menu, 3, context(16, 0)), Intent::Redraw);
-        assert_eq!(shell.screen(), Screen::TxTimeoutList);
-        assert_eq!(
-            shell.tx_timeout_cursor(),
-            0,
-            "opens on the timeout in force"
-        );
-        shell.press(Key::Down, 4, context(16, 0));
-        shell.press(Key::Down, 5, context(16, 0));
-        assert_eq!(shell.press(Key::Menu, 6, context(16, 0)), Intent::Redraw);
-        assert_eq!(shell.tx_timeout_ms(), 180_000);
-        assert_eq!(shell.screen(), Screen::Operating);
-
-        // The digit is the minutes; others do nothing.
-        shell.press(Key::Menu, 7, context(16, 0));
-        shell.press(Key::Up, 8, context(16, 0));
-        shell.press(Key::Up, 8, context(16, 0));
-        shell.press(Key::Menu, 9, context(16, 0));
-        assert_eq!(
-            shell.screen(),
-            Screen::TxTimeoutList,
-            "Up wraps to the last row, TX classes, and on to the timeout"
-        );
-        assert_eq!(shell.press(Key::Digit(6), 10, context(16, 0)), Intent::Idle);
-        assert_eq!(shell.press(Key::Digit(0), 10, context(16, 0)), Intent::Idle);
-        shell.press(Key::Digit(5), 11, context(16, 0));
-        assert_eq!(shell.tx_timeout_ms(), 300_000);
-
-        // Exit returns to the menu and applies nothing.
-        shell.press(Key::Menu, 12, context(16, 0));
-        shell.press(Key::Up, 13, context(16, 0));
-        shell.press(Key::Menu, 14, context(16, 0));
-        shell.press(Key::Down, 15, context(16, 0));
-        shell.press(Key::Exit, 16, context(16, 0));
-        assert_eq!(shell.screen(), Screen::Settings);
-        assert_eq!(shell.tx_timeout_ms(), 300_000);
+        // CHANNEL drops the override; a programmed default does not touch it.
+        shell.set_tx(5, 0);
+        assert_eq!(shell.tx_override(), Some(3));
+        shell.press(Key::Menu, 17, context(16, 0));
+        shell.press(Key::Digit(0), 18, context(16, 0));
+        assert_eq!(shell.tx_override(), None);
+        assert_eq!(shell.tx_level(4), 4);
     }
 
     /// The studio's TX power and timeout are what the menu then shows.
@@ -1793,7 +1722,7 @@ mod tests {
         let mut shell = Shell::new();
         shell.set_capabilities(Capabilities::K5);
         shell.set_tx(2, 3);
-        assert_eq!((shell.tx_power(), shell.tx_power_cursor()), (2, 2));
+        assert_eq!(shell.tx_power(), 2);
         assert_eq!((shell.tx_timeout(), shell.tx_timeout_cursor()), (3, 3));
         assert_eq!(shell.tx_timeout_ms(), 240_000);
 

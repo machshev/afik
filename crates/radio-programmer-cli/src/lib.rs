@@ -475,7 +475,7 @@ fn parse_channel(spec: &str) -> Result<ChannelRecord, CliError> {
         tx_tone: Tone::None,
         modulation: Modulation::Fm,
         bandwidth: Bandwidth::Narrow,
-        power: PowerLevel::Low,
+        power: PowerLevel::Low1,
         step: FrequencyStep::from_hz(12_500)
             .map_err(|error| CliError::Usage(format!("invalid step: {error}")))?,
         flags: ChannelFlags::default(),

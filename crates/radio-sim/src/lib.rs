@@ -1605,7 +1605,7 @@ mod tests {
                 tx_tone: Tone::Ctcss(1_000),
                 modulation: Modulation::Fm,
                 bandwidth: Bandwidth::Wide,
-                power: PowerLevel::Medium,
+                power: PowerLevel::Mid,
                 step: FrequencyStep::from_hz(12_500).unwrap(),
                 flags: radio_channel_plan::ChannelFlags::default(),
                 bank: Some(radio_domain::BankId::new(1)),
