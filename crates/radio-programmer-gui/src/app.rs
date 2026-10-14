@@ -18,8 +18,8 @@ use crate::{
     device::{DeviceChoice, DeviceChooser},
     flash_tab::FlashTab,
     model::{
-        BankDraft, BankKind, BankUsage, ChannelDraft, ModelError, ProjectModel, StorageSummary,
-        ToneDraft, ToneKind, MAX_PROJECT_IMAGE_BYTES, RADIO_IMAGE_BYTES,
+        BankDraft, BankKind, ChannelDraft, ModelError, ProjectModel, StorageSummary, ToneDraft,
+        ToneKind, MAX_PROJECT_IMAGE_BYTES, RADIO_IMAGE_BYTES,
     },
     presets::PRESETS,
     projects::ProjectStore,
@@ -1230,13 +1230,13 @@ fn generated_expansion(ui: &mut egui::Ui, bank: &BankDraft) {
     });
 }
 
-/// Shows what the project gives and costs a radio, on every tab: the banks
-/// and their channels, and how much of the radio's memory the image takes.
+/// Shows what the project gives and costs a radio, on every tab: its banks
+/// and channels, and how much of the radio's memory the image takes.
 fn usage_bar(ui: &mut egui::Ui, summary: &StorageSummary) {
     ui.horizontal_wrapped(|ui| {
         ui.label(format!(
             "{} banks · {} channels ({} stored, {} from {} plans)",
-            summary.banks.len(),
+            summary.banks,
             summary.selectable_channels(),
             summary.stored_channels,
             summary.expanded_channels,
@@ -1266,29 +1266,11 @@ fn usage_bar(ui: &mut egui::Ui, summary: &StorageSummary) {
             }
         }
     });
-    if !summary.banks.is_empty() {
-        ui.horizontal_wrapped(|ui| {
-            for (row, bank) in summary.banks.iter().enumerate() {
-                ui.label(bank_usage_label(row, bank));
-            }
-        });
-    }
 }
 
 /// Formats tenths of a percent, such as `12.5%`.
 fn memory_percent(per_mille: usize) -> String {
     format!("{}.{}%", per_mille / 10, per_mille % 10)
-}
-
-/// Names one bank and its channel count for the status bar.
-fn bank_usage_label(row: usize, bank: &BankUsage) -> String {
-    let name = if bank.name.trim().is_empty() {
-        format!("Bank {}", row + 1)
-    } else {
-        bank.name.clone()
-    };
-    let plan = if bank.generated { ", plan" } else { "" };
-    format!("{name}: {}{plan}", bank.channels)
 }
 
 fn bank_kind_editor(ui: &mut egui::Ui, kind: &mut BankKind) {
@@ -1385,12 +1367,26 @@ pub fn channel_row_label(row: usize, channel: &ChannelDraft) -> String {
     format!("{}: {} ({})", row + 1, channel.name, channel.receive_mhz)
 }
 
+/// Counts channels in words, such as `1 channel` or `16 channels`.
+fn channels_label(count: usize) -> String {
+    if count == 1 {
+        "1 channel".to_owned()
+    } else {
+        format!("{count} channels")
+    }
+}
+
 /// Returns the editor label for one bank row, used by tests and headers.
+///
+/// It carries the bank's channel count, so a collapsed bank still shows it.
 pub fn bank_row_label(row: usize, bank: &BankDraft) -> String {
     let detail = match bank.kind {
-        BankKind::Named => format!("{} channels", bank.channels.len()),
+        BankKind::Named => channels_label(bank.channels.len()),
         BankKind::Generated => match bank.generated_span() {
-            Some((first, last)) => format!("plan, {first} to {last} MHz"),
+            Some((first, last)) => format!(
+                "plan, {}, {first} to {last} MHz",
+                channels_label(usize::from(bank.channel_count))
+            ),
             None => "generated plan".to_owned(),
         },
     };
@@ -1400,14 +1396,10 @@ pub fn bank_row_label(row: usize, bank: &BankDraft) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        bank_row_label, bank_usage_label, channel_row_label, memory_percent, scan_resume_label,
-        tx_class_label, StudioApp, Tab,
+        bank_row_label, channel_row_label, memory_percent, scan_resume_label, tx_class_label,
+        StudioApp, Tab,
     };
-    use crate::{
-        model::{BankKind, BankUsage},
-        projects::ProjectStore,
-        DeviceSelector, Options,
-    };
+    use crate::{model::BankKind, projects::ProjectStore, DeviceSelector, Options};
     use radio_domain::{ScanResume, TxClass};
     use std::path::PathBuf;
 
@@ -1585,13 +1577,13 @@ mod tests {
         project.add_channel(0);
         assert_eq!(
             bank_row_label(0, &project.banks[0]),
-            "1: Bank 1 (1 channels)"
+            "1: Bank 1 (1 channel)"
         );
         project.add_generated_bank();
         project.banks[1].base_mhz = "446.00625".to_owned();
         assert_eq!(
             bank_row_label(1, &project.banks[1]),
-            "2: Bank 2 (plan, 446.006250 to 446.193750 MHz)"
+            "2: Bank 2 (plan, 16 channels, 446.006250 to 446.193750 MHz)"
         );
         project.banks[1].base_mhz = "nope".to_owned();
         assert!(bank_row_label(1, &project.banks[1]).contains("generated plan"));
@@ -1811,22 +1803,10 @@ mod tests {
     }
 
     #[test]
-    fn the_status_bar_names_banks_and_reads_memory_in_tenths() {
+    fn the_status_bar_reads_memory_in_tenths() {
         assert_eq!(memory_percent(0), "0.0%");
         assert_eq!(memory_percent(125), "12.5%");
         assert_eq!(memory_percent(1_000), "100.0%");
-        let named = BankUsage {
-            name: "Amateur 2m".to_owned(),
-            generated: false,
-            channels: 4,
-        };
-        assert_eq!(bank_usage_label(0, &named), "Amateur 2m: 4");
-        let plan = BankUsage {
-            name: " ".to_owned(),
-            generated: true,
-            channels: 16,
-        };
-        assert_eq!(bank_usage_label(2, &plan), "Bank 3: 16, plan");
     }
 
     #[test]

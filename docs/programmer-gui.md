@@ -113,9 +113,9 @@ floating point.
   from one which fails.
 - **Flash:** the guided flash flow described below.
 
-A status bar under every tab shows the number of banks, the channels the
-radio can select (stored, and expanded from plans), each bank's channel count,
-and how much of the radio's 7,424-byte image region (`0x0000..0x1D00`) the
+Each bank's header shows its channel count, so it is visible while the bank
+is collapsed. A status bar under every tab shows the number of banks, the
+channels the radio can select (stored, and expanded from plans), and how much of the radio's 7,424-byte image region (`0x0000..0x1D00`) the
 compiled image takes, in bytes and as a percentage rounded up to a tenth.
 Only rows which validate are counted, and no size is shown until the whole
 project compiles.

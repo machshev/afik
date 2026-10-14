@@ -369,22 +369,11 @@ impl BankKind {
     }
 }
 
-/// How many channels one bank row gives the radio.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct BankUsage {
-    /// The bank's display name, as typed.
-    pub name: String,
-    /// Whether the bank is a generated plan.
-    pub generated: bool,
-    /// Channels which validate, or a valid plan's expansion.
-    pub channels: usize,
-}
-
 /// What one project costs a radio.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct StorageSummary {
-    /// Every bank row, in the radio's order.
-    pub banks: Vec<BankUsage>,
+    /// Bank rows, valid or not.
+    pub banks: usize,
     /// Channels stored one record each.
     pub stored_channels: usize,
     /// Channels the radio expands from stored plans.
@@ -884,10 +873,12 @@ impl ProjectModel {
     /// when the whole project compiles, so the figures always describe a
     /// configuration which could be written.
     pub fn storage_summary(&self) -> StorageSummary {
-        let mut summary = StorageSummary::default();
+        let mut summary = StorageSummary {
+            banks: self.banks.len(),
+            ..StorageSummary::default()
+        };
         let mut id = 1_u16;
         for (row, draft) in self.banks.iter().enumerate() {
-            let mut channels = 0;
             match draft.validate(row) {
                 Ok(ValidatedBank::Named(bank)) => {
                     for (channel_row, channel) in draft.channels.iter().enumerate() {
@@ -896,24 +887,17 @@ impl ProjectModel {
                             row: channel_row,
                         };
                         if channel.validate(scope, id, bank.id()).is_ok() {
-                            channels += 1;
+                            summary.stored_channels += 1;
                         }
                         id = id.saturating_add(1);
                     }
-                    summary.stored_channels += channels;
                 }
                 Ok(ValidatedBank::Generated(plan)) => {
-                    channels = usize::from(plan.channel_count());
                     summary.plans += 1;
-                    summary.expanded_channels += channels;
+                    summary.expanded_channels += usize::from(plan.channel_count());
                 }
                 Err(_) => {}
             }
-            summary.banks.push(BankUsage {
-                name: draft.name.clone(),
-                generated: draft.kind == BankKind::Generated,
-                channels,
-            });
         }
         summary.image_bytes = self.to_radio_image().ok().map(|image| image.len());
         summary
@@ -1531,15 +1515,7 @@ mod tests {
         assert_eq!(summary.selectable_channels(), 17);
         assert_eq!(summary.plans, 1);
         assert!(summary.image_bytes.unwrap() > bytes);
-        assert_eq!(summary.banks.len(), 2);
-        assert_eq!(
-            (summary.banks[0].generated, summary.banks[0].channels),
-            (false, 1)
-        );
-        assert_eq!(
-            (summary.banks[1].generated, summary.banks[1].channels),
-            (true, 16)
-        );
+        assert_eq!(summary.banks, 2);
 
         // A row which does not validate is not counted, and no image is claimed.
         model.banks[row].base_mhz = "not a frequency".to_owned();
@@ -1547,7 +1523,7 @@ mod tests {
         assert_eq!(summary.expanded_channels, 0);
         assert_eq!(summary.image_bytes, None);
         assert_eq!(summary.used_per_mille(), None);
-        assert_eq!(summary.banks[row].channels, 0);
+        assert_eq!(summary.banks, 2);
     }
 
     #[test]

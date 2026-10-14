@@ -278,9 +278,9 @@
   workspace clippy `-D warnings` clean, `cargo test --workspace
   --no-fail-fast` 682 passed 0 failed.
 - Studio (operator request): a status bar under every tab shows banks,
-  selectable channels, each bank's channel count, and image bytes and percent
-  of the radio's memory (`StorageSummary::banks`, `used_per_mille`); it
-  replaces the Banks and Device tab summary lines. Gate: `cargo fmt --all
+  selectable channels, and image bytes and percent of the radio's memory
+  (`StorageSummary::used_per_mille`); it replaces the Banks and Device tab
+  summary lines. Each bank header, plans included, shows its channel count. Gate: `cargo fmt --all
   --check` clean, workspace clippy `-D warnings` clean, `cargo test
   --workspace` 683 passed 0 failed.
 - Next: flash K5 `7.0.18`, check a power cycle keeps VFO, bank and channel,
