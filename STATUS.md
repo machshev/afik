@@ -158,6 +158,17 @@ programmed TX ranges protect channel and VFO mode alike.
   warnings` clean, `cargo test --workspace` 755 passed 0 failed 1 ignored;
   `cargo test -p radio-programmer-gui the_live_satnogs -- --ignored` passed
   against db.satnogs.org.
+- Studio (operator request, `ADR-104`): UK repeaters near a locator. Sync
+  from ETCC fetches the RSGB repeater list (`api-beta.rsgb.online`) into
+  `$XDG_CACHE_HOME/afik/etcc`; Add builds one bank `RPT <locator>` of the
+  operational analogue FM repeaters within the chosen radius (10–200 km),
+  nearest first, at most 40, each receiving the output and transmitting on
+  the input with its CTCSS tone. The locator and radius are kept in
+  `$XDG_STATE_HOME/afik/repeater-area`. 482 repeaters live; 30 within 50 km
+  of IO91WM. Not checked on screen. Gate: `cargo fmt --all --check` clean,
+  workspace clippy `-D warnings` clean, `cargo test --workspace` 776 passed
+  0 failed 2 ignored; `cargo test -p radio-programmer-gui the_live_etcc --
+  --ignored` passed against the ETCC API.
 - Step 5 (hardware, partial): on `7.0.22` with PMR446 channels in A and B,
   the other slot was never heard and scan never stopped at the 90 ms dwell;
   programmed at 200 ms both work (`EVID-K5-036`). `RadioConfig::conservative()`

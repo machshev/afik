@@ -1759,3 +1759,20 @@ meaning.
   the BK4819 datasheet coverage; the uplink tone is read from the
   description. The result is an ordinary bank, validated before any write,
   and the TX ranges still decide what may transmit.
+
+## ADR-104 — The studio adds UK repeaters near a locator from the ETCC list
+
+- **Date:** 2026-10-15
+- **Status:** accepted, operator request.
+- Sync fetches the RSGB ETCC systems list over HTTPS on a worker and caches
+  the raw response in `$XDG_CACHE_HOME/afik/etcc`, as `ADR-103` does for
+  satellites; nothing fetches on its own, and a response that does not parse
+  leaves the cache untouched.
+- Selection: repeater types AV, DM and RL, operational or at reduced output,
+  carrying analogue FM, output and input both in the BK4819 datasheet
+  coverage. Gateways are left out. Distance is great-circle from the centre
+  of the operator's locator square to the centre of the repeater's; many
+  ETCC locators are four characters, so distances are approximate.
+- "Likely range" is an operator-chosen radius, not a propagation model; the
+  bank takes the nearest 40 so it stays about a quarter of the image. The TX
+  ranges still decide what may transmit.

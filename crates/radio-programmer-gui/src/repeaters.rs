@@ -37,6 +37,9 @@ const AREA_FILE: &str = "repeater-area";
 pub const MAX_REPEATER_CHANNELS: usize = 40;
 /// The radius offered before the operator chooses one, in kilometres.
 pub const DEFAULT_RADIUS_KM: u16 = 50;
+/// The radii the studio offers, in kilometres: from a handheld's reach of
+/// a hilltop repeater to a mobile's on a good day.
+pub const RADII_KM: [u16; 8] = [10, 20, 30, 50, 75, 100, 150, 200];
 /// The largest radius accepted; the whole UK is within it of anywhere in it.
 pub const MAX_RADIUS_KM: u16 = 1_500;
 const TIMEOUT: Duration = Duration::from_secs(30);
@@ -65,8 +68,9 @@ pub struct Repeater {
     pub ctcss_tenths_hz: Option<u16>,
     /// A 25 kHz channel rather than 12.5 kHz.
     pub wide: bool,
-    /// Where it is, in degrees.
+    /// Latitude of its locator square's centre, in degrees north.
     pub latitude: f64,
+    /// Longitude of its locator square's centre, in degrees east.
     pub longitude: f64,
 }
 
@@ -133,13 +137,13 @@ fn receivable(value: &Value, key: &str) -> Option<u32> {
 }
 
 /// A CTCSS tone in hertz as tenths, or none where the ETCC records zero.
+// Checked against the CTCSS range first, so the cast is exact.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn ctcss(hz: f64) -> Option<u16> {
     let tenths = (hz * 10.0).round();
     (f64::from(MIN_CTCSS_TENTHS_HZ)..=f64::from(MAX_CTCSS_TENTHS_HZ))
         .contains(&tenths)
-        // In range, so the conversion is exact.
-        .then(|| u16::try_from(tenths as i64).ok())
-        .flatten()
+        .then_some(tenths as u16)
 }
 
 /// Upper-case printable ASCII no longer than `max`, or none if nothing is left.
@@ -160,7 +164,9 @@ fn sanitise(name: &str, max: usize) -> Option<String> {
 pub fn locator_centre(locator: &str) -> Result<(f64, f64), String> {
     let bytes = locator.trim().as_bytes();
     if !matches!(bytes.len(), 2 | 4 | 6 | 8) {
-        return Err(format!("{locator:?} is not a 2, 4, 6 or 8 character locator"));
+        return Err(format!(
+            "{locator:?} is not a 2, 4, 6 or 8 character locator"
+        ));
     }
     // Each pair's base character, number of divisions, and size in degrees
     // of longitude; latitude is half.
@@ -348,7 +354,9 @@ impl RepeaterCache {
 /// The locator and radius the operator last chose.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RepeaterArea {
+    /// Maidenhead locator the radius is measured from.
     pub locator: String,
+    /// Distance within which repeaters are taken, in kilometres.
     pub radius_km: u16,
 }
 
@@ -464,7 +472,7 @@ mod tests {
          "txbw": 25, "locator": "IO81HW"},
         {"type": "RL", "status": "OPERATIONAL", "modeCodes": ["A"], "repeater": "GB3NL",
          "town": "NORTH LONDON", "tx": 145612500, "rx": 145012500, "ctcss": 0,
-         "txbw": 12.5, "locator": "IO91VP"},
+         "txbw": 12.5, "locator": "IO91WN"},
         {"type": "AV", "status": "NOT OPERATIONAL", "modeCodes": ["A"], "repeater": "GB3OFF",
          "town": "LONDON", "tx": 145700000, "rx": 145100000, "ctcss": 82.5,
          "txbw": 12.5, "locator": "IO91WM"},
@@ -475,7 +483,7 @@ mod tests {
          "town": "LONDON", "tx": 145337500, "rx": 145337500, "ctcss": 77,
          "txbw": 12.5, "locator": "IO91WM"},
         {"type": "AV", "status": "OPERATIONAL", "modeCodes": ["A"], "repeater": "GB3TV",
-         "town": "DUNSTABLE", "tx": 1297000000, "rx": 1291000000, "ctcss": 0,
+         "town": "DUNSTABLE", "tx": 2400000000, "rx": 2400000000, "ctcss": 0,
          "txbw": 12.5, "locator": "IO91RV"},
         {"type": "AV", "status": "OPERATIONAL", "modeCodes": null, "repeater": "GB3NUL",
          "town": "LONDON", "tx": 145650000, "rx": 145050000, "ctcss": 0,
@@ -509,14 +517,15 @@ mod tests {
         };
         close(locator_centre("IO").unwrap(), (55.0, -10.0));
         close(locator_centre("IO91").unwrap(), (51.5, -1.0));
-        // IO91WM: 51.5 to 51.541 N, 0.166 to 0.083 W.
+        // IO91WM spans 51.5 to 51.5417 N and 0.1667 to 0.0833 W.
         close(
             locator_centre("io91wm").unwrap(),
-            (51.5 + 12.5 / 600.0, -2.0 + 22.5 / 12.0 + 1.0 / 24.0),
+            (51.5 + 1.0 / 48.0, -2.0 + 22.5 / 12.0),
         );
+        // Its extended square 55 is the middle tenth each way.
         close(
             locator_centre("IO91WM55").unwrap(),
-            (51.5 + 12.5 / 600.0 + 0.0, -2.0 + 22.5 / 12.0 + 1.0 / 24.0),
+            (51.5 + 5.5 / 240.0, -2.0 + 22.0 / 12.0 + 5.5 / 120.0),
         );
         for bad in ["", "I", "IO9", "SA00", "IO9A", "IO91ZZ", "IO91WMAA"] {
             assert!(locator_centre(bad).is_err(), "{bad:?}");
@@ -536,7 +545,15 @@ mod tests {
         let repeaters = parse(SYSTEMS).expect("parses");
         let summary: Vec<_> = repeaters
             .iter()
-            .map(|r| (r.callsign.as_str(), r.output_hz, r.input_hz, r.ctcss_tenths_hz, r.wide))
+            .map(|r| {
+                (
+                    r.callsign.as_str(),
+                    r.output_hz,
+                    r.input_hz,
+                    r.ctcss_tenths_hz,
+                    r.wide,
+                )
+            })
             .collect();
         assert_eq!(
             summary,
@@ -567,7 +584,7 @@ mod tests {
         // Brecon is about 230 km away.
         let wide = nearby(&repeaters, "IO91WM", 300).unwrap();
         assert_eq!(wide.last().unwrap().0.callsign, "GB3BB");
-        assert!(nearby(&repeaters, "IO91WM", 1).unwrap().len() == 1);
+        assert_eq!(nearby(&repeaters, "IO91WM", 1).unwrap().len(), 1);
         assert!(nearby(&repeaters, "nonsense", 50).is_err());
     }
 

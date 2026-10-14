@@ -1,6 +1,10 @@
 //! The egui application drawing the validated project model.
 
-use std::{fs, path::Path, time::Instant};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::Instant,
+};
 
 use eframe::egui::{
     self, collapsing_header::CollapsingState, ComboBox, Grid, RichText, ScrollArea, TextEdit,
@@ -25,6 +29,7 @@ use crate::{
     },
     presets::{satellite_bank, PRESETS, SATELLITE_PRESET, TX_RANGE_PRESETS},
     projects::ProjectStore,
+    repeaters::{self, RepeaterArea, RepeaterCache, RepeaterList},
     satellites::{SatelliteCache, SatelliteList, SyncJob},
     session::{DeviceJob, DeviceOutcome, DeviceSession, JobKind},
     DeviceSelector, Options,
@@ -126,6 +131,15 @@ pub struct StudioApp {
     satellites: Option<SatelliteList>,
     /// A SatNOGS fetch running on a worker.
     satellite_sync: Option<SyncJob>,
+    /// Where the ETCC repeater list is cached, and what was last read from it.
+    repeater_cache: RepeaterCache,
+    repeaters: Option<RepeaterList>,
+    /// An ETCC fetch running on a worker.
+    repeater_sync: Option<repeaters::SyncJob>,
+    /// The locator and radius repeaters are added for, and the state file
+    /// they are remembered in.
+    repeater_area: RepeaterArea,
+    repeater_area_file: Option<PathBuf>,
 }
 
 impl StudioApp {
@@ -133,7 +147,133 @@ impl StudioApp {
     pub fn new(options: &Options) -> Self {
         let mut app = Self::with_projects(options, ProjectStore::open());
         app.use_satellite_cache(SatelliteCache::open());
+        app.use_repeater_cache(RepeaterCache::open());
+        app.repeater_area_file = RepeaterArea::file();
+        if let Some(file) = &app.repeater_area_file {
+            app.repeater_area = RepeaterArea::load(file);
+        }
         app
+    }
+
+    /// Reads the repeater list from `cache`, which a sync then writes.
+    ///
+    /// Reading never fetches: the network is used only when Sync is pressed.
+    pub fn use_repeater_cache(&mut self, cache: RepeaterCache) {
+        self.repeaters = match cache.load() {
+            Ok(list) => list,
+            Err(error) => {
+                log::warn!("reading the repeater cache: {error}");
+                None
+            }
+        };
+        self.repeater_cache = cache;
+    }
+
+    /// Starts fetching the repeater list from the ETCC.
+    fn sync_repeaters(&mut self) {
+        if self.repeater_sync.is_some() {
+            return;
+        }
+        if self.repeater_cache.dir().is_none() {
+            self.refuse("Cannot sync repeaters: no XDG cache directory or HOME is set.");
+            return;
+        }
+        log::info!("syncing repeaters from the ETCC");
+        "Syncing repeaters from the ETCC...".clone_into(&mut self.status);
+        self.repeater_sync = Some(repeaters::SyncJob::start(self.repeater_cache.clone()));
+    }
+
+    /// Takes in a finished repeater sync.
+    fn poll_repeater_sync(&mut self) {
+        let Some(outcome) = self
+            .repeater_sync
+            .as_ref()
+            .and_then(repeaters::SyncJob::poll)
+        else {
+            return;
+        };
+        self.repeater_sync = None;
+        match outcome {
+            Ok(list) => {
+                self.status = format!(
+                    "Synced {} FM repeaters from the ETCC.",
+                    list.repeaters.len()
+                );
+                log::info!("{}", self.status);
+                self.repeaters = Some(list);
+            }
+            // The cache is untouched, so the previous list still applies.
+            Err(error) => self.fail(
+                "syncing repeaters",
+                format!("Repeater sync failed: {error}"),
+            ),
+        }
+    }
+
+    /// Describes the repeater list and what the area would add.
+    fn repeater_source(&self) -> String {
+        if self.repeater_sync.is_some() {
+            return "Syncing...".to_owned();
+        }
+        let Some(list) = &self.repeaters else {
+            return "Not synced.".to_owned();
+        };
+        let synced = format!(
+            "{} repeaters from the ETCC, synced {}.",
+            list.repeaters.len(),
+            age(list.synced)
+        );
+        let area = &self.repeater_area;
+        match repeaters::nearby(&list.repeaters, &area.locator, area.radius_km) {
+            Ok(near) => format!("{} within {} km. {synced}", near.len(), area.radius_km),
+            Err(_) => synced,
+        }
+    }
+
+    /// Adds a bank of the repeaters near the locator, nearest first.
+    fn add_repeaters(&mut self) {
+        let Some(list) = &self.repeaters else {
+            self.refuse("Sync the repeater list from the ETCC first.");
+            return;
+        };
+        let area = self.repeater_area.clone();
+        let near = match repeaters::nearby(&list.repeaters, &area.locator, area.radius_km) {
+            Ok(near) => near,
+            Err(error) => {
+                self.refuse(&format!("Cannot add repeaters: {error}."));
+                return;
+            }
+        };
+        if near.is_empty() {
+            self.status = format!(
+                "No FM repeaters within {} km of {}.",
+                area.radius_km, area.locator
+            );
+            return;
+        }
+        let bank = repeaters::repeater_bank(&area.locator, &near);
+        let furthest = near.last().map_or(0.0, |(_, km)| *km);
+        let count = near.len();
+        if let Some(existing) = self.project.banks.iter().position(|b| b.name == bank.name) {
+            self.project.banks[existing] = bank;
+        } else if self.project.banks.len() >= usize::from(MAX_BANKS) {
+            self.status =
+                format!("A radio holds {MAX_BANKS} banks and the project already has them.");
+            return;
+        } else {
+            self.project.banks.push(bank);
+        }
+        self.status = format!(
+            "Added {count} repeaters within {} km of {}, nearest first (furthest {furthest:.0} \
+             km). Confirm each against the ETCC list before use.",
+            area.radius_km,
+            area.locator.trim().to_ascii_uppercase()
+        );
+        if let Some(file) = &self.repeater_area_file {
+            if let Err(error) = area.save(file) {
+                log::warn!("could not remember the repeater area: {error}");
+            }
+        }
     }
 
     /// Reads the satellite list from `cache`, which a sync then writes.
@@ -194,19 +334,11 @@ impl StudioApp {
             return "Syncing...".to_owned();
         }
         match &self.satellites {
-            Some(list) => {
-                let age = list.synced.elapsed().unwrap_or_default().as_secs();
-                let age = match age {
-                    0..=59 => "just now".to_owned(),
-                    60..=3599 => format!("{} min ago", age / 60),
-                    3600..=86_399 => format!("{} h ago", age / 3600),
-                    _ => format!("{} days ago", age / 86_400),
-                };
-                format!(
-                    "{} channels from SatNOGS, synced {age}.",
-                    list.channels.len()
-                )
-            }
+            Some(list) => format!(
+                "{} channels from SatNOGS, synced {}.",
+                list.channels.len(),
+                age(list.synced)
+            ),
             None => "Built-in list; not synced.".to_owned(),
         }
     }
@@ -233,6 +365,11 @@ impl StudioApp {
             satellite_cache: SatelliteCache::none(),
             satellites: None,
             satellite_sync: None,
+            repeater_cache: RepeaterCache::none(),
+            repeaters: None,
+            repeater_sync: None,
+            repeater_area: RepeaterArea::default(),
+            repeater_area_file: None,
         };
         if let Some(baud) = options.baud {
             app.chooser.baud = baud;
@@ -661,6 +798,17 @@ impl StudioApp {
     }
 }
 
+/// Says how long ago a cache was written.
+fn age(written: std::time::SystemTime) -> String {
+    let age = written.elapsed().unwrap_or_default().as_secs();
+    match age {
+        0..=59 => "just now".to_owned(),
+        60..=3599 => format!("{} min ago", age / 60),
+        3600..=86_399 => format!("{} h ago", age / 3600),
+        _ => format!("{} days ago", age / 86_400),
+    }
+}
+
 /// Reads one project file, either format the editor reads.
 fn read_project_file(path: &Path) -> Result<ProjectModel, String> {
     let bytes =
@@ -680,7 +828,8 @@ impl eframe::App for StudioApp {
         // checks for its end, wherever the operator is looking.
         self.poll_job();
         self.poll_satellite_sync();
-        if self.job.is_some() || self.satellite_sync.is_some() {
+        self.poll_repeater_sync();
+        if self.job.is_some() || self.satellite_sync.is_some() || self.repeater_sync.is_some() {
             context.request_repaint_after(std::time::Duration::from_millis(50));
         }
         // The Flash tab's automatic flow only runs while it is shown, so a
@@ -810,6 +959,55 @@ impl StudioApp {
                     ui.label(self.satellite_source());
                 }
             }
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.label("UK repeaters near");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.repeater_area.locator)
+                    .hint_text("IO91WM")
+                    .char_limit(8)
+                    .desired_width(70.0),
+            )
+            .on_hover_text("Your Maidenhead locator, 4 to 8 characters");
+            ui.label("within");
+            ComboBox::from_id_salt("repeater-radius")
+                .selected_text(format!("{} km", self.repeater_area.radius_km))
+                .show_ui(ui, |ui| {
+                    for km in repeaters::RADII_KM {
+                        ui.selectable_value(
+                            &mut self.repeater_area.radius_km,
+                            km,
+                            format!("{km} km"),
+                        );
+                    }
+                });
+            // Always enabled: a disabled button here cuts the Tab order
+            // short in egui 0.29, and Add explains itself when unsynced.
+            if ui
+                .button("Add")
+                .on_hover_text(format!(
+                    "Adds the FM repeaters in range as one bank, nearest first, at most {}; \
+                     each receives the output and transmits on the input with its CTCSS tone",
+                    repeaters::MAX_REPEATER_CHANNELS
+                ))
+                .clicked()
+            {
+                self.add_repeaters();
+            }
+            if ui
+                .add_enabled(
+                    self.repeater_sync.is_none(),
+                    egui::Button::new("Sync from ETCC"),
+                )
+                .on_hover_text(
+                    "Fetches the UK repeater list from the RSGB ETCC and caches it; the \
+                     studio never fetches on its own",
+                )
+                .clicked()
+            {
+                self.sync_repeaters();
+            }
+            ui.label(self.repeater_source());
         });
         ui.separator();
     }
@@ -2530,6 +2728,58 @@ mod tests {
         assert_eq!(synced.channels[0].transmit_mhz, "145.850000");
         assert_eq!(synced.channels[0].tx_tone.value, "67.0");
         assert!(app.project.validate().is_ok());
+    }
+
+    #[test]
+    fn repeaters_near_a_locator_are_added_nearest_first_once_synced() {
+        use crate::repeaters::{Repeater, RepeaterArea, RepeaterList};
+
+        let repeater = |callsign: &str, latitude: f64, longitude: f64| Repeater {
+            callsign: callsign.to_owned(),
+            town: String::new(),
+            output_hz: 145_625_000,
+            input_hz: 145_025_000,
+            ctcss_tenths_hz: Some(825),
+            wide: false,
+            latitude,
+            longitude,
+        };
+        let mut app = simulated("repeaters");
+        assert!(app.repeaters.is_none(), "tests never read the real cache");
+        assert_eq!(app.repeater_source(), "Not synced.");
+        let banks = app.project.banks.len();
+        app.add_repeaters();
+        assert_eq!(app.project.banks.len(), banks, "nothing without a sync");
+
+        app.repeaters = Some(RepeaterList {
+            repeaters: vec![
+                repeater("GB3FAR", 51.9, -0.1),
+                repeater("GB3NEAR", 51.52, -0.12),
+                repeater("GB3OUT", 53.0, -0.1),
+            ],
+            synced: std::time::SystemTime::now(),
+        });
+        app.repeater_area = RepeaterArea {
+            locator: "io91wm".to_owned(),
+            radius_km: 50,
+        };
+        assert!(app.repeater_source().starts_with("2 within 50 km."));
+        app.add_repeaters();
+        let bank = app.project.banks.last().unwrap();
+        assert_eq!(bank.name, "RPT IO91WM");
+        let names: Vec<_> = bank.channels.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["GB3NEAR", "GB3FAR"]);
+        assert!(app.project.validate().is_ok());
+
+        // Adding again replaces the bank rather than adding a second.
+        app.repeater_area.radius_km = 10;
+        app.add_repeaters();
+        assert_eq!(app.project.banks.len(), banks + 1);
+        assert_eq!(app.project.banks.last().unwrap().channels.len(), 1);
+
+        app.repeater_area.locator = "nonsense".to_owned();
+        app.add_repeaters();
+        assert_eq!(app.project.banks.len(), banks + 1);
     }
 
     #[test]
