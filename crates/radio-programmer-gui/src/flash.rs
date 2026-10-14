@@ -6,13 +6,12 @@
 //!
 //! Firmware cannot be read back. The bootloader protocols this crate drives
 //! carry no flash-read command, so a page acknowledgement is the only evidence a
-//! write produced and there is no firmware backup to take. What protects a unit
-//! is the retained known-good recovery image and the retained EEPROM backup,
-//! which the recovery and K5 paths require and report the digest of before
-//! starting. The K1 application path does not: it addresses a page index rather
-//! than an address and issues no EEPROM operation, so it cannot reach the
-//! bootloader and a bad application is recovered by writing another one. Both
-//! artefacts stay optional there and are validated when supplied.
+//! write produced and there is no firmware backup to take. The default AFIK
+//! write is image-only, exactly as `afik-flasher flash-afik` (`ADR-098`): it
+//! reads the bootloader beacon, refuses an image built for the other radio, and
+//! writes only the application pages, so an image which does not boot is
+//! recovered by writing another one. The K1 recovery write and the
+//! recovery-gated K5 write keep their retained artefacts and phrases.
 
 use std::{
     fmt,
@@ -24,8 +23,9 @@ use std::{
 };
 
 use radio_flasher::{
-    crc32, detect_bootloader, k1, k1::K1RecoveryImage, ApplicationImage, BootloaderFamily,
-    EepromBackup, FirmwareVersion, FlashPrerequisites, FlashPurpose,
+    crc32, detect_bootloader, flash_afik_application, k1, k1::K1RecoveryImage, ApplicationImage,
+    BootloaderFamily, EepromBackup, FirmwareVersion, FlashPrerequisites, FlashPurpose,
+    DEFAULT_NEGOTIATION_VERSION, FLASH_PAGE_COUNT,
 };
 use radio_programmer_serial::LinuxSerialTransport;
 
@@ -33,6 +33,9 @@ use radio_programmer_serial::LinuxSerialTransport;
 pub const FLASH_BAUD: u32 = 38_400;
 /// Largest firmware image the editor will read from disk.
 pub const MAX_FIRMWARE_BYTES: usize = 256 * 1024;
+/// Application pages every K5 V1 write sends.
+#[allow(clippy::cast_possible_truncation)]
+const K5_PAGES: u16 = FLASH_PAGE_COUNT as u16;
 /// Exact EEPROM backup size for the UV-K5 V1 path.
 pub const EEPROM_BYTES: usize = 8 * 1024;
 
@@ -41,10 +44,10 @@ pub const EEPROM_BYTES: usize = 8 * 1024;
 pub enum FlashOperation {
     /// Read the complete EEPROM without writing anything.
     BackupEeprom,
+    /// Write an AFIK application to whichever radio's bootloader answers.
+    AfikApplication,
     /// Write the known-good recovery image to a UV-K1.
     K1Recovery,
-    /// Write an AFIK application to a UV-K1 after a recovery rehearsal.
-    K1Application,
     /// Write an application to a UV-K5 V1 after a recovery rehearsal.
     K5Application,
 }
@@ -54,9 +57,9 @@ impl FlashOperation {
     pub const fn label(self) -> &'static str {
         match self {
             Self::BackupEeprom => "Back up EEPROM (read only)",
+            Self::AfikApplication => "Flash AFIK application (K5 V1 or K1)",
             Self::K1Recovery => "Flash K1 recovery image",
-            Self::K1Application => "Flash K1 AFIK application",
-            Self::K5Application => "Flash K5 V1 application",
+            Self::K5Application => "Flash K5 V1 application (recovery-gated)",
         }
     }
 
@@ -69,11 +72,29 @@ impl FlashOperation {
     pub const fn all() -> [Self; 4] {
         [
             Self::BackupEeprom,
+            Self::AfikApplication,
             Self::K1Recovery,
-            Self::K1Application,
             Self::K5Application,
         ]
     }
+
+    /// Reports whether the operator must type the image CRC-32 to confirm it.
+    pub const fn needs_crc32(self) -> bool {
+        matches!(self, Self::K1Recovery | Self::K5Application)
+    }
+}
+
+/// Parses an operator-typed CRC-32: eight hex digits, optionally `0x`-prefixed.
+pub fn parse_crc32(text: &str) -> Option<u32> {
+    let text = text.trim();
+    let digits = text
+        .strip_prefix("0x")
+        .or_else(|| text.strip_prefix("0X"))
+        .unwrap_or(text);
+    if digits.is_empty() || digits.len() > 8 {
+        return None;
+    }
+    u32::from_str_radix(digits, 16).ok()
 }
 
 /// Complete operator-supplied inputs for one guarded operation.
@@ -97,7 +118,7 @@ pub struct FlashRequest {
     pub bootloader_version: String,
     /// Non-zero per-run transaction identifier.
     pub transaction_id: u32,
-    /// Operator-entered CRC-32 of the selected K5 image.
+    /// Operator-entered CRC-32 of the selected image, where one is required.
     pub image_crc32: u32,
     /// Negotiated K5 firmware version string.
     pub firmware_version: String,
@@ -241,7 +262,17 @@ pub fn validate_request(
                 ));
             }
         }
-        FlashOperation::K1Recovery | FlashOperation::K1Application => {
+        FlashOperation::AfikApplication => {
+            // The image is the only input: the radio is identified from its
+            // beacon at write time, as `afik-flasher flash-afik` does.
+            require_file(&request.firmware, "firmware image")?;
+            if request.transaction_id == 0 {
+                return Err(FlashRequestError::new(
+                    "enter a non-zero transaction identifier",
+                ));
+            }
+        }
+        FlashOperation::K1Recovery => {
             require_file(&request.firmware, "firmware image")?;
             if request.transaction_id == 0 {
                 return Err(FlashRequestError::new(
@@ -253,26 +284,10 @@ pub fn validate_request(
                     "identify the radio, or enter the observed 7.03.x bootloader version",
                 ));
             }
-            // The recovery write still asks for its phrase, because that path
-            // can leave a unit needing rescue. The application write does not:
-            // the editor already shows the operator the device, image, and
-            // digest, and a phrase typed beside them adds no knowledge of what
-            // is about to happen.
-            if matches!(operation, FlashOperation::K1Recovery)
-                && request.target_confirmation.trim().is_empty()
-            {
+            // The recovery write can leave a unit needing rescue, so it still
+            // asks for its phrase.
+            if request.target_confirmation.trim().is_empty() {
                 return Err(FlashRequestError::new("enter the target confirmation"));
-            }
-            if matches!(operation, FlashOperation::K1Application) {
-                // Neither retained artefact is required here, exactly as the
-                // flasher CLI's `flash-afik-k1` no longer requires them. This
-                // path addresses a page index rather than an address and issues
-                // no EEPROM operation, so it cannot reach the bootloader and an
-                // application which does not boot is recovered by writing
-                // another one through the same passive beacon. Both are still
-                // validated when the operator does supply them.
-                optional_file(&request.recovery, "recovery image")?;
-                optional_file(&request.eeprom_backup, "EEPROM backup")?;
             }
         }
         FlashOperation::K5Application => {
@@ -360,37 +375,7 @@ fn run(
                 report.pages_acknowledged, report.transaction_id
             ))
         }
-        FlashOperation::K1Application => {
-            let image = read_k1_image(&request.firmware)?;
-            // Both retained artefacts are optional for this operation and are
-            // validated only when the operator supplied one.
-            let recovery = read_optional(&request.recovery, read_k1_image)?;
-            let backup = read_optional(&request.eeprom_backup, read_eeprom_backup)?;
-            confirm_image_crc32(&image, request.image_crc32)?;
-            classify_k1(&mut serial, &request.bootloader_version)?;
-            let total = image.page_count();
-            let report = k1::flash_application(
-                &mut serial,
-                &image,
-                recovery.as_ref(),
-                &request.bootloader_version,
-                request.transaction_id,
-                |page| step(sender, page, total),
-            )
-            .map_err(|error| FlashRequestError::new(error.to_string()))?;
-            Ok(match backup {
-                Some(backup) => format!(
-                    "wrote {} application pages under transaction {:08x} with retained backup CRC-32 {:08x}",
-                    report.pages_acknowledged,
-                    report.transaction_id,
-                    backup.crc32()
-                ),
-                None => format!(
-                    "wrote {} application pages under transaction {:08x} with no retained backup",
-                    report.pages_acknowledged, report.transaction_id
-                ),
-            })
-        }
+        FlashOperation::AfikApplication => flash_afik(&mut serial, request, sender),
         FlashOperation::K5Application => {
             let image = read_k5_image(&request.firmware)?;
             let recovery = read_k5_image(&request.recovery)?;
@@ -411,7 +396,7 @@ fn run(
                         recovery_rehearsed_confirmation: &request.recovery_rehearsed_confirmation,
                     },
                 },
-                |page| step(sender, page, 240),
+                |page| step(sender, page, K5_PAGES),
             )
             .map_err(|error| FlashRequestError::new(error.to_string()))?;
             Ok(format!(
@@ -420,6 +405,106 @@ fn run(
             ))
         }
     }
+}
+
+/// Writes an AFIK application to whichever radio's bootloader answers.
+fn flash_afik(
+    serial: &mut LinuxSerialTransport,
+    request: &FlashRequest,
+    sender: &Sender<FlashProgress>,
+) -> Result<String, FlashRequestError> {
+    let raw = read_bounded(&request.firmware, MAX_FIRMWARE_BYTES, "firmware image")?;
+    // Classification is read-only and consumes the first beacon, which
+    // both write paths require of their caller.
+    let family =
+        detect_bootloader(serial).map_err(|error| FlashRequestError::new(error.to_string()))?;
+    match afik_image_for(Radio::of(&family), family.info().version(), &raw)? {
+        AfikImage::K5V1(image) => {
+            let version = FirmwareVersion::new(DEFAULT_NEGOTIATION_VERSION)
+                .map_err(|error| FlashRequestError::new(error.to_string()))?;
+            let report =
+                flash_afik_application(serial, &image, &version, request.transaction_id, |page| {
+                    step(sender, page, K5_PAGES);
+                })
+                .map_err(|error| FlashRequestError::new(error.to_string()))?;
+            Ok(format!(
+                "wrote {} K5 V1 application pages with CRC-32 {:08x} under transaction \
+                 {:08x}; acknowledged, not read back",
+                report.pages_acknowledged, report.image_crc32, report.transaction_id
+            ))
+        }
+        AfikImage::K1(image) => {
+            let total = image.page_count();
+            let report = k1::flash_application(
+                serial,
+                &image,
+                None,
+                family.info().version(),
+                request.transaction_id,
+                |page| step(sender, page, total),
+            )
+            .map_err(|error| FlashRequestError::new(error.to_string()))?;
+            Ok(format!(
+                "wrote {} K1 application pages with CRC-32 {:08x} under transaction \
+                 {:08x}; acknowledged, not read back",
+                report.pages_acknowledged,
+                crc32(image.bytes()),
+                report.transaction_id
+            ))
+        }
+    }
+}
+
+/// Which radio a detected bootloader belongs to.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Radio {
+    K5V1,
+    K1,
+}
+
+impl Radio {
+    const fn of(family: &BootloaderFamily) -> Self {
+        match family {
+            BootloaderFamily::K5V1(_) => Self::K5V1,
+            BootloaderFamily::K1(_) => Self::K1,
+        }
+    }
+}
+
+/// An AFIK application image checked against the radio that answered.
+enum AfikImage {
+    K5V1(ApplicationImage),
+    K1(K1RecoveryImage),
+}
+
+/// Refuses an image built for the other radio before any page is sent.
+///
+/// The layouts cannot be confused: a K5 image's reset vector lies inside its own
+/// 60 KiB from address zero, and a K1 image's lies in the K1 flash region.
+fn afik_image_for(
+    radio: Radio,
+    bootloader: &str,
+    raw: &[u8],
+) -> Result<AfikImage, FlashRequestError> {
+    let (label, image) = match radio {
+        Radio::K5V1 => (
+            "K5 V1",
+            ApplicationImage::from_raw(raw)
+                .map(AfikImage::K5V1)
+                .map_err(|error| error.to_string()),
+        ),
+        Radio::K1 => (
+            "K1",
+            K1RecoveryImage::from_raw(raw)
+                .map(AfikImage::K1)
+                .map_err(|error| error.to_string()),
+        ),
+    };
+    image.map_err(|error| {
+        FlashRequestError::new(format!(
+            "the image is not a {label} application ({error}); detected bootloader {bootloader}"
+        ))
+    })
 }
 
 /// Refuses a K1 write unless the operator's CRC-32 matches the exact image.
@@ -486,33 +571,6 @@ fn require_file(path: &Path, description: &str) -> Result<(), FlashRequestError>
     Ok(())
 }
 
-/// Reads and validates one retained artefact, if the operator supplied a path.
-///
-/// An unset field is the operator saying they are not retaining this artefact
-/// for this operation, which the K1 application path allows. A path which is set
-/// is always read and validated.
-fn read_optional<T>(
-    path: &Path,
-    read: impl Fn(&Path) -> Result<T, FlashRequestError>,
-) -> Result<Option<T>, FlashRequestError> {
-    if path.as_os_str().is_empty() {
-        return Ok(None);
-    }
-    read(path).map(Some)
-}
-
-/// Accepts an unset path, and checks any path the operator did set.
-///
-/// Leaving the field blank is a choice the operation allows. Typing something
-/// which is not a readable file is not: that is a mistake, and it is caught here
-/// rather than after the write has started.
-fn optional_file(path: &Path, description: &str) -> Result<(), FlashRequestError> {
-    if path.as_os_str().is_empty() {
-        return Ok(());
-    }
-    require_file(path, description)
-}
-
 fn read_bounded(
     path: &Path,
     maximum: usize,
@@ -563,8 +621,9 @@ fn write_new_file(path: &Path, bytes: &[u8]) -> Result<(), FlashRequestError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        artefact_digest, confirm_image_crc32, crc32, fresh_transaction_id, validate_request,
-        FlashOperation, FlashRequest, K1RecoveryImage,
+        afik_image_for, artefact_digest, confirm_image_crc32, crc32, fresh_transaction_id,
+        parse_crc32, validate_request, AfikImage, FlashOperation, FlashRequest, K1RecoveryImage,
+        Radio,
     };
     use std::path::PathBuf;
 
@@ -619,48 +678,44 @@ mod tests {
         bad_bootloader.bootloader_version = "2.00.06".to_owned();
         assert!(validate_request(FlashOperation::K1Recovery, &bad_bootloader).is_err());
 
-        // A K1 application write asks for no phrases at all: what the operator
-        // is shown before the write is the device, the image, and its digest.
-        let mut no_phrases = request.clone();
-        no_phrases.recovery_rehearsed_confirmation = String::new();
-        no_phrases.target_confirmation = String::new();
-        validate_request(FlashOperation::K1Application, &no_phrases).unwrap();
-        validate_request(FlashOperation::K1Application, &request).unwrap();
+        // The AFIK write takes the image and nothing else, as `flash-afik`
+        // does: no phrases, no bootloader version, no retained artefacts.
+        let afik = FlashRequest {
+            device: request.device.clone(),
+            firmware: request.firmware.clone(),
+            transaction_id: 1,
+            ..FlashRequest::default()
+        };
+        validate_request(FlashOperation::AfikApplication, &afik).unwrap();
+        let mut no_image = afik.clone();
+        no_image.firmware = PathBuf::new();
+        assert!(validate_request(FlashOperation::AfikApplication, &no_image)
+            .unwrap_err()
+            .to_string()
+            .contains("firmware image"));
 
         // The recovery write can leave a unit needing rescue, so it still asks.
+        let mut no_phrases = request.clone();
+        no_phrases.target_confirmation = String::new();
         assert!(validate_request(FlashOperation::K1Recovery, &no_phrases)
             .unwrap_err()
             .to_string()
             .contains("target confirmation"));
-
-        // The K1 application path cannot reach the bootloader and issues no
-        // EEPROM operation, so neither retained artefact is required and a
-        // failed write is recovered by writing another image.
         let mut no_artefacts = request.clone();
         no_artefacts.eeprom_backup = PathBuf::new();
         no_artefacts.recovery = PathBuf::new();
-        validate_request(FlashOperation::K1Application, &no_artefacts)
-            .expect("recovery from a bad K1 application is another flash");
         validate_request(FlashOperation::K1Recovery, &no_artefacts)
             .expect("a recovery write restores the known-good image itself");
 
-        // Optional is not unchecked: a path which was typed and does not exist
-        // is a mistake, not a decision, and is still refused.
-        let mut missing_backup = request.clone();
-        missing_backup.eeprom_backup = PathBuf::from("/nonexistent/eeprom.bin");
+        // The recovery-gated K5 write keeps its retained artefacts.
+        let mut k5_no_backup = request.clone();
+        k5_no_backup.firmware_version = "2.01.26".to_owned();
+        k5_no_backup.eeprom_backup = PathBuf::new();
         assert!(
-            validate_request(FlashOperation::K1Application, &missing_backup)
+            validate_request(FlashOperation::K5Application, &k5_no_backup)
                 .unwrap_err()
                 .to_string()
                 .contains("EEPROM backup")
-        );
-        let mut missing_recovery = request.clone();
-        missing_recovery.recovery = PathBuf::from("/nonexistent/recovery.raw");
-        assert!(
-            validate_request(FlashOperation::K1Application, &missing_recovery)
-                .unwrap_err()
-                .to_string()
-                .contains("recovery image")
         );
 
         let mut bad_version = request.clone();
@@ -671,14 +726,53 @@ mod tests {
         validate_request(FlashOperation::K5Application, &k5).unwrap();
     }
 
+    /// A raw K1 image: a stack pointer and a reset vector in the K1 flash region.
+    fn k1_raw() -> Vec<u8> {
+        let mut raw = vec![0_u8; 512];
+        raw[..4].copy_from_slice(&0x2000_4000_u32.to_le_bytes());
+        raw[4..8].copy_from_slice(&0x0800_28c1_u32.to_le_bytes());
+        raw
+    }
+
+    #[test]
+    fn an_afik_image_must_belong_to_the_radio_which_answered() {
+        assert!(matches!(
+            afik_image_for(Radio::K1, "7.03.01", &k1_raw()),
+            Ok(AfikImage::K1(_))
+        ));
+        let refused = afik_image_for(Radio::K5V1, "2.00.06", &k1_raw())
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(refused.contains("not a K5 V1 application"), "{refused}");
+        assert!(refused.contains("2.00.06"), "{refused}");
+        assert!(afik_image_for(Radio::K1, "7.03.01", &[0_u8; 16])
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("not a K1 application"));
+    }
+
+    #[test]
+    fn typed_crc32s_are_hex_or_refused() {
+        assert_eq!(parse_crc32("deadBEEF"), Some(0xdead_beef));
+        assert_eq!(parse_crc32(" 0x0000002a "), Some(42));
+        assert_eq!(parse_crc32("0XFF"), Some(0xff));
+        assert_eq!(parse_crc32(""), None);
+        assert_eq!(parse_crc32("0x"), None);
+        assert_eq!(parse_crc32("12345678g"), None);
+        assert_eq!(parse_crc32("123456789"), None);
+        assert!(FlashOperation::K1Recovery.needs_crc32());
+        assert!(FlashOperation::K5Application.needs_crc32());
+        assert!(!FlashOperation::AfikApplication.needs_crc32());
+        assert!(!FlashOperation::BackupEeprom.needs_crc32());
+    }
+
     #[test]
     fn a_k1_write_requires_the_exact_image_crc32() {
         // This is the same fixed 256-byte page shape the K1 bootloader takes, so
         // the image the gate compares against is a real one.
-        let mut raw = vec![0_u8; 512];
-        raw[..4].copy_from_slice(&0x2000_4000_u32.to_le_bytes());
-        raw[4..8].copy_from_slice(&0x0800_28c1_u32.to_le_bytes());
-        let image = K1RecoveryImage::from_raw(&raw).expect("a valid vector image");
+        let image = K1RecoveryImage::from_raw(&k1_raw()).expect("a valid vector image");
         let expected = crc32(image.bytes());
         assert!(confirm_image_crc32(&image, expected).is_ok());
         assert!(confirm_image_crc32(&image, expected ^ 1)
@@ -705,8 +799,8 @@ mod tests {
     #[test]
     fn only_the_backup_operation_is_read_only() {
         assert!(!FlashOperation::BackupEeprom.is_write());
+        assert!(FlashOperation::AfikApplication.is_write());
         assert!(FlashOperation::K1Recovery.is_write());
-        assert!(FlashOperation::K1Application.is_write());
         assert!(FlashOperation::K5Application.is_write());
     }
 }

@@ -375,8 +375,17 @@ impl StudioApp {
                 return;
             }
         }
-        self.flash_request.image_crc32 =
-            u32::from_str_radix(self.flash_crc32.trim().trim_start_matches("0x"), 16).unwrap_or(0);
+        // A CRC which does not parse is refused here rather than sent as zero,
+        // which would only fail later as a misleading mismatch.
+        self.flash_request.image_crc32 = 0;
+        if self.flash_operation.needs_crc32() {
+            let Some(crc) = flash::parse_crc32(&self.flash_crc32) else {
+                "Enter the image CRC-32 as up to eight hex digits."
+                    .clone_into(&mut self.flash_status);
+                return;
+            };
+            self.flash_request.image_crc32 = crc;
+        }
         match flash::start(self.flash_operation, self.flash_request.clone()) {
             Ok(job) => {
                 self.flash_status = format!(
@@ -819,12 +828,22 @@ impl StudioApp {
                 "EEPROM backup output",
                 &mut self.flash_request.eeprom_output,
             ),
+            FlashOperation::AfikApplication => {
+                path_field(ui, "AFIK image", &mut self.flash_request.firmware);
+                digest_label(ui, &self.flash_request.firmware);
+                ui.label(
+                    "The radio is identified from its bootloader beacon when the write \
+                     starts. An image built for the other radio is refused before any \
+                     page is sent. Only the application is written, never the \
+                     bootloader or EEPROM.",
+                );
+            }
             FlashOperation::K1Recovery => {
                 path_field(ui, "Recovery image", &mut self.flash_request.firmware);
                 digest_label(ui, &self.flash_request.firmware);
-                self.k1_confirmations(ui, false);
+                self.k1_confirmations(ui);
             }
-            FlashOperation::K1Application => {
+            FlashOperation::K5Application => {
                 path_field(ui, "Application image", &mut self.flash_request.firmware);
                 digest_label(ui, &self.flash_request.firmware);
                 path_field(
@@ -833,21 +852,6 @@ impl StudioApp {
                     &mut self.flash_request.recovery,
                 );
                 digest_label(ui, &self.flash_request.recovery);
-                path_field(
-                    ui,
-                    "Retained EEPROM backup",
-                    &mut self.flash_request.eeprom_backup,
-                );
-                digest_label(ui, &self.flash_request.eeprom_backup);
-                self.k1_confirmations(ui, true);
-            }
-            FlashOperation::K5Application => {
-                path_field(ui, "Application image", &mut self.flash_request.firmware);
-                path_field(
-                    ui,
-                    "Known-good recovery image",
-                    &mut self.flash_request.recovery,
-                );
                 path_field(
                     ui,
                     "Retained EEPROM backup",
@@ -894,7 +898,7 @@ impl StudioApp {
         }
     }
 
-    fn k1_confirmations(&mut self, ui: &mut egui::Ui, rehearsal: bool) {
+    fn k1_confirmations(&mut self, ui: &mut egui::Ui) {
         text_field(
             ui,
             "Bootloader version",
@@ -905,13 +909,6 @@ impl StudioApp {
             "Target confirmation",
             &mut self.flash_request.target_confirmation,
         );
-        if rehearsal {
-            text_field(
-                ui,
-                "Recovery rehearsed confirmation",
-                &mut self.flash_request.recovery_rehearsed_confirmation,
-            );
-        }
         text_field(ui, "Image CRC-32 (hex)", &mut self.flash_crc32);
     }
 }
@@ -1638,6 +1635,29 @@ mod tests {
             app.project.banks[0].name.ends_with("ZYX"),
             "{}",
             app.project.banks[0].name
+        );
+    }
+
+    #[test]
+    fn a_malformed_crc32_is_refused_before_the_flash_starts() {
+        let mut app = StudioApp {
+            flash_operation: crate::flash::FlashOperation::K1Recovery,
+            flash_crc32: "not hex".to_owned(),
+            ..StudioApp::default()
+        };
+        app.start_flash();
+        assert!(app.flash_job.is_none());
+        assert!(app.flash_status.contains("CRC-32"), "{}", app.flash_status);
+
+        // The AFIK write asks for no CRC, so the same text does not stop it;
+        // the request then stops on the missing device instead.
+        app.flash_operation = crate::flash::FlashOperation::AfikApplication;
+        app.start_flash();
+        assert!(app.flash_job.is_none());
+        assert!(
+            app.flash_status.contains("serial device"),
+            "{}",
+            app.flash_status
         );
     }
 

@@ -51,6 +51,19 @@
   `cargo fmt --all --check` clean, workspace clippy `-D warnings` clean,
   `cargo test --workspace` 662 passed 0 failed. Not yet run against a radio;
   the next flash uses it.
+- Studio fixes (operator request): typing into a channel or bank row lost
+  focus after one character (row headers were keyed by their changing label);
+  a one-channel plan crashed the storage summary (`bytes_saved` underflow); a
+  re-detection could move the device choice to another radio; the last write
+  receipt outlived its device; a non-hex CRC-32 was silently sent as zero. The
+  Flash tab now offers **Flash AFIK application**, the image-only, beacon-
+  detected write of `flash-afik` (`ADR-098`), in place of the per-radio K1/K5
+  application writes; K1 recovery and the recovery-gated K5 write stay.
+  `DEFAULT_NEGOTIATION_VERSION` moved to `radio-flasher`. Gate: `cargo fmt
+  --all --check` clean, workspace clippy `-D warnings` clean, `cargo test
+  --workspace --no-fail-fast` 665 passed 1 failed; the failure is
+  `flash_afik_takes_the_image_and_nothing_else` from another session's
+  uncommitted optional-IMAGE CLI work, and fails without these changes.
 - Next: flash `7.0.5` with `afik-flasher flash-afik` and check a 1 min over
   times out; flash K1 and check its speech level; then CTCSS/DCS with an
   end-of-transmission tail tone to remove the key-off squelch burst.

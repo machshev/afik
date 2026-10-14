@@ -33,8 +33,9 @@ Supported BAUD: 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200\n\
 Connecting at start-up is optional: the Device tab detects USB serial\n\
 devices, offers a single candidate as the selection, leaves an ambiguous\n\
 choice to the operator, and always accepts a manually entered path.\n\
-Firmware and EEPROM operations live in the Flash tab and keep every\n\
-recovery-gated confirmation required by the flasher library.\n";
+Firmware and EEPROM operations live in the Flash tab. Flash AFIK\n\
+application detects a K5 V1 or K1 from its bootloader beacon and takes\n\
+only the image, as afik-flasher flash-afik does.\n";
 
 /// Which serial device the command line asked for.
 #[derive(Clone, Debug, Eq, PartialEq)]

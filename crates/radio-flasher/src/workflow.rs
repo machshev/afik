@@ -922,6 +922,9 @@ where
     )
 }
 
+/// Bootloader negotiation version sent by the default K5 AFIK flash.
+pub const DEFAULT_NEGOTIATION_VERSION: &str = "2.01.23";
+
 /// Identity every AFIK K5 application image carries in its version string.
 const AFIK_K5_IDENTITY: &[u8] = b"AFIK-K5-";
 

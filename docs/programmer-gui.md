@@ -105,44 +105,30 @@ front end.
 
 ## Flashing boundary
 
-Firmware and EEPROM operations reuse the recovery-gated `radio-flasher`
-workflows unchanged. The editor collects input, validates the request before
-opening the serial device, runs the operation on a worker thread, and reports
-page acknowledgements as they arrive. It adds no shortcut and weakens no gate.
+Firmware and EEPROM operations reuse the `radio-flasher` workflows. The editor
+collects input, validates the request before opening the serial device, runs the
+operation on a worker thread, and reports page acknowledgements as they arrive.
 
 There is no firmware backup, and there cannot be one: the bootloader protocols
-this crate drives carry no flash-read command, so a page acknowledgement is the
-only evidence a write produced. What protects a unit is the retained known-good
-recovery image and the retained EEPROM backup. The recovery and K5 paths require
-them and report each file's size and CRC-32 before starting, because that digest
-is the only evidence available that the files on disk are the pair kept for that
-unit.
+carry no flash-read command, so a page acknowledgement is the only evidence a
+write produced.
 
-The K1 application path does not require either. It cannot reach the bootloader:
-the protocol addresses a page index rather than an address, so the destination is
-the bootloader's own application origin, and the image is bounded to the
-application region so the page count cannot run past it. It issues no EEPROM
-operation either. An application which does not boot is therefore recovered by
-writing another one through the same passive beacon, which `EVID-K1-016` records
-on the exact unit. Both artefacts stay optional there and are fully validated
-when supplied, so an operator who does retain them keeps every
-accidental-selection check.
+**Flash AFIK application** is the default write and matches
+`afik-flasher flash-afik` (`ADR-098`). It takes the image and nothing else: when
+the write starts it reads the bootloader beacon, refuses an image built for the
+other radio before any page is sent, and writes only the application pages to a
+K5 V1 (`2.*`) or K1 (`7.03.*`). An image that does not boot is recovered by
+writing another one. The editor shows the image's size and CRC-32 beside it.
 
-**Identify radio** classifies the bootloader read-only and fills in the version
-the write then checks against the radio, so a mistyped version or a K5 in
-bootloader mode stops the run before any page is written. A K1 application write
-asks for no confirmation phrases: the editor already shows the device, the image,
-and its digest, and a phrase typed beside them proves only that the operator knew
-the phrase. The recovery write, which can leave a unit needing rescue, still asks
-for its exact target phrase. The per-run
-transaction identifier is generated rather than typed: the bootloader ties every
-acknowledgement to it, so reuse would make one run's acknowledgements
-indistinguishable from another's.
+**Flash K1 recovery image** and **Flash K5 V1 application (recovery-gated)**
+keep their typed confirmations and the operator-entered image CRC-32; the K5
+form also needs the retained recovery image, EEPROM backup and negotiated
+firmware version, each shown with its digest. **Identify radio** reads the
+bootloader version read-only and fills it in for the K1 recovery write. A CRC-32
+that is not hex is refused before the serial device is opened. The per-run
+transaction identifier is generated, never typed, so one run's acknowledgements
+cannot be mistaken for another's.
 
-The EEPROM backup is read-only and refuses to overwrite an existing file. Every
-firmware write still requires its exact confirmation phrases, a non-zero
-transaction identifier, the retained known-good recovery image, and, for the
-UV-K5 V1 path, the retained EEPROM backup, the negotiated firmware version, and
-the operator-entered image CRC-32. See `docs/k5-flashing.md` and
-`docs/k1-bring-up.md` for what each guard means and `RISK-029` for the editor's
-accepted local-tool exposure.
+The EEPROM backup is read-only and refuses to overwrite an existing file. See
+`docs/k5-flashing.md` and `docs/k1-bring-up.md` for what each guard means and
+`RISK-029` for the editor's accepted local-tool exposure.

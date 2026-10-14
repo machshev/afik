@@ -19,8 +19,7 @@ use std::{
 
 pub use cli::{run_to, run_with, HELP};
 
-/// Bootloader negotiation version sent by the default K5 AFIK flash.
-pub const DEFAULT_NEGOTIATION_VERSION: &str = "2.01.23";
+pub use radio_flasher::DEFAULT_NEGOTIATION_VERSION;
 
 /// Successful process exit code.
 pub const EXIT_SUCCESS: i32 = 0;

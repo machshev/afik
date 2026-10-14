@@ -28,6 +28,6 @@ pub use workflow::{
     BeaconProtocol, BootloaderFamily, BootloaderInfo, ClockSnapshotReport, EepromRestorePlan,
     EepromRestorePrerequisites, EepromRestoreReport, FirmwareVersion, FlashError,
     FlashPrerequisites, FlashPurpose, FlashReport, KeypadMatrixReport, NormalFirmwareInfo,
-    RfReport, K5_RECOVERY_SOURCE_BYTES, QUALIFIED_TARGET_CONFIRMATION,
+    RfReport, DEFAULT_NEGOTIATION_VERSION, K5_RECOVERY_SOURCE_BYTES, QUALIFIED_TARGET_CONFIRMATION,
     RECOVERY_REHEARSED_CONFIRMATION,
 };
