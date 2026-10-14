@@ -31,6 +31,9 @@ use crate::{
 /// Columns in a bank row's header.
 const BANK_COLUMNS: usize = 4;
 
+/// The least space after each bank header column, in points.
+const MIN_COLUMN_GAP: f32 = 16.0;
+
 /// Channels of one generated plan the editor lists before summarising the rest.
 const EXPANSION_PREVIEW_ROWS: usize = 32;
 /// Colour used for advisory text which is not a validation failure.
@@ -628,6 +631,7 @@ impl StudioApp {
             .map(|(row, bank)| bank_row_columns(row, bank))
             .collect();
         let widths = column_widths(ui, &headers);
+        let delete_width = button_width(ui, "Delete");
         ScrollArea::vertical().show(ui, |ui| {
             for (row, bank) in self.project.banks.iter_mut().enumerate() {
                 ui.push_id(row, |ui| {
@@ -642,6 +646,7 @@ impl StudioApp {
                     }
                     state
                         .show_header(ui, |ui| {
+                            let gap = column_gap(ui.available_width() - delete_width, &widths);
                             for (text, width) in headers[row].iter().zip(widths) {
                                 let label = egui::Label::new(RichText::new(text).strong())
                                     .sense(egui::Sense::click());
@@ -649,7 +654,7 @@ impl StudioApp {
                                 if response.clicked() {
                                     toggle = Some(id);
                                 }
-                                ui.add_space((width - response.rect.width()).max(0.0));
+                                ui.add_space((width - response.rect.width()).max(0.0) + gap);
                             }
                             // The header runs the full width, Delete at its right.
                             ui.with_layout(
@@ -1457,6 +1462,29 @@ pub fn bank_row_columns(row: usize, bank: &BankDraft) -> [String; BANK_COLUMNS] 
     ]
 }
 
+/// Spreads the header columns across the width left beside them, sharing
+/// what is spare equally after each column, but never closer than
+/// `MIN_COLUMN_GAP`.
+// Four columns convert to `f32` exactly.
+#[allow(clippy::cast_precision_loss)]
+fn column_gap(available: f32, widths: &[f32; BANK_COLUMNS]) -> f32 {
+    let spare = available - widths.iter().sum::<f32>();
+    (spare / BANK_COLUMNS as f32).max(MIN_COLUMN_GAP)
+}
+
+/// Measures a button with the given text, with the spacing after it.
+fn button_width(ui: &egui::Ui, text: &str) -> f32 {
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let text = ui.fonts(|fonts| {
+        fonts
+            .layout_no_wrap(text.to_owned(), font, egui::Color32::PLACEHOLDER)
+            .size()
+            .x
+    });
+    let spacing = ui.spacing();
+    text + 2.0 * spacing.button_padding.x + spacing.item_spacing.x
+}
+
 /// Measures the widest text in each header column, so every bank's columns
 /// start at the same tab stops.
 fn column_widths(ui: &egui::Ui, rows: &[[String; BANK_COLUMNS]]) -> [f32; BANK_COLUMNS] {
@@ -1477,8 +1505,8 @@ fn column_widths(ui: &egui::Ui, rows: &[[String; BANK_COLUMNS]]) -> [f32; BANK_C
 #[cfg(test)]
 mod tests {
     use super::{
-        bank_row_columns, channel_row_label, memory_percent, scan_resume_label, tx_class_label,
-        tx_power_label, tx_timeout_label, StudioApp, Tab,
+        bank_row_columns, channel_row_label, column_gap, memory_percent, scan_resume_label,
+        tx_class_label, tx_power_label, tx_timeout_label, StudioApp, Tab, MIN_COLUMN_GAP,
     };
     use crate::{model::BankKind, projects::ProjectStore, DeviceSelector, Options};
     use radio_domain::{ScanResume, TxClass};
@@ -1740,7 +1768,8 @@ mod tests {
         assert!((counts[0][0] - counts[1][0]).abs() < 0.5, "{counts:?}");
         assert!((counts[0][0] - counts[2][0]).abs() < 0.5, "{counts:?}");
         let longest = text_left_edges(&output, "2: A much longer");
-        assert!(counts[0][0] > longest[0] + 100.0);
+        // Spare width is shared between the columns, not left at the end.
+        assert!(counts[0][0] > longest[0] + 250.0, "{counts:?} {longest:?}");
 
         // Delete sits at the right edge of the 1100-point window on every row.
         let deletes = text_left_edges(&output, "Delete");
@@ -1942,6 +1971,13 @@ mod tests {
         frame(&context, &mut app, Vec::new());
         focus_field(&context, &mut app, |app| app.project.banks[1].name.clone());
         assert_eq!(app.project.banks[0].name, name);
+    }
+
+    #[test]
+    fn header_columns_share_the_spare_width_but_keep_a_least_gap() {
+        let widths = [200.0, 50.0, 100.0, 250.0];
+        assert!((column_gap(1_000.0, &widths) - 100.0).abs() < f32::EPSILON);
+        assert!((column_gap(500.0, &widths) - MIN_COLUMN_GAP).abs() < f32::EPSILON);
     }
 
     #[test]
