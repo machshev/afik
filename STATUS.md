@@ -116,8 +116,15 @@
   skippable; the family's packaged image, overridable; one Flash button once
   the radio is in flashing mode. It re-checks every 3 s until then; recovery
   writes stay under Advanced. Gate: fmt clean, clippy `-D warnings` clean,
-  `cargo test --workspace --no-fail-fast` 695 passed 0 failed. Not yet tried on
-  the bench.
+  `cargo test --workspace --no-fail-fast` 695 passed 0 failed.
+- Bench (2026-10-14, `EVID-K5-035`): the new Flash tab found the K6 in flashing
+  mode, flashed `7.0.6` (240/240), re-identified it as `AFIK-K5-7.0.6`, and took
+  a backup from AFIK whose CRC-32 `bd475dd8` equals the stock backup's. Fixes
+  from that run: identification now listens past the tail of a beacon it joined
+  mid-packet (the first check had reported `invalid packet footer: 8be6`), and
+  the packaged image path is shown without `crates/x/../../`. Gate: fmt clean,
+  clippy `-D warnings` clean, `cargo test --workspace --no-fail-fast` 697
+  passed 0 failed.
 - Next: flash `7.0.5` with `afik-flasher flash-afik` and check a 1 min over
   times out; flash K1 and check its speech level; then CTCSS/DCS with an
   end-of-transmission tail tone to remove the key-off squelch burst.

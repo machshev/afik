@@ -905,6 +905,9 @@ pub fn observe_bootloader<T: Read>(transport: &mut T) -> Result<BeaconObservatio
     Ok(BeaconObservation { command, version })
 }
 
+/// Packets the identification listens to before giving up on a beacon.
+const IDENTIFY_LISTEN_ATTEMPTS: usize = 3;
+
 /// What answered on a serial port.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RadioPresence {
@@ -920,10 +923,17 @@ pub enum RadioPresence {
 /// a radio in flashing mode is never sent anything. Only when no beacon arrives
 /// does it send the read-only normal-firmware hello.
 pub fn identify_radio<T: Read + Write>(transport: &mut T) -> Result<RadioPresence, FlashError> {
-    let silent = match detect_bootloader(transport) {
-        Ok(family) => return Ok(RadioPresence::Bootloader(family)),
-        Err(error) => error,
-    };
+    // A port opened partway through a beacon reads the tail of one packet
+    // first. Bytes are arriving, so listen for the next packet rather than
+    // reporting that nothing answered; silence goes straight to the hello.
+    let mut silent = FlashError::Timeout;
+    for _ in 0..IDENTIFY_LISTEN_ATTEMPTS {
+        match detect_bootloader(transport) {
+            Ok(family) => return Ok(RadioPresence::Bootloader(family)),
+            Err(FlashError::Timeout) => break,
+            Err(error) => silent = error,
+        }
+    }
     match probe_normal_firmware(transport) {
         Ok(info) => Ok(RadioPresence::Firmware(info)),
         // A beacon arriving now is a bootloader the listen missed or could not
@@ -2089,6 +2099,18 @@ mod tests {
             transport.writes.is_empty(),
             "a bootloader is never written to"
         );
+    }
+
+    #[test]
+    fn identification_skips_the_tail_of_a_beacon_it_joined_late() {
+        // The bench saw `invalid packet footer: 8be6` from a port opened
+        // mid-beacon: a header followed by the wrong bytes where a footer goes.
+        let mut stream = vec![0xAB, 0xCD, 0x04, 0x00, 1, 2, 3, 4, 5, 6, 0x8B, 0xE6];
+        stream.extend(beacon());
+        let mut transport = ScriptedTransport::new(stream, 1);
+        let presence = identify_radio(&mut transport).unwrap();
+        assert!(matches!(presence, RadioPresence::Bootloader(_)));
+        assert!(transport.writes.is_empty());
     }
 
     #[test]

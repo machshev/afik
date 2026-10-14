@@ -112,13 +112,36 @@ fn file_name(path: &Path) -> Option<&std::ffi::OsStr> {
 /// `tool/build-*.sh --release` leaves a fresh image; `$XDG_DATA_HOME/afik/images`
 /// holds images kept outside a checkout.
 pub fn packaged_image_candidates(name: &str) -> Vec<PathBuf> {
-    let mut candidates = vec![Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/thumbv6m-none-eabi/release")
-        .join(name)];
+    let mut candidates = vec![normalise(
+        &Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/thumbv6m-none-eabi/release")
+            .join(name),
+    )];
     if let Some(data) = data_dir() {
         candidates.push(data.join("images").join(name));
     }
     candidates
+}
+
+/// Removes `.` and `..` components without touching the filesystem.
+///
+/// The path is shown to the operator and logged, and a workspace path reads
+/// better as `afik/target/...` than as `afik/crates/x/../../target/...`.
+pub fn normalise(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut normal = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normal.pop() {
+                    normal.push(component);
+                }
+            }
+            other => normal.push(other),
+        }
+    }
+    normal
 }
 
 /// Returns the first packaged image which exists, or the first place to put one.
@@ -292,9 +315,22 @@ mod tests {
     }
 
     #[test]
+    fn paths_are_normalised_for_display() {
+        assert_eq!(
+            super::normalise(std::path::Path::new("/a/crates/gui/../../target/./x.raw")),
+            PathBuf::from("/a/target/x.raw")
+        );
+        assert_eq!(
+            super::normalise(std::path::Path::new("../x")),
+            PathBuf::from("../x")
+        );
+    }
+
+    #[test]
     fn packaged_images_are_looked_for_in_the_build_output_first() {
         let candidates = super::packaged_image_candidates("afik-k5-v1.raw");
         assert!(candidates[0].ends_with("target/thumbv6m-none-eabi/release/afik-k5-v1.raw"));
+        assert!(!candidates[0].to_string_lossy().contains(".."));
         if let Some(data) = super::data_dir() {
             assert_eq!(candidates[1], data.join("images").join("afik-k5-v1.raw"));
         }

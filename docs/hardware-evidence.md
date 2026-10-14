@@ -2893,6 +2893,22 @@ or hardware/calibration envelope is established here. `RISK-007`, `RISK-038`,
 - **Observation (2026-10-13):** `7.0.3` on the operator's K5 showed 100% just
   after charging, then 99% (about 8.23 V on this curve) once unplugged.
 
+### EVID-K5-035 — AFIK 7.0.6 serves a complete, exact EEPROM backup
+
+- **Source:** `radio-firmware-k5` `7.0.6` serving the stock `0x051B` read
+  through the `EVID-K5-026` driver, borrowing PA10/PA11 from the keypad
+  between scans as `EVID-K5-025` records; host `radio-flasher::backup_eeprom`
+  from the studio Flash tab.
+- **Observation (2026-10-14):** the `EVID-K5-013`/`EVID-K5-020` UV-K6 was
+  flashed with `7.0.6` from the studio (240/240 pages, image CRC-32
+  `93763149`), restarted as `AFIK-K5-7.0.6`, and served a complete 8,192-byte
+  backup in about 7 s. Its CRC-32 is `bd475dd8`, identical to the stock
+  `F4HWN v4.3` backup of the same unit taken 2026-08-12, so every byte read
+  matches and nothing AFIK has run since changed the EEPROM. Calibration at
+  `0x1ED0` and `0x1F40` reads as expected (e.g. `32 32 32 64 64 64 8c 8c 8c`).
+- **Confidence:** high for the read path on this unit. Keypad behaviour after a
+  backup (the pins are handed back) was not yet checked.
+
 ### Pinned source provenance
 
 K1 references below are relative to [Armel commit
