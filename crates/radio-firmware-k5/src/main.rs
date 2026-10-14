@@ -147,7 +147,7 @@ fn main() -> ! {
     portcon::enable_pull_up(Port::A, 8);
 
     let clock = clock::configure();
-    time_driver::start(clock.hertz()).expect("the K5 clock is a whole number of MHz");
+    time_driver::start(clock.hertz()).expect("SysTick counts a millisecond of the K5 clock");
 
     // SAFETY: `main` never returns and is the only code to touch this static,
     // so the executor lives for the rest of the image and is borrowed once.
@@ -172,7 +172,7 @@ async fn operate(clock_hz: u32) {
     };
     UART1.start_receive_dma();
 
-    let mut display = K5BootDisplay::initialise();
+    let mut display = K5BootDisplay::initialise(&mut BlockingDelay);
     let _ = show_boot_sequence(&mut display);
 
     // PC4 starts low even though receive audio is the operator default. It is

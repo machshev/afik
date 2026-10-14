@@ -16,6 +16,7 @@ use radio_platform::operator_shell::{
     Screen, Setting, Shell, Source, SQUELCH_LEVELS, TX_POWER_LEVELS, TX_TIMEOUT_CHOICES,
 };
 use radio_platform::receive_app::View;
+use radio_platform::transmit::Delay;
 
 use crate::keypad::Key;
 
@@ -99,7 +100,11 @@ pub struct K5BootDisplay {
 
 impl K5BootDisplay {
     /// Configures only the evidenced display pins and SPI0 controller.
-    pub fn initialise() -> Self {
+    ///
+    /// The waits are the reference firmware's (`driver/st7565.c`), in real
+    /// milliseconds: spin-loop counts stood in for them until the size-built
+    /// image made the same counts take about five seconds.
+    pub fn initialise(delay: &mut impl Delay) -> Self {
         syscon::enable(&[Peripheral::GpioB, Peripheral::PwmPlus0]);
         for pin in [SELECT_PIN, CLOCK_PIN, A0_PIN, DATA_PIN, RESET_PIN] {
             gpio::set_output(Port::B, pin);
@@ -112,24 +117,24 @@ impl K5BootDisplay {
         gpio::write_pin(Port::B, RESET_PIN, true);
         BACKLIGHT.enable_diagnostic_backlight();
 
-        delay(50_000);
+        delay.delay_ms(1);
         gpio::write_pin(Port::B, RESET_PIN, false);
-        delay(1_000_000);
+        delay.delay_ms(20);
         gpio::write_pin(Port::B, RESET_PIN, true);
-        delay(6_000_000);
+        delay.delay_ms(120);
 
         select_display(true);
         for command in [0xE2, 0xA2, 0xC0, 0xA1, 0xA6, 0xA4, 0x24, 0x81, 31] {
             command_byte(command);
         }
         command_byte(0x2B);
-        delay(50_000);
+        delay.delay_ms(1);
         command_byte(0x2E);
-        delay(50_000);
+        delay.delay_ms(1);
         for _ in 0..4 {
             command_byte(0x2F);
         }
-        delay(2_000_000);
+        delay.delay_ms(40);
         command_byte(0x40);
         command_byte(0xAF);
         select_display(false);
@@ -529,11 +534,5 @@ fn hexadecimal_text(mut value: u32, text: &mut [u8]) {
     for character in text.iter_mut().rev() {
         *character = DIGITS[usize::try_from(value & 0xF).unwrap_or(0)];
         value >>= 4;
-    }
-}
-
-fn delay(iterations: u32) {
-    for _ in 0..iterations {
-        core::hint::spin_loop();
     }
 }

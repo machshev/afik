@@ -40,7 +40,6 @@ mod driver {
     struct SysTickDriver {
         periods: Mutex<Cell<u64>>,
         reload: Mutex<Cell<u32>>,
-        cycles_per_micro: Mutex<Cell<u32>>,
         queue: Mutex<RefCell<Queue>>,
     }
 
@@ -54,13 +53,7 @@ mod driver {
                 // again so it belongs to the period the pending flag adds.
                 current = CURRENT.read();
             }
-            micros(
-                self.periods.borrow(cs).get(),
-                pending,
-                reload,
-                current,
-                self.cycles_per_micro.borrow(cs).get(),
-            )
+            micros(self.periods.borrow(cs).get(), pending, reload, current)
         }
     }
 
@@ -86,7 +79,6 @@ mod driver {
         embassy_time_driver::time_driver_impl!(static DRIVER: super::SysTickDriver = super::SysTickDriver {
             periods: critical_section::Mutex::new(core::cell::Cell::new(0)),
             reload: critical_section::Mutex::new(core::cell::Cell::new(0)),
-            cycles_per_micro: critical_section::Mutex::new(core::cell::Cell::new(1)),
             queue: critical_section::Mutex::new(core::cell::RefCell::new(
                 embassy_time_queue_utils::Queue::new()
             )),
@@ -99,11 +91,10 @@ mod driver {
 
     /// Starts the millisecond period and its exception against `clock_hz`.
     pub fn start(clock_hz: u32) -> Result<(), ClockError> {
-        let (reload, cycles_per_micro) = period(clock_hz)?;
+        let reload = period(clock_hz)?;
         let driver = registration::driver();
         critical_section::with(|cs| {
             driver.reload.borrow(cs).set(reload);
-            driver.cycles_per_micro.borrow(cs).set(cycles_per_micro);
             driver.periods.borrow(cs).set(0);
         });
         RELOAD.write(reload);
@@ -124,34 +115,32 @@ mod driver {
     }
 }
 
-/// `SysTick` cannot divide this clock into whole-microsecond millisecond periods.
+/// `SysTick` cannot count one millisecond of this clock.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ClockError;
 
-/// Returns the reload value and cycles per microsecond for a 1 ms period.
-pub const fn period(clock_hz: u32) -> Result<(u32, u32), ClockError> {
+/// Returns the reload value for a 1 ms period at `clock_hz`.
+///
+/// Any clock is accepted: the K5 reports its RCHF corrected by the part's
+/// measured deviation, so it is never a whole number of megahertz. The period
+/// is `clock_hz / 1000` cycles, which is a millisecond to within one cycle.
+pub const fn period(clock_hz: u32) -> Result<u32, ClockError> {
     let cycles = clock_hz / 1_000;
-    let cycles_per_micro = clock_hz / 1_000_000;
-    if cycles_per_micro == 0 || clock_hz % 1_000_000 != 0 || cycles == 0 || cycles - 1 > 0x00FF_FFFF
-    {
+    if cycles < 2 || cycles - 1 > 0x00FF_FFFF {
         return Err(ClockError);
     }
-    Ok((cycles - 1, cycles_per_micro))
+    Ok(cycles - 1)
 }
 
 /// Microseconds since start from the counted periods and the running counter.
 ///
-/// `pending` is a reload the exception has not counted yet.
-pub const fn micros(
-    periods: u64,
-    pending: bool,
-    reload: u32,
-    current: u32,
-    cycles_per_micro: u32,
-) -> u64 {
+/// `pending` is a reload the exception has not counted yet. The counter runs
+/// down from `reload` once per millisecond, so its position is scaled against
+/// the whole period rather than divided by a whole cycles-per-microsecond.
+pub const fn micros(periods: u64, pending: bool, reload: u32, current: u32) -> u64 {
     let periods = if pending { periods + 1 } else { periods };
-    let elapsed = reload.saturating_sub(current) / cycles_per_micro;
-    periods * MICROS_PER_PERIOD + elapsed as u64
+    let elapsed = reload.saturating_sub(current) as u64;
+    periods * MICROS_PER_PERIOD + elapsed * MICROS_PER_PERIOD / (reload as u64 + 1)
 }
 
 #[cfg(test)]
@@ -159,35 +148,46 @@ mod tests {
     use super::{micros, period, ClockError};
 
     #[test]
-    fn the_k5_clock_gives_a_whole_millisecond_period() {
-        assert_eq!(period(48_000_000), Ok((47_999, 48)));
+    fn the_nominal_k5_clock_gives_a_whole_millisecond_period() {
+        assert_eq!(period(48_000_000), Ok(47_999));
     }
 
     #[test]
-    fn clocks_without_whole_microseconds_are_refused() {
+    fn a_deviation_corrected_clock_is_accepted() {
+        // The K5 reports RCHF corrected by its measured deviation, which is
+        // why a whole-megahertz requirement stopped `7.0.10` at boot.
+        assert_eq!(period(47_987_456), Ok(47_986));
+        assert_eq!(period(48_012_345), Ok(48_011));
+    }
+
+    #[test]
+    fn clocks_too_slow_for_a_millisecond_period_are_refused() {
         assert_eq!(period(0), Err(ClockError));
-        assert_eq!(period(999_999), Err(ClockError));
-        assert_eq!(period(48_000_500), Err(ClockError));
+        assert_eq!(period(1_999), Err(ClockError));
+        // Every u32 clock fits the 24-bit reload, so none is too fast.
+        assert_eq!(period(u32::MAX), Ok(4_294_966));
     }
 
     #[test]
     fn time_is_periods_plus_the_counter_position() {
         // Counter just reloaded: no time into the period yet.
-        assert_eq!(micros(0, false, 47_999, 47_999, 48), 0);
-        assert_eq!(micros(3, false, 47_999, 47_999 - 480, 48), 3_010);
-        assert_eq!(micros(3, false, 47_999, 0, 48), 3_999);
+        assert_eq!(micros(0, false, 47_999, 47_999), 0);
+        assert_eq!(micros(3, false, 47_999, 47_999 - 480), 3_010);
+        assert_eq!(micros(3, false, 47_999, 0), 3_999);
+        // A corrected clock scales the same way.
+        assert_eq!(micros(1, false, 47_986, 47_986 - 23_993), 1_499);
     }
 
     #[test]
     fn an_uncounted_reload_adds_its_period() {
-        assert_eq!(micros(3, true, 47_999, 47_999 - 48, 48), 4_001);
+        assert_eq!(micros(3, true, 47_999, 47_999 - 48), 4_001);
     }
 
     #[test]
     fn time_never_runs_backwards_across_a_reload() {
-        let before = micros(7, false, 47_999, 0, 48);
-        let pending = micros(7, true, 47_999, 47_998, 48);
-        let counted = micros(8, false, 47_999, 47_990, 48);
+        let before = micros(7, false, 47_999, 0);
+        let pending = micros(7, true, 47_999, 47_998);
+        let counted = micros(8, false, 47_999, 47_990);
         assert!(before <= pending && pending <= counted);
     }
 }

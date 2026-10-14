@@ -168,6 +168,16 @@
   Gate: fmt clean, workspace clippy `-D warnings` clean, `cargo test
   --workspace` 707 passed 0 failed, K1 build + `verify-k1-image.sh` (headroom
   6,960 bytes) + `test-k1-image.sh` pass, K5 build + verify pass.
+- `7.0.12`/`7.0.13` (K5 bench): `7.0.10`/`7.0.11` booted to a black screen.
+  The time driver required a whole-MHz clock, but `clock.hertz()` is RCHF
+  corrected by the part's measured deviation, so `time_driver::start` failed and
+  the image panicked. It now accepts any clock (period `hz / 1000` cycles,
+  counter scaled against it). `7.0.12` booted on the K5 but took about 5 s to
+  show anything: the ST7565 start-up waited by spin-loop counts, which the size
+  build runs far slower. `7.0.13` waits the reference firmware's real 1/20/120/
+  1/1/40 ms through a `Delay`. Gate: fmt clean, workspace clippy `-D warnings`
+  clean, `cargo test --workspace` 708 passed 0 failed, K5 build + verify pass
+  (flash end `0x00007170`). K1 `7.0.11` confirmed working on the bench.
 - Next: flash `7.0.5` with `afik-flasher flash-afik` and check a 1 min over
   times out; flash K1 and check its speech level; then CTCSS/DCS with an
   end-of-transmission tail tone to remove the key-off squelch burst.
