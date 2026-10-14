@@ -18,7 +18,9 @@ use radio_programmer_serial::SUPPORTED_BAUDS;
 
 use crate::{
     device::{self, DeviceCandidate, DeviceChoice, DeviceChooser},
-    flash::{self, FlashJob, FlashOperation, FlashProgress, FlashRequest},
+    flash::{
+        self, DigestCache, FlashJob, FlashOperation, FlashProgress, FlashRequest, IdentifyJob,
+    },
     model::{
         BankDraft, BankKind, ChannelDraft, ModelError, ProjectModel, StorageSummary, ToneDraft,
         ToneKind, MAX_PROJECT_IMAGE_BYTES,
@@ -69,6 +71,8 @@ pub struct StudioApp {
     flash_progress: Option<(u16, u16)>,
     flash_status: String,
     flash_devices: Vec<DeviceCandidate>,
+    identify_job: Option<(IdentifyJob, PathBuf)>,
+    digests: DigestCache,
     preset: usize,
 }
 
@@ -91,6 +95,8 @@ impl Default for StudioApp {
             flash_progress: None,
             flash_status: String::new(),
             flash_devices: Vec::new(),
+            identify_job: None,
+            digests: DigestCache::default(),
             preset: 0,
         }
     }
@@ -344,9 +350,30 @@ impl StudioApp {
         );
     }
 
-    /// Classifies the radio on the selected port without writing to it.
+    /// Starts classifying the radio on the selected port without writing to it.
     fn identify_radio(&mut self) {
-        match flash::identify(&self.flash_request.device) {
+        let device = self.flash_request.device.clone();
+        match flash::start_identify(device.clone()) {
+            Ok(job) => {
+                self.flash_status =
+                    format!("Waiting for a bootloader beacon on {}.", device.display());
+                self.identify_job = Some((job, device));
+            }
+            Err(error) => self.flash_status = error.to_string(),
+        }
+    }
+
+    /// Takes the identification result once the worker has one.
+    fn poll_identify(&mut self) {
+        let Some((job, device)) = self.identify_job.as_ref() else {
+            return;
+        };
+        let Some(outcome) = job.poll() else {
+            return;
+        };
+        let device = device.clone();
+        self.identify_job = None;
+        match outcome {
             Ok(identity) => {
                 // The version becomes the confirmation the write compares
                 // against the radio, so it is read rather than remembered.
@@ -357,7 +384,7 @@ impl StudioApp {
                     "{} bootloader {} on {}.",
                     identity.family,
                     identity.version,
-                    self.flash_request.device.display()
+                    device.display()
                 );
             }
             Err(error) => self.flash_status = error.to_string(),
@@ -365,6 +392,10 @@ impl StudioApp {
     }
 
     fn start_flash(&mut self) {
+        if self.identify_job.is_some() {
+            "Wait for the radio identification to finish.".clone_into(&mut self.flash_status);
+            return;
+        }
         // A fresh identifier per run is generated rather than typed: the
         // bootloader ties every acknowledgement to it and reuse would make one
         // run's acknowledgements indistinguishable from another's.
@@ -404,7 +435,8 @@ impl StudioApp {
 impl eframe::App for StudioApp {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_flash();
-        if self.flash_job.is_some() {
+        self.poll_identify();
+        if self.flash_job.is_some() || self.identify_job.is_some() {
             context.request_repaint();
         }
 
@@ -808,7 +840,12 @@ impl StudioApp {
             }
             // Reading the bootloader version off the radio is read-only and
             // fills in the confirmation the write checks against it.
-            if ui.button("Identify radio").clicked() {
+            // Both open the port, so neither starts while the other runs.
+            let idle = self.flash_job.is_none() && self.identify_job.is_none();
+            if ui
+                .add_enabled(idle, egui::Button::new("Identify radio"))
+                .clicked()
+            {
                 self.identify_radio();
             }
         });
@@ -830,7 +867,7 @@ impl StudioApp {
             ),
             FlashOperation::AfikApplication => {
                 path_field(ui, "AFIK image", &mut self.flash_request.firmware);
-                digest_label(ui, &self.flash_request.firmware);
+                digest_label(ui, &mut self.digests, &self.flash_request.firmware);
                 ui.label(
                     "The radio is identified from its bootloader beacon when the write \
                      starts. An image built for the other radio is refused before any \
@@ -840,24 +877,24 @@ impl StudioApp {
             }
             FlashOperation::K1Recovery => {
                 path_field(ui, "Recovery image", &mut self.flash_request.firmware);
-                digest_label(ui, &self.flash_request.firmware);
+                digest_label(ui, &mut self.digests, &self.flash_request.firmware);
                 self.k1_confirmations(ui);
             }
             FlashOperation::K5Application => {
                 path_field(ui, "Application image", &mut self.flash_request.firmware);
-                digest_label(ui, &self.flash_request.firmware);
+                digest_label(ui, &mut self.digests, &self.flash_request.firmware);
                 path_field(
                     ui,
                     "Known-good recovery image",
                     &mut self.flash_request.recovery,
                 );
-                digest_label(ui, &self.flash_request.recovery);
+                digest_label(ui, &mut self.digests, &self.flash_request.recovery);
                 path_field(
                     ui,
                     "Retained EEPROM backup",
                     &mut self.flash_request.eeprom_backup,
                 );
-                digest_label(ui, &self.flash_request.eeprom_backup);
+                digest_label(ui, &mut self.digests, &self.flash_request.eeprom_backup);
                 text_field(
                     ui,
                     "Firmware version",
@@ -879,7 +916,7 @@ impl StudioApp {
     }
 
     fn flash_controls(&mut self, ui: &mut egui::Ui) {
-        let running = self.flash_job.is_some();
+        let running = self.flash_job.is_some() || self.identify_job.is_some();
         ui.add_enabled_ui(!running, |ui| {
             let label = if self.flash_operation.is_write() {
                 "Start write"
@@ -918,11 +955,11 @@ impl StudioApp {
 /// Firmware cannot be read back off a radio, so the digests of the retained
 /// recovery image and EEPROM backup are the only evidence the operator has that
 /// the files selected are the pair kept for this exact unit.
-fn digest_label(ui: &mut egui::Ui, path: &Path) {
+fn digest_label(ui: &mut egui::Ui, digests: &mut DigestCache, path: &Path) {
     if path.as_os_str().is_empty() {
         return;
     }
-    match flash::artefact_digest(path) {
+    match digests.digest(path) {
         Ok((bytes, crc)) => {
             ui.label(format!("    {bytes} bytes, CRC-32 {crc:08x}"));
         }
@@ -1656,6 +1693,28 @@ mod tests {
         assert!(app.flash_job.is_none());
         assert!(
             app.flash_status.contains("serial device"),
+            "{}",
+            app.flash_status
+        );
+    }
+
+    #[test]
+    fn identifying_a_radio_does_not_block_the_editor() {
+        let mut app = StudioApp::default();
+        app.flash_request.device = std::path::PathBuf::from("/definitely/missing");
+        app.identify_radio();
+        assert!(app.identify_job.is_some());
+        assert!(app.flash_status.contains("Waiting"), "{}", app.flash_status);
+        // A write cannot start on the port while identification holds it.
+        app.start_flash();
+        assert!(app.flash_job.is_none());
+        assert!(app.flash_status.contains("Wait"), "{}", app.flash_status);
+        while app.identify_job.is_some() {
+            app.poll_identify();
+            std::thread::yield_now();
+        }
+        assert!(
+            app.flash_status.contains("serial setup failed"),
             "{}",
             app.flash_status
         );

@@ -14,12 +14,14 @@
 //! recovery-gated K5 write keep their retained artefacts and phrases.
 
 use std::{
+    collections::HashMap,
     fmt,
     fs::{self, File},
     io::Read,
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, Sender},
     thread,
+    time::SystemTime,
 };
 
 use radio_flasher::{
@@ -187,6 +189,42 @@ pub fn identify(device: &Path) -> Result<RadioIdentity, FlashRequestError> {
     })
 }
 
+/// A read-only identification running on a worker thread.
+///
+/// Waiting for a beacon can take seconds when no bootloader answers, so it never
+/// runs on the thread drawing the editor.
+pub struct IdentifyJob {
+    outcome: Receiver<Result<RadioIdentity, FlashRequestError>>,
+}
+
+impl IdentifyJob {
+    /// Returns the outcome once the worker has finished, without blocking.
+    pub fn poll(&self) -> Option<Result<RadioIdentity, FlashRequestError>> {
+        match self.outcome.try_recv() {
+            Ok(outcome) => Some(outcome),
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => Some(Err(FlashRequestError::new(
+                "the identification worker stopped without a result",
+            ))),
+        }
+    }
+}
+
+/// Starts [`identify`] on a worker thread.
+pub fn start_identify(device: PathBuf) -> Result<IdentifyJob, FlashRequestError> {
+    if device.as_os_str().is_empty() {
+        return Err(FlashRequestError::new("select a serial device path"));
+    }
+    let (sender, outcome) = mpsc::channel();
+    thread::Builder::new()
+        .name("afik-identify".to_owned())
+        .spawn(move || {
+            let _ignored = sender.send(identify(&device));
+        })
+        .map_err(|error| FlashRequestError::new(format!("could not start worker: {error}")))?;
+    Ok(IdentifyJob { outcome })
+}
+
 /// Returns the byte length and CRC-32 of one retained artefact.
 ///
 /// The operator confirms the retained recovery image and EEPROM backup by their
@@ -195,6 +233,56 @@ pub fn identify(device: &Path) -> Result<RadioIdentity, FlashRequestError> {
 pub fn artefact_digest(path: &Path) -> Result<(usize, u32), FlashRequestError> {
     let bytes = read_bounded(path, MAX_FIRMWARE_BYTES, "artefact")?;
     Ok((bytes.len(), crc32(&bytes)))
+}
+
+/// Most selected files whose digests are remembered at once.
+const MAX_CACHED_DIGESTS: usize = 16;
+
+/// What identifies one version of a file without reading it.
+type FileStamp = Option<(SystemTime, u64)>;
+/// One file's size and CRC-32, or why it could not be read.
+type Digest = Result<(usize, u32), FlashRequestError>;
+
+/// Digests of the selected artefacts, recomputed only when a file changes.
+///
+/// The editor shows each digest on every frame, and reading up to 256 KiB per
+/// file per frame is wasted work while a flash keeps the window repainting.
+/// A file is re-read when its size or modification time changes.
+#[derive(Debug, Default)]
+pub struct DigestCache {
+    entries: HashMap<PathBuf, (FileStamp, Digest)>,
+    reads: usize,
+}
+
+impl DigestCache {
+    /// Returns the digest of one file, reading it only if it has changed.
+    pub fn digest(&mut self, path: &Path) -> Digest {
+        let stamp = fs::metadata(path).ok().map(|metadata| {
+            (
+                metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+                metadata.len(),
+            )
+        });
+        if let Some((cached, outcome)) = self.entries.get(path) {
+            if *cached == stamp {
+                return outcome.clone();
+            }
+        }
+        // A path typed one character at a time leaves a trail of prefixes.
+        if self.entries.len() >= MAX_CACHED_DIGESTS {
+            self.entries.clear();
+        }
+        let outcome = artefact_digest(path);
+        self.reads += 1;
+        self.entries
+            .insert(path.to_path_buf(), (stamp, outcome.clone()));
+        outcome
+    }
+
+    /// Returns how many times a file has actually been read.
+    pub const fn reads(&self) -> usize {
+        self.reads
+    }
 }
 
 /// Returns one fresh non-zero transaction identifier.
@@ -622,8 +710,8 @@ fn write_new_file(path: &Path, bytes: &[u8]) -> Result<(), FlashRequestError> {
 mod tests {
     use super::{
         afik_image_for, artefact_digest, confirm_image_crc32, crc32, fresh_transaction_id,
-        parse_crc32, validate_request, AfikImage, FlashOperation, FlashRequest, K1RecoveryImage,
-        Radio,
+        parse_crc32, start_identify, validate_request, AfikImage, DigestCache, FlashOperation,
+        FlashRequest, K1RecoveryImage, Radio,
     };
     use std::path::PathBuf;
 
@@ -782,6 +870,26 @@ mod tests {
     }
 
     #[test]
+    fn identification_runs_off_the_calling_thread_and_reports_its_failure() {
+        assert!(start_identify(PathBuf::new())
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("serial device"));
+        let job = start_identify(PathBuf::from("/definitely/missing")).unwrap();
+        let outcome = loop {
+            if let Some(outcome) = job.poll() {
+                break outcome;
+            }
+            std::thread::yield_now();
+        };
+        assert!(outcome
+            .unwrap_err()
+            .to_string()
+            .contains("serial setup failed"));
+    }
+
+    #[test]
     fn a_fresh_transaction_identifier_is_never_zero() {
         let first = fresh_transaction_id().expect("/dev/urandom is readable");
         assert_ne!(first, 0);
@@ -794,6 +902,30 @@ mod tests {
         assert!(bytes > 0);
         assert_eq!(artefact_digest(&path).unwrap(), (bytes, checksum));
         assert!(artefact_digest(&PathBuf::from("/definitely/missing")).is_err());
+    }
+
+    #[test]
+    fn a_digest_is_read_once_and_again_only_when_the_file_changes() {
+        let path = std::env::temp_dir().join(format!("afik-digest-{}.bin", std::process::id()));
+        std::fs::write(&path, [1_u8; 10]).unwrap();
+        let mut cache = DigestCache::default();
+        let first = cache.digest(&path).unwrap();
+        assert_eq!(first.0, 10);
+        assert_eq!(cache.digest(&path).unwrap(), first);
+        assert_eq!(cache.reads(), 1);
+
+        std::fs::write(&path, [2_u8; 12]).unwrap();
+        assert_eq!(cache.digest(&path).unwrap().0, 12);
+        assert_eq!(cache.reads(), 2);
+
+        // A missing file is remembered too, and read once it appears.
+        std::fs::remove_file(&path).unwrap();
+        assert!(cache.digest(&path).is_err());
+        assert!(cache.digest(&path).is_err());
+        assert_eq!(cache.reads(), 3);
+        std::fs::write(&path, [3_u8; 4]).unwrap();
+        assert_eq!(cache.digest(&path).unwrap().0, 4);
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]
