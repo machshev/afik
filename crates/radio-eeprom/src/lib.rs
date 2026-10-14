@@ -20,6 +20,8 @@
 
 use core::fmt;
 
+pub mod staged;
+
 /// Bytes in one programmable page.
 ///
 /// A program which crosses a page boundary wraps inside the page on this device
@@ -109,6 +111,8 @@ pub enum EepromError<E> {
     WriteProtected,
     /// The device reported an identification this build does not accept.
     UnknownDevice(JedecId),
+    /// A block already staged would need bits set again.
+    Rewritten,
 }
 
 impl<E> fmt::Display for EepromError<E> {
@@ -120,6 +124,7 @@ impl<E> fmt::Display for EepromError<E> {
             Self::Busy => formatter.write_str("external memory stayed busy"),
             Self::WriteProtected => formatter.write_str("external memory refused write enable"),
             Self::UnknownDevice(_) => formatter.write_str("unrecognised external memory device"),
+            Self::Rewritten => formatter.write_str("block was already written in this session"),
         }
     }
 }
@@ -357,6 +362,28 @@ impl<B: NorBus> Eeprom<B> {
         Ok(())
     }
 
+    /// Programs bytes at `offset` in one claimed region without erasing.
+    ///
+    /// The bytes must be erased already: programming only clears bits.
+    pub fn program(
+        &mut self,
+        region: Region,
+        offset: u32,
+        bytes: &[u8],
+    ) -> Result<(), EepromError<B::Error>> {
+        let len = u32::try_from(bytes.len()).map_err(|_| EepromError::OutOfRange)?;
+        let address = region.address(offset, len).ok_or(EepromError::OutOfRange)?;
+        let mut at = address;
+        let mut rest = bytes;
+        while !rest.is_empty() {
+            let (chunk, tail) = rest.split_at(rest.len().min(page_split(at)));
+            self.program_page(at, chunk)?;
+            at += u32::try_from(chunk.len()).map_err(|_| EepromError::OutOfRange)?;
+            rest = tail;
+        }
+        Ok(())
+    }
+
     /// Reports whether the device has finished its last write.
     ///
     /// A caller which cannot block, such as one inside a cooperative executor,
@@ -529,18 +556,18 @@ mod tests {
     use std::{vec, vec::Vec};
 
     /// A host model of the device, bounded to one window of its address space.
-    struct ModelBus {
+    pub(crate) struct ModelBus {
         window_origin: u32,
         bytes: Vec<u8>,
         latch: bool,
         writes: usize,
-        erases: usize,
+        pub(crate) erases: usize,
         /// Programs recorded as (address, length), to prove page splitting.
         programs: Vec<(u32, usize)>,
     }
 
     impl ModelBus {
-        fn new(window_origin: u32, window_len: usize) -> Self {
+        pub(crate) fn new(window_origin: u32, window_len: usize) -> Self {
             Self {
                 window_origin,
                 bytes: vec![ERASED_BYTE; window_len],
