@@ -21,6 +21,7 @@ use radio_domain::{
 use radio_platform::backlight::Backlight;
 use radio_platform::battery::Battery;
 use radio_platform::configuration_change::{ConfigurationAcknowledgement, ConfigurationCandidate};
+use radio_platform::dual_watch::{DualWatch, Listening as Watching};
 use radio_platform::operator_display::{
     render_channel_list, render_info_screen, render_operating_screen, render_selector_list,
     BankIndicator, ListRow, MemoryState, OperatingView, SelectorRow, FRAME_BYTES, LIST_ROWS,
@@ -729,6 +730,12 @@ pub async fn run<D, K, B, S, V, M>(
     let mut held_since: Option<u32> = None;
     // The scan timer the controller asked for, and when it expires.
     let mut scan_timer: Option<(TimerToken, Instant)> = None;
+    // Which slot dual watch has the receiver on, whether the last settled
+    // reading there was busy, and whether the last pass was transmitting.
+    let mut watch = DualWatch::new();
+    let mut watched_busy = false;
+    let mut transmitted = false;
+    let mut quiet_retune = false;
     let mut next_sample = Instant::now();
     // Whether the receiver has produced a reading on the channel it is now on.
     let mut settled = false;
@@ -837,8 +844,15 @@ pub async fn run<D, K, B, S, V, M>(
         if let Some(calibration) = TX_CALIBRATION.try_take() {
             tx_calibration = calibration;
         }
-        if receiver.frequency_hz != tx_tuned_hz {
-            tx_tuned_hz = receiver.frequency_hz;
+        // PTT transmits on the selected slot, whichever one dual watch has
+        // the receiver on.
+        let tx_frequency_hz = activation
+            .as_ref()
+            .map_or(receiver.frequency_hz, |(controller, _)| {
+                controller.setup().frequency.as_hz()
+            });
+        if tx_frequency_hz != tx_tuned_hz {
+            tx_tuned_hz = tx_frequency_hz;
             tx_revision = tx_revision.saturating_add(1);
         }
         // The handset's class switches narrow the programmed ranges, and
@@ -853,12 +867,13 @@ pub async fn run<D, K, B, S, V, M>(
                     .as_ref()
                     .map(|(controller, _)| controller.channel()),
             ),
-            Frequency::from_hz(receiver.frequency_hz)
+            Frequency::from_hz(tx_frequency_hz)
                 .ok()
                 .and_then(|frequency| tx_policy_now.max_mw_at(frequency)),
         );
         let tx_request = tx_request(
             &receiver,
+            tx_frequency_hz,
             context.scanning,
             pending.is_some() || pending_operator_squelch.is_some(),
             tx_revision,
@@ -894,9 +909,17 @@ pub async fn run<D, K, B, S, V, M>(
                 controller.state(),
                 TxPhase::Ready | TxPhase::ReleaseRequired
             ) {
+                transmitted = true;
                 Timer::after(Duration::from_millis(LOOP_MILLISECONDS)).await;
                 continue;
             }
+        }
+        // Receive was restored to whichever slot dual watch was on; the
+        // selected one is where a reply to that transmission comes.
+        if core::mem::take(&mut transmitted) && watch.reset(now_ms()) {
+            pending = activation
+                .as_ref()
+                .map(|(controller, _)| controller.setup());
         }
 
         let sample = keypad.scan().await;
@@ -1091,6 +1114,38 @@ pub async fn run<D, K, B, S, V, M>(
             }
         }
 
+        // Dual watch. Every action the operator takes is on the selected slot,
+        // so any intent beyond a redraw brings the receiver back to it. While
+        // dual watch runs, the receiver moves between the slots whenever the
+        // one it is on has been quiet for its dwell; scanning, a squelch being
+        // staged, or a slot with nothing to tune stops it on the selected one.
+        let watching = shell.dual_watch()
+            && pending_operator_squelch.is_none()
+            && other_activation.is_some()
+            && activation.as_ref().is_some_and(|(controller, _)| {
+                !matches!(controller.state(), ReceiveState::Scanning(_))
+            });
+        let acted = !matches!(intent, Intent::Idle | Intent::Redraw);
+        if (acted || !watching) && watch.reset(now) && pending.is_none() {
+            pending = activation
+                .as_ref()
+                .map(|(controller, _)| controller.setup());
+        }
+        if watching && pending.is_none() {
+            let dwell = programmed.config().scan_dwell_ms;
+            pending = match watch.poll(now, dwell, watched_busy) {
+                Some(Watching::Selected) => activation
+                    .as_ref()
+                    .map(|(controller, _)| controller.setup()),
+                Some(Watching::Other) => other_activation
+                    .as_ref()
+                    .map(|(controller, _)| controller.setup()),
+                None => None,
+            };
+            // A move between quiet slots changes nothing on screen.
+            quiet_retune = pending.is_some();
+        }
+
         // What the operator is listening to, in the form the radio would have to
         // restore it from. A memory selection is remembered even while the VFO
         // is in use, so leaving the VFO returns to the channel rather than to
@@ -1249,16 +1304,24 @@ pub async fn run<D, K, B, S, V, M>(
             // so how many readings a channel got was a matter of phase.
             next_sample = Instant::now();
             settled = false;
-            redraw = true;
+            watched_busy = false;
+            redraw |= !core::mem::take(&mut quiet_retune);
         } else if receiver.audio_routed && Instant::now() >= next_sample && bus_available() {
             let was_open = receiver.squelch_open;
             let scanning = activation.as_ref().is_some_and(|(controller, _)| {
                 matches!(controller.state(), ReceiveState::Scanning(_))
             });
-            if let (Some(observation), Some((controller, _))) = (
-                receiver.observe(shared_receive.is_none()),
-                activation.as_mut(),
-            ) {
+            // The reading belongs to whichever slot the receiver is on.
+            let tuned = match watch.listening() {
+                Watching::Selected => activation.as_mut(),
+                Watching::Other => other_activation.as_mut(),
+            };
+            if let (Some(observation), Some((controller, _))) =
+                (receiver.observe(shared_receive.is_none()), tuned)
+            {
+                // Dual watch holds on a busy slot, judged on settled readings
+                // only, as a scan is.
+                watched_busy = settled && observation.squelch_open;
                 if let Some(app) = shared_receive.as_mut() {
                     redraw |= apply_shared_effects(
                         app.apply(SharedEvent::ReceiveSample {
@@ -1298,7 +1361,7 @@ pub async fn run<D, K, B, S, V, M>(
                 }
             }
             next_sample = Instant::now()
-                + Duration::from_millis(if scanning {
+                + Duration::from_millis(if scanning || watching {
                     SCAN_SAMPLE_MILLISECONDS
                 } else {
                     RF_SAMPLE_MILLISECONDS
@@ -1372,11 +1435,12 @@ fn adopt_squelch(
     });
 }
 
-/// Builds the TX request from what the receiver is tuned to, and the bias it
+/// Builds the TX request for the selected slot's frequency, and the bias it
 /// would use. Off-raster, wide, or non-PMR446 tuning is denied by policy.
 #[allow(clippy::too_many_arguments)]
 fn tx_request<B: RegisterBus, S: Speaker>(
     receiver: &Receiver<B, S>,
+    frequency_hz: u32,
     scanning: bool,
     changing: bool,
     revision: u32,
@@ -1385,7 +1449,7 @@ fn tx_request<B: RegisterBus, S: Speaker>(
     level: u8,
     timeout_ms: u32,
 ) -> (TxRequest, Option<u8>) {
-    let frequency = Frequency::from_hz(receiver.frequency_hz).ok();
+    let frequency = Frequency::from_hz(frequency_hz).ok();
     let state = if receiver.faulted || !receiver.started || frequency.is_none() {
         TxState::Faulted
     } else if scanning {
