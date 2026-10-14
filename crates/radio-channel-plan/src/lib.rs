@@ -924,12 +924,182 @@ impl ChannelRecord {
     }
 }
 
-/// Named bank metadata addressed by a channel membership mask.
+/// Named bank metadata, and the settings the bank shares with its channels.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ChannelBank {
     id: BankId,
     name: BankName,
     flags: BankFlags,
+    settings: BankSettings,
+}
+
+/// Which settings a channel bank fixes for every channel it holds.
+///
+/// A setting the bank shares is entered once on the bank; one it does not is
+/// entered on each channel.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SharedSettings {
+    bits: u8,
+}
+
+impl SharedSettings {
+    /// Every channel uses the bank's modulation.
+    pub const MODULATION: u8 = 1 << 0;
+    /// Every channel uses the bank's bandwidth.
+    pub const BANDWIDTH: u8 = 1 << 1;
+    /// Every channel uses the bank's tuning step.
+    pub const STEP: u8 = 1 << 2;
+    /// Every channel uses the bank's power level.
+    pub const POWER: u8 = 1 << 3;
+    /// Every channel transmits the bank's offset from where it receives.
+    pub const OFFSET: u8 = 1 << 4;
+    /// Every channel uses the bank's receive tone.
+    pub const RX_TONE: u8 = 1 << 5;
+    /// Every channel uses the bank's transmit tone.
+    pub const TX_TONE: u8 = 1 << 6;
+    /// Bits which must be zero in this format version.
+    pub const RESERVED: u8 = 1 << 7;
+
+    /// Returns the field sharing nothing.
+    #[must_use]
+    pub const fn none() -> Self {
+        Self { bits: 0 }
+    }
+
+    /// Validates a raw field.
+    pub const fn from_bits(bits: u8) -> Result<Self, PlanError> {
+        if bits & Self::RESERVED != 0 {
+            Err(PlanError::ReservedFlag)
+        } else {
+            Ok(Self { bits })
+        }
+    }
+
+    /// Returns the raw field.
+    pub const fn bits(self) -> u8 {
+        self.bits
+    }
+
+    /// Reports whether every requested setting is shared.
+    pub const fn contains(self, setting: u8) -> bool {
+        self.bits & setting == setting
+    }
+
+    /// Returns this field with one setting shared or not.
+    #[must_use]
+    pub const fn with(self, setting: u8, shared: bool) -> Self {
+        let bits = if shared {
+            self.bits | setting
+        } else {
+            self.bits & !setting
+        };
+        Self { bits }
+    }
+}
+
+/// The values a channel bank shares, and which of them it shares.
+///
+/// A value whose setting is not shared is kept, so switching sharing off and on
+/// again restores what the operator entered.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BankSettings {
+    /// Which of the values below every channel takes.
+    pub shared: SharedSettings,
+    /// Shared modulation family.
+    pub modulation: Modulation,
+    /// Shared occupied bandwidth.
+    pub bandwidth: Bandwidth,
+    /// Shared manual tuning step.
+    pub step: FrequencyStep,
+    /// Shared transmit power level.
+    pub power: PowerLevel,
+    /// Shared transmit offset from the receive frequency; zero is simplex.
+    pub offset: Offset,
+    /// Shared receive tone.
+    pub rx_tone: Tone,
+    /// Shared transmit tone.
+    pub tx_tone: Tone,
+}
+
+impl Default for BankSettings {
+    fn default() -> Self {
+        Self::unshared()
+    }
+}
+
+impl BankSettings {
+    /// Settings which share nothing, so every channel carries its own.
+    ///
+    /// # Panics
+    ///
+    /// Never: the step it holds is a non-zero constant.
+    #[must_use]
+    pub const fn unshared() -> Self {
+        Self {
+            shared: SharedSettings::none(),
+            modulation: Modulation::Fm,
+            bandwidth: Bandwidth::Narrow,
+            step: match FrequencyStep::from_hz(12_500) {
+                Ok(step) => step,
+                Err(_) => panic!("a non-zero step"),
+            },
+            power: PowerLevel::Low,
+            offset: Offset::from_hz(0),
+            rx_tone: Tone::None,
+            tx_tone: Tone::None,
+        }
+    }
+
+    /// Validates the shared tones.
+    pub fn validate(self) -> Result<Self, PlanError> {
+        validate_tone(self.rx_tone)?;
+        validate_tone(self.tx_tone)?;
+        Ok(self)
+    }
+
+    /// Returns `definition` with every shared setting replaced by the bank's.
+    ///
+    /// A shared offset sets the transmit frequency from the receive frequency.
+    pub fn apply(self, mut definition: ChannelDefinition) -> Result<ChannelDefinition, PlanError> {
+        let shared = self.shared;
+        if shared.contains(SharedSettings::MODULATION) {
+            definition.modulation = self.modulation;
+        }
+        if shared.contains(SharedSettings::BANDWIDTH) {
+            definition.bandwidth = self.bandwidth;
+        }
+        if shared.contains(SharedSettings::STEP) {
+            definition.step = self.step;
+        }
+        if shared.contains(SharedSettings::POWER) {
+            definition.power = self.power;
+        }
+        if shared.contains(SharedSettings::OFFSET) {
+            definition.transmit = definition.receive.checked_apply_offset(self.offset)?;
+        }
+        if shared.contains(SharedSettings::RX_TONE) {
+            definition.rx_tone = self.rx_tone;
+        }
+        if shared.contains(SharedSettings::TX_TONE) {
+            definition.tx_tone = self.tx_tone;
+        }
+        Ok(definition)
+    }
+
+    /// Reports whether `channel` already has every value the bank shares.
+    pub fn agrees(self, channel: &ChannelRecord) -> bool {
+        let shared = self.shared;
+        let offset = i64::from(channel.transmit().as_hz()) - i64::from(channel.receive().as_hz());
+        (!shared.contains(SharedSettings::MODULATION) || channel.modulation() == self.modulation)
+            && (!shared.contains(SharedSettings::BANDWIDTH)
+                || channel.bandwidth() == self.bandwidth)
+            && (!shared.contains(SharedSettings::STEP) || channel.step() == self.step)
+            && (!shared.contains(SharedSettings::POWER) || channel.power() == self.power)
+            && (!shared.contains(SharedSettings::OFFSET)
+                || offset == i64::from(self.offset.as_hz()))
+            && (!shared.contains(SharedSettings::RX_TONE) || channel.rx_tone() == self.rx_tone)
+            && (!shared.contains(SharedSettings::TX_TONE) || channel.tx_tone() == self.tx_tone)
+    }
 }
 
 /// Bank-level behaviour flags.
@@ -981,7 +1151,23 @@ impl ChannelBank {
         if id.get() >= MAX_BANKS {
             return Err(PlanError::BankOutOfRange);
         }
-        Ok(Self { id, name, flags })
+        Ok(Self {
+            id,
+            name,
+            flags,
+            settings: BankSettings::unshared(),
+        })
+    }
+
+    /// Returns this bank sharing `settings` with its channels.
+    pub fn with_settings(mut self, settings: BankSettings) -> Result<Self, PlanError> {
+        self.settings = settings.validate()?;
+        Ok(self)
+    }
+
+    /// Returns the settings the bank shares with its channels.
+    pub const fn settings(self) -> BankSettings {
+        self.settings
     }
 
     /// Returns the bank identifier.
@@ -1020,14 +1206,15 @@ fn validate_tone(tone: Tone) -> Result<(), PlanError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        generated_channel_id, is_generated_channel_id, BankFlags, ChannelBank, ChannelDefinition,
-        ChannelFlags, ChannelName, ChannelRecord, ChannelTemplate, GENERATED_CHANNEL_ID_BASE,
-        MAX_BANKS, MAX_GENERATED_CHANNELS,
+        generated_channel_id, is_generated_channel_id, BankFlags, BankSettings, ChannelBank,
+        ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord, ChannelTemplate,
+        GENERATED_CHANNEL_ID_BASE, MAX_BANKS, MAX_GENERATED_CHANNELS,
     };
     use radio_domain::{Bandwidth, ChannelId, Modulation, PowerLevel, Tone};
 
     use super::{
         generated_channel_parts, BankName, Designator, GeneratedBank, PlanEncoding, PlanError,
+        SharedSettings,
     };
     use radio_domain::{BankId, Frequency, FrequencyStep, Offset};
 
@@ -1300,6 +1487,61 @@ mod tests {
             inverted: false,
         };
         assert_eq!(ChannelRecord::new(bad_code), Err(PlanError::InvalidTone));
+    }
+
+    #[test]
+    fn a_bank_fills_in_the_settings_it_shares_and_leaves_the_rest() {
+        let settings = BankSettings {
+            shared: SharedSettings::none()
+                .with(SharedSettings::MODULATION, true)
+                .with(SharedSettings::POWER, true)
+                .with(SharedSettings::OFFSET, true)
+                .with(SharedSettings::TX_TONE, true),
+            modulation: Modulation::Am,
+            power: PowerLevel::High,
+            offset: Offset::from_hz(-600_000),
+            tx_tone: Tone::Ctcss(770),
+            // Not shared, so these are ignored.
+            bandwidth: Bandwidth::Narrow,
+            rx_tone: Tone::Ctcss(1_188),
+            ..BankSettings::unshared()
+        };
+        let applied = settings.apply(definition()).unwrap();
+        assert_eq!(applied.modulation, Modulation::Am);
+        assert_eq!(applied.power, PowerLevel::High);
+        assert_eq!(applied.transmit.as_hz(), 145_125_000);
+        assert_eq!(applied.tx_tone, Tone::Ctcss(770));
+        assert_eq!(applied.bandwidth, Bandwidth::Wide);
+        assert_eq!(applied.rx_tone, Tone::Ctcss(1_000));
+
+        let record = ChannelRecord::new(applied).unwrap();
+        assert!(settings.agrees(&record));
+        assert!(!settings.agrees(&ChannelRecord::new(definition()).unwrap()));
+        assert!(BankSettings::unshared().agrees(&record));
+
+        let mut too_low = definition();
+        too_low.receive = Frequency::from_hz(100_000).unwrap();
+        assert!(settings.apply(too_low).is_err());
+    }
+
+    #[test]
+    fn a_bank_validates_its_shared_settings() {
+        assert_eq!(
+            SharedSettings::from_bits(SharedSettings::RESERVED),
+            Err(PlanError::ReservedFlag)
+        );
+        let bank = ChannelBank::new(
+            BankId::new(1),
+            BankName::new("RPT").unwrap(),
+            BankFlags::default(),
+        )
+        .unwrap();
+        assert_eq!(bank.settings(), BankSettings::unshared());
+        let bad = BankSettings {
+            rx_tone: Tone::Ctcss(1),
+            ..BankSettings::unshared()
+        };
+        assert_eq!(bank.with_settings(bad), Err(PlanError::InvalidTone));
     }
 
     #[test]

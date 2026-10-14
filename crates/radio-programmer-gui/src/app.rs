@@ -5,7 +5,7 @@ use std::{fs, path::Path, time::Instant};
 use eframe::egui::{
     self, collapsing_header::CollapsingState, ComboBox, Grid, RichText, ScrollArea, TextEdit,
 };
-use radio_channel_plan::{MAX_BANKS, MAX_GENERATED_CHANNELS};
+use radio_channel_plan::{SharedSettings, MAX_BANKS, MAX_GENERATED_CHANNELS};
 use radio_domain::{
     Bandwidth, Modulation, PowerLevel, ScanResume, TxClass, BACKLIGHT_ALWAYS_ON,
     MAX_BATTERY_SAVE_RATIO, MAX_SQUELCH_LEVEL, TX_POWER_LEVELS, TX_TIMEOUT_CHOICES,
@@ -1121,7 +1121,19 @@ fn reorder_open(open: &mut [bool], row: usize, action: BankAction) {
 }
 
 /// Draws one channel row, returning the action its buttons requested.
-fn channel_row_editor(ui: &mut egui::Ui, channel: &mut ChannelDraft) -> Option<RowAction> {
+/// Draws one channel; a setting its bank shares is shown as the bank's.
+fn channel_row_editor(
+    ui: &mut egui::Ui,
+    channel: &mut ChannelDraft,
+    shared: SharedSettings,
+) -> Option<RowAction> {
+    let own = |ui: &mut egui::Ui, setting: u8, editor: &mut dyn FnMut(&mut egui::Ui)| {
+        if shared.contains(setting) {
+            ui.weak("from bank");
+        } else {
+            editor(ui);
+        }
+    };
     Grid::new("channel").num_columns(4).show(ui, |ui| {
         ui.label("Name");
         ui.add(TextEdit::singleline(&mut channel.name).desired_width(120.0));
@@ -1130,25 +1142,39 @@ fn channel_row_editor(ui: &mut egui::Ui, channel: &mut ChannelDraft) -> Option<R
         ui.label("Receive MHz");
         ui.add(TextEdit::singleline(&mut channel.receive_mhz).desired_width(120.0));
         ui.label("Transmit MHz");
-        ui.add(TextEdit::singleline(&mut channel.transmit_mhz).desired_width(120.0));
+        own(ui, SharedSettings::OFFSET, &mut |ui| {
+            ui.add(TextEdit::singleline(&mut channel.transmit_mhz).desired_width(120.0));
+        });
         ui.end_row();
 
         ui.label("RX tone");
-        tone_editor(ui, "rx", &mut channel.rx_tone);
+        own(ui, SharedSettings::RX_TONE, &mut |ui| {
+            tone_editor(ui, "rx", &mut channel.rx_tone);
+        });
         ui.label("TX tone");
-        tone_editor(ui, "tx", &mut channel.tx_tone);
+        own(ui, SharedSettings::TX_TONE, &mut |ui| {
+            tone_editor(ui, "tx", &mut channel.tx_tone);
+        });
         ui.end_row();
 
         ui.label("Modulation");
-        modulation_editor(ui, &mut channel.modulation);
+        own(ui, SharedSettings::MODULATION, &mut |ui| {
+            modulation_editor(ui, &mut channel.modulation);
+        });
         ui.label("Bandwidth");
-        bandwidth_editor(ui, &mut channel.bandwidth);
+        own(ui, SharedSettings::BANDWIDTH, &mut |ui| {
+            bandwidth_editor(ui, &mut channel.bandwidth);
+        });
         ui.end_row();
 
         ui.label("Power");
-        power_editor(ui, &mut channel.power);
+        own(ui, SharedSettings::POWER, &mut |ui| {
+            power_editor(ui, &mut channel.power);
+        });
         ui.label("Step Hz");
-        ui.add(egui::DragValue::new(&mut channel.step_hz).speed(125.0));
+        own(ui, SharedSettings::STEP, &mut |ui| {
+            ui.add(egui::DragValue::new(&mut channel.step_hz).speed(125.0));
+        });
         ui.end_row();
 
         ui.label("Flags");
@@ -1191,6 +1217,7 @@ fn bank_row_editor(ui: &mut egui::Ui, bank: &mut BankDraft) -> Option<BankAction
                 ui.label("Scanning");
                 ui.checkbox(&mut bank.scan_enabled, "Scan enabled");
                 ui.end_row();
+                shared_settings_editor(ui, bank);
             }
             BankKind::Generated => generated_plan_editor(ui, bank),
         }
@@ -1218,6 +1245,7 @@ fn bank_row_editor(ui: &mut egui::Ui, bank: &mut BankDraft) -> Option<BankAction
             }
         }
         BankKind::Named => {
+            let shared = bank.shared;
             ui.indent("channels", |ui| {
                 for (row, channel) in bank.channels.iter_mut().enumerate() {
                     ui.push_id(row, |ui| {
@@ -1225,7 +1253,7 @@ fn bank_row_editor(ui: &mut egui::Ui, bank: &mut BankDraft) -> Option<BankAction
                             .id_salt(row)
                             .default_open(true)
                             .show(ui, |ui| {
-                                if let Some(requested) = channel_row_editor(ui, channel) {
+                                if let Some(requested) = channel_row_editor(ui, channel, shared) {
                                     action = Some(BankAction::Channel(row, requested));
                                 }
                             });
@@ -1238,6 +1266,77 @@ fn bank_row_editor(ui: &mut egui::Ui, bank: &mut BankDraft) -> Option<BankAction
         }
     }
     action
+}
+
+/// Draws the settings a channel bank can share, each with its own switch.
+///
+/// A shared setting is entered here once and every channel takes it; one the
+/// bank does not share is entered on each channel instead.
+fn shared_settings_editor(ui: &mut egui::Ui, bank: &mut BankDraft) {
+    ui.label("Shared");
+    ui.weak("Ticked settings apply to every channel in the bank.");
+    ui.end_row();
+
+    if share_toggle(
+        ui,
+        &mut bank.shared,
+        SharedSettings::MODULATION,
+        "Modulation",
+    ) {
+        modulation_editor(ui, &mut bank.modulation);
+    } else {
+        ui.weak("per channel");
+    }
+    if share_toggle(ui, &mut bank.shared, SharedSettings::BANDWIDTH, "Bandwidth") {
+        bandwidth_editor(ui, &mut bank.bandwidth);
+    } else {
+        ui.weak("per channel");
+    }
+    ui.end_row();
+
+    if share_toggle(ui, &mut bank.shared, SharedSettings::POWER, "Power") {
+        power_editor(ui, &mut bank.power);
+    } else {
+        ui.weak("per channel");
+    }
+    if share_toggle(ui, &mut bank.shared, SharedSettings::STEP, "Step Hz") {
+        ui.add(egui::DragValue::new(&mut bank.step_hz).speed(125.0));
+    } else {
+        ui.weak("per channel");
+    }
+    ui.end_row();
+
+    if share_toggle(ui, &mut bank.shared, SharedSettings::OFFSET, "TX offset Hz") {
+        ui.add(
+            egui::DragValue::new(&mut bank.offset_hz)
+                .speed(1_000.0)
+                .range(-50_000_000..=50_000_000),
+        )
+        .on_hover_text("Zero is simplex; each channel transmits this far from where it receives.");
+    } else {
+        ui.weak("per channel");
+    }
+    ui.end_row();
+
+    if share_toggle(ui, &mut bank.shared, SharedSettings::RX_TONE, "RX tone") {
+        tone_editor(ui, "bank-rx", &mut bank.rx_tone);
+    } else {
+        ui.weak("per channel");
+    }
+    if share_toggle(ui, &mut bank.shared, SharedSettings::TX_TONE, "TX tone") {
+        tone_editor(ui, "bank-tx", &mut bank.tx_tone);
+    } else {
+        ui.weak("per channel");
+    }
+    ui.end_row();
+}
+
+/// Draws one share switch and reports whether the setting is now shared.
+fn share_toggle(ui: &mut egui::Ui, shared: &mut SharedSettings, setting: u8, label: &str) -> bool {
+    let mut on = shared.contains(setting);
+    ui.checkbox(&mut on, label);
+    *shared = shared.with(setting, on);
+    on
 }
 
 /// Draws the editor for one generated plan.
@@ -1911,6 +2010,21 @@ mod tests {
         let deletes = text_left_edges(&output, "Delete");
         assert_eq!(deletes.len(), 3, "{deletes:?}");
         assert!(deletes.iter().all(|x| *x > 1_000.0), "{deletes:?}");
+    }
+
+    #[test]
+    fn a_shared_setting_is_edited_on_the_bank_and_shown_as_the_banks_on_a_channel() {
+        let context = eframe::egui::Context::default();
+        let mut app = app_in(&scratch("shared"), &Options::default());
+        app.add_bank(BankKind::Named);
+        app.project.add_channel(0);
+        app.project.banks[0].shared = radio_channel_plan::SharedSettings::none()
+            .with(radio_channel_plan::SharedSettings::POWER, true);
+        frame(&context, &mut app, Vec::new());
+        let output = frame(&context, &mut app, Vec::new());
+        // Power is shared; the other six settings stay per channel.
+        assert_eq!(text_left_edges(&output, "from bank").len(), 1);
+        assert_eq!(text_left_edges(&output, "per channel").len(), 6);
     }
 
     /// Tabs through the widgets until typed text lands in the probed field.

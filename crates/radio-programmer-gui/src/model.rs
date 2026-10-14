@@ -12,9 +12,9 @@
 use std::fmt;
 
 use radio_channel_plan::{
-    BankFlags, BankName, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord,
-    ChannelTemplate, Designator, GeneratedBank, PlanEncoding, GENERATED_CHANNEL_ID_BASE, MAX_BANKS,
-    MAX_DESIGNATOR_LEN, MAX_GENERATED_CHANNELS,
+    BankFlags, BankName, BankSettings, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
+    ChannelRecord, ChannelTemplate, Designator, GeneratedBank, PlanEncoding, SharedSettings,
+    GENERATED_CHANNEL_ID_BASE, MAX_BANKS, MAX_DESIGNATOR_LEN, MAX_GENERATED_CHANNELS,
 };
 use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, Offset, PowerLevel,
@@ -273,20 +273,42 @@ impl ChannelDraft {
 
     /// Validates every field into one channel record numbered `id` and
     /// stored in `bank`.
+    ///
+    /// A setting the bank shares comes from the bank, whatever this row holds,
+    /// so the row's own value for it is neither checked nor stored.
     pub fn validate(
         &self,
         scope: ModelScope,
         id: u16,
-        bank: BankId,
+        bank: &ChannelBank,
     ) -> Result<ChannelRecord, ModelError> {
+        let shared = bank.settings().shared;
         let name = ChannelName::new(self.name.trim())
             .map_err(|_| error(scope, "name", "must be 1 to 12 printable characters"))?;
         let receive = parse_frequency(&self.receive_mhz)
             .ok_or_else(|| error(scope, "receive", "is not a frequency in megahertz"))?;
-        let transmit = parse_frequency(&self.transmit_mhz)
-            .ok_or_else(|| error(scope, "transmit", "is not a frequency in megahertz"))?;
-        let step = FrequencyStep::from_hz(self.step_hz)
-            .map_err(|_| error(scope, "step", "must be a non-zero number of hertz"))?;
+        let transmit = if shared.contains(SharedSettings::OFFSET) {
+            receive
+        } else {
+            parse_frequency(&self.transmit_mhz)
+                .ok_or_else(|| error(scope, "transmit", "is not a frequency in megahertz"))?
+        };
+        let step = if shared.contains(SharedSettings::STEP) {
+            bank.settings().step
+        } else {
+            FrequencyStep::from_hz(self.step_hz)
+                .map_err(|_| error(scope, "step", "must be a non-zero number of hertz"))?
+        };
+        let rx_tone = if shared.contains(SharedSettings::RX_TONE) {
+            Tone::None
+        } else {
+            self.rx_tone.validate(scope, "receive tone")?
+        };
+        let tx_tone = if shared.contains(SharedSettings::TX_TONE) {
+            Tone::None
+        } else {
+            self.tx_tone.validate(scope, "transmit tone")?
+        };
         let mut flags = ChannelFlags::default()
             .with(ChannelFlags::SCAN_SKIP, self.scan_skip)
             .with(ChannelFlags::BUSY_LOCKOUT, self.busy_lockout)
@@ -302,21 +324,31 @@ impl ChannelDraft {
                 ),
             ));
         }
-        ChannelRecord::new(ChannelDefinition {
-            id: ChannelId::new(id),
-            name,
-            receive,
-            transmit,
-            rx_tone: self.rx_tone.validate(scope, "receive tone")?,
-            tx_tone: self.tx_tone.validate(scope, "transmit tone")?,
-            modulation: self.modulation,
-            bandwidth: self.bandwidth,
-            power: self.power,
-            step,
-            flags,
-            bank: Some(bank),
-        })
-        .map_err(|failure| error(scope, "channel", failure.to_string()))
+        let definition = bank
+            .settings()
+            .apply(ChannelDefinition {
+                id: ChannelId::new(id),
+                name,
+                receive,
+                transmit,
+                rx_tone,
+                tx_tone,
+                modulation: self.modulation,
+                bandwidth: self.bandwidth,
+                power: self.power,
+                step,
+                flags,
+                bank: Some(bank.id()),
+            })
+            .map_err(|_| {
+                error(
+                    scope,
+                    "transmit",
+                    "is out of range at the offset the bank shares",
+                )
+            })?;
+        ChannelRecord::new(definition)
+            .map_err(|failure| error(scope, "channel", failure.to_string()))
     }
 }
 
@@ -428,6 +460,10 @@ pub struct BankDraft {
     pub calling_index: Option<u16>,
     /// Fixed transmit offset in hertz. Zero is simplex; non-zero is a repeater.
     pub offset_hz: i32,
+    /// Which of the settings below a channel bank shares with its channels.
+    ///
+    /// A generated plan shares all of them, whatever this holds.
+    pub shared: SharedSettings,
     /// Receive-side tone squelch shared by every generated channel.
     pub rx_tone: ToneDraft,
     /// Transmit-side tone shared by every generated channel.
@@ -463,6 +499,7 @@ impl Default for BankDraft {
             first_number: 1,
             calling_index: None,
             offset_hz: 0,
+            shared: SharedSettings::none(),
             rx_tone: ToneDraft::default(),
             tx_tone: ToneDraft::default(),
             modulation: Modulation::Fm,
@@ -480,12 +517,57 @@ impl Default for BankDraft {
 impl BankDraft {
     /// Builds a draft from a validated named bank.
     pub fn from_record(bank: ChannelBank) -> Self {
+        let settings = bank.settings();
         Self {
             name: bank.name().as_str().to_owned(),
             kind: BankKind::Named,
             scan_enabled: bank.is_scan_enabled(),
+            shared: settings.shared,
+            modulation: settings.modulation,
+            bandwidth: settings.bandwidth,
+            power: settings.power,
+            step_hz: settings.step.as_hz(),
+            offset_hz: settings.offset.as_hz(),
+            rx_tone: ToneDraft::from_tone(settings.rx_tone),
+            tx_tone: ToneDraft::from_tone(settings.tx_tone),
             ..Self::default()
         }
+    }
+
+    /// Validates the settings a channel bank shares with its channels.
+    ///
+    /// Only a shared value is checked: one the bank does not share is kept for
+    /// when the operator shares it again, but nothing uses it.
+    fn settings(&self, scope: ModelScope) -> Result<BankSettings, ModelError> {
+        let shared = self.shared;
+        let unshared = BankSettings::unshared();
+        Ok(BankSettings {
+            shared,
+            modulation: self.modulation,
+            bandwidth: self.bandwidth,
+            power: self.power,
+            step: if shared.contains(SharedSettings::STEP) {
+                FrequencyStep::from_hz(self.step_hz)
+                    .map_err(|_| error(scope, "step", "must be a non-zero number of hertz"))?
+            } else {
+                FrequencyStep::from_hz(self.step_hz).unwrap_or(unshared.step)
+            },
+            offset: Offset::from_hz(self.offset_hz),
+            rx_tone: if shared.contains(SharedSettings::RX_TONE) {
+                self.rx_tone.validate(scope, "receive tone")?
+            } else {
+                self.rx_tone
+                    .validate(scope, "receive tone")
+                    .unwrap_or(Tone::None)
+            },
+            tx_tone: if shared.contains(SharedSettings::TX_TONE) {
+                self.tx_tone.validate(scope, "transmit tone")?
+            } else {
+                self.tx_tone
+                    .validate(scope, "transmit tone")
+                    .unwrap_or(Tone::None)
+            },
+        })
     }
 
     /// Builds a draft from a validated generated plan.
@@ -533,19 +615,24 @@ impl BankDraft {
                 )
             })?;
         match self.kind {
-            BankKind::Named => ChannelBank::new(
-                BankId::new(id),
-                name,
-                BankFlags::default().with(BankFlags::SCAN_ENABLED, self.scan_enabled),
-            )
-            .map(ValidatedBank::Named)
-            .map_err(|_| {
-                error(
-                    scope,
-                    "bank",
-                    format!("a radio holds {MAX_BANKS} banks at most"),
+            BankKind::Named => {
+                let settings = self.settings(scope)?;
+                ChannelBank::new(
+                    BankId::new(id),
+                    name,
+                    BankFlags::default().with(BankFlags::SCAN_ENABLED, self.scan_enabled),
                 )
-            }),
+                .map_err(|_| {
+                    error(
+                        scope,
+                        "bank",
+                        format!("a radio holds {MAX_BANKS} banks at most"),
+                    )
+                })?
+                .with_settings(settings)
+                .map(ValidatedBank::Named)
+                .map_err(|failure| error(scope, "shared settings", failure.to_string()))
+            }
             BankKind::Generated => {
                 let base = parse_frequency(&self.base_mhz)
                     .ok_or_else(|| error(scope, "base", "is not a frequency in megahertz"))?;
@@ -985,7 +1072,7 @@ impl ProjectModel {
                             bank: row,
                             row: channel_row,
                         };
-                        if channel.validate(scope, id, bank.id()).is_ok() {
+                        if channel.validate(scope, id, &bank).is_ok() {
                             summary.stored_channels += 1;
                         }
                         id = id.saturating_add(1);
@@ -1019,7 +1106,7 @@ impl ProjectModel {
                             bank: row,
                             row: channel_row,
                         };
-                        match channel.validate(scope, id, bank.id()) {
+                        match channel.validate(scope, id, &bank) {
                             Ok(record) => project.add_channel(record),
                             Err(failure) => errors.push(failure),
                         }
@@ -1272,8 +1359,8 @@ mod tests {
         format_mhz, parse_frequency, BankDraft, BankKind, ChannelDraft, ConfigDraft, ModelScope,
         ProjectModel, ToneDraft, ToneKind, ValidatedBank, RADIO_IMAGE_BYTES,
     };
-    use radio_channel_plan::{ChannelFlags, MAX_BANKS};
-    use radio_domain::{Bandwidth, BankId, PowerLevel, ScanResume, Tone};
+    use radio_channel_plan::{ChannelFlags, SharedSettings, MAX_BANKS};
+    use radio_domain::{Bandwidth, BankId, Modulation, PowerLevel, ScanResume, Tone};
     use radio_programmer::RadioProject;
 
     fn project() -> ProjectModel {
@@ -1678,11 +1765,70 @@ mod tests {
     }
 
     #[test]
+    fn a_bank_shares_its_settings_with_every_channel_and_survives_a_save() {
+        let mut model = ProjectModel::new();
+        model.add_bank();
+        model.add_channel(0);
+        model.add_channel(0);
+        let bank = &mut model.banks[0];
+        bank.shared = SharedSettings::none()
+            .with(SharedSettings::BANDWIDTH, true)
+            .with(SharedSettings::POWER, true)
+            .with(SharedSettings::OFFSET, true)
+            .with(SharedSettings::TX_TONE, true);
+        bank.bandwidth = Bandwidth::Wide;
+        bank.power = PowerLevel::High;
+        bank.offset_hz = -600_000;
+        bank.tx_tone = ToneDraft {
+            kind: ToneKind::Ctcss,
+            value: "77.0".to_owned(),
+        };
+        // A row's own value for a shared setting is neither used nor checked.
+        bank.channels[0].transmit_mhz = "not a frequency".to_owned();
+        bank.channels[0].power = PowerLevel::Low;
+        bank.channels[1].receive_mhz = "145.725000".to_owned();
+        bank.channels[1].modulation = Modulation::Am;
+
+        let project = model.validate().unwrap();
+        let channels = project.channels();
+        for channel in channels {
+            assert_eq!(channel.bandwidth(), Bandwidth::Wide);
+            assert_eq!(channel.power(), PowerLevel::High);
+            assert_eq!(channel.tx_tone(), Tone::Ctcss(770));
+        }
+        assert_eq!(channels[1].transmit().as_hz(), 145_125_000);
+        // Modulation is not shared, so each channel keeps its own.
+        assert_eq!(channels[0].modulation(), Modulation::Fm);
+        assert_eq!(channels[1].modulation(), Modulation::Am);
+
+        let saved = model.to_image().unwrap();
+        let loaded = ProjectModel::from_image(&saved).unwrap();
+        assert_eq!(loaded.banks[0].shared, model.banks[0].shared);
+        assert_eq!(loaded.banks[0].offset_hz, -600_000);
+        assert_eq!(loaded.validate().unwrap().channels(), channels);
+        assert!(model.to_radio_image().is_ok());
+    }
+
+    #[test]
+    fn a_shared_offset_out_of_range_is_reported_on_the_channel() {
+        let mut model = ProjectModel::new();
+        model.add_bank();
+        model.add_channel(0);
+        model.banks[0].shared = SharedSettings::none().with(SharedSettings::OFFSET, true);
+        model.banks[0].offset_hz = -200_000_000;
+        let errors = model.validate().unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].scope, ModelScope::Channel { bank: 0, row: 0 });
+        assert_eq!(errors[0].field, "transmit");
+    }
+
+    #[test]
     fn channel_drafts_round_trip_through_records() {
         let draft = project().banks[0].channels[0].clone();
-        let record = draft
-            .validate(ModelScope::Project, 7, BankId::new(2))
-            .unwrap();
+        let ValidatedBank::Named(bank) = BankDraft::default().validate(2).unwrap() else {
+            panic!("a channel bank");
+        };
+        let record = draft.validate(ModelScope::Project, 7, &bank).unwrap();
         assert_eq!(record.id().get(), 7);
         assert!(record.is_member_of(BankId::new(2)));
         assert_eq!(ChannelDraft::from_record(record), draft);

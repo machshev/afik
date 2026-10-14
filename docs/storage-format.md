@@ -94,7 +94,7 @@ modulation     : u8
 bandwidth      : u8
 power level    : u8
 step Hz        : u32 little endian
-squelch level  : u8
+reserved       : u8  (was a squelch level; written 0, ignored)
 channel flags  : u8
 designator len : u8
 designator     : fixed 4-byte field
@@ -185,13 +185,14 @@ modulation     : u8  (0 FM, 1 AM, 2 USB)
 bandwidth      : u8  (0 narrow, 1 wide)
 power          : u8  (0 low, 1 medium, 2 high)
 step Hz        : u32 little endian
-squelch level  : u8  (0 through 9)
+reserved       : u8  (was a squelch level; squelch is radio-wide; written 0, ignored)
 flags          : u8  (bit 0 scan skip, 1 busy lockout, 2 reverse, 3 compander)
 reserved       : u8  (was the TX class before ADR-101; written 0, ignored)
-bank mask      : u16 little endian
+bank           : u16 little endian (one bit, the channel's bank; 0 is none)
 ```
 
-Channel-bank payload version 1 is 22 bytes:
+Channel-bank payload is 39 bytes; one of 22 bytes, written before banks shared
+settings, ends after the shared field and must have it zero (sharing nothing):
 
 ```text
 format version : u8
@@ -199,8 +200,20 @@ bank ID        : u16 little endian (0 through 15)
 name length    : u8
 name bytes     : fixed 16-byte field
 flags          : u8  (bit 0 scan enabled)
-reserved       : u8  (must be zero)
+shared         : u8  (bit 0 modulation, 1 bandwidth, 2 step, 3 power,
+                      4 TX offset, 5 RX tone, 6 TX tone; bit 7 must be zero)
+modulation     : u8
+bandwidth      : u8
+power          : u8
+step Hz        : u32 little endian
+TX offset Hz   : i32 little endian (TX minus RX)
+RX tone        : 3 bytes, as on a channel
+TX tone        : 3 bytes
 ```
+
+A shared setting is the bank's for every channel in it: the studio fills it
+into each channel record, and the compiler refuses a channel that disagrees.
+An unshared value is kept so sharing it again restores it.
 
 Radio-configuration payload version 1 is 16 bytes:
 

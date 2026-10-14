@@ -14,6 +14,7 @@
 //! rather than a truncated bank name and a position. The marine channel
 //! numbering is not arithmetic, so it is stored as named channels.
 
+use radio_channel_plan::SharedSettings;
 use radio_domain::{Bandwidth, Modulation, PowerLevel, TxClass};
 
 use crate::model::{format_mhz, BankDraft, BankKind, ChannelDraft, ProjectModel, TxRangeDraft};
@@ -506,14 +507,18 @@ impl Preset {
                     ..ChannelDraft::default()
                 })
                 .collect();
+            // Everything but the frequency is the same across a list, so the
+            // bank shares it all and each channel carries a name and a frequency.
             project.banks.push(BankDraft {
                 name: list.name.to_owned(),
                 kind: BankKind::Named,
                 scan_enabled: true,
+                shared: SharedSettings::from_bits(!SharedSettings::RESERVED).unwrap_or_default(),
                 modulation: list.modulation,
                 bandwidth: list.bandwidth,
                 power: list.power,
                 step_hz: list.step_hz,
+                offset_hz: -i32::try_from(list.receive_offset_hz).unwrap_or(0),
                 channels,
                 ..BankDraft::default()
             });
@@ -766,6 +771,20 @@ mod tests {
             .banks
             .iter()
             .all(|bank| bank.channels.iter().all(|c| c.bandwidth == Bandwidth::Wide)));
+
+        // Each bank shares everything but the frequency, and the duplex bank's
+        // shared offset reproduces every listed transmit frequency.
+        assert!(project.banks.iter().all(|bank| bank.shared.contains(0x7F)));
+        assert_eq!(duplex.offset_hz, -4_600_000);
+        assert_eq!(simplex.offset_hz, 0);
+        let validated = project.validate().unwrap();
+        for (channel, draft) in validated.channels().iter().zip(&duplex.channels) {
+            assert_eq!(
+                crate::model::format_mhz(channel.transmit().as_hz()),
+                draft.transmit_mhz
+            );
+            assert_eq!(channel.bandwidth(), Bandwidth::Wide);
+        }
     }
 
     #[test]

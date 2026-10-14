@@ -324,6 +324,13 @@ pub enum CompileError {
         /// The undefined bank identifier.
         bank: u16,
     },
+    /// A channel differs from a setting its bank shares with every channel.
+    BankSetting {
+        /// The disagreeing channel.
+        channel: u16,
+        /// The bank whose shared setting it differs from.
+        bank: u16,
+    },
     /// A TX range is malformed, or there are too many (`ADR-101`).
     TxRange(RangeError),
 }
@@ -348,6 +355,10 @@ impl fmt::Display for CompileError {
             Self::UnknownBank { channel, bank } => write!(
                 formatter,
                 "channel {channel} references undefined bank {bank}"
+            ),
+            Self::BankSetting { channel, bank } => write!(
+                formatter,
+                "channel {channel} differs from a setting bank {bank} shares"
             ),
             Self::TxRange(error) => write!(formatter, "{error}"),
         }
@@ -426,8 +437,14 @@ impl ConfigurationCompiler {
     fn require_defined_banks(project: &RadioProject) -> Result<(), CompileError> {
         for channel in &project.channels {
             if let Some(id) = channel.bank() {
-                if !project.banks.iter().any(|named| named.id() == id) {
+                let Some(bank) = project.banks.iter().find(|named| named.id() == id) else {
                     return Err(CompileError::UnknownBank {
+                        channel: channel.id().get(),
+                        bank: id.get(),
+                    });
+                };
+                if !bank.settings().agrees(channel) {
+                    return Err(CompileError::BankSetting {
                         channel: channel.id().get(),
                         bank: id.get(),
                     });
@@ -1385,6 +1402,39 @@ mod tests {
             Err(CompileError::UnknownBank {
                 channel: 1,
                 bank: 2
+            })
+        );
+    }
+
+    #[test]
+    fn a_channel_must_agree_with_what_its_bank_shares() {
+        // The test channel is wide FM at medium power, 600 kHz below.
+        let shares = |setting: u8, settings: radio_channel_plan::BankSettings| {
+            let mut project = RadioProject::new();
+            project.add_channel(channel(1, 1));
+            project.add_bank(
+                named_bank(1)
+                    .with_settings(radio_channel_plan::BankSettings {
+                        shared: radio_channel_plan::SharedSettings::none().with(setting, true),
+                        ..settings
+                    })
+                    .unwrap(),
+            );
+            ConfigurationCompiler::new(capabilities_for(8)).compile(&project)
+        };
+        let base = radio_channel_plan::BankSettings::unshared();
+        let agreeing = radio_channel_plan::BankSettings {
+            bandwidth: radio_domain::Bandwidth::Wide,
+            offset: radio_domain::Offset::from_hz(-600_000),
+            ..base
+        };
+        assert!(shares(radio_channel_plan::SharedSettings::BANDWIDTH, agreeing).is_ok());
+        assert!(shares(radio_channel_plan::SharedSettings::OFFSET, agreeing).is_ok());
+        assert_eq!(
+            shares(radio_channel_plan::SharedSettings::POWER, base),
+            Err(CompileError::BankSetting {
+                channel: 1,
+                bank: 1
             })
         );
     }

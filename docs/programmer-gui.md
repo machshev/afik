@@ -94,9 +94,11 @@ floating point.
   Move down change it. Banks open collapsed, showing only their name and
   summary; clicking the name opens one, a newly added bank opens for editing,
   and Delete on the header removes a bank with its channels (Revert undoes it
-  until the project is saved). A channel bank carries a name and the scan flag, and
-  its channels carry name, receive and transmit frequency, tones, modulation,
-  bandwidth, power, step and flags; channels are
+  until the project is saved). A channel bank carries a name, the scan flag and
+  a shared value, each with its own switch, for modulation, bandwidth, power,
+  step, TX offset, RX tone and TX tone. Its channels carry name, receive
+  frequency and flags, plus each of those settings the bank does not share
+  (a shared one shows as `from bank`); channels are
   numbered by the radio from their position. A generated plan stores a base
   frequency, spacing, channel count, naming, transmit class and the
   per-channel template its channels share, and expands, in place, into the

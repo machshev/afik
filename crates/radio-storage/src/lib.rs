@@ -5,9 +5,9 @@
 
 use core::fmt;
 use radio_channel_plan::{
-    BankFlags, BankName, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord,
-    ChannelTemplate, Designator, GeneratedBank, PlanEncoding, MAX_BANK_NAME_LEN,
-    MAX_CHANNEL_NAME_LEN, MAX_DESIGNATOR_LEN,
+    BankFlags, BankName, BankSettings, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
+    ChannelRecord, ChannelTemplate, Designator, GeneratedBank, PlanEncoding, SharedSettings,
+    MAX_BANK_NAME_LEN, MAX_CHANNEL_NAME_LEN, MAX_DESIGNATOR_LEN,
 };
 use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, Offset, PowerLevel,
@@ -45,8 +45,10 @@ pub const GENERATED_BANK_CORE_LEN: usize = 56;
 pub const MAX_GENERATED_BANK_ENCODED_LEN: usize = GENERATED_BANK_CORE_LEN + 4;
 /// Encoded byte length of a version-3 explicit channel object.
 pub const CHANNEL_ENCODED_LEN: usize = 42;
-/// Encoded byte length of a version-3 named channel-bank object.
-pub const CHANNEL_BANK_ENCODED_LEN: usize = 22;
+/// Encoded byte length of a channel-bank object with its shared settings.
+pub const CHANNEL_BANK_ENCODED_LEN: usize = 39;
+/// Bytes in a channel-bank object written before banks shared settings.
+pub const LEGACY_CHANNEL_BANK_ENCODED_LEN: usize = 22;
 /// Encoded byte length of a version-2 global radio-configuration object.
 pub const RADIO_CONFIG_ENCODED_LEN: usize = 16;
 /// Stable identifier of the single global radio-configuration object.
@@ -978,7 +980,10 @@ pub fn decode_channel(object: &impl Object) -> Result<ChannelRecord, StorageErro
     .map_err(|_| StorageError::MalformedObject)
 }
 
-/// Encodes named channel-bank metadata as a versioned storage object.
+/// Encodes a channel bank, and the settings it shares, as a storage object.
+///
+/// Byte 21 was reserved zero before banks shared settings, so it holds the
+/// shared-settings field and an older 22-byte object reads as sharing nothing.
 pub fn encode_channel_bank(bank: ChannelBank) -> Result<StorageObject, StorageError> {
     let mut data = [0_u8; CHANNEL_BANK_ENCODED_LEN];
     data[0] = STORAGE_FORMAT_VERSION;
@@ -986,6 +991,15 @@ pub fn encode_channel_bank(bank: ChannelBank) -> Result<StorageObject, StorageEr
     data[3] = bank.name().len();
     data[4..4 + MAX_BANK_NAME_LEN].copy_from_slice(&bank.name().field());
     data[20] = bank.flags().bits();
+    let settings = bank.settings();
+    data[21] = settings.shared.bits();
+    data[22] = settings.modulation as u8;
+    data[23] = settings.bandwidth as u8;
+    data[24] = settings.power as u8;
+    data[25..29].copy_from_slice(&settings.step.as_hz().to_le_bytes());
+    data[29..33].copy_from_slice(&settings.offset.as_hz().to_le_bytes());
+    encode_tone(settings.rx_tone, &mut data[33..36]);
+    encode_tone(settings.tx_tone, &mut data[36..39]);
     StorageObject::new(
         ObjectKey {
             kind: ObjectKind::ChannelBank,
@@ -995,14 +1009,17 @@ pub fn encode_channel_bank(bank: ChannelBank) -> Result<StorageObject, StorageEr
     )
 }
 
-/// Decodes and fully validates a named channel-bank storage object.
+/// Decodes and fully validates a channel-bank storage object.
 pub fn decode_channel_bank(object: &impl Object) -> Result<ChannelBank, StorageError> {
     let key = object.key();
     if key.kind != ObjectKind::ChannelBank {
         return Err(StorageError::UnsupportedObject);
     }
     let data = object.data();
-    if data.len() != CHANNEL_BANK_ENCODED_LEN || data[0] != STORAGE_FORMAT_VERSION || data[21] != 0
+    let legacy = data.len() == LEGACY_CHANNEL_BANK_ENCODED_LEN;
+    if !(legacy || data.len() == CHANNEL_BANK_ENCODED_LEN)
+        || data[0] != STORAGE_FORMAT_VERSION
+        || legacy && data[21] != 0
     {
         return Err(StorageError::MalformedObject);
     }
@@ -1015,7 +1032,24 @@ pub fn decode_channel_bank(object: &impl Object) -> Result<ChannelBank, StorageE
     let name =
         BankName::from_field(name_field, data[3]).map_err(|_| StorageError::MalformedObject)?;
     let flags = BankFlags::from_bits(data[20]).map_err(|_| StorageError::MalformedObject)?;
-    ChannelBank::new(BankId::new(id), name, flags).map_err(|_| StorageError::MalformedObject)
+    let bank = ChannelBank::new(BankId::new(id), name, flags)
+        .map_err(|_| StorageError::MalformedObject)?;
+    if legacy {
+        return Ok(bank);
+    }
+    let malformed = |_| StorageError::MalformedObject;
+    let settings = BankSettings {
+        shared: SharedSettings::from_bits(data[21]).map_err(malformed)?,
+        modulation: Modulation::try_from(data[22]).map_err(|_| StorageError::MalformedObject)?,
+        bandwidth: Bandwidth::try_from(data[23]).map_err(|_| StorageError::MalformedObject)?,
+        power: PowerLevel::try_from(data[24]).map_err(|_| StorageError::MalformedObject)?,
+        step: FrequencyStep::from_hz(u32::from_le_bytes([data[25], data[26], data[27], data[28]]))
+            .map_err(|_| StorageError::MalformedObject)?,
+        offset: Offset::from_hz(i32::from_le_bytes([data[29], data[30], data[31], data[32]])),
+        rx_tone: decode_tone(&data[33..36])?,
+        tx_tone: decode_tone(&data[36..39])?,
+    };
+    bank.with_settings(settings).map_err(malformed)
 }
 
 /// Encodes the global radio configuration as a versioned storage object.
@@ -1504,11 +1538,13 @@ mod tests {
         ObjectKind, ObjectRef, StorageError, StorageObject, TransactionalStore,
         CHANNEL_BANK_ENCODED_LEN, CHANNEL_ENCODED_LEN, CONFIGURATION_IMAGE_HEADER_LEN,
         CONFIGURATION_IMAGE_MAGIC, CONFIGURATION_IMAGE_VERSION, GENERATED_BANK_CORE_LEN,
-        OBJECT_ENTRY_HEADER_LEN, RADIO_CONFIG_ENCODED_LEN, STORAGE_FORMAT_VERSION,
+        LEGACY_CHANNEL_BANK_ENCODED_LEN, OBJECT_ENTRY_HEADER_LEN, RADIO_CONFIG_ENCODED_LEN,
+        STORAGE_FORMAT_VERSION,
     };
     use radio_channel_plan::{
-        BankFlags, BankName, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
-        ChannelRecord, ChannelTemplate, GeneratedBank, PlanEncoding, GENERATED_CHANNEL_ID_BASE,
+        BankFlags, BankName, BankSettings, ChannelBank, ChannelDefinition, ChannelFlags,
+        ChannelName, ChannelRecord, ChannelTemplate, GeneratedBank, PlanEncoding, SharedSettings,
+        GENERATED_CHANNEL_ID_BASE,
     };
     use radio_domain::{
         Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, Offset, PowerLevel,
@@ -1680,11 +1716,34 @@ mod tests {
             BankName::new("Amateur 2m").unwrap(),
             BankFlags::default().with(BankFlags::SCAN_ENABLED, true),
         )
+        .unwrap()
+        .with_settings(BankSettings {
+            shared: SharedSettings::from_bits(0x7F).unwrap(),
+            modulation: Modulation::Am,
+            bandwidth: Bandwidth::Wide,
+            step: FrequencyStep::from_hz(25_000).unwrap(),
+            power: PowerLevel::High,
+            offset: Offset::from_hz(-600_000),
+            rx_tone: Tone::Ctcss(770),
+            tx_tone: Tone::Dcs {
+                code: 23,
+                inverted: false,
+            },
+        })
         .unwrap();
         let encoded_bank = encode_channel_bank(bank).unwrap();
         assert_eq!(encoded_bank.len(), CHANNEL_BANK_ENCODED_LEN);
         assert_eq!(decode_channel_bank(&encoded_bank).unwrap(), bank);
         assert!(validate_object(&encoded_bank));
+
+        // A bank saved before banks shared settings loads sharing nothing.
+        let legacy = &encoded_bank.data()[..LEGACY_CHANNEL_BANK_ENCODED_LEN];
+        let mut legacy = legacy.to_vec();
+        legacy[21] = 0;
+        let loaded =
+            decode_channel_bank(&StorageObject::new(encoded_bank.key(), &legacy).unwrap()).unwrap();
+        assert_eq!(loaded.name(), bank.name());
+        assert_eq!(loaded.settings(), BankSettings::unshared());
 
         let mut config = RadioConfig::conservative();
         config.dual_watch = true;
@@ -1755,6 +1814,37 @@ mod tests {
                 Ok(channel(12, "GB3AB"))
             );
         }
+    }
+
+    #[test]
+    fn bank_decoding_rejects_reserved_bits_and_a_sharing_legacy_object() {
+        let bank_object = encode_channel_bank(
+            ChannelBank::new(
+                BankId::new(3),
+                BankName::new("Amateur 2m").unwrap(),
+                BankFlags::default(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let mut reserved = bank_object.data().to_vec();
+        reserved[21] = SharedSettings::RESERVED;
+        assert_eq!(
+            decode_channel_bank(&StorageObject::new(bank_object.key(), &reserved).unwrap()),
+            Err(StorageError::MalformedObject)
+        );
+        let mut legacy = bank_object.data()[..LEGACY_CHANNEL_BANK_ENCODED_LEN].to_vec();
+        legacy[21] = 1;
+        assert_eq!(
+            decode_channel_bank(&StorageObject::new(bank_object.key(), &legacy).unwrap()),
+            Err(StorageError::MalformedObject)
+        );
+        let mut reserved_flag = bank_object.data().to_vec();
+        reserved_flag[20] = 0x02;
+        assert_eq!(
+            decode_channel_bank(&StorageObject::new(bank_object.key(), &reserved_flag).unwrap()),
+            Err(StorageError::MalformedObject)
+        );
     }
 
     #[test]
@@ -1840,28 +1930,6 @@ mod tests {
                 )
                 .unwrap()
             ),
-            Err(StorageError::MalformedObject)
-        );
-
-        let bank_object = encode_channel_bank(
-            ChannelBank::new(
-                BankId::new(3),
-                BankName::new("Amateur 2m").unwrap(),
-                BankFlags::default(),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        let mut reserved = bank_object.data().to_vec();
-        reserved[21] = 1;
-        assert_eq!(
-            decode_channel_bank(&StorageObject::new(bank_object.key(), &reserved).unwrap()),
-            Err(StorageError::MalformedObject)
-        );
-        let mut reserved_flag = bank_object.data().to_vec();
-        reserved_flag[20] = 0x02;
-        assert_eq!(
-            decode_channel_bank(&StorageObject::new(bank_object.key(), &reserved_flag).unwrap()),
             Err(StorageError::MalformedObject)
         );
     }
