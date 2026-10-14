@@ -226,8 +226,7 @@
   synchronous operations only (K1 place writes now block on the flash). Image
   region back to `0x1D00` (7,424 bytes). K5: text 49,827, static RAM end
   `0x200011d0` (about 11.8 KB of stack). K1: text 56,572, headroom 11,776.
-  K5 `7.0.16` flashed (240/240 pages); bench result for `7.0.15`/`7.0.16`
-  pending. Gate: fmt clean, workspace clippy `-D warnings` clean,
+  K5 `7.0.16` flashed (240/240 pages) and confirmed working on the bench. Gate: fmt clean, workspace clippy `-D warnings` clean,
   `cargo test --workspace` 666 passed 0 failed, K5 and K1 build + verify pass.
 - Next: flash `7.0.5` with `afik-flasher flash-afik` and check a 1 min over
   times out; flash K1 and check its speech level; then CTCSS/DCS with an
