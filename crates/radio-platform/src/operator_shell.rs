@@ -302,6 +302,9 @@ pub enum Intent {
     /// The selected slot switched between its channels and the VFO (F then
     /// 3, VFO/MR); its memory selection is kept.
     ToggleVfo,
+    /// Select the calling channel of the active view, if it has one (F then
+    /// 9, Call).
+    SelectCalling,
 }
 
 /// Target capabilities which gate operator screens without changing their
@@ -1027,6 +1030,10 @@ impl Shell {
                 self.cursor = 0;
                 self.source_cursor = self.source_row();
                 Intent::ToggleVfo
+            }
+            Key::Digit(9) if matches!(self.mode, Mode::Memory) => {
+                self.entry = None;
+                Intent::SelectCalling
             }
             _ => Intent::Redraw,
         }
@@ -2209,6 +2216,24 @@ mod tests {
         assert_eq!(shell.active_slot(), SlotId::A);
         assert_eq!(shell.bank_filter(), Some(BankId::new(3)));
         assert_eq!(shell.other_slot().bank_filter, Some(BankId::new(7)));
+    }
+
+    #[test]
+    fn f_then_9_asks_for_the_calling_channel_on_channels_only() {
+        let mut shell = memory_shell(&[]);
+        shell.press(Key::Function, 0, context(4, 2));
+        assert_eq!(
+            shell.press(Key::Digit(9), 1, context(4, 2)),
+            Intent::SelectCalling
+        );
+        assert!(!shell.function_pending());
+        assert_eq!(shell.entry(), None, "9 is not typed as a channel digit");
+
+        // On the VFO there is no bank to have a calling channel.
+        shell.press(Key::Function, 2, context(4, 2));
+        shell.press(Key::Digit(3), 3, context(4, 2));
+        shell.press(Key::Function, 4, context(0, 0));
+        assert_eq!(shell.press(Key::Digit(9), 5, context(0, 0)), Intent::Redraw);
     }
 
     #[test]

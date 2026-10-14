@@ -153,6 +153,13 @@ programmed TX ranges protect channel and VFO mode alike.
   drops the switch; flag bit 0 is reserved, cleared on load, so older images
   and projects still load. Gate: `cargo fmt --all --check` clean, workspace
   clippy `-D warnings` clean, `cargo test --workspace` 732 passed 0 failed.
+- Call (operator request): F then 9 on channels selects the first channel
+  in the slot's bank view marked calling (a plan's calling index, such as
+  UK 2 m S20); a view without one keeps the selection. On the VFO it only
+  clears F. Gate: `cargo fmt --all --check` clean, workspace clippy `-D
+  warnings` clean, `cargo test --workspace` 734 passed 0 failed,
+  `tool/build-k5.sh --release` (flash end `0x0000e514`) and
+  `tool/build-k1.sh --release` pass. Not flashed.
 - Next (step 5, hardware): with the 200 ms dwell; F 2 and F 3 on the keypad; put A
   and B in different banks; dual watch on, key a second radio on B and check
   the hold, hang, meter and that PTT goes out on A (`RISK-041`); power-cycle

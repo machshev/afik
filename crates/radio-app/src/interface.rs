@@ -1180,12 +1180,16 @@ pub async fn run<D, K, B, S, V, M>(
                 }
                 redraw = true;
             }
-            Intent::SelectNext | Intent::SelectPrevious | Intent::SelectIndex(_) => {
+            Intent::SelectNext
+            | Intent::SelectPrevious
+            | Intent::SelectIndex(_)
+            | Intent::SelectCalling => {
                 if let Some((controller, _)) = activation.as_mut() {
                     let update = match intent {
                         Intent::SelectNext => controller.select_next(),
                         Intent::SelectPrevious => controller.select_previous(),
                         Intent::SelectIndex(position) => controller.select_visible(position),
+                        Intent::SelectCalling => controller.select_calling(),
                         _ => unreachable!(),
                     };
                     if let Ok(update) = update {

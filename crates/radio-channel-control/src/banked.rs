@@ -7,7 +7,7 @@
 
 use core::fmt;
 
-use radio_channel_plan::{generated_channel_parts, ChannelRecord, GeneratedBank};
+use radio_channel_plan::{generated_channel_parts, ChannelFlags, ChannelRecord, GeneratedBank};
 use radio_domain::{
     Bandwidth, BankId, ChannelId, DomainError, Frequency, FrequencyStep, Modulation, RadioConfig,
     ScanResume, SquelchLevel, Tone,
@@ -658,6 +658,21 @@ impl<C: ChannelSource> BankedReceiveController<C> {
         self.select(index)
     }
 
+    /// Selects the first channel in the filtered view marked as calling.
+    ///
+    /// A view with no calling channel is refused and the selection kept.
+    pub fn select_calling(&mut self) -> Result<ReceiveUpdate, ReceiveError> {
+        let index = (0..self.source.len())
+            .filter(|index| self.is_member_at(*index))
+            .find(|index| {
+                self.source
+                    .get(*index)
+                    .is_some_and(|channel| channel.flags().contains(ChannelFlags::CALLING))
+            })
+            .ok_or(ReceiveError::NoEligibleChannel)?;
+        self.select(index)
+    }
+
     /// Selects the next eligible channel, wrapping around the bank.
     pub fn select_next(&mut self) -> Result<ReceiveUpdate, ReceiveError> {
         let index = self.neighbour(self.index, true, false)?;
@@ -1156,6 +1171,45 @@ mod tests {
         assert!(controller.select_visible(4).is_err());
         controller.start_scanning().unwrap();
         assert_eq!(controller.state(), ReceiveState::Scanning(ScanPhase::Dwell));
+    }
+
+    #[test]
+    fn the_calling_channel_of_the_bank_in_view_is_selected() {
+        let mut memory = ProgrammedMemory::<8, 4>::new();
+        memory
+            .insert(channel(1, 145_500_000, Some(1), ChannelFlags::CALLING))
+            .unwrap();
+        memory
+            .install(
+                plan(3, "2m", 145_200_000, 16)
+                    .with_calling_index(Some(12))
+                    .unwrap(),
+            )
+            .unwrap();
+        memory.install(plan(4, "PMR446", 446_006_250, 4)).unwrap();
+
+        let (mut controller, _) = BankedReceiveController::activate(
+            memory,
+            RadioConfig::conservative(),
+            Some(BankId::new(3)),
+        )
+        .unwrap();
+        let update = controller.select_calling().unwrap();
+        assert_eq!(
+            update.activation.unwrap().setup.frequency.as_hz(),
+            145_350_000,
+            "the plan's own calling channel, not bank 1's"
+        );
+        assert_eq!(controller.visible_position(), 12);
+
+        // A bank with none keeps the selection.
+        controller.set_bank(Some(BankId::new(4))).unwrap();
+        controller.select_visible(2).unwrap();
+        assert_eq!(
+            controller.select_calling().map(|_| ()),
+            Err(ReceiveError::NoEligibleChannel)
+        );
+        assert_eq!(controller.visible_position(), 2);
     }
 
     fn memory() -> ChannelMemory<8> {
