@@ -203,6 +203,11 @@ programmed TX ranges protect channel and VFO mode alike.
   clippy `-D warnings` clean, `cargo test --workspace` 745 passed 0 failed,
   `tool/build-k5.sh --release` (flash end `0x0000e808`) and
   `tool/build-k1.sh --release` pass. Not flashed.
+- `7.0.24` flashed to the K5 (bootloader `2.00.06`, CRC-32 `17aef08b`,
+  240/240 pages acknowledged, not read back; K5 flash end `0x0000e810`, K1
+  release builds). It carries the S meter and `b066148` (TX on every
+  calibrated band, NO TX BAND). Not yet observed on the radio; next compare
+  the meter against a known signal (`RISK-043`).
 - Next (step 5, hardware): with the 200 ms dwell; F 2 and F 3 on the keypad; put A
   and B in different banks; dual watch on, key a second radio on B and check
   the hold, hang, meter and that PTT goes out on A (`RISK-041`); power-cycle
