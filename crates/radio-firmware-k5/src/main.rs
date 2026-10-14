@@ -37,6 +37,7 @@ use radio_platform::battery::{Calibration, CALIBRATION_BYTES, SAMPLES};
 use radio_platform::configuration_change::ConfigurationCandidate;
 use radio_platform::display::show_boot_sequence;
 use radio_platform::operator_shell::{Capabilities, Context, Shell};
+use radio_platform::ptt::PttFilter;
 use radio_platform::receive_app::{Event, ReceiveApp};
 use radio_platform::tx_control::{self, Controller, State};
 
@@ -206,8 +207,9 @@ fn main() -> ! {
     let mut eeprom_response = [0_u8; EEPROM_RESPONSE_FRAME_BYTES];
 
     let tx_policy = transmit::policy();
-    let mut ptt_down = keypad.ptt_pressed();
     let mut now_ms = 0_u64;
+    let mut ptt_filter = PttFilter::new(keypad.ptt_pressed(), now_ms);
+    let mut ptt_down = ptt_filter.pressed();
     let mut tx = Controller::new(1, ptt_down, now_ms).expect("instance is non-zero");
     let mut selected = app.view().channel;
     let mut revision = 1_u32;
@@ -225,7 +227,7 @@ fn main() -> ! {
                     transmit::level_bias(calibration, channel.frequency().as_hz(), level)
                 });
         let request = transmit::request(view, revision, bias, level, shell.tx_timeout_ms());
-        let ptt = keypad.ptt_pressed();
+        let ptt = ptt_filter.sample(now_ms, keypad.ptt_pressed());
         let ptt_event = match (ptt_down, ptt) {
             (false, true) => tx_control::Event::Pressed,
             (true, false) => tx_control::Event::Released,
@@ -257,6 +259,7 @@ fn main() -> ! {
             let Some(request) = service.push(byte) else {
                 continue;
             };
+            ptt_filter.serial_activity(now_ms);
             let length = match request {
                 NormalRequest::ReadEeprom { offset, length } => {
                     // PA10/PA11 are the keypad's rows between scans, and the
