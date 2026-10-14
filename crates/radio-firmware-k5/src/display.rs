@@ -138,6 +138,10 @@ impl<D: Delay> Display for K5Display<D> {
         true
     }
 
+    fn set_backlight(&mut self, on: bool) {
+        BACKLIGHT.set_backlight(on);
+    }
+
     async fn frame(&mut self, frame: &[u8; FRAME_BYTES]) -> bool {
         write_frame(frame);
         true

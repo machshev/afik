@@ -21,6 +21,8 @@ pub trait Display {
     async fn initialise(&mut self) -> bool;
     /// Writes one whole frame.
     async fn frame(&mut self, frame: &[u8; FRAME_BYTES]) -> bool;
+    /// Switches the backlight on or off. [`Self::initialise`] leaves it on.
+    fn set_backlight(&mut self, on: bool);
 }
 
 /// The keypad and the push-to-talk input.

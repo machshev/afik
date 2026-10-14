@@ -6,6 +6,8 @@ const CFG_COUNTER_ENABLE: u32 = 1 << 0;
 const CFG_REPEAT: u32 = 1 << 2;
 const GEN_CH0_OUTPUT_INVERT: u32 = 1 << 16;
 const GEN_CH0_OUTPUT_ENABLE: u32 = 1 << 24;
+/// The waveform period, and the compare which lights the backlight fully.
+const BACKLIGHT_FULL: u32 = 1_023;
 
 /// One `PWM_PLUS` controller.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -43,11 +45,22 @@ impl PwmPlus {
     pub fn enable_diagnostic_backlight(self) {
         self.configuration().write(0);
         self.clock_source().write(46 << 16);
-        self.period().write(1_023);
-        self.channel_zero_compare().write(1_023);
+        self.period().write(BACKLIGHT_FULL);
+        self.channel_zero_compare().write(BACKLIGHT_FULL);
         self.generation()
             .write(GEN_CH0_OUTPUT_ENABLE | GEN_CH0_OUTPUT_INVERT);
         self.configuration().write(CFG_REPEAT | CFG_COUNTER_ENABLE);
+    }
+
+    /// Switches the running channel-zero backlight fully on or off.
+    ///
+    /// The reference firmware's `BACKLIGHT_SetBrightness` writes the compare
+    /// as `(1 << brightness) - 1` on this inverted waveform, so zero is dark
+    /// and the full period is the brightness `enable_diagnostic_backlight`
+    /// starts at.
+    pub fn set_backlight(self, on: bool) {
+        self.channel_zero_compare()
+            .write(if on { BACKLIGHT_FULL } else { 0 });
     }
 }
 

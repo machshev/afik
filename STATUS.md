@@ -296,10 +296,19 @@
   --workspace` 687 passed 0 failed, `tool/build-k5.sh --release` (verifies,
   flash end `0x0000c900`) and `tool/build-k1.sh --release` pass. Not yet
   flashed.
-- Next: flash K5 `7.0.19`, check a power cycle keeps VFO, bank and channel,
-  and program it from the studio (write with a non-default TX power and
-  timeout, check the handset menu shows them, power-cycle, read back); then
-  the K1's NOR erase plan; then CTCSS/DCS with a tail tone.
+- `7.0.20` (operator request): the studio's Backlight seconds now does
+  something. `radio-platform::backlight::Backlight` lights the display for that
+  long after a key or PTT press (0 keeps it off, 255 on, as the reference
+  firmware); programming restarts it. `Display::set_backlight` is K5
+  PWM_PLUS0 compare 0/1023 (`EVID-DP32-011` update) and K1 PF8. A press that
+  wakes the light still acts. Gate: `cargo fmt --all --check` clean, workspace
+  clippy `-D warnings` clean, `cargo test --workspace` 693 passed 0 failed,
+  `tool/build-k5.sh --release` (flash end `0x0000cad8`) and
+  `tool/build-k1.sh --release` pass. Not yet flashed.
+- Next: flash K5 `7.0.20`, check the backlight goes out after 10 s and a key
+  brings it back, then program it from the studio (non-default TX power,
+  timeout and backlight; check the handset follows, power-cycle, read back);
+  then the K1's NOR erase plan; then CTCSS/DCS with a tail tone.
 
 ## Previous work package: TXK5-058
 

@@ -254,6 +254,11 @@ impl Display for DisplayPins {
         self.transfer(false, &[0x40, 0xAF]).await
     }
 
+    fn set_backlight(&mut self, on: bool) {
+        self.backlight
+            .set_level(if on { Level::High } else { Level::Low });
+    }
+
     async fn frame(&mut self, frame: &[u8; FRAME_BYTES]) -> bool {
         if !self.transfer(false, &[0x40]).await {
             return false;

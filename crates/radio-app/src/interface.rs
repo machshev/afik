@@ -20,6 +20,7 @@ use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, SquelchLevel,
     Tone, TxClass,
 };
+use radio_platform::backlight::Backlight;
 use radio_platform::battery::Battery;
 use radio_platform::configuration_change::{ConfigurationAcknowledgement, ConfigurationCandidate};
 use radio_platform::operator_display::{
@@ -702,6 +703,10 @@ pub async fn run<D, K, B, S, V, M>(
     // The place already written down, and the one waiting to settle into it.
     let mut saved_place = place;
     let mut settling: Option<(OperatorState, Instant)> = None;
+    let mut backlight = Backlight::new(programmed.config().backlight_seconds, now_ms());
+    if let Some(on) = backlight.poll(now_ms()) {
+        display.set_backlight(on);
+    }
 
     loop {
         let context = activation
@@ -776,6 +781,10 @@ pub async fn run<D, K, B, S, V, M>(
                 publication.place,
                 &mut selected,
             );
+            if let Some(on) = backlight.set_seconds(programmed.config().backlight_seconds, now_ms())
+            {
+                display.set_backlight(on);
+            }
             if publication.place.is_some() {
                 saved_place = publication.place;
                 settling = None;
@@ -809,6 +818,12 @@ pub async fn run<D, K, B, S, V, M>(
             ptt.serial_activity(tx_now);
         }
         let event = ptt.sample(tx_now, keypad.ptt_pressed());
+        // A key or PTT press lights the display; it still does what it does.
+        if matches!(event, tx_control::Event::Pressed) {
+            if let Some(on) = backlight.wake(now_ms()) {
+                display.set_backlight(on);
+            }
+        }
         if tx.is_none() && receiver.started && !receiver.faulted {
             tx = TxController::new(1, ptt.pressed(), tx_now).ok();
         }
@@ -832,7 +847,16 @@ pub async fn run<D, K, B, S, V, M>(
         let sample = keypad.scan().await;
         let now = now_ms();
 
-        let intent = match debounce.update(now, sample) {
+        let edge = debounce.update(now, sample);
+        let woken = if matches!(edge, Edge::Pressed(_)) {
+            backlight.wake(now)
+        } else {
+            backlight.poll(now)
+        };
+        if let Some(on) = woken {
+            display.set_backlight(on);
+        }
+        let intent = match edge {
             Edge::Pressed(key) => {
                 held_since = Some(now);
                 shell.press(key, now, context)
