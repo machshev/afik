@@ -2913,6 +2913,18 @@ or hardware/calibration envelope is established here. `RISK-007`, `RISK-038`,
 - **Confidence:** high for the read path on this unit. Keypad behaviour after a
   backup (the pins are handed back) was not yet checked.
 
+### EVID-K5-036 — The K5 needs a longer scan dwell than the K1
+
+- **Source:** `radio-firmware-k5` `7.0.22` (`DUALW-064`), PMR446 channels in
+  slots A and B, a second radio keying the slot not selected.
+- **Observation (2026-10-14, operator):** at the 90 ms default dwell
+  (`EVID-K1-071`) the K5 never saw the signal on the other slot: no meter on
+  it, nothing heard. Scan did not stop on a busy channel either, with dual watch
+  on or off. With the dwell programmed to 200 ms, both scan and dual watch work.
+- **What it changed:** `RadioConfig::conservative()` now has a 200 ms dwell.
+  The real floor lies between 90 and 200 ms and has not been bisected.
+- **Confidence:** medium; one unit, observed by the operator, not timed.
+
 ### Pinned source provenance
 
 K1 references below are relative to [Armel commit

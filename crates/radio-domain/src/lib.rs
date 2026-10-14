@@ -416,11 +416,12 @@ impl RadioConfig {
             squelch: SquelchLevel::CONSERVATIVE,
             backlight_seconds: 10,
             scan_resume: ScanResume::TimeOut,
-            // Measured on the exact K1 unit rather than chosen: 100 ms stopped
-            // on a signal and 60 ms did not, and bisecting that bracket landed
-            // here. `EVID-K1-071`. A radio which needs longer is programmed
-            // with longer; this is only what one arrives with.
-            scan_dwell_ms: 90,
+            // Measured rather than chosen, and set by the slower radio: the K1
+            // stops on a signal from 90 ms (`EVID-K1-071`), the K5 stopped on
+            // none at 90 ms and scans and dual-watches at 200 ms
+            // (`EVID-K5-036`). A radio which needs longer is programmed with
+            // longer; this is only what one arrives with.
+            scan_dwell_ms: 200,
             scan_hold_ms: 5_000,
             dual_watch: false,
             battery_save_ratio: 0,
@@ -612,6 +613,8 @@ mod tests {
         let config = RadioConfig::conservative();
         assert_eq!(config.validate(), Ok(config));
         assert_eq!(config.scan_resume, ScanResume::TimeOut);
+        // The slower radio sets it: the K5 hears nothing at 90 ms.
+        assert_eq!(config.scan_dwell_ms, 200);
 
         let mut zero_dwell = config;
         zero_dwell.scan_dwell_ms = 0;
