@@ -228,7 +228,8 @@ scan dwell ms     : u32 little endian (non-zero)
 scan hold ms      : u32 little endian (non-zero)
 dual watch        : u8  (0 or 1)
 battery save      : u8  (0 through 5)
-flags             : u8  (bit 0 key beep, 1 busy lockout default, 2 AM fix,
+flags             : u8  (bit 0 reserved, was key beep: ignored on load and
+                         written clear; 1 busy lockout default, 2 AM fix,
                          3 tone tail elimination)
 TX settings       : u8  (bits 0-3 VFO TX power level 0 through 5, bits 4-7 TX
                          timeout index 0 through 4, i.e. 1 to 5 minutes)

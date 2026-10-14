@@ -795,8 +795,6 @@ pub struct ConfigDraft {
     pub dual_watch: bool,
     /// Receive battery-save duty ratio.
     pub battery_save_ratio: u8,
-    /// Audible key confirmation.
-    pub key_beep: bool,
     /// New channels default to busy lockout.
     pub busy_lockout_default: bool,
     /// Apply the AM gain-compensation workaround.
@@ -826,7 +824,6 @@ impl ConfigDraft {
             scan_hold_ms: config.scan_hold_ms,
             dual_watch: config.dual_watch,
             battery_save_ratio: config.battery_save_ratio,
-            key_beep: config.flags.contains(RadioFlags::KEY_BEEP),
             busy_lockout_default: config.flags.contains(RadioFlags::BUSY_LOCKOUT_DEFAULT),
             am_fix: config.flags.contains(RadioFlags::AM_FIX),
             tone_tail_elimination: config.flags.contains(RadioFlags::TONE_TAIL_ELIMINATION),
@@ -867,7 +864,6 @@ impl ConfigDraft {
             ));
         }
         let flags = RadioFlags::default()
-            .with(RadioFlags::KEY_BEEP, self.key_beep)
             .with(RadioFlags::BUSY_LOCKOUT_DEFAULT, self.busy_lockout_default)
             .with(RadioFlags::AM_FIX, self.am_fix)
             .with(

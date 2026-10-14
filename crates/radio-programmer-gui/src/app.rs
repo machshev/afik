@@ -934,10 +934,6 @@ impl StudioApp {
             )
             .on_hover_text(BATTERY_SAVE_HINT);
             ui.end_row();
-
-            ui.label("Options");
-            ui.checkbox(&mut config.key_beep, "Key beep");
-            ui.end_row();
         });
     }
 

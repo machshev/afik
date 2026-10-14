@@ -149,6 +149,10 @@ programmed TX ranges protect channel and VFO mode alike.
   workspace clippy `-D warnings` clean, `cargo test --workspace` 732 passed
   0 failed, `tool/build-k5.sh --release` (flash end `0x0000e46c`) and
   `tool/build-k1.sh --release` pass. Not flashed.
+- Key beep removed (operator request): it was never implemented. The studio
+  drops the switch; flag bit 0 is reserved, cleared on load, so older images
+  and projects still load. Gate: `cargo fmt --all --check` clean, workspace
+  clippy `-D warnings` clean, `cargo test --workspace` 732 passed 0 failed.
 - Next (step 5, hardware): with the 200 ms dwell; F 2 and F 3 on the keypad; put A
   and B in different banks; dual watch on, key a second radio on B and check
   the hold, hang, meter and that PTT goes out on A (`RISK-041`); power-cycle

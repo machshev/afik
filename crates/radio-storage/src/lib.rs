@@ -1768,7 +1768,7 @@ mod tests {
         config.dual_watch = true;
         config.battery_save_ratio = 4;
         config.scan_resume = ScanResume::Carrier;
-        config.flags = RadioFlags::default().with(RadioFlags::KEY_BEEP, true);
+        config.flags = RadioFlags::default().with(RadioFlags::AM_FIX, true);
         config.tx_power = 2;
         config.tx_timeout = 4;
         let encoded_config = encode_radio_config(config).unwrap();

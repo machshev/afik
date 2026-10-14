@@ -329,8 +329,9 @@ pub struct RadioFlags {
 }
 
 impl RadioFlags {
-    /// Key presses produce an audible confirmation.
-    pub const KEY_BEEP: u8 = 0b0000_0001;
+    /// Was the key beep, which was never implemented and is gone. An older
+    /// image or project with it set still loads, without it.
+    const RETIRED: u8 = 0b0000_0001;
     /// New channels default to busy-channel lockout.
     pub const BUSY_LOCKOUT_DEFAULT: u8 = 0b0000_0010;
     /// The receiver applies the AM gain-compensation workaround.
@@ -340,12 +341,14 @@ impl RadioFlags {
     /// Bits which must be zero in this format version.
     pub const RESERVED: u8 = 0b1111_0000;
 
-    /// Validates a raw flag field.
+    /// Validates a raw flag field, dropping the retired key beep bit.
     pub const fn from_bits(bits: u8) -> Result<Self, DomainError> {
         if bits & Self::RESERVED != 0 {
             Err(DomainError::OutOfRange)
         } else {
-            Ok(Self { bits })
+            Ok(Self {
+                bits: bits & !Self::RETIRED,
+            })
         }
     }
 
@@ -642,6 +645,9 @@ mod tests {
         assert!(RadioFlags::from_bits(0x0F)
             .unwrap()
             .contains(RadioFlags::AM_FIX));
+        // An older image's key beep bit loads and is dropped.
+        assert_eq!(RadioFlags::from_bits(0x01), Ok(RadioFlags::default()));
+        assert_eq!(RadioFlags::from_bits(0x0F).unwrap().bits(), 0x0E);
     }
 
     #[test]
