@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/radio-domain",
     "crates/radio-aprs",
+    "crates/radio-app",
     "crates/radio-bk4819",
     "crates/radio-dp32g030",
     "crates/radio-firmware-k1",
@@ -26,7 +27,7 @@ members = [
 ]
 
 [workspace.package]
-version = "7.0.13"
+version = "7.0.14"
 edition = "2021"
 rust-version = "1.86"
 license = "Apache-2.0"

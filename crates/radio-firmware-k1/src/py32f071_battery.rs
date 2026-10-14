@@ -41,3 +41,9 @@ impl BatterySense {
         self.adc.blocking_read(&mut self.input)
     }
 }
+
+impl radio_app::drivers::BatterySense for BatterySense {
+    fn read(&mut self) -> Option<u16> {
+        Some(Self::read(self))
+    }
+}

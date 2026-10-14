@@ -707,6 +707,11 @@
   `publish`, sat in stack frames. `7.0.11` fills the arena in place and keeps
   the serial task's large state in statics (poll frame 1,768 bytes). The
   headroom floor alone did not catch this; per-frame sizes are the measure.
+- **2026-10-14 (`7.0.14`):** the same pattern returns whenever a target task
+  is an `async fn` that awaits a shared `radio-app` future: the wrapper builds
+  the inner future in its poll frame (2,848 bytes) before moving it. Target
+  tasks are plain `fn`s returning the shared future, which leaves the
+  interface poll frame at 1,024 bytes and the serial one at 1,776.
 - **Mitigation:** `crates/radio-firmware-k1/stack-headroom.x` asserts a 6,144-byte
   reserve at link time, so a build which eats the headroom fails to link rather
   than packaging; `tool/verify-k1-image.sh` checks the same bound and

@@ -1661,3 +1661,9 @@ meaning.
   set in `tool/build-k{5,1}.sh`), because the K5 application region is 60 KiB.
 - Order: K5 executor; shared application crate from the K1's tasks; K5 drivers
   behind its traits; then features such as the EEPROM backup are written once.
+- Step 2 (`7.0.14`): `radio-app` holds the interface and serial tasks
+  (`interface::run`, `serial::run`), the configuration service, the operator
+  place, host control, and key debounce. Targets implement `radio-app::drivers`
+  (`Display`, `Keypad`, `Speaker`, `BatterySense`, `SerialLink`,
+  `RetainedMemory`) and pass a `Target` with their identity and PMR446 TX
+  constants. The K1 is the first target on it.

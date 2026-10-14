@@ -19,9 +19,9 @@ use radio_eeprom::{page_span, Eeprom, EepromError, JedecId, Region, RegionError}
 use radio_storage::{configuration_image_len_from_header, CONFIGURATION_IMAGE_HEADER_LEN};
 
 use crate::battery::{Calibration, CALIBRATION_ADDRESS, CALIBRATION_BYTES};
-use crate::configuration::RETAINED_IMAGE_BYTES;
 use crate::eeprom_bus::{EepromPort, SpiEepromBus};
-use crate::operator_state::{is_erased, OperatorState, OPERATOR_STATE_BYTES};
+use radio_app::configuration::RETAINED_IMAGE_BYTES;
+use radio_app::operator_state::{is_erased, OperatorState, OPERATOR_STATE_BYTES};
 
 /// First address of the region AFIK claims for its configuration.
 ///

@@ -1,4 +1,4 @@
-//! K1 translation of shared receive-application effects.
+//! Translation of shared receive-application effects into the receiver vocabulary.
 
 use radio_channel_control::ChannelReceiveSetup;
 use radio_domain::{Bandwidth, Frequency, FrequencyStep, Modulation, Tone};
@@ -6,13 +6,13 @@ use radio_platform::configuration::Pmr446Channel;
 use radio_platform::configuration_change::{ConfigurationAcknowledgement, ConfigurationChange};
 use radio_platform::receive_app::{Effect, View};
 
-/// One operation expressed in the K1 receiver/display adapter vocabulary.
+/// One operation expressed in the receiver/display adapter vocabulary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum K1Effect {
+pub enum ReceiverEffect {
     /// Identify the exact candidate which the target must acknowledge after
     /// the preceding tune operation completes.
     ConfigurationChange(ConfigurationChange),
-    /// Apply the existing complete K1 receive setup.
+    /// Apply a complete receive setup.
     Tune {
         /// Complete validated receive setup.
         setup: ChannelReceiveSetup,
@@ -21,9 +21,9 @@ pub enum K1Effect {
     },
     /// Route or mute demodulated BK4829 audio.
     SetChipAudio(bool),
-    /// Drive the K1 receive speaker amplifier.
+    /// Drive the receive speaker amplifier.
     SetSpeaker(bool),
-    /// Render the shared semantic view through the K1 display adapter.
+    /// Render the shared semantic view through the display adapter.
     Redraw(View),
     /// Carry the shared application acknowledgement across the target seam.
     ConfigurationAcknowledged(ConfigurationAcknowledgement),
@@ -33,10 +33,10 @@ pub enum K1Effect {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AdapterError;
 
-/// Identifies the shared PMR446 example channel represented by a complete K1
+/// Identifies the shared PMR446 example channel represented by a complete
 /// receive setup.
 ///
-/// The K1 continues to accept arbitrary programmed channels and VFO settings;
+/// The application accepts arbitrary programmed channels and VFO settings;
 /// those do not silently become shared-example channels merely because their
 /// frequency happens to be nearby.
 #[must_use]
@@ -51,8 +51,8 @@ pub fn shared_channel(setup: ChannelReceiveSetup) -> Option<u8> {
     Some(Pmr446Channel::from_frequency_hz(setup.frequency.as_hz())?.number())
 }
 
-/// Translates one shared effect without touching K1 hardware.
-pub fn translate(effect: Effect) -> Result<K1Effect, AdapterError> {
+/// Translates one shared effect without touching hardware.
+pub fn translate(effect: Effect) -> Result<ReceiverEffect, AdapterError> {
     match effect {
         Effect::Tune {
             channel,
@@ -64,7 +64,7 @@ pub fn translate(effect: Effect) -> Result<K1Effect, AdapterError> {
             if frequency_hz != selected.frequency_hz() {
                 return Err(AdapterError);
             }
-            Ok(K1Effect::Tune {
+            Ok(ReceiverEffect::Tune {
                 setup: ChannelReceiveSetup {
                     frequency: Frequency::from_hz(frequency_hz).map_err(|_| AdapterError)?,
                     modulation: Modulation::Fm,
@@ -76,17 +76,19 @@ pub fn translate(effect: Effect) -> Result<K1Effect, AdapterError> {
                 audio,
             })
         }
-        Effect::ConfigurationChange(change) => Ok(K1Effect::ConfigurationChange(change)),
-        Effect::SetChipAudio(enabled) => Ok(K1Effect::SetChipAudio(enabled)),
-        Effect::SetSpeaker(enabled) => Ok(K1Effect::SetSpeaker(enabled)),
-        Effect::Redraw(view) => Ok(K1Effect::Redraw(view)),
-        Effect::ConfigurationAcknowledged(ack) => Ok(K1Effect::ConfigurationAcknowledged(ack)),
+        Effect::ConfigurationChange(change) => Ok(ReceiverEffect::ConfigurationChange(change)),
+        Effect::SetChipAudio(enabled) => Ok(ReceiverEffect::SetChipAudio(enabled)),
+        Effect::SetSpeaker(enabled) => Ok(ReceiverEffect::SetSpeaker(enabled)),
+        Effect::Redraw(view) => Ok(ReceiverEffect::Redraw(view)),
+        Effect::ConfigurationAcknowledged(ack) => {
+            Ok(ReceiverEffect::ConfigurationAcknowledged(ack))
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{shared_channel, translate, AdapterError, K1Effect};
+    use super::{shared_channel, translate, AdapterError, ReceiverEffect};
     use radio_channel_control::ChannelReceiveSetup;
     use radio_domain::{Bandwidth, Frequency, FrequencyStep, Modulation, SquelchLevel, Tone};
     use radio_platform::receive_app::{Effect, Event, ReceiveApp};
@@ -100,8 +102,8 @@ mod tests {
             .map(translate)
             .collect::<Result<_, _>>()
             .unwrap();
-        assert_eq!(translated[0], K1Effect::SetSpeaker(false));
-        let K1Effect::Tune { setup, audio } = translated[1] else {
+        assert_eq!(translated[0], ReceiverEffect::SetSpeaker(false));
+        let ReceiverEffect::Tune { setup, audio } = translated[1] else {
             panic!("second effect must tune");
         };
         assert!(audio);
@@ -123,7 +125,10 @@ mod tests {
             .map(translate)
             .collect::<Result<_, _>>()
             .unwrap();
-        assert!(matches!(translated[1], K1Effect::Tune { audio: false, .. }));
+        assert!(matches!(
+            translated[1],
+            ReceiverEffect::Tune { audio: false, .. }
+        ));
     }
 
     #[test]
@@ -136,7 +141,7 @@ mod tests {
             .map(translate)
             .collect::<Result<_, _>>()
             .unwrap();
-        let K1Effect::Tune { setup, .. } = translated[1] else {
+        let ReceiverEffect::Tune { setup, .. } = translated[1] else {
             panic!("squelch setting must retune");
         };
         assert_eq!(setup.squelch, level);
@@ -174,7 +179,7 @@ mod tests {
             .collect::<Result<_, _>>()
             .unwrap();
         assert!(app.view().monitoring);
-        assert!(translated.contains(&K1Effect::SetSpeaker(true)));
+        assert!(translated.contains(&ReceiverEffect::SetSpeaker(true)));
         let translated: std::vec::Vec<_> = app
             .apply(Event::SetMonitor(false))
             .iter()
@@ -182,7 +187,7 @@ mod tests {
             .collect::<Result<_, _>>()
             .unwrap();
         assert!(!app.view().monitoring);
-        assert!(translated.contains(&K1Effect::SetSpeaker(false)));
+        assert!(translated.contains(&ReceiverEffect::SetSpeaker(false)));
     }
 
     #[test]
@@ -243,11 +248,11 @@ mod tests {
         app.apply(Event::Start);
         for effect in app.apply(Event::ToggleAudio).iter() {
             match (effect, translate(effect).unwrap()) {
-                (Effect::SetSpeaker(value), K1Effect::SetSpeaker(adapted))
-                | (Effect::SetChipAudio(value), K1Effect::SetChipAudio(adapted)) => {
+                (Effect::SetSpeaker(value), ReceiverEffect::SetSpeaker(adapted))
+                | (Effect::SetChipAudio(value), ReceiverEffect::SetChipAudio(adapted)) => {
                     assert_eq!(value, adapted);
                 }
-                (Effect::Redraw(value), K1Effect::Redraw(adapted)) => {
+                (Effect::Redraw(value), ReceiverEffect::Redraw(adapted)) => {
                     assert_eq!(value, adapted);
                 }
                 _ => panic!("adapter changed effect kind"),

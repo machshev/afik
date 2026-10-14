@@ -1,0 +1,41 @@
+[package]
+name = "radio-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The AFIK radio application, shared by every target behind driver traits"
+
+[dependencies]
+radio-bk4819 = { path = "../radio-bk4819" }
+radio-channel-control = { path = "../radio-channel-control" }
+radio-channel-plan = { path = "../radio-channel-plan" }
+radio-device = { path = "../radio-device" }
+radio-domain = { path = "../radio-domain" }
+radio-platform = { path = "../radio-platform" }
+radio-protocol = { path = "../radio-protocol" }
+radio-storage = { path = "../radio-storage" }
+radio-tx-policy = { path = "../radio-tx-policy" }
+# The same pinned Embassy both targets run. No `tick-hz` feature is set here,
+# so each target's time driver keeps the default 1 MHz rate (ADR-099).
+embassy-time = { version = "=0.5.1", default-features = false }
+embassy-sync = { version = "=0.7.2", default-features = false }
+embassy-futures = { version = "=0.1.2", default-features = false }
+
+[dev-dependencies]
+radio-programmer = { path = "../radio-programmer" }
+
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+missing_errors_doc = "allow"
+must_use_candidate = "allow"
+
+[features]
+# RISK-036 bisection: count received bytes and drop them without parsing.
+serial-drop-bytes = []

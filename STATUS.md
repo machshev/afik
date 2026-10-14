@@ -180,6 +180,20 @@
   (flash end `0x00007170`). K1 `7.0.11` confirmed working on the bench.
   K5 `7.0.13` flashed (240/240 pages) and confirmed working on the bench,
   which completes `ADR-099` step 1: both targets run on Embassy.
+- `7.0.14` (`ADR-099` step 2): new `radio-app` crate with the K1's two tasks,
+  generic over driver traits; the K1 `main.rs` is now only drivers and task
+  start-up (2,312 → 472 lines). Configuration, operator place, host control,
+  the receive adapter and the debouncer moved with their tests, and the
+  programming test now runs against `radio-app`. Tasks are plain `fn`s
+  returning the shared future (`RISK-033` note). K1 image 69,628 bytes (was
+  68,704), headroom 6,720 bytes, interface poll frame 1,024 and serial 1,776.
+  Size check for step 3: the K1 application is about 60 KB of text and
+  `opt-level = "z"` saves only 2.2 KB, against the K5's 61,440-byte region.
+  Gate: `cargo fmt --all --check` clean, `cargo clippy --workspace
+  --all-targets -- -D warnings` clean, `cargo test --workspace` 709 passed
+  0 failed, `tool/build-k1.sh --release` + `tool/verify-k1-image.sh` +
+  `tool/test-k1-image.sh` pass, `tool/build-k5.sh --release` +
+  `tool/verify-k5-image.sh` pass. Not yet flashed.
 - Next: flash `7.0.5` with `afik-flasher flash-afik` and check a 1 min over
   times out; flash K1 and check its speech level; then CTCSS/DCS with an
   end-of-transmission tail tone to remove the key-off squelch burst.

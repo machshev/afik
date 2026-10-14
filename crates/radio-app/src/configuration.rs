@@ -46,11 +46,11 @@ pub const RETAINED_IMAGE_BYTES: usize = CONFIGURATION_IMAGE_HEADER_LEN + CONFIGU
 const _: () = assert!(RETAINED_IMAGE_BYTES == 1_280);
 
 /// The configuration service this image exposes over serial.
-pub type K1DeviceService = DeviceService<CONFIGURATION_STORE_BYTES>;
+pub type AppDeviceService = DeviceService<CONFIGURATION_STORE_BYTES>;
 
 /// Constructs the configuration service this image exposes over serial.
 #[must_use]
-pub fn device_service() -> K1DeviceService {
+pub fn device_service() -> AppDeviceService {
     // This image expands both arithmetic plan families itself, so it advertises
     // them and the host may compile either for it. A fixed-offset plan is
     // honestly supported here: its receive frequencies are what this image

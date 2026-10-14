@@ -1,10 +1,13 @@
 //! Host proof that the studio's programmer can program this exact device.
 //!
 //! The transport here is the byte stream, not a shortcut: the host programmer
-//! library encodes real frames, the K1's own configuration service consumes
+//! library encodes real frames, the application's own configuration service consumes
 //! them, and the result is decoded with the same code the image runs. What the
 //! editor and the CLI do to a radio is therefore covered without hardware.
 
+use radio_app::configuration::{
+    device_service, AppDeviceService, Programmed, CONFIGURATION_STORE_BYTES, RETAINED_IMAGE_BYTES,
+};
 use radio_channel_plan::{
     BankFlags, BankMask, BankName, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
     ChannelRecord,
@@ -13,21 +16,18 @@ use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, RadioConfig,
     SquelchLevel, Tone, TxClass,
 };
-use radio_firmware_k1::configuration::{
-    device_service, K1DeviceService, Programmed, CONFIGURATION_STORE_BYTES, RETAINED_IMAGE_BYTES,
-};
 use radio_programmer::{CompileError, Programmer, ProtocolTransport, RadioProject};
 
 /// Explicit channels these tests program.
 ///
 /// Nothing about the image fixes this number any more; it is simply a full
-/// project which comfortably fits the bytes the K1 declares.
+/// project which comfortably fits the bytes the application declares.
 const CHANNELS: u16 = 8;
 use radio_protocol::MAX_ENCODED_FRAME;
 
 /// The device service behind an in-process byte stream.
 struct DeviceTransport {
-    service: K1DeviceService,
+    service: AppDeviceService,
     queue: std::collections::VecDeque<u8>,
 }
 

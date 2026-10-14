@@ -34,12 +34,11 @@ pub struct Performed {
     pub answer: ControlAnswer,
 }
 
-/// Capabilities exposed by the K1 serial adapter.
+/// Capabilities the application's serial service exposes.
 ///
-/// The shared receive view and logical-key boundary are common with K5. K1
-/// additionally retains its target-owned object protocol, persistence, raw
-/// metrics, arbitrary channels, VFO, and scan controller. Those capabilities
-/// are declared here instead of being pulled into the shared platform crate.
+/// Beside the shared receive view and logical keys, the application has the
+/// object protocol, persistence, raw metrics, arbitrary channels, the VFO, and
+/// the scan controller.
 #[must_use]
 pub const fn serial_capabilities() -> Capabilities {
     Capabilities::shared_view()

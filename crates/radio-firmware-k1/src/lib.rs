@@ -10,16 +10,13 @@ pub mod backlight;
 pub mod battery;
 pub mod bk4819_bus;
 pub mod clock_handoff;
-pub mod configuration;
 #[cfg(test)]
 mod cooperative_progress;
 pub mod display;
 pub mod eeprom_bus;
 #[cfg(feature = "embassy-runtime")]
 pub mod embassy_runtime;
-pub mod host_control;
 pub mod keypad;
-pub mod operator_state;
 pub mod platform_display;
 pub mod protocol;
 #[cfg(feature = "py32f071-battery")]
@@ -44,4 +41,3 @@ pub mod py32f071_spi1;
 #[cfg(feature = "py32f071-usart1")]
 pub mod py32f071_usart1;
 pub mod shell;
-pub mod unified_receive;

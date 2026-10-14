@@ -6,9 +6,6 @@ use radio_platform::serial::{
     decode_command, encode_hello_response as encode_shared_hello_response, ApplicationIdentity,
 };
 pub use radio_platform::serial::{REQUEST_BODY_BYTES, RESPONSE_FRAME_BYTES};
-use radio_platform::serial_control::wire as shared_wire;
-pub use radio_platform::serial_control::wire::Error as SharedWireError;
-use radio_platform::serial_control::Result as SharedResult;
 /// Complete encoded response size for the 16-byte keypad diagnostic payload.
 pub const KEYPAD_RESPONSE_FRAME_BYTES: usize = 24;
 /// Complete encoded response size for the 24-byte clock diagnostic payload.
@@ -103,43 +100,6 @@ pub const RF_STAGE_READ_BACK: u8 = 2;
 pub const RF_STAGE_RECEIVING: u8 = 3;
 /// A bus or state error was latched; the observation is not trustworthy.
 pub const RF_STAGE_FAULTED: u8 = 0xFF;
-
-/// Decodes the fixed common payload after this target's framing has been
-/// removed. The payload mapping is shared; K1 retains ownership of its
-/// COBS/object framing and target-only commands.
-pub fn decode_shared_request(payload: &[u8]) -> Result<shared_wire::Request, SharedWireError> {
-    shared_wire::decode_request(payload)
-}
-
-/// Applies a common request at the K1 boundary.
-///
-/// K1's banked controller and operator shell are owned by the UI task, so
-/// common key/audio mutations are refused rather than mutating a detached
-/// shared receive instance. View and capability queries remain transport-free.
-pub fn apply_common_request(
-    app: &mut radio_platform::receive_app::ReceiveApp,
-    request: shared_wire::Request,
-) -> core::result::Result<SharedResult, radio_protocol::DeviceErrorCode> {
-    if matches!(
-        request,
-        shared_wire::Request::Key(_) | shared_wire::Request::ToggleAudio
-    ) {
-        return Err(radio_protocol::DeviceErrorCode::UnsupportedCommand);
-    }
-    Ok(radio_platform::serial_control::dispatch(
-        app,
-        crate::host_control::serial_capabilities(),
-        shared_wire::into_request(request),
-    ))
-}
-
-/// Encodes a semantic response for a target-owned K1 wire envelope.
-pub fn encode_shared_response(
-    result: SharedResult,
-    output: &mut [u8],
-) -> Result<usize, SharedWireError> {
-    shared_wire::encode_response(result, output)
-}
 
 /// Decodes one bounded normal-mode request body.
 pub fn decode_request(encoded_body: &mut [u8; REQUEST_BODY_BYTES]) -> Option<Request> {
@@ -543,51 +503,6 @@ mod tests {
             u32::from_le_bytes(frame[12..16].try_into().unwrap()),
             CLOCK_CONTROL_MARKER
         );
-    }
-
-    #[test]
-    fn common_wire_key_is_decoded_but_k1_capability_is_view_only() {
-        use super::decode_shared_request;
-        use radio_platform::serial_control::Capability;
-
-        let request = decode_shared_request(&[0x03, 0x04]).expect("common key");
-        assert_eq!(
-            request,
-            super::shared_wire::Request::Key(super::shared_wire::KeyCode::Up)
-        );
-        assert!(!crate::host_control::serial_capabilities().contains(Capability::KeyCommands));
-    }
-
-    #[test]
-    fn k1_common_key_and_audio_requests_are_refused_without_app_mutation() {
-        use super::{apply_common_request, decode_shared_request};
-        use radio_platform::receive_app::ReceiveApp;
-        use radio_protocol::DeviceErrorCode;
-
-        let mut app = ReceiveApp::new();
-        let before = app.view();
-        for payload in [[0x03, 0x01], [0x03, 0x04], [0x03, 0x05], [0x04, 0x00]] {
-            let request = decode_shared_request(&payload).expect("bounded common request");
-            assert_eq!(
-                apply_common_request(&mut app, request),
-                Err(DeviceErrorCode::UnsupportedCommand)
-            );
-            assert_eq!(app.view(), before);
-        }
-    }
-
-    #[test]
-    fn malformed_or_unknown_common_payloads_are_rejected_without_app_mutation() {
-        use super::{decode_shared_request, shared_wire};
-        use radio_platform::receive_app::ReceiveApp;
-
-        let app = ReceiveApp::new();
-        let before = app.view();
-        assert!(decode_shared_request(&[0x03]).is_err());
-        assert!(decode_shared_request(&[0x03, 0xFF]).is_err());
-        assert!(decode_shared_request(&[0x01, 0x01]).is_err());
-        assert_eq!(app.view(), before);
-        assert_eq!(shared_wire::REQUEST_BYTES, 2);
     }
 
     fn encode_request_for_test(payload: [u8; 8]) -> [u8; 10] {
