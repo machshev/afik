@@ -222,9 +222,23 @@ programmed TX ranges protect channel and VFO mode alike.
   `-D warnings` clean, `cargo test --workspace` 760 passed 0 failed,
   `tool/build-k1.sh --release` and `tool/build-k5.sh --release` pass.
   `7.0.25` flashed to the K1 (bootloader `7.03.01`, CRC-32 `713f8759`,
-  261/261 pages acknowledged, not read back). Next: power-cycle, take
-  `backup-eeprom` and check that the battery and TX bias bytes match the stock
-  F4HWN backup in `.private/k1/` at `0x1F40` and `0x1ED0`.
+  261/261 pages acknowledged, not read back). The studio backed it up on the
+  radio (8192 bytes): `0x1E00`–`0x1F8F` hold K5-layout calibration (squelch
+  tables, RSSI, TX bias rows, battery `a0 05 d5 07 …`). The stock F4HWN
+  backup in `.private/k1/` is all `FF` there: stock K1 firmware never served
+  its calibration, so this is the first K1 backup that holds it.
+- K1 configuration writes: the studio's write timed out on `7.0.25` because
+  the K1 refused every host write. `radio-eeprom::staged::Staged` now stages
+  host blocks into the spare sector `0x102000` (64-byte bitmap, reads see
+  staged over live) and, once the host is quiet, fills in the unwritten
+  blocks, erases the configuration sector and copies back
+  (`Memory::commit_host_write`, run before the reload). The host refuses a K1
+  image over 4 KiB; the operator's default project is 1788 bytes. Gate:
+  `cargo fmt --all --check` clean, workspace clippy `-D warnings` clean,
+  `cargo test --workspace` 767 passed 0 failed, `tool/build-k1.sh --release`
+  (static RAM 5740, headroom 10644) and `tool/build-k5.sh --release` pass.
+  `7.0.26` not yet flashed. Next: flash the K1, write the project from the
+  studio, power-cycle, and read it back.
 - `7.0.24` flashed to the K5 (bootloader `2.00.06`, CRC-32 `17aef08b`,
   240/240 pages acknowledged, not read back; K5 flash end `0x0000e810`, K1
   release builds). It carries the S meter and `b066148` (TX on every
