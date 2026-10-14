@@ -85,7 +85,10 @@ impl DeviceChooser {
     pub fn detect(&mut self) -> String {
         match discover_usb_serial_devices() {
             Ok(paths) => self.accept(paths.into_iter().map(DeviceCandidate::new).collect()),
-            Err(error) => format!("Could not scan for serial devices: {error}"),
+            Err(error) => {
+                log::error!("scanning for serial devices: {error}");
+                format!("Could not scan for serial devices: {error}")
+            }
         }
     }
 

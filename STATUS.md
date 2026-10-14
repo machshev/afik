@@ -77,6 +77,12 @@
   the K5 retained backup defaults to the newest one there. Gate: fmt clean,
   clippy `-D warnings` clean, `cargo test --workspace --no-fail-fast` 674
   passed 0 failed.
+  Then: studio logging through the `log` facade (already in the tree via
+  eframe) to stderr and `$XDG_STATE_HOME/afik/studio.log`, level `AFIK_LOG`;
+  every status-line failure is logged with its context. Gate: fmt clean,
+  clippy `-D warnings` clean, `cargo test --workspace --no-fail-fast` 679
+  passed 0 failed; a display-less run logged its start and the window failure
+  to both stderr and the file.
 - Next: flash `7.0.5` with `afik-flasher flash-afik` and check a 1 min over
   times out; flash K1 and check its speech level; then CTCSS/DCS with an
   end-of-transmission tail tone to remove the key-off squelch burst.

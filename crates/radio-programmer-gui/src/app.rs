@@ -133,10 +133,38 @@ impl StudioApp {
         app
     }
 
+    /// Shows a failure on the status line and logs it with what was being done.
+    fn fail(&mut self, doing: &str, message: String) {
+        log::error!("{doing}: {message}");
+        self.status = message;
+    }
+
+    /// Shows a request the editor refused before doing anything, logged as a warning.
+    fn refuse(&mut self, message: &str) {
+        log::warn!("{message}");
+        message.clone_into(&mut self.status);
+    }
+
+    /// Refuses an action because the project does not validate, logging each field.
+    fn refuse_invalid(&mut self, action: &str, errors: Vec<ModelError>) {
+        log::warn!("{action} refused: {} fields do not validate", errors.len());
+        for error in &errors {
+            log::warn!("  {error}");
+        }
+        self.errors = errors;
+        self.status = format!("Fix the highlighted fields before {action}.");
+    }
+
+    /// Shows a flashing failure and logs it with what was being done.
+    fn flash_fail(&mut self, doing: &str, message: String) {
+        log::error!("{doing}: {message}");
+        self.flash_status = message;
+    }
+
     fn connect_simulator(&mut self) {
         match DeviceSession::connect_simulator() {
             Ok(session) => self.install_session(session),
-            Err(error) => self.status = error.to_string(),
+            Err(error) => self.fail("connecting the simulator", error.to_string()),
         }
     }
 
@@ -144,18 +172,26 @@ impl StudioApp {
         let (path, baud) = match self.chooser.resolve() {
             Ok(resolved) => resolved,
             Err(reason) => {
-                self.status = reason;
+                self.refuse(&reason);
                 return;
             }
         };
         match DeviceSession::connect_serial(&path, baud) {
             Ok(session) => self.install_session(session),
-            Err(error) => self.status = error.to_string(),
+            Err(error) => self.fail(
+                &format!("connecting {} at {baud} baud", path.display()),
+                error.to_string(),
+            ),
         }
     }
 
     /// Replaces the connected device, forgetting what the previous one reported.
     fn install_session(&mut self, session: DeviceSession) {
+        log::info!(
+            "connected to {}: {:?}",
+            session.description(),
+            session.capabilities()
+        );
         self.status = format!("Connected to {}.", session.description());
         self.session = Some(session);
         self.last_receipt = None;
@@ -165,6 +201,7 @@ impl StudioApp {
 
     fn disconnect(&mut self) {
         if let Some(session) = self.session.take() {
+            log::info!("disconnected from {}", session.description());
             self.status = format!("Disconnected from {}.", session.description());
             self.listing.clear();
             self.last_receipt = None;
@@ -175,6 +212,7 @@ impl StudioApp {
         let Some(session) = self.session.as_mut() else {
             return;
         };
+        let device = session.description().to_owned();
         match session.listing() {
             Ok(listing) => {
                 self.listing = listing
@@ -194,7 +232,7 @@ impl StudioApp {
                     listing.objects.len()
                 );
             }
-            Err(error) => self.status = error.to_string(),
+            Err(error) => self.fail(&format!("listing objects on {device}"), error.to_string()),
         }
     }
 
@@ -202,18 +240,23 @@ impl StudioApp {
         let project = match self.project.validate() {
             Ok(project) => project,
             Err(errors) => {
-                self.errors = errors;
-                "Fix the highlighted fields before writing.".clone_into(&mut self.status);
+                self.refuse_invalid("writing", errors);
                 return;
             }
         };
         self.errors.clear();
         let Some(session) = self.session.as_mut() else {
-            "Connect a device first.".clone_into(&mut self.status);
+            self.refuse("Connect a device first.");
             return;
         };
+        let device = session.description().to_owned();
         match session.write_project(&project) {
             Ok(receipt) => {
+                log::info!(
+                    "wrote and verified generation {} on {device}: {:?}",
+                    receipt.generation,
+                    receipt.report
+                );
                 self.last_receipt = Some(receipt.report);
                 self.status = format!(
                     "Wrote and verified generation {} with {} channels in {} banks.",
@@ -221,20 +264,28 @@ impl StudioApp {
                 );
                 self.refresh_listing();
             }
-            Err(error) => self.status = error.to_string(),
+            Err(error) => self.fail(
+                &format!("writing the project to {device}"),
+                error.to_string(),
+            ),
         }
     }
 
     fn read_project(&mut self) {
         let Some(session) = self.session.as_mut() else {
-            "Connect a device first.".clone_into(&mut self.status);
+            self.refuse("Connect a device first.");
             return;
         };
+        let device = session.description().to_owned();
         match session.backup() {
             Ok(backup) => match ProjectModel::from_image(&backup.image) {
                 Ok(project) => {
                     let channels = project.channels.len();
                     let banks = project.banks.len();
+                    log::info!(
+                        "read {channels} channels and {banks} banks from {device} at generation {}",
+                        backup.generation
+                    );
                     self.project = project;
                     self.errors.clear();
                     // An empty read is the ordinary state of a radio nobody has
@@ -256,45 +307,54 @@ impl StudioApp {
                         )
                     };
                 }
-                Err(error) => self.status = error.to_string(),
+                Err(error) => self.fail(
+                    &format!("decoding the configuration read from {device}"),
+                    error.to_string(),
+                ),
             },
-            Err(error) => self.status = error.to_string(),
+            Err(error) => self.fail(
+                &format!("reading the project from {device}"),
+                error.to_string(),
+            ),
         }
     }
 
     fn save_project(&mut self) {
         let path = self.project_path.trim().to_owned();
         if path.is_empty() {
-            "Enter a project file path.".clone_into(&mut self.status);
+            self.refuse("Enter a project file path.");
             return;
         }
         match self.project.to_image() {
             Ok(image) => match fs::write(&path, image) {
                 Ok(()) => {
+                    log::info!("saved project {path}");
                     self.errors.clear();
                     self.status = format!("Saved {path}.");
                 }
-                Err(error) => self.status = format!("Could not save {path}: {error}"),
+                Err(error) => self.fail(
+                    "saving the project",
+                    format!("Could not save {path}: {error}"),
+                ),
             },
-            Err(errors) => {
-                self.errors = errors;
-                "Fix the highlighted fields before saving.".clone_into(&mut self.status);
-            }
+            Err(errors) => self.refuse_invalid("saving", errors),
         }
     }
 
     fn load_project(&mut self) {
         let path = self.project_path.trim().to_owned();
         if path.is_empty() {
-            "Enter a project file path.".clone_into(&mut self.status);
+            self.refuse("Enter a project file path.");
             return;
         }
         match fs::read(&path) {
-            Ok(bytes) if bytes.len() > MAX_PROJECT_IMAGE_BYTES => {
-                self.status = format!("{path} exceeds {MAX_PROJECT_IMAGE_BYTES} bytes.");
-            }
+            Ok(bytes) if bytes.len() > MAX_PROJECT_IMAGE_BYTES => self.fail(
+                "loading the project",
+                format!("{path} exceeds {MAX_PROJECT_IMAGE_BYTES} bytes."),
+            ),
             Ok(bytes) => match ProjectModel::from_image(&bytes) {
                 Ok(project) => {
+                    log::info!("loaded project {path}");
                     self.status = format!(
                         "Loaded {} channels and {} banks from {path}.",
                         project.channels.len(),
@@ -303,9 +363,12 @@ impl StudioApp {
                     self.project = project;
                     self.errors.clear();
                 }
-                Err(error) => self.status = error.to_string(),
+                Err(error) => self.fail(&format!("decoding project {path}"), error.to_string()),
             },
-            Err(error) => self.status = format!("Could not read {path}: {error}"),
+            Err(error) => self.fail(
+                "loading the project",
+                format!("Could not read {path}: {error}"),
+            ),
         }
     }
 
@@ -314,6 +377,7 @@ impl StudioApp {
             return;
         };
         let operation = job.operation();
+        let device = self.flash_request.device.display().to_string();
         let mut finished = false;
         for message in job.drain() {
             match message {
@@ -327,11 +391,12 @@ impl StudioApp {
                             paths::default_eeprom_backup(),
                         );
                     }
+                    log::info!("{} on {device}: {summary}", operation.label());
                     self.flash_status = summary;
                     finished = true;
                 }
                 FlashProgress::Failed(error) => {
-                    self.flash_status = error;
+                    self.flash_fail(&format!("{} on {device}", operation.label()), error);
                     finished = true;
                 }
             }
@@ -369,7 +434,7 @@ impl StudioApp {
                     format!("Waiting for a bootloader beacon on {}.", device.display());
                 self.identify_job = Some((job, device));
             }
-            Err(error) => self.flash_status = error.to_string(),
+            Err(error) => self.flash_fail("identifying the radio", error.to_string()),
         }
     }
 
@@ -396,8 +461,12 @@ impl StudioApp {
                     identity.version,
                     device.display()
                 );
+                log::info!("identified {}", self.flash_status);
             }
-            Err(error) => self.flash_status = error.to_string(),
+            Err(error) => self.flash_fail(
+                &format!("identifying the radio on {}", device.display()),
+                error.to_string(),
+            ),
         }
     }
 
@@ -412,7 +481,7 @@ impl StudioApp {
         match flash::fresh_transaction_id() {
             Ok(transaction_id) => self.flash_request.transaction_id = transaction_id,
             Err(error) => {
-                self.flash_status = error.to_string();
+                self.flash_fail("generating a transaction identifier", error.to_string());
                 return;
             }
         }
@@ -421,6 +490,7 @@ impl StudioApp {
         self.flash_request.image_crc32 = 0;
         if self.flash_operation.needs_crc32() {
             let Some(crc) = flash::parse_crc32(&self.flash_crc32) else {
+                log::warn!("refused a non-hex image CRC-32 {:?}", self.flash_crc32);
                 "Enter the image CRC-32 as up to eight hex digits."
                     .clone_into(&mut self.flash_status);
                 return;
@@ -434,10 +504,19 @@ impl StudioApp {
                     job.operation().label(),
                     self.flash_request.transaction_id
                 );
+                log::info!(
+                    "{} on {}: image {}",
+                    self.flash_status,
+                    self.flash_request.device.display(),
+                    self.flash_request.firmware.display()
+                );
                 self.flash_progress = None;
                 self.flash_job = Some(job);
             }
-            Err(error) => self.flash_status = error.to_string(),
+            Err(error) => self.flash_fail(
+                &format!("starting {}", self.flash_operation.label()),
+                error.to_string(),
+            ),
         }
     }
 }
@@ -1764,6 +1843,99 @@ mod tests {
         assert!(
             name.starts_with("eeprom-") && name.ends_with("Z.bin"),
             "{name}"
+        );
+    }
+
+    /// Captures log records so a test can see what its own thread logged.
+    mod capture {
+        use log::{Level, LevelFilter, Log, Metadata, Record};
+        use std::{
+            sync::{Mutex, Once},
+            thread::{self, ThreadId},
+        };
+
+        static RECORDS: Mutex<Vec<(ThreadId, Level, String)>> = Mutex::new(Vec::new());
+        static CAPTURE: Capture = Capture;
+
+        struct Capture;
+
+        impl Log for Capture {
+            fn enabled(&self, _metadata: &Metadata<'_>) -> bool {
+                true
+            }
+
+            fn log(&self, record: &Record<'_>) {
+                RECORDS.lock().unwrap().push((
+                    thread::current().id(),
+                    record.level(),
+                    record.args().to_string(),
+                ));
+            }
+
+            fn flush(&self) {}
+        }
+
+        /// Installs the capture logger once for the whole test process.
+        pub fn install() {
+            static ONCE: Once = Once::new();
+            ONCE.call_once(|| {
+                log::set_logger(&CAPTURE).unwrap();
+                log::set_max_level(LevelFilter::Trace);
+            });
+        }
+
+        /// Takes the records this thread logged.
+        pub fn take() -> Vec<(Level, String)> {
+            let me = thread::current().id();
+            let mut records = RECORDS.lock().unwrap();
+            let (mine, others) = records.drain(..).partition(|(id, _, _)| *id == me);
+            *records = others;
+            mine.into_iter()
+                .map(|(_, level, text)| (level, text))
+                .collect()
+        }
+    }
+
+    #[test]
+    fn failures_are_logged_with_what_was_being_done() {
+        use log::Level;
+        capture::install();
+        let _earlier = capture::take();
+
+        let mut app = StudioApp::new(&Options {
+            device: Some(DeviceSelector::Explicit(std::path::PathBuf::from(
+                "/definitely/missing",
+            ))),
+            ..Options::default()
+        });
+        let logged = capture::take();
+        assert!(
+            logged.iter().any(|(level, text)| *level == Level::Error
+                && text.contains("connecting /definitely/missing at 38400 baud")
+                && text.contains("serial setup failed")),
+            "{logged:?}"
+        );
+
+        // A refused write is a warning naming every field which failed.
+        app.project.add_channel();
+        app.project.channels[0].receive_mhz = "nope".to_owned();
+        app.write_project();
+        let logged = capture::take();
+        assert!(logged
+            .iter()
+            .any(|(level, text)| *level == Level::Warn && text.contains("writing refused")));
+        assert!(logged
+            .iter()
+            .any(|(level, text)| *level == Level::Warn && text.contains("receive")));
+
+        // A flash which cannot start is an error naming the operation.
+        app.flash_operation = crate::flash::FlashOperation::AfikApplication;
+        app.start_flash();
+        let logged = capture::take();
+        assert!(
+            logged.iter().any(|(level, text)| *level == Level::Error
+                && text.starts_with("starting Flash AFIK application")),
+            "{logged:?}"
         );
     }
 

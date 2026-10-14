@@ -9,6 +9,7 @@
 pub mod app;
 pub mod device;
 pub mod flash;
+pub mod logging;
 pub mod model;
 pub mod paths;
 pub mod presets;

@@ -24,13 +24,31 @@ pub fn data_dir() -> Option<PathBuf> {
 ///
 /// The XDG specification ignores a relative `XDG_DATA_HOME`, and so does this.
 pub fn data_dir_from(xdg_data_home: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
-    let base = xdg_data_home
+    xdg_base(xdg_data_home, home, &[".local", "share"])
+}
+
+/// Returns the AFIK state directory, `$XDG_STATE_HOME/afik` or `~/.local/state/afik`.
+///
+/// Logs are state rather than data: worth keeping, but not something an
+/// operator would copy to another machine.
+pub fn state_dir() -> Option<PathBuf> {
+    state_dir_from(std::env::var_os("XDG_STATE_HOME"), std::env::var_os("HOME"))
+}
+
+/// Resolves the state directory from the two environment values, without I/O.
+pub fn state_dir_from(xdg_state_home: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
+    xdg_base(xdg_state_home, home, &[".local", "state"])
+}
+
+/// Picks an absolute XDG base, or the given fallback under an absolute home.
+fn xdg_base(xdg: Option<OsString>, home: Option<OsString>, fallback: &[&str]) -> Option<PathBuf> {
+    let base = xdg
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
         .or_else(|| {
             home.map(PathBuf::from)
                 .filter(|path| path.is_absolute())
-                .map(|home| home.join(".local").join("share"))
+                .map(|home| fallback.iter().fold(home, |path, part| path.join(part)))
         })?;
     Some(base.join(APPLICATION_DIR))
 }
@@ -44,12 +62,9 @@ pub fn eeprom_dir() -> Option<PathBuf> {
 ///
 /// A backup never overwrites a file, so each one gets its own name.
 pub fn default_eeprom_backup() -> PathBuf {
-    let seconds = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs());
     eeprom_dir()
         .unwrap_or_default()
-        .join(eeprom_backup_name(seconds))
+        .join(eeprom_backup_name(unix_now()))
 }
 
 /// Returns the newest EEPROM backup in `directory`, if there is one.
@@ -73,15 +88,35 @@ pub fn newest_eeprom_backup(directory: &Path) -> Option<PathBuf> {
 
 /// Names one backup by its UTC time, as `eeprom-YYYYMMDDTHHMMSSZ.bin`.
 pub fn eeprom_backup_name(unix_seconds: u64) -> String {
-    let days = unix_seconds / 86_400;
+    let [year, month, day, hour, minute, second] = utc_fields(unix_seconds);
+    format!("eeprom-{year:04}{month:02}{day:02}T{hour:02}{minute:02}{second:02}Z.bin")
+}
+
+/// Formats a UTC time as ISO 8601, `YYYY-MM-DDTHH:MM:SSZ`.
+pub fn utc_timestamp(unix_seconds: u64) -> String {
+    let [year, month, day, hour, minute, second] = utc_fields(unix_seconds);
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+}
+
+/// Returns the current time in whole seconds since the Unix epoch.
+pub fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
+}
+
+/// Splits a Unix time into year, month, day, hour, minute, and second.
+const fn utc_fields(unix_seconds: u64) -> [u64; 6] {
     let seconds_of_day = unix_seconds % 86_400;
-    let (year, month, day) = civil_from_days(days);
-    format!(
-        "eeprom-{year:04}{month:02}{day:02}T{:02}{:02}{:02}Z.bin",
+    let (year, month, day) = civil_from_days(unix_seconds / 86_400);
+    [
+        year,
+        month,
+        day,
         seconds_of_day / 3_600,
         seconds_of_day % 3_600 / 60,
-        seconds_of_day % 60
-    )
+        seconds_of_day % 60,
+    ]
 }
 
 /// Converts days since 1970-01-01 to a proleptic Gregorian date.
@@ -107,7 +142,9 @@ const fn civil_from_days(days: u64) -> (u64, u64, u64) {
 
 #[cfg(test)]
 mod tests {
-    use super::{data_dir_from, eeprom_backup_name, newest_eeprom_backup};
+    use super::{
+        data_dir_from, eeprom_backup_name, newest_eeprom_backup, state_dir_from, utc_timestamp,
+    };
     use std::{ffi::OsString, path::PathBuf};
 
     fn os(value: &str) -> OsString {
@@ -130,6 +167,14 @@ mod tests {
             Some(PathBuf::from("/home/op/.local/share/afik"))
         );
         assert_eq!(data_dir_from(None, None), None);
+        assert_eq!(
+            state_dir_from(None, Some(os("/home/op"))),
+            Some(PathBuf::from("/home/op/.local/state/afik"))
+        );
+        assert_eq!(
+            state_dir_from(Some(os("/state")), Some(os("/home/op"))),
+            Some(PathBuf::from("/state/afik"))
+        );
         assert_eq!(data_dir_from(Some(os("")), Some(os(""))), None);
     }
 
@@ -146,6 +191,7 @@ mod tests {
             "eeprom-20240301T000000Z.bin"
         );
         assert!(eeprom_backup_name(1_709_251_199) < eeprom_backup_name(1_709_251_200));
+        assert_eq!(utc_timestamp(1_709_251_199), "2024-02-29T23:59:59Z");
     }
 
     #[test]

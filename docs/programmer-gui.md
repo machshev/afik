@@ -103,6 +103,17 @@ Project files are canonical AFIK configuration images, the same format the CLI
 and the loopback GUI produce, so a project saved here can be restored by any
 front end.
 
+## Logging
+
+Every failure shown on a status line is also logged with what was being done
+(the device, operation, or file), refused requests as warnings with each field
+that failed, and connections, writes, reads, backups and flashes as one info
+line each. Lines go to stderr and are appended to
+`$XDG_STATE_HOME/afik/studio.log` (`~/.local/state/afik/studio.log`), which is
+moved to `studio.log.1` at start-up once it passes 1 MiB. `AFIK_LOG` sets the
+level (`off`, `error`, `warn`, `info` by default, `debug`, `trace`); other
+crates such as the windowing stack log only warnings below `debug`.
+
 ## Flashing boundary
 
 Firmware and EEPROM operations reuse the `radio-flasher` workflows. The editor
