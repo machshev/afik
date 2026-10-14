@@ -137,7 +137,14 @@ pub async fn run<L: SerialLink, M: Memory>(
                 // now, squelch included, so nothing of the old one is kept.
                 written = false;
                 generation = generation.wrapping_add(1);
-                let (programmed, loaded) = memory.with_mut(|cell| load(cell.as_mut()));
+                let (programmed, loaded) = memory.with_mut(|cell| {
+                    // A commit which failed leaves the old image, or none, and
+                    // the load says which.
+                    if let Some(memory) = cell.as_mut() {
+                        let _ = memory.commit_host_write();
+                    }
+                    load(cell.as_mut())
+                });
                 PROGRAMMED.signal(Publication {
                     programmed,
                     generation,

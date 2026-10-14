@@ -82,6 +82,13 @@ pub trait Memory {
     /// Reads the PMR446 low-power TX bias bytes from the vendor block.
     fn read_tx_calibration(&mut self) -> Option<TxCalibration>;
 
+    /// Makes what a host has written durable, once the host has gone quiet.
+    ///
+    /// Memory which stores each block as it arrives has nothing to do.
+    fn commit_host_write(&mut self) -> bool {
+        true
+    }
+
     /// Reads where the operator left the radio.
     fn read_operator_state(&mut self) -> Option<OperatorState> {
         let mut bytes = [0_u8; OPERATOR_STATE_BYTES];

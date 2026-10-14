@@ -15,6 +15,7 @@ use py32_hal::gpio::{Level, Output, Speed};
 use py32_hal::pac::spi::vals::Br;
 use py32_hal::peripherals::{PA0, PA1, PA2, PA3, SPI2};
 use py32_hal::spi::{Error as SpiError, Spi};
+use radio_eeprom::staged::{Staged, BLOCK_BYTES};
 use radio_eeprom::{Eeprom, EepromError, JedecId, Region, RegionError};
 
 use crate::battery::{Calibration, CALIBRATION_ADDRESS, CALIBRATION_BYTES};
@@ -45,6 +46,11 @@ const _: () = assert!(CONFIGURATION_BYTES == crate::memory_view::STORED_IMAGE_BY
 /// channel list's erase cycles on a channel change, and would put the channels
 /// at risk in the window a place is being written.
 pub const OPERATOR_STATE_ORIGIN: u32 = 0x10_1000;
+/// First address of the sector host writes are staged in before they replace
+/// the configuration, so a host can write only the blocks it changed.
+pub const STAGING_ORIGIN: u32 = 0x10_2000;
+// A host write block is one staged block.
+const _: () = assert!(BLOCK_BYTES == radio_platform::memory_link::WRITE_BYTES);
 /// Vendor address of the TX bias table, every band's rows.
 pub const TX_CALIBRATION_ADDRESS: u32 = 0x1_00D0;
 /// Bytes claimed for the operator's place, one erase sector.
@@ -121,9 +127,8 @@ impl EepromPort for K1EepromPort {
     }
 
     fn delay_microseconds(&mut self, microseconds: u32) {
-        // Only the driver's blocking paths reach this, and retention does not
-        // use them: a stored configuration is written through the yielding path
-        // above. Waits here are the driver's own short inter-poll pacing.
+        // The driver's blocking paths reach this: the staged host write and
+        // its commit. Waits here are the driver's own short inter-poll pacing.
         block_for(Duration::from_micros(u64::from(microseconds)));
     }
 }
@@ -131,7 +136,8 @@ impl EepromPort for K1EepromPort {
 /// Bounded accessor for the retained configuration in external memory.
 pub struct RetainedConfiguration {
     eeprom: Eeprom<SpiEepromBus<K1EepromPort>>,
-    region: Region,
+    /// The configuration region and its staging sector.
+    configuration: Staged,
     place: Region,
     /// Next erased operator-state slot, once the sector has been walked.
     next_slot: Option<u32>,
@@ -147,6 +153,9 @@ impl RetainedConfiguration {
             Region::new(CONFIGURATION_ORIGIN, CONFIGURATION_BYTES).map_err(RetainError::Region)?;
         let place = Region::new(OPERATOR_STATE_ORIGIN, OPERATOR_STATE_REGION_BYTES)
             .map_err(RetainError::Region)?;
+        let staging =
+            Region::new(STAGING_ORIGIN, CONFIGURATION_BYTES).map_err(RetainError::Region)?;
+        let configuration = Staged::new(region, staging).map_err(RetainError::Memory)?;
         let port = K1EepromPort {
             spi: Spi::new(spi, sck, mosi, miso, CLOCK_DIVIDER),
             // Deselected until a transfer asserts it.
@@ -154,7 +163,7 @@ impl RetainedConfiguration {
         };
         Ok(Self {
             eeprom: Eeprom::new(SpiEepromBus::new(port)),
-            region,
+            configuration,
             place,
             // Nothing has been walked yet, so the first read or save discovers
             // the free slot rather than assuming the sector is erased and
@@ -212,13 +221,30 @@ impl RetainedConfiguration {
         self.eeprom.read_vendor(address, output).is_ok()
     }
 
-    /// Reads `output.len()` bytes at `offset` in the configuration region.
+    /// Reads `output.len()` bytes at `offset` in the configuration region,
+    /// as a host has written it so far.
     ///
-    /// This is the K1's backing for the image part of the memory view. Writes
-    /// to it are not served yet: this NOR memory erases a whole sector at a
-    /// time, and block writes from a host need their own erase plan.
+    /// This is the K1's backing for the image part of the memory view.
     pub fn read_configuration(&mut self, offset: u32, output: &mut [u8]) -> bool {
-        self.eeprom.read(self.region, offset, output).is_ok()
+        self.configuration
+            .read(&mut self.eeprom, offset, output)
+            .is_ok()
+    }
+
+    /// Stages one host block at `offset` in the configuration region.
+    ///
+    /// This NOR memory erases a whole sector at a time, so the block goes to
+    /// the staging sector and replaces the configuration on
+    /// [`Self::commit_configuration`].
+    pub fn write_configuration(&mut self, offset: u32, data: &[u8; BLOCK_BYTES]) -> bool {
+        self.configuration
+            .write(&mut self.eeprom, offset, data)
+            .is_ok()
+    }
+
+    /// Makes the staged host write the configuration.
+    pub fn commit_configuration(&mut self) -> bool {
+        self.configuration.commit(&mut self.eeprom).is_ok()
     }
 
     /// Reads back where the operator left the radio.

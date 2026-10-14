@@ -433,8 +433,8 @@ fn open_memory(memory: EepromPins) -> (Option<Memory>, MemoryState) {
 /// configuration region, so a K1 programmed by an earlier image keeps its
 /// channels; the place part is the latest record from its own sector and slot
 /// rotation; the calibration part reads the vendor block, so a host backup
-/// holds this unit's calibration. Host writes are refused until the K1 has an
-/// erase plan for block writes.
+/// holds this unit's calibration. Host writes reach the image part only; they
+/// are staged and replace the configuration once the host has finished.
 struct Memory(RetainedConfiguration);
 
 impl radio_app::drivers::Memory for Memory {
@@ -455,8 +455,15 @@ impl radio_app::drivers::Memory for Memory {
         }
     }
 
-    fn write(&mut self, _address: u16, _data: &[u8; WRITE_BYTES]) -> bool {
-        false
+    fn write(&mut self, address: u16, data: &[u8; WRITE_BYTES]) -> bool {
+        match locate(address, WRITE_BYTES) {
+            Some(ViewSpan::Image(offset)) => self.0.write_configuration(offset, data),
+            _ => false,
+        }
+    }
+
+    fn commit_host_write(&mut self) -> bool {
+        self.0.commit_configuration()
     }
 
     fn read_battery_calibration(&mut self) -> Option<Calibration> {
