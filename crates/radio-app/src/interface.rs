@@ -848,11 +848,12 @@ pub async fn run<D, K, B, S, V, M>(
         let now = now_ms();
 
         let edge = debounce.update(now, sample);
-        let woken = if matches!(edge, Edge::Pressed(_)) {
-            backlight.wake(now)
-        } else {
-            backlight.poll(now)
-        };
+        // A key press or a received signal lights the display; the press
+        // still does what it does.
+        let woken = backlight.keep_lit_while(
+            matches!(edge, Edge::Pressed(_)) || receiver.squelch_open,
+            now,
+        );
         if let Some(on) = woken {
             display.set_backlight(on);
         }

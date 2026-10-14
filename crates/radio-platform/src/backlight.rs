@@ -3,9 +3,9 @@
 //! The programmed configuration's `backlight_seconds` is the whole policy, as
 //! in the reference firmware: zero keeps the light off, [`BACKLIGHT_ALWAYS_ON`]
 //! keeps it on, and anything else lights it for that many seconds after the
-//! operator last pressed a key. Every caller passes the same wrapping
-//! millisecond clock, so this owns no time of its own and tests run on virtual
-//! time.
+//! operator last pressed a key or the squelch last stood open. Every caller
+//! passes the same wrapping millisecond clock, so this owns no time of its own
+//! and tests run on virtual time.
 
 use radio_domain::BACKLIGHT_ALWAYS_ON;
 
@@ -59,6 +59,19 @@ impl Backlight {
         self.settle(now_ms)
     }
 
+    /// Wakes the light while `active` holds, such as an open squelch, and
+    /// otherwise lets it run out: it stays lit through a signal and goes out
+    /// the timeout after the signal ends.
+    ///
+    /// Returns the new state when it differs from the old one.
+    pub fn keep_lit_while(&mut self, active: bool, now_ms: u32) -> Option<bool> {
+        if active {
+            self.wake(now_ms)
+        } else {
+            self.poll(now_ms)
+        }
+    }
+
     fn settle(&mut self, now_ms: u32) -> Option<bool> {
         let lit = match self.seconds {
             0 => false,
@@ -102,6 +115,16 @@ mod tests {
         assert_eq!(light.wake(2), None, "zero ignores key presses");
         assert_eq!(light.set_seconds(BACKLIGHT_ALWAYS_ON, 3), Some(true));
         assert_eq!(light.poll(u32::MAX), None);
+    }
+
+    #[test]
+    fn an_open_squelch_keeps_the_light_on_until_the_timeout_after_it_shuts() {
+        let mut light = Backlight::new(10, 0);
+        assert_eq!(light.poll(10_000), Some(false));
+        assert_eq!(light.keep_lit_while(true, 20_000), Some(true));
+        assert_eq!(light.keep_lit_while(true, 45_000), None, "a long over");
+        assert_eq!(light.keep_lit_while(false, 54_999), None);
+        assert_eq!(light.keep_lit_while(false, 55_000), Some(false));
     }
 
     #[test]

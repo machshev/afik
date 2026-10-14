@@ -52,7 +52,7 @@ the radio is next switched off.";
 
 /// What the backlight timeout does, said once.
 const BACKLIGHT_HINT: &str = "How long the display stays lit after a key or PTT \
-press. 0 keeps it off; 255 keeps it on.";
+press, or after a received signal ends. 0 keeps it off; 255 keeps it on.";
 
 /// Which editor tab is visible.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
