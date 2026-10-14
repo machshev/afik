@@ -1025,6 +1025,9 @@ pub fn encode_radio_config(config: RadioConfig) -> Result<StorageObject, Storage
     data[12] = u8::from(config.dual_watch);
     data[13] = config.battery_save_ratio;
     data[14] = config.flags.bits();
+    // What was a reserved zero byte, so an image written before TX settings
+    // existed reads as the lowest power and a one-minute timeout.
+    data[15] = config.tx_power | (config.tx_timeout << 4);
     StorageObject::new(
         ObjectKey {
             kind: ObjectKind::RadioConfig,
@@ -1044,11 +1047,7 @@ pub fn decode_radio_config(object: &impl Object) -> Result<RadioConfig, StorageE
         return Err(StorageError::MalformedObject);
     }
     let data = object.data();
-    if data.len() != RADIO_CONFIG_ENCODED_LEN
-        || data[0] != STORAGE_FORMAT_VERSION
-        || data[15] != 0
-        || data[12] > 1
-    {
+    if data.len() != RADIO_CONFIG_ENCODED_LEN || data[0] != STORAGE_FORMAT_VERSION || data[12] > 1 {
         return Err(StorageError::MalformedObject);
     }
     RadioConfig {
@@ -1060,6 +1059,8 @@ pub fn decode_radio_config(object: &impl Object) -> Result<RadioConfig, StorageE
         dual_watch: data[12] == 1,
         battery_save_ratio: data[13],
         flags: RadioFlags::from_bits(data[14]).map_err(|_| StorageError::MalformedObject)?,
+        tx_power: data[15] & 0x0F,
+        tx_timeout: data[15] >> 4,
     }
     .validate()
     .map_err(|_| StorageError::MalformedObject)
@@ -1599,6 +1600,8 @@ mod tests {
         config.battery_save_ratio = 4;
         config.scan_resume = ScanResume::Carrier;
         config.flags = RadioFlags::default().with(RadioFlags::KEY_BEEP, true);
+        config.tx_power = 2;
+        config.tx_timeout = 4;
         let encoded_config = encode_radio_config(config).unwrap();
         assert_eq!(encoded_config.len(), RADIO_CONFIG_ENCODED_LEN);
         assert_eq!(decode_radio_config(&encoded_config).unwrap(), config);
@@ -1657,7 +1660,7 @@ mod tests {
             data[index] = value;
             StorageObject::new(config.key(), &data).unwrap()
         };
-        for (index, value) in [(1, 10), (3, 3), (12, 2), (14, 0x10), (15, 1)] {
+        for (index, value) in [(1, 10), (3, 3), (12, 2), (14, 0x10), (15, 0x04), (15, 0x50)] {
             assert_eq!(
                 decode_radio_config(&mutate_config(index, value)),
                 Err(StorageError::MalformedObject),

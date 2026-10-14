@@ -162,19 +162,17 @@ pub const SETTINGS: [Setting; 1] = [Setting::Squelch];
 /// The TX timeout does too: a net with long overs needs a longer one.
 pub const SETTINGS_WITH_TX: [Setting; 3] = [Setting::Squelch, Setting::TxPower, Setting::TxTimeout];
 
-/// Selectable TX power levels.
-pub const TX_POWER_LEVELS: u8 = 4;
+/// Selectable TX power levels. The programmed configuration names one of
+/// these, so the count lives with it.
+pub use radio_domain::TX_POWER_LEVELS;
 
 /// Nominal output of each TX power level, in milliwatts: Armel F4HWN Low1 to
 /// Low4 as its README documents them. Nominal, not measured by AFIK.
 pub const TX_POWER_NOMINAL_MW: [u32; TX_POWER_LEVELS as usize] = [20, 125, 250, 500];
 
 /// Selectable TX timeouts: one to five whole minutes, the last being the TX
-/// policy's ceiling.
-pub const TX_TIMEOUT_CHOICES: u8 = 5;
-
-/// Index of the TX timeout in force until the operator picks one: one minute.
-pub const TX_TIMEOUT_DEFAULT: u8 = 0;
+/// policy's ceiling; and the one a radio arrives with.
+pub use radio_domain::{TX_TIMEOUT_CHOICES, TX_TIMEOUT_DEFAULT};
 
 /// Selectable squelch levels, from permanently open to tightest.
 pub const SQUELCH_LEVELS: u8 = MAX_SQUELCH_LEVEL + 1;
@@ -426,6 +424,22 @@ impl Shell {
     pub fn set_squelch(&mut self, squelch: SquelchLevel) {
         self.squelch = squelch;
         self.squelch_cursor = squelch.get();
+    }
+
+    /// Adopts the TX power level and timeout a programmed configuration
+    /// carries, as [`Self::set_squelch`] does the squelch.
+    ///
+    /// Values outside the selectable range leave the current choice alone; a
+    /// validated configuration never carries one.
+    pub fn set_tx(&mut self, power: u8, timeout: u8) {
+        if power < TX_POWER_LEVELS {
+            self.tx_power = power;
+            self.tx_power_cursor = power;
+        }
+        if timeout < TX_TIMEOUT_CHOICES {
+            self.tx_timeout = timeout;
+            self.tx_timeout_cursor = timeout;
+        }
     }
 
     /// Returns the settings-menu cursor row.
@@ -1592,6 +1606,21 @@ mod tests {
         shell.press(Key::Exit, 16, context(16, 0));
         assert_eq!(shell.screen(), Screen::Settings);
         assert_eq!(shell.tx_timeout_ms(), 300_000);
+    }
+
+    /// The studio's TX power and timeout are what the menu then shows.
+    #[test]
+    fn a_programmed_tx_power_and_timeout_replace_what_the_menu_shows() {
+        let mut shell = Shell::new();
+        shell.set_capabilities(Capabilities::K5);
+        shell.set_tx(2, 3);
+        assert_eq!((shell.tx_power(), shell.tx_power_cursor()), (2, 2));
+        assert_eq!((shell.tx_timeout(), shell.tx_timeout_cursor()), (3, 3));
+        assert_eq!(shell.tx_timeout_ms(), 240_000);
+
+        shell.set_tx(super::TX_POWER_LEVELS, super::TX_TIMEOUT_CHOICES);
+        assert_eq!(shell.tx_power(), 2, "an out-of-range level is ignored");
+        assert_eq!(shell.tx_timeout(), 3, "an out-of-range timeout is ignored");
     }
 
     /// A host write is the authority on the level the menu shows.

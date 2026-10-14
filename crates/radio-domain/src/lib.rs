@@ -288,6 +288,12 @@ impl TryFrom<u8> for ScanResume {
 pub const MAX_BATTERY_SAVE_RATIO: u8 = 5;
 /// Backlight timeout value meaning the backlight never switches off.
 pub const BACKLIGHT_ALWAYS_ON: u8 = u8::MAX;
+/// Selectable TX power levels, indexed from zero (the lowest).
+pub const TX_POWER_LEVELS: u8 = 4;
+/// Selectable TX timeouts: index `n` is `n + 1` whole minutes.
+pub const TX_TIMEOUT_CHOICES: u8 = 5;
+/// Index of the TX timeout a radio arrives with: one minute.
+pub const TX_TIMEOUT_DEFAULT: u8 = 0;
 
 /// Global receive-side radio behaviour flags.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -338,7 +344,11 @@ impl RadioFlags {
     }
 }
 
-/// Global receive-side radio configuration carrying no transmit authority.
+/// Global radio configuration.
+///
+/// The TX power and timeout choose how a transmission is made, not whether one
+/// is allowed: they carry no transmit authority, and `radio-tx-policy` still
+/// decides every key-up.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RadioConfig {
     /// Squelch level applied when no channel overrides it.
@@ -364,6 +374,12 @@ pub struct RadioConfig {
     pub battery_save_ratio: u8,
     /// Global behaviour flags.
     pub flags: RadioFlags,
+    /// TX power level in force until the operator picks another, zero-based
+    /// and below [`TX_POWER_LEVELS`].
+    pub tx_power: u8,
+    /// TX timeout index in force until the operator picks another, below
+    /// [`TX_TIMEOUT_CHOICES`]; the timeout is one more whole minute.
+    pub tx_timeout: u8,
 }
 
 impl RadioConfig {
@@ -382,6 +398,8 @@ impl RadioConfig {
             dual_watch: false,
             battery_save_ratio: 0,
             flags: RadioFlags { bits: 0 },
+            tx_power: 0,
+            tx_timeout: TX_TIMEOUT_DEFAULT,
         }
     }
 
@@ -390,7 +408,10 @@ impl RadioConfig {
         if self.scan_dwell_ms == 0 || self.scan_hold_ms == 0 {
             return Err(DomainError::Zero);
         }
-        if self.battery_save_ratio > MAX_BATTERY_SAVE_RATIO {
+        if self.battery_save_ratio > MAX_BATTERY_SAVE_RATIO
+            || self.tx_power >= TX_POWER_LEVELS
+            || self.tx_timeout >= TX_TIMEOUT_CHOICES
+        {
             return Err(DomainError::OutOfRange);
         }
         Ok(self)
@@ -572,6 +593,16 @@ mod tests {
         let mut saving = config;
         saving.battery_save_ratio = 6;
         assert_eq!(saving.validate(), Err(DomainError::OutOfRange));
+        let mut loudest = config;
+        loudest.tx_power = super::TX_POWER_LEVELS - 1;
+        loudest.tx_timeout = super::TX_TIMEOUT_CHOICES - 1;
+        assert_eq!(loudest.validate(), Ok(loudest));
+        let mut power = config;
+        power.tx_power = super::TX_POWER_LEVELS;
+        assert_eq!(power.validate(), Err(DomainError::OutOfRange));
+        let mut timeout = config;
+        timeout.tx_timeout = super::TX_TIMEOUT_CHOICES;
+        assert_eq!(timeout.validate(), Err(DomainError::OutOfRange));
 
         assert_eq!(ScanResume::try_from(2), Ok(ScanResume::Stop));
         assert_eq!(ScanResume::try_from(3), Err(DomainError::OutOfRange));

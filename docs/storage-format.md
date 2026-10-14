@@ -214,8 +214,13 @@ dual watch        : u8  (0 or 1)
 battery save      : u8  (0 through 5)
 flags             : u8  (bit 0 key beep, 1 busy lockout default, 2 AM fix,
                          3 tone tail elimination)
-reserved          : u8  (must be zero)
+TX settings       : u8  (bits 0-3 TX power level 0 through 3, bits 4-7 TX
+                         timeout index 0 through 4, i.e. 1 to 5 minutes)
 ```
+
+The TX settings byte was reserved zero before, so an older image reads as the
+lowest power and a one-minute timeout. They are the values the radio adopts
+when programmed; the handset menu can change them until the next power cycle.
 
 Bank membership is a mask on the channel rather than a member list on the bank,
 so every object stays fixed size and a channel may belong to several banks. See

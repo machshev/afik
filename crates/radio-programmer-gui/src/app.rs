@@ -8,9 +8,10 @@ use eframe::egui::{
 use radio_channel_plan::MAX_GENERATED_CHANNELS;
 use radio_domain::{
     Bandwidth, Modulation, PowerLevel, ScanResume, TxClass, BACKLIGHT_ALWAYS_ON,
-    MAX_BATTERY_SAVE_RATIO, MAX_SQUELCH_LEVEL,
+    MAX_BATTERY_SAVE_RATIO, MAX_SQUELCH_LEVEL, TX_POWER_LEVELS, TX_TIMEOUT_CHOICES,
 };
 use radio_flasher::ImageWriteReport;
+use radio_platform::operator_shell::TX_POWER_NOMINAL_MW;
 
 use radio_programmer_serial::SUPPORTED_BAUDS;
 
@@ -27,6 +28,9 @@ use crate::{
     DeviceSelector, Options,
 };
 
+/// Columns in a bank row's header.
+const BANK_COLUMNS: usize = 4;
+
 /// Channels of one generated plan the editor lists before summarising the rest.
 const EXPANSION_PREVIEW_ROWS: usize = 32;
 /// Colour used for advisory text which is not a validation failure.
@@ -37,6 +41,11 @@ const SQUELCH_HINT: &str = "Applies to every channel on the radio. The operator 
 can change it from the handset settings menu, and the radio stores what they \
 chose. A channel's own squelch level is kept in the project but does not \
 override this.";
+
+/// What the TX power and timeout settings govern, said once.
+const TX_HINT: &str = "What the radio starts on after it is programmed or \
+switched on. The operator can change it from the handset settings menu until \
+the radio is next switched off.";
 
 /// Which editor tab is visible.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -607,6 +616,14 @@ impl StudioApp {
         let mut toggle = None;
         let mut ids = Vec::with_capacity(self.project.banks.len());
         let expand = self.expand_bank.take();
+        let headers: Vec<_> = self
+            .project
+            .banks
+            .iter()
+            .enumerate()
+            .map(|(row, bank)| bank_row_columns(row, bank))
+            .collect();
+        let widths = column_widths(ui, &headers);
         ScrollArea::vertical().show(ui, |ui| {
             for (row, bank) in self.project.banks.iter_mut().enumerate() {
                 ui.push_id(row, |ui| {
@@ -621,11 +638,14 @@ impl StudioApp {
                     }
                     state
                         .show_header(ui, |ui| {
-                            let label =
-                                egui::Label::new(RichText::new(bank_row_label(row, bank)).strong())
+                            for (text, width) in headers[row].iter().zip(widths) {
+                                let label = egui::Label::new(RichText::new(text).strong())
                                     .sense(egui::Sense::click());
-                            if ui.add(label).clicked() {
-                                toggle = Some(id);
+                                let response = ui.add(label);
+                                if response.clicked() {
+                                    toggle = Some(id);
+                                }
+                                ui.add_space((width - response.rect.width()).max(0.0));
                             }
                             if ui
                                 .button("Delete")
@@ -687,6 +707,30 @@ impl StudioApp {
             ui.label("Squelch level").on_hover_text(SQUELCH_HINT);
             ui.add(egui::DragValue::new(&mut config.squelch).range(0..=MAX_SQUELCH_LEVEL))
                 .on_hover_text(SQUELCH_HINT);
+            ui.end_row();
+
+            ui.label("TX power").on_hover_text(TX_HINT);
+            ComboBox::from_id_salt("tx-power")
+                .selected_text(tx_power_label(config.tx_power))
+                .show_ui(ui, |ui| {
+                    for level in 0..TX_POWER_LEVELS {
+                        ui.selectable_value(&mut config.tx_power, level, tx_power_label(level));
+                    }
+                });
+            ui.end_row();
+
+            ui.label("TX timeout").on_hover_text(TX_HINT);
+            ComboBox::from_id_salt("tx-timeout")
+                .selected_text(tx_timeout_label(config.tx_timeout))
+                .show_ui(ui, |ui| {
+                    for choice in 0..TX_TIMEOUT_CHOICES {
+                        ui.selectable_value(
+                            &mut config.tx_timeout,
+                            choice,
+                            tx_timeout_label(choice),
+                        );
+                    }
+                });
             ui.end_row();
 
             ui.label("Backlight seconds");
@@ -1310,6 +1354,21 @@ fn bandwidth_editor(ui: &mut egui::Ui, bandwidth: &mut Bandwidth) {
         });
 }
 
+/// One TX power level as the handset lists it: its nominal output.
+fn tx_power_label(level: u8) -> String {
+    TX_POWER_NOMINAL_MW
+        .get(usize::from(level))
+        .map_or_else(|| format!("Level {level}"), |mw| format!("{mw} mW"))
+}
+
+/// One TX timeout choice in whole minutes.
+fn tx_timeout_label(choice: u8) -> String {
+    match choice {
+        0 => "1 minute".to_owned(),
+        _ => format!("{} minutes", u32::from(choice) + 1),
+    }
+}
+
 fn power_editor(ui: &mut egui::Ui, power: &mut PowerLevel) {
     ComboBox::from_id_salt("power")
         .selected_text(match power {
@@ -1367,41 +1426,63 @@ pub fn channel_row_label(row: usize, channel: &ChannelDraft) -> String {
     format!("{}: {} ({})", row + 1, channel.name, channel.receive_mhz)
 }
 
-/// Counts channels in words, such as `1 channel` or `16 channels`.
-fn channels_label(count: usize) -> String {
-    if count == 1 {
-        "1 channel".to_owned()
-    } else {
-        format!("{count} channels")
-    }
+/// Returns the columns of one bank row's header: number and name, channel
+/// count, kind, and frequency span. A collapsed bank still shows them.
+pub fn bank_row_columns(row: usize, bank: &BankDraft) -> [String; BANK_COLUMNS] {
+    let channels = match bank.kind {
+        BankKind::Named => bank.channels.len(),
+        BankKind::Generated => usize::from(bank.channel_count),
+    };
+    let span = match bank.frequency_span() {
+        Some((first, last)) if first == last => format!("{first} MHz"),
+        Some((first, last)) => format!("{first} to {last} MHz"),
+        None => String::new(),
+    };
+    [
+        format!("{}: {}", row + 1, bank.name),
+        format!("{channels} Ch"),
+        bank.kind.label().to_owned(),
+        span,
+    ]
 }
 
-/// Returns the editor label for one bank row, used by tests and headers.
-///
-/// It carries the bank's channel count, so a collapsed bank still shows it.
-pub fn bank_row_label(row: usize, bank: &BankDraft) -> String {
-    let detail = match bank.kind {
-        BankKind::Named => channels_label(bank.channels.len()),
-        BankKind::Generated => match bank.generated_span() {
-            Some((first, last)) => format!(
-                "plan, {}, {first} to {last} MHz",
-                channels_label(usize::from(bank.channel_count))
-            ),
-            None => "generated plan".to_owned(),
-        },
-    };
-    format!("{}: {} ({detail})", row + 1, bank.name)
+/// Measures the widest text in each header column, so every bank's columns
+/// start at the same tab stops.
+fn column_widths(ui: &egui::Ui, rows: &[[String; BANK_COLUMNS]]) -> [f32; BANK_COLUMNS] {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let mut widths = [0.0_f32; BANK_COLUMNS];
+    ui.fonts(|fonts| {
+        for columns in rows {
+            for (width, text) in widths.iter_mut().zip(columns) {
+                let galley =
+                    fonts.layout_no_wrap(text.clone(), font.clone(), egui::Color32::PLACEHOLDER);
+                *width = width.max(galley.size().x);
+            }
+        }
+    });
+    widths
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        bank_row_label, channel_row_label, memory_percent, scan_resume_label, tx_class_label,
-        StudioApp, Tab,
+        bank_row_columns, channel_row_label, memory_percent, scan_resume_label, tx_class_label,
+        tx_power_label, tx_timeout_label, StudioApp, Tab,
     };
     use crate::{model::BankKind, projects::ProjectStore, DeviceSelector, Options};
     use radio_domain::{ScanResume, TxClass};
     use std::path::PathBuf;
+
+    /// The studio names each TX choice as the handset menu lists it.
+    #[test]
+    fn tx_choices_are_labelled_as_the_handset_lists_them() {
+        let powers: Vec<_> = (0..radio_domain::TX_POWER_LEVELS)
+            .map(tx_power_label)
+            .collect();
+        assert_eq!(powers, ["20 mW", "125 mW", "250 mW", "500 mW"]);
+        assert_eq!(tx_timeout_label(0), "1 minute");
+        assert_eq!(tx_timeout_label(4), "5 minutes");
+    }
 
     /// A project directory of the test's own, so nothing touches the
     /// operator's projects or their last-project record.
@@ -1571,22 +1652,28 @@ mod tests {
     }
 
     #[test]
-    fn bank_row_labels_name_the_kind_and_the_generated_span() {
+    fn bank_headers_give_name_count_kind_and_span_columns() {
         let mut project = crate::model::ProjectModel::new();
         project.add_bank();
         project.add_channel(0);
+        project.banks[0].channels[0].receive_mhz = "145.5".to_owned();
         assert_eq!(
-            bank_row_label(0, &project.banks[0]),
-            "1: Bank 1 (1 channel)"
+            bank_row_columns(0, &project.banks[0]),
+            ["1: Bank 1", "1 Ch", "Channels", "145.500000 MHz"]
         );
         project.add_generated_bank();
         project.banks[1].base_mhz = "446.00625".to_owned();
         assert_eq!(
-            bank_row_label(1, &project.banks[1]),
-            "2: Bank 2 (plan, 16 channels, 446.006250 to 446.193750 MHz)"
+            bank_row_columns(1, &project.banks[1]),
+            [
+                "2: Bank 2",
+                "16 Ch",
+                "Generated plan",
+                "446.006250 to 446.193750 MHz"
+            ]
         );
         project.banks[1].base_mhz = "nope".to_owned();
-        assert!(bank_row_label(1, &project.banks[1]).contains("generated plan"));
+        assert_eq!(bank_row_columns(1, &project.banks[1])[3], "");
     }
 
     /// Draws one headless frame of the Banks tab with the given input events.

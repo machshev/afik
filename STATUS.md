@@ -283,9 +283,22 @@
   summary lines. Each bank header, plans included, shows its channel count. Gate: `cargo fmt --all
   --check` clean, workspace clippy `-D warnings` clean, `cargo test
   --workspace` 683 passed 0 failed.
-- Next: flash K5 `7.0.18`, check a power cycle keeps VFO, bank and channel,
-  and program it from the studio (write, power-cycle,
-  read back); then the K1's NOR erase plan; then CTCSS/DCS with a tail tone.
+- `7.0.19` (operator report: studio Radio settings did not match the handset
+  menu): the studio's Radio tab now has TX power (20/125/250/500 mW) and TX
+  timeout (1–5 min) beside squelch. They travel in `RadioConfig`
+  (`tx_power`, `tx_timeout`) in the config object's formerly reserved byte 15,
+  so older images read as lowest power and one minute. The radio adopts them
+  when programmed or booted, as it does squelch; a handset change lasts until
+  power-off. A `7.0.18` radio rejects a config whose byte 15 is non-zero, so
+  flash `7.0.19` before writing those settings. Gate: `cargo fmt --all
+  --check` clean, workspace clippy `-D warnings` clean, `cargo test
+  --workspace` 687 passed 0 failed, `tool/build-k5.sh --release` (verifies,
+  flash end `0x0000c900`) and `tool/build-k1.sh --release` pass. Not yet
+  flashed.
+- Next: flash K5 `7.0.19`, check a power cycle keeps VFO, bank and channel,
+  and program it from the studio (write with a non-default TX power and
+  timeout, check the handset menu shows them, power-cycle, read back); then
+  the K1's NOR erase plan; then CTCSS/DCS with a tail tone.
 
 ## Previous work package: TXK5-058
 

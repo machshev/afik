@@ -69,6 +69,14 @@ impl Programmed {
         }
     }
 
+    /// Returns this summary with a different programmed TX power and timeout.
+    #[cfg(test)]
+    pub(crate) const fn with_tx(mut self, power: u8, timeout: u8) -> Self {
+        self.config.tx_power = power;
+        self.config.tx_timeout = timeout;
+        self
+    }
+
     /// Returns this summary with the radio-wide squelch replaced.
     ///
     /// The operator's handset choice is the radio's own and is kept beside

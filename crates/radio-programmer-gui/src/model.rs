@@ -19,7 +19,7 @@ use radio_channel_plan::{
 use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, Offset, PowerLevel,
     RadioConfig, RadioFlags, ScanResume, SquelchLevel, Tone, TxClass, MAX_BATTERY_SAVE_RATIO,
-    MAX_SQUELCH_LEVEL,
+    MAX_SQUELCH_LEVEL, TX_POWER_LEVELS, TX_TIMEOUT_CHOICES,
 };
 use radio_programmer::{ConfigurationCompiler, DeviceCapabilities, RadioProject};
 use radio_storage::{
@@ -673,6 +673,26 @@ impl BankDraft {
             .collect()
     }
 
+    /// Returns the lowest and highest receive frequency the bank covers in
+    /// megahertz: a plan's span, or the span of its channels which parse.
+    pub fn frequency_span(&self) -> Option<(String, String)> {
+        match self.kind {
+            BankKind::Generated => self.generated_span(),
+            BankKind::Named => {
+                let hertz = self
+                    .channels
+                    .iter()
+                    .filter_map(|channel| parse_frequency(&channel.receive_mhz))
+                    .map(Frequency::as_hz);
+                let (low, high) = hertz.fold(None, |span, hz| match span {
+                    None => Some((hz, hz)),
+                    Some((low, high)) => Some((u32::min(low, hz), u32::max(high, hz))),
+                })?;
+                Some((format_mhz(low), format_mhz(high)))
+            }
+        }
+    }
+
     /// Returns the first and last generated frequency when the plan is valid.
     ///
     /// The editor shows the span a compact plan covers, which is otherwise only
@@ -717,6 +737,10 @@ pub struct ConfigDraft {
     pub am_fix: bool,
     /// Request squelch tail elimination on tone-coded channels.
     pub tone_tail_elimination: bool,
+    /// TX power level the radio starts on, zero-based.
+    pub tx_power: u8,
+    /// TX timeout index the radio starts on; the timeout is one more minute.
+    pub tx_timeout: u8,
 }
 
 impl Default for ConfigDraft {
@@ -740,6 +764,8 @@ impl ConfigDraft {
             busy_lockout_default: config.flags.contains(RadioFlags::BUSY_LOCKOUT_DEFAULT),
             am_fix: config.flags.contains(RadioFlags::AM_FIX),
             tone_tail_elimination: config.flags.contains(RadioFlags::TONE_TAIL_ELIMINATION),
+            tx_power: config.tx_power,
+            tx_timeout: config.tx_timeout,
         }
     }
 
@@ -760,6 +786,20 @@ impl ConfigDraft {
                 format!("must be 0 to {MAX_BATTERY_SAVE_RATIO}"),
             ));
         }
+        if self.tx_power >= TX_POWER_LEVELS {
+            return Err(error(
+                scope,
+                "TX power",
+                format!("must be 0 to {}", TX_POWER_LEVELS - 1),
+            ));
+        }
+        if self.tx_timeout >= TX_TIMEOUT_CHOICES {
+            return Err(error(
+                scope,
+                "TX timeout",
+                format!("must be 1 to {TX_TIMEOUT_CHOICES} minutes"),
+            ));
+        }
         let flags = RadioFlags::default()
             .with(RadioFlags::KEY_BEEP, self.key_beep)
             .with(RadioFlags::BUSY_LOCKOUT_DEFAULT, self.busy_lockout_default)
@@ -777,6 +817,8 @@ impl ConfigDraft {
             dual_watch: self.dual_watch,
             battery_save_ratio: self.battery_save_ratio,
             flags,
+            tx_power: self.tx_power,
+            tx_timeout: self.tx_timeout,
         }
         .validate()
         .map_err(|_| error(scope, "scan timing", "dwell and hold must be non-zero"))
@@ -1420,6 +1462,45 @@ mod tests {
         assert_eq!(draft.validate().unwrap().battery_save_ratio, 5);
         draft.squelch = 10;
         assert!(draft.validate().is_err());
+        draft.squelch = 3;
+        draft.tx_power = radio_domain::TX_POWER_LEVELS;
+        assert!(draft.validate().is_err());
+        draft.tx_power = radio_domain::TX_POWER_LEVELS - 1;
+        draft.tx_timeout = radio_domain::TX_TIMEOUT_CHOICES;
+        assert!(draft.validate().is_err());
+        draft.tx_timeout = radio_domain::TX_TIMEOUT_CHOICES - 1;
+        let config = draft.validate().unwrap();
+        assert_eq!((config.tx_power, config.tx_timeout), (3, 4));
+    }
+
+    /// The handset's TX settings go to the radio and come back from it.
+    #[test]
+    fn tx_power_and_timeout_round_trip_through_the_radio_image() {
+        let mut model = project();
+        model.config.tx_power = 2;
+        model.config.tx_timeout = 3;
+        let image = model.to_radio_image().unwrap();
+        let loaded = ProjectModel::from_image(&image).unwrap();
+        assert_eq!((loaded.config.tx_power, loaded.config.tx_timeout), (2, 3));
+    }
+
+    #[test]
+    fn a_channel_bank_spans_the_receive_frequencies_which_parse() {
+        let mut model = project();
+        assert_eq!(
+            model.banks[0].frequency_span(),
+            Some(("145.725000".to_owned(), "145.725000".to_owned()))
+        );
+        model.add_channel(0);
+        model.banks[0].channels[1].receive_mhz = "144.800".to_owned();
+        model.add_channel(0);
+        model.banks[0].channels[2].receive_mhz = "half typed.".to_owned();
+        assert_eq!(
+            model.banks[0].frequency_span(),
+            Some(("144.800000".to_owned(), "145.725000".to_owned()))
+        );
+        model.banks[0].channels.clear();
+        assert_eq!(model.banks[0].frequency_span(), None);
     }
 
     #[test]

@@ -22,6 +22,7 @@ log = "0.4"
 radio-channel-plan = { path = "../radio-channel-plan" }
 radio-domain = { path = "../radio-domain" }
 radio-flasher = { path = "../radio-flasher" }
+radio-platform = { path = "../radio-platform" }
 radio-programmer = { path = "../radio-programmer" }
 radio-programmer-serial = { path = "../radio-programmer-serial" }
 radio-sim = { path = "../radio-sim" }

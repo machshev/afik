@@ -474,7 +474,9 @@ fn cancel_pending_squelch(
 fn adopt_settings(shell: &mut Shell, programmed: &Programmed) {
     let (banks, bank_count) = programmed.populated_banks();
     shell.set_banks(banks, bank_count);
-    shell.set_squelch(programmed.config().squelch);
+    let config = programmed.config();
+    shell.set_squelch(config.squelch);
+    shell.set_tx(config.tx_power, config.tx_timeout);
 }
 
 /// Points the shell at the source the operator was last listening to.
@@ -1587,5 +1589,19 @@ mod tests {
         );
         assert_eq!(shell.bank_filter(), Some(BankId::new(1)));
         assert_eq!(selected.map(|kept| kept.index), Some(3));
+    }
+    #[test]
+    fn a_programmed_tx_power_and_timeout_reach_the_handset_menu() {
+        let mut shell = Shell::new();
+        let mut selected = None;
+        adopt_publication(
+            &mut shell,
+            &Programmed::with_channels(4, 0b11).with_tx(3, 4),
+            true,
+            None,
+            &mut selected,
+        );
+        assert_eq!(shell.tx_power(), 3);
+        assert_eq!(shell.tx_timeout_ms(), 300_000);
     }
 }
