@@ -18,8 +18,8 @@ use crate::{
     device::{DeviceChoice, DeviceChooser},
     flash_tab::FlashTab,
     model::{
-        BankDraft, BankKind, ChannelDraft, ModelError, ProjectModel, StorageSummary, ToneDraft,
-        ToneKind, MAX_PROJECT_IMAGE_BYTES, RADIO_IMAGE_BYTES,
+        BankDraft, BankKind, BankUsage, ChannelDraft, ModelError, ProjectModel, StorageSummary,
+        ToneDraft, ToneKind, MAX_PROJECT_IMAGE_BYTES, RADIO_IMAGE_BYTES,
     },
     presets::PRESETS,
     projects::ProjectStore,
@@ -500,6 +500,8 @@ impl eframe::App for StudioApp {
         });
 
         egui::TopBottomPanel::bottom("status").show(context, |ui| {
+            usage_bar(ui, &self.project.storage_summary());
+            ui.separator();
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new(&self.status).strong());
             });
@@ -598,15 +600,7 @@ impl StudioApp {
             if ui.button("Add generated plan").clicked() {
                 self.add_bank(BankKind::Generated);
             }
-            ui.label(format!(
-                "{} banks, {} channel rows",
-                self.project.banks.len(),
-                self.project.channel_count()
-            ));
         });
-        let summary = self.project.storage_summary();
-        storage_summary_label(ui, &summary);
-        radio_memory_label(ui, &summary);
         ui.separator();
 
         let mut action = None;
@@ -779,7 +773,6 @@ impl StudioApp {
             "The project is compiled into the image the radio runs, written into its \
              memory and read back. The radio checks it again before it uses it.",
         );
-        radio_memory_label(ui, &self.project.storage_summary());
 
         let idle = self.job.is_none();
         ui.add_enabled_ui(idle && self.session.is_some(), |ui| {
@@ -1237,34 +1230,65 @@ fn generated_expansion(ui: &mut egui::Ui, bank: &BankDraft) {
     });
 }
 
-/// Reports how much of a radio's configuration memory the project takes.
-fn radio_memory_label(ui: &mut egui::Ui, summary: &StorageSummary) {
-    match summary.image_bytes {
-        Some(bytes) => {
-            ui.label(format!(
-                "Radio memory: {bytes} of {RADIO_IMAGE_BYTES} bytes used, {} free.",
-                RADIO_IMAGE_BYTES - bytes
-            ));
+/// Shows what the project gives and costs a radio, on every tab: the banks
+/// and their channels, and how much of the radio's memory the image takes.
+fn usage_bar(ui: &mut egui::Ui, summary: &StorageSummary) {
+    ui.horizontal_wrapped(|ui| {
+        ui.label(format!(
+            "{} banks · {} channels ({} stored, {} from {} plans)",
+            summary.banks.len(),
+            summary.selectable_channels(),
+            summary.stored_channels,
+            summary.expanded_channels,
+            summary.plans,
+        ));
+        ui.separator();
+        match (summary.image_bytes, summary.used_per_mille()) {
+            (Some(bytes), Some(per_mille)) => {
+                ui.add(
+                    egui::ProgressBar::new(
+                        f32::from(u16::try_from(per_mille).unwrap_or(1_000).min(1_000)) / 1_000.0,
+                    )
+                    .desired_width(120.0)
+                    .text(memory_percent(per_mille)),
+                );
+                ui.label(format!(
+                    "{bytes} of {RADIO_IMAGE_BYTES} bytes, {} free",
+                    RADIO_IMAGE_BYTES.saturating_sub(bytes)
+                ));
+            }
+            _ => {
+                ui.colored_label(
+                    WARNING_COLOUR,
+                    "Memory: the project does not compile into a radio image yet; \
+                     Save or Write lists what to fix.",
+                );
+            }
         }
-        None => {
-            ui.colored_label(
-                WARNING_COLOUR,
-                "Radio memory: the project does not compile into a radio image yet; \
-                 Save or Write lists what to fix.",
-            );
-        }
+    });
+    if !summary.banks.is_empty() {
+        ui.horizontal_wrapped(|ui| {
+            for (row, bank) in summary.banks.iter().enumerate() {
+                ui.label(bank_usage_label(row, bank));
+            }
+        });
     }
 }
 
-/// Reports how many channels the radio will offer.
-fn storage_summary_label(ui: &mut egui::Ui, summary: &StorageSummary) {
-    ui.label(format!(
-        "{} selectable channels: {} stored, {} expanded from {} plans.",
-        summary.selectable_channels(),
-        summary.stored_channels,
-        summary.expanded_channels,
-        summary.plans,
-    ));
+/// Formats tenths of a percent, such as `12.5%`.
+fn memory_percent(per_mille: usize) -> String {
+    format!("{}.{}%", per_mille / 10, per_mille % 10)
+}
+
+/// Names one bank and its channel count for the status bar.
+fn bank_usage_label(row: usize, bank: &BankUsage) -> String {
+    let name = if bank.name.trim().is_empty() {
+        format!("Bank {}", row + 1)
+    } else {
+        bank.name.clone()
+    };
+    let plan = if bank.generated { ", plan" } else { "" };
+    format!("{name}: {}{plan}", bank.channels)
 }
 
 fn bank_kind_editor(ui: &mut egui::Ui, kind: &mut BankKind) {
@@ -1376,9 +1400,14 @@ pub fn bank_row_label(row: usize, bank: &BankDraft) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        bank_row_label, channel_row_label, scan_resume_label, tx_class_label, StudioApp, Tab,
+        bank_row_label, bank_usage_label, channel_row_label, memory_percent, scan_resume_label,
+        tx_class_label, StudioApp, Tab,
     };
-    use crate::{model::BankKind, projects::ProjectStore, DeviceSelector, Options};
+    use crate::{
+        model::{BankKind, BankUsage},
+        projects::ProjectStore,
+        DeviceSelector, Options,
+    };
     use radio_domain::{ScanResume, TxClass};
     use std::path::PathBuf;
 
@@ -1779,6 +1808,25 @@ mod tests {
         frame(&context, &mut app, Vec::new());
         focus_field(&context, &mut app, |app| app.project.banks[1].name.clone());
         assert_eq!(app.project.banks[0].name, name);
+    }
+
+    #[test]
+    fn the_status_bar_names_banks_and_reads_memory_in_tenths() {
+        assert_eq!(memory_percent(0), "0.0%");
+        assert_eq!(memory_percent(125), "12.5%");
+        assert_eq!(memory_percent(1_000), "100.0%");
+        let named = BankUsage {
+            name: "Amateur 2m".to_owned(),
+            generated: false,
+            channels: 4,
+        };
+        assert_eq!(bank_usage_label(0, &named), "Amateur 2m: 4");
+        let plan = BankUsage {
+            name: " ".to_owned(),
+            generated: true,
+            channels: 16,
+        };
+        assert_eq!(bank_usage_label(2, &plan), "Bank 3: 16, plan");
     }
 
     #[test]

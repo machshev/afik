@@ -96,9 +96,7 @@ floating point.
   numbered by the radio from their position. A generated plan stores a base
   frequency, spacing, channel count, naming, transmit class and the
   per-channel template its channels share, and expands, in place, into the
-  channels the radio will build from it. The tab says how many channels the
-  radio can select and how much of its 7,424-byte image region
-  (`0x0000..0x1D00`) the compiled image takes.
+  channels the radio will build from it.
 - **Radio:** squelch, backlight, scan resume mode and timings, dual watch,
   battery save, and the global behaviour flags.
 - **Device:** detect and select a serial device, choose the baud, connect or
@@ -114,6 +112,13 @@ floating point.
   checks the image again a second after the last write and runs no channels
   from one which fails.
 - **Flash:** the guided flash flow described below.
+
+A status bar under every tab shows the number of banks, the channels the
+radio can select (stored, and expanded from plans), each bank's channel count,
+and how much of the radio's 7,424-byte image region (`0x0000..0x1D00`) the
+compiled image takes, in bytes and as a percentage rounded up to a tenth.
+Only rows which validate are counted, and no size is shown until the whole
+project compiles.
 
 ## Logging
 

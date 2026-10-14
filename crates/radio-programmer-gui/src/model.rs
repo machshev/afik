@@ -369,9 +369,22 @@ impl BankKind {
     }
 }
 
+/// How many channels one bank row gives the radio.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BankUsage {
+    /// The bank's display name, as typed.
+    pub name: String,
+    /// Whether the bank is a generated plan.
+    pub generated: bool,
+    /// Channels which validate, or a valid plan's expansion.
+    pub channels: usize,
+}
+
 /// What one project costs a radio.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct StorageSummary {
+    /// Every bank row, in the radio's order.
+    pub banks: Vec<BankUsage>,
     /// Channels stored one record each.
     pub stored_channels: usize,
     /// Channels the radio expands from stored plans.
@@ -386,6 +399,15 @@ impl StorageSummary {
     /// Returns every channel the radio can select.
     pub const fn selectable_channels(&self) -> usize {
         self.stored_channels + self.expanded_channels
+    }
+
+    /// Returns the radio memory the image takes in tenths of a percent,
+    /// rounded up so a nearly full radio never reads as having room.
+    pub const fn used_per_mille(&self) -> Option<usize> {
+        match self.image_bytes {
+            Some(bytes) => Some((bytes * 1_000).div_ceil(RADIO_IMAGE_BYTES)),
+            None => None,
+        }
     }
 }
 
@@ -865,6 +887,7 @@ impl ProjectModel {
         let mut summary = StorageSummary::default();
         let mut id = 1_u16;
         for (row, draft) in self.banks.iter().enumerate() {
+            let mut channels = 0;
             match draft.validate(row) {
                 Ok(ValidatedBank::Named(bank)) => {
                     for (channel_row, channel) in draft.channels.iter().enumerate() {
@@ -873,17 +896,24 @@ impl ProjectModel {
                             row: channel_row,
                         };
                         if channel.validate(scope, id, bank.id()).is_ok() {
-                            summary.stored_channels += 1;
+                            channels += 1;
                         }
                         id = id.saturating_add(1);
                     }
+                    summary.stored_channels += channels;
                 }
                 Ok(ValidatedBank::Generated(plan)) => {
+                    channels = usize::from(plan.channel_count());
                     summary.plans += 1;
-                    summary.expanded_channels += usize::from(plan.channel_count());
+                    summary.expanded_channels += channels;
                 }
                 Err(_) => {}
             }
+            summary.banks.push(BankUsage {
+                name: draft.name.clone(),
+                generated: draft.kind == BankKind::Generated,
+                channels,
+            });
         }
         summary.image_bytes = self.to_radio_image().ok().map(|image| image.len());
         summary
@@ -1491,6 +1521,9 @@ mod tests {
         assert_eq!(stored_only.selectable_channels(), 1);
         let bytes = stored_only.image_bytes.unwrap();
         assert!(bytes < RADIO_IMAGE_BYTES);
+        let per_mille = stored_only.used_per_mille().unwrap();
+        assert!(per_mille > 0 && per_mille <= 1_000);
+        assert!(per_mille * RADIO_IMAGE_BYTES >= bytes * 1_000);
 
         let row = pmr_plan(&mut model);
         let summary = model.storage_summary();
@@ -1498,12 +1531,23 @@ mod tests {
         assert_eq!(summary.selectable_channels(), 17);
         assert_eq!(summary.plans, 1);
         assert!(summary.image_bytes.unwrap() > bytes);
+        assert_eq!(summary.banks.len(), 2);
+        assert_eq!(
+            (summary.banks[0].generated, summary.banks[0].channels),
+            (false, 1)
+        );
+        assert_eq!(
+            (summary.banks[1].generated, summary.banks[1].channels),
+            (true, 16)
+        );
 
         // A row which does not validate is not counted, and no image is claimed.
         model.banks[row].base_mhz = "not a frequency".to_owned();
         let summary = model.storage_summary();
         assert_eq!(summary.expanded_channels, 0);
         assert_eq!(summary.image_bytes, None);
+        assert_eq!(summary.used_per_mille(), None);
+        assert_eq!(summary.banks[row].channels, 0);
     }
 
     #[test]

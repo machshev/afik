@@ -277,6 +277,12 @@
   and a second job meanwhile. Gate: `cargo fmt --all --check` clean,
   workspace clippy `-D warnings` clean, `cargo test --workspace
   --no-fail-fast` 682 passed 0 failed.
+- Studio (operator request): a status bar under every tab shows banks,
+  selectable channels, each bank's channel count, and image bytes and percent
+  of the radio's memory (`StorageSummary::banks`, `used_per_mille`); it
+  replaces the Banks and Device tab summary lines. Gate: `cargo fmt --all
+  --check` clean, workspace clippy `-D warnings` clean, `cargo test
+  --workspace` 683 passed 0 failed.
 - Next: flash K5 `7.0.18`, check a power cycle keeps VFO, bank and channel,
   and program it from the studio (write, power-cycle,
   read back); then the K1's NOR erase plan; then CTCSS/DCS with a tail tone.
