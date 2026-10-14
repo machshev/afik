@@ -24,13 +24,13 @@ The commands are:
 
 Project objects are supplied as specifications:
 
-- `--bank ID:NAME:BASE_HZ:SPACING_HZ:COUNT:TX_CLASS` is a generated bank: one
+- `--bank ID:NAME:BASE_HZ:SPACING_HZ:COUNT` is a generated bank: one
   stored object which a target expands into `COUNT` complete channels. `ID` is a
   bank identifier from 0 to 15, and the expanded channels are members of it. The
   per-channel template takes the same conservative defaults as `--channel`, with
   the manual step following the plan spacing; the studio edits the template
   field by field.
-- `--channel ID:NAME:RECEIVE_HZ:BANK:TX_CLASS` is one explicit receive channel.
+- `--channel ID:NAME:RECEIVE_HZ:BANK` is one explicit receive channel.
   `BANK` is a bank identifier, or `-` for a channel in no bank. The transmit
   frequency mirrors receive; modulation, bandwidth, power, step, squelch, and
   flags take the conservative defaults the compiler validates. A target which

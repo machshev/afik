@@ -18,7 +18,7 @@ use std::{cell::RefCell, rc::Rc};
 
 use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, RadioConfig,
-    SquelchLevel, Tone, TxClass,
+    SquelchLevel, Tone,
 };
 
 const TRANSMIT_MODE: u16 = 0x80FE;
@@ -147,7 +147,6 @@ fn channel(id: u16, hertz: u32, tone: Tone, flags: u8) -> ChannelRecord {
         squelch: SquelchLevel::new(4).expect("squelch"),
         flags: ChannelFlags::from_bits(flags).expect("flags"),
         banks: BankMask::from_bits(0b0000_0001),
-        tx_class: TxClass::Amateur,
     })
     .expect("channel record")
 }

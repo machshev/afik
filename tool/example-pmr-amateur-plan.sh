@@ -44,28 +44,28 @@ esac
 # Bank 0: the eight-channel analogue PMR446 allocation, licence free, 12.5 kHz
 # spacing from 446.00625 MHz. Four are programmed to leave room for amateur use.
 pmr=(
-  "1:PMR 1:446006250:0:licence-free"
-  "2:PMR 2:446018750:0:licence-free"
-  "3:PMR 3:446031250:0:licence-free"
-  "4:PMR 4:446043750:0:licence-free"
+  "1:PMR 1:446006250:0"
+  "2:PMR 2:446018750:0"
+  "3:PMR 3:446031250:0"
+  "4:PMR 4:446043750:0"
 )
 
 # Bank 1: 2 m FM simplex. 145.500 MHz is the calling channel and the rest sit in
 # the FM simplex segment at 25 kHz spacing.
 two_metres=(
-  "5:2M CALL:145500000:1:amateur"
-  "6:2M 145.525:145525000:1:amateur"
-  "7:2M 145.550:145550000:1:amateur"
-  "8:2M 145.575:145575000:1:amateur"
+  "5:2M CALL:145500000:1"
+  "6:2M 145.525:145525000:1"
+  "7:2M 145.550:145550000:1"
+  "8:2M 145.575:145575000:1"
 )
 
 # Bank 2: 70 cm FM simplex. 433.500 MHz is the calling channel and the rest sit
 # in the 433.400 to 433.575 MHz simplex segment at 25 kHz spacing.
 seventy_centimetres=(
-  "9:70CM CALL:433500000:2:amateur"
-  "10:70CM 433.40:433400000:2:amateur"
-  "11:70CM 433.45:433450000:2:amateur"
-  "12:70CM 433.55:433550000:2:amateur"
+  "9:70CM CALL:433500000:2"
+  "10:70CM 433.40:433400000:2"
+  "11:70CM 433.45:433450000:2"
+  "12:70CM 433.55:433550000:2"
 )
 
 arguments=()

@@ -11,7 +11,7 @@ use radio_channel_plan::{
 };
 use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, Offset, PowerLevel,
-    RadioConfig, RadioFlags, ScanResume, SquelchLevel, Tone, TxClass,
+    RadioConfig, RadioFlags, ScanResume, SquelchLevel, Tone,
 };
 
 /// Relative dual-slot canonical-image persistence model.
@@ -762,7 +762,7 @@ pub fn encode_generated_bank(bank: GeneratedBank) -> Result<StorageObject, Stora
     data[21..25].copy_from_slice(&bank.base().as_hz().to_le_bytes());
     data[25..29].copy_from_slice(&bank.spacing().as_hz().to_le_bytes());
     data[29..31].copy_from_slice(&bank.channel_count().to_le_bytes());
-    data[31] = bank.tx_class() as u8;
+    // data[31] held a TX class before `ADR-101`; it is reserved and zero.
     let template = bank.template();
     encode_tone(template.rx_tone, &mut data[32..35]);
     encode_tone(template.tx_tone, &mut data[35..38]);
@@ -842,7 +842,7 @@ pub fn decode_generated_bank(object: &impl Object) -> Result<GeneratedBank, Stor
         FrequencyStep::from_hz(u32::from_le_bytes([data[25], data[26], data[27], data[28]]))
             .map_err(|_| StorageError::MalformedObject)?;
     let channel_count = u16::from_le_bytes([data[29], data[30]]);
-    let tx_class = TxClass::try_from(data[31]).map_err(|_| StorageError::MalformedObject)?;
+    // data[31] was the TX class; older projects carry one and it is ignored.
     let template = ChannelTemplate {
         rx_tone: decode_tone(&data[32..35])?,
         tx_tone: decode_tone(&data[35..38])?,
@@ -870,7 +870,6 @@ pub fn decode_generated_bank(object: &impl Object) -> Result<GeneratedBank, Stor
             base,
             spacing,
             channel_count,
-            tx_class,
             template,
         ),
         PlanEncoding::LinearFixedOffset => GeneratedBank::linear_fixed_offset_with(
@@ -879,7 +878,6 @@ pub fn decode_generated_bank(object: &impl Object) -> Result<GeneratedBank, Stor
             base,
             spacing,
             channel_count,
-            tx_class,
             template,
             Offset::from_hz(i32::from_le_bytes([data[56], data[57], data[58], data[59]])),
         ),
@@ -907,7 +905,7 @@ pub fn encode_channel(channel: ChannelRecord) -> Result<StorageObject, StorageEr
     data[33..37].copy_from_slice(&channel.step().as_hz().to_le_bytes());
     data[37] = channel.squelch().get();
     data[38] = channel.flags().bits();
-    data[39] = channel.tx_class() as u8;
+    // data[39] held a TX class before `ADR-101`; it is reserved and zero.
     data[40..42].copy_from_slice(&channel.banks().bits().to_le_bytes());
     StorageObject::new(
         ObjectKey {
@@ -949,7 +947,7 @@ pub fn decode_channel(object: &impl Object) -> Result<ChannelRecord, StorageErro
         .map_err(|_| StorageError::MalformedObject)?;
     let squelch = SquelchLevel::new(data[37]).map_err(|_| StorageError::MalformedObject)?;
     let flags = ChannelFlags::from_bits(data[38]).map_err(|_| StorageError::MalformedObject)?;
-    let tx_class = TxClass::try_from(data[39]).map_err(|_| StorageError::MalformedObject)?;
+    // data[39] was the TX class; older projects carry one and it is ignored.
     let banks = BankMask::from_bits(u16::from_le_bytes([data[40], data[41]]));
     ChannelRecord::new(ChannelDefinition {
         id: ChannelId::new(id),
@@ -965,7 +963,6 @@ pub fn decode_channel(object: &impl Object) -> Result<ChannelRecord, StorageErro
         squelch,
         flags,
         banks,
-        tx_class,
     })
     .map_err(|_| StorageError::MalformedObject)
 }
@@ -1415,7 +1412,7 @@ mod tests {
     };
     use radio_domain::{
         Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, Offset, PowerLevel,
-        RadioConfig, RadioFlags, ScanResume, SquelchLevel, Tone, TxClass,
+        RadioConfig, RadioFlags, ScanResume, SquelchLevel, Tone,
     };
     use std::{vec, vec::Vec};
 
@@ -1426,7 +1423,6 @@ mod tests {
             Frequency::from_hz(446_006_250).unwrap(),
             FrequencyStep::from_hz(12_500).unwrap(),
             16,
-            TxClass::LicenceFreePlan,
             // A template unlike the conservative default, so the round trip
             // proves every per-channel field survives storage.
             ChannelTemplate {
@@ -1509,7 +1505,6 @@ mod tests {
             Frequency::from_hz(145_600_000).unwrap(),
             FrequencyStep::from_hz(12_500).unwrap(),
             8,
-            TxClass::Amateur,
             ChannelTemplate::narrow_fm(FrequencyStep::from_hz(12_500).unwrap()),
             Offset::from_hz(-600_000),
         )
@@ -1531,7 +1526,6 @@ mod tests {
             Frequency::from_hz(145_600_000).unwrap(),
             FrequencyStep::from_hz(12_500).unwrap(),
             8,
-            TxClass::Amateur,
             ChannelTemplate::narrow_fm(FrequencyStep::from_hz(12_500).unwrap()),
             Offset::from_hz(0),
         )
@@ -1564,7 +1558,6 @@ mod tests {
             flags: ChannelFlags::from_bits(ChannelFlags::SCAN_SKIP | ChannelFlags::REVERSE)
                 .unwrap(),
             banks: BankMask::from_bits(0b0000_0000_0000_0101),
-            tx_class: TxClass::Amateur,
         })
         .unwrap()
     }
@@ -1618,7 +1611,7 @@ mod tests {
         };
 
         // version, identity, name length, tone kind, tone code, modulation,
-        // bandwidth, power, squelch, reserved flag, and TX class are all checked.
+        // bandwidth, power, squelch, and reserved flag are all checked.
         for (index, value) in [
             (0, STORAGE_FORMAT_VERSION + 1),
             (1, 13),
@@ -1630,12 +1623,20 @@ mod tests {
             (32, 3),
             (37, 10),
             (38, 0x20),
-            (39, 7),
         ] {
             assert_eq!(
                 decode_channel(&mutate(index, value)),
                 Err(StorageError::MalformedObject),
                 "index {index} value {value} was accepted"
+            );
+        }
+
+        // The byte that held a TX class before `ADR-101` is ignored, so a
+        // project saved with one still loads.
+        for old_class in [0, 2, 6, 7] {
+            assert_eq!(
+                decode_channel(&mutate(39, old_class)),
+                Ok(channel(12, "GB3AB"))
             );
         }
 
@@ -1949,10 +1950,10 @@ mod tests {
         assert_eq!(
             &image[..image_len],
             &[
-                0x41, 0x46, 0x49, 0x4B, 0x01, 0x04, 0x01, 0x00, 0x3D, 0x00, 0x00, 0x00, 0x0B, 0x08,
-                0x7A, 0x8F, 0x01, 0x04, 0x00, 0x38, 0x00, 0x04, 0x00, 0x04, 0x00, 0x01, 0x41, 0x00,
+                0x41, 0x46, 0x49, 0x4B, 0x01, 0x04, 0x01, 0x00, 0x3D, 0x00, 0x00, 0x00, 0x05, 0x98,
+                0xF1, 0x2A, 0x01, 0x04, 0x00, 0x38, 0x00, 0x04, 0x00, 0x04, 0x00, 0x01, 0x41, 0x00,
                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0xEA, 0x83, 0x95, 0x1A, 0xD4, 0x30, 0x00, 0x00, 0x10, 0x00, 0x01, 0x01, 0xE8, 0x03,
+                0xEA, 0x83, 0x95, 0x1A, 0xD4, 0x30, 0x00, 0x00, 0x10, 0x00, 0x00, 0x01, 0xE8, 0x03,
                 0x03, 0x17, 0x00, 0x00, 0x00, 0x01, 0xD4, 0x30, 0x00, 0x00, 0x04, 0x02, 0x02, 0x41,
                 0x20, 0x00, 0x00, 0x01, 0x00, 0xFF, 0xFF,
             ]
@@ -2089,7 +2090,7 @@ mod image_writer_tests {
     };
     use radio_domain::{
         Bandwidth, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, RadioConfig,
-        SquelchLevel, Tone, TxClass,
+        SquelchLevel, Tone,
     };
 
     fn channel(id: u16) -> ChannelRecord {
@@ -2108,7 +2109,6 @@ mod image_writer_tests {
             squelch: SquelchLevel::new(3).expect("squelch"),
             flags: ChannelFlags::default(),
             banks: BankMask::default(),
-            tx_class: TxClass::Never,
         })
         .expect("channel")
     }

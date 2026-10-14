@@ -449,7 +449,7 @@ impl RfSimulator {
         let channel = request.channel;
         self.shared.record(RfTraceKind::TransmitStarted {
             frequency: channel.transmit,
-            class: channel.tx_class,
+            class: authorisation.class(),
         });
         Ok(())
     }
@@ -1580,7 +1580,6 @@ mod tests {
             Frequency::from_hz(446_006_250).unwrap(),
             FrequencyStep::from_hz(12_500).unwrap(),
             16,
-            TxClass::LicenceFreePlan,
         )
         .unwrap()
     }
@@ -1611,7 +1610,6 @@ mod tests {
                 squelch: SquelchLevel::new(6).unwrap(),
                 flags: radio_channel_plan::ChannelFlags::default(),
                 banks: radio_channel_plan::BankMask::from_bits(1 << 1),
-                tx_class: TxClass::Amateur,
             })
             .unwrap(),
         );
@@ -2093,22 +2091,21 @@ mod tests {
 
     /// A request at another frequency, so its token cannot transmit `rf_channel`.
     fn other_rf_request() -> radio_tx_policy::TxRequest {
-        let mut channel = rf_channel(TxClass::Amateur);
+        let mut channel = rf_channel();
         channel.transmit = Frequency::from_hz(145_525_000).unwrap();
         tx_request(channel)
     }
 
-    fn rf_channel(class: TxClass) -> ActiveChannel {
+    fn rf_channel() -> ActiveChannel {
         ActiveChannel {
             receive: Frequency::from_hz(145_500_000).unwrap(),
             transmit: Frequency::from_hz(145_500_000).unwrap(),
-            tx_class: class,
         }
     }
 
     fn run_rf_script() -> (Vec<RfTraceEvent>, super::RfDriverState) {
         let policy = tx_fixture::policy(true);
-        let request = tx_request(rf_channel(TxClass::Amateur));
+        let request = tx_request(rf_channel());
         let amateur = policy.authorise(&request).unwrap();
         let other_request = other_rf_request();
         let other = policy.authorise(&other_request).unwrap();
@@ -2181,7 +2178,7 @@ mod tests {
         let before = simulator.trace();
 
         assert!(simulator
-            .start_transmit(&tx_request(rf_channel(TxClass::Amateur)), &other)
+            .start_transmit(&tx_request(rf_channel()), &other)
             .is_err());
         assert_eq!(simulator.trace(), before);
         assert!(!simulator.trace().iter().any(|event| matches!(
@@ -2329,7 +2326,6 @@ mod tests {
             Frequency::from_hz(145_500_001).unwrap(),
             FrequencyStep::from_hz(10).unwrap(),
             2,
-            TxClass::Amateur,
         )
         .unwrap();
         assert!(matches!(

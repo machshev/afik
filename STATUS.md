@@ -13,6 +13,15 @@ programmed TX ranges protect channel and VFO mode alike.
   PMR446 alone as one range. Gate: `cargo fmt --all --check` clean, workspace
   clippy `-D warnings` clean, `cargo test --workspace` 685 passed 0 failed,
   `tool/build-k5.sh --release` and `tool/build-k1.sh --release` pass.
+- Step 2: channels no longer carry a TX class (domain, plan, storage, sim,
+  CLI, web, studio; `TxClass::Never` is gone). Project files keep the old
+  class byte as reserved and ignore it, so saved projects load. The radio
+  image is now format 6 without the class byte: a radio on this firmware
+  rejects a format 5 image until the studio writes it again. CLI/web bank
+  specs are `ID:NAME:BASE_HZ:SPACING_HZ:COUNT`, channels `ID:NAME:RX_HZ:BANK`.
+  Gate: `cargo fmt --all --check` clean, workspace clippy `-D warnings`
+  clean, `cargo test --workspace` 685 passed 0 failed, K5 and K1 release
+  images build.
 
 ## Previous work package: TXK5-059
 

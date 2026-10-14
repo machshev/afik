@@ -1,4 +1,4 @@
-//! The image a radio runs: storage format 5, grouped into bank blocks.
+//! The image a radio runs: storage format 6, grouped into bank blocks.
 //!
 //! The host compiles a project into this image and writes it into the radio's
 //! memory (`ADR-100`); the radio reads it in place. Every channel lives in one
@@ -15,7 +15,7 @@
 //! no records at all.
 //!
 //! ```text
-//! header  : magic "AFIK", image version 2, format 5, block count u16,
+//! header  : magic "AFIK", image version 2, format 6, block count u16,
 //!           payload length u32, CRC-32 (as format 4)
 //! payload : radio configuration (16 bytes, as its format 4 object)
 //!           bank count u8, then per bank: id u8, flags u8, name length u8,
@@ -25,9 +25,9 @@
 //! linear  : the format 4 generated-bank object bytes
 //! list    : fields u16, name width u8, count u16, base Hz u32, raster Hz u32,
 //!           TX offset i32, step Hz u32, RX tone 3, TX tone 3, mode u8,
-//!           flags u8, squelch u8, TX class u8; then `count` records
+//!           flags u8, squelch u8; then `count` records
 //! record  : name (name width), RX, [TX], [RX tone], [TX tone], [mode],
-//!           [flags], [squelch], [TX class], [step], as `fields` says
+//!           [flags], [squelch], [step], as `fields` says
 //! ```
 //!
 //! A frequency is a `u16` count of rasters above the base when
@@ -41,7 +41,7 @@ use radio_channel_plan::{
 };
 use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, RadioConfig,
-    SquelchLevel, Tone, TxClass,
+    SquelchLevel, Tone,
 };
 
 use super::{
@@ -51,10 +51,10 @@ use super::{
     RADIO_CONFIG_ENCODED_LEN,
 };
 
-/// Image container version for format 5.
+/// Image container version for format 6.
 pub const IMAGE_VERSION: u8 = 2;
 /// Object format version this module reads and writes.
-pub const FORMAT_VERSION: u8 = 5;
+pub const FORMAT_VERSION: u8 = 6;
 /// Bytes in the image header.
 pub const HEADER_LEN: usize = 16;
 /// Most blocks one image may hold, which bounds the radio's RAM index.
@@ -79,19 +79,17 @@ pub const MODE: u16 = 1 << 4;
 pub const FLAGS: u16 = 1 << 5;
 /// Records carry their own squelch level.
 pub const SQUELCH: u16 = 1 << 6;
-/// Records carry their own TX class.
-pub const TX_CLASS: u16 = 1 << 7;
 /// Records carry their own tuning step.
-pub const STEP: u16 = 1 << 8;
-const KNOWN_FIELDS: u16 = (1 << 9) - 1;
+pub const STEP: u16 = 1 << 7;
+const KNOWN_FIELDS: u16 = (1 << 8) - 1;
 
 const KIND_LIST: u8 = 1;
 const KIND_LINEAR: u8 = 2;
 const BLOCK_HEADER_LEN: usize = 4;
-const LIST_HEADER_LEN: usize = 31;
+const LIST_HEADER_LEN: usize = 30;
 const BANK_ENTRY_HEADER_LEN: usize = 3;
 /// Largest list record: every field present at full width.
-const MAX_RECORD_LEN: usize = MAX_CHANNEL_NAME_LEN + 4 + 4 + 3 + 3 + 1 + 1 + 1 + 1 + 4;
+const MAX_RECORD_LEN: usize = MAX_CHANNEL_NAME_LEN + 4 + 4 + 3 + 3 + 1 + 1 + 1 + 4;
 /// Payload offset meaning "none".
 const ABSENT: u16 = u16::MAX;
 
@@ -229,7 +227,6 @@ impl ListLayout {
                 (mode_byte(channel) != mode_byte(&template), MODE),
                 (channel.flags() != template.flags(), FLAGS),
                 (channel.squelch() != template.squelch(), SQUELCH),
-                (channel.tx_class() != template.tx_class(), TX_CLASS),
                 (channel.step() != template.step(), STEP),
             ] {
                 if differs {
@@ -287,7 +284,6 @@ fn record_len(fields: u16, name_width: u8) -> usize {
         (MODE, 1),
         (FLAGS, 1),
         (SQUELCH, 1),
-        (TX_CLASS, 1),
         (STEP, 4),
     ] {
         if fields & field != 0 {
@@ -323,7 +319,6 @@ fn write_list<'a>(
     writer.u8(mode_byte(&template))?;
     writer.u8(template.flags().bits())?;
     writer.u8(template.squelch().get())?;
-    writer.u8(template.tx_class() as u8)?;
     let frequency = |writer: &mut Writer<'_>, hz: u32| {
         if layout.fields & SHORT_FREQUENCY != 0 {
             writer.u16(u16::try_from((hz - layout.base) / layout.raster).unwrap_or(0))
@@ -353,9 +348,6 @@ fn write_list<'a>(
         }
         if fields & SQUELCH != 0 {
             writer.u8(channel.squelch().get())?;
-        }
-        if fields & TX_CLASS != 0 {
-            writer.u8(channel.tx_class() as u8)?;
         }
         if fields & STEP != 0 {
             writer.u32(channel.step().as_hz())?;
@@ -493,7 +485,6 @@ struct ListHeader {
     mode: u8,
     flags: u8,
     squelch: u8,
-    tx_class: u8,
 }
 
 impl ListHeader {
@@ -514,7 +505,6 @@ impl ListHeader {
             mode: bytes[27],
             flags: bytes[28],
             squelch: bytes[29],
-            tx_class: bytes[30],
         };
         if header.fields & !KNOWN_FIELDS != 0
             || usize::from(header.name_width) > MAX_CHANNEL_NAME_LEN
@@ -548,7 +538,6 @@ impl ListHeader {
         let [mode] = cursor.field(self.fields & MODE != 0, &[self.mode]);
         let [flags] = cursor.field(self.fields & FLAGS != 0, &[self.flags]);
         let [squelch] = cursor.field(self.fields & SQUELCH != 0, &[self.squelch]);
-        let [tx_class] = cursor.field(self.fields & TX_CLASS != 0, &[self.tx_class]);
         let step =
             u32::from_le_bytes(cursor.field(self.fields & STEP != 0, &self.step.to_le_bytes()));
         let banks = if bank == NO_BANK {
@@ -572,7 +561,6 @@ impl ListHeader {
             squelch: SquelchLevel::new(squelch).map_err(malformed)?,
             flags: ChannelFlags::from_bits(flags).map_err(malformed)?,
             banks,
-            tx_class: TxClass::try_from(tx_class).map_err(malformed)?,
         })
         .map_err(malformed)
     }
@@ -953,7 +941,7 @@ mod tests {
     };
     use radio_domain::{
         Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel,
-        RadioConfig, SquelchLevel, Tone, TxClass,
+        RadioConfig, SquelchLevel, Tone,
     };
     use std::vec::Vec;
 
@@ -974,7 +962,6 @@ mod tests {
             banks: bank.map_or(BankMask::default(), |bank| {
                 BankMask::default().with(BankId::new(bank), true).unwrap()
             }),
-            tx_class: TxClass::Never,
         }
     }
 
@@ -1002,7 +989,6 @@ mod tests {
         let mut two = channel(101, "GB3BB", 433_050_000, 434_650_000, Some(1));
         two.tx_tone = Tone::ctcss(1188).unwrap();
         two.power = PowerLevel::High;
-        two.tx_class = TxClass::Amateur;
         vec_of([one, two])
     }
 
@@ -1017,7 +1003,6 @@ mod tests {
             Frequency::from_hz(156_000_000).unwrap(),
             FrequencyStep::from_hz(25_000).unwrap(),
             40,
-            TxClass::Never,
         )
         .unwrap()
     }
@@ -1077,7 +1062,6 @@ mod tests {
         assert_eq!(a.squelch(), b.squelch());
         assert_eq!(a.flags(), b.flags());
         assert_eq!(a.banks(), b.banks());
-        assert_eq!(a.tx_class(), b.tx_class());
     }
 
     #[test]
@@ -1142,8 +1126,8 @@ mod tests {
     fn a_pmr_list_costs_its_names_and_short_frequencies() {
         let image = compiled(&pmr(), &[]);
         // Header 16, config 16, one named bank 3 + 6, block header 4, list
-        // header 31, then 16 records of a 5-byte name and a 2-byte frequency.
-        assert_eq!(image.len(), 16 + 16 + 1 + 3 + 6 + 4 + 31 + 16 * (5 + 2));
+        // header 30, then 16 records of a 5-byte name and a 2-byte frequency.
+        assert_eq!(image.len(), 16 + 16 + 1 + 3 + 6 + 4 + 30 + 16 * (5 + 2));
     }
 
     #[test]

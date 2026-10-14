@@ -186,11 +186,14 @@ impl TxSimulator {
                 }
                 Action::EnablePa => {
                     let valid = self.prepared.as_ref() == Some(current)
-                        && matches!(self.rf.state(), DriverState::Transmitting { frequency, class }
-                        if frequency == current.channel.transmit && class == current.channel.tx_class)
-                        && effect
-                            .authorisation()
-                            .is_some_and(|token| token.matches(current));
+                        && effect.authorisation().is_some_and(|token| {
+                            token.matches(current)
+                                && self.rf.state()
+                                    == DriverState::Transmitting {
+                                        frequency: current.channel.transmit,
+                                        class: token.class(),
+                                    }
+                        });
                     if valid {
                         self.pa_enabled = true;
                     }

@@ -17,7 +17,7 @@ discover a radio, choose a serial default, or open a browser automatically.
 
 The responsive embedded interface displays every negotiated capability, the
 active generation, and the complete stable object listing. Generated banks use
-the same strict `ID:NAME:BASE_HZ:SPACING_HZ:COUNT:TX_CLASS` fields as the CLI,
+the same strict `ID:NAME:BASE_HZ:SPACING_HZ:COUNT` fields as the CLI,
 one per line, capped at 64 KiB. Domain validation and duplicate/capacity rules
 remain in their authoritative libraries.
 

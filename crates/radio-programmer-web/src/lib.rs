@@ -3,7 +3,7 @@
 #![forbid(unsafe_code)]
 
 use radio_channel_plan::{BankName, GeneratedBank};
-use radio_domain::{BankId, Frequency, FrequencyStep, TxClass};
+use radio_domain::{BankId, Frequency, FrequencyStep};
 use radio_programmer::{
     CapacityReport, CompileError, DeviceCapabilities, ObjectListing, Programmer, ProgrammerError,
     ProtocolTransport, RadioProject, RestoreError, VerifiedConfigurationReceipt,
@@ -259,10 +259,10 @@ fn parse_project(text: &str) -> Result<RadioProject, ProjectTextError> {
 
 fn parse_bank(line_number: usize, spec: &str) -> Result<GeneratedBank, ProjectTextError> {
     let fields = spec.split(':').collect::<Vec<_>>();
-    if fields.len() != 6 {
+    if fields.len() != 5 {
         return Err(ProjectTextError::line(
             line_number,
-            "expected ID:NAME:BASE_HZ:SPACING_HZ:COUNT:TX_CLASS",
+            "expected ID:NAME:BASE_HZ:SPACING_HZ:COUNT",
         ));
     }
     let id = parse_integer::<u16>(line_number, fields[0], "bank ID")?;
@@ -277,8 +277,7 @@ fn parse_bank(line_number: usize, spec: &str) -> Result<GeneratedBank, ProjectTe
     let spacing = FrequencyStep::from_hz(parse_integer::<u32>(line_number, fields[3], "spacing")?)
         .map_err(|error| ProjectTextError::line(line_number, error.to_string()))?;
     let count = parse_integer::<u16>(line_number, fields[4], "channel count")?;
-    let class = parse_class(line_number, fields[5])?;
-    GeneratedBank::linear_simplex(BankId::new(id), name, base, spacing, count, class)
+    GeneratedBank::linear_simplex(BankId::new(id), name, base, spacing, count)
         .map_err(|error| ProjectTextError::line(line_number, error.to_string()))
 }
 
@@ -291,29 +290,13 @@ where
         .map_err(|_| ProjectTextError::line(line, format!("invalid {label}: {value}")))
 }
 
-fn parse_class(line: usize, value: &str) -> Result<TxClass, ProjectTextError> {
-    match value {
-        "never" => Ok(TxClass::Never),
-        "licence-free" => Ok(TxClass::LicenceFreePlan),
-        "amateur" => Ok(TxClass::Amateur),
-        "marine" => Ok(TxClass::Marine),
-        "aeronautical" => Ok(TxClass::Aeronautical),
-        "business" => Ok(TxClass::Business),
-        "experimental" => Ok(TxClass::Experimental),
-        _ => Err(ProjectTextError::line(
-            line,
-            format!("unknown TX class: {value}"),
-        )),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{GuiSession, APP_CSS, APP_JS, INDEX_HTML, MAX_PROJECT_TEXT_BYTES};
     use radio_storage::decode_configuration_image;
 
-    const PROJECT: &str = "2:TWO:446018750:12500:2:licence-free\n\
-1:ONE:446006250:12500:1:licence-free\n";
+    const PROJECT: &str = "2:TWO:446018750:12500:2\n\
+1:ONE:446006250:12500:1\n";
 
     fn run_session() -> (super::GuiState, Vec<u8>) {
         let mut session = GuiSession::connect_simulator().unwrap();
@@ -353,9 +336,7 @@ mod tests {
         assert!(session.compile_project("").is_err());
         assert!(session.compile_project("broken").is_err());
         assert!(session.compile_project("1:X:1:1:1:unknown").is_err());
-        assert!(session
-            .compile_project("1:X:1:1:1:never\n1:Y:2:1:1:never")
-            .is_err());
+        assert!(session.compile_project("1:X:1:1:1\n1:Y:2:1:1").is_err());
         assert!(session
             .compile_project(&"x".repeat(MAX_PROJECT_TEXT_BYTES + 1))
             .is_err());

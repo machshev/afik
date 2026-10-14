@@ -2,7 +2,7 @@
 
 Two encodings are implemented, and one `GeneratedBank` expresses both. It stores
 a bank ID, bounded printable name, channel-name designator and first number,
-base frequency, positive spacing, channel count, trusted TX class, one
+base frequency, positive spacing, channel count, one
 `ChannelTemplate`, an optional calling-channel index, and a signed transmit
 offset. Construction checks the final generated frequency and both ends of the
 transmit range, so every valid index can be expanded without overflow.

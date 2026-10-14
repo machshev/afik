@@ -8,7 +8,7 @@ use radio_channel_plan::{
 };
 use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, Offset, PowerLevel,
-    RadioConfig, SquelchLevel, Tone, TxClass,
+    RadioConfig, SquelchLevel, Tone,
 };
 use radio_programmer::{ControlOutcome, Programmer, ProtocolTransport, RadioProject};
 use radio_programmer_serial::{is_supported_baud, LinuxSerialTransport};
@@ -72,18 +72,17 @@ Usage:\n\
 \n\
 PROJECT is one or more of --bank SPEC, --channel SPEC, and\n\
 --channel-bank SPEC, with at most one --config SPEC.\n\
-Bank SPEC: ID:NAME:BASE_HZ:SPACING_HZ:COUNT:TX_CLASS\n\
+Bank SPEC: ID:NAME:BASE_HZ:SPACING_HZ:COUNT\n\
   optionally :DESIGNATOR:FIRST_NUMBER[:CALLING[:OFFSET_HZ]]\n\
   DESIGNATOR is up to four characters the radio names channels with, and a\n\
   trailing space separates the number. CALLING is a zero-based index or -.\n\
   OFFSET_HZ is 0 for simplex or the signed transmit offset of a repeater.\n\
-Channel SPEC: ID:NAME:RECEIVE_HZ:BANK:TX_CLASS, where BANK is - for none\n\
+Channel SPEC: ID:NAME:RECEIVE_HZ:BANK, where BANK is - for none\n\
 Channel bank SPEC: ID:NAME:scan|noscan\n\
 Config SPEC: SQUELCH:SCAN_DWELL_MS, either field - to keep its default\n\
   SQUELCH is 0 to 9, where 0 disables carrier squelch entirely.\n\
   SCAN_DWELL_MS is whole milliseconds a scan listens to a channel for.\n\
   A radio which needs neither changed does not need this option at all.\n\
-TX_CLASS: never, licence-free, amateur, marine, aeronautical, business, experimental\n\
 Supported BAUD: 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200\n\
 \n\
 The rf- commands drive the receiver exactly as the handset does. They change\n\
@@ -445,9 +444,9 @@ fn parse_force_and_banks(
 /// conservative default the compiler already validates.
 fn parse_channel(spec: &str) -> Result<ChannelRecord, CliError> {
     let fields = spec.split(':').collect::<Vec<_>>();
-    if fields.len() != 5 {
+    if fields.len() != 4 {
         return Err(CliError::Usage(format!(
-            "channel spec requires five colon-separated fields: {spec}"
+            "channel spec requires four colon-separated fields: {spec}"
         )));
     }
     let id = parse_integer::<u16>(fields[0], "channel ID")?;
@@ -468,12 +467,11 @@ fn parse_channel(spec: &str) -> Result<ChannelRecord, CliError> {
             .with(BankId::new(bank), true)
             .map_err(|error| CliError::Usage(format!("invalid bank: {error}")))?
     };
-    let class = parse_class(fields[4])?;
     ChannelRecord::new(ChannelDefinition {
         id: ChannelId::new(id),
         name,
-        // Receive-only: the transmit frequency mirrors receive and the class
-        // decides whether transmission is permitted at all.
+        // Simplex: the transmit frequency mirrors receive, and the programmed
+        // TX ranges decide whether it may be used (`ADR-101`).
         receive,
         transmit: receive,
         rx_tone: Tone::None,
@@ -487,7 +485,6 @@ fn parse_channel(spec: &str) -> Result<ChannelRecord, CliError> {
             .map_err(|error| CliError::Usage(format!("invalid squelch: {error}")))?,
         flags: ChannelFlags::default(),
         banks,
-        tx_class: class,
     })
     .map_err(|error| CliError::Usage(format!("invalid channel: {error}")))
 }
@@ -543,9 +540,9 @@ fn parse_config(spec: &str) -> Result<RadioConfig, CliError> {
 /// operator reads on the radio.
 fn parse_bank(spec: &str) -> Result<GeneratedBank, CliError> {
     let fields = spec.split(':').collect::<Vec<_>>();
-    if !(6..=10).contains(&fields.len()) || fields.len() == 7 {
+    if !(5..=9).contains(&fields.len()) || fields.len() == 6 {
         return Err(CliError::Usage(format!(
-            "bank spec requires six colon-separated fields, or eight to ten \
+            "bank spec requires five colon-separated fields, or seven to nine \
              with DESIGNATOR:FIRST_NUMBER[:CALLING[:OFFSET_HZ]]: {spec}"
         )));
     }
@@ -557,8 +554,7 @@ fn parse_bank(spec: &str) -> Result<GeneratedBank, CliError> {
     let spacing = FrequencyStep::from_hz(parse_integer::<u32>(fields[3], "spacing")?)
         .map_err(|error| CliError::Usage(format!("invalid spacing: {error}")))?;
     let count = parse_integer::<u16>(fields[4], "channel count")?;
-    let class = parse_class(fields[5])?;
-    let offset = match fields.get(9) {
+    let offset = match fields.get(8) {
         Some(field) => Offset::from_hz(parse_integer::<i32>(field, "transmit offset")?),
         None => Offset::from_hz(0),
     };
@@ -568,12 +564,11 @@ fn parse_bank(spec: &str) -> Result<GeneratedBank, CliError> {
         base,
         spacing,
         count,
-        class,
         ChannelTemplate::narrow_fm(spacing),
         offset,
     )
     .map_err(|error| CliError::Usage(format!("invalid generated bank: {error}")))?;
-    if let (Some(designator), Some(first)) = (fields.get(6), fields.get(7)) {
+    if let (Some(designator), Some(first)) = (fields.get(5), fields.get(6)) {
         let designator = Designator::new(designator)
             .map_err(|error| CliError::Usage(format!("invalid designator: {error}")))?;
         let first = parse_integer::<u16>(first, "first channel number")?;
@@ -581,7 +576,7 @@ fn parse_bank(spec: &str) -> Result<GeneratedBank, CliError> {
             .with_designator(designator, first)
             .map_err(|error| CliError::Usage(format!("invalid plan numbering: {error}")))?;
     }
-    if let Some(field) = fields.get(8) {
+    if let Some(field) = fields.get(7) {
         let calling = match *field {
             "-" => None,
             value => Some(parse_integer::<u16>(value, "calling channel index")?),
@@ -624,19 +619,6 @@ where
     value
         .parse::<T>()
         .map_err(|_| CliError::Usage(format!("invalid {label}: {value}")))
-}
-
-fn parse_class(value: &str) -> Result<TxClass, CliError> {
-    match value {
-        "never" => Ok(TxClass::Never),
-        "licence-free" => Ok(TxClass::LicenceFreePlan),
-        "amateur" => Ok(TxClass::Amateur),
-        "marine" => Ok(TxClass::Marine),
-        "aeronautical" => Ok(TxClass::Aeronautical),
-        "business" => Ok(TxClass::Business),
-        "experimental" => Ok(TxClass::Experimental),
-        _ => Err(CliError::Usage(format!("unknown TX class: {value}"))),
-    }
 }
 
 /// Parses the runtime-control commands, which all share the `rf-` prefix.
@@ -1134,8 +1116,7 @@ mod tests {
     #[test]
     fn a_bank_spec_carries_the_designator_numbering_and_calling_channel() {
         // UK 2 m FM simplex: S8 at 145.200 through S23, calling on S20.
-        let bank =
-            super::parse_bank("1:2M SIMPLEX:145200000:25000:16:amateur:S:8:12").expect("bank spec");
+        let bank = super::parse_bank("1:2M SIMPLEX:145200000:25000:16:S:8:12").expect("bank spec");
         assert_eq!(bank.name().as_str(), "2M SIMPLEX");
         assert_eq!(bank.designator().as_str(), "S");
         assert_eq!(bank.first_number(), 8);
@@ -1148,8 +1129,7 @@ mod tests {
     #[test]
     fn a_bank_spec_keeps_a_trailing_space_in_the_designator() {
         // The space is what separates `PMR 1` from `PMR1`, so it is not trimmed.
-        let bank = super::parse_bank("0:PMR446:446006250:12500:16:licence-free:PMR :1:-")
-            .expect("bank spec");
+        let bank = super::parse_bank("0:PMR446:446006250:12500:16:PMR :1:-").expect("bank spec");
         assert_eq!(bank.designator().as_str(), "PMR ");
         assert_eq!(bank.channel_record(0).unwrap().name().as_str(), "PMR 1");
         assert_eq!(bank.calling_index(), None);
@@ -1157,7 +1137,7 @@ mod tests {
 
     #[test]
     fn a_bank_spec_with_an_offset_is_a_repeater_plan() {
-        let bank = super::parse_bank("3:2M REPEATERS:145600000:12500:16:amateur:RV:48:-:-600000")
+        let bank = super::parse_bank("3:2M REPEATERS:145600000:12500:16:RV:48:-:-600000")
             .expect("bank spec");
         assert_eq!(
             bank.encoding(),
@@ -1171,15 +1151,14 @@ mod tests {
 
     #[test]
     fn a_six_field_bank_spec_still_works_and_derives_its_designator() {
-        let bank =
-            super::parse_bank("0:PMR446:446006250:12500:16:licence-free").expect("bank spec");
+        let bank = super::parse_bank("0:PMR446:446006250:12500:16").expect("bank spec");
         assert_eq!(bank.channel_record(0).unwrap().name().as_str(), "PMR 1");
     }
 
     #[test]
     fn a_bank_spec_rejects_a_calling_channel_outside_the_plan() {
-        assert!(super::parse_bank("1:S:145200000:25000:4:amateur:S:8:9").is_err());
-        assert!(super::parse_bank("1:S:145200000:25000:4:amateur:S").is_err());
+        assert!(super::parse_bank("1:S:145200000:25000:4:S:8:9").is_err());
+        assert!(super::parse_bank("1:S:145200000:25000:4:S").is_err());
     }
     use super::{parse_config, run, CliOutcome, EXIT_OPERATION, EXIT_SUCCESS, EXIT_USAGE, HELP};
     use radio_domain::{RadioConfig, SquelchLevel};
@@ -1209,7 +1188,7 @@ mod tests {
     }
 
     fn bank(id: u16) -> String {
-        format!("{id}:PMR446:446006250:12500:16:licence-free")
+        format!("{id}:PMR446:446006250:12500:16")
     }
 
     #[test]
@@ -1249,8 +1228,8 @@ mod tests {
     fn explicit_channels_compile_write_and_list_beside_generated_banks() {
         let output = temp_file("channels");
         let output_text = output.to_string_lossy().into_owned();
-        let first = "1:2M CALL:145500000:0:amateur".to_owned();
-        let second = "2:PMR 1:446006250:1:licence-free".to_owned();
+        let first = "1:2M CALL:145500000:0".to_owned();
+        let second = "2:PMR 1:446006250:1".to_owned();
         let compiled = run(&arguments(&[
             "--sim",
             "compile",
@@ -1272,15 +1251,15 @@ mod tests {
         fs::remove_file(&output).ok();
 
         // The written configuration reads back through the ordinary listing.
-        let unbanked = "3:NO BANK:145700000:-:amateur".to_owned();
+        let unbanked = "3:NO BANK:145700000:-".to_owned();
         let written = run(&arguments(&["--sim", "write", "--channel", &unbanked]));
         assert_eq!(written.exit_code, EXIT_SUCCESS, "{written:?}");
         assert!(written.stdout.contains("generation=1"), "{written:?}");
 
         for spec in [
-            "1:x:abc:-:amateur",
-            "0:NAME:145500000:-:amateur",
-            "1:NAME:145500000:-",
+            "1:x:abc:-",
+            "0:NAME:145500000:-",
+            "1:NAME:145500000:-:extra",
         ] {
             let outcome = invoke(&["--sim", "write", "--channel", spec]);
             assert_eq!(outcome.exit_code, EXIT_USAGE, "{spec}");
@@ -1405,7 +1384,7 @@ mod tests {
             "--sim",
             "write",
             "--bank",
-            "0:PMR446:446006250:12500:16:licence-free",
+            "0:PMR446:446006250:12500:16",
             "--config",
             "3:84",
         ]));
@@ -1442,7 +1421,7 @@ mod tests {
             "--sim",
             "write",
             "--bank",
-            "0:PMR446:446006250:12500:16:licence-free",
+            "0:PMR446:446006250:12500:16",
             "--config",
             "3:90",
             "--config",

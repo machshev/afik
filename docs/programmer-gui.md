@@ -37,7 +37,7 @@ and opens it. A project with unsaved changes is never switched away from:
 Save it or Revert it first.
 
 A project file is the canonical format 4 object set, which every front end
-reads. The editor also opens a format 5 radio image, and an older project
+reads. The editor also opens a format 6 radio image, and an older project
 whose channels are in several banks, or in none, is grouped so each channel
 is in one bank (its first, or a last bank named `Unbanked`).
 
@@ -89,7 +89,7 @@ floating point.
 - **Banks:** the project as a radio holds it: up to sixteen banks in order,
   each either a list of channels or a generated plan. Every channel is in
   exactly one bank, the one it is listed under, because the radio stores each
-  channel in its bank (storage format 5, `ADR-100`). A bank's place in the
+  channel in its bank (storage format 6, `ADR-100`). A bank's place in the
   list is its identifier and the order the radio shows it in; Move up and
   Move down change it. Banks open collapsed, showing only their name and
   summary; clicking the name opens one, a newly added bank opens for editing,
@@ -106,7 +106,7 @@ floating point.
   battery save, and the global behaviour flags.
 - **Device:** detect and select a serial device, choose the baud, connect or
   disconnect it, connect the simulated radio, read the project back from the
-  radio, and write it. Writing compiles the format 5 image, writes only the
+  radio, and write it. Writing compiles the format 6 image, writes only the
   eight-byte blocks which differ into the radio's memory over the stock
   protocol, reads each back, then reads the whole image back
   (`radio_flasher::write_afik_image`). Writes and reads run on a worker

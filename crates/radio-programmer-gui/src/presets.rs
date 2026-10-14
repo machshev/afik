@@ -3,8 +3,9 @@
 //! A preset is a starting point, not an authority. Frequencies here are the
 //! licence-free and amateur allocations an operator is most likely to want
 //! first; the operator remains responsible for confirming them against their
-//! own national band plan, and for the transmit classification every channel
-//! carries. Nothing here is applied without an explicit request.
+//! own national band plan. Whether a channel may transmit is decided by the
+//! programmed TX ranges, not here (`ADR-101`). Nothing here is applied without
+//! an explicit request.
 //!
 //! A set is expressed as generated plans wherever its allocation is
 //! arithmetic. A plan is one stored object however many channels it holds, so
@@ -13,7 +14,7 @@
 //! rather than a truncated bank name and a position. The marine channel
 //! numbering is not arithmetic, so it is stored as named channels.
 
-use radio_domain::{Bandwidth, Modulation, PowerLevel, TxClass};
+use radio_domain::{Bandwidth, Modulation, PowerLevel};
 
 use crate::model::{format_mhz, BankDraft, BankKind, ChannelDraft, ProjectModel};
 
@@ -32,7 +33,6 @@ struct PresetPlan {
     calling_index: Option<u16>,
     /// Fixed transmit offset. Zero is simplex.
     offset_hz: i32,
-    tx_class: TxClass,
     modulation: Modulation,
     bandwidth: Bandwidth,
     power: PowerLevel,
@@ -45,7 +45,6 @@ struct PresetList {
     channels: &'static [(&'static str, u32)],
     /// Receive offset from the transmit frequency. Zero is simplex.
     receive_offset_hz: u32,
-    tx_class: TxClass,
     modulation: Modulation,
     bandwidth: Bandwidth,
     power: PowerLevel,
@@ -74,7 +73,6 @@ const PMR446: PresetPlan = PresetPlan {
     // The allocation designates no calling channel.
     calling_index: None,
     offset_hz: 0,
-    tx_class: TxClass::LicenceFreePlan,
     modulation: Modulation::Fm,
     // Analogue PMR446 is narrow FM at low power by allocation.
     bandwidth: Bandwidth::Narrow,
@@ -92,7 +90,6 @@ const TWO_METRE_SIMPLEX: PresetPlan = PresetPlan {
     // S20, twelve channels above S8.
     calling_index: Some(12),
     offset_hz: 0,
-    tx_class: TxClass::Amateur,
     modulation: Modulation::Fm,
     bandwidth: Bandwidth::Narrow,
     power: PowerLevel::Low,
@@ -109,7 +106,6 @@ const SEVENTY_CENTIMETRE_SIMPLEX: PresetPlan = PresetPlan {
     // SU20 at 433.500, four channels above SU16.
     calling_index: Some(4),
     offset_hz: 0,
-    tx_class: TxClass::Amateur,
     modulation: Modulation::Fm,
     bandwidth: Bandwidth::Narrow,
     power: PowerLevel::Low,
@@ -128,7 +124,6 @@ const TWO_METRE_REPEATERS: PresetPlan = PresetPlan {
     channels: 16,
     calling_index: None,
     offset_hz: -600_000,
-    tx_class: TxClass::Amateur,
     modulation: Modulation::Fm,
     bandwidth: Bandwidth::Narrow,
     power: PowerLevel::Low,
@@ -136,10 +131,8 @@ const TWO_METRE_REPEATERS: PresetPlan = PresetPlan {
 
 /// The VHF civil airband at 25 kHz: 118.000 to 136.975, AM, receive only.
 ///
-/// The transmit class is `Never`: this allocation is not one an amateur or
-/// licence-free operator may transmit in, and the class is the radio's own
-/// refusal rather than a note in a manual. The 8.33 kHz channel numbering is
-/// not arithmetic and is deliberately not expressed here.
+/// No TX range covers it, so the radio refuses to transmit here. The 8.33 kHz
+/// channel numbering is not arithmetic and is deliberately not expressed here.
 const AIRBAND: PresetPlan = PresetPlan {
     name: "AIRBAND",
     designator: "AIR",
@@ -149,7 +142,6 @@ const AIRBAND: PresetPlan = PresetPlan {
     channels: 760,
     calling_index: None,
     offset_hz: 0,
-    tx_class: TxClass::Never,
     modulation: Modulation::Am,
     bandwidth: Bandwidth::Narrow,
     power: PowerLevel::Low,
@@ -212,7 +204,6 @@ const MARINE_DUPLEX: PresetList = PresetList {
         ("86", marine_hz(86)),
     ],
     receive_offset_hz: MARINE_DUPLEX_OFFSET_HZ,
-    tx_class: TxClass::Marine,
     modulation: Modulation::Fm,
     // Marine VHF is 25 kHz FM.
     bandwidth: Bandwidth::Wide,
@@ -248,7 +239,6 @@ const MARINE_SIMPLEX: PresetList = PresetList {
         ("M2", 161_425_000),
     ],
     receive_offset_hz: 0,
-    tx_class: TxClass::Marine,
     modulation: Modulation::Fm,
     bandwidth: Bandwidth::Wide,
     power: PowerLevel::Low,
@@ -294,7 +284,7 @@ pub const PRESETS: &[Preset] = &[
         name: "Marine VHF",
         detail: "The international marine channels: a duplex bank receiving \
                  4.6 MHz above the ship frequency and a simplex bank with 16, \
-                 M and M2. Transmit needs a ship licence grant.",
+                 M and M2. Transmit needs a Marine TX range.",
         plans: &[],
         lists: &[MARINE_DUPLEX, MARINE_SIMPLEX],
     },
@@ -344,7 +334,6 @@ impl Preset {
                 channel_count: plan.channels,
                 calling_index: plan.calling_index,
                 offset_hz: plan.offset_hz,
-                tx_class: plan.tx_class,
                 scan_enabled: true,
                 modulation: plan.modulation,
                 bandwidth: plan.bandwidth,
@@ -365,14 +354,12 @@ impl Preset {
                     bandwidth: list.bandwidth,
                     power: list.power,
                     step_hz: list.step_hz,
-                    tx_class: list.tx_class,
                     ..ChannelDraft::default()
                 })
                 .collect();
             project.banks.push(BankDraft {
                 name: list.name.to_owned(),
                 kind: BankKind::Named,
-                tx_class: list.tx_class,
                 scan_enabled: true,
                 modulation: list.modulation,
                 bandwidth: list.bandwidth,
@@ -390,7 +377,7 @@ impl Preset {
 mod tests {
     use super::PRESETS;
     use crate::model::{BankKind, ProjectModel, ValidatedBank, RADIO_IMAGE_BYTES};
-    use radio_domain::{Bandwidth, TxClass};
+    use radio_domain::Bandwidth;
 
     #[test]
     fn every_preset_validates_and_compiles_to_an_image() {
@@ -518,7 +505,6 @@ mod tests {
             panic!("the airband row is a generated plan");
         };
         assert_eq!(plan.channel_count(), 760);
-        assert_eq!(plan.tx_class(), TxClass::Never);
         assert_eq!(
             plan.channel_record(0).unwrap().receive().as_hz(),
             118_000_000
@@ -582,15 +568,10 @@ mod tests {
         assert_eq!(channel(1, "M").receive_mhz, "157.850000");
         assert_eq!(channel(1, "M2").receive_mhz, "161.425000");
 
-        // Transmit needs a marine grant, which the TX policy checks.
         assert!(project
             .banks
             .iter()
-            .all(|bank| bank.tx_class == TxClass::Marine
-                && bank
-                    .channels
-                    .iter()
-                    .all(|c| c.tx_class == TxClass::Marine && c.bandwidth == Bandwidth::Wide)));
+            .all(|bank| bank.channels.iter().all(|c| c.bandwidth == Bandwidth::Wide)));
     }
 
     #[test]

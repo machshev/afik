@@ -25,7 +25,7 @@ pub const MAX_TX_RANGES: usize = 16;
 /// One programmed frequency range in which TX is permitted.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TxRange {
-    /// Service this range belongs to; a label, never `TxClass::Never`.
+    /// Service this range belongs to.
     pub class: TxClass,
     /// Lowest permitted carrier frequency, inclusive.
     pub first_hz: u32,
@@ -46,9 +46,6 @@ impl TxRange {
     ///
     /// Returns the first defect found.
     pub const fn validate(&self) -> Result<(), RangeError> {
-        if matches!(self.class, TxClass::Never) {
-            return Err(RangeError::Never);
-        }
         if self.first_hz == 0 || self.first_hz > self.last_hz {
             return Err(RangeError::Span);
         }
@@ -111,8 +108,6 @@ impl ClassSet {
 /// Why a programmed TX range is refused.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RangeError {
-    /// `TxClass::Never` is not a transmit service.
-    Never,
     /// The first frequency is zero or above the last.
     Span,
     /// The power ceiling is zero.
@@ -124,7 +119,6 @@ pub enum RangeError {
 impl fmt::Display for RangeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::Never => "a TX range cannot have class Never",
             Self::Span => "a TX range must start above zero and not end below its start",
             Self::Power => "a TX range needs a power ceiling above zero",
             Self::TooMany => "too many TX ranges",

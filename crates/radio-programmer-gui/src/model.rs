@@ -18,7 +18,7 @@ use radio_channel_plan::{
 };
 use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, Offset, PowerLevel,
-    RadioConfig, RadioFlags, ScanResume, SquelchLevel, Tone, TxClass, MAX_BATTERY_SAVE_RATIO,
+    RadioConfig, RadioFlags, ScanResume, SquelchLevel, Tone, MAX_BATTERY_SAVE_RATIO,
     MAX_SQUELCH_LEVEL, TX_POWER_LEVELS, TX_TIMEOUT_CHOICES,
 };
 use radio_programmer::{ConfigurationCompiler, DeviceCapabilities, RadioProject};
@@ -225,8 +225,6 @@ pub struct ChannelDraft {
     pub reverse: bool,
     /// Request the audio compander.
     pub compander: bool,
-    /// Trusted transmit classification.
-    pub tx_class: TxClass,
 }
 
 impl Default for ChannelDraft {
@@ -246,7 +244,6 @@ impl Default for ChannelDraft {
             busy_lockout: false,
             reverse: false,
             compander: false,
-            tx_class: TxClass::Never,
         }
     }
 }
@@ -270,7 +267,6 @@ impl ChannelDraft {
             busy_lockout: flags.contains(ChannelFlags::BUSY_LOCKOUT),
             reverse: flags.contains(ChannelFlags::REVERSE),
             compander: flags.contains(ChannelFlags::COMPANDER),
-            tx_class: record.tx_class(),
         }
     }
 
@@ -324,7 +320,6 @@ impl ChannelDraft {
             squelch,
             flags,
             banks,
-            tx_class: self.tx_class,
         })
         .map_err(|failure| error(scope, "channel", failure.to_string()))
     }
@@ -438,8 +433,6 @@ pub struct BankDraft {
     pub calling_index: Option<u16>,
     /// Fixed transmit offset in hertz. Zero is simplex; non-zero is a repeater.
     pub offset_hz: i32,
-    /// Trusted transmit classification of every generated channel.
-    pub tx_class: TxClass,
     /// Receive-side tone squelch shared by every generated channel.
     pub rx_tone: ToneDraft,
     /// Transmit-side tone shared by every generated channel.
@@ -477,7 +470,6 @@ impl Default for BankDraft {
             first_number: 1,
             calling_index: None,
             offset_hz: 0,
-            tx_class: TxClass::Never,
             rx_tone: ToneDraft::default(),
             tx_tone: ToneDraft::default(),
             modulation: Modulation::Fm,
@@ -517,7 +509,6 @@ impl BankDraft {
             first_number: bank.first_number(),
             calling_index: bank.calling_index(),
             offset_hz: bank.offset().as_hz(),
-            tx_class: bank.tx_class(),
             rx_tone: ToneDraft::from_tone(template.rx_tone),
             tx_tone: ToneDraft::from_tone(template.tx_tone),
             modulation: template.modulation,
@@ -585,7 +576,6 @@ impl BankDraft {
                     base,
                     spacing,
                     self.channel_count,
-                    self.tx_class,
                     self.template(scope)?,
                     Offset::from_hz(self.offset_hz),
                 )
@@ -887,7 +877,6 @@ impl ProjectModel {
             draft.step_hz = previous.step_hz;
             draft.modulation = previous.modulation;
             draft.bandwidth = previous.bandwidth;
-            draft.tx_class = previous.tx_class;
         }
         bank.channels.push(draft);
     }
@@ -1196,7 +1185,7 @@ mod tests {
         ProjectModel, ToneDraft, ToneKind, ValidatedBank, RADIO_IMAGE_BYTES,
     };
     use radio_channel_plan::{ChannelFlags, MAX_BANKS};
-    use radio_domain::{Bandwidth, BankId, PowerLevel, ScanResume, Tone, TxClass};
+    use radio_domain::{Bandwidth, BankId, PowerLevel, ScanResume, Tone};
     use radio_programmer::RadioProject;
 
     fn project() -> ProjectModel {
@@ -1216,7 +1205,6 @@ mod tests {
             kind: ToneKind::DcsInverted,
             value: "023".to_owned(),
         };
-        channel.tx_class = TxClass::Amateur;
         model
     }
 
@@ -1226,7 +1214,6 @@ mod tests {
         model.banks[row].name = "PMR446".to_owned();
         model.banks[row].base_mhz = "446.006250".to_owned();
         model.banks[row].designator = "PMR ".to_owned();
-        model.banks[row].tx_class = TxClass::LicenceFreePlan;
         row
     }
 
@@ -1342,7 +1329,6 @@ mod tests {
                 squelch: record.squelch(),
                 flags: record.flags(),
                 banks: radio_channel_plan::BankMask::from_bits(banks),
-                tx_class: record.tx_class(),
             })
             .unwrap()
         };
@@ -1426,7 +1412,6 @@ mod tests {
         model.banks[0].channels[0].step_hz = 6_250;
         model.add_channel(0);
         assert_eq!(model.banks[0].channels[1].step_hz, 6_250);
-        assert_eq!(model.banks[0].channels[1].tx_class, TxClass::Amateur);
         assert_eq!(model.banks[0].channels[1].name, "CH2");
         model.add_channel(9);
         assert_eq!(model.channel_count(), 2);
@@ -1511,7 +1496,6 @@ mod tests {
             base_mhz: "446.00625".to_owned(),
             spacing_hz: 12_500,
             channel_count: 16,
-            tx_class: TxClass::LicenceFreePlan,
             ..BankDraft::default()
         };
         let ValidatedBank::Generated(bank) = draft.validate(3).unwrap() else {

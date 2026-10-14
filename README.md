@@ -30,7 +30,7 @@ nix develop
 cargo run --package radio-programmer-cli --bin afik-programmer -- --help
 cargo run --package radio-programmer-cli --bin afik-programmer -- --sim info
 cargo run --package radio-programmer-cli --bin afik-programmer -- \
-  --sim write --bank '1:PMR446:446006250:12500:16:licence-free'
+  --sim write --bank '1:PMR446:446006250:12500:16'
 ```
 
 `compile`, `write`, `backup`, and `restore` use negotiated capabilities,

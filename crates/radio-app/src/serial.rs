@@ -240,7 +240,7 @@ mod tests {
     };
     use radio_domain::{
         Bandwidth, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, RadioConfig,
-        SquelchLevel, Tone, TxClass,
+        SquelchLevel, Tone,
     };
     use radio_platform::battery::Calibration;
     use radio_platform::memory_link::{VIEW_BYTES, WRITE_BYTES};
@@ -289,7 +289,6 @@ mod tests {
             squelch: SquelchLevel::new(3).expect("level"),
             flags: ChannelFlags::default(),
             banks: BankMask::default(),
-            tx_class: TxClass::Never,
         })
         .expect("channel")
     }

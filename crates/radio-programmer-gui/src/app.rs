@@ -7,8 +7,8 @@ use eframe::egui::{
 };
 use radio_channel_plan::{MAX_BANKS, MAX_GENERATED_CHANNELS};
 use radio_domain::{
-    Bandwidth, Modulation, PowerLevel, ScanResume, TxClass, BACKLIGHT_ALWAYS_ON,
-    MAX_BATTERY_SAVE_RATIO, MAX_SQUELCH_LEVEL, TX_POWER_LEVELS, TX_TIMEOUT_CHOICES,
+    Bandwidth, Modulation, PowerLevel, ScanResume, BACKLIGHT_ALWAYS_ON, MAX_BATTERY_SAVE_RATIO,
+    MAX_SQUELCH_LEVEL, TX_POWER_LEVELS, TX_TIMEOUT_CHOICES,
 };
 use radio_flasher::ImageWriteReport;
 use radio_platform::operator_shell::TX_POWER_NOMINAL_MW;
@@ -1001,8 +1001,6 @@ fn channel_row_editor(ui: &mut egui::Ui, channel: &mut ChannelDraft) -> Option<R
     Grid::new("channel").num_columns(4).show(ui, |ui| {
         ui.label("Name");
         ui.add(TextEdit::singleline(&mut channel.name).desired_width(120.0));
-        ui.label("TX class");
-        tx_class_editor(ui, &mut channel.tx_class);
         ui.end_row();
 
         ui.label("Receive MHz");
@@ -1138,8 +1136,6 @@ fn generated_plan_editor(ui: &mut egui::Ui, bank: &mut BankDraft) {
 
     ui.label("Channels");
     ui.add(egui::DragValue::new(&mut bank.channel_count).range(1..=MAX_GENERATED_CHANNELS));
-    ui.label("TX class");
-    tx_class_editor(ui, &mut bank.tx_class);
     ui.end_row();
 
     plan_naming_editor(ui, bank);
@@ -1417,36 +1413,6 @@ fn power_editor(ui: &mut egui::Ui, power: &mut PowerLevel) {
         });
 }
 
-fn tx_class_editor(ui: &mut egui::Ui, class: &mut TxClass) {
-    ComboBox::from_id_salt("tx-class")
-        .selected_text(tx_class_label(*class))
-        .show_ui(ui, |ui| {
-            for candidate in [
-                TxClass::Never,
-                TxClass::LicenceFreePlan,
-                TxClass::Amateur,
-                TxClass::Marine,
-                TxClass::Aeronautical,
-                TxClass::Business,
-                TxClass::Experimental,
-            ] {
-                ui.selectable_value(class, candidate, tx_class_label(candidate));
-            }
-        });
-}
-
-const fn tx_class_label(class: TxClass) -> &'static str {
-    match class {
-        TxClass::Never => "Never",
-        TxClass::LicenceFreePlan => "Licence free",
-        TxClass::Amateur => "Amateur",
-        TxClass::Marine => "Marine",
-        TxClass::Aeronautical => "Aeronautical",
-        TxClass::Business => "Business",
-        TxClass::Experimental => "Experimental",
-    }
-}
-
 const fn scan_resume_label(resume: ScanResume) -> &'static str {
     match resume {
         ScanResume::TimeOut => "Resume after hold",
@@ -1524,10 +1490,10 @@ fn column_widths(ui: &egui::Ui, rows: &[[String; BANK_COLUMNS]]) -> [f32; BANK_C
 mod tests {
     use super::{
         bank_row_columns, channel_row_label, column_gap, memory_percent, scan_resume_label,
-        tx_class_label, tx_power_label, tx_timeout_label, StudioApp, Tab, MIN_COLUMN_GAP,
+        tx_power_label, tx_timeout_label, StudioApp, Tab, MIN_COLUMN_GAP,
     };
     use crate::{model::BankKind, projects::ProjectStore, DeviceSelector, Options};
-    use radio_domain::{ScanResume, TxClass};
+    use radio_domain::ScanResume;
     use std::path::PathBuf;
 
     /// The studio names each TX choice as the handset menu lists it.
@@ -2007,7 +1973,6 @@ mod tests {
 
     #[test]
     fn labels_cover_every_enumerated_value() {
-        assert_eq!(tx_class_label(TxClass::Never), "Never");
         assert_eq!(scan_resume_label(ScanResume::Stop), "Stop on signal");
         let mut project = crate::model::ProjectModel::new();
         project.add_bank();

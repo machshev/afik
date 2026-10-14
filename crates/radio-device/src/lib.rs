@@ -916,7 +916,6 @@ mod tests {
     };
     use radio_domain::{
         Bandwidth, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, SquelchLevel, Tone,
-        TxClass,
     };
 
     /// A store with room for four channels and nothing else to say about it.
@@ -979,7 +978,6 @@ mod tests {
             squelch: SquelchLevel::new(3).expect("squelch"),
             flags: ChannelFlags::default(),
             banks: BankMask::default(),
-            tx_class: TxClass::Never,
         })
         .expect("channel record")
     }

@@ -20,7 +20,6 @@ pub fn channel(class: TxClass) -> ActiveChannel {
     ActiveChannel {
         receive: Frequency::from_hz(hz).unwrap(),
         transmit: Frequency::from_hz(hz).unwrap(),
-        tx_class: class,
     }
 }
 

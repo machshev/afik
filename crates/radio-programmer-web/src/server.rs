@@ -607,7 +607,7 @@ mod tests {
     use std::{io::Cursor, net::SocketAddr, path::PathBuf};
 
     const TOKEN: &str = "test-session-token";
-    const PROJECT: &[u8] = b"1:PMR446:446006250:12500:16:licence-free\n";
+    const PROJECT: &[u8] = b"1:PMR446:446006250:12500:16\n";
 
     fn request(method: &str, path: &str, body: &[u8]) -> Request {
         Request {

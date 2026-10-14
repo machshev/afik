@@ -1,10 +1,10 @@
 # Storage object model
 
-> **Radios run format 5 (`ADR-100`).** The object format below is the host's
+> **Radios run format 6 (`ADR-100`, `ADR-101`).** The object format below is the host's
 > project and editing format. A radio runs the bank-grouped image in
 > `radio-storage::radio_image`, compiled from a project by
 > `RadioProject::compile_radio_image`; its module documentation is the
-> byte-level reference. In short: a 16-byte header (image version 2, format 5,
+> byte-level reference. In short: a 16-byte header (image version 2, format 6,
 > block count, payload length, CRC-32), the 16-byte radio configuration, a
 > bank-name table, then one block per bank and kind. A *list* block stores the
 > values its channels share once and sets a `fields` bit for each value its
@@ -84,7 +84,7 @@ name bytes     : fixed 16-byte field
 base Hz        : u32 little endian
 spacing Hz     : u32 little endian
 channel count  : u16 little endian
-TX class       : u8
+reserved       : u8  (was the TX class before ADR-101; written 0, ignored)
 RX tone kind   : u8  (0 none, 1 CTCSS, 2 DCS, 3 DCS inverted)
 RX tone value  : u16 little endian (CTCSS tenths of a hertz, or DCS octal code)
 TX tone kind   : u8
@@ -186,7 +186,7 @@ power          : u8  (0 low, 1 medium, 2 high)
 step Hz        : u32 little endian
 squelch level  : u8  (0 through 9)
 flags          : u8  (bit 0 scan skip, 1 busy lockout, 2 reverse, 3 compander)
-TX class       : u8
+reserved       : u8  (was the TX class before ADR-101; written 0, ignored)
 bank mask      : u16 little endian
 ```
 

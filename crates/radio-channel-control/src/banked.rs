@@ -1052,7 +1052,7 @@ mod tests {
     };
     use radio_domain::{
         Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel,
-        RadioConfig, ScanResume, SquelchLevel, Tone, TxClass,
+        RadioConfig, ScanResume, SquelchLevel, Tone,
     };
 
     fn channel(id: u16, hertz: u32, banks: u16, flags: u8) -> ChannelRecord {
@@ -1070,7 +1070,6 @@ mod tests {
             squelch: SquelchLevel::new(4).unwrap(),
             flags: ChannelFlags::from_bits(flags).unwrap(),
             banks: BankMask::from_bits(banks),
-            tx_class: TxClass::Amateur,
         })
         .unwrap()
     }
@@ -1082,7 +1081,6 @@ mod tests {
             Frequency::from_hz(base_hz).unwrap(),
             FrequencyStep::from_hz(12_500).unwrap(),
             count,
-            TxClass::LicenceFreePlan,
         )
         .unwrap()
     }

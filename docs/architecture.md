@@ -177,8 +177,7 @@ paths, target behavior, or a physical-programming claim.
 Work Package 10 adds no crate or behavior. Its Frequency Copy feasibility
 design keeps a measurement candidate separate from `ActiveChannel`, storage,
 and `TxAuthorisation`; observation cannot infer a transmit frequency or trusted
-class. Any future save must be deliberate and receive-only with
-`TxClass::Never`. Register commands and a physical adapter remain blocked by
+class. Any future save must be deliberate. Register commands and a physical adapter remain blocked by
 revision, board-path, crystal, false-lock, timing, and cleanup evidence gates.
 
 Work Package 11 adds `radio-aprs` as an embedded, hardware-independent leaf

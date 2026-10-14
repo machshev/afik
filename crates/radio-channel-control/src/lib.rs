@@ -452,7 +452,6 @@ mod tests {
             Frequency::from_hz(145_500_000).unwrap(),
             FrequencyStep::from_hz(25_000).unwrap(),
             3,
-            TxClass::Amateur,
         )
         .unwrap()
     }

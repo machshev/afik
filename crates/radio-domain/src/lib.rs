@@ -466,13 +466,13 @@ impl RegionId {
     }
 }
 
-/// Trusted policy classification assigned to an active channel.
+/// Service a programmed TX range belongs to (`ADR-101`).
+///
+/// Discriminants are stored in images and handset records; zero is unused.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum TxClass {
-    /// Transmission must never be authorised.
-    Never = 0,
-    /// A validated licence-free regional plan.
+    /// A licence-free regional plan.
     LicenceFreePlan = 1,
     /// Amateur service.
     Amateur = 2,
@@ -491,7 +491,6 @@ impl TryFrom<u8> for TxClass {
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
-            0 => Ok(Self::Never),
             1 => Ok(Self::LicenceFreePlan),
             2 => Ok(Self::Amateur),
             3 => Ok(Self::Marine),
@@ -503,15 +502,13 @@ impl TryFrom<u8> for TxClass {
     }
 }
 
-/// Fully resolved frequencies and policy metadata for the selected channel.
+/// Fully resolved frequencies of the selected channel.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ActiveChannel {
     /// Receive frequency.
     pub receive: Frequency,
     /// Transmit frequency.
     pub transmit: Frequency,
-    /// Centrally enforced transmit classification.
-    pub tx_class: TxClass,
 }
 
 /// A bounded signal measurement independent of receiver hardware units.

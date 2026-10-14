@@ -6,7 +6,7 @@
 use core::{fmt, str};
 use radio_domain::{
     ActiveChannel, Bandwidth, BankId, ChannelId, DomainError, Frequency, FrequencyStep, Modulation,
-    Offset, PowerLevel, SquelchLevel, Tone, TxClass,
+    Offset, PowerLevel, SquelchLevel, Tone,
 };
 
 /// Maximum encoded byte length of a generated bank name.
@@ -273,7 +273,6 @@ pub struct GeneratedBank {
     base: Frequency,
     spacing: FrequencyStep,
     channel_count: u16,
-    tx_class: TxClass,
     template: ChannelTemplate,
     calling_index: Option<u16>,
     encoding: PlanEncoding,
@@ -288,7 +287,6 @@ impl GeneratedBank {
         base: Frequency,
         spacing: FrequencyStep,
         channel_count: u16,
-        tx_class: TxClass,
     ) -> Result<Self, PlanError> {
         Self::linear_simplex_with(
             id,
@@ -296,7 +294,6 @@ impl GeneratedBank {
             base,
             spacing,
             channel_count,
-            tx_class,
             ChannelTemplate::narrow_fm(spacing),
         )
     }
@@ -308,7 +305,6 @@ impl GeneratedBank {
         base: Frequency,
         spacing: FrequencyStep,
         channel_count: u16,
-        tx_class: TxClass,
         template: ChannelTemplate,
     ) -> Result<Self, PlanError> {
         Self::linear(
@@ -317,7 +313,6 @@ impl GeneratedBank {
             base,
             spacing,
             channel_count,
-            tx_class,
             template,
             PlanEncoding::LinearSimplex,
             Offset::from_hz(0),
@@ -337,7 +332,6 @@ impl GeneratedBank {
         base: Frequency,
         spacing: FrequencyStep,
         channel_count: u16,
-        tx_class: TxClass,
         template: ChannelTemplate,
         offset: Offset,
     ) -> Result<Self, PlanError> {
@@ -347,7 +341,6 @@ impl GeneratedBank {
             base,
             spacing,
             channel_count,
-            tx_class,
             template,
             PlanEncoding::LinearFixedOffset,
             offset,
@@ -368,23 +361,13 @@ impl GeneratedBank {
         base: Frequency,
         spacing: FrequencyStep,
         channel_count: u16,
-        tx_class: TxClass,
         template: ChannelTemplate,
         offset: Offset,
     ) -> Result<Self, PlanError> {
         if offset.as_hz() == 0 {
-            Self::linear_simplex_with(id, name, base, spacing, channel_count, tx_class, template)
+            Self::linear_simplex_with(id, name, base, spacing, channel_count, template)
         } else {
-            Self::linear_fixed_offset_with(
-                id,
-                name,
-                base,
-                spacing,
-                channel_count,
-                tx_class,
-                template,
-                offset,
-            )
+            Self::linear_fixed_offset_with(id, name, base, spacing, channel_count, template, offset)
         }
     }
 
@@ -395,7 +378,6 @@ impl GeneratedBank {
         base: Frequency,
         spacing: FrequencyStep,
         channel_count: u16,
-        tx_class: TxClass,
         template: ChannelTemplate,
         encoding: PlanEncoding,
         offset: Offset,
@@ -422,7 +404,6 @@ impl GeneratedBank {
             base,
             spacing,
             channel_count,
-            tx_class,
             template: template.validate()?,
             calling_index: None,
             encoding,
@@ -538,11 +519,6 @@ impl GeneratedBank {
         self.channel_count
     }
 
-    /// Returns the trusted TX classification.
-    pub const fn tx_class(self) -> TxClass {
-        self.tx_class
-    }
-
     /// Returns the compact encoding family this plan declares.
     ///
     /// The family is a property of the plan rather than an inference from a
@@ -564,7 +540,6 @@ impl GeneratedBank {
         Ok(ActiveChannel {
             receive,
             transmit: receive.checked_apply_offset(self.offset)?,
-            tx_class: self.tx_class,
         })
     }
 
@@ -596,7 +571,6 @@ impl GeneratedBank {
             squelch: self.template.squelch,
             flags: self.template.flags.with(ChannelFlags::CALLING, calling),
             banks: BankMask::default().with(self.id, true)?,
-            tx_class: self.tx_class,
         })
     }
 
@@ -851,7 +825,6 @@ pub struct ChannelRecord {
     squelch: SquelchLevel,
     flags: ChannelFlags,
     banks: BankMask,
-    tx_class: TxClass,
 }
 
 /// Complete validated input required to construct a [`ChannelRecord`].
@@ -883,8 +856,6 @@ pub struct ChannelDefinition {
     pub flags: ChannelFlags,
     /// Bank membership mask.
     pub banks: BankMask,
-    /// Trusted transmit classification.
-    pub tx_class: TxClass,
 }
 
 impl ChannelRecord {
@@ -918,7 +889,6 @@ impl ChannelRecord {
             squelch: definition.squelch,
             flags: definition.flags,
             banks: definition.banks,
-            tx_class: definition.tx_class,
         })
     }
 
@@ -987,11 +957,6 @@ impl ChannelRecord {
         self.banks
     }
 
-    /// Returns the trusted transmit classification.
-    pub const fn tx_class(self) -> TxClass {
-        self.tx_class
-    }
-
     /// Reports whether the radio expanded this channel from a generated plan.
     pub const fn is_generated(self) -> bool {
         is_generated_channel_id(self.id)
@@ -1015,11 +980,7 @@ impl ChannelRecord {
         } else {
             (self.receive, self.transmit)
         };
-        ActiveChannel {
-            receive,
-            transmit,
-            tx_class: self.tx_class,
-        }
+        ActiveChannel { receive, transmit }
     }
 }
 
@@ -1128,7 +1089,7 @@ mod tests {
     use super::{
         generated_channel_parts, BankName, Designator, GeneratedBank, PlanEncoding, PlanError,
     };
-    use radio_domain::{BankId, Frequency, FrequencyStep, Offset, TxClass};
+    use radio_domain::{BankId, Frequency, FrequencyStep, Offset};
 
     #[test]
     fn linear_bank_expands_lazily() {
@@ -1138,7 +1099,6 @@ mod tests {
             Frequency::from_hz(446_006_250).unwrap(),
             FrequencyStep::from_hz(12_500).unwrap(),
             16,
-            TxClass::LicenceFreePlan,
         )
         .unwrap();
 
@@ -1159,7 +1119,6 @@ mod tests {
             Frequency::from_hz(446_006_250).unwrap(),
             FrequencyStep::from_hz(12_500).unwrap(),
             16,
-            TxClass::LicenceFreePlan,
             template,
         )
         .unwrap();
@@ -1170,7 +1129,6 @@ mod tests {
         assert_eq!(first.transmit().as_hz(), 446_006_250);
         assert_eq!(first.rx_tone(), Tone::Ctcss(1_000));
         assert_eq!(first.bandwidth(), Bandwidth::Wide);
-        assert_eq!(first.tx_class(), TxClass::LicenceFreePlan);
         assert!(first.is_member_of(BankId::new(3)));
         assert!(!first.is_member_of(BankId::new(4)));
         assert!(first.is_generated());
@@ -1220,7 +1178,6 @@ mod tests {
             Frequency::from_hz(156_050_000).unwrap(),
             FrequencyStep::from_hz(50_000).unwrap(),
             120,
-            TxClass::Never,
         )
         .unwrap();
         assert_eq!(bank.designator().as_str(), "Mar ");
@@ -1237,7 +1194,6 @@ mod tests {
             Frequency::from_hz(145_200_000).unwrap(),
             FrequencyStep::from_hz(25_000).unwrap(),
             16,
-            TxClass::Amateur,
         )
         .unwrap()
         .with_designator(Designator::new("S").unwrap(), 8)
@@ -1272,7 +1228,6 @@ mod tests {
             Frequency::from_hz(433_400_000).unwrap(),
             FrequencyStep::from_hz(25_000).unwrap(),
             8,
-            TxClass::Amateur,
         )
         .unwrap();
         // Four designator bytes plus five digits plus " CALL" cannot fit the
@@ -1307,7 +1262,6 @@ mod tests {
             Frequency::from_hz(145_600_000).unwrap(),
             FrequencyStep::from_hz(12_500).unwrap(),
             16,
-            TxClass::Amateur,
             ChannelTemplate::narrow_fm(FrequencyStep::from_hz(12_500).unwrap()),
             Offset::from_hz(-600_000),
         )
@@ -1331,7 +1285,6 @@ mod tests {
             Frequency::from_hz(145_600_000).unwrap(),
             FrequencyStep::from_hz(12_500).unwrap(),
             16,
-            TxClass::Amateur,
         )
         .unwrap();
         assert_eq!(simplex.encoding(), PlanEncoding::LinearSimplex);
@@ -1362,7 +1315,6 @@ mod tests {
             Frequency::from_hz(1).unwrap(),
             FrequencyStep::from_hz(1).unwrap(),
             0,
-            TxClass::Never,
         );
         assert_eq!(result, Err(PlanError::EmptyBank));
     }
@@ -1382,7 +1334,6 @@ mod tests {
             squelch: SquelchLevel::new(4).unwrap(),
             flags: ChannelFlags::default(),
             banks: BankMask::default().with(BankId::new(2), true).unwrap(),
-            tx_class: TxClass::Amateur,
         }
     }
 
@@ -1400,7 +1351,6 @@ mod tests {
         let reversed = ChannelRecord::new(reversed).unwrap();
         assert_eq!(reversed.active().receive.as_hz(), 145_125_000);
         assert_eq!(reversed.active().transmit.as_hz(), 145_725_000);
-        assert_eq!(reversed.active().tx_class, TxClass::Amateur);
 
         let mut bad_tone = definition();
         bad_tone.rx_tone = Tone::Ctcss(1);

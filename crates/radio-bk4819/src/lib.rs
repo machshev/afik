@@ -452,11 +452,10 @@ mod tests {
         Frequency::from_hz(hertz).unwrap()
     }
 
-    fn channel(class: TxClass) -> ActiveChannel {
+    fn channel() -> ActiveChannel {
         ActiveChannel {
             receive: frequency(145_500_000),
             transmit: frequency(145_500_000),
-            tx_class: class,
         }
     }
 
@@ -515,9 +514,9 @@ mod tests {
     #[test]
     fn only_the_approved_request_reaches_transmit_mode() {
         let tx_policy = policy();
-        let request = tx_request(channel(TxClass::Amateur));
+        let request = tx_request(channel());
         let approved = tx_policy.authorise(&request).unwrap();
-        let mut other_channel = channel(TxClass::Amateur);
+        let mut other_channel = channel();
         other_channel.transmit = frequency(145_525_000);
         let other_request = tx_request(other_channel);
         let mut radio = Bk4819::new(FakeBus::new(None));
@@ -558,7 +557,7 @@ mod tests {
     #[test]
     fn unknown_and_invalid_states_deny_without_bus_operations() {
         let tx_policy = policy();
-        let request = tx_request(channel(TxClass::Amateur));
+        let request = tx_request(channel());
         let authorisation = tx_policy.authorise(&request).unwrap();
         let mut radio = Bk4819::new(FakeBus::new(None));
         assert_eq!(
@@ -583,7 +582,7 @@ mod tests {
     #[test]
     fn changed_same_class_request_is_denied_before_every_bus_operation() {
         let policy = policy();
-        let request = tx_request(channel(TxClass::Amateur));
+        let request = tx_request(channel());
         let token = policy.authorise(&request).unwrap();
         let mut radio = Bk4819::new(FakeBus::new(None));
         radio.recover_to_standby().unwrap();
@@ -612,7 +611,7 @@ mod tests {
 
     fn assert_mode_failure_latches_fault(final_mode: u16, fail_step: usize) {
         let tx_policy = policy();
-        let request = tx_request(channel(TxClass::Amateur));
+        let request = tx_request(channel());
         let authorisation = tx_policy.authorise(&request).unwrap();
         let mut radio = Bk4819::new(FakeBus::new(Some(fail_step + 1)));
         radio.recover_to_standby().unwrap();

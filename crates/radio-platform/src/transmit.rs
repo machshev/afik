@@ -127,7 +127,6 @@ impl Pmr446Target {
             channel: ActiveChannel {
                 receive: frequency,
                 transmit: frequency,
-                tx_class: TxClass::LicenceFreePlan,
             },
             modulation: Modulation::Fm,
             bandwidth: Bandwidth::Narrow,

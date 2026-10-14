@@ -2847,7 +2847,7 @@ mod tests {
 
     mod memory {
         use radio_channel_plan::{BankName, GeneratedBank};
-        use radio_domain::{BankId, Frequency, FrequencyStep, RadioConfig, TxClass};
+        use radio_domain::{BankId, Frequency, FrequencyStep, RadioConfig};
         use radio_sim::memory_radio::MemoryRadio;
         use radio_storage::radio_image;
 
@@ -2860,7 +2860,6 @@ mod tests {
                 Frequency::from_hz(446_006_250).unwrap(),
                 FrequencyStep::from_hz(12_500).unwrap(),
                 channels,
-                TxClass::LicenceFreePlan,
             )
             .unwrap();
             let mut image = vec![0_u8; IMAGE_REGION];

@@ -1107,7 +1107,7 @@ mod tests {
         RadioProject, WRITE_ENVELOPE_LEN,
     };
     use radio_channel_plan::{BankName, ChannelBank, ChannelRecord, GeneratedBank, PlanEncoding};
-    use radio_domain::{BankId, Frequency, FrequencyStep, RadioConfig, TxClass};
+    use radio_domain::{BankId, Frequency, FrequencyStep, RadioConfig};
     use radio_storage::{
         decode_configuration_image, encode_generated_bank, ObjectKey, ObjectKind, StorageError,
         StorageObject, GENERATED_BANK_CORE_LEN, OBJECT_ENTRY_HEADER_LEN, STORAGE_FORMAT_VERSION,
@@ -1141,7 +1141,6 @@ mod tests {
             Frequency::from_hz(446_006_250).unwrap(),
             FrequencyStep::from_hz(12_500).unwrap(),
             16,
-            TxClass::LicenceFreePlan,
         )
         .unwrap()
     }
@@ -1185,7 +1184,6 @@ mod tests {
             squelch: radio_domain::SquelchLevel::new(3).unwrap(),
             flags: radio_channel_plan::ChannelFlags::default(),
             banks: radio_channel_plan::BankMask::from_bits(banks),
-            tx_class: TxClass::Amateur,
         })
         .unwrap()
     }

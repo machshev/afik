@@ -3044,7 +3044,7 @@
      class switch (`TxPolicy::restricted`); regional table, grants,
      attestations, permission record and `radio-ui` removed. Done.
   2. Remove the channel TX class (domain, plan, storage, sim, CLI, web,
-     studio); old projects still load.
+     studio); old projects still load; image format 6. Done.
   3. Image format 6 carries the ranges; the studio and the radio validate them.
   4. Firmware builds its policy from the image; handset class switch in the
      radio's own record; hardware envelope widened to the calibrated

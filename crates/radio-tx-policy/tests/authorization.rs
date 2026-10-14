@@ -39,13 +39,6 @@ fn a_programmed_range_permits_its_frequencies_and_names_the_class() {
         policy.authorise(&pmr).unwrap().class(),
         TxClass::LicenceFreePlan
     );
-    // The channel's own class is not consulted: frequency decides.
-    let mut marked = pmr;
-    marked.channel.tx_class = TxClass::Never;
-    assert_eq!(
-        policy.authorise(&marked).unwrap().class(),
-        TxClass::LicenceFreePlan
-    );
 }
 
 #[test]
@@ -132,13 +125,6 @@ fn overlapping_ranges_all_apply_whatever_their_order() {
 fn malformed_or_too_many_ranges_are_refused() {
     let good = support::RANGES[1];
     for (range, error) in [
-        (
-            TxRange {
-                class: TxClass::Never,
-                ..good
-            },
-            RangeError::Never,
-        ),
         (
             TxRange {
                 first_hz: 0,
@@ -321,7 +307,7 @@ fn every_changed_request_fact_invalidates_the_token() {
         match field {
             0 => current.channel.transmit = Frequency::from_hz(145_525_000).unwrap(),
             1 => current.channel.receive = Frequency::from_hz(145_525_000).unwrap(),
-            2 => current.channel.tx_class = TxClass::Business,
+            2 => current.calibration = None,
             3 => current.modulation = Modulation::Am,
             4 => current.bandwidth = Bandwidth::Wide,
             5 => current.conducted_mw += 1,

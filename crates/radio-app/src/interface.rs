@@ -18,7 +18,7 @@ use radio_channel_plan::{
 };
 use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, SquelchLevel,
-    Tone, TxClass,
+    Tone,
 };
 use radio_platform::backlight::Backlight;
 use radio_platform::battery::Battery;
@@ -582,7 +582,6 @@ fn vfo_source<M>(shell: &Shell, squelch: SquelchLevel) -> Option<Listening<M>> {
         squelch,
         flags: ChannelFlags::default(),
         banks: BankMask::default(),
-        tx_class: TxClass::Never,
     })
     .ok()?;
     Some(Listening::Vfo(record))

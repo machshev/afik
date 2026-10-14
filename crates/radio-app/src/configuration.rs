@@ -7,8 +7,8 @@
 //! from memory when it is shown or tuned. [`Programmed`] is the small summary
 //! the tasks pass around.
 //!
-//! Nothing here mints transmit authority. Channels keep the transmit class the
-//! host programmed, and every transmission still goes through the TX policy.
+//! Nothing here mints transmit authority: every transmission still goes
+//! through the TX policy.
 
 use radio_channel_plan::MAX_BANKS;
 use radio_domain::{BankId, RadioConfig, SquelchLevel};
