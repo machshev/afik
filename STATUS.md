@@ -101,12 +101,20 @@ with its channels.
   byte is the bitfield). The studio edits a switch per setting and channel
   rows show shared settings as `from bank`; the programmer refuses a channel
   disagreeing with its bank; preset lists share all but the frequency.
-- Gate after step 4: `cargo fmt --all --check` clean, workspace clippy
+- Step 5 done: `PowerLevel` is the radio's six levels; project files tag the
+  power byte (an untagged older byte reads low 20 mW, medium 2 W, high 5 W).
+  The radio transmits at the selected channel's power, the VFO at the
+  programmed default, unless the handset TX POWER menu chose a level; that
+  override is never stored and its CHANNEL row (digit 0) drops it. The TX
+  range ceiling still lowers the result. Presets: PMR446 500 mW, amateur and
+  marine 5 W.
+- Gate after step 5: `cargo fmt --all --check` clean, workspace clippy
   `-D warnings` clean, `cargo test --workspace` 709 passed 0 failed,
   `tool/build-k5.sh --release` and `tool/build-k1.sh --release` pass.
-- Next (step 5): TX power from the channel or bank, the handset TX POWER a
-  temporary override. Blocked on mapping the three stored `PowerLevel`s to the
-  handset's six levels.
+- Next (hardware): bump the workspace version, flash, and write the marine
+  and UK presets. Check that a 2 m channel keys at 5 W, a PMR446 channel at
+  500 mW, TX POWER 125 mW overrides both, CHANNEL restores them, a power
+  cycle clears the override, and SQL changes squelch on a non-PMR channel.
 
 ## Previous work package: TXK5-059
 

@@ -3073,4 +3073,5 @@
   4. Bank shared settings in domain, project file, programmer check, studio
      and presets. Done.
   5. Firmware transmits at the channel's power, the handset TX POWER a
-     temporary override.
+     temporary override. Done.
+  6. Flash and check channel power, override, CHANNEL and SQL on hardware.
