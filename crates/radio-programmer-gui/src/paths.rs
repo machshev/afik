@@ -67,6 +67,71 @@ pub fn default_eeprom_backup() -> PathBuf {
         .join(eeprom_backup_name(unix_now()))
 }
 
+/// Returns the directory one radio family's EEPROM backups are written to.
+pub fn family_eeprom_dir(family: &str) -> Option<PathBuf> {
+    eeprom_dir().map(|dir| dir.join(family))
+}
+
+/// Returns a fresh default backup path in one family's backup directory.
+pub fn default_family_eeprom_backup(family: &str) -> PathBuf {
+    family_eeprom_dir(family)
+        .unwrap_or_default()
+        .join(eeprom_backup_name(unix_now()))
+}
+
+/// Returns the newest backup kept for one family.
+///
+/// Backups taken before they were filed by family sit directly in the EEPROM
+/// directory; `legacy` says whether those count for this family.
+pub fn newest_family_eeprom_backup(family: &str, legacy: bool) -> Option<PathBuf> {
+    newest_family_backup_in(&eeprom_dir()?, family, legacy)
+}
+
+/// [`newest_family_eeprom_backup`] under an explicit EEPROM directory.
+pub fn newest_family_backup_in(eeprom: &Path, family: &str, legacy: bool) -> Option<PathBuf> {
+    let filed = newest_eeprom_backup(&eeprom.join(family));
+    let unfiled = legacy.then(|| newest_eeprom_backup(eeprom)).flatten();
+    // Names carry their time, so the later name is the newer backup.
+    match (filed, unfiled) {
+        (Some(filed), Some(unfiled)) => Some(if file_name(&unfiled) > file_name(&filed) {
+            unfiled
+        } else {
+            filed
+        }),
+        (filed, unfiled) => filed.or(unfiled),
+    }
+}
+
+fn file_name(path: &Path) -> Option<&std::ffi::OsStr> {
+    path.file_name()
+}
+
+/// Returns the places a packaged image named `name` is looked for, in order.
+///
+/// The workspace build output comes first, because that is where
+/// `tool/build-*.sh --release` leaves a fresh image; `$XDG_DATA_HOME/afik/images`
+/// holds images kept outside a checkout.
+pub fn packaged_image_candidates(name: &str) -> Vec<PathBuf> {
+    let mut candidates = vec![Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/thumbv6m-none-eabi/release")
+        .join(name)];
+    if let Some(data) = data_dir() {
+        candidates.push(data.join("images").join(name));
+    }
+    candidates
+}
+
+/// Returns the first packaged image which exists, or the first place to put one.
+pub fn packaged_image(name: &str) -> PathBuf {
+    let candidates = packaged_image_candidates(name);
+    candidates
+        .iter()
+        .find(|path| path.is_file())
+        .or_else(|| candidates.first())
+        .cloned()
+        .unwrap_or_default()
+}
+
 /// Returns the newest EEPROM backup in `directory`, if there is one.
 ///
 /// Backup names sort by time, so the newest is the last by name.
@@ -192,6 +257,52 @@ mod tests {
         );
         assert!(eeprom_backup_name(1_709_251_199) < eeprom_backup_name(1_709_251_200));
         assert_eq!(utc_timestamp(1_709_251_199), "2024-02-29T23:59:59Z");
+    }
+
+    #[test]
+    fn family_backups_include_unfiled_ones_only_when_asked() {
+        let eeprom = std::env::temp_dir().join(format!("afik-family-{}", std::process::id()));
+        std::fs::create_dir_all(eeprom.join("k5")).unwrap();
+        std::fs::write(eeprom.join("eeprom-20260101T000000Z.bin"), [0_u8]).unwrap();
+        assert_eq!(
+            super::newest_family_backup_in(&eeprom, "k5", true),
+            Some(eeprom.join("eeprom-20260101T000000Z.bin"))
+        );
+        assert_eq!(super::newest_family_backup_in(&eeprom, "k1", false), None);
+        std::fs::write(
+            eeprom.join("k5").join("eeprom-20250101T000000Z.bin"),
+            [0_u8],
+        )
+        .unwrap();
+        // The unfiled one is newer, so it still wins.
+        assert_eq!(
+            super::newest_family_backup_in(&eeprom, "k5", true),
+            Some(eeprom.join("eeprom-20260101T000000Z.bin"))
+        );
+        std::fs::write(
+            eeprom.join("k5").join("eeprom-20270101T000000Z.bin"),
+            [0_u8],
+        )
+        .unwrap();
+        assert_eq!(
+            super::newest_family_backup_in(&eeprom, "k5", true),
+            Some(eeprom.join("k5").join("eeprom-20270101T000000Z.bin"))
+        );
+        std::fs::remove_dir_all(&eeprom).unwrap();
+    }
+
+    #[test]
+    fn packaged_images_are_looked_for_in_the_build_output_first() {
+        let candidates = super::packaged_image_candidates("afik-k5-v1.raw");
+        assert!(candidates[0].ends_with("target/thumbv6m-none-eabi/release/afik-k5-v1.raw"));
+        if let Some(data) = super::data_dir() {
+            assert_eq!(candidates[1], data.join("images").join("afik-k5-v1.raw"));
+        }
+        // With nothing on disk the first candidate is where one would go.
+        assert_eq!(
+            super::packaged_image("definitely-not-built.raw"),
+            super::packaged_image_candidates("definitely-not-built.raw")[0]
+        );
     }
 
     #[test]

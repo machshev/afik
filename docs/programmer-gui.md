@@ -97,7 +97,7 @@ describes a configuration which could be written.
   listing, read the project back from the radio, and write it. Writing compiles
   against the negotiated target capabilities and uses the programmer library's
   transactional write with read-back verification.
-- **Flash:** firmware and EEPROM operations.
+- **Flash:** the guided flash flow described below.
 
 Project files are canonical AFIK configuration images, the same format the CLI
 and the loopback GUI produce, so a project saved here can be restored by any
@@ -114,37 +114,43 @@ moved to `studio.log.1` at start-up once it passes 1 MiB. `AFIK_LOG` sets the
 level (`off`, `error`, `warn`, `info` by default, `debug`, `trace`); other
 crates such as the windowing stack log only warnings below `debug`.
 
-## Flashing boundary
+## Flashing
 
-Firmware and EEPROM operations reuse the `radio-flasher` workflows. The editor
-collects input, validates the request before opening the serial device, runs the
-operation on a worker thread, and reports page acknowledgements as they arrive.
+The Flash tab is a guided flow which does as much as it safely can by itself
+and falls back to the operator wherever it cannot decide.
 
-There is no firmware backup, and there cannot be one: the bootloader protocols
-carry no flash-read command, so a page acknowledgement is the only evidence a
-write produced.
+1. **Radio.** USB serial devices are scanned when the tab opens (and every few
+   seconds while none is found) and the first is selected; another can be
+   picked or a path typed. The radio is identified without writing to a
+   bootloader: the tab listens for a bootloader beacon first and only sends the
+   read-only hello when none arrives. A beacon names the family, K5/K6 (`2.*`)
+   or K1 (`7.03.*`); running firmware names it from its version where it can
+   (`AFIK-K5-`, `AFIK-K1-`, stock `k5_`), and otherwise the operator chooses.
+   Until the radio is in flashing mode the tab says how to get there and checks
+   again every few seconds. The family can always be overridden.
+2. **EEPROM backup.** Backups are kept per family under
+   `$XDG_DATA_HOME/afik/eeprom/<family>/` (`~/.local/share/afik/eeprom/...`);
+   those taken earlier directly in `eeprom/` count for the K5/K6. With none
+   kept, the tab asks for one before the first flash and offers **Back up now**
+   when the running firmware can serve it (stock, or AFIK-K5 7.0.6 or later),
+   but never insists: **Skip** goes on without one for the session, and the
+   flash button then says it is flashing without a backup.
+3. **Image.** The family's packaged image is chosen: the workspace build output
+   (`tool/build-k5.sh --release` or `tool/build-k1.sh --release`) first, then
+   `$XDG_DATA_HOME/afik/images/`. Typing a path overrides it; **Use packaged
+   image** goes back. The size and CRC-32 are shown.
+4. **Flash.** Enabled once the radio is in flashing mode and the image exists.
+   It is the image-only write of `afik-flasher flash-afik` (`ADR-098`): the
+   worker reads the beacon again, refuses an image built for the other radio
+   before any page is sent, and writes only the application pages. Progress is
+   shown per page; afterwards the tab identifies the radio again.
 
-**Flash AFIK application** is the default write and matches
-`afik-flasher flash-afik` (`ADR-098`). It takes the image and nothing else: when
-the write starts it reads the bootloader beacon, refuses an image built for the
-other radio before any page is sent, and writes only the application pages to a
-K5 V1 (`2.*`) or K1 (`7.03.*`). An image that does not boot is recovered by
-writing another one. The editor shows the image's size and CRC-32 beside it.
-
-**Flash K1 recovery image** and **Flash K5 V1 application (recovery-gated)**
-keep their typed confirmations and the operator-entered image CRC-32; the K5
-form also needs the retained recovery image, EEPROM backup and negotiated
-firmware version, each shown with its digest. **Identify radio** reads the
-bootloader version read-only and fills it in for the K1 recovery write. A CRC-32
-that is not hex is refused before the serial device is opened. The per-run
-transaction identifier is generated, never typed, so one run's acknowledgements
-cannot be mistaken for another's.
-
-The EEPROM backup is read-only and refuses to overwrite an existing file. Its
-output defaults to a timestamped file under `$XDG_DATA_HOME/afik/eeprom/`
-(`~/.local/share/afik/eeprom/` without it), created on first use, and
-**New default name** restores that default after an override. A finished
-backup becomes the retained EEPROM backup the recovery-gated K5 write offers,
-which otherwise starts as the newest backup in that directory. See
-`docs/k5-flashing.md` and `docs/k1-bring-up.md` for what each guard means and
-`RISK-029` for the editor's accepted local-tool exposure.
+Only one worker ever has the port: a backup asked for during a check starts
+when the check ends. **Advanced** keeps the K1 recovery write, the
+recovery-gated K5 write and a backup to a chosen file, with every typed
+confirmation and operator-entered CRC-32 they require; a CRC-32 that is not hex
+is refused before the port is opened. Transaction identifiers are generated,
+never typed. There is no firmware backup, and there cannot be one: the
+bootloader protocols carry no flash-read command. See `docs/k5-flashing.md` and
+`docs/k1-bring-up.md` for what each guard means and `RISK-029` for the editor's
+accepted local-tool exposure.

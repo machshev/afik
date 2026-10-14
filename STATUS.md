@@ -108,6 +108,16 @@
   --no-fail-fast` 686 passed 0 failed, K5 image verifies (flash end
   `0x0000e9d0`), K1 image builds. Not yet flashed: next, flash 7.0.6 and take
   a studio backup from it, comparing it with the retained stock backup.
+- Studio Flash tab rewritten as a guided flow (operator request): scan and
+  select the first device; identify without writing to a bootloader
+  (`radio_flasher::identify_radio` listens for a beacon, then sends the hello);
+  family K5/K6 or K1 from the beacon or firmware version, overridable; per-family
+  EEPROM backups under `$XDG_DATA_HOME/afik/eeprom/<family>/`, asked for but
+  skippable; the family's packaged image, overridable; one Flash button once
+  the radio is in flashing mode. It re-checks every 3 s until then; recovery
+  writes stay under Advanced. Gate: fmt clean, clippy `-D warnings` clean,
+  `cargo test --workspace --no-fail-fast` 695 passed 0 failed. Not yet tried on
+  the bench.
 - Next: flash `7.0.5` with `afik-flasher flash-afik` and check a 1 min over
   times out; flash K1 and check its speech level; then CTCSS/DCS with an
   end-of-transmission tail tone to remove the key-off squelch burst.

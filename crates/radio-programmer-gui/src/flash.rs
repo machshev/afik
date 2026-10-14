@@ -25,9 +25,9 @@ use std::{
 };
 
 use radio_flasher::{
-    crc32, detect_bootloader, flash_afik_application, k1, k1::K1RecoveryImage, ApplicationImage,
-    BootloaderFamily, EepromBackup, FirmwareVersion, FlashPrerequisites, FlashPurpose,
-    DEFAULT_NEGOTIATION_VERSION, FLASH_PAGE_COUNT,
+    crc32, detect_bootloader, flash_afik_application, identify_radio, k1, k1::K1RecoveryImage,
+    ApplicationImage, BootloaderFamily, EepromBackup, FirmwareVersion, FlashPrerequisites,
+    FlashPurpose, RadioPresence, DEFAULT_NEGOTIATION_VERSION, FLASH_PAGE_COUNT,
 };
 use radio_programmer_serial::LinuxSerialTransport;
 
@@ -158,35 +158,99 @@ impl FlashRequestError {
     }
 }
 
-/// What a read-only identification found on the serial port.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RadioIdentity {
-    /// Bootloader protocol family label.
-    pub family: String,
-    /// Bootloader version the device reported.
-    pub version: String,
+/// Which radio family a device belongs to, as far as flashing is concerned.
+///
+/// The K5 and K6 share the K5 V1 bootloader and image layout, so they are one
+/// family here; the K1 has its own bootloader, image layout, and storage.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum RadioFamily {
+    /// UV-K5 V1 and UV-K6: `2.*` bootloader.
+    K5,
+    /// UV-K1: `7.03.*` bootloader.
+    K1,
 }
 
-/// Classifies the connected bootloader without writing anything.
+impl RadioFamily {
+    /// Returns every family in display order.
+    pub const fn all() -> [Self; 2] {
+        [Self::K5, Self::K1]
+    }
+
+    /// Returns the operator-facing name.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::K5 => "K5/K6",
+            Self::K1 => "K1",
+        }
+    }
+
+    /// Returns the directory name used for this family's files.
+    pub const fn slug(self) -> &'static str {
+        match self {
+            Self::K5 => "k5",
+            Self::K1 => "k1",
+        }
+    }
+
+    /// Returns the file name `tool/package-*-image.sh` gives this family's image.
+    pub const fn image_name(self) -> &'static str {
+        match self {
+            Self::K5 => "afik-k5-v1.raw",
+            Self::K1 => "radio-firmware-k1.raw",
+        }
+    }
+
+    /// Returns the command which builds and packages this family's image.
+    pub const fn build_hint(self) -> &'static str {
+        match self {
+            Self::K5 => "tool/build-k5.sh --release",
+            Self::K1 => "tool/build-k1.sh --release",
+        }
+    }
+
+    /// Returns the family a bootloader beacon belongs to.
+    pub const fn of_bootloader(family: &BootloaderFamily) -> Self {
+        match family {
+            BootloaderFamily::K5V1(_) => Self::K5,
+            BootloaderFamily::K1(_) => Self::K1,
+        }
+    }
+
+    /// Recognises the family from a running firmware's hello version.
+    ///
+    /// AFIK names its target; stock K5 firmware reports `k5_…`. Anything else
+    /// is left for the operator to choose rather than guessed.
+    pub fn of_firmware(version: &str) -> Option<Self> {
+        let lower = version.to_ascii_lowercase();
+        if lower.starts_with("afik-k5-") || lower.starts_with("k5_") || lower.starts_with("k6_") {
+            Some(Self::K5)
+        } else if lower.starts_with("afik-k1-") || lower.starts_with("k1_") {
+            Some(Self::K1)
+        } else {
+            None
+        }
+    }
+
+    /// Returns the family of whatever answered, when it can be told.
+    pub fn of_presence(presence: &RadioPresence) -> Option<Self> {
+        match presence {
+            RadioPresence::Bootloader(family) => Some(Self::of_bootloader(family)),
+            RadioPresence::Firmware(info) => Self::of_firmware(info.version()),
+        }
+    }
+}
+
+/// Finds out what is on the serial port without writing to a bootloader.
 ///
-/// This is the same read-only classification the flasher CLI performs before a
-/// write, so the operator can read the bootloader version off the radio instead
-/// of typing it from memory into a confirmation field.
-pub fn identify(device: &Path) -> Result<RadioIdentity, FlashRequestError> {
+/// A radio in flashing mode is only listened to; a radio running its firmware
+/// is sent the read-only hello. See [`radio_flasher::identify_radio`].
+pub fn identify(device: &Path) -> Result<RadioPresence, FlashRequestError> {
     if device.as_os_str().is_empty() {
         return Err(FlashRequestError::new("select a serial device path"));
     }
     let mut serial = LinuxSerialTransport::open(device, FLASH_BAUD)
         .map_err(|error| FlashRequestError::new(format!("serial setup failed: {error}")))?;
-    let family = detect_bootloader(&mut serial)
-        .map_err(|error| FlashRequestError::new(error.to_string()))?;
-    let version = match &family {
-        BootloaderFamily::K1(info) | BootloaderFamily::K5V1(info) => info.version().to_owned(),
-    };
-    Ok(RadioIdentity {
-        family: family.label().to_owned(),
-        version,
-    })
+    identify_radio(&mut serial).map_err(|error| FlashRequestError::new(error.to_string()))
 }
 
 /// A read-only identification running on a worker thread.
@@ -194,12 +258,12 @@ pub fn identify(device: &Path) -> Result<RadioIdentity, FlashRequestError> {
 /// Waiting for a beacon can take seconds when no bootloader answers, so it never
 /// runs on the thread drawing the editor.
 pub struct IdentifyJob {
-    outcome: Receiver<Result<RadioIdentity, FlashRequestError>>,
+    outcome: Receiver<Result<RadioPresence, FlashRequestError>>,
 }
 
 impl IdentifyJob {
     /// Returns the outcome once the worker has finished, without blocking.
-    pub fn poll(&self) -> Option<Result<RadioIdentity, FlashRequestError>> {
+    pub fn poll(&self) -> Option<Result<RadioPresence, FlashRequestError>> {
         match self.outcome.try_recv() {
             Ok(outcome) => Some(outcome),
             Err(mpsc::TryRecvError::Empty) => None,
