@@ -212,6 +212,19 @@ programmed TX ranges protect channel and VFO mode alike.
   clippy `-D warnings` clean, `cargo test --workspace` 745 passed 0 failed,
   `tool/build-k5.sh --release` (flash end `0x0000e808`) and
   `tool/build-k1.sh --release` pass. Not flashed.
+- K1 EEPROM backup (operator request): the K1's memory view now has the K5's
+  layout. Image from the AFIK sector (erased above its 4 KiB), the latest
+  place record at `0x1D00`, and a read-only window at `0x1E00` onto the vendor
+  calibration at `0x010000` (`EVID-K1-064`; same offsets as the K5's: TX bias
+  `+0xD0`, battery `+0x140`). `backup-eeprom` and the studio accept
+  `AFIK-K1-` from `7.0.25`; restore stays K5/stock only because the K1 refuses
+  host writes. Gate: `cargo fmt --all --check` clean, workspace clippy
+  `-D warnings` clean, `cargo test --workspace` 760 passed 0 failed,
+  `tool/build-k1.sh --release` and `tool/build-k5.sh --release` pass.
+  `7.0.25` flashed to the K1 (bootloader `7.03.01`, CRC-32 `713f8759`,
+  261/261 pages acknowledged, not read back). Next: power-cycle, take
+  `backup-eeprom` and check that the battery and TX bias bytes match the stock
+  F4HWN backup in `.private/k1/` at `0x1F40` and `0x1ED0`.
 - `7.0.24` flashed to the K5 (bootloader `2.00.06`, CRC-32 `17aef08b`,
   240/240 pages acknowledged, not read back; K5 flash end `0x0000e810`, K1
   release builds). It carries the S meter and `b066148` (TX on every
