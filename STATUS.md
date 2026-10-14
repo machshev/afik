@@ -271,6 +271,12 @@
   clean, workspace clippy `-D warnings` clean, `cargo test --workspace
   --no-fail-fast` 681 passed 0 failed, `tool/build-k5.sh --release` and
   `tool/build-k1.sh --release` pass. Not yet flashed.
+- Studio (operator request): writing to and reading from a radio run on a
+  worker thread (`session::DeviceJob`), which holds the session until it ends;
+  the Device tab shows write progress by block and refuses connection changes
+  and a second job meanwhile. Gate: `cargo fmt --all --check` clean,
+  workspace clippy `-D warnings` clean, `cargo test --workspace
+  --no-fail-fast` 682 passed 0 failed.
 - Next: flash K5 `7.0.18`, check a power cycle keeps VFO, bank and channel,
   and program it from the studio (write, power-cycle,
   read back); then the K1's NOR erase plan; then CTCSS/DCS with a tail tone.
