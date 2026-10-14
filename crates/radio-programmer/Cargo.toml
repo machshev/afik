@@ -13,6 +13,7 @@ radio-domain = { path = "../radio-domain" }
 radio-protocol = { path = "../radio-protocol" }
 radio-platform = { path = "../radio-platform" }
 radio-storage = { path = "../radio-storage" }
+radio-tx-policy = { path = "../radio-tx-policy" }
 
 [lints]
 workspace = true

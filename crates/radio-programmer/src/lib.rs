@@ -16,11 +16,12 @@ use radio_protocol::{
 use radio_storage::radio_image;
 use radio_storage::{
     configuration_image_len, decode_channel, decode_channel_bank, decode_configuration_image,
-    decode_generated_bank, decode_radio_config, encode_channel, encode_channel_bank,
-    encode_configuration_image, encode_generated_bank, encode_radio_config, ObjectKey, ObjectKind,
-    StorageError, StorageObject, StorageUsage, MAX_OBJECT_DATA, OBJECT_ENTRY_HEADER_LEN,
-    STORAGE_FORMAT_VERSION,
+    decode_generated_bank, decode_radio_config, decode_tx_range, encode_channel,
+    encode_channel_bank, encode_configuration_image, encode_generated_bank, encode_radio_config,
+    encode_tx_range, ObjectKey, ObjectKind, StorageError, StorageObject, StorageUsage,
+    MAX_OBJECT_DATA, OBJECT_ENTRY_HEADER_LEN, STORAGE_FORMAT_VERSION,
 };
+use radio_tx_policy::{RangeError, TxPolicy, TxRange};
 
 const MAX_RECEIVE_CALLS: usize = MAX_ENCODED_FRAME + 1;
 const WRITE_ENVELOPE_LEN: usize = 9;
@@ -106,6 +107,7 @@ pub struct RadioProject {
     channels: Vec<ChannelRecord>,
     banks: Vec<ChannelBank>,
     config: Option<RadioConfig>,
+    tx_ranges: Vec<TxRange>,
 }
 
 impl RadioProject {
@@ -116,6 +118,7 @@ impl RadioProject {
             channels: Vec::new(),
             banks: Vec::new(),
             config: None,
+            tx_ranges: Vec::new(),
         }
     }
 
@@ -139,6 +142,16 @@ impl RadioProject {
         self.config = Some(config);
     }
 
+    /// Adds one programmed TX range (`ADR-101`); order is kept.
+    pub fn add_tx_range(&mut self, range: TxRange) {
+        self.tx_ranges.push(range);
+    }
+
+    /// Returns the programmed TX ranges in order.
+    pub fn tx_ranges(&self) -> &[TxRange] {
+        &self.tx_ranges
+    }
+
     /// Returns project generated banks in stable insertion order.
     pub fn generated_banks(&self) -> &[GeneratedBank] {
         &self.generated_banks
@@ -160,7 +173,7 @@ impl RadioProject {
     }
 
     /// Compiles the project into the bank-grouped image a radio runs
-    /// (storage format 5, `ADR-100`), sized to the radio's image region.
+    /// (storage format 6, `ADR-100`), sized to the radio's image region.
     ///
     /// Each channel must be in at most one bank: in this format a channel is
     /// stored in its bank. Channels in no bank are kept in a bankless block.
@@ -168,6 +181,7 @@ impl RadioProject {
         let mut image = vec![0_u8; usize::from(IMAGE_REGION_BYTES)];
         let len = radio_image::compile(
             self.config.unwrap_or_else(RadioConfig::conservative),
+            &self.tx_ranges,
             &self.banks,
             &self.channels,
             &self.generated_banks,
@@ -199,6 +213,9 @@ impl RadioProject {
         let index = radio_image::Index::build(&header, read)?;
         let mut project = Self::new();
         project.set_config(index.config());
+        for range in index.tx_policy(read).ranges() {
+            project.add_tx_range(*range);
+        }
         for id in 0..radio_channel_plan::MAX_BANKS {
             let bank = BankId::new(id);
             if let Some(named) = index.bank(read, bank) {
@@ -224,6 +241,7 @@ impl RadioProject {
             && self.channels.is_empty()
             && self.banks.is_empty()
             && self.config.is_none()
+            && self.tx_ranges.is_empty()
     }
 }
 
@@ -306,6 +324,8 @@ pub enum CompileError {
         /// The undefined bank identifier.
         bank: u16,
     },
+    /// A TX range is malformed, or there are too many (`ADR-101`).
+    TxRange(RangeError),
 }
 
 impl fmt::Display for CompileError {
@@ -329,6 +349,7 @@ impl fmt::Display for CompileError {
                 formatter,
                 "channel {channel} references undefined bank {bank}"
             ),
+            Self::TxRange(error) => write!(formatter, "{error}"),
         }
     }
 }
@@ -358,7 +379,8 @@ impl ConfigurationCompiler {
         let object_count = project.generated_banks.len()
             + project.channels.len()
             + project.banks.len()
-            + usize::from(project.config.is_some());
+            + usize::from(project.config.is_some())
+            + project.tx_ranges.len();
         let mut objects = Vec::with_capacity(object_count);
         for bank in &project.generated_banks {
             objects.push(encode_generated_bank(*bank)?);
@@ -371,6 +393,11 @@ impl ConfigurationCompiler {
         }
         if let Some(config) = project.config {
             objects.push(encode_radio_config(config)?);
+        }
+        TxPolicy::new(&project.tx_ranges).map_err(CompileError::TxRange)?;
+        for (position, range) in project.tx_ranges.iter().enumerate() {
+            let position = u16::try_from(position).map_err(|_| CompileError::CapacityOverflow)?;
+            objects.push(encode_tx_range(position, *range)?);
         }
         objects.sort_unstable_by_key(|object| object.key());
         if let Some(duplicate) = objects
@@ -459,6 +486,9 @@ impl ConfigurationCompiler {
                 ObjectKind::RadioConfig => {
                     decode_radio_config(object)?;
                     report.has_radio_config = true;
+                }
+                ObjectKind::TxRange => {
+                    decode_tx_range(object)?;
                 }
             }
             report.object_count = report
@@ -598,6 +628,9 @@ impl ConfigurationSnapshot {
                 ObjectKind::RadioConfig => {
                     decode_radio_config(object)?;
                     has_radio_config = true;
+                }
+                ObjectKind::TxRange => {
+                    decode_tx_range(object)?;
                 }
             }
             storage_bytes = storage_bytes
@@ -1232,6 +1265,70 @@ mod tests {
         damaged[20] ^= 1;
         assert!(RadioProject::from_radio_image(&damaged).is_err());
         assert!(RadioProject::from_radio_image(&[0; 4]).is_err());
+    }
+
+    const AMATEUR_70CM: radio_tx_policy::TxRange = radio_tx_policy::TxRange {
+        class: radio_domain::TxClass::Amateur,
+        first_hz: 430_000_000,
+        last_hz: 440_000_000,
+        max_mw: 5_000,
+        wide_fm: true,
+        raster_hz: 0,
+    };
+
+    #[test]
+    fn tx_ranges_survive_the_radio_image_and_the_project_file() {
+        let pmr = radio_tx_policy::TxRange {
+            class: radio_domain::TxClass::LicenceFreePlan,
+            first_hz: 446_006_250,
+            last_hz: 446_193_750,
+            max_mw: 500,
+            wide_fm: false,
+            raster_hz: 12_500,
+        };
+        let mut project = RadioProject::new();
+        project.add_generated_bank(bank(1));
+        project.add_tx_range(AMATEUR_70CM);
+        project.add_tx_range(pmr);
+        assert!(!RadioProject {
+            generated_banks: Vec::new(),
+            ..project.clone()
+        }
+        .is_empty());
+
+        let image = project.compile_radio_image().expect("radio image");
+        let read = RadioProject::from_radio_image(&image).expect("reads back");
+        assert_eq!(read.tx_ranges(), &[AMATEUR_70CM, pmr]);
+
+        let compiled = ConfigurationCompiler::new(capabilities_for(8))
+            .compile(&project)
+            .unwrap();
+        let kinds: Vec<_> = compiled
+            .objects()
+            .iter()
+            .map(|object| (object.key().kind, object.key().id))
+            .collect();
+        assert!(kinds.contains(&(ObjectKind::TxRange, 0)));
+        assert!(kinds.contains(&(ObjectKind::TxRange, 1)));
+    }
+
+    #[test]
+    fn a_bad_tx_range_is_refused_before_anything_is_written() {
+        let mut project = RadioProject::new();
+        project.add_tx_range(radio_tx_policy::TxRange {
+            last_hz: 1,
+            ..AMATEUR_70CM
+        });
+        assert_eq!(
+            ConfigurationCompiler::new(capabilities_for(8)).compile(&project),
+            Err(CompileError::TxRange(radio_tx_policy::RangeError::Span))
+        );
+        assert_eq!(
+            project.compile_radio_image(),
+            Err(super::RadioImageError::TxRange(
+                radio_tx_policy::RangeError::Span
+            ))
+        );
     }
 
     #[test]

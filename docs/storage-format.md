@@ -5,8 +5,9 @@
 > `radio-storage::radio_image`, compiled from a project by
 > `RadioProject::compile_radio_image`; its module documentation is the
 > byte-level reference. In short: a 16-byte header (image version 2, format 6,
-> block count, payload length, CRC-32), the 16-byte radio configuration, a
-> bank-name table, then one block per bank and kind. A *list* block stores the
+> block count, payload length, CRC-32), the 16-byte radio configuration, the
+> programmed TX ranges (a count, then 14 bytes each: class, flags, first and
+> last Hz, max mW, raster Hz; `ADR-101`), a bank-name table, then one block per bank and kind. A *list* block stores the
 > values its channels share once and sets a `fields` bit for each value its
 > fixed-size records carry instead (a frequency is a `u16` count of rasters
 > when it fits). A *linear* block is a generated plan. Every channel is stored

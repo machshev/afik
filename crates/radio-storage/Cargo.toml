@@ -10,6 +10,7 @@ description = "Bounded transactional radio configuration object storage"
 [dependencies]
 radio-channel-plan = { path = "../radio-channel-plan" }
 radio-domain = { path = "../radio-domain" }
+radio-tx-policy = { path = "../radio-tx-policy" }
 
 [lints]
 workspace = true

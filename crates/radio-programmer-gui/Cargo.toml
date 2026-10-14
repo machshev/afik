@@ -27,6 +27,7 @@ radio-programmer = { path = "../radio-programmer" }
 radio-programmer-serial = { path = "../radio-programmer-serial" }
 radio-sim = { path = "../radio-sim" }
 radio-storage = { path = "../radio-storage" }
+radio-tx-policy = { path = "../radio-tx-policy" }
 
 [lints]
 workspace = true

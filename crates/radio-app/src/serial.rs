@@ -300,6 +300,7 @@ mod tests {
         let length = compile(
             RadioConfig::conservative(),
             &[],
+            &[],
             &[channel(1), channel(2)],
             &[],
             &mut memory.0,

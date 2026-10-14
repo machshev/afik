@@ -24,8 +24,10 @@ use radio_domain::{
 use radio_programmer::{ConfigurationCompiler, DeviceCapabilities, RadioProject};
 use radio_storage::{
     decode_channel, decode_channel_bank, decode_configuration_image, decode_generated_bank,
-    decode_radio_config, radio_image, ObjectKind, MAX_OBJECT_DATA, STORAGE_FORMAT_VERSION,
+    decode_radio_config, decode_tx_range, radio_image, ObjectKind, MAX_OBJECT_DATA,
+    STORAGE_FORMAT_VERSION,
 };
+use radio_tx_policy::TxRange;
 
 /// Maximum objects an offline host project may hold.
 pub const MAX_PROJECT_OBJECTS: u16 = 1_024;
@@ -822,6 +824,8 @@ pub struct ProjectModel {
     pub banks: Vec<BankDraft>,
     /// The editable global radio configuration.
     pub config: ConfigDraft,
+    /// The programmed TX ranges, in order (`ADR-101`).
+    pub tx_ranges: Vec<TxRange>,
 }
 
 impl ProjectModel {
@@ -976,6 +980,9 @@ impl ProjectModel {
             Ok(config) => project.set_config(config),
             Err(failure) => errors.push(failure),
         }
+        for range in &self.tx_ranges {
+            project.add_tx_range(*range);
+        }
 
         if errors.is_empty() {
             Ok(project)
@@ -1017,7 +1024,7 @@ impl ProjectModel {
 
     /// Builds a project from a project file or an image read from a radio.
     ///
-    /// Both the format 4 object set and the format 5 radio image are read.
+    /// Both the format 4 object set and the format 6 radio image are read.
     pub fn from_image(bytes: &[u8]) -> Result<Self, ModelError> {
         if bytes.len() > MAX_PROJECT_IMAGE_BYTES {
             return Err(error(
@@ -1050,6 +1057,10 @@ impl ProjectModel {
                 ObjectKind::GeneratedBank => {
                     project.add_generated_bank(decode_generated_bank(&object).map_err(invalid)?);
                 }
+                // Objects come in key order, so ranges keep their positions.
+                ObjectKind::TxRange => {
+                    project.add_tx_range(decode_tx_range(&object).map_err(invalid)?);
+                }
             }
         }
         Ok(Self::from_project(&project))
@@ -1077,6 +1088,7 @@ impl ProjectModel {
             config: project
                 .config()
                 .map_or_else(ConfigDraft::default, ConfigDraft::from_config),
+            tx_ranges: project.tx_ranges().to_vec(),
         };
         for id in 0..MAX_BANKS {
             let named = project.banks().iter().find(|bank| bank.id().get() == id);

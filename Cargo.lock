@@ -2520,6 +2520,7 @@ dependencies = [
  "radio-platform",
  "radio-protocol",
  "radio-storage",
+ "radio-tx-policy",
 ]
 
 [[package]]
@@ -2549,6 +2550,7 @@ dependencies = [
  "radio-programmer-serial",
  "radio-sim",
  "radio-storage",
+ "radio-tx-policy",
 ]
 
 [[package]]
@@ -2597,6 +2599,7 @@ version = "7.0.20"
 dependencies = [
  "radio-channel-plan",
  "radio-domain",
+ "radio-tx-policy",
 ]
 
 [[package]]

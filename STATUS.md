@@ -22,6 +22,14 @@ programmed TX ranges protect channel and VFO mode alike.
   Gate: `cargo fmt --all --check` clean, workspace clippy `-D warnings`
   clean, `cargo test --workspace` 685 passed 0 failed, K5 and K1 release
   images build.
+- Step 3: the format 6 image carries a TX range table after the radio
+  configuration (count, then 14 bytes each); project files carry one
+  `TxRange` object per range (kind 5, id = position). The studio's compiler
+  refuses a malformed range or more than 16 before writing; the radio's
+  `Index::build` checks every range again and `Index::tx_policy` returns the
+  policy (none programmed permits nothing). Gate: `cargo fmt --all --check`
+  clean, workspace clippy `-D warnings` clean, `cargo test --workspace` 690
+  passed 0 failed, K5 and K1 release images build.
 
 ## Previous work package: TXK5-059
 

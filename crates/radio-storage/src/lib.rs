@@ -11,12 +11,13 @@ use radio_channel_plan::{
 };
 use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, Offset, PowerLevel,
-    RadioConfig, RadioFlags, ScanResume, SquelchLevel, Tone,
+    RadioConfig, RadioFlags, ScanResume, SquelchLevel, Tone, TxClass,
 };
+use radio_tx_policy::{TxRange, MAX_TX_RANGES};
 
 /// Relative dual-slot canonical-image persistence model.
 pub mod dual_slot;
-/// The bank-grouped image a radio runs (format 5).
+/// The bank-grouped image a radio runs (format 6).
 pub mod radio_image;
 
 /// Encoded calling-channel index meaning a plan marks no calling channel.
@@ -71,6 +72,8 @@ pub enum ObjectKind {
     ChannelBank = 3,
     /// The single global radio configuration.
     RadioConfig = 4,
+    /// One programmed TX range (`ADR-101`); the identifier is its position.
+    TxRange = 5,
 }
 
 impl TryFrom<u8> for ObjectKind {
@@ -82,6 +85,7 @@ impl TryFrom<u8> for ObjectKind {
             2 => Ok(Self::Channel),
             3 => Ok(Self::ChannelBank),
             4 => Ok(Self::RadioConfig),
+            5 => Ok(Self::TxRange),
             _ => Err(StorageError::UnsupportedObject),
         }
     }
@@ -1092,6 +1096,94 @@ fn decode_tone(field: &[u8]) -> Result<Tone, StorageError> {
     tone.map_err(|_| StorageError::MalformedObject)
 }
 
+/// Bytes in one encoded TX range, as both the image and its object carry it:
+/// class u8, flags u8 (bit 0 wide FM), first Hz u32, last Hz u32, max mW u16,
+/// raster Hz u16, little endian.
+pub const TX_RANGE_ENCODED_LEN: usize = 14;
+const TX_RANGE_WIDE_FM: u8 = 1 << 0;
+
+/// Encodes one TX range body.
+#[must_use]
+pub fn encode_tx_range_body(range: TxRange) -> [u8; TX_RANGE_ENCODED_LEN] {
+    let mut data = [0_u8; TX_RANGE_ENCODED_LEN];
+    data[0] = range.class as u8;
+    data[1] = if range.wide_fm { TX_RANGE_WIDE_FM } else { 0 };
+    data[2..6].copy_from_slice(&range.first_hz.to_le_bytes());
+    data[6..10].copy_from_slice(&range.last_hz.to_le_bytes());
+    data[10..12].copy_from_slice(&range.max_mw.to_le_bytes());
+    data[12..14].copy_from_slice(&range.raster_hz.to_le_bytes());
+    data
+}
+
+/// Decodes and validates one TX range body.
+///
+/// # Errors
+///
+/// Returns [`StorageError::MalformedObject`] for an unknown class or flag, or
+/// a range [`TxRange::validate`] refuses.
+pub fn decode_tx_range_body(data: &[u8; TX_RANGE_ENCODED_LEN]) -> Result<TxRange, StorageError> {
+    if data[1] & !TX_RANGE_WIDE_FM != 0 {
+        return Err(StorageError::MalformedObject);
+    }
+    let range = TxRange {
+        class: TxClass::try_from(data[0]).map_err(|_| StorageError::MalformedObject)?,
+        first_hz: u32::from_le_bytes([data[2], data[3], data[4], data[5]]),
+        last_hz: u32::from_le_bytes([data[6], data[7], data[8], data[9]]),
+        max_mw: u16::from_le_bytes([data[10], data[11]]),
+        wide_fm: data[1] & TX_RANGE_WIDE_FM != 0,
+        raster_hz: u16::from_le_bytes([data[12], data[13]]),
+    };
+    range
+        .validate()
+        .map_err(|_| StorageError::MalformedObject)?;
+    Ok(range)
+}
+
+/// Encodes the TX range at `position` as a project object.
+///
+/// # Errors
+///
+/// Returns [`StorageError::MalformedObject`] for a position beyond
+/// [`MAX_TX_RANGES`] or a range [`TxRange::validate`] refuses.
+pub fn encode_tx_range(position: u16, range: TxRange) -> Result<StorageObject, StorageError> {
+    if usize::from(position) >= MAX_TX_RANGES || range.validate().is_err() {
+        return Err(StorageError::MalformedObject);
+    }
+    let mut data = [0_u8; 1 + TX_RANGE_ENCODED_LEN];
+    data[0] = STORAGE_FORMAT_VERSION;
+    data[1..].copy_from_slice(&encode_tx_range_body(range));
+    StorageObject::new(
+        ObjectKey {
+            kind: ObjectKind::TxRange,
+            id: position,
+        },
+        &data,
+    )
+}
+
+/// Decodes and validates one TX range object.
+///
+/// # Errors
+///
+/// Returns [`StorageError::UnsupportedObject`] for another kind and
+/// [`StorageError::MalformedObject`] for anything else wrong.
+pub fn decode_tx_range(object: &impl Object) -> Result<TxRange, StorageError> {
+    let key = object.key();
+    if key.kind != ObjectKind::TxRange {
+        return Err(StorageError::UnsupportedObject);
+    }
+    let data = object.data();
+    if usize::from(key.id) >= MAX_TX_RANGES
+        || data.len() != 1 + TX_RANGE_ENCODED_LEN
+        || data[0] != STORAGE_FORMAT_VERSION
+    {
+        return Err(StorageError::MalformedObject);
+    }
+    let mut body = [0_u8; TX_RANGE_ENCODED_LEN];
+    body.copy_from_slice(&data[1..]);
+    decode_tx_range_body(&body)
+}
+
 /// Validates any currently supported configuration object.
 pub fn validate_object(object: &impl Object) -> bool {
     match object.key().kind {
@@ -1099,6 +1191,7 @@ pub fn validate_object(object: &impl Object) -> bool {
         ObjectKind::Channel => decode_channel(object).is_ok(),
         ObjectKind::ChannelBank => decode_channel_bank(object).is_ok(),
         ObjectKind::RadioConfig => decode_radio_config(object).is_ok(),
+        ObjectKind::TxRange => decode_tx_range(object).is_ok(),
     }
 }
 
@@ -1599,6 +1692,36 @@ mod tests {
         assert_eq!(encoded_config.len(), RADIO_CONFIG_ENCODED_LEN);
         assert_eq!(decode_radio_config(&encoded_config).unwrap(), config);
         assert!(validate_object(&encoded_config));
+    }
+
+    #[test]
+    fn tx_range_objects_round_trip_and_refuse_bad_fields() {
+        let range = radio_tx_policy::TxRange {
+            class: radio_domain::TxClass::Amateur,
+            first_hz: 430_000_000,
+            last_hz: 440_000_000,
+            max_mw: 5_000,
+            wide_fm: true,
+            raster_hz: 0,
+        };
+        let object = super::encode_tx_range(3, range).unwrap();
+        assert_eq!(object.key().id, 3);
+        assert_eq!(super::decode_tx_range(&object), Ok(range));
+        assert!(validate_object(&object));
+        assert!(super::encode_tx_range(16, range).is_err());
+        assert!(
+            super::encode_tx_range(0, radio_tx_policy::TxRange { max_mw: 0, ..range }).is_err()
+        );
+        for (index, value) in [(0, STORAGE_FORMAT_VERSION + 1), (1, 0), (1, 7), (2, 2)] {
+            let mut data = object.data().to_vec();
+            data[index] = value;
+            let bad = StorageObject::new(object.key(), &data).unwrap();
+            assert_eq!(
+                super::decode_tx_range(&bad),
+                Err(StorageError::MalformedObject),
+                "index {index} value {value}"
+            );
+        }
     }
 
     #[test]

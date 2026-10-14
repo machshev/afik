@@ -18,6 +18,7 @@
 //! header  : magic "AFIK", image version 2, format 6, block count u16,
 //!           payload length u32, CRC-32 (as format 4)
 //! payload : radio configuration (16 bytes, as its format 4 object)
+//!           TX range count u8, then each range's 14 bytes (`ADR-101`)
 //!           bank count u8, then per bank: id u8, flags u8, name length u8,
 //!           name bytes
 //!           blocks, each: kind u8 (1 list, 2 linear), bank u8 (0xFF none),
@@ -44,11 +45,14 @@ use radio_domain::{
     SquelchLevel, Tone,
 };
 
+use radio_tx_policy::{RangeError, TxPolicy, TxRange, MAX_TX_RANGES};
+
 use super::{
     configuration_image_crc, crc32_update, decode_generated_bank, decode_radio_config, decode_tone,
-    encode_generated_bank, encode_radio_config, encode_tone, ObjectKey, ObjectKind, ObjectRef,
-    StorageError, CONFIGURATION_IMAGE_MAGIC, MAX_GENERATED_BANK_ENCODED_LEN,
-    RADIO_CONFIG_ENCODED_LEN,
+    decode_tx_range_body, encode_generated_bank, encode_radio_config, encode_tone,
+    encode_tx_range_body, ObjectKey, ObjectKind, ObjectRef, StorageError,
+    CONFIGURATION_IMAGE_MAGIC, MAX_GENERATED_BANK_ENCODED_LEN, RADIO_CONFIG_ENCODED_LEN,
+    TX_RANGE_ENCODED_LEN,
 };
 
 /// Image container version for format 6.
@@ -105,6 +109,8 @@ pub enum CompileError {
     TooManyBlocks,
     /// The image does not fit the output.
     TooLarge,
+    /// A TX range is malformed, or there are too many.
+    TxRange(RangeError),
     /// An object failed its own encoding.
     Storage(StorageError),
 }
@@ -125,6 +131,7 @@ impl core::fmt::Display for CompileError {
                 "the image needs more than the {MAX_BLOCKS} blocks a radio indexes"
             ),
             Self::TooLarge => formatter.write_str("the image does not fit the radio's memory"),
+            Self::TxRange(error) => write!(formatter, "{error}"),
             Self::Storage(error) => write!(formatter, "{error}"),
         }
     }
@@ -363,6 +370,7 @@ fn write_list<'a>(
 /// numbers channels in this order.
 pub fn compile(
     config: RadioConfig,
+    tx_ranges: &[TxRange],
     banks: &[ChannelBank],
     channels: &[ChannelRecord],
     plans: &[GeneratedBank],
@@ -381,6 +389,11 @@ pub fn compile(
         at: HEADER_LEN,
     };
     writer.bytes(encode_radio_config(config)?.data())?;
+    TxPolicy::new(tx_ranges).map_err(CompileError::TxRange)?;
+    writer.u8(u8::try_from(tx_ranges.len()).map_err(|_| CompileError::TooLarge)?)?;
+    for range in tx_ranges {
+        writer.bytes(&encode_tx_range_body(*range))?;
+    }
     writer.u8(u8::try_from(banks.len()).map_err(|_| CompileError::TooLarge)?)?;
     for bank in banks {
         let name = bank.name();
@@ -444,6 +457,9 @@ pub struct Block {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Index {
     config: RadioConfig,
+    /// Payload offset of the first TX range and how many there are.
+    tx_ranges: u16,
+    tx_range_count: u8,
     blocks: [Block; MAX_BLOCKS],
     block_count: usize,
     names: [u16; MAX_BANKS as usize],
@@ -468,6 +484,25 @@ fn read_array<const N: usize>(
     } else {
         Err(StorageError::MalformedImage)
     }
+}
+
+/// Builds a policy from decoded ranges, denying everything if one is absent.
+fn policy_of(ranges: &[Option<TxRange>]) -> TxPolicy {
+    let mut flat = [TxRange {
+        class: radio_domain::TxClass::LicenceFreePlan,
+        first_hz: 1,
+        last_hz: 1,
+        max_mw: 1,
+        wide_fm: false,
+        raster_hz: 0,
+    }; MAX_TX_RANGES];
+    for (slot, range) in flat.iter_mut().zip(ranges) {
+        match range {
+            Some(range) => *slot = *range,
+            None => return TxPolicy::deny_all(),
+        }
+    }
+    TxPolicy::new(&flat[..ranges.len()]).unwrap_or_default()
 }
 
 /// A list block's header, decoded.
@@ -619,6 +654,8 @@ impl Index {
     pub const fn empty() -> Self {
         Self {
             config: RadioConfig::conservative(),
+            tx_ranges: 0,
+            tx_range_count: 0,
             blocks: [Block {
                 kind: 0,
                 bank: 0,
@@ -685,6 +722,17 @@ impl Index {
         .validate()
         .map_err(|_| StorageError::MalformedObject)?;
         let mut at = RADIO_CONFIG_ENCODED_LEN;
+        let [range_count] = read_array::<1>(&mut read, at)?;
+        at += 1;
+        index.tx_ranges = u16::try_from(at).map_err(|_| StorageError::ImageTooLarge)?;
+        index.tx_range_count = range_count;
+        if usize::from(range_count) > MAX_TX_RANGES {
+            return Err(StorageError::MalformedObject);
+        }
+        for _ in 0..range_count {
+            decode_tx_range_body(&read_array(&mut read, at)?)?;
+            at += TX_RANGE_ENCODED_LEN;
+        }
         let [bank_count] = read_array::<1>(&mut read, at)?;
         at += 1;
         for _ in 0..bank_count {
@@ -815,6 +863,23 @@ impl Index {
         Ok(plan)
     }
 
+    /// The programmed TX ranges as a policy.
+    ///
+    /// They were validated when the index was built; a range that no longer
+    /// reads back (the memory changed underneath) leaves nothing permitted.
+    pub fn tx_policy(&self, mut read: impl FnMut(usize, &mut [u8]) -> bool) -> TxPolicy {
+        let mut ranges = [None; MAX_TX_RANGES];
+        let count = usize::from(self.tx_range_count).min(MAX_TX_RANGES);
+        for (position, slot) in ranges.iter_mut().take(count).enumerate() {
+            let at = usize::from(self.tx_ranges) + position * TX_RANGE_ENCODED_LEN;
+            match read_array(&mut read, at).and_then(|body| decode_tx_range_body(&body)) {
+                Ok(range) => *slot = Some(range),
+                Err(_) => return TxPolicy::deny_all(),
+            }
+        }
+        policy_of(&ranges[..count])
+    }
+
     /// The global receive configuration.
     #[must_use]
     pub const fn config(&self) -> RadioConfig {
@@ -934,15 +999,18 @@ mod tests {
     extern crate std;
 
     use super::{compile, CompileError, Index, HEADER_LEN, NO_BANK};
-    use crate::StorageError;
+    use crate::{
+        configuration_image_crc, StorageError, RADIO_CONFIG_ENCODED_LEN, TX_RANGE_ENCODED_LEN,
+    };
     use radio_channel_plan::{
         BankFlags, BankMask, BankName, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
         ChannelRecord, GeneratedBank,
     };
     use radio_domain::{
         Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel,
-        RadioConfig, SquelchLevel, Tone,
+        RadioConfig, SquelchLevel, Tone, TxClass,
     };
+    use radio_tx_policy::{RangeError, TxPolicy, TxRange, MAX_TX_RANGES};
     use std::vec::Vec;
 
     fn channel(id: u16, name: &str, rx: u32, tx: u32, bank: Option<u16>) -> ChannelDefinition {
@@ -1017,9 +1085,18 @@ mod tests {
     }
 
     fn compiled(channels: &[ChannelRecord], plans: &[GeneratedBank]) -> Vec<u8> {
+        compiled_with(&[], channels, plans)
+    }
+
+    fn compiled_with(
+        ranges: &[TxRange],
+        channels: &[ChannelRecord],
+        plans: &[GeneratedBank],
+    ) -> Vec<u8> {
         let mut image = std::vec![0_u8; 8192];
         let len = compile(
             RadioConfig::conservative(),
+            ranges,
             &banks(),
             channels,
             plans,
@@ -1028,6 +1105,106 @@ mod tests {
         .expect("compile");
         image.truncate(len);
         image
+    }
+
+    const RANGES: [TxRange; 2] = [
+        TxRange {
+            class: TxClass::LicenceFreePlan,
+            first_hz: 446_006_250,
+            last_hz: 446_193_750,
+            max_mw: 500,
+            wide_fm: false,
+            raster_hz: 12_500,
+        },
+        TxRange {
+            class: TxClass::Amateur,
+            first_hz: 144_000_000,
+            last_hz: 146_000_000,
+            max_mw: 5_000,
+            wide_fm: true,
+            raster_hz: 0,
+        },
+    ];
+
+    /// Rewrites the header checksum after a test edits the payload.
+    fn reseal(image: &mut [u8]) {
+        let (header, payload) = image.split_at_mut(HEADER_LEN);
+        let crc = configuration_image_crc(&header[..12], payload);
+        header[12..16].copy_from_slice(&crc.to_le_bytes());
+    }
+
+    #[test]
+    fn tx_ranges_round_trip_into_the_radio_policy() {
+        let image = compiled_with(&RANGES, &pmr(), &[plan()]);
+        let index = index(&image).expect("index");
+        assert_eq!(
+            index.tx_policy(reader(&image)),
+            TxPolicy::new(&RANGES).unwrap()
+        );
+        // The ranges cost a count and 14 bytes each.
+        assert_eq!(
+            image.len(),
+            compiled(&pmr(), &[plan()]).len() + 2 * TX_RANGE_ENCODED_LEN
+        );
+        // No range programmed: nothing may transmit.
+        let bare = compiled(&pmr(), &[]);
+        assert_eq!(
+            index_of(&bare).tx_policy(reader(&bare)),
+            TxPolicy::deny_all()
+        );
+    }
+
+    fn index_of(image: &[u8]) -> Index {
+        index(image).expect("index")
+    }
+
+    #[test]
+    fn a_malformed_or_extra_tx_range_is_refused_by_compiler_and_radio() {
+        let mut image = [0_u8; 1024];
+        let empty = TxRange {
+            max_mw: 0,
+            ..RANGES[0]
+        };
+        assert_eq!(
+            compile(
+                RadioConfig::conservative(),
+                &[empty],
+                &[],
+                &[],
+                &[],
+                &mut image
+            ),
+            Err(CompileError::TxRange(RangeError::Power))
+        );
+        assert_eq!(
+            compile(
+                RadioConfig::conservative(),
+                &[RANGES[0]; MAX_TX_RANGES + 1],
+                &[],
+                &[],
+                &[],
+                &mut image
+            ),
+            Err(CompileError::TxRange(RangeError::TooMany))
+        );
+
+        // The radio checks again: a class byte no TxClass has, then a
+        // reversed span, each with a valid checksum.
+        let first = RADIO_CONFIG_ENCODED_LEN + 1;
+        for (offset, value) in [(0, 0), (0, 9), (1, 2), (2, 0xFF)] {
+            let mut image = compiled_with(&RANGES, &[], &[]);
+            image[HEADER_LEN + first + offset] = value;
+            if offset == 2 {
+                // first Hz above last Hz
+                image[HEADER_LEN + first + 5] = 0xFF;
+            }
+            reseal(&mut image);
+            assert_eq!(
+                index(&image),
+                Err(StorageError::MalformedObject),
+                "offset {offset} value {value}"
+            );
+        }
     }
 
     fn index(image: &[u8]) -> Result<Index, StorageError> {
@@ -1125,9 +1302,10 @@ mod tests {
     #[test]
     fn a_pmr_list_costs_its_names_and_short_frequencies() {
         let image = compiled(&pmr(), &[]);
-        // Header 16, config 16, one named bank 3 + 6, block header 4, list
-        // header 30, then 16 records of a 5-byte name and a 2-byte frequency.
-        assert_eq!(image.len(), 16 + 16 + 1 + 3 + 6 + 4 + 30 + 16 * (5 + 2));
+        // Header 16, config 16, no TX ranges 1, one named bank 3 + 6, block
+        // header 4, list header 30, then 16 records of a 5-byte name and a
+        // 2-byte frequency.
+        assert_eq!(image.len(), 16 + 16 + 1 + 1 + 3 + 6 + 4 + 30 + 16 * (5 + 2));
     }
 
     #[test]
@@ -1138,6 +1316,7 @@ mod tests {
         assert_eq!(
             compile(
                 RadioConfig::conservative(),
+                &[],
                 &[],
                 &[record(definition)],
                 &[],

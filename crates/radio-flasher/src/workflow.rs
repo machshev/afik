@@ -2863,9 +2863,15 @@ mod tests {
             )
             .unwrap();
             let mut image = vec![0_u8; IMAGE_REGION];
-            let len =
-                radio_image::compile(RadioConfig::conservative(), &[], &[], &[plan], &mut image)
-                    .unwrap();
+            let len = radio_image::compile(
+                RadioConfig::conservative(),
+                &[],
+                &[],
+                &[],
+                &[plan],
+                &mut image,
+            )
+            .unwrap();
             image.truncate(len);
             image
         }
