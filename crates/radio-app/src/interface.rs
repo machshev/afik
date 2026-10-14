@@ -497,6 +497,31 @@ fn adopt_place(shell: &mut Shell, programmed: &Programmed, place: Option<Operato
     }
 }
 
+/// Adopts one published configuration, and the retained place it carries.
+///
+/// The serial task publishes an empty configuration before it has read the
+/// memory, then the stored one with the place beside it. The interface may take
+/// either first, so the place is restored whenever it arrives. Without one, a
+/// radio which had no channels and now has some is being given them and leaves
+/// the VFO for them; one which already had them is only being told about a
+/// changed setting, and the operator stays exactly where they were.
+fn adopt_publication(
+    shell: &mut Shell,
+    programmed: &Programmed,
+    was_empty: bool,
+    place: Option<OperatorState>,
+    selected: &mut Option<Selected>,
+) {
+    adopt_settings(shell, programmed);
+    if place.is_some() {
+        adopt_place(shell, programmed, place);
+        *selected = place.and_then(Selected::from_place);
+    } else if was_empty && !programmed.is_empty() {
+        shell.select_memory();
+        *selected = None;
+    }
+}
+
 /// Builds the receive controller for whatever the shell says is in force.
 ///
 /// `keep` is the memory channel the operator is on, which survives the rebuild
@@ -623,11 +648,10 @@ pub async fn run<D, K, B, S, V, M>(
     let mut programmed = publication.map_or_else(Programmed::empty, |value| value.programmed);
 
     let mut shell = Shell::new();
-    adopt_settings(&mut shell, &programmed);
-    adopt_place(&mut shell, &programmed, place);
     // The retained place is where the operator left this radio, and it is the
     // only thing which knows on the pass that adopts it.
-    let mut selected = place.and_then(Selected::from_place);
+    let mut selected = None;
+    adopt_publication(&mut shell, &programmed, true, place, &mut selected);
     let mut activation = activate(&programmed, &shell, selected, memory);
     let mut pending = activation.as_mut().and_then(|(_, setup)| setup.take());
 
@@ -743,14 +767,16 @@ pub async fn run<D, K, B, S, V, M>(
                 &mut pending_operator_squelch,
             );
             shared_receive = None;
-            adopt_settings(&mut shell, &programmed);
-            // A radio which had no channels and now has some is being given
-            // them, so it leaves the VFO for them. One which already had them
-            // is only being told about a changed setting, and the operator
-            // stays exactly where they were.
-            if was_empty && !programmed.is_empty() {
-                shell.select_memory();
-                selected = None;
+            adopt_publication(
+                &mut shell,
+                &programmed,
+                was_empty,
+                publication.place,
+                &mut selected,
+            );
+            if publication.place.is_some() {
+                saved_place = publication.place;
+                settling = None;
             }
             activation = activate(&programmed, &shell, selected, memory);
             pending = activation.as_mut().and_then(|(_, setup)| setup.take());
@@ -1477,4 +1503,89 @@ fn bank_name<M: Memory>(bank: BankId, memory: &'static TaskCell<Option<M>>) -> O
             image.bank_name(|offset, buffer| read_image(memory, offset, buffer), bank)
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{adopt_publication, Selected};
+    use crate::configuration::Programmed;
+    use crate::operator_state::OperatorState;
+    use radio_domain::BankId;
+    use radio_platform::operator_shell::{Mode, Shell};
+
+    const VFO_HZ: u32 = 145_500_000;
+
+    fn place(memory_mode: bool) -> OperatorState {
+        OperatorState {
+            memory_mode,
+            bank: Some(BankId::new(1)),
+            index: 3,
+            channel_id: 9,
+            vfo_hz: VFO_HZ,
+            step_index: 2,
+            squelch: None,
+        }
+    }
+
+    /// Boots the way the radio does: the serial task's empty publication
+    /// first, then the stored configuration with the place beside it.
+    fn boot(place: Option<OperatorState>) -> (Shell, Option<Selected>) {
+        let mut shell = Shell::new();
+        let mut selected = None;
+        adopt_publication(&mut shell, &Programmed::empty(), true, None, &mut selected);
+        adopt_publication(
+            &mut shell,
+            &Programmed::with_channels(4, 0b11),
+            true,
+            place,
+            &mut selected,
+        );
+        (shell, selected)
+    }
+
+    #[test]
+    fn a_place_published_after_the_empty_configuration_is_restored() {
+        let (shell, selected) = boot(Some(place(true)));
+        assert!(matches!(shell.mode(), Mode::Memory));
+        assert_eq!(shell.bank_filter(), Some(BankId::new(1)));
+        assert_eq!(shell.vfo_hz(), VFO_HZ);
+        assert_eq!(shell.step_index(), 2);
+        assert_eq!(
+            selected,
+            Some(Selected {
+                index: 3,
+                channel_id: 9
+            })
+        );
+    }
+
+    #[test]
+    fn a_radio_left_on_the_vfo_comes_back_to_it() {
+        let (shell, selected) = boot(Some(place(false)));
+        assert!(matches!(shell.mode(), Mode::Vfo));
+        assert_eq!(shell.vfo_hz(), VFO_HZ);
+        assert_eq!(selected, None);
+    }
+
+    #[test]
+    fn a_radio_with_no_place_starts_on_its_channels() {
+        let (shell, selected) = boot(None);
+        assert!(matches!(shell.mode(), Mode::Memory));
+        assert_eq!(shell.bank_filter(), None);
+        assert_eq!(selected, None);
+    }
+
+    #[test]
+    fn a_later_configuration_without_a_place_keeps_the_operator_where_they_are() {
+        let (mut shell, mut selected) = boot(Some(place(true)));
+        adopt_publication(
+            &mut shell,
+            &Programmed::with_channels(4, 0b11),
+            false,
+            None,
+            &mut selected,
+        );
+        assert_eq!(shell.bank_filter(), Some(BankId::new(1)));
+        assert_eq!(selected.map(|kept| kept.index), Some(3));
+    }
 }

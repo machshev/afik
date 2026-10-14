@@ -59,6 +59,16 @@ impl Programmed {
         }
     }
 
+    /// A summary of `len` channels stored in the banks `populated` sets.
+    #[cfg(test)]
+    pub(crate) const fn with_channels(len: u16, populated: u16) -> Self {
+        Self {
+            len,
+            populated,
+            config: RadioConfig::conservative(),
+        }
+    }
+
     /// Returns this summary with the radio-wide squelch replaced.
     ///
     /// The operator's handset choice is the radio's own and is kept beside

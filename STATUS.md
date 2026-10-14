@@ -261,7 +261,18 @@
   rows move or are deleted. Gate: `cargo fmt --all --check` clean, workspace
   clippy `-D warnings` clean, `cargo test --workspace --no-fail-fast` 677
   passed 0 failed.
-- Next: flash K5 `7.0.17` and program it from the studio (write, power-cycle,
+- `7.0.18` (bench report: VFO frequency, bank and channel forgotten on
+  power cycle): the serial task publishes an empty configuration before
+  reading memory, then the stored one with the place. The interface restored a
+  place only from the publication it took at start-up, usually the empty one,
+  and the loop dropped the later place, went to the top of the list, and then
+  saved that over the record. `interface::adopt_publication` now restores a
+  place whenever one arrives (4 new tests). Gate: `cargo fmt --all --check`
+  clean, workspace clippy `-D warnings` clean, `cargo test --workspace
+  --no-fail-fast` 681 passed 0 failed, `tool/build-k5.sh --release` and
+  `tool/build-k1.sh --release` pass. Not yet flashed.
+- Next: flash K5 `7.0.18`, check a power cycle keeps VFO, bank and channel,
+  and program it from the studio (write, power-cycle,
   read back); then the K1's NOR erase plan; then CTCSS/DCS with a tail tone.
 
 ## Previous work package: TXK5-058
