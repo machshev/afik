@@ -25,6 +25,7 @@ use crate::{
         BankDraft, BankKind, ChannelDraft, ModelError, ProjectModel, StorageSummary, ToneDraft,
         ToneKind, MAX_PROJECT_IMAGE_BYTES,
     },
+    paths,
     presets::PRESETS,
     session::DeviceSession,
     DeviceSelector, Options,
@@ -89,7 +90,7 @@ impl Default for StudioApp {
             last_receipt: None,
             listing: Vec::new(),
             flash_operation: FlashOperation::BackupEeprom,
-            flash_request: FlashRequest::default(),
+            flash_request: default_flash_request(),
             flash_crc32: String::new(),
             flash_job: None,
             flash_progress: None,
@@ -312,11 +313,20 @@ impl StudioApp {
         let Some(job) = self.flash_job.as_ref() else {
             return;
         };
+        let operation = job.operation();
         let mut finished = false;
         for message in job.drain() {
             match message {
                 FlashProgress::Step { done, total } => self.flash_progress = Some((done, total)),
                 FlashProgress::Finished(summary) => {
+                    if operation == FlashOperation::BackupEeprom {
+                        // The backup just taken is the one to retain, and the
+                        // next backup needs a name of its own.
+                        self.flash_request.eeprom_backup = std::mem::replace(
+                            &mut self.flash_request.eeprom_output,
+                            paths::default_eeprom_backup(),
+                        );
+                    }
                     self.flash_status = summary;
                     finished = true;
                 }
@@ -860,11 +870,20 @@ impl StudioApp {
 
     fn flash_operation_fields(&mut self, ui: &mut egui::Ui) {
         match self.flash_operation {
-            FlashOperation::BackupEeprom => path_field(
-                ui,
-                "EEPROM backup output",
-                &mut self.flash_request.eeprom_output,
-            ),
+            FlashOperation::BackupEeprom => {
+                path_field(
+                    ui,
+                    "EEPROM backup output",
+                    &mut self.flash_request.eeprom_output,
+                );
+                if ui
+                    .button("New default name")
+                    .on_hover_text("A fresh timestamped file in the AFIK data directory")
+                    .clicked()
+                {
+                    self.flash_request.eeprom_output = paths::default_eeprom_backup();
+                }
+            }
             FlashOperation::AfikApplication => {
                 path_field(ui, "AFIK image", &mut self.flash_request.firmware);
                 digest_label(ui, &mut self.digests, &self.flash_request.firmware);
@@ -947,6 +966,20 @@ impl StudioApp {
             &mut self.flash_request.target_confirmation,
         );
         text_field(ui, "Image CRC-32 (hex)", &mut self.flash_crc32);
+    }
+}
+
+/// Returns a flash request with its paths filled in from the XDG defaults.
+///
+/// The backup output is a fresh timestamped file under the AFIK data directory,
+/// and the retained backup is the newest one already there. Both stay editable.
+fn default_flash_request() -> FlashRequest {
+    FlashRequest {
+        eeprom_output: paths::default_eeprom_backup(),
+        eeprom_backup: paths::eeprom_dir()
+            .and_then(|directory| paths::newest_eeprom_backup(&directory))
+            .unwrap_or_default(),
+        ..FlashRequest::default()
     }
 }
 
@@ -1717,6 +1750,20 @@ mod tests {
             app.flash_status.contains("serial setup failed"),
             "{}",
             app.flash_status
+        );
+    }
+
+    #[test]
+    fn the_eeprom_backup_output_defaults_to_the_xdg_data_directory() {
+        let app = StudioApp::default();
+        let output = &app.flash_request.eeprom_output;
+        if let Some(directory) = crate::paths::eeprom_dir() {
+            assert_eq!(output.parent(), Some(directory.as_path()));
+        }
+        let name = output.file_name().unwrap().to_str().unwrap();
+        assert!(
+            name.starts_with("eeprom-") && name.ends_with("Z.bin"),
+            "{name}"
         );
     }
 

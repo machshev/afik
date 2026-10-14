@@ -702,6 +702,15 @@ fn write_new_file(path: &Path, bytes: &[u8]) -> Result<(), FlashRequestError> {
             path.display()
         )));
     }
+    // The default lives under the XDG data directory, which may not exist yet.
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent).map_err(|error| {
+            FlashRequestError::new(format!("could not create {}: {error}", parent.display()))
+        })?;
+    }
     fs::write(path, bytes)
         .map_err(|error| FlashRequestError::new(format!("could not write backup: {error}")))
 }
@@ -710,8 +719,8 @@ fn write_new_file(path: &Path, bytes: &[u8]) -> Result<(), FlashRequestError> {
 mod tests {
     use super::{
         afik_image_for, artefact_digest, confirm_image_crc32, crc32, fresh_transaction_id,
-        parse_crc32, start_identify, validate_request, AfikImage, DigestCache, FlashOperation,
-        FlashRequest, K1RecoveryImage, Radio,
+        parse_crc32, start_identify, validate_request, write_new_file, AfikImage, DigestCache,
+        FlashOperation, FlashRequest, K1RecoveryImage, Radio,
     };
     use std::path::PathBuf;
 
@@ -926,6 +935,20 @@ mod tests {
         std::fs::write(&path, [3_u8; 4]).unwrap();
         assert_eq!(cache.digest(&path).unwrap().0, 4);
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn a_backup_creates_its_directory_and_never_overwrites() {
+        let directory = std::env::temp_dir().join(format!("afik-backup-{}", std::process::id()));
+        let path = directory.join("eeprom").join("eeprom-19700101T000000Z.bin");
+        write_new_file(&path, &[7_u8; 4]).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), [7_u8; 4]);
+        assert!(write_new_file(&path, &[8_u8; 4])
+            .unwrap_err()
+            .to_string()
+            .contains("already exists"));
+        assert_eq!(std::fs::read(&path).unwrap(), [7_u8; 4]);
+        std::fs::remove_dir_all(&directory).unwrap();
     }
 
     #[test]

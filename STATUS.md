@@ -72,6 +72,11 @@
   digests are cached by size and mtime instead of re-read every frame. Gate:
   fmt clean, clippy `-D warnings` clean, `cargo test --workspace
   --no-fail-fast` 669 passed 0 failed.
+  Then: the EEPROM backup output defaults to a timestamped file under
+  `$XDG_DATA_HOME/afik/eeprom/` (created on first use, never overwritten), and
+  the K5 retained backup defaults to the newest one there. Gate: fmt clean,
+  clippy `-D warnings` clean, `cargo test --workspace --no-fail-fast` 674
+  passed 0 failed.
 - Next: flash `7.0.5` with `afik-flasher flash-afik` and check a 1 min over
   times out; flash K1 and check its speech level; then CTCSS/DCS with an
   end-of-transmission tail tone to remove the key-off squelch burst.

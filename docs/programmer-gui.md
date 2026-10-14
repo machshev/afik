@@ -129,6 +129,11 @@ that is not hex is refused before the serial device is opened. The per-run
 transaction identifier is generated, never typed, so one run's acknowledgements
 cannot be mistaken for another's.
 
-The EEPROM backup is read-only and refuses to overwrite an existing file. See
+The EEPROM backup is read-only and refuses to overwrite an existing file. Its
+output defaults to a timestamped file under `$XDG_DATA_HOME/afik/eeprom/`
+(`~/.local/share/afik/eeprom/` without it), created on first use, and
+**New default name** restores that default after an override. A finished
+backup becomes the retained EEPROM backup the recovery-gated K5 write offers,
+which otherwise starts as the newest backup in that directory. See
 `docs/k5-flashing.md` and `docs/k1-bring-up.md` for what each guard means and
 `RISK-029` for the editor's accepted local-tool exposure.
