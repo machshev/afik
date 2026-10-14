@@ -4,7 +4,7 @@ use crate::display::{BootStage, ReceiveDiagnostic};
 use crate::operator_shell::TX_POWER_NOMINAL_MW;
 use crate::receive_app::Key;
 use radio_bk4819::SquelchThresholds;
-use radio_domain::{SquelchLevel, TxClass};
+use radio_domain::{Bandwidth, Modulation, SquelchLevel, TxClass};
 
 /// Visible display width in columns.
 pub const WIDTH: usize = 128;
@@ -238,70 +238,83 @@ pub const LIST_NAME_BYTES: usize = 14;
 /// Channel list rows one screen shows.
 pub const LIST_ROWS: usize = 5;
 
+/// One slot as the operating screen shows it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SlotView<'a> {
+    /// `b'A'` or `b'B'`.
+    pub letter: u8,
+    /// Whether keys act on this slot and PTT transmits on it.
+    pub selected: bool,
+    /// What it listens to; `None` is a memory with no channels.
+    pub channel: Option<SlotChannel<'a>>,
+}
+
+/// The channel or VFO one slot listens to.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SlotChannel<'a> {
+    /// Channel name, or `VFO`.
+    pub name: &'a [u8],
+    /// Receive frequency in hertz.
+    pub frequency_hz: u32,
+    /// The channel's bank and its one-based number in the view, or the VFO's
+    /// step in hertz.
+    pub place: SlotPlace,
+    /// Modulation.
+    pub modulation: Modulation,
+    /// Bandwidth, which tells FM from NFM.
+    pub bandwidth: Bandwidth,
+    /// The TX power level, zero-based.
+    pub power: u8,
+    /// The chip's raw RSSI count while the receiver is on this slot and its
+    /// squelch is open; no meter is drawn otherwise.
+    pub meter: Option<u16>,
+}
+
+/// Where one slot's channel sits.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SlotPlace {
+    /// A programmed channel: its bank, if it has one, and its number.
+    Memory {
+        /// The channel's bank identifier.
+        bank: Option<u16>,
+        /// One-based number in the slot's view.
+        number: u16,
+    },
+    /// The VFO, with its tuning step in hertz.
+    Vfo {
+        /// Tuning step in hertz.
+        step_hz: u32,
+    },
+}
+
 /// Everything the operating screen displays.
 ///
-/// The caller passes exactly what it read from the controller and the receiver,
-/// so the screen cannot compute a value the serial observation disagrees with.
+/// The caller passes exactly what it read from the controllers and the
+/// receiver, so the screen cannot compute a value the serial observation
+/// disagrees with.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct OperatingView<'a> {
-    /// One-based position of the active channel in the active view.
-    pub position: u16,
-    /// Channels selectable in the active view.
-    pub total: u16,
-    /// Active channel name.
-    pub name: &'a [u8],
-    /// Active receive frequency in hertz.
-    pub frequency_hz: u32,
-    /// The chip's own raw RSSI count.
-    pub rssi_raw: u16,
-    /// Whether the carrier squelch link is open.
-    pub squelch_open: bool,
+    /// Slot A, drawn on top.
+    pub a: SlotView<'a>,
+    /// Slot B, drawn below.
+    pub b: SlotView<'a>,
     /// Whether the receiver path is known healthy.
     pub receiver_ok: bool,
     /// Remaining battery charge, absent until the radio has a reading.
     pub battery_percent: Option<u8>,
     /// Whether the squelch override is held open.
     pub monitoring: bool,
-    /// Whether a scan is walking the channels of the active view.
+    /// Whether a scan is walking the channels of the selected slot.
     pub scanning: bool,
-    /// Active bank filter, if any.
-    pub bank: Option<BankIndicator<'a>>,
+    /// Whether dual watch is on.
+    pub dual_watch: bool,
+    /// Whether F waits for the key it modifies.
+    pub function: bool,
     /// Number being typed, if any: a channel position, or VFO kilohertz.
     pub entry: Option<u32>,
-    /// VFO tuning step in hertz, set only while the VFO is the active source.
-    pub vfo_step_hz: Option<u32>,
-}
-
-/// Columns the operating screen gives the bank indicator.
-pub const BANK_INDICATOR_BYTES: usize = 5;
-
-/// The active bank filter as the operating screen shows it.
-///
-/// The host names its banks, so the name is what the operator recognises. An
-/// unnamed bank, which is what a built-in set or an older configuration has,
-/// falls back to the identifier rather than to blank space.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct BankIndicator<'a> {
-    /// Bank identifier.
-    pub id: u16,
-    /// Programmed bank name, which may be empty.
-    pub name: &'a [u8],
-}
-
-impl BankIndicator<'_> {
-    /// Returns the fixed-width indicator text.
-    fn label(&self) -> [u8; BANK_INDICATOR_BYTES] {
-        let mut label = *b"BK 00";
-        if self.name.is_empty() {
-            write_two_digits(&mut label[3..], self.id);
-            return label;
-        }
-        label = [b' '; BANK_INDICATOR_BYTES];
-        let length = self.name.len().min(BANK_INDICATOR_BYTES);
-        label[..length].copy_from_slice(&self.name[..length]);
-        label
-    }
+    /// Whether the selected slot is on the VFO, so an entry is kilohertz.
+    pub entry_vfo: bool,
 }
 
 /// One selector-list row, carrying the exact text the row shows.
@@ -541,23 +554,34 @@ impl ListRow {
     }
 }
 
-/// Produces the operating screen for one programmed or built-in channel.
+/// Produces the operating screen: a status row, then slot A and slot B.
 pub fn render_operating_screen(frame: &mut [u8; FRAME_BYTES], view: &OperatingView<'_>) {
     frame.fill(0);
 
-    // The top line is a status row: what the radio is listening to on the left,
-    // and how much battery is left to keep doing it on the right. The battery
-    // holds its corner whatever else changes, so an operator learns one place to
-    // glance at rather than hunting for it among the things that move.
-    if view.vfo_step_hz.is_some() {
-        // The VFO has no position in a list and no bank, so the header names the
-        // source instead.
-        draw_text(frame, 0, 0, b"VFO");
+    // The status row carries what the operator is doing on the left, and the
+    // battery in the right corner, where nothing else appears. A failed
+    // receiver must not resemble a quiet but healthy channel, so it takes the
+    // row over; typed digits come next, so the operator sees what the radio
+    // will act on before it acts.
+    if !view.receiver_ok {
+        draw_text(frame, 0, 0, b"RX FAULT");
+    } else if let Some(entry) = view.entry {
+        draw_text(frame, 0, 0, &entry_label(entry, view.entry_vfo));
     } else {
-        let mut position = *b"00/00";
-        write_two_digits(&mut position[..2], view.position);
-        write_two_digits(&mut position[3..], view.total);
-        draw_text(frame, 0, 0, &position);
+        if view.function {
+            draw_inverted(frame, 0, 0, b'F');
+        }
+        if view.dual_watch {
+            draw_text(frame, 12, 0, b"DW");
+        }
+        // A scan moves the channel under the operator without them touching
+        // a key, so the screen says so; both markers can be true at once.
+        if view.scanning {
+            draw_text(frame, 30, 0, b"SCAN");
+        }
+        if view.monitoring {
+            draw_text(frame, 60, 0, b"MON");
+        }
     }
     draw_text(
         frame,
@@ -566,51 +590,198 @@ pub fn render_operating_screen(frame: &mut [u8; FRAME_BYTES], view: &OperatingVi
         &battery_label(view.battery_percent),
     );
 
-    let width = view.name.len() * 6;
-    draw_text(frame, WIDTH.saturating_sub(width) / 2, 12, view.name);
-    draw_text(frame, 4, 26, &megahertz(view.frequency_hz));
+    draw_slot(frame, SLOT_A_Y, &view.a);
+    draw_horizontal(frame, SLOT_B_Y - 3);
+    draw_slot(frame, SLOT_B_Y, &view.b);
+}
 
-    draw_text(frame, 0, 42, &rssi_label(view.rssi_raw));
-    draw_text(
-        frame,
-        WIDTH - 7 * 6,
-        42,
-        if view.squelch_open {
-            b"SQ OPEN"
-        } else {
-            b"SQ SHUT"
-        },
-    );
-    // A failed receiver must not resemble a quiet but healthy channel.
-    if !view.receiver_ok {
-        draw_text(frame, 0, 55, b"RX FAULT");
-        return;
-    }
-    // The bottom line carries what the operator is doing rather than what the
-    // radio is: the number being typed, the tuning step it will move by, or the
-    // bank the channel list is filtered to. Typed digits take precedence so the
-    // operator can see what the radio will act on before it acts.
-    if let Some(entry) = view.entry {
-        let typed = entry_label(entry, view.vfo_step_hz.is_some());
-        draw_text(frame, 0, 55, &typed);
-    } else if let Some(step_hz) = view.vfo_step_hz {
-        draw_text(frame, 0, 55, &step_label(step_hz));
+/// Top pixel row of slot A.
+const SLOT_A_Y: usize = 10;
+/// Top pixel row of slot B.
+const SLOT_B_Y: usize = 38;
+/// Left column of a slot's text and meter, after its letter.
+const SLOT_TEXT_X: usize = 10;
+
+/// Draws one slot in three rows: letter, name and place; frequency,
+/// modulation and power; and the meter while its squelch is open.
+fn draw_slot(frame: &mut [u8; FRAME_BYTES], y: usize, slot: &SlotView<'_>) {
+    if slot.selected {
+        draw_inverted(frame, 0, y, slot.letter);
     } else {
-        match view.bank {
-            Some(bank) => draw_text(frame, 0, 55, &bank.label()),
-            None => draw_text(frame, 0, 55, b"ALL  "),
+        draw_text(frame, 1, y, &[slot.letter]);
+    }
+    let Some(channel) = slot.channel else {
+        draw_text(frame, SLOT_TEXT_X, y, b"NO CHANNELS");
+        return;
+    };
+    let name = &channel.name[..channel.name.len().min(12)];
+    draw_text(frame, SLOT_TEXT_X, y, name);
+    match channel.place {
+        SlotPlace::Memory { bank, number } => {
+            draw_text(frame, WIDTH - 7 * 6, y, &place_label(bank, number));
+        }
+        SlotPlace::Vfo { step_hz } => {
+            let label = short_step_label(step_hz);
+            let used = label
+                .iter()
+                .rposition(|byte| *byte != b' ')
+                .map_or(0, |at| at + 1);
+            draw_text(frame, WIDTH - used * 6, y, &label[..used]);
         }
     }
-    // A scan moves the channel under the operator without them touching a key,
-    // so the screen has to say that is what is happening. It sits beside the
-    // monitor marker rather than replacing it: both can be true at once, and a
-    // radio which hid one behind the other would be lying about the other.
-    if view.scanning {
-        draw_text(frame, WIDTH - 8 * 6, 55, b"SCAN");
+    let frequency = megahertz(channel.frequency_hz);
+    // Below 1 GHz the leading zero says nothing.
+    let frequency = if frequency[0] == b'0' {
+        &frequency[1..]
+    } else {
+        &frequency[..]
+    };
+    draw_text(frame, SLOT_TEXT_X, y + 9, frequency);
+    let mode = modulation_label(channel.modulation, channel.bandwidth);
+    draw_text(frame, WIDTH - 7 * 6, y + 9, &mode);
+    draw_text(frame, WIDTH - 2 * 6, y + 9, &power_label(channel.power));
+    if let Some(rssi_raw) = channel.meter {
+        draw_meter(frame, y + 18, rssi_raw);
     }
-    if view.monitoring {
-        draw_text(frame, WIDTH - 3 * 6, 55, b"MON");
+}
+
+/// Weakest carrier the meter shows, in dBm; anything weaker draws one segment.
+const METER_FLOOR_DBM: i32 = -130;
+/// Strongest carrier the meter shows, in dBm.
+const METER_CEILING_DBM: i32 = -50;
+/// Pixel columns in one meter segment, the last of them a gap.
+const METER_SEGMENT: usize = 3;
+
+/// Draws the signal meter: segments in proportion to the carrier between
+/// [`METER_FLOOR_DBM`] and [`METER_CEILING_DBM`], with the chip's meter read
+/// as `dBm = count / 2 - 160` (`EVID-BK4819-053`). An open squelch always
+/// draws at least one segment, so the meter is never present but empty.
+fn draw_meter(frame: &mut [u8; FRAME_BYTES], y: usize, rssi_raw: u16) {
+    let segments = (WIDTH - SLOT_TEXT_X) / METER_SEGMENT;
+    let dbm = i32::from(rssi_raw) / 2 - 160;
+    let span = METER_CEILING_DBM - METER_FLOOR_DBM;
+    let above = (dbm - METER_FLOOR_DBM).clamp(0, span);
+    let lit = usize::try_from(above).unwrap_or(0) * segments / usize::try_from(span).unwrap_or(1);
+    for segment in 0..lit.max(1) {
+        let x = SLOT_TEXT_X + segment * METER_SEGMENT;
+        for column in x..x + METER_SEGMENT - 1 {
+            draw_column(frame, column, y, 0b0001_1111);
+        }
     }
+}
+
+/// Draws one character in a filled box, marking a selection.
+fn draw_inverted(frame: &mut [u8; FRAME_BYTES], x: usize, y: usize, byte: u8) {
+    let bits = glyph(byte);
+    for column in 0..7 {
+        let glyph_bits = if (1..6).contains(&column) {
+            bits[column - 1]
+        } else {
+            0
+        };
+        // One pixel of box above and below the seven-pixel glyph.
+        for row in 0..9 {
+            let lit = match row {
+                1..=7 => glyph_bits & (1 << (row - 1)) == 0,
+                _ => true,
+            };
+            let pixel_y = (y + row).wrapping_sub(1);
+            if lit && x + column < WIDTH && pixel_y < HEIGHT {
+                frame[(pixel_y / 8) * WIDTH + x + column] |= 1 << (pixel_y % 8);
+            }
+        }
+    }
+}
+
+/// Draws a dotted rule across the screen between the slots.
+fn draw_horizontal(frame: &mut [u8; FRAME_BYTES], y: usize) {
+    for x in (0..WIDTH).step_by(2) {
+        frame[(y / 8) * WIDTH + x] |= 1 << (y % 8);
+    }
+}
+
+/// Renders a memory channel's bank and number, such as `B03 012`; `B--`
+/// for a channel in no bank.
+#[must_use]
+pub fn place_label(bank: Option<u16>, number: u16) -> [u8; 7] {
+    let mut label = *b"B-- 000";
+    if let Some(bank) = bank {
+        write_two_digits(&mut label[1..3], bank);
+    }
+    let number = number.min(999);
+    label[4] = b'0' + u8::try_from(number / 100).unwrap_or(0);
+    write_two_digits(&mut label[5..], number % 100);
+    label
+}
+
+/// Renders a modulation as the stock firmware names it: `NFM`, ` FM`, ` AM`
+/// or `USB`.
+#[must_use]
+pub fn modulation_label(modulation: Modulation, bandwidth: Bandwidth) -> [u8; 3] {
+    match (modulation, bandwidth) {
+        (Modulation::Fm, Bandwidth::Narrow) => *b"NFM",
+        (Modulation::Fm, Bandwidth::Wide) => *b" FM",
+        (Modulation::Am, _) => *b" AM",
+        (Modulation::Usb, _) => *b"USB",
+    }
+}
+
+/// Renders a TX power level: `L1` to `L4`, ` M` or ` H`.
+#[must_use]
+pub fn power_label(level: u8) -> [u8; 2] {
+    match level {
+        0..=3 => [b'L', b'1' + level],
+        4 => *b" M",
+        _ => *b" H",
+    }
+}
+
+/// Renders a VFO step in at most five columns, such as `12.5K` or `1M`.
+#[must_use]
+pub fn short_step_label(step_hz: u32) -> [u8; 5] {
+    let mut label = [b' '; 5];
+    let (value, unit) = if step_hz >= 1_000_000 && step_hz % 1_000_000 == 0 {
+        (step_hz / 1_000_000, b'M')
+    } else if step_hz % 1_000 == 0 {
+        (step_hz / 1_000, b'K')
+    } else {
+        // Hundredths of a kilohertz: 6.25K, 12.5K.
+        let hundredths = step_hz / 10;
+        let whole = hundredths / 100;
+        let fraction = hundredths % 100;
+        let mut text = [b' '; 5];
+        let mut at = 0;
+        if whole >= 10 {
+            text[at] = b'0' + u8::try_from(whole / 10 % 10).unwrap_or(0);
+            at += 1;
+        }
+        text[at] = b'0' + u8::try_from(whole % 10).unwrap_or(0);
+        text[at + 1] = b'.';
+        text[at + 2] = b'0' + u8::try_from(fraction / 10).unwrap_or(0);
+        if fraction % 10 == 0 {
+            text[at + 3] = b'K';
+        } else {
+            text[at + 3] = b'0' + u8::try_from(fraction % 10).unwrap_or(0);
+            text[at + 4] = b'K';
+        }
+        return text;
+    };
+    let mut digits = [0_u8; 4];
+    let mut count = 0;
+    let mut rest = value.min(9_999);
+    loop {
+        digits[count] = b'0' + u8::try_from(rest % 10).unwrap_or(0);
+        count += 1;
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+    for (at, digit) in digits[..count].iter().rev().enumerate() {
+        label[at] = *digit;
+    }
+    label[count] = unit;
+    label
 }
 
 /// Columns one carrier-strength label occupies.
@@ -1038,15 +1209,6 @@ fn megahertz(frequency_hz: u32) -> [u8; 10] {
     text
 }
 
-fn rssi_label(rssi_raw: u16) -> [u8; 8] {
-    let mut label = *b"RSSI ---";
-    let value = rssi_raw.min(999);
-    label[5] = b'0' + u8::try_from(value / 100).unwrap_or(0);
-    label[6] = b'0' + u8::try_from(value / 10 % 10).unwrap_or(0);
-    label[7] = b'0' + u8::try_from(value % 10).unwrap_or(0);
-    label
-}
-
 fn draw_text(frame: &mut [u8; FRAME_BYTES], mut x: usize, y: usize, text: &[u8]) {
     for byte in text {
         let glyph = glyph(*byte);
@@ -1354,28 +1516,59 @@ mod tests {
 
 #[cfg(test)]
 mod operating_screen_tests {
+    use super::{modulation_label, place_label, power_label, short_step_label};
     use super::{
         render_channel_list, render_info_screen, render_operating_screen, render_selector_list,
-        step_label, BankIndicator, ListRow, MemoryState, OperatingView, ResetCause, SelectorRow,
-        SerialCounters, FRAME_BYTES, LIST_NAME_BYTES, MEMORY_LABEL_BYTES,
+        step_label, ListRow, MemoryState, OperatingView, ResetCause, SelectorRow, SerialCounters,
+        SlotChannel, SlotPlace, SlotView, FRAME_BYTES, LIST_NAME_BYTES, MEMORY_LABEL_BYTES,
+    };
+    use radio_domain::{Bandwidth, Modulation};
+
+    const CHANNEL: SlotChannel<'static> = SlotChannel {
+        name: b"2M CALL",
+        frequency_hz: 145_500_000,
+        place: SlotPlace::Memory {
+            bank: Some(3),
+            number: 3,
+        },
+        modulation: Modulation::Fm,
+        bandwidth: Bandwidth::Narrow,
+        power: 0,
+        meter: None,
     };
 
     fn view() -> OperatingView<'static> {
         OperatingView {
-            position: 3,
-            total: 16,
-            name: b"2M CALL",
-            frequency_hz: 145_500_000,
-            rssi_raw: 148,
-            squelch_open: false,
+            a: SlotView {
+                letter: b'A',
+                selected: true,
+                channel: Some(CHANNEL),
+            },
+            b: SlotView {
+                letter: b'B',
+                selected: false,
+                channel: Some(SlotChannel {
+                    name: b"VFO",
+                    frequency_hz: 433_500_000,
+                    place: SlotPlace::Vfo { step_hz: 12_500 },
+                    ..CHANNEL
+                }),
+            },
             receiver_ok: true,
             battery_percent: Some(87),
             monitoring: false,
             scanning: false,
-            bank: None,
+            dual_watch: false,
+            function: false,
             entry: None,
-            vfo_step_hz: None,
+            entry_vfo: false,
         }
+    }
+
+    fn with_a(channel: SlotChannel<'static>) -> OperatingView<'static> {
+        let mut view = view();
+        view.a.channel = Some(channel);
+        view
     }
 
     fn render(view: &OperatingView<'_>) -> [u8; FRAME_BYTES] {
@@ -1418,28 +1611,46 @@ mod operating_screen_tests {
     /// without a glyph is caught on the host rather than on the radio.
     #[test]
     fn every_character_the_screen_draws_has_a_glyph() {
-        use super::{battery_label, glyph, megahertz, rssi_label, step_label};
+        use super::{
+            battery_label, glyph, megahertz, modulation_label, place_label, power_label,
+            short_step_label, step_label,
+        };
         use crate::operator_shell::VFO_STEPS_HZ;
 
         let mut fixed = std::vec::Vec::new();
         fixed.extend_from_slice(b"VFO");
-        fixed.extend_from_slice(b"ALL  ");
+        fixed.extend_from_slice(b"AB");
+        fixed.extend_from_slice(b"F");
+        fixed.extend_from_slice(b"DW");
+        fixed.extend_from_slice(b"SCAN");
         fixed.extend_from_slice(b"MON");
-        fixed.extend_from_slice(b"SQ OPEN");
-        fixed.extend_from_slice(b"SQ SHUT");
+        fixed.extend_from_slice(b"RX FAULT");
+        fixed.extend_from_slice(b"NO CHANNELS");
+        fixed.extend_from_slice(b"DUAL WATCH ON");
+        fixed.extend_from_slice(b"DUAL WATCH OFF");
+        fixed.extend_from_slice(&place_label(None, 12));
+        fixed.extend_from_slice(&place_label(Some(3), 999));
+        for modulation in [Modulation::Fm, Modulation::Am, Modulation::Usb] {
+            for bandwidth in [Bandwidth::Narrow, Bandwidth::Wide] {
+                fixed.extend_from_slice(&modulation_label(modulation, bandwidth));
+            }
+        }
+        for level in 0..crate::operator_shell::TX_POWER_LEVELS {
+            fixed.extend_from_slice(&power_label(level));
+        }
         fixed.extend_from_slice(b"BANK 00");
         fixed.extend_from_slice(b"SETTINGS");
         fixed.extend_from_slice(b"SQUELCH");
         fixed.extend_from_slice(b"SOURCE");
         fixed.extend_from_slice(b"STEP");
         fixed.extend_from_slice(b"0  OPEN");
-        fixed.extend_from_slice(&rssi_label(148));
         fixed.extend_from_slice(&battery_label(None));
         fixed.extend_from_slice(&battery_label(Some(16)));
         fixed.extend_from_slice(&battery_label(Some(100)));
         fixed.extend_from_slice(&megahertz(145_500_000));
         for step in VFO_STEPS_HZ {
             fixed.extend_from_slice(&step_label(step));
+            fixed.extend_from_slice(&short_step_label(step));
         }
         fixed.extend_from_slice(SelectorRow::squelch_setting(0).label());
         fixed.extend_from_slice(SelectorRow::squelch_setting(5).label());
@@ -1478,15 +1689,61 @@ mod operating_screen_tests {
         assert_eq!(base, render(&view()));
         assert!(base.iter().any(|byte| *byte != 0));
 
+        let swapped = {
+            let mut view = view();
+            view.a.selected = false;
+            view.b.selected = true;
+            view
+        };
+        let empty_b = {
+            let mut view = view();
+            view.b.channel = None;
+            view
+        };
         for changed in [
-            OperatingView {
-                position: 4,
-                ..view()
-            },
-            OperatingView {
-                squelch_open: true,
-                ..view()
-            },
+            swapped,
+            empty_b,
+            with_a(SlotChannel {
+                place: SlotPlace::Memory {
+                    bank: Some(3),
+                    number: 4,
+                },
+                ..CHANNEL
+            }),
+            with_a(SlotChannel {
+                place: SlotPlace::Memory {
+                    bank: Some(2),
+                    number: 3,
+                },
+                ..CHANNEL
+            }),
+            with_a(SlotChannel {
+                place: SlotPlace::Memory {
+                    bank: None,
+                    number: 3,
+                },
+                ..CHANNEL
+            }),
+            with_a(SlotChannel {
+                frequency_hz: 145_512_500,
+                ..CHANNEL
+            }),
+            with_a(SlotChannel {
+                bandwidth: Bandwidth::Wide,
+                ..CHANNEL
+            }),
+            with_a(SlotChannel {
+                modulation: Modulation::Am,
+                ..CHANNEL
+            }),
+            with_a(SlotChannel {
+                power: 5,
+                ..CHANNEL
+            }),
+            with_a(SlotChannel {
+                meter: Some(100),
+                ..CHANNEL
+            }),
             OperatingView {
                 receiver_ok: false,
                 ..view()
@@ -1513,26 +1770,15 @@ mod operating_screen_tests {
                 ..view()
             },
             OperatingView {
-                bank: Some(BankIndicator {
-                    id: 2,
-                    name: b"PMR446",
-                }),
+                dual_watch: true,
                 ..view()
             },
             OperatingView {
-                bank: Some(BankIndicator { id: 2, name: b"" }),
+                function: true,
                 ..view()
             },
             OperatingView {
                 entry: Some(7),
-                ..view()
-            },
-            OperatingView {
-                rssi_raw: 200,
-                ..view()
-            },
-            OperatingView {
-                frequency_hz: 433_500_000,
                 ..view()
             },
         ] {
@@ -1540,18 +1786,49 @@ mod operating_screen_tests {
         }
     }
 
+    /// The meter is the squelch indicator: present while open, absent while
+    /// shut, and longer for a stronger carrier.
     #[test]
-    fn a_typed_channel_number_replaces_the_bank_indicator() {
-        let typed = render(&OperatingView {
-            bank: Some(BankIndicator { id: 2, name: b"" }),
-            entry: Some(7),
-            ..view()
-        });
-        let bank = render(&OperatingView {
-            bank: Some(BankIndicator { id: 2, name: b"" }),
-            ..view()
-        });
-        assert_ne!(typed, bank);
+    fn the_meter_is_drawn_only_while_the_squelch_is_open_and_grows_with_the_carrier() {
+        let shut = render(&view());
+        let lit =
+            |frame: &[u8; FRAME_BYTES]| -> u32 { frame.iter().map(|byte| byte.count_ones()).sum() };
+        let weak = render(&with_a(SlotChannel {
+            meter: Some(0),
+            ..CHANNEL
+        }));
+        let middle = render(&with_a(SlotChannel {
+            meter: Some(2 * 70), // -90 dBm
+            ..CHANNEL
+        }));
+        let strong = render(&with_a(SlotChannel {
+            meter: Some(2 * 120), // -40 dBm
+            ..CHANNEL
+        }));
+        assert!(
+            lit(&shut) < lit(&weak),
+            "an open squelch always draws a segment"
+        );
+        assert!(lit(&weak) < lit(&middle));
+        assert!(lit(&middle) < lit(&strong));
+    }
+
+    #[test]
+    fn slot_labels_name_bank_channel_mode_power_and_step() {
+        assert_eq!(&place_label(Some(3), 12), b"B03 012");
+        assert_eq!(&place_label(None, 7), b"B-- 007");
+        assert_eq!(&modulation_label(Modulation::Fm, Bandwidth::Narrow), b"NFM");
+        assert_eq!(&modulation_label(Modulation::Fm, Bandwidth::Wide), b" FM");
+        assert_eq!(&modulation_label(Modulation::Am, Bandwidth::Narrow), b" AM");
+        assert_eq!(&power_label(0), b"L1");
+        assert_eq!(&power_label(3), b"L4");
+        assert_eq!(&power_label(4), b" M");
+        assert_eq!(&power_label(5), b" H");
+        assert_eq!(&short_step_label(6_250), b"6.25K");
+        assert_eq!(&short_step_label(12_500), b"12.5K");
+        assert_eq!(&short_step_label(25_000), b"25K  ");
+        assert_eq!(&short_step_label(100_000), b"100K ");
+        assert_eq!(&short_step_label(1_000_000), b"1M   ");
     }
 
     /// A threshold the operator cannot read is a threshold they cannot set.
@@ -1613,25 +1890,6 @@ mod operating_screen_tests {
     }
 
     #[test]
-    fn a_bank_indicator_prefers_the_programmed_name_over_the_identifier() {
-        let named = render(&OperatingView {
-            bank: Some(BankIndicator {
-                id: 2,
-                name: b"PMR446",
-            }),
-            ..view()
-        });
-        let numbered = render(&OperatingView {
-            bank: Some(BankIndicator { id: 2, name: b"" }),
-            ..view()
-        });
-        let unfiltered = render(&view());
-        assert_ne!(named, numbered, "a named bank shows its name");
-        assert_ne!(named, unfiltered);
-        assert_ne!(numbered, unfiltered);
-    }
-
-    #[test]
     fn the_selector_list_marks_the_cursor_and_the_choice_in_force() {
         let rows = [
             SelectorRow::text(b"ALL CHANNELS", false),
@@ -1667,25 +1925,30 @@ mod operating_screen_tests {
     }
 
     #[test]
-    fn the_vfo_screen_shows_its_step_instead_of_a_position_and_bank() {
+    fn the_vfo_slot_shows_its_step_instead_of_a_bank_and_number() {
         let memory = render(&view());
-        let vfo = render(&OperatingView {
-            vfo_step_hz: Some(12_500),
-            ..view()
-        });
+        let vfo = render(&with_a(SlotChannel {
+            name: b"VFO",
+            place: SlotPlace::Vfo { step_hz: 12_500 },
+            ..CHANNEL
+        }));
         assert_ne!(memory, vfo);
-        let coarser = render(&OperatingView {
-            vfo_step_hz: Some(1_000_000),
-            ..view()
-        });
+        let coarser = render(&with_a(SlotChannel {
+            name: b"VFO",
+            place: SlotPlace::Vfo { step_hz: 1_000_000 },
+            ..CHANNEL
+        }));
         assert_ne!(vfo, coarser, "the step in force is visible");
 
-        // Typed kilohertz digits replace the step indicator while they are being
-        // entered, in either mode.
+        // Typed kilohertz digits are shown while they are being entered.
         let typing = render(&OperatingView {
-            vfo_step_hz: Some(12_500),
             entry: Some(4335),
-            ..view()
+            entry_vfo: true,
+            ..with_a(SlotChannel {
+                name: b"VFO",
+                place: SlotPlace::Vfo { step_hz: 12_500 },
+                ..CHANNEL
+            })
         });
         assert_ne!(vfo, typing);
     }

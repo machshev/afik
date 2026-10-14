@@ -24,11 +24,12 @@ use radio_platform::configuration_change::{ConfigurationAcknowledgement, Configu
 use radio_platform::dual_watch::{DualWatch, Listening as Watching};
 use radio_platform::operator_display::{
     render_channel_list, render_info_screen, render_operating_screen, render_selector_list,
-    BankIndicator, ListRow, MemoryState, OperatingView, SelectorRow, FRAME_BYTES, LIST_ROWS,
+    ListRow, MemoryState, OperatingView, SelectorRow, SlotChannel, SlotPlace, SlotView,
+    FRAME_BYTES, LIST_ROWS,
 };
 use radio_platform::operator_shell::{
-    Context, Intent, Mode, Screen, Setting, Shell, Slot, Source, HOLD_MILLISECONDS, SQUELCH_LEVELS,
-    TX_POWER_ROWS, TX_TIMEOUT_CHOICES, VFO_STEPS_HZ,
+    Context, Intent, Mode, Screen, Setting, Shell, Slot, SlotId, Source, HOLD_MILLISECONDS,
+    SQUELCH_LEVELS, TX_POWER_ROWS, TX_TIMEOUT_CHOICES, VFO_STEPS_HZ,
 };
 use radio_platform::ptt::PttFilter;
 use radio_platform::receive_app::{
@@ -1382,6 +1383,8 @@ pub async fn run<D, K, B, S, V, M>(
                 &mut frame,
                 &shell,
                 activation.as_ref().map(|(controller, _)| controller),
+                other_activation.as_ref().map(|(controller, _)| controller),
+                watch.listening(),
                 &receiver,
                 battery.percent(),
                 generation,
@@ -1480,6 +1483,8 @@ fn render<B: RegisterBus, S: Speaker, M: Memory>(
     frame: &mut [u8; FRAME_BYTES],
     shell: &Shell,
     controller: Option<&BankedReceiveController<Listening<M>>>,
+    other: Option<&BankedReceiveController<Listening<M>>>,
+    listening: Watching,
     receiver: &Receiver<B, S>,
     battery_percent: Option<u8>,
     generation: u32,
@@ -1488,50 +1493,58 @@ fn render<B: RegisterBus, S: Speaker, M: Memory>(
     identity: &[u8],
     memory: &'static TaskCell<Option<M>>,
 ) {
-    // Names are fixed-capacity values copied out of the configuration, so they
-    // are held here for as long as the view borrows their bytes.
-    let filter = shell.bank_filter();
-    let filter_name = filter.and_then(|bank| bank_name(bank, memory));
-    // Only an empty memory has no controller: the VFO always has one, so this is
-    // the "you have selected channels but programmed none" case.
-    let (visible, channel) = match controller {
-        Some(controller) => (controller.visible_channels(), Some(controller.channel())),
-        None => (0, None),
-    };
-    let vfo_step_hz = matches!(shell.mode(), Mode::Vfo).then(|| shell.vfo_step_hz());
-    // The name is a fixed-capacity value copied out of the record, so it is held
-    // here for as long as the view borrows its bytes.
-    let channel_name = channel.map(ChannelRecord::name);
+    // Only an empty memory has no controller: the VFO always has one.
+    let visible = controller.map_or(0, BankedReceiveController::visible_channels);
     match shell.screen() {
-        Screen::Operating => render_operating_screen(
-            frame,
-            &OperatingView {
-                position: controller.map_or(0, |controller| {
-                    controller.visible_position().saturating_add(1)
-                }),
-                total: visible,
-                name: channel_name
-                    .as_ref()
-                    .map_or(&[][..], |name| name.as_str().as_bytes()),
-                frequency_hz: receiver.frequency_hz,
-                rssi_raw: receiver.rssi_raw,
-                squelch_open: receiver.squelch_open,
-                receiver_ok: !receiver.faulted,
-                battery_percent,
-                monitoring: controller.is_some_and(BankedReceiveController::is_monitoring),
-                scanning: controller.is_some_and(|controller| {
-                    matches!(controller.state(), ReceiveState::Scanning(_))
-                }),
-                bank: filter.map(|bank| BankIndicator {
-                    id: bank.get(),
-                    name: filter_name
-                        .as_ref()
-                        .map_or(&[][..], |name| name.as_str().as_bytes()),
-                }),
-                entry: shell.entry(),
-                vfo_step_hz,
-            },
-        ),
+        Screen::Operating => {
+            // Names are fixed-capacity values copied out of the records, so
+            // they are held here for as long as the view borrows their bytes.
+            let selected_name = controller.map(|controller| controller.channel().name());
+            let other_name = other.map(|controller| controller.channel().name());
+            let selected = slot_channel(
+                shell,
+                shell.slot(),
+                controller,
+                selected_name.as_ref(),
+                (listening == Watching::Selected).then_some(receiver),
+            );
+            let other = slot_channel(
+                shell,
+                shell.other_slot(),
+                other,
+                other_name.as_ref(),
+                (listening == Watching::Other).then_some(receiver),
+            );
+            let (a, b) = match shell.active_slot() {
+                SlotId::A => (selected, other),
+                SlotId::B => (other, selected),
+            };
+            render_operating_screen(
+                frame,
+                &OperatingView {
+                    a: SlotView {
+                        letter: b'A',
+                        selected: shell.active_slot() == SlotId::A,
+                        channel: a,
+                    },
+                    b: SlotView {
+                        letter: b'B',
+                        selected: shell.active_slot() == SlotId::B,
+                        channel: b,
+                    },
+                    receiver_ok: !receiver.faulted,
+                    battery_percent,
+                    monitoring: controller.is_some_and(BankedReceiveController::is_monitoring),
+                    scanning: controller.is_some_and(|controller| {
+                        matches!(controller.state(), ReceiveState::Scanning(_))
+                    }),
+                    dual_watch: shell.dual_watch(),
+                    function: shell.function_pending(),
+                    entry: shell.entry(),
+                    entry_vfo: matches!(shell.mode(), Mode::Vfo),
+                },
+            );
+        }
         Screen::SourceList => {
             let mut rows = [SelectorRow::default(); LIST_ROWS];
             // The rows the shell offers are paged directly, so the cursor it
@@ -1712,6 +1725,39 @@ fn render<B: RegisterBus, S: Speaker, M: Memory>(
 }
 
 /// Returns the host-programmed name of one bank, if the host named it.
+/// Builds what one slot shows from its controller. `receiver` is given only
+/// while the receiver is on this slot, and its meter only while the squelch is
+/// open.
+fn slot_channel<'a, B: RegisterBus, S: Speaker, M: Memory>(
+    shell: &Shell,
+    slot: Slot,
+    controller: Option<&BankedReceiveController<Listening<M>>>,
+    name: Option<&'a ChannelName>,
+    receiver: Option<&Receiver<B, S>>,
+) -> Option<SlotChannel<'a>> {
+    let controller = controller?;
+    let channel = controller.channel();
+    Some(SlotChannel {
+        name: name.map_or(&[][..], |name| name.as_str().as_bytes()),
+        frequency_hz: controller.setup().frequency.as_hz(),
+        place: match slot.mode {
+            Mode::Vfo => SlotPlace::Vfo {
+                step_hz: slot.vfo_step_hz(),
+            },
+            Mode::Memory => SlotPlace::Memory {
+                bank: channel.bank().map(BankId::get),
+                number: controller.visible_position().saturating_add(1),
+            },
+        },
+        modulation: channel.modulation(),
+        bandwidth: channel.bandwidth(),
+        power: shell.tx_level(channel.power() as u8),
+        meter: receiver
+            .filter(|receiver| receiver.squelch_open)
+            .map(|receiver| receiver.rssi_raw),
+    })
+}
+
 fn bank_name<M: Memory>(bank: BankId, memory: &'static TaskCell<Option<M>>) -> Option<BankName> {
     memory.with_mut(|cell| {
         let memory = cell.as_mut()?;
