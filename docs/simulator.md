@@ -30,23 +30,6 @@ GPIO, physical display/keypad behavior, physical RF, audio, power, and
 scenario-YAML models belong to later work packages; no behavior for them is
 invented here.
 
-## Boot UI and TX permissions
-
-Work Package 5 adds a separate `UiSimulator` using the same explicit virtual
-time principle. It records boot/load status, logical key edges, semantic views,
-UI actions, and in-memory permission persistence in exact order. Identical
-timed scripts must produce identical traces and bytes.
-
-The simulator holds persisted permission bytes separately from the active
-`TxPolicy`. A save action replaces only the simulated bytes. The currently
-active policy remains unchanged until an explicit simulated reboot validates
-the record; corrupt bytes default that reboot to deny-all. Cancel emits no
-persistence event and preserves the original bytes.
-
-This proves logical state-machine behavior, not non-volatile durability,
-physical keypad scanning, display rendering, debounce timing, or security of a
-particular key chord.
-
 ## BK4819 command simulation
 
 Work Package 6 adds a separate `RfSimulator` around the hardware-independent
@@ -56,8 +39,8 @@ chosen number of successful operations. Completed receive, status, standby, TX,
 and TX-stop commands are semantic trace events. A failed register operation is
 recorded, faults the driver, and cannot produce a completed TX event.
 
-Identical timed scripts must produce identical traces. A class-mismatched
-`TxAuthorisation` produces neither a register operation nor a TX event; a bus
+Identical timed scripts must produce identical traces. A `TxAuthorisation`
+for another request produces neither a register operation nor a TX event; a bus
 failure on the final TX-mode write records only that failed write. Recovery
 requires an explicit successful neutral-mode write before another command.
 

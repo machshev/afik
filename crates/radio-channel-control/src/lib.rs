@@ -443,7 +443,7 @@ mod tests {
     };
     use radio_channel_plan::{BankName, GeneratedBank, PlanError};
     use radio_domain::{BankId, Frequency, FrequencyStep, SignalMeasurement, TxClass};
-    use radio_tx_policy::{PermissionSet, StoredPermissions, TxPolicy};
+    use radio_tx_policy::TxPolicy;
 
     fn bank() -> GeneratedBank {
         GeneratedBank::linear_simplex(
@@ -485,8 +485,7 @@ mod tests {
     }
 
     fn policy(enabled: bool) -> TxPolicy {
-        let permissions = PermissionSet::none().with(TxClass::Amateur, enabled);
-        TxPolicy::load(&StoredPermissions::new(permissions, 1).encode()).0
+        super::tx_fixture::policy(enabled)
     }
 
     #[test]

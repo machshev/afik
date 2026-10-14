@@ -3,26 +3,23 @@
 mod support;
 
 use radio_domain::{Bandwidth, Frequency, Modulation, TxClass};
-use radio_tx_policy::regional::{Attestation, GrantProfile, Region, RegionalDenial, RuleRange};
-use radio_tx_policy::{PermissionSet, StoredPermissions, TxDenied, TxPolicy, TxRequest, TxState};
+use radio_tx_policy::{
+    ClassSet, RangeError, TxDenied, TxPolicy, TxRange, TxRequest, TxState, MAX_TX_RANGES,
+};
 
 fn policy() -> TxPolicy {
-    let mut permissions = PermissionSet::none();
-    for class in [
-        TxClass::LicenceFreePlan,
-        TxClass::Amateur,
-        TxClass::Marine,
-        TxClass::Aeronautical,
-        TxClass::Business,
-        TxClass::Experimental,
-    ] {
-        permissions = permissions.with(class, true);
-    }
-    TxPolicy::load(&StoredPermissions::new(permissions, 1).encode()).0
+    support::policy(true)
 }
 
 fn request() -> TxRequest {
     support::request(support::channel(TxClass::Amateur))
+}
+
+fn at(hz: u32) -> TxRequest {
+    let mut channel = support::channel(TxClass::Amateur);
+    channel.transmit = Frequency::from_hz(hz).unwrap();
+    channel.receive = channel.transmit;
+    support::request(channel)
 }
 
 fn denied(request: &TxRequest, reason: TxDenied) {
@@ -30,54 +27,146 @@ fn denied(request: &TxRequest, reason: TxDenied) {
 }
 
 #[test]
-fn complete_request_is_approved_with_exact_facts_and_snapshot_provenance() {
+fn a_programmed_range_permits_its_frequencies_and_names_the_class() {
     let policy = policy();
-    let request = request();
-    let token = policy.authorise(&request).unwrap();
-    assert!(token.matches(&request));
-    assert_eq!(token.request(), &request);
-    assert_eq!(token.provenance().version, 1);
-    assert_eq!(token.provenance().checked_on, 20_260_812);
-    assert_eq!(request.configuration.unwrap().generation, 0);
-    assert!(core::mem::size_of_val(&token) <= 64);
-    assert!(core::mem::size_of::<TxRequest>() <= 512);
+    let amateur = request();
+    assert_eq!(
+        policy.authorise(&amateur).unwrap().class(),
+        TxClass::Amateur
+    );
+    let pmr = support::request(support::channel(TxClass::LicenceFreePlan));
+    assert_eq!(
+        policy.authorise(&pmr).unwrap().class(),
+        TxClass::LicenceFreePlan
+    );
+    // The channel's own class is not consulted: frequency decides.
+    let mut marked = pmr;
+    marked.channel.tx_class = TxClass::Never;
+    assert_eq!(
+        policy.authorise(&marked).unwrap().class(),
+        TxClass::LicenceFreePlan
+    );
 }
 
 #[test]
-fn every_permission_class_and_corrupted_permission_bit_fails_closed() {
-    for class in [
-        TxClass::Never,
-        TxClass::LicenceFreePlan,
-        TxClass::Amateur,
-        TxClass::Marine,
-        TxClass::Aeronautical,
-        TxClass::Business,
-        TxClass::Experimental,
+fn no_programmed_range_permits_nothing() {
+    for request in [
+        request(),
+        support::request(support::channel(TxClass::LicenceFreePlan)),
     ] {
-        let request = support::request(support::channel(class));
         assert_eq!(
             TxPolicy::deny_all().authorise(&request).unwrap_err(),
-            TxDenied::Permission
+            TxDenied::Range
         );
-        if class == TxClass::Never {
-            denied(&request, TxDenied::Permission);
-        } else {
-            assert!(policy().authorise(&request).is_ok());
-        }
-    }
-    let bytes =
-        StoredPermissions::new(PermissionSet::none().with(TxClass::Amateur, true), 7).encode();
-    for bit in 0..bytes.len() * 8 {
-        let mut corrupt = bytes;
-        corrupt[bit / 8] ^= 1 << (bit % 8);
         assert_eq!(
-            TxPolicy::load(&corrupt)
-                .0
-                .authorise(&request())
-                .unwrap_err(),
-            TxDenied::Permission
+            TxPolicy::default().authorise(&request).unwrap_err(),
+            TxDenied::Range
         );
     }
+}
+
+#[test]
+fn outside_every_range_off_raster_over_power_and_wide_are_denied() {
+    // The envelopes follow the candidate, so only the programmed range decides.
+    let widen = |mut request: TxRequest| {
+        for envelope in [request.hardware.as_mut(), request.calibration.as_mut()] {
+            let range = envelope.unwrap().ranges[0].as_mut().unwrap();
+            range.max_conducted_mw = 10_000;
+            range.wide_fm = true;
+        }
+        request
+    };
+    for hz in [143_999_990, 146_000_010, 446_206_250, 156_800_000] {
+        denied(&widen(at(hz)), TxDenied::Range);
+    }
+    assert!(policy().authorise(&widen(at(144_000_000))).is_ok());
+    assert!(policy().authorise(&widen(at(146_000_000))).is_ok());
+    // PMR446: on the 12.5 kHz raster, at most 500 mW, narrow only.
+    assert!(policy().authorise(&widen(at(446_018_750))).is_ok());
+    denied(&widen(at(446_012_500 + 1_250)), TxDenied::Range);
+    let mut loud = widen(at(446_006_250));
+    loud.conducted_mw = 501;
+    denied(&loud, TxDenied::Range);
+    loud.conducted_mw = 500;
+    assert!(policy().authorise(&loud).is_ok());
+    let mut wide = widen(at(446_006_250));
+    wide.bandwidth = Bandwidth::Wide;
+    denied(&wide, TxDenied::Range);
+    let mut wide = widen(at(145_500_000));
+    wide.bandwidth = Bandwidth::Wide;
+    assert!(policy().authorise(&wide).is_ok());
+}
+
+#[test]
+fn overlapping_ranges_all_apply_whatever_their_order() {
+    let broad = TxRange {
+        class: TxClass::Amateur,
+        first_hz: 144_000_000,
+        last_hz: 146_000_000,
+        max_mw: 5_000,
+        wide_fm: true,
+        raster_hz: 0,
+    };
+    let strict = TxRange {
+        class: TxClass::Experimental,
+        first_hz: 145_000_000,
+        last_hz: 145_900_000,
+        max_mw: 50,
+        wide_fm: false,
+        raster_hz: 0,
+    };
+    for ranges in [[broad, strict], [strict, broad]] {
+        let policy = TxPolicy::new(&ranges).unwrap();
+        assert_eq!(
+            policy.authorise(&request()).unwrap_err(),
+            TxDenied::Range,
+            "a permissive range masked a strict one"
+        );
+        let mut quiet = request();
+        quiet.conducted_mw = 50;
+        assert_eq!(policy.authorise(&quiet).unwrap().class(), ranges[0].class);
+    }
+}
+
+#[test]
+fn malformed_or_too_many_ranges_are_refused() {
+    let good = support::RANGES[1];
+    for (range, error) in [
+        (
+            TxRange {
+                class: TxClass::Never,
+                ..good
+            },
+            RangeError::Never,
+        ),
+        (
+            TxRange {
+                first_hz: 0,
+                ..good
+            },
+            RangeError::Span,
+        ),
+        (
+            TxRange {
+                last_hz: good.first_hz - 1,
+                ..good
+            },
+            RangeError::Span,
+        ),
+        (TxRange { max_mw: 0, ..good }, RangeError::Power),
+    ] {
+        assert_eq!(range.validate(), Err(error));
+        assert_eq!(TxPolicy::new(&[good, range]), Err(error));
+    }
+    assert!(TxPolicy::new(&[good; MAX_TX_RANGES]).is_ok());
+    assert_eq!(
+        TxPolicy::new(&[good; MAX_TX_RANGES + 1]),
+        Err(RangeError::TooMany)
+    );
+    assert_eq!(
+        TxPolicy::new(&support::RANGES).unwrap().ranges().count(),
+        support::RANGES.len()
+    );
 }
 
 #[test]
@@ -133,40 +222,6 @@ fn unsettled_state_missing_identity_timeout_and_zero_power_deny() {
 }
 
 #[test]
-fn every_required_attestation_and_unsupported_modulation_deny() {
-    for field in 0..4 {
-        let mut candidate = request();
-        let facts = &mut candidate.attestations;
-        match field {
-            0 => facts.location = Attestation::Unattested,
-            1 => facts.licence_valid = Attestation::Unattested,
-            2 => facts.operator_authorised = Attestation::Unattested,
-            _ => facts.equipment_eligible = Attestation::Unattested,
-        }
-        denied(
-            &candidate,
-            TxDenied::Regional(if field == 3 {
-                RegionalDenial::EquipmentIneligible
-            } else {
-                RegionalDenial::MissingAttestation
-            }),
-        );
-    }
-    for modulation in [Modulation::Am, Modulation::Usb] {
-        denied(
-            &TxRequest {
-                modulation,
-                ..request()
-            },
-            TxDenied::Regional(RegionalDenial::Modulation),
-        );
-    }
-    let mut candidate = request();
-    candidate.channel.transmit = Frequency::from_hz(160_000_000).unwrap();
-    denied(&candidate, TxDenied::Regional(RegionalDenial::Frequency));
-}
-
-#[test]
 fn missing_malformed_and_exceeded_envelopes_deny_independently() {
     for hardware in [true, false] {
         let reason = if hardware {
@@ -217,149 +272,43 @@ fn missing_malformed_and_exceeded_envelopes_deny_independently() {
 }
 
 #[test]
-fn power_must_satisfy_regional_grant_hardware_and_calibration_ceilings() {
+fn switching_a_class_off_only_ever_narrows_the_programmed_ranges() {
+    let policy = policy();
+    let programmed = ClassSet::NONE
+        .with(TxClass::LicenceFreePlan, true)
+        .with(TxClass::Amateur, true);
+    assert_eq!(policy.classes(), programmed);
+    let pmr = support::request(support::channel(TxClass::LicenceFreePlan));
+
+    let no_amateur = policy.restricted(ClassSet::ALL.with(TxClass::Amateur, false));
+    assert_eq!(
+        no_amateur.authorise(&request()).unwrap_err(),
+        TxDenied::Range
+    );
+    assert!(no_amateur.authorise(&pmr).is_ok());
+    assert_eq!(
+        no_amateur.classes(),
+        ClassSet::NONE.with(TxClass::LicenceFreePlan, true)
+    );
+
+    // Switching on a class nothing programmed adds nothing.
+    let pmr_only = TxPolicy::new(&support::RANGES[..1])
+        .unwrap()
+        .restricted(ClassSet::ALL);
+    assert_eq!(pmr_only.authorise(&request()).unwrap_err(), TxDenied::Range);
+    assert_eq!(policy.restricted(ClassSet::ALL), policy);
+    assert_eq!(policy.restricted(ClassSet::NONE), TxPolicy::deny_all());
+    assert_eq!(
+        policy.restricted(ClassSet::NONE).restricted(ClassSet::ALL),
+        TxPolicy::deny_all()
+    );
+}
+
+#[test]
+fn analog_fm_only() {
     let mut candidate = request();
-    candidate.hardware.as_mut().unwrap().ranges[0]
-        .as_mut()
-        .unwrap()
-        .max_conducted_mw = 40_000;
-    candidate.calibration.as_mut().unwrap().ranges[0]
-        .as_mut()
-        .unwrap()
-        .max_conducted_mw = 40_000;
-    candidate.conducted_mw = 25_001;
-    denied(&candidate, TxDenied::Regional(RegionalDenial::Power));
-    candidate.conducted_mw = 25_000;
-    assert!(policy().authorise(&candidate).is_ok());
-    candidate.grant = Some(GrantProfile {
-        region: candidate.region,
-        class: candidate.channel.tx_class,
-        grant_id: 2,
-        ranges: [
-            Some(RuleRange {
-                first_hz: 145_000_000,
-                last_hz: 146_000_000,
-                max_conducted_mw: 1_000,
-                wide_fm: false,
-            }),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        ],
-        complete: true,
-    });
-    denied(&candidate, TxDenied::Regional(RegionalDenial::Power));
-    candidate.conducted_mw = 1_000;
-    assert!(policy().authorise(&candidate).is_ok());
-    candidate.hardware.as_mut().unwrap().ranges[0]
-        .as_mut()
-        .unwrap()
-        .max_conducted_mw = 999;
-    denied(&candidate, TxDenied::Hardware);
-    candidate.hardware.as_mut().unwrap().ranges[0]
-        .as_mut()
-        .unwrap()
-        .max_conducted_mw = 1_000;
-    candidate.calibration.as_mut().unwrap().ranges[0]
-        .as_mut()
-        .unwrap()
-        .max_conducted_mw = 999;
-    denied(&candidate, TxDenied::Calibration);
-}
-
-#[test]
-fn grants_are_complete_exact_and_all_overlapping_limits_apply() {
-    let original = support::request(support::channel(TxClass::Business));
-    denied(
-        &TxRequest {
-            grant: None,
-            ..original
-        },
-        TxDenied::Regional(RegionalDenial::MissingGrant),
-    );
-    for field in 0..6 {
-        let mut candidate = original;
-        let grant = candidate.grant.as_mut().unwrap();
-        match field {
-            0 => grant.complete = false,
-            1 => grant.grant_id = 0,
-            2 => grant.region = Region::UnitedStates,
-            3 => grant.class = TxClass::Marine,
-            4 => grant.ranges[0].as_mut().unwrap().first_hz = 0,
-            _ => grant.ranges[0].as_mut().unwrap().max_conducted_mw = 0,
-        }
-        denied(&candidate, TxDenied::Regional(RegionalDenial::InvalidGrant));
-    }
-    let mut candidate = original;
-    let mut strict = candidate.grant.unwrap().ranges[0].unwrap();
-    strict.max_conducted_mw = 99;
-    candidate.grant.as_mut().unwrap().ranges[1] = Some(strict);
-    denied(&candidate, TxDenied::Regional(RegionalDenial::Power));
-    candidate.grant.as_mut().unwrap().ranges.swap(0, 1);
-    denied(&candidate, TxDenied::Regional(RegionalDenial::Power));
-    for hardware in [true, false] {
-        candidate = request();
-        let envelope = if hardware {
-            candidate.hardware.as_mut()
-        } else {
-            candidate.calibration.as_mut()
-        }
-        .unwrap();
-        envelope.ranges[1] = Some(strict);
-        denied(
-            &candidate,
-            if hardware {
-                TxDenied::Hardware
-            } else {
-                TxDenied::Calibration
-            },
-        );
-    }
-}
-
-#[test]
-fn licence_free_requires_exact_raster_simplex_operating_facts_and_limits() {
-    for index in 0..16 {
-        let mut channel = support::channel(TxClass::LicenceFreePlan);
-        channel.receive = Frequency::from_hz(446_006_250 + index * 12_500).unwrap();
-        channel.transmit = channel.receive;
-        assert!(policy().authorise(&support::request(channel)).is_ok());
-    }
-    let original = support::request(support::channel(TxClass::LicenceFreePlan));
-    for field in 0..4 {
-        let mut candidate = original;
-        match field {
-            0 => candidate.operating.mobile = Attestation::Unattested,
-            1 => candidate.operating.non_airborne = Attestation::Unattested,
-            2 => candidate.operating.receiver_capable = Attestation::Unattested,
-            _ => candidate.channel.receive = Frequency::from_hz(446_018_750).unwrap(),
-        }
-        denied(&candidate, TxDenied::OperatingConditions);
-    }
-    for hz in [446_000_000, 446_006_251, 446_012_500, 446_200_000] {
-        let mut candidate = original;
-        candidate.channel.transmit = Frequency::from_hz(hz).unwrap();
-        candidate.channel.receive = candidate.channel.transmit;
-        denied(&candidate, TxDenied::OperatingConditions);
-    }
-    denied(
-        &TxRequest {
-            bandwidth: Bandwidth::Wide,
-            ..original
-        },
-        TxDenied::Regional(RegionalDenial::Bandwidth),
-    );
-    denied(
-        &TxRequest {
-            conducted_mw: 501,
-            ..original
-        },
-        TxDenied::Regional(RegionalDenial::Power),
-    );
+    candidate.modulation = Modulation::Am;
+    denied(&candidate, TxDenied::Modulation);
 }
 
 #[test]
@@ -367,7 +316,7 @@ fn every_changed_request_fact_invalidates_the_token() {
     let policy = policy();
     let original = request();
     let token = policy.authorise(&original).unwrap();
-    for field in 0..19 {
+    for field in 0..15 {
         let mut current = original;
         match field {
             0 => current.channel.transmit = Frequency::from_hz(145_525_000).unwrap(),
@@ -381,23 +330,14 @@ fn every_changed_request_fact_invalidates_the_token() {
             8 => current.configuration.as_mut().unwrap().instance += 1,
             9 => current.configuration.as_mut().unwrap().revision += 1,
             10 => current.state = TxState::Changing,
-            11 => current.region = Region::UnitedStates,
-            12 => current.attestations.location = Attestation::Unattested,
-            13 => current.hardware.as_mut().unwrap().evidence_id += 1,
-            14 => current.calibration.as_mut().unwrap().evidence_id += 1,
-            15 => {
+            11 => current.hardware.as_mut().unwrap().evidence_id += 1,
+            12 => current.calibration.as_mut().unwrap().evidence_id += 1,
+            13 => {
                 current.hardware.as_mut().unwrap().ranges[0]
                     .as_mut()
                     .unwrap()
                     .max_conducted_mw += 1;
             }
-            16 => {
-                current.calibration.as_mut().unwrap().ranges[0]
-                    .as_mut()
-                    .unwrap()
-                    .max_conducted_mw += 1;
-            }
-            17 => current.operating.mobile = Attestation::Unattested,
             _ => current.target_id += 1,
         }
         assert!(
@@ -405,9 +345,9 @@ fn every_changed_request_fact_invalidates_the_token() {
             "changed field {field} reused authority"
         );
     }
-    let business = support::request(support::channel(TxClass::Business));
-    let token = policy.authorise(&business).unwrap();
-    let mut current = business;
-    current.grant.as_mut().unwrap().grant_id += 1;
-    assert!(!token.matches(&current));
+}
+
+#[test]
+fn the_policy_stays_small_enough_for_the_k5() {
+    assert!(core::mem::size_of::<TxPolicy>() <= 256);
 }

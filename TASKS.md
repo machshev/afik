@@ -3031,3 +3031,28 @@
 - **Scope:** measure release/timeout-to-carrier-off latency; PA off in the
   panic/fault handlers; watchdog behaviour with TX active; behaviour after a
   bus fault during TX. Fix what turns out to matter.
+
+## TXRANGE-062 — Programmed TX ranges protect channel and VFO
+
+- **Status:** active (2026-10-14), operator request (`ADR-101`).
+- **Objective:** the studio programs the TX ranges (class, span, max mW, wide,
+  raster) a radio may transmit in, with US, EU and UK presets; the radio checks
+  the TX frequency against them in channel and VFO mode; the handset can switch
+  programmed classes off to lend the radio out. Channels lose their TX class.
+- **Steps (commit after each):**
+  1. Policy authorises against programmed ranges with per-range power; handset
+     class switch (`TxPolicy::restricted`); regional table, grants,
+     attestations, permission record and `radio-ui` removed. Done.
+  2. Remove the channel TX class (domain, plan, storage, sim, CLI, web,
+     studio); old projects still load.
+  3. Image format 6 carries the ranges; the studio and the radio validate them.
+  4. Firmware builds its policy from the image; handset class switch in the
+     radio's own record; hardware envelope widened to the calibrated
+     400–470 MHz band. Version bump.
+  4a. Full power for amateur use: Armel's Low5, Mid and High levels from the
+     unit's mid/high calibration rows (nominally 1, 2 and 5 W); the hardware
+     envelope rises to match and each range's ceiling still applies, so
+     PMR446 stays at 500 mW.
+  5. Studio range editor with US, EU and UK presets.
+  6. Flash and check TX allowed and refused by range in channel and VFO mode,
+     and with a class switched off.

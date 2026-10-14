@@ -38,7 +38,7 @@ The current hardware-independent crates have this dependency direction:
 ```text
 radio-domain ──→ radio-channel-plan ──→ radio-storage
       │                   │
-      ├────────→ radio-tx-policy ─────→ radio-ui
+      ├────────→ radio-tx-policy
       │                   │
       └───────────────────┴───────────→ radio-channel-control
       │                   │
@@ -50,7 +50,6 @@ radio-protocol ──→ radio-programmer ──→ radio-sim
                          └─────────────────┴→ radio-programmer-cli
                          │                 │
                          └─────────────────┴→ radio-programmer-web
-radio-ui ─────────────────────────────→ radio-sim
 radio-bk4819 ─────────────────────────→ radio-sim
 radio-channel-control ────────────────→ radio-sim
 radio-domain ─────────→ radio-aprs ───→ radio-sim
@@ -127,13 +126,6 @@ injection covers torn writes, stale atomic writes, corruption, and generation
 wrap. This model is no_std and heap-free in production; its caller supplies a
 slot buffer and image scratch, and the next task is simulator object transport.
 
-Work Package 5 adds `radio-ui` as another embedded, hardware-independent leaf
-over `radio-domain` and `radio-tx-policy`. It owns only logical key edges,
-bounded semantic display views, and boot-scoped draft permission state. It does
-not own key scanning, display drawing, persistence I/O, or live transmit policy.
-`radio-sim` provides the host-only virtual-time adapter and keeps persisted
-permission bytes separate from the active policy loaded at the last boot.
-
 Work Package 6 adds `radio-bk4819` as an embedded, hardware-independent command
 driver over a fallible logical register-bus trait. It owns exact frequency-word
 packing, receive status decoding, state/fault latching, and the only modeled TX
@@ -151,7 +143,7 @@ logical BK4819 driver and schedules tokens on explicit virtual time.
 
 `TXAUTH-053` makes the TX-policy leaf the sole complete-request authority.
 Its bounded request owns exact settings, configuration/selection identity,
-operator/regional inputs, and explicit hardware and per-unit calibration
+the programmed TX ranges, and explicit hardware and per-unit calibration
 envelopes. A token borrows the immutable request and policy; controller bundles
 also borrow selection state. The logical driver compares the entire current
 request before writing. Test-only synthetic envelopes live under

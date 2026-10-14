@@ -2,7 +2,6 @@
 
 use radio_domain::{ActiveChannel, Bandwidth, Modulation, TxClass};
 
-use crate::regional::{self, Attestation, Attestations, GrantProfile, Region, RuleRange};
 use crate::{TxDenied, TxPolicy};
 
 /// Maximum number of ranges in a hardware or calibration envelope.
@@ -36,6 +35,19 @@ pub enum TxState {
     Faulted,
     /// An unacknowledged configuration is pending.
     Changing,
+}
+
+/// One inclusive frequency range with its conducted-power and FM limits.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RuleRange {
+    /// Lowest permitted carrier frequency, inclusive.
+    pub first_hz: u32,
+    /// Highest permitted carrier frequency, inclusive.
+    pub last_hz: u32,
+    /// Maximum conducted power, in milliwatts.
+    pub max_conducted_mw: u32,
+    /// Whether wide FM is permitted.
+    pub wide_fm: bool,
 }
 
 /// Explicit evidence-backed hardware or per-unit calibration limits.
@@ -86,17 +98,6 @@ impl TxEnvelope {
     }
 }
 
-/// Equipment/operating facts additionally required for the PMR446 model.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct OperatingConditions {
-    /// Hand-portable/mobile operation has been established.
-    pub mobile: Attestation,
-    /// Operation is not airborne.
-    pub non_airborne: Attestation,
-    /// The equipment can receive on its selected simplex channel.
-    pub receiver_capable: Attestation,
-}
-
 /// Complete immutable input to central TX authorization.
 ///
 /// Adapters must rebuild this from current authoritative state immediately
@@ -106,7 +107,7 @@ pub struct OperatingConditions {
 pub struct TxRequest {
     /// Non-zero opaque target/unit identity, shared by both evidence envelopes.
     pub target_id: u64,
-    /// Exact selected RX/TX frequencies and service class.
+    /// Exact selected RX/TX frequencies; the class is not consulted.
     pub channel: ActiveChannel,
     /// Exact requested modulation.
     pub modulation: Modulation,
@@ -120,25 +121,15 @@ pub struct TxRequest {
     pub state: TxState,
     /// Application/configuration identity, absent until established.
     pub configuration: Option<ConfigurationIdentity>,
-    /// Actual operator-selected region.
-    pub region: Region,
-    /// Required affirmative external facts.
-    pub attestations: Attestations,
-    /// Exact grant, required for individualized services and honored if supplied.
-    pub grant: Option<GrantProfile>,
     /// Target hardware limits; absence denies.
     pub hardware: Option<TxEnvelope>,
     /// Independently validated per-unit calibration limits; absence denies.
     pub calibration: Option<TxEnvelope>,
-    /// Additional equipment/operating facts for licence-free operation.
-    pub operating: OperatingConditions,
 }
 
 impl TxRequest {
-    pub(crate) fn validate(&self, policy: TxPolicy) -> Result<regional::RuleProvenance, TxDenied> {
-        if !policy.permissions.allows(self.channel.tx_class) {
-            return Err(TxDenied::Permission);
-        }
+    /// Validates every fact and returns the class of the permitting range.
+    pub(crate) fn validate(&self, policy: &TxPolicy) -> Result<TxClass, TxDenied> {
         if self.state != TxState::Selected {
             return Err(TxDenied::State);
         }
@@ -151,35 +142,16 @@ impl TxRequest {
         if self.conducted_mw == 0 {
             return Err(TxDenied::Power);
         }
-        let provenance = regional::evaluate(regional::RegionalRequest {
-            region: self.region,
-            class: self.channel.tx_class,
-            frequency: self.channel.transmit,
-            modulation: self.modulation,
-            bandwidth: self.bandwidth,
-            conducted_mw: self.conducted_mw,
-            attestations: self.attestations,
-            grant: self.grant.as_ref(),
-        })
-        .map_err(TxDenied::Regional)?;
-        if self.channel.tx_class == TxClass::LicenceFreePlan {
-            let hz = self.channel.transmit.as_hz();
-            if self.channel.receive != self.channel.transmit
-                || !(446_006_250..=446_193_750).contains(&hz)
-                || (hz - 446_006_250) % 12_500 != 0
-                || self.operating.mobile != Attestation::Attested
-                || self.operating.non_airborne != Attestation::Attested
-                || self.operating.receiver_capable != Attestation::Attested
-            {
-                return Err(TxDenied::OperatingConditions);
-            }
+        if self.modulation != Modulation::Fm {
+            return Err(TxDenied::Modulation);
         }
+        let class = policy.permitting(self)?;
         if !self.hardware.is_some_and(|limits| limits.permits(self)) {
             return Err(TxDenied::Hardware);
         }
         if !self.calibration.is_some_and(|limits| limits.permits(self)) {
             return Err(TxDenied::Calibration);
         }
-        Ok(provenance)
+        Ok(class)
     }
 }

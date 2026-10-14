@@ -33,8 +33,7 @@ use radio_storage::{
     dual_slot::{self, BlockBackend, BLOCK_BYTES},
     ObjectKey,
 };
-use radio_tx_policy::{LoadStatus, TxAuthorisation, TxPolicy, TxRequest, PERMISSION_RECORD_LEN};
-use radio_ui::{BootUi, KeyEvent, KeySet, UiAction, UiView};
+use radio_tx_policy::{TxAuthorisation, TxPolicy, TxRequest};
 use std::{
     cell::{Cell, RefCell},
     collections::VecDeque,
@@ -201,148 +200,6 @@ impl<const CAPACITY: usize> AprsSimulator<CAPACITY> {
     fn record(&mut self, kind: AprsTraceKind) {
         self.trace.push(AprsTraceEvent {
             at_ms: self.now_ms(),
-            kind,
-        });
-    }
-}
-
-/// One deterministic boot-UI simulator observation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct UiTraceEvent {
-    /// Explicit virtual timestamp.
-    pub at_ms: u64,
-    /// Observable boot-UI event details.
-    pub kind: UiTraceKind,
-}
-
-/// Observable boot-UI, persistence, and reboot events.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum UiTraceKind {
-    /// A controller boot loaded persisted state and selected an initial view.
-    Booted {
-        /// Logical keys held at the instant of boot.
-        initial_keys: KeySet,
-        /// Whether persisted permissions were valid or defaulted denied.
-        load_status: LoadStatus,
-        /// First semantic display view.
-        view: UiView,
-    },
-    /// One logical key edge was handled.
-    KeyHandled {
-        /// Input edge delivered to the UI controller.
-        event: KeyEvent,
-        /// External side effect requested by the controller.
-        action: UiAction,
-        /// Semantic display view after handling the edge.
-        view: UiView,
-    },
-    /// A complete permission record replaced simulated persisted bytes.
-    PermissionsPersisted {
-        /// Monotonic generation contained in the new record.
-        generation: u32,
-    },
-}
-
-/// Deterministic virtual-time harness for the boot-only permission UI.
-///
-/// Persisting a record does not alter `active_policy`. Only [`Self::reboot`]
-/// validates the current persisted bytes and replaces the active policy.
-pub struct UiSimulator {
-    clock: SimClock,
-    controller: BootUi,
-    persisted_permissions: [u8; PERMISSION_RECORD_LEN],
-    active_policy: TxPolicy,
-    trace: Vec<UiTraceEvent>,
-}
-
-impl UiSimulator {
-    /// Boots a simulator from one exact persisted permission record buffer.
-    pub fn boot(persisted_permissions: [u8; PERMISSION_RECORD_LEN], initial_keys: KeySet) -> Self {
-        let (active_policy, policy_status) = TxPolicy::load(&persisted_permissions);
-        let (controller, ui_status) = BootUi::boot(&persisted_permissions, initial_keys);
-        debug_assert_eq!(policy_status, ui_status);
-        let first_event = UiTraceEvent {
-            at_ms: 0,
-            kind: UiTraceKind::Booted {
-                initial_keys,
-                load_status: ui_status,
-                view: controller.view(),
-            },
-        };
-        Self {
-            clock: SimClock::new(),
-            controller,
-            persisted_permissions,
-            active_policy,
-            trace: vec![first_event],
-        }
-    }
-
-    /// Returns current virtual milliseconds.
-    pub const fn now_ms(&self) -> u64 {
-        self.clock.now_ms()
-    }
-
-    /// Advances virtual time by an exact duration.
-    pub fn advance_ms(&mut self, duration_ms: u64) {
-        self.clock.advance_ms(duration_ms);
-    }
-
-    /// Returns the current bounded semantic display view.
-    pub fn view(&self) -> UiView {
-        self.controller.view()
-    }
-
-    /// Returns the active policy loaded at the most recent simulated boot.
-    pub const fn active_policy(&self) -> TxPolicy {
-        self.active_policy
-    }
-
-    /// Returns the current simulated persisted permission bytes.
-    pub const fn persisted_permissions(&self) -> &[u8; PERMISSION_RECORD_LEN] {
-        &self.persisted_permissions
-    }
-
-    /// Returns the ordered deterministic boot-UI trace.
-    pub fn trace(&self) -> &[UiTraceEvent] {
-        &self.trace
-    }
-
-    /// Handles one logical key edge at the current virtual time.
-    pub fn handle(&mut self, event: KeyEvent) -> UiAction {
-        let action = self.controller.handle(event);
-        self.record(UiTraceKind::KeyHandled {
-            event,
-            action,
-            view: self.controller.view(),
-        });
-        if let UiAction::PersistPermissions(record) = action {
-            self.persisted_permissions = record;
-            let generation = u32::from_le_bytes([record[3], record[4], record[5], record[6]]);
-            self.record(UiTraceKind::PermissionsPersisted { generation });
-        }
-        action
-    }
-
-    /// Reboots from current persisted bytes and replaces the active policy only
-    /// after its redundant record validation succeeds or defaults denied.
-    pub fn reboot(&mut self, initial_keys: KeySet) -> LoadStatus {
-        let (active_policy, policy_status) = TxPolicy::load(&self.persisted_permissions);
-        let (controller, ui_status) = BootUi::boot(&self.persisted_permissions, initial_keys);
-        debug_assert_eq!(policy_status, ui_status);
-        self.active_policy = active_policy;
-        self.controller = controller;
-        self.record(UiTraceKind::Booted {
-            initial_keys,
-            load_status: ui_status,
-            view: self.controller.view(),
-        });
-        ui_status
-    }
-
-    fn record(&mut self, kind: UiTraceKind) {
-        self.trace.push(UiTraceEvent {
-            at_ms: self.clock.now_ms(),
             kind,
         });
     }
@@ -1590,12 +1447,11 @@ mod tx_fixture;
 
 #[cfg(test)]
 mod tests {
-    use super::tx_fixture::{channel as tx_channel, request as tx_request};
+    use super::tx_fixture::{self, request as tx_request};
     use super::{
         AprsSimError, AprsSimulator, AprsTraceEvent, AprsTraceKind, ChannelSimError,
         ChannelSimulator, ChannelTraceEvent, ChannelTraceKind, K5ObjectDevice, K5ObjectTransport,
         RfBusOperation, RfSimulator, RfTraceEvent, RfTraceKind, SimDevice, SimTransport, TraceKind,
-        UiSimulator, UiTraceKind,
     };
     use radio_aprs::{AprsError, DiscoveryError, DiscoveryUpdate};
     use radio_channel_control::{ChannelTxError, ControlState, ScanConfig};
@@ -1626,8 +1482,7 @@ mod tests {
         decode_configuration_image, decode_generated_bank, encode_generated_bank, ObjectKey,
         ObjectKind, StorageError, StorageObject, GENERATED_BANK_CORE_LEN, OBJECT_ENTRY_HEADER_LEN,
     };
-    use radio_tx_policy::{LoadStatus, PermissionSet, StoredPermissions, TxPolicy};
-    use radio_ui::{Key, KeyEvent, KeySet, UiAction, UiView};
+    use radio_tx_policy::TxPolicy;
 
     #[test]
     fn deterministic_simulator_shared_serial_trace_matches_keypad() {
@@ -2236,6 +2091,13 @@ mod tests {
         }
     }
 
+    /// A request at another frequency, so its token cannot transmit `rf_channel`.
+    fn other_rf_request() -> radio_tx_policy::TxRequest {
+        let mut channel = rf_channel(TxClass::Amateur);
+        channel.transmit = Frequency::from_hz(145_525_000).unwrap();
+        tx_request(channel)
+    }
+
     fn rf_channel(class: TxClass) -> ActiveChannel {
         ActiveChannel {
             receive: Frequency::from_hz(145_500_000).unwrap(),
@@ -2245,14 +2107,11 @@ mod tests {
     }
 
     fn run_rf_script() -> (Vec<RfTraceEvent>, super::RfDriverState) {
-        let permissions = PermissionSet::none()
-            .with(TxClass::Amateur, true)
-            .with(TxClass::Business, true);
-        let policy = TxPolicy::load(&StoredPermissions::new(permissions, 1).encode()).0;
+        let policy = tx_fixture::policy(true);
         let request = tx_request(rf_channel(TxClass::Amateur));
         let amateur = policy.authorise(&request).unwrap();
-        let business_request = tx_request(rf_channel(TxClass::Business));
-        let business = policy.authorise(&business_request).unwrap();
+        let other_request = other_rf_request();
+        let other = policy.authorise(&other_request).unwrap();
         let mut simulator = RfSimulator::new();
 
         simulator.recover_to_standby().unwrap();
@@ -2269,7 +2128,7 @@ mod tests {
             }
         );
         simulator.advance_ms(3);
-        assert!(simulator.start_transmit(&request, &business).is_err());
+        assert!(simulator.start_transmit(&request, &other).is_err());
 
         simulator.advance_ms(2);
         simulator.inject_failure_after(3);
@@ -2314,18 +2173,15 @@ mod tests {
 
     #[test]
     fn rf_simulator_emits_no_tx_event_or_write_for_a_mismatched_token() {
-        let permissions = PermissionSet::none()
-            .with(TxClass::Amateur, true)
-            .with(TxClass::Business, true);
-        let policy = TxPolicy::load(&StoredPermissions::new(permissions, 1).encode()).0;
-        let business_request = tx_request(rf_channel(TxClass::Business));
-        let business = policy.authorise(&business_request).unwrap();
+        let policy = tx_fixture::policy(true);
+        let other_request = other_rf_request();
+        let other = policy.authorise(&other_request).unwrap();
         let mut simulator = RfSimulator::new();
         simulator.recover_to_standby().unwrap();
         let before = simulator.trace();
 
         assert!(simulator
-            .start_transmit(&tx_request(rf_channel(TxClass::Amateur)), &business)
+            .start_transmit(&tx_request(rf_channel(TxClass::Amateur)), &other)
             .is_err());
         assert_eq!(simulator.trace(), before);
         assert!(!simulator.trace().iter().any(|event| matches!(
@@ -2336,8 +2192,7 @@ mod tests {
     }
 
     fn scan_policy(enabled: bool) -> TxPolicy {
-        let permissions = PermissionSet::none().with(TxClass::LicenceFreePlan, enabled);
-        TxPolicy::load(&StoredPermissions::new(permissions, 1).encode()).0
+        tx_fixture::policy(enabled)
     }
 
     #[test]
@@ -2358,10 +2213,7 @@ mod tests {
                     3 => request.state = radio_tx_policy::TxState::Faulted,
                     4 => request.timeout_ms = 0,
                     5 => request.conducted_mw = 501,
-                    6 => {
-                        request.attestations.equipment_eligible =
-                            radio_tx_policy::regional::Attestation::Unattested;
-                    }
+                    6 => request.modulation = Modulation::Am,
                     _ => request.target_id += 1,
                 }
                 simulator.advance_ms(7);
@@ -2379,7 +2231,7 @@ mod tests {
     #[test]
     fn rf_simulator_refuses_stale_generation_and_power_without_tx_events() {
         let policy = scan_policy(true);
-        let request = tx_request(tx_channel(TxClass::LicenceFreePlan));
+        let request = tx_request(tx_fixture::channel(TxClass::LicenceFreePlan));
         let token = policy.authorise(&request).unwrap();
         let mut simulator = RfSimulator::new();
         simulator.recover_to_standby().unwrap();
@@ -2537,112 +2389,6 @@ mod tests {
         );
     }
 
-    fn run_permission_script() -> UiSimulator {
-        let persisted = StoredPermissions::new(PermissionSet::none(), 10).encode();
-        let mut simulator = UiSimulator::boot(persisted, KeySet::permission_menu_gesture());
-        simulator.advance_ms(10);
-        assert_eq!(
-            simulator.handle(KeyEvent::released(Key::Menu)),
-            UiAction::None
-        );
-        simulator.advance_ms(5);
-        assert_eq!(
-            simulator.handle(KeyEvent::released(Key::Back)),
-            UiAction::None
-        );
-        simulator.advance_ms(5);
-        assert_eq!(
-            simulator.handle(KeyEvent::pressed(Key::Confirm)),
-            UiAction::None
-        );
-        simulator.advance_ms(1);
-        assert_eq!(
-            simulator.handle(KeyEvent::released(Key::Confirm)),
-            UiAction::None
-        );
-        simulator.advance_ms(9);
-        assert!(matches!(
-            simulator.handle(KeyEvent::pressed(Key::Menu)),
-            UiAction::PersistPermissions(_)
-        ));
-        simulator
-    }
-
-    #[test]
-    fn timed_permission_save_is_repeatable_and_activates_only_after_reboot() {
-        let mut first = run_permission_script();
-        let second = run_permission_script();
-        assert_eq!(first.trace(), second.trace());
-        assert_eq!(
-            first.persisted_permissions(),
-            second.persisted_permissions()
-        );
-        assert_eq!(first.now_ms(), 30);
-        assert_eq!(first.view(), UiView::PermissionsSaved { generation: 11 });
-        assert!(first
-            .active_policy()
-            .authorise(&tx_request(tx_channel(TxClass::LicenceFreePlan)))
-            .is_err());
-        assert!(matches!(
-            first.trace().last().map(|event| event.kind),
-            Some(UiTraceKind::PermissionsPersisted { generation: 11 })
-        ));
-
-        first.advance_ms(10);
-        assert_eq!(first.reboot(KeySet::none()), LoadStatus::Valid);
-        assert_eq!(first.view(), UiView::Normal);
-        assert!(first
-            .active_policy()
-            .authorise(&tx_request(tx_channel(TxClass::LicenceFreePlan)))
-            .is_ok());
-        assert!(first
-            .active_policy()
-            .authorise(&tx_request(tx_channel(TxClass::Amateur)))
-            .is_err());
-        assert_eq!(first.trace().last().unwrap().at_ms, 40);
-    }
-
-    #[test]
-    fn simulated_cancel_preserves_bytes_and_corruption_fails_closed() {
-        let permissions = PermissionSet::none().with(TxClass::Amateur, true);
-        let mut corrupt = StoredPermissions::new(permissions, 6).encode();
-        corrupt[2] ^= 1;
-        let original = corrupt;
-        let mut simulator = UiSimulator::boot(corrupt, KeySet::permission_menu_gesture());
-        assert!(matches!(
-            simulator.trace()[0].kind,
-            UiTraceKind::Booted {
-                load_status: LoadStatus::DefaultedDenied(_),
-                ..
-            }
-        ));
-        assert!(simulator
-            .active_policy()
-            .authorise(&tx_request(tx_channel(TxClass::Amateur)))
-            .is_err());
-        simulator.handle(KeyEvent::released(Key::Menu));
-        simulator.handle(KeyEvent::released(Key::Back));
-        simulator.handle(KeyEvent::pressed(Key::Confirm));
-        simulator.handle(KeyEvent::released(Key::Confirm));
-        assert_eq!(
-            simulator.handle(KeyEvent::pressed(Key::Back)),
-            UiAction::MenuCancelled
-        );
-        assert_eq!(simulator.persisted_permissions(), &original);
-        assert!(!simulator
-            .trace()
-            .iter()
-            .any(|event| matches!(event.kind, UiTraceKind::PermissionsPersisted { .. })));
-        assert!(matches!(
-            simulator.reboot(KeySet::none()),
-            LoadStatus::DefaultedDenied(_)
-        ));
-        assert!(simulator
-            .active_policy()
-            .authorise(&tx_request(tx_channel(TxClass::Amateur)))
-            .is_err());
-    }
-
     #[test]
     fn offline_image_failures_map_only_to_internal_device_errors() {
         for error in [
@@ -2774,7 +2520,7 @@ mod tests {
 
         let tx_policy = TxPolicy::default();
         assert!(tx_policy
-            .authorise(&tx_request(tx_channel(TxClass::LicenceFreePlan)))
+            .authorise(&tx_request(tx_fixture::channel(TxClass::LicenceFreePlan)))
             .is_err());
     }
 

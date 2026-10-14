@@ -149,11 +149,11 @@ pub enum DriverState {
         /// Prepared transmit frequency.
         frequency: Frequency,
     },
-    /// The inferred transmit mode was written for this authorized class/frequency.
+    /// The inferred transmit mode was written for this authorized frequency.
     Transmitting {
         /// Requested transmit frequency.
         frequency: Frequency,
-        /// Exact policy class approved by the token.
+        /// Class of the programmed range that permitted it.
         class: TxClass,
     },
     /// A bus operation failed and the physical state is unknown.
@@ -178,13 +178,6 @@ pub enum DriverError<E> {
     InvalidState(DriverState),
     /// The exact integer frequency cannot be encoded.
     Frequency(FrequencyError),
-    /// The capability token approves a different class than the channel.
-    AuthorisationClassMismatch {
-        /// Class carried by the central-policy token.
-        approved: TxClass,
-        /// Class required by the requested active channel.
-        requested: TxClass,
-    },
     /// The complete current request differs from the approved immutable facts.
     AuthorisationRequestMismatch,
 }
@@ -198,13 +191,6 @@ impl<E: fmt::Display> fmt::Display for DriverError<E> {
             Self::AuthorisationRequestMismatch => {
                 formatter.write_str("TX authorization request is stale or mismatched")
             }
-            Self::AuthorisationClassMismatch {
-                approved,
-                requested,
-            } => write!(
-                formatter,
-                "TX authorization class {approved:?} does not match {requested:?}"
-            ),
         }
     }
 }
@@ -308,12 +294,6 @@ impl<B: RegisterBus> Bk4819<B> {
         authorisation: &TxAuthorisation<'_>,
     ) -> Result<(), DriverError<B::Error>> {
         let channel = request.channel;
-        if authorisation.class() != channel.tx_class {
-            return Err(DriverError::AuthorisationClassMismatch {
-                approved: authorisation.class(),
-                requested: channel.tx_class,
-            });
-        }
         if !authorisation.matches(request) {
             return Err(DriverError::AuthorisationRequestMismatch);
         }
@@ -327,7 +307,7 @@ impl<B: RegisterBus> Bk4819<B> {
         self.program_mode(word, MODE_TRANSMIT)?;
         self.state = DriverState::Transmitting {
             frequency: channel.transmit,
-            class: channel.tx_class,
+            class: authorisation.class(),
         };
         Ok(())
     }
@@ -465,7 +445,7 @@ mod tests {
         REG_FREQUENCY_LOW, REG_MODE_CONTROL, REG_RSSI, REG_SQUELCH_STATUS, SQUELCH_OPEN,
     };
     use radio_domain::{ActiveChannel, Frequency, TxClass};
-    use radio_tx_policy::{PermissionSet, StoredPermissions, TxPolicy};
+    use radio_tx_policy::TxPolicy;
     use std::vec;
 
     fn frequency(hertz: u32) -> Frequency {
@@ -480,12 +460,8 @@ mod tests {
         }
     }
 
-    fn policy(classes: &[TxClass]) -> TxPolicy {
-        let mut permissions = PermissionSet::none();
-        for class in classes {
-            permissions = permissions.with(*class, true);
-        }
-        TxPolicy::load(&StoredPermissions::new(permissions, 1).encode()).0
+    fn policy() -> TxPolicy {
+        crate::tx_fixture::policy(true)
     }
 
     #[test]
@@ -537,26 +513,24 @@ mod tests {
     }
 
     #[test]
-    fn only_a_matching_class_token_reaches_transmit_mode() {
-        let tx_policy = policy(&[TxClass::Amateur, TxClass::Business]);
-        let amateur_request = tx_request(channel(TxClass::Amateur));
-        let amateur = tx_policy.authorise(&amateur_request).unwrap();
-        let business_request = tx_request(channel(TxClass::Business));
-        let business = tx_policy.authorise(&business_request).unwrap();
+    fn only_the_approved_request_reaches_transmit_mode() {
+        let tx_policy = policy();
+        let request = tx_request(channel(TxClass::Amateur));
+        let approved = tx_policy.authorise(&request).unwrap();
+        let mut other_channel = channel(TxClass::Amateur);
+        other_channel.transmit = frequency(145_525_000);
+        let other_request = tx_request(other_channel);
         let mut radio = Bk4819::new(FakeBus::new(None));
         radio.recover_to_standby().unwrap();
 
         let operation_count = radio.bus().operations.len();
         assert_eq!(
-            radio.start_transmit(&business_request, &amateur),
-            Err(DriverError::AuthorisationClassMismatch {
-                approved: TxClass::Amateur,
-                requested: TxClass::Business,
-            })
+            radio.start_transmit(&other_request, &approved),
+            Err(DriverError::AuthorisationRequestMismatch)
         );
         assert_eq!(radio.bus().operations.len(), operation_count);
 
-        radio.start_transmit(&business_request, &business).unwrap();
+        radio.start_transmit(&request, &approved).unwrap();
         assert_eq!(
             &radio.bus().operations[operation_count..],
             &[
@@ -570,7 +544,7 @@ mod tests {
             radio.state(),
             DriverState::Transmitting {
                 frequency: frequency(145_500_000),
-                class: TxClass::Business,
+                class: TxClass::Amateur,
             }
         );
         radio.stop_transmit().unwrap();
@@ -583,7 +557,7 @@ mod tests {
 
     #[test]
     fn unknown_and_invalid_states_deny_without_bus_operations() {
-        let tx_policy = policy(&[TxClass::Amateur]);
+        let tx_policy = policy();
         let request = tx_request(channel(TxClass::Amateur));
         let authorisation = tx_policy.authorise(&request).unwrap();
         let mut radio = Bk4819::new(FakeBus::new(None));
@@ -608,7 +582,7 @@ mod tests {
 
     #[test]
     fn changed_same_class_request_is_denied_before_every_bus_operation() {
-        let policy = policy(&[TxClass::Amateur]);
+        let policy = policy();
         let request = tx_request(channel(TxClass::Amateur));
         let token = policy.authorise(&request).unwrap();
         let mut radio = Bk4819::new(FakeBus::new(None));
@@ -637,7 +611,7 @@ mod tests {
     }
 
     fn assert_mode_failure_latches_fault(final_mode: u16, fail_step: usize) {
-        let tx_policy = policy(&[TxClass::Amateur]);
+        let tx_policy = policy();
         let request = tx_request(channel(TxClass::Amateur));
         let authorisation = tx_policy.authorise(&request).unwrap();
         let mut radio = Bk4819::new(FakeBus::new(Some(fail_step + 1)));

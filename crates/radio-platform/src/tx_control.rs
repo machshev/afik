@@ -451,13 +451,9 @@ mod tx_fixture;
 mod tests {
     use super::*;
     use radio_domain::TxClass;
-    use radio_tx_policy::{PermissionSet, StoredPermissions};
 
     fn policy() -> TxPolicy {
-        TxPolicy::load(
-            &StoredPermissions::new(PermissionSet::none().with(TxClass::Amateur, true), 1).encode(),
-        )
-        .0
+        tx_fixture::policy(true)
     }
 
     fn request() -> TxRequest {
@@ -551,7 +547,7 @@ mod tests {
         let mut controller = startup(1, false);
         assert_eq!(
             controller.handle(1, Event::Pressed, &TxPolicy::deny_all(), &request),
-            Err(Error::Policy(TxDenied::Permission))
+            Err(Error::Policy(TxDenied::Range))
         );
         assert_eq!(controller.state(), State::ReleaseRequired);
         controller
@@ -661,7 +657,7 @@ mod tests {
             ));
             assert!(matches!(
                 controller.effect(&TxPolicy::deny_all(), &request),
-                Err(Error::Policy(TxDenied::Permission))
+                Err(Error::Policy(TxDenied::Range))
             ));
             controller
                 .handle(3, Event::Tick, &policy, &changed)

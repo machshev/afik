@@ -2589,7 +2589,6 @@ dependencies = [
  "radio-protocol",
  "radio-storage",
  "radio-tx-policy",
- "radio-ui",
 ]
 
 [[package]]
@@ -2605,14 +2604,6 @@ name = "radio-tx-policy"
 version = "7.0.20"
 dependencies = [
  "radio-domain",
-]
-
-[[package]]
-name = "radio-ui"
-version = "7.0.20"
-dependencies = [
- "radio-domain",
- "radio-tx-policy",
 ]
 
 [[package]]

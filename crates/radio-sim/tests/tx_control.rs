@@ -5,16 +5,13 @@ use radio_domain::{Frequency, TxClass};
 use radio_platform::tx_control::{Action, Error, Event, State, StopReason};
 use radio_sim::tx_control::{TraceKind, TxSimulator};
 use radio_sim::RfTraceKind;
-use radio_tx_policy::{PermissionSet, StoredPermissions, TxDenied, TxPolicy, TxRequest};
+use radio_tx_policy::{TxDenied, TxPolicy, TxRequest};
 
 #[path = "../../radio-tx-policy/tests/support/mod.rs"]
 mod fixture;
 
 fn policy() -> TxPolicy {
-    TxPolicy::load(
-        &StoredPermissions::new(PermissionSet::none().with(TxClass::Amateur, true), 1).encode(),
-    )
-    .0
+    fixture::policy(true)
 }
 
 fn request() -> TxRequest {
@@ -106,7 +103,7 @@ fn held_boot_and_complete_policy_denials_emit_no_tx_write_or_pa_enable() {
     let before = sim.rf_trace();
     assert_eq!(
         sim.deliver(Event::Pressed, &TxPolicy::deny_all(), &request),
-        Err(Error::Policy(TxDenied::Permission))
+        Err(Error::Policy(TxDenied::Range))
     );
     for field in 0..5 {
         let mut candidate = request;

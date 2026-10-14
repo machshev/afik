@@ -1,204 +1,209 @@
 //! Fail-closed central transmit authorisation.
+//!
+//! The operator programs the frequency ranges this radio may transmit in from
+//! the studio (`ADR-101`). Each range names its service class and carries its
+//! own power ceiling, so every TX path, whether a programmed channel or the
+//! VFO, is checked against the frequency it would transmit on. With no
+//! programmed range nothing is permitted.
 
 #![no_std]
 #![forbid(unsafe_code)]
 
 use core::fmt;
-use radio_domain::TxClass;
+use radio_domain::{Bandwidth, Frequency, TxClass};
 
-pub mod regional;
 mod request;
 
 pub use request::{
-    ConfigurationIdentity, OperatingConditions, TxEnvelope, TxRequest, TxState,
-    MAX_ENVELOPE_RANGES, MAX_TX_TIMEOUT_MS,
+    ConfigurationIdentity, RuleRange, TxEnvelope, TxRequest, TxState, MAX_ENVELOPE_RANGES,
+    MAX_TX_TIMEOUT_MS,
 };
 
-/// Current persisted permission encoding version.
-pub const PERMISSION_FORMAT_VERSION: u8 = 1;
-/// Exact byte length of a persisted permission record.
-pub const PERMISSION_RECORD_LEN: usize = 9;
+/// Most programmed TX ranges one radio holds.
+pub const MAX_TX_RANGES: usize = 16;
 
-const KNOWN_PERMISSION_BITS: u8 = 0b0011_1111;
+/// One programmed frequency range in which TX is permitted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TxRange {
+    /// Service this range belongs to; a label, never `TxClass::Never`.
+    pub class: TxClass,
+    /// Lowest permitted carrier frequency, inclusive.
+    pub first_hz: u32,
+    /// Highest permitted carrier frequency, inclusive.
+    pub last_hz: u32,
+    /// Highest permitted conducted power, in milliwatts.
+    pub max_mw: u16,
+    /// Whether wide FM is permitted.
+    pub wide_fm: bool,
+    /// Channel raster relative to `first_hz`; zero permits any frequency.
+    pub raster_hz: u16,
+}
 
-/// A set of centrally controlled transmit permissions.
-#[must_use]
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct PermissionSet(u8);
-
-impl PermissionSet {
-    /// Returns an empty, default-deny permission set.
-    pub const fn none() -> Self {
-        Self(0)
-    }
-
-    /// Returns a copy with one class enabled or disabled.
+impl TxRange {
+    /// Checks the range is well formed.
     ///
-    /// `TxClass::Never` remains disabled regardless of `enabled`.
-    pub const fn with(self, class: TxClass, enabled: bool) -> Self {
-        let Some(bit) = permission_bit(class) else {
-            return self;
-        };
-        if enabled {
-            Self(self.0 | bit)
-        } else {
-            Self(self.0 & !bit)
+    /// # Errors
+    ///
+    /// Returns the first defect found.
+    pub const fn validate(&self) -> Result<(), RangeError> {
+        if matches!(self.class, TxClass::Never) {
+            return Err(RangeError::Never);
         }
+        if self.first_hz == 0 || self.first_hz > self.last_hz {
+            return Err(RangeError::Span);
+        }
+        if self.max_mw == 0 {
+            return Err(RangeError::Power);
+        }
+        Ok(())
     }
 
-    /// Reports whether one class is enabled.
-    pub const fn allows(self, class: TxClass) -> bool {
-        match permission_bit(class) {
-            Some(bit) => self.0 & bit != 0,
-            None => false,
-        }
+    const fn contains(&self, frequency: Frequency) -> bool {
+        frequency.as_hz() >= self.first_hz && frequency.as_hz() <= self.last_hz
     }
 
-    const fn bits(self) -> u8 {
+    const fn permits(&self, request: &TxRequest) -> bool {
+        let hz = request.channel.transmit.as_hz();
+        (self.raster_hz == 0 || (hz - self.first_hz) % self.raster_hz as u32 == 0)
+            && request.conducted_mw <= self.max_mw as u32
+            && (self.wide_fm || !matches!(request.bandwidth, Bandwidth::Wide))
+    }
+}
+
+/// A set of TX classes, one bit per [`TxClass`] discriminant.
+///
+/// The handset uses it to switch programmed classes off and on again; it can
+/// only narrow what the studio programmed (`ADR-101`).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ClassSet(u8);
+
+impl ClassSet {
+    /// Every class.
+    pub const ALL: Self = Self(u8::MAX);
+    /// No class.
+    pub const NONE: Self = Self(0);
+
+    /// Builds a set from stored bits; bits beyond the known classes are kept,
+    /// so a later class is not switched on by an older record.
+    #[must_use]
+    pub const fn from_bits(bits: u8) -> Self {
+        Self(bits)
+    }
+
+    /// The stored bits.
+    pub const fn bits(self) -> u8 {
         self.0
     }
 
-    const fn from_valid_bits(bits: u8) -> Self {
-        Self(bits)
+    /// Whether `class` is in the set.
+    pub const fn contains(self, class: TxClass) -> bool {
+        self.0 & (1 << class as u8) != 0
+    }
+
+    /// The set with `class` added or removed.
+    #[must_use]
+    pub const fn with(self, class: TxClass, on: bool) -> Self {
+        let bit = 1 << class as u8;
+        Self(if on { self.0 | bit } else { self.0 & !bit })
     }
 }
 
-const fn permission_bit(class: TxClass) -> Option<u8> {
-    match class {
-        TxClass::Never => None,
-        TxClass::LicenceFreePlan => Some(1 << 0),
-        TxClass::Amateur => Some(1 << 1),
-        TxClass::Marine => Some(1 << 2),
-        TxClass::Aeronautical => Some(1 << 3),
-        TxClass::Business => Some(1 << 4),
-        TxClass::Experimental => Some(1 << 5),
-    }
-}
-
-/// A validated persisted TX-permission record.
+/// Why a programmed TX range is refused.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct StoredPermissions {
-    permissions: PermissionSet,
-    generation: u32,
+pub enum RangeError {
+    /// `TxClass::Never` is not a transmit service.
+    Never,
+    /// The first frequency is zero or above the last.
+    Span,
+    /// The power ceiling is zero.
+    Power,
+    /// More ranges than [`MAX_TX_RANGES`].
+    TooMany,
 }
 
-impl StoredPermissions {
-    /// Constructs a record for the hidden physical-presence settings path.
-    pub const fn new(permissions: PermissionSet, generation: u32) -> Self {
-        Self {
-            permissions,
-            generation,
-        }
-    }
-
-    /// Returns the validated permission set.
-    pub const fn permissions(self) -> PermissionSet {
-        self.permissions
-    }
-
-    /// Returns the monotonic settings generation.
-    pub const fn generation(self) -> u32 {
-        self.generation
-    }
-
-    /// Encodes version, permissions, inversion, generation, and CRC.
-    pub fn encode(self) -> [u8; PERMISSION_RECORD_LEN] {
-        let mut bytes = [0_u8; PERMISSION_RECORD_LEN];
-        bytes[0] = PERMISSION_FORMAT_VERSION;
-        bytes[1] = self.permissions.bits();
-        bytes[2] = !self.permissions.bits();
-        bytes[3..7].copy_from_slice(&self.generation.to_le_bytes());
-        let crc = crc16_ccitt_false(&bytes[..7]);
-        bytes[7..9].copy_from_slice(&crc.to_le_bytes());
-        bytes
-    }
-
-    /// Decodes a record only when every redundant check passes.
-    pub fn decode(bytes: &[u8]) -> Result<Self, PermissionError> {
-        if bytes.len() != PERMISSION_RECORD_LEN {
-            return Err(PermissionError::InvalidLength);
-        }
-        if bytes[0] != PERMISSION_FORMAT_VERSION {
-            return Err(PermissionError::UnsupportedVersion);
-        }
-        if bytes[1] & !KNOWN_PERMISSION_BITS != 0 {
-            return Err(PermissionError::ReservedBits);
-        }
-        if bytes[2] != !bytes[1] {
-            return Err(PermissionError::InversionMismatch);
-        }
-        let expected_crc = u16::from_le_bytes([bytes[7], bytes[8]]);
-        if crc16_ccitt_false(&bytes[..7]) != expected_crc {
-            return Err(PermissionError::CrcMismatch);
-        }
-        Ok(Self {
-            permissions: PermissionSet::from_valid_bits(bytes[1]),
-            generation: u32::from_le_bytes([bytes[3], bytes[4], bytes[5], bytes[6]]),
+impl fmt::Display for RangeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Never => "a TX range cannot have class Never",
+            Self::Span => "a TX range must start above zero and not end below its start",
+            Self::Power => "a TX range needs a power ceiling above zero",
+            Self::TooMany => "too many TX ranges",
         })
     }
-}
-
-/// A persisted TX-permission validation failure.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PermissionError {
-    /// The byte length does not match the versioned record.
-    InvalidLength,
-    /// The version is unsupported.
-    UnsupportedVersion,
-    /// Unknown permission bits were set.
-    ReservedBits,
-    /// The redundant inverted permission byte did not match.
-    InversionMismatch,
-    /// The record checksum did not match.
-    CrcMismatch,
-}
-
-impl fmt::Display for PermissionError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidLength => formatter.write_str("invalid TX permission record length"),
-            Self::UnsupportedVersion => formatter.write_str("unsupported TX permission version"),
-            Self::ReservedBits => formatter.write_str("reserved TX permission bits are set"),
-            Self::InversionMismatch => formatter.write_str("TX permission inversion mismatch"),
-            Self::CrcMismatch => formatter.write_str("TX permission CRC mismatch"),
-        }
-    }
-}
-
-/// Whether stored policy was accepted or replaced by fail-closed defaults.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LoadStatus {
-    /// A valid persisted record was loaded.
-    Valid,
-    /// Persisted bytes were invalid and all TX classes were disabled.
-    DefaultedDenied(PermissionError),
 }
 
 /// Central policy authority used by every transmit request path.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct TxPolicy {
-    permissions: PermissionSet,
+    ranges: [Option<TxRange>; MAX_TX_RANGES],
 }
 
 impl TxPolicy {
-    /// Constructs the default policy with every class denied.
+    /// Constructs the default policy, which permits nothing.
     pub const fn deny_all() -> Self {
         Self {
-            permissions: PermissionSet::none(),
+            ranges: [None; MAX_TX_RANGES],
         }
     }
 
-    /// Loads policy from persisted bytes, failing closed on every error.
-    pub fn load(bytes: &[u8]) -> (Self, LoadStatus) {
-        match StoredPermissions::decode(bytes) {
-            Ok(stored) => (
-                Self {
-                    permissions: stored.permissions(),
-                },
-                LoadStatus::Valid,
-            ),
-            Err(error) => (Self::deny_all(), LoadStatus::DefaultedDenied(error)),
+    /// Builds a policy from programmed ranges, refusing any malformed one.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first defect; the caller then keeps [`Self::deny_all`].
+    pub fn new(ranges: &[TxRange]) -> Result<Self, RangeError> {
+        if ranges.len() > MAX_TX_RANGES {
+            return Err(RangeError::TooMany);
         }
+        let mut policy = Self::deny_all();
+        for (slot, range) in policy.ranges.iter_mut().zip(ranges) {
+            range.validate()?;
+            *slot = Some(*range);
+        }
+        Ok(policy)
+    }
+
+    /// Returns the programmed ranges in order.
+    pub fn ranges(&self) -> impl Iterator<Item = &TxRange> {
+        self.ranges.iter().flatten()
+    }
+
+    /// The classes of the programmed ranges.
+    pub fn classes(&self) -> ClassSet {
+        self.ranges()
+            .fold(ClassSet::NONE, |set, range| set.with(range.class, true))
+    }
+
+    /// The policy with only the ranges whose class is in `enabled`.
+    ///
+    /// This is the handset's class switch: it can drop ranges but never add
+    /// one, so the result is never more permissive than `self`.
+    #[must_use]
+    pub fn restricted(&self, enabled: ClassSet) -> Self {
+        let mut policy = *self;
+        for slot in &mut policy.ranges {
+            if slot.is_some_and(|range| !enabled.contains(range.class)) {
+                *slot = None;
+            }
+        }
+        policy
+    }
+
+    /// Finds the class of the range permitting `request`.
+    ///
+    /// Every range containing the frequency must permit it, so an overlapping
+    /// permissive range cannot mask a strict one; the first one names the class.
+    fn permitting(&self, request: &TxRequest) -> Result<TxClass, TxDenied> {
+        let mut class = None;
+        for range in self.ranges() {
+            if range.contains(request.channel.transmit) {
+                if !range.permits(request) {
+                    return Err(TxDenied::Range);
+                }
+                class.get_or_insert(range.class);
+            }
+        }
+        class.ok_or(TxDenied::Range)
     }
 
     /// Authorizes one complete request, borrowing its immutable policy/facts.
@@ -227,15 +232,19 @@ impl TxPolicy {
     ///     assert!(token.matches(request));
     /// }
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns the first failed check.
     pub fn authorise<'a>(
         &'a self,
         request: &'a TxRequest,
     ) -> Result<TxAuthorisation<'a>, TxDenied> {
-        let provenance = request.validate(*self)?;
+        let class = request.validate(self)?;
         Ok(TxAuthorisation {
             request,
             policy: self,
-            provenance,
+            class,
         })
     }
 }
@@ -248,36 +257,31 @@ impl TxPolicy {
 pub struct TxAuthorisation<'a> {
     request: &'a TxRequest,
     policy: &'a TxPolicy,
-    provenance: regional::RuleProvenance,
+    class: TxClass,
 }
 
 impl TxAuthorisation<'_> {
-    /// Returns the exact TX class approved by this capability token.
+    /// Returns the class of the programmed range that permitted this request.
     pub const fn class(&self) -> TxClass {
-        self.request.channel.tx_class
+        self.class
     }
 
     /// Checks the entire freshly supplied request, including opaque identities.
     pub fn matches(&self, current: &TxRequest) -> bool {
-        self.request == current && current.validate(*self.policy).is_ok()
+        self.request == current && current.validate(self.policy).is_ok()
     }
 
     /// Returns the exact approved request; this is not proof of current state.
     pub const fn request(&self) -> &TxRequest {
         self.request
     }
-
-    /// Returns the unchanged regional snapshot provenance used for approval.
-    pub const fn provenance(&self) -> regional::RuleProvenance {
-        self.provenance
-    }
 }
 
 /// Transmit authorisation was denied by central policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TxDenied {
-    /// Service class is disabled, or permissions failed validation.
-    Permission,
+    /// No programmed range permits this frequency, power and bandwidth.
+    Range,
     /// No healthy, settled selected channel is established.
     State,
     /// Configuration identity is missing or invalid.
@@ -286,10 +290,8 @@ pub enum TxDenied {
     Timeout,
     /// Requested power is zero.
     Power,
-    /// Regional rule or external fact validation failed.
-    Regional(regional::RegionalDenial),
-    /// Licence-free raster, simplex, or operating facts failed.
-    OperatingConditions,
+    /// Only analog FM is transmitted.
+    Modulation,
     /// Hardware limits are absent, malformed, or exceeded.
     Hardware,
     /// Calibration limits are absent, malformed, or exceeded.
@@ -299,84 +301,5 @@ pub enum TxDenied {
 impl fmt::Display for TxDenied {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "transmit denied by policy: {self:?}")
-    }
-}
-
-fn crc16_ccitt_false(bytes: &[u8]) -> u16 {
-    let mut crc = 0xffff_u16;
-    for byte in bytes {
-        crc ^= u16::from(*byte) << 8;
-        for _ in 0..8 {
-            crc = if crc & 0x8000 != 0 {
-                (crc << 1) ^ 0x1021
-            } else {
-                crc << 1
-            };
-        }
-    }
-    crc
-}
-
-#[cfg(test)]
-extern crate self as radio_tx_policy;
-
-#[cfg(test)]
-#[path = "../tests/support/mod.rs"]
-mod tx_fixture;
-
-#[cfg(test)]
-mod tests {
-    use super::tx_fixture::{channel as tx_channel, request as tx_request};
-    use super::{LoadStatus, PermissionSet, StoredPermissions, TxPolicy};
-    use radio_domain::TxClass;
-
-    #[test]
-    fn default_policy_denies_every_class() {
-        let policy = TxPolicy::default();
-        for class in [
-            TxClass::Never,
-            TxClass::LicenceFreePlan,
-            TxClass::Amateur,
-            TxClass::Marine,
-            TxClass::Aeronautical,
-            TxClass::Business,
-            TxClass::Experimental,
-        ] {
-            assert!(policy.authorise(&tx_request(tx_channel(class))).is_err());
-        }
-    }
-
-    #[test]
-    fn valid_record_enables_only_selected_class() {
-        let permissions = PermissionSet::none().with(TxClass::LicenceFreePlan, true);
-        let bytes = StoredPermissions::new(permissions, 8).encode();
-        let (policy, status) = TxPolicy::load(&bytes);
-        assert_eq!(status, LoadStatus::Valid);
-        let request = tx_request(tx_channel(TxClass::LicenceFreePlan));
-        let authorisation = policy.authorise(&request).unwrap();
-        assert_eq!(authorisation.class(), TxClass::LicenceFreePlan);
-        assert!(policy
-            .authorise(&tx_request(tx_channel(TxClass::Amateur)))
-            .is_err());
-        assert!(policy
-            .authorise(&tx_request(tx_channel(TxClass::Never)))
-            .is_err());
-    }
-
-    #[test]
-    fn corruption_fails_closed() {
-        let permissions = PermissionSet::none()
-            .with(TxClass::LicenceFreePlan, true)
-            .with(TxClass::Amateur, true);
-        let mut bytes = StoredPermissions::new(permissions, 3).encode();
-        bytes[1] ^= 1;
-        let (policy, status) = TxPolicy::load(&bytes);
-        assert!(matches!(status, LoadStatus::DefaultedDenied(_)));
-        assert!(policy
-            .authorise(&tx_request(tx_channel(TxClass::LicenceFreePlan)))
-            .is_err());
-        assert!(policy
-            .authorise(&tx_request(tx_channel(TxClass::Amateur)))
-            .is_err());
     }
 }

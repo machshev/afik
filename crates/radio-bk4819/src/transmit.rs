@@ -158,7 +158,7 @@ impl<B: RegisterBus> Bk4819<B> {
         self.write(REG_MODE_CONTROL, MODE_TRANSMIT_K5)?;
         self.state = DriverState::Transmitting {
             frequency,
-            class: request.channel.tx_class,
+            class: authorisation.class(),
         };
         Ok(())
     }
@@ -197,7 +197,7 @@ impl<B: RegisterBus> Bk4819<B> {
         if self.state
             != (DriverState::Transmitting {
                 frequency,
-                class: request.channel.tx_class,
+                class: authorisation.class(),
             })
         {
             return Err(DriverError::InvalidState(self.state));
@@ -210,12 +210,6 @@ fn check_authority<E>(
     request: &TxRequest,
     authorisation: &TxAuthorisation<'_>,
 ) -> Result<(), DriverError<E>> {
-    if authorisation.class() != request.channel.tx_class {
-        return Err(DriverError::AuthorisationClassMismatch {
-            approved: authorisation.class(),
-            requested: request.channel.tx_class,
-        });
-    }
     if !authorisation.matches(request) {
         return Err(DriverError::AuthorisationRequestMismatch);
     }
@@ -231,12 +225,11 @@ mod tests {
     use crate::tx_fixture::{channel, request};
     use crate::{Bk4819, DriverError, DriverState, RegisterAddress, GPIO_OUT_DEFAULT};
     use radio_domain::TxClass;
-    use radio_tx_policy::{PermissionSet, StoredPermissions, TxPolicy, TxRequest};
+    use radio_tx_policy::{TxPolicy, TxRequest};
     use std::vec::Vec;
 
     fn policy() -> TxPolicy {
-        let permissions = PermissionSet::none().with(TxClass::LicenceFreePlan, true);
-        TxPolicy::load(&StoredPermissions::new(permissions, 1).encode()).0
+        crate::tx_fixture::policy(true)
     }
 
     fn pmr() -> TxRequest {

@@ -14,10 +14,8 @@
 
 use radio_bk4819::{Bk4819, ReceiveSetup, RegisterBus};
 use radio_domain::{ActiveChannel, Bandwidth, Frequency, Modulation, TxClass};
-use radio_tx_policy::regional::{Attestation, Attestations, Region, RuleRange};
 use radio_tx_policy::{
-    ConfigurationIdentity, OperatingConditions, PermissionSet, StoredPermissions, TxEnvelope,
-    TxPolicy, TxRequest, TxState,
+    ConfigurationIdentity, RuleRange, TxEnvelope, TxPolicy, TxRange, TxRequest, TxState,
 };
 
 use crate::operator_shell::{TX_POWER_LEVELS, TX_POWER_NOMINAL_MW};
@@ -110,8 +108,7 @@ impl Pmr446Target {
 
     /// Builds the complete simplex narrow-FM request for one frequency.
     ///
-    /// The attestations are the operator's, given for this experimental bench
-    /// build on 2026-10-13 (`TXK5-058`). The calibration envelope is present
+    /// The calibration envelope is present
     /// only when a bias for `level` was derived from this unit's calibration.
     /// A frequency off the PMR446 raster, or a timeout over the policy
     /// ceiling, is denied by policy, not here.
@@ -145,30 +142,26 @@ impl Pmr446Target {
                 generation: 0,
                 revision,
             }),
-            region: Region::UnitedKingdom,
-            attestations: Attestations {
-                location: Attestation::Attested,
-                licence_valid: Attestation::Attested,
-                operator_authorised: Attestation::Attested,
-                equipment_eligible: Attestation::Attested,
-            },
-            grant: None,
             hardware: Some(self.envelope(1)),
             calibration: bias.map(|_| self.envelope(2)),
-            operating: OperatingConditions {
-                mobile: Attestation::Attested,
-                non_airborne: Attestation::Attested,
-                receiver_capable: Attestation::Attested,
-            },
         }
     }
 }
 
+/// PMR446 as one programmed range: the 16 channels, narrow FM, 500 mW.
+pub const PMR446_RANGE: TxRange = TxRange {
+    class: TxClass::LicenceFreePlan,
+    first_hz: PMR446_FIRST_HZ,
+    last_hz: PMR446_LAST_HZ,
+    max_mw: 500,
+    wide_fm: false,
+    raster_hz: 12_500,
+};
+
 /// The fixed experimental policy: licence-free PMR446 only.
 #[must_use]
 pub fn policy() -> TxPolicy {
-    let permissions = PermissionSet::none().with(TxClass::LicenceFreePlan, true);
-    TxPolicy::load(&StoredPermissions::new(permissions, 1).encode()).0
+    TxPolicy::new(&[PMR446_RANGE]).unwrap_or_default()
 }
 
 /// Executes one controller effect against the radio, muting receive audio
@@ -296,7 +289,7 @@ mod tests {
         assert!(policy.authorise(&selected(446_193_750)).is_ok());
         assert_eq!(
             policy.authorise(&selected(446_012_500)).unwrap_err(),
-            TxDenied::OperatingConditions,
+            TxDenied::Range,
             "between raster channels"
         );
         assert!(

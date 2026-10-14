@@ -2,7 +2,21 @@
 
 ## Current work package
 
-**`TXK5-059` is active** (2026-10-13), with `TXK1-060` started alongside.
+**`TXRANGE-062` is active** (2026-10-14, operator request, `ADR-101`):
+programmed TX ranges protect channel and VFO mode alike.
+
+- Step 1: `radio-tx-policy` permits TX only inside programmed `TxRange`s
+  (class, span, max mW, wide FM, raster), every overlapping range applying;
+  `TxPolicy::restricted` is the handset class switch and can only narrow. The
+  class bitset, regional snapshot, grants, attestations, `radio-ui` and the
+  simulator's boot permission editor are removed. The firmware still programs
+  PMR446 alone as one range. Gate: `cargo fmt --all --check` clean, workspace
+  clippy `-D warnings` clean, `cargo test --workspace` 685 passed 0 failed,
+  `tool/build-k5.sh --release` and `tool/build-k1.sh --release` pass.
+
+## Previous work package: TXK5-059
+
+**`TXK5-059` is paused** (2026-10-14) for `TXRANGE-062`; `TXK1-060` was started alongside.
 
 - K5 `7.0.2` and K1 `6.4T` are flashed. Both key up on PMR446 (`EVID-TX058-001`);
   K5 speech is now close to Armel (`EVID-TX059-001`).

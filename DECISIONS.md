@@ -1710,3 +1710,21 @@ meaning.
   is vendor calibration, readable but never writable by a host.
 - The studio's live tune, scan and metrics controls are dropped.
 
+
+## ADR-101 — TX permission is programmed frequency ranges
+
+- **Date:** 2026-10-14
+- **Status:** accepted, operator decision. Supersedes the class bitset,
+  built-in regional snapshot, grants and attestations of `TXAUTH-053`, and
+  the hidden boot permission editor of Work Package 5.
+- The studio programs up to 16 TX ranges: a class label, an inclusive span,
+  a power ceiling in milliwatts, wide FM allowed or not, and an optional
+  raster. Presets cover common US, EU/CEPT and UK services. These ranges are
+  the authority: `radio-tx-policy` permits a request only inside one, and
+  every range containing the frequency must permit it.
+- The check is on the TX frequency, so channel and VFO mode are protected
+  alike. Channels no longer carry a TX class.
+- The handset can switch programmed classes off and on again, kept in the
+  radio's own record, to restrict a radio lent to someone else. It can only
+  narrow what was programmed.
+- Hardware and calibration envelopes still apply beneath the ranges.
