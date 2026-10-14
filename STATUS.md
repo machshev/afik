@@ -237,8 +237,9 @@ programmed TX ranges protect channel and VFO mode alike.
   `cargo fmt --all --check` clean, workspace clippy `-D warnings` clean,
   `cargo test --workspace` 767 passed 0 failed, `tool/build-k1.sh --release`
   (static RAM 5740, headroom 10644) and `tool/build-k5.sh --release` pass.
-  `7.0.26` not yet flashed. Next: flash the K1, write the project from the
-  studio, power-cycle, and read it back.
+  `7.0.26` flashed to the K1 (bootloader `7.03.01`, CRC-32 `20e02321`,
+  266/266 pages acknowledged, not read back). Next: write the project from
+  the studio, power-cycle, and read it back.
 - `7.0.24` flashed to the K5 (bootloader `2.00.06`, CRC-32 `17aef08b`,
   240/240 pages acknowledged, not read back; K5 flash end `0x0000e810`, K1
   release builds). It carries the S meter and `b066148` (TX on every
