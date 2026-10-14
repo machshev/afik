@@ -66,6 +66,16 @@ programmed TX ranges protect channel and VFO mode alike.
   screen (no GUI driver here). Gate: `cargo fmt --all --check` clean,
   workspace clippy `-D warnings` clean, `cargo test --workspace` 698 passed
   0 failed.
+- `7.0.21` is the image to flash (`Cargo.lock` and both targets rebuilt;
+  K5 flash end `0x0000d138`). `cargo test --workspace` 698 passed 0 failed.
+- Next (step 6, hardware): flash K5 `7.0.21`; the old format 5 image is
+  refused, so write the project again from the studio with the UK preset's
+  ranges. Check PMR446 keys up at Low1–Low4 and is refused at Mid/High; a
+  70 cm amateur channel keys up; a frequency outside every range (e.g. a
+  marine or airband channel) is refused; switch Amateur off in
+  SETTINGS > TX CLASSES and check 70 cm is refused, power-cycle, still
+  refused. On the K1, repeat in VFO mode. Measure Mid/High on a dummy load
+  (`RISK-040`). Then the K1's NOR erase plan; then CTCSS/DCS.
 
 ## Previous work package: TXK5-059
 
