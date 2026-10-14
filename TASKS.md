@@ -3094,3 +3094,15 @@
   4. Place record version 3 keeps both slots and dual watch. Done
      (`a95ec0e`).
   5. Flash `7.0.22` and check on hardware (see `STATUS.md`).
+
+## SMETER-065 — Calibrated S meter
+
+- **Status:** active (2026-10-14), operator request.
+- **Objective:** the slot meter reads S units and dBm at the antenna, not the
+  chip's raw count.
+- **Steps (commit after each):**
+  1. `radio-platform::s_meter`: egzumer's band corrections over
+     `dBm = count / 2 - 160`, IARU Region 1 VHF/UHF scale (S9 = -93 dBm,
+     6 dB per unit, S9+10 to S9+60); the slot meter draws one segment per S
+     unit, a taller one per 10 dB over S9, the reading and the dBm.
+  2. Flash and compare against a known signal (`RISK-043`).

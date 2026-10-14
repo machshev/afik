@@ -3,6 +3,7 @@
 use crate::display::{BootStage, ReceiveDiagnostic};
 use crate::operator_shell::TX_POWER_NOMINAL_MW;
 use crate::receive_app::Key;
+use crate::s_meter::{self, SReading};
 use radio_bk4819::SquelchThresholds;
 use radio_domain::{Bandwidth, Modulation, SquelchLevel, TxClass};
 
@@ -646,33 +647,56 @@ fn draw_slot(frame: &mut [u8; FRAME_BYTES], y: usize, slot: &SlotView<'_>) {
     draw_text(frame, WIDTH - 7 * 6, y + 9, &mode);
     draw_text(frame, WIDTH - 2 * 6, y + 9, &power_label(channel.power));
     if let Some(rssi_raw) = channel.meter {
-        draw_meter(frame, y + 18, rssi_raw);
+        draw_meter(frame, y + 18, rssi_raw, channel.frequency_hz);
     }
 }
 
-/// Weakest carrier the meter shows, in dBm; anything weaker draws one segment.
-const METER_FLOOR_DBM: i32 = -130;
-/// Strongest carrier the meter shows, in dBm.
-const METER_CEILING_DBM: i32 = -50;
 /// Pixel columns in one meter segment, the last of them a gap.
-const METER_SEGMENT: usize = 3;
+const METER_SEGMENT: usize = 4;
+/// Left column of the meter's S reading, after the bar.
+const METER_LABEL_X: usize = SLOT_TEXT_X + s_meter::SEGMENTS as usize * METER_SEGMENT + 2;
 
-/// Draws the signal meter: segments in proportion to the carrier between
-/// [`METER_FLOOR_DBM`] and [`METER_CEILING_DBM`], with the chip's meter read
-/// as `dBm = count / 2 - 160` (`EVID-BK4819-053`). An open squelch always
-/// draws at least one segment, so the meter is never present but empty.
-fn draw_meter(frame: &mut [u8; FRAME_BYTES], y: usize, rssi_raw: u16) {
-    let segments = (WIDTH - SLOT_TEXT_X) / METER_SEGMENT;
-    let dbm = i32::from(rssi_raw) / 2 - 160;
-    let span = METER_CEILING_DBM - METER_FLOOR_DBM;
-    let above = (dbm - METER_FLOOR_DBM).clamp(0, span);
-    let lit = usize::try_from(above).unwrap_or(0) * segments / usize::try_from(span).unwrap_or(1);
-    for segment in 0..lit.max(1) {
+/// Draws the calibrated S meter (`s_meter`): a bar of one segment per S unit
+/// and a taller one per 10 dB over S9, the reading such as `S9+20`, and the
+/// carrier in dBm at the right. An open squelch always draws at least one
+/// segment, so the meter is never present but empty.
+fn draw_meter(frame: &mut [u8; FRAME_BYTES], y: usize, rssi_raw: u16, frequency_hz: u32) {
+    let reading = SReading::from_rssi(rssi_raw, frequency_hz);
+    for segment in 0..usize::from(reading.segments().max(1)) {
         let x = SLOT_TEXT_X + segment * METER_SEGMENT;
+        let bits = if segment < 9 {
+            0b0111_1100
+        } else {
+            0b0111_1111
+        };
         for column in x..x + METER_SEGMENT - 1 {
-            draw_column(frame, column, y, 0b0001_1111);
+            draw_column(frame, column, y, bits);
         }
     }
+    draw_text(frame, METER_LABEL_X, y, &reading.label());
+    let dbm = dbm_digits(reading.dbm);
+    let used = dbm.iter().position(|byte| *byte != b' ').unwrap_or(0);
+    draw_text(frame, WIDTH - (dbm.len() - used) * 6, y, &dbm[used..]);
+}
+
+/// Renders whole dBm right-aligned in four bytes, such as `-105` or ` -93`.
+fn dbm_digits(dbm: i16) -> [u8; 4] {
+    let mut digits = *b"    ";
+    let magnitude = dbm.unsigned_abs().min(999);
+    let mut at = digits.len();
+    let mut rest = magnitude;
+    loop {
+        at -= 1;
+        digits[at] = b'0' + u8::try_from(rest % 10).unwrap_or(0);
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+    if dbm < 0 {
+        digits[at - 1] = b'-';
+    }
+    digits
 }
 
 /// Draws one character in a filled box, marking a selection.
@@ -1836,6 +1860,38 @@ mod operating_screen_tests {
         );
         assert!(lit(&weak) < lit(&middle));
         assert!(lit(&middle) < lit(&strong));
+    }
+
+    /// The meter reads in S units and dBm with the band's correction applied:
+    /// count 140 is -90 dBm at the chip, -110 dBm at 2 m, which is S6.
+    #[test]
+    fn the_meter_shows_the_calibrated_s_reading_and_dbm() {
+        use super::{draw_text, METER_LABEL_X, SLOT_A_Y, WIDTH};
+
+        let shows = |frame: &[u8; FRAME_BYTES], x: usize, text: &[u8]| {
+            let mut drawn = *frame;
+            draw_text(&mut drawn, x, SLOT_A_Y + 18, text);
+            drawn == *frame
+        };
+        let frame = |meter| {
+            let mut frame = [0_u8; FRAME_BYTES];
+            render_operating_screen(
+                &mut frame,
+                &with_a(SlotChannel {
+                    meter: Some(meter),
+                    ..CHANNEL
+                }),
+            );
+            frame
+        };
+        let s6 = frame(140);
+        assert!(shows(&s6, METER_LABEL_X, b"S6"));
+        assert!(shows(&s6, WIDTH - 4 * 6, b"-110"));
+        assert!(!shows(&s6, METER_LABEL_X, b"S9+20"));
+        // -50 dBm at the chip is -70 dBm at 2 m, 23 dB over S9.
+        let over = frame(220);
+        assert!(shows(&over, METER_LABEL_X, b"S9+20"));
+        assert!(shows(&over, WIDTH - 3 * 6, b"-70"));
     }
 
     #[test]

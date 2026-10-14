@@ -1144,8 +1144,18 @@ lowered to the highest level within it (operator request), by nominal figures.
   other slot and 200 ms works (`EVID-K5-036`, now the default); the floor
   between them, and whether 200 ms misses short transmissions, is unmeasured
   (`RISK-008`). PMR446 slots retune through the shared receive app each time.
-- The two-slot layout and meter scale (-130 to -50 dBm) were checked only as
-  host-rendered pixels.
+- The two-slot layout and S meter were checked only as host-rendered pixels.
 - Experiment: with dual watch on, key a second radio on the other slot and on
   the selected one; check the hold, the 3 s hang, the meter, and that PTT
   during dual watch transmits on the selected slot.
+
+## RISK-043 — S meter accuracy is unmeasured
+
+- **State:** open (2026-10-14, `SMETER-065`).
+- The meter applies egzumer's per-band corrections to the chip's RSSI and
+  reads it on the IARU S scale (`EVID-SMETER-065-001`). Whether these units
+  read within a few dB of the true carrier is unknown, and AM fix gain is
+  not compensated.
+- Experiment: feed a signal generator (or a known-attenuated carrier) at
+  -93 dBm and -73 dBm on 145 and 446 MHz; expect S9 and S9+20 within one S
+  unit, and record the error per band.

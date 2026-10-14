@@ -3285,6 +3285,19 @@ the proven hardware reference.
   and the 2 W / 5 W figures are Armel's nominal ones. This source has no
   Low5, so AFIK offers none.
 
+### EVID-SMETER-065-001 — S meter band corrections and scale
+
+- **Source:** pinned `machshev/uv-k5-firmware-custom` (`7f959e8`, egzumer
+  upstream): `ui/main.c` `dBmCorrTable` (-15, -25, -20, -4, -7, -6, -1 dB)
+  added to `BK4819_GetRSSI_dBm()`, indexed by `FREQUENCY_GetBand` over the
+  lower edges 50/108/137/174/350/400/470 MHz in `frequencies.c`; the
+  spectrum view applies the same table. The S scale is IARU Region 1
+  Technical Recommendation R.1 above 30 MHz (S9 = -93 dBm, 6 dB per unit),
+  not egzumer's default S0 -130 / S9 -76.
+- **Confidence:** high that this is what the reference firmware shows; the
+  absolute accuracy of the corrections on these units is unmeasured
+  (`RISK-043`). AM fix gain is not added.
+
 ### EVID-TX059-001 — K5 TX speech level follows Armel's register state
 
 - **Observations, 2026-10-13, operator:** `AFIK-K5-7.0.0` (mic gain written)

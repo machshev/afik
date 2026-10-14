@@ -176,6 +176,15 @@ programmed TX ranges protect channel and VFO mode alike.
   save, F 9 Call, the 200 ms dwell and the change-identity wrap. The image
   format is unchanged, so the programmed configuration still loads. Not yet
   observed on the radio.
+- S meter (operator request, `SMETER-065`): the slot meter now reads the
+  carrier at the antenna, the chip's `count / 2 - 160` plus egzumer's
+  per-band correction (`EVID-SMETER-065-001`), on the IARU Region 1 VHF/UHF
+  scale: one segment per S unit (S9 = -93 dBm, 6 dB each), a taller one per
+  10 dB over S9 up to +60, then `S7` or `S9+20` and the dBm. Accuracy is
+  unmeasured (`RISK-043`). Gate: `cargo fmt --all --check` clean, `cargo
+  clippy --workspace --all-targets -- -D warnings` clean, `cargo test
+  --workspace` 743 passed 0 failed, `tool/build-k5.sh --release` (flash end
+  `0x0000e6b4`) and `tool/build-k1.sh --release` pass. Not flashed.
 - Next (step 5, hardware): with the 200 ms dwell; F 2 and F 3 on the keypad; put A
   and B in different banks; dual watch on, key a second radio on B and check
   the hold, hang, meter and that PTT goes out on A (`RISK-041`); power-cycle

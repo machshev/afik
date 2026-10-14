@@ -17,6 +17,7 @@ pub mod operator_shell;
 pub mod power_save;
 pub mod ptt;
 pub mod receive_app;
+pub mod s_meter;
 pub mod serial;
 pub mod serial_control;
 pub mod transmit;
