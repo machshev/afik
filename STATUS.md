@@ -94,13 +94,18 @@ programmed TX ranges protect channel and VFO mode alike.
   (`RISK-040`). Then the K1's NOR erase plan; then CTCSS/DCS.
 
 **`DUPLEX-069` is active alongside** (2026-10-16, operator request,
-`ADR-108`): receive-only duplex channels. Step 1: `ChannelFlags::
-RECEIVE_ONLY_DUPLEX` (bit 5, image format unchanged) needs two frequencies
-and no broadcast; the radio's TX request carries `receive_only` from the
-channel and `radio-tx-policy` refuses it (`TxDenied::ReceiveOnly`). Gate:
-`cargo fmt --all --check` clean, `cargo clippy --workspace --all-targets --
--D warnings` clean, `cargo test --workspace` 838 passed 0 failed. Next:
-the firmware listens to both sides in turn.
+`ADR-108`): a duplex memory channel the programmed TX ranges refuse is
+heard on both sides. The first try, a receive-only flag, was reverted on
+the operator's correction. Step 2: `TxPolicy::may_transmit`; dual watch
+visits each slot's transmit side when its channel listens both, holding on
+a busy side, with or without slot dual watch; the slot shows `DX` for its
+power and the transmit frequency while that side talks. Adding the Marine
+VHF range makes marine duplex channels transmit instead. Gate: `cargo fmt
+--all --check` clean, `cargo clippy --workspace --all-targets -- -D
+warnings` clean, `cargo test --workspace` 840 passed 0 failed,
+`tool/build-k5.sh --release` (flash end `0x0000e83c`) and
+`tool/build-k1.sh --release` pass. Not flashed. Next: bump the version,
+flash the K5 and listen to a marine duplex channel.
 
 **`AIRPORT-068` is active alongside** (2026-10-15, operator request,
 `ADR-106`): step 1 done. The Banks tab has an Airports row: Sync fetches

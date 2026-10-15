@@ -1827,16 +1827,18 @@ meaning.
   their bandwidth. The image is unchanged: the record still carries the
   receive frequency as its transmit one.
 
-## ADR-108 — Receive-only duplex channels listen to both sides
+## ADR-108 — A duplex channel the radio may not transmit on is heard on both sides
 
 - **Date:** 2026-10-16
 - **Status:** accepted, operator request (`DUPLEX-069`).
-- A channel flag, not a modulation: bit 5 of the channel flags, so the image
-  format stays 6 and older firmware refuses such a record as reserved. The
-  record's transmit frequency is the second frequency listened to; a record
-  or plan with the flag needs two frequencies and cannot be broadcast.
-- It never transmits. The radio sets `TxRequest::receive_only` from the
-  selected channel and `radio-tx-policy` refuses it, so a range covering the
-  frequency does not matter.
-- Listening to both is the slot dual-watch timing applied to the channel's
-  two frequencies, holding on whichever side is busy.
+- No channel type or flag: a memory channel whose transmit frequency differs
+  from its receive one, and which the programmed TX ranges (after the
+  handset class switch) would not let key up, listens on both. A licensed
+  operator's range, such as the Marine VHF preset, makes the same channel
+  an ordinary transmitting one. A flag tried first (`79c9a3b`) was reverted.
+- `TxPolicy::may_transmit` answers the range, raster, bandwidth and FM
+  checks, power aside. It grants nothing; PTT is still authorised in full.
+- Dual watch visits stops, a slot and a side: the selected slot's two sides,
+  then the other slot's, a dwell each, holding on a busy one. The transmit
+  side listens with the channel's TX tone, which is what stations there
+  send.

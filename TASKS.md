@@ -3169,20 +3169,24 @@
   3. Write a bank for the operator's locator to the K5 and hear the local
      tower or ATIS.
 
-## DUPLEX-069 — Receive-only duplex channels
+## DUPLEX-069 — Duplex channels heard on both sides
 
 - **Status:** active (2026-10-16), operator request ("a new channel type RO
   duplex when active it has a special dual watch mode that listens on both
-  the RX and TX sides so we can hear both sides of the conversation";
-  `ADR-108`).
-- **Objective:** a receive-only duplex channel, such as a marine duplex
-  channel, lets the operator hear the coast station and the ship.
+  the RX and TX sides"; then "make this a generic functionality such that
+  when the TX policy disallows TX on a channel it automatically becomes a
+  RO dual watch channel"; `ADR-108`).
+- **Objective:** on a duplex channel the radio may not transmit on, such as
+  a marine duplex channel without a ship licence, the operator hears the
+  coast station and the ship.
 - **Steps (commit after each):**
-  1. `ChannelFlags::RECEIVE_ONLY_DUPLEX`, checked in records and plans;
-     `TxRequest::receive_only` and `TxDenied::ReceiveOnly`. Done (`79c9a3b`).
-  2. Firmware: while such a channel is selected the receiver alternates
-     between its two frequencies as dual watch does between slots, holding
-     on a busy side; the screen shows which side is heard.
-  3. Studio: an RO duplex channel type with no transmit side but its second
-     frequency; the marine duplex preset uses it.
-  4. Version bump, flash the K5, hear a coast station and a ship.
+  1. A receive-only duplex channel flag and TX request field (`79c9a3b`),
+     reverted on the operator's correction (`0dc7207`): the TX ranges
+     decide instead.
+  2. `TxPolicy::may_transmit`; dual watch visits a slot's transmit side when
+     its memory channel is duplex and the ranges refuse it, holding on a
+     busy side; the slot shows `DX` and the frequency talking. Done
+     (`3216f2d`).
+  3. Version bump, flash the K5, hear a coast station and a ship on a
+     marine duplex channel; add the Marine VHF range and check it keys up
+     instead.
