@@ -148,6 +148,13 @@ programmed as ordinary banks.
   100 km. Layout not checked on screen. Gate: `cargo fmt --all --check`
   clean, workspace clippy `-D warnings` clean, `cargo test --workspace` 810
   passed 0 failed.
+- Change (operator request): no radius cut-off. At JO02eh the saved 50 km
+  radius dropped Tacolneston (122 kW at 57 km: Classic FM 101.5, Radio 4
+  94.1) for 130 W relays. Every transmitter is now ranked by ERP over
+  distance squared, times (horizon/distance)^4 past the 4/3-earth radio
+  horizon from Ofcom's site plus aerial height, and the bank takes the
+  strongest N (`1c467ff`). Gate: `cargo fmt --all --check` clean, workspace
+  clippy `-D warnings` clean, `cargo test --workspace` 816 passed 0 failed.
 - Fix (operator report): the handset squelch list never took a new level
   on a channel off the common PMR446 path or in VFO mode, because staging
   required the shared receive app. `stage_squelch` now stages on the banked
