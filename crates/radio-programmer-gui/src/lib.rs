@@ -18,6 +18,7 @@ pub mod projects;
 pub mod repeaters;
 pub mod satellites;
 pub mod session;
+pub mod stations;
 
 /// Command-line help for the native editor binary.
 pub const HELP: &str = "AFIK Studio: native channel, configuration, and flashing editor\n\

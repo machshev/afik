@@ -165,7 +165,7 @@ fn ctcss(hz: f64) -> Option<u16> {
 }
 
 /// Upper-case printable ASCII no longer than `max`, or none if nothing is left.
-fn sanitise(name: &str, max: usize) -> Option<String> {
+pub(crate) fn sanitise(name: &str, max: usize) -> Option<String> {
     let mut clean: String = name
         .trim()
         .chars()
@@ -436,8 +436,9 @@ impl RepeaterArea {
     }
 }
 
-/// Fetches one URL over HTTPS.
-fn fetch(url: &str) -> Result<String, String> {
+/// Fetches one URL over HTTPS. Text that is not UTF-8 is replaced rather
+/// than refused, so a stray byte in a list does not stop a sync.
+pub(crate) fn fetch(url: &str) -> Result<String, String> {
     let agent = ureq::AgentBuilder::new()
         .timeout(TIMEOUT)
         .user_agent(concat!("afik-studio/", env!("CARGO_PKG_VERSION")))
@@ -446,13 +447,13 @@ fn fetch(url: &str) -> Result<String, String> {
         .get(url)
         .call()
         .map_err(|error| format!("{url}: {error}"))?;
-    let mut body = String::new();
+    let mut body = Vec::new();
     response
         .into_reader()
         .take(MAX_RESPONSE_BYTES)
-        .read_to_string(&mut body)
+        .read_to_end(&mut body)
         .map_err(|error| format!("{url}: {error}"))?;
-    Ok(body)
+    Ok(String::from_utf8_lossy(&body).into_owned())
 }
 
 /// A sync running on a worker thread, so the window keeps drawing.

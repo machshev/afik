@@ -32,6 +32,7 @@ use crate::{
     repeaters::{self, RepeaterArea, RepeaterCache, RepeaterList},
     satellites::{SatelliteCache, SatelliteList, SyncJob},
     session::{DeviceJob, DeviceOutcome, DeviceSession, JobKind},
+    stations::{self, StationArea, StationCache, StationList},
     DeviceSelector, Options,
 };
 
@@ -140,6 +141,15 @@ pub struct StudioApp {
     /// they are remembered in.
     repeater_area: RepeaterArea,
     repeater_area_file: Option<PathBuf>,
+    /// Where Ofcom's FM transmitter list is cached, and what was last read.
+    station_cache: StationCache,
+    stations: Option<StationList>,
+    /// An Ofcom fetch running on a worker.
+    station_sync: Option<stations::SyncJob>,
+    /// The radius and count stations are added for, at the repeaters'
+    /// locator, and the state file they are remembered in.
+    station_area: StationArea,
+    station_area_file: Option<PathBuf>,
 }
 
 impl StudioApp {
@@ -152,7 +162,170 @@ impl StudioApp {
         if let Some(file) = &app.repeater_area_file {
             app.repeater_area = RepeaterArea::load(file);
         }
+        app.use_station_cache(StationCache::open());
+        app.station_area_file = StationArea::file();
+        if let Some(file) = &app.station_area_file {
+            app.station_area = StationArea::load(file);
+        }
         app
+    }
+
+    /// Reads the FM station list from `cache`, which a sync then writes.
+    ///
+    /// Reading never fetches: the network is used only when Sync is pressed.
+    pub fn use_station_cache(&mut self, cache: StationCache) {
+        self.stations = match cache.load() {
+            Ok(list) => list,
+            Err(error) => {
+                log::warn!("reading the station cache: {error}");
+                None
+            }
+        };
+        self.station_cache = cache;
+    }
+
+    /// Starts fetching the FM transmitter list from Ofcom.
+    fn sync_stations(&mut self) {
+        if self.station_sync.is_some() {
+            return;
+        }
+        if self.station_cache.dir().is_none() {
+            self.refuse("Cannot sync stations: no XDG cache directory or HOME is set.");
+            return;
+        }
+        log::info!("syncing FM stations from Ofcom");
+        "Syncing FM stations from Ofcom...".clone_into(&mut self.status);
+        self.station_sync = Some(stations::SyncJob::start(self.station_cache.clone()));
+    }
+
+    /// Takes in a finished station sync.
+    fn poll_station_sync(&mut self) {
+        let Some(outcome) = self.station_sync.as_ref().and_then(stations::SyncJob::poll) else {
+            return;
+        };
+        self.station_sync = None;
+        match outcome {
+            Ok(list) => {
+                self.status = format!("Synced {} FM transmitters from Ofcom.", list.stations.len());
+                log::info!("{}", self.status);
+                self.stations = Some(list);
+            }
+            // The cache is untouched, so the previous list still applies.
+            Err(error) => self.fail("syncing stations", format!("Station sync failed: {error}")),
+        }
+    }
+
+    /// Builds the station bank the area would add, and the project it would
+    /// make, as [`Self::repeater_preview`] does.
+    fn station_preview(&self) -> Result<AreaPreview, String> {
+        let list = self
+            .stations
+            .as_ref()
+            .ok_or("sync the FM station list from Ofcom first")?;
+        let locator = &self.repeater_area.locator;
+        let mut near = stations::nearby(&list.stations, locator, self.station_area.radius_km)?;
+        let in_range = near.len();
+        near.truncate(usize::from(self.station_area.max_channels));
+        let (project, bank_bytes) = self.with_bank(stations::station_bank(locator, &near));
+        Ok(AreaPreview {
+            in_range,
+            taken: near.len(),
+            furthest_km: near.iter().map(|(_, km)| *km).fold(0.0, f64::max),
+            bank_bytes,
+            project,
+        })
+    }
+
+    /// Describes the station list, what the area would add, and its cost.
+    fn station_source(&self) -> String {
+        if self.station_sync.is_some() {
+            return "Syncing...".to_owned();
+        }
+        let Some(list) = &self.stations else {
+            return "Not synced.".to_owned();
+        };
+        let synced = format!(
+            "{} transmitters from Ofcom, synced {}.",
+            list.stations.len(),
+            age(list.synced)
+        );
+        let Ok(preview) = self.station_preview() else {
+            return synced;
+        };
+        let radius = self.station_area.radius_km;
+        let taking = if preview.taken < preview.in_range {
+            format!(
+                "{} stations within {radius} km, strongest {} taken",
+                preview.in_range, preview.taken
+            )
+        } else {
+            format!("{} stations within {radius} km", preview.in_range)
+        };
+        format!("{taking}{}. {synced}", cost(&preview))
+    }
+
+    /// Adds a bank of the strongest stations near the locator.
+    fn add_stations(&mut self) {
+        let preview = match self.station_preview() {
+            Ok(preview) => preview,
+            Err(error) => {
+                self.refuse(&format!("Cannot add stations: {error}."));
+                return;
+            }
+        };
+        let locator = self.repeater_area.locator.trim().to_ascii_uppercase();
+        let area = self.station_area.clone();
+        if preview.taken == 0 {
+            self.status = format!("No FM stations within {} km of {locator}.", area.radius_km);
+            return;
+        }
+        if preview.project.banks.len() > usize::from(MAX_BANKS) {
+            self.status =
+                format!("A radio holds {MAX_BANKS} banks and the project already has them.");
+            return;
+        }
+        if too_big(&preview.project) {
+            self.refuse(&format!(
+                "{} stations would not fit the radio; take fewer.",
+                preview.taken
+            ));
+            return;
+        }
+        self.project = preview.project;
+        self.status = format!(
+            "Added {} FM stations within {} km of {locator}, in frequency order (furthest \
+             transmitter {:.0} km).",
+            preview.taken, area.radius_km, preview.furthest_km
+        );
+        if let Some(file) = &self.station_area_file {
+            if let Err(error) = area.save(file) {
+                log::warn!("could not remember the station area: {error}");
+            }
+        }
+    }
+
+    /// The project with `bank` replacing one of the same name, else after
+    /// the rest, and the bytes the bank alone adds to a radio image.
+    fn with_bank(&self, bank: BankDraft) -> (ProjectModel, Option<usize>) {
+        let mut project = self.project.clone();
+        if let Some(existing) = project.banks.iter().position(|b| b.name == bank.name) {
+            project.banks[existing] = bank.clone();
+        } else {
+            project.banks.push(bank.clone());
+        }
+        // What the bank alone costs: its image less an empty project's.
+        let bank_only = ProjectModel {
+            banks: vec![bank],
+            ..ProjectModel::new()
+        };
+        let bank_bytes = match (
+            bank_only.to_radio_image(),
+            ProjectModel::new().to_radio_image(),
+        ) {
+            (Ok(with), Ok(without)) => Some(with.len().saturating_sub(without.len())),
+            _ => None,
+        };
+        (project, bank_bytes)
     }
 
     /// Reads the repeater list from `cache`, which a sync then writes.
@@ -212,7 +385,7 @@ impl StudioApp {
 
     /// Builds the repeater bank the area would add, and the project it would
     /// make: the bank replaces one of the same name, else follows the rest.
-    fn repeater_preview(&self) -> Result<RepeaterPreview, String> {
+    fn repeater_preview(&self) -> Result<AreaPreview, String> {
         let list = self
             .repeaters
             .as_ref()
@@ -221,26 +394,8 @@ impl StudioApp {
         let mut near = repeaters::nearby(&list.repeaters, &area.locator, area.radius_km)?;
         let in_range = near.len();
         near.truncate(usize::from(area.max_channels));
-        let bank = repeaters::repeater_bank(&area.locator, &near);
-        let mut project = self.project.clone();
-        if let Some(existing) = project.banks.iter().position(|b| b.name == bank.name) {
-            project.banks[existing] = bank.clone();
-        } else {
-            project.banks.push(bank.clone());
-        }
-        // What the bank alone costs: its image less an empty project's.
-        let bank_only = ProjectModel {
-            banks: vec![bank],
-            ..ProjectModel::new()
-        };
-        let bank_bytes = match (
-            bank_only.to_radio_image(),
-            ProjectModel::new().to_radio_image(),
-        ) {
-            (Ok(with), Ok(without)) => Some(with.len().saturating_sub(without.len())),
-            _ => None,
-        };
-        Ok(RepeaterPreview {
+        let (project, bank_bytes) = self.with_bank(repeaters::repeater_bank(&area.locator, &near));
+        Ok(AreaPreview {
             in_range,
             taken: near.len(),
             furthest_km: near.last().map_or(0.0, |(_, km)| *km),
@@ -274,27 +429,7 @@ impl StudioApp {
         } else {
             format!("{} within {radius} km", preview.in_range)
         };
-        let bank = preview.bank_bytes.map_or_else(
-            || ", bank too big for the radio".to_owned(),
-            |bytes| {
-                format!(
-                    ", bank {}",
-                    memory_percent((bytes * 1_000).div_ceil(RADIO_IMAGE_BYTES))
-                )
-            },
-        );
-        let total = match preview.project.to_radio_image() {
-            Ok(image) => format!(
-                ", project {} after adding",
-                memory_percent((image.len() * 1_000).div_ceil(RADIO_IMAGE_BYTES))
-            ),
-            Err(_) if too_big(&preview.project) => {
-                ", project too big for the radio after adding".to_owned()
-            }
-            // Another bank does not validate; the usage bar already says so.
-            Err(_) => String::new(),
-        };
-        format!("{taking}{bank}{total}. {synced}")
+        format!("{taking}{}. {synced}", cost(&preview))
     }
 
     /// Adds a bank of the repeaters near the locator, nearest first.
@@ -435,6 +570,11 @@ impl StudioApp {
             repeater_sync: None,
             repeater_area: RepeaterArea::default(),
             repeater_area_file: None,
+            station_cache: StationCache::none(),
+            stations: None,
+            station_sync: None,
+            station_area: StationArea::default(),
+            station_area_file: None,
         };
         if let Some(baud) = options.baud {
             app.chooser.baud = baud;
@@ -863,17 +1003,42 @@ impl StudioApp {
     }
 }
 
-/// The repeater bank an area would add, and what it would cost.
-struct RepeaterPreview {
-    /// Repeaters within the radius.
+/// The repeater or station bank an area would add, and what it would cost.
+struct AreaPreview {
+    /// Repeaters or stations within the radius.
     in_range: usize,
-    /// How many of them, nearest first, the bank takes.
+    /// How many of them, nearest or strongest first, the bank takes.
     taken: usize,
     furthest_km: f64,
     /// Bytes the bank adds to a radio image, when it compiles.
     bank_bytes: Option<usize>,
     /// The project with the bank added or replaced.
     project: ProjectModel,
+}
+
+/// What a previewed bank costs, and the project's use after adding it.
+fn cost(preview: &AreaPreview) -> String {
+    let bank = preview.bank_bytes.map_or_else(
+        || ", bank too big for the radio".to_owned(),
+        |bytes| {
+            format!(
+                ", bank {}",
+                memory_percent((bytes * 1_000).div_ceil(RADIO_IMAGE_BYTES))
+            )
+        },
+    );
+    let total = match preview.project.to_radio_image() {
+        Ok(image) => format!(
+            ", project {} after adding",
+            memory_percent((image.len() * 1_000).div_ceil(RADIO_IMAGE_BYTES))
+        ),
+        Err(_) if too_big(&preview.project) => {
+            ", project too big for the radio after adding".to_owned()
+        }
+        // Another bank does not validate; the usage bar already says so.
+        Err(_) => String::new(),
+    };
+    format!("{bank}{total}")
 }
 
 /// Whether a project validates but does not fit a radio's image, which is
@@ -913,7 +1078,12 @@ impl eframe::App for StudioApp {
         self.poll_job();
         self.poll_satellite_sync();
         self.poll_repeater_sync();
-        if self.job.is_some() || self.satellite_sync.is_some() || self.repeater_sync.is_some() {
+        self.poll_station_sync();
+        if self.job.is_some()
+            || self.satellite_sync.is_some()
+            || self.repeater_sync.is_some()
+            || self.station_sync.is_some()
+        {
             context.request_repaint_after(std::time::Duration::from_millis(50));
         }
         // The Flash tab's automatic flow only runs while it is shown, so a
@@ -1099,7 +1269,65 @@ impl StudioApp {
             }
             ui.label(self.repeater_source());
         });
+        self.station_bar(ui);
         ui.separator();
+    }
+
+    /// The row that adds the UK FM stations near the repeaters' locator.
+    fn station_bar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label("UK FM stations near");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.repeater_area.locator)
+                    .hint_text("IO91WM")
+                    .char_limit(8)
+                    .desired_width(70.0),
+            )
+            .on_hover_text("Your Maidenhead locator, shared with the repeaters");
+            ui.label("within");
+            ComboBox::from_id_salt("station-radius")
+                .selected_text(format!("{} km", self.station_area.radius_km))
+                .show_ui(ui, |ui| {
+                    for km in stations::RADII_KM {
+                        ui.selectable_value(
+                            &mut self.station_area.radius_km,
+                            km,
+                            format!("{km} km"),
+                        );
+                    }
+                });
+            ui.label("strongest");
+            ui.add(
+                egui::DragValue::new(&mut self.station_area.max_channels)
+                    .range(1..=stations::MAX_CHANNELS_LIMIT),
+            )
+            .on_hover_text("How many stations the bank takes, strongest signal first");
+            if ui
+                .button("Add")
+                .on_hover_text(
+                    "Adds the stations with the strongest estimated signal here (transmitter \
+                     power over distance squared) as one broadcast bank in frequency order, \
+                     one channel per station, replacing one for the same locator",
+                )
+                .clicked()
+            {
+                self.add_stations();
+            }
+            if ui
+                .add_enabled(
+                    self.station_sync.is_none(),
+                    egui::Button::new("Sync from Ofcom"),
+                )
+                .on_hover_text(
+                    "Fetches Ofcom's list of FM broadcast transmitters and caches it; the \
+                     studio never fetches on its own",
+                )
+                .clicked()
+            {
+                self.sync_stations();
+            }
+            ui.label(self.station_source());
+        });
     }
 
     fn banks_tab(&mut self, ui: &mut egui::Ui) {
@@ -2985,6 +3213,73 @@ mod tests {
         app.add_repeaters();
         assert_eq!(app.project.banks.len(), before, "refused, not added");
         assert!(app.status.contains("would not fit"), "{}", app.status);
+    }
+
+    #[test]
+    fn stations_near_the_locator_are_added_strongest_first_once_synced() {
+        use crate::stations::{Station, StationArea, StationList};
+        use radio_domain::Modulation;
+
+        let station = |name: &str, mhz: u32, kw: f64, latitude: f64| Station {
+            name: name.to_owned(),
+            station: name.to_owned(),
+            site: String::new(),
+            frequency_hz: mhz * 100_000,
+            erp_watts: kw * 1_000.0,
+            latitude,
+            longitude: -0.12,
+        };
+        let mut app = simulated("stations");
+        assert!(app.stations.is_none(), "tests never read the real cache");
+        assert_eq!(app.station_source(), "Not synced.");
+        let banks = app.project.banks.len();
+        app.add_stations();
+        assert_eq!(app.project.banks.len(), banks, "nothing without a sync");
+
+        app.stations = Some(StationList {
+            stations: vec![
+                station("CLASSIC", 1_009, 125.0, 51.9),
+                station("LOCAL", 1_062, 0.05, 51.52),
+                station("FAR AWAY", 943, 125.0, 54.0),
+            ],
+            synced: std::time::SystemTime::now(),
+        });
+        app.repeater_area.locator = "io91wm".to_owned();
+        app.station_area = StationArea {
+            radius_km: 100,
+            max_channels: 30,
+        };
+        let source = app.station_source();
+        assert!(
+            source.starts_with("2 stations within 100 km, bank "),
+            "{source}"
+        );
+
+        // The limit takes the strongest: 125 kW at 42 km beats 50 W nearby.
+        app.station_area.max_channels = 1;
+        app.add_stations();
+        let bank = app.project.banks.last().unwrap();
+        assert_eq!(bank.name, "FM IO91WM");
+        let names: Vec<_> = bank.channels.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["CLASSIC"]);
+
+        // Again with room for both: the same bank, now in frequency order.
+        app.station_area.max_channels = 30;
+        app.add_stations();
+        assert_eq!(app.project.banks.len(), banks + 1);
+        let bank = app.project.banks.last().unwrap();
+        let names: Vec<_> = bank.channels.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["CLASSIC", "LOCAL"]);
+        assert!(bank
+            .channels
+            .iter()
+            .all(|c| c.modulation == Modulation::Broadcast));
+        assert!(app.project.validate().is_ok());
+        assert!(
+            app.status.starts_with("Added 2 FM stations"),
+            "{}",
+            app.status
+        );
     }
 
     #[test]
