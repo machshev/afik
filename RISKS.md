@@ -1208,5 +1208,6 @@ lowered to the highest level within it (operator request), by nominal figures.
 - 2026-10-15, `7.0.30`: the K5 opened GB3EL (heard on another radio), so
   TX tone and split work; its toned output then went silent on the untoned
   channel while the tone scan `REG_51` was in force. `7.0.31` drops the scan
-  from ordinary receive; hearing GB3EL on it confirms the cause.
+  from ordinary receive; it was still silent. `7.0.32` sets RX enable on
+  every receive setup, which no earlier AFIK image did.
 

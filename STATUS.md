@@ -446,6 +446,19 @@ key up and check the kerchunk and other users are heard (`RISK-046`); also
 check WFM audio, since `BCFM-066`'s broadcast fix (`67ff234`) is still
 unobserved on hardware.
 
+Fix (operator report, `7.0.31`): still silent on GB3EL, though the K5 heard
+the Armel radio on 430.8375 simplex, with or without 156.7 Hz, and dual
+watch off made no difference. Receive setup never set RX enable
+(`REG_33` `0x40`, `BK4819_GPIO0_PIN28_RX_ENABLE`), which Armel's
+`RADIO_SetupRegisters` sets after the filter path every time; AFIK only
+cleared it for TX. It is now set on every receive setup (`5ee8395`). Gate:
+`cargo fmt --all --check` clean, workspace clippy `-D warnings` clean,
+`cargo test --workspace` 818 passed 0 failed 2 ignored, K5 (image end
+`0x0000e8bc`) and K1 (72020 bytes) release images build. `7.0.32`
+(`10d3a85`) flashed to the K5 (bootloader `2.00.06`, CRC-32 `4607267d`,
+240/240 pages acknowledged, not read back). Next: GB3EL kerchunk and tail,
+weak-signal sensitivity and meter against `7.0.31`, WFM audio.
+
 **`TXK5-059` was paused** (2026-10-14) for `TXRANGE-062`; `TXK1-060` was started alongside.
 
 - K5 `7.0.2` and K1 `6.4T` are flashed. Both key up on PMR446 (`EVID-TX058-001`);
