@@ -17,11 +17,14 @@
 //! [`ChipProfile`]: crate::ChipProfile
 //! - [`Bk4819::enable_pa`] then [`Bk4819::set_pa_bias`]: filter path, PA
 //!   enable, and bias, with the source's 5 ms between them left to the caller.
+//! - [`Bk4819::set_transmit_tone`]: the closing `CodeType` switch of
+//!   `RADIO_SetTxParameters`: `BK4819_ExitSubAu`, `BK4819_SetCTCSSFrequency`
+//!   or `BK4819_SetCDCSSCodeWord`, the same writes receive uses.
 //!
 //! The caller owns the source's delays: 10 ms after chip TX, 5 ms after PA
-//! enable, and 10 ms after bias. Tones are not supported; sub-audio TX is off.
+//! enable, and 10 ms after bias.
 
-use radio_domain::{Bandwidth, Frequency, Modulation};
+use radio_domain::{Bandwidth, Frequency, Modulation, Tone};
 use radio_tx_policy::{TxAuthorisation, TxRequest};
 
 use crate::receive::{
@@ -175,7 +178,7 @@ impl<B: RegisterBus> Bk4819<B> {
         self.write(REG_GPIO_OUT, self.gpio_out)
     }
 
-    /// Applies PA bias and disables TX sub-audio, after PA enable.
+    /// Applies PA bias, after PA enable.
     pub fn set_pa_bias(
         &mut self,
         request: &TxRequest,
@@ -183,8 +186,22 @@ impl<B: RegisterBus> Bk4819<B> {
         bias: u8,
     ) -> Result<(), DriverError<B::Error>> {
         let frequency = self.check_transmitting(request, authorisation)?;
-        self.write(REG_PA_CONTROL, pa_control_word(bias, frequency.as_hz()))?;
-        self.write(REG_SUB_AUDIO_CONTROL, 0)
+        self.write(REG_PA_CONTROL, pa_control_word(bias, frequency.as_hz()))
+    }
+
+    /// Sends `tone` with the transmission, after the bias has settled: no
+    /// tone switches sub-audio off (`BK4819_ExitSubAu`, `REG_51 = 0`).
+    pub fn set_transmit_tone(
+        &mut self,
+        request: &TxRequest,
+        authorisation: &TxAuthorisation<'_>,
+        tone: Tone,
+    ) -> Result<(), DriverError<B::Error>> {
+        self.check_transmitting(request, authorisation)?;
+        match tone {
+            Tone::None => self.write(REG_SUB_AUDIO_CONTROL, 0),
+            tone => self.configure_sub_audio(tone),
+        }
     }
 
     fn check_transmitting(
@@ -224,7 +241,7 @@ mod tests {
     use crate::tests_support::{FakeBus, Operation};
     use crate::tx_fixture::{channel, request};
     use crate::{Bk4819, DriverError, DriverState, RegisterAddress, GPIO_OUT_DEFAULT};
-    use radio_domain::TxClass;
+    use radio_domain::{Tone, TxClass};
     use radio_tx_policy::{TxPolicy, TxRequest};
     use std::vec::Vec;
 
@@ -309,6 +326,9 @@ mod tests {
 
         radio.enable_pa(&request, &token).unwrap();
         radio.set_pa_bias(&request, &token, 0x0B).unwrap();
+        radio
+            .set_transmit_tone(&request, &token, Tone::None)
+            .unwrap();
         let uhf_lna = 0x40 >> 3;
         let path = GPIO_OUT_DEFAULT | uhf_lna;
         assert_eq!(
@@ -366,6 +386,63 @@ mod tests {
             writes(&radio).last().unwrap().1 & (GPIO_PA_ENABLE | 0x01),
             0
         );
+    }
+
+    #[test]
+    fn tones_use_each_chips_own_sub_audio_words_after_the_bias() {
+        let policy = policy();
+        let request = pmr();
+        let token = policy.authorise(&request).unwrap();
+        // (profile, CTCSS REG_51, CDCSS REG_51) from Armel K5 `bk4819.c` and
+        // K1 `bk4829.c`, as receive uses them.
+        for (profile, ctcss, cdcss) in [
+            (crate::BK4819_PROFILE, 0x904A, 0x8033),
+            (crate::BK4829_PROFILE, 0x9040, 0xA033),
+        ] {
+            let mut radio = Bk4819::with_profile(FakeBus::new(None), profile);
+            radio.recover_to_standby().unwrap();
+            radio.prepare_transmit(&request, &token).unwrap();
+            radio.enable_transmit(&request, &token).unwrap();
+            radio.enable_pa(&request, &token).unwrap();
+            radio.set_pa_bias(&request, &token, 0x0B).unwrap();
+            radio.bus_mut().operations.clear();
+
+            // 88.5 Hz: (885 * 206488 + 50000) / 100000 = 1827.
+            radio
+                .set_transmit_tone(&request, &token, Tone::Ctcss(885))
+                .unwrap();
+            assert_eq!(writes(&radio), [(0x51, ctcss), (0x07, 1827)]);
+            radio.bus_mut().operations.clear();
+
+            // DCS 023N is the Golay word 0x763813, sent low half first.
+            radio
+                .set_transmit_tone(
+                    &request,
+                    &token,
+                    Tone::Dcs {
+                        code: 23,
+                        inverted: false,
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                writes(&radio),
+                [(0x51, cdcss), (0x07, 2775), (0x08, 0x0813), (0x08, 0x8763)]
+            );
+        }
+    }
+
+    #[test]
+    fn a_tone_needs_chip_tx_and_matching_authority() {
+        let policy = policy();
+        let request = pmr();
+        let token = policy.authorise(&request).unwrap();
+        let mut radio = receiving();
+        assert!(matches!(
+            radio.set_transmit_tone(&request, &token, Tone::Ctcss(885)),
+            Err(DriverError::InvalidState(DriverState::Standby))
+        ));
+        assert!(radio.bus().operations.is_empty());
     }
 
     #[test]

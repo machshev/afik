@@ -796,7 +796,7 @@ impl<B: RegisterBus> Bk4819<B> {
         )
     }
 
-    fn configure_sub_audio(&mut self, tone: Tone) -> Result<(), DriverError<B::Error>> {
+    pub(crate) fn configure_sub_audio(&mut self, tone: Tone) -> Result<(), DriverError<B::Error>> {
         match tone {
             Tone::None => {
                 let disabled = self.profile.sub_audio_ctcss;
