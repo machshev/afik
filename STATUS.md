@@ -543,7 +543,8 @@ tune, sample, monitor and stage squelch through the banked controller
 (the removed adapter's tests went with it), `tool/test-k5-mem.sh` passes,
 `tool/build-k5.sh --release` (image end `0x0000e0d4`, 3,884 bytes spare),
 `tool/verify-k5-image.sh` and `tool/build-k1.sh --release` pass. `7.0.37`
-(`ad5a0b3`, includes `7.0.36`) is built, not flashed. Next: flash; check
+(`ad5a0b3`, includes `7.0.36`) flashed to the K5 (bootloader `2.00.06`,
+CRC-32 `f3dd2cea`, 240/240 pages acknowledged, not read back). Next: check
 PMR446 receive, SQL and monitor there, side key 1, VFO STEP, the F 4 catch
 to VFO with tone.
 
