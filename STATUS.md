@@ -206,7 +206,15 @@ programmed as ordinary banks.
   and scans; ordinary receive unchanged.
 - K1: `7.0.35` (`43e3122`, built in a clean worktree off HEAD) flashed
   (bootloader `7.03.01`, CRC-32 `82e05d57`, 295/295 pages acknowledged, not
-  read back, 75,412 bytes); broadcast not yet observed on the K1.
+  read back, 75,412 bytes). Observed: no broadcast audio, and PMR446
+  squelch open on S8 noise (`TXK5-059` is taking the squelch).
+- Fix: the K1 reference's `FM_Start` selects the VHF LNA, through which its
+  BK1080 hears the antenna; we slept the BK4819 on the last channel's path
+  (UHF after PMR446) or none after power-on. `tune_broadcast` now brings the
+  BK4819 up if needed, selects the station's path and sleeps it
+  (`98a8fec`, new test covers power-on and after PMR446). Gate: fmt clean,
+  workspace clippy `-D warnings` clean, `cargo test --workspace` 822 passed
+  0 failed. Not yet flashed.
 - Change (operator request, studio): broadcast channels, shared broadcast
   banks and broadcast plans no longer show power, bandwidth, TX frequency
   or offset, tones, or busy lockout/reverse/compander; the studio keeps
