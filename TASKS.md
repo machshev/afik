@@ -3145,3 +3145,18 @@
      the gridsquare"): the studio adds the UK FM stations near the locator
      from Ofcom's VHF transmitter list, synced and cached like the ETCC
      repeaters (`ADR-104`). Done (`c909445`).
+
+## AIRPORT-068 — Airport frequencies near the locator
+
+- **Status:** active (2026-10-15), operator request ("Airband presets are
+  not that helpful... find an online dataset containing the frequencies for
+  airports that we could filter by location", "use the existing gridsquare
+  locator"; `ADR-106`).
+- **Objective:** the studio adds the airband frequencies of the airports
+  near the operator's locator as one receive-only AM bank.
+- **Steps (commit after each):**
+  1. Sync and cache OurAirports' airport and frequency lists; parse,
+     join, convert channel names to carriers, choose by radius from the
+     shared locator, and add the bank from the studio. Done (`ad4a194`).
+  2. Write a bank for the operator's locator to the K5 and hear the local
+     tower or ATIS.

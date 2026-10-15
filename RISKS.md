@@ -1223,3 +1223,11 @@ lowered to the highest level within it (operator request), by nominal figures.
   hears GB3EL's kerchunk and tail (`EVID-RX-067-001`). Still open: tone
   deviation, tone squelch and DCS on air.
 
+## RISK-047 — Airport frequencies are volunteer data
+
+- **State:** open (2026-10-15, `AIRPORT-068`).
+- OurAirports is crowd-maintained; a listed frequency may be stale, or a
+  navaid or company frequency filed under an airport. The studio says so
+  when it adds a bank. Receive only, so a wrong entry costs a silent channel.
+- Experiment: compare the bank for a familiar locator against the national
+  AIP and listen to each channel.

@@ -1797,3 +1797,21 @@ meaning.
 - Both radios have a BK1080 (K5: shared EEPROM I2C on PA10/PA11, enable PB15
   active low; K1: its own I2C on PF5/PF6, no enable), driven from the Armel
   sources' register table.
+
+## ADR-106 — The studio adds airport frequencies near a locator from OurAirports
+
+- **Date:** 2026-10-15
+- **Status:** accepted, operator request (`AIRPORT-068`).
+- Source: OurAirports' `airports.csv` and `airport-frequencies.csv`
+  (public domain, worldwide, volunteer-maintained) from its GitHub Pages
+  mirror, synced on request and cached raw in
+  `$XDG_CACHE_HOME/afik/ourairports` as `ADR-104` does. OpenAIP needs a key
+  and is non-commercial; FAA NASR is US only.
+- Lists give channel names, so a remainder of 5, 10 or 15 kHz in a 25 kHz
+  block is the 8.33 kHz carrier at +0, +8.33 or +16.67 kHz (to 10 Hz), and
+  20 is a two-decimal 25 kHz cut (`123.07` is 123.075). Off-grid values
+  (about 30 of 27 000) and anything outside 118–136.975 MHz are dropped.
+- Location is the repeaters' shared locator; airports not closed within an
+  operator-chosen radius, nearest first, a shared frequency kept once for the
+  nearest airport. Channels are simplex AM narrow; no TX range covers the
+  airband, so they never transmit.

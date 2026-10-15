@@ -93,6 +93,18 @@ programmed TX ranges protect channel and VFO mode alike.
   refused. On the K1, repeat in VFO mode. Measure Mid/High on a dummy load
   (`RISK-040`). Then the K1's NOR erase plan; then CTCSS/DCS.
 
+**`AIRPORT-068` is active alongside** (2026-10-15, operator request,
+`ADR-106`): step 1 done. The Banks tab has an Airports row: Sync fetches
+OurAirports' airport and frequency lists into the XDG cache; Add takes the
+airband frequencies of the airports within the chosen radius of the shared
+locator, nearest first, as one receive-only AM bank `AIR <locator>`. Against
+the live data JO02BF gives 33 frequencies in 50 km (Cambridge, Duxford,
+Wyton...), IO83VJ 13, IO91WM 64. A fetch over the 64 MiB bound now fails
+rather than caching a cut-off list. Gate: `cargo fmt --all --check` clean,
+`cargo clippy --workspace --all-targets -- -D warnings` clean, `cargo test
+--workspace` 832 passed 0 failed. Next: write a bank for the operator's
+locator to the K5 and listen to the local tower or ATIS.
+
 **`BCFM-066` is active alongside** (2026-10-15, operator request,
 `ADR-105`): FM broadcast on K5 and K1 through their BK1080, stations
 programmed as ordinary banks.
