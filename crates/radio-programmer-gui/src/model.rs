@@ -206,7 +206,8 @@ pub struct ChannelDraft {
     pub name: String,
     /// Receive frequency in megahertz.
     pub receive_mhz: String,
-    /// Transmit frequency in megahertz.
+    /// Transmit frequency in megahertz; empty, and never read, on a
+    /// broadcast channel, which only receives.
     pub transmit_mhz: String,
     /// Receive-side tone squelch.
     pub rx_tone: ToneDraft,
@@ -254,10 +255,15 @@ impl ChannelDraft {
     /// Builds a draft from a validated channel record.
     pub fn from_record(record: ChannelRecord) -> Self {
         let flags = record.flags();
+        let receive_only = record.modulation() == Modulation::Broadcast;
         Self {
             name: record.name().as_str().to_owned(),
             receive_mhz: format_mhz(record.receive().as_hz()),
-            transmit_mhz: format_mhz(record.transmit().as_hz()),
+            transmit_mhz: if receive_only {
+                String::new()
+            } else {
+                format_mhz(record.transmit().as_hz())
+            },
             rx_tone: ToneDraft::from_tone(record.rx_tone()),
             tx_tone: ToneDraft::from_tone(record.tx_tone()),
             modulation: record.modulation(),
@@ -287,7 +293,14 @@ impl ChannelDraft {
             .map_err(|_| error(scope, "name", "must be 1 to 12 printable characters"))?;
         let receive = parse_frequency(&self.receive_mhz)
             .ok_or_else(|| error(scope, "receive", "is not a frequency in megahertz"))?;
-        let transmit = if shared.contains(SharedSettings::OFFSET) {
+        // A broadcast channel only receives: whatever its row holds for the
+        // transmit side, it has none (`ADR-105`).
+        let receive_only = if shared.contains(SharedSettings::MODULATION) {
+            bank.settings().modulation
+        } else {
+            self.modulation
+        } == Modulation::Broadcast;
+        let transmit = if receive_only || shared.contains(SharedSettings::OFFSET) {
             receive
         } else {
             parse_frequency(&self.transmit_mhz)
@@ -299,21 +312,23 @@ impl ChannelDraft {
             FrequencyStep::from_hz(self.step_hz)
                 .map_err(|_| error(scope, "step", "must be a non-zero number of hertz"))?
         };
-        let rx_tone = if shared.contains(SharedSettings::RX_TONE) {
+        let rx_tone = if receive_only || shared.contains(SharedSettings::RX_TONE) {
             Tone::None
         } else {
             self.rx_tone.validate(scope, "receive tone")?
         };
-        let tx_tone = if shared.contains(SharedSettings::TX_TONE) {
+        let tx_tone = if receive_only || shared.contains(SharedSettings::TX_TONE) {
             Tone::None
         } else {
             self.tx_tone.validate(scope, "transmit tone")?
         };
-        let mut flags = ChannelFlags::default()
-            .with(ChannelFlags::SCAN_SKIP, self.scan_skip)
-            .with(ChannelFlags::BUSY_LOCKOUT, self.busy_lockout)
-            .with(ChannelFlags::REVERSE, self.reverse);
-        flags = flags.with(ChannelFlags::COMPANDER, self.compander);
+        let mut flags = ChannelFlags::default().with(ChannelFlags::SCAN_SKIP, self.scan_skip);
+        if !receive_only {
+            flags = flags
+                .with(ChannelFlags::BUSY_LOCKOUT, self.busy_lockout)
+                .with(ChannelFlags::REVERSE, self.reverse)
+                .with(ChannelFlags::COMPANDER, self.compander);
+        }
         if id >= GENERATED_CHANNEL_ID_BASE {
             return Err(error(
                 scope,
@@ -541,6 +556,25 @@ impl BankDraft {
     fn settings(&self, scope: ModelScope) -> Result<BankSettings, ModelError> {
         let shared = self.shared;
         let unshared = BankSettings::unshared();
+        if self.is_receive_only() {
+            // Nothing on the transmit side is shown or stored.
+            return Ok(BankSettings {
+                shared,
+                modulation: self.modulation,
+                bandwidth: self.bandwidth,
+                power: self.power,
+                step: FrequencyStep::from_hz(self.step_hz).or_else(|_| {
+                    if shared.contains(SharedSettings::STEP) {
+                        Err(error(scope, "step", "must be a non-zero number of hertz"))
+                    } else {
+                        Ok(unshared.step)
+                    }
+                })?,
+                offset: Offset::from_hz(0),
+                rx_tone: Tone::None,
+                tx_tone: Tone::None,
+            });
+        }
         Ok(BankSettings {
             shared,
             modulation: self.modulation,
@@ -568,6 +602,15 @@ impl BankDraft {
                     .unwrap_or(Tone::None)
             },
         })
+    }
+
+    /// Whether every channel in the bank is a broadcast one, which only
+    /// receives: by the modulation the bank shares or, for a plan, its
+    /// template.
+    pub fn is_receive_only(&self) -> bool {
+        self.modulation == Modulation::Broadcast
+            && (self.kind == BankKind::Generated
+                || self.shared.contains(SharedSettings::MODULATION))
     }
 
     /// Builds a draft from a validated generated plan.
@@ -655,7 +698,11 @@ impl BankDraft {
                     spacing,
                     self.channel_count,
                     self.template(scope)?,
-                    Offset::from_hz(self.offset_hz),
+                    Offset::from_hz(if self.is_receive_only() {
+                        0
+                    } else {
+                        self.offset_hz
+                    }),
                 )
                 .map_err(|_| {
                     error(
@@ -703,6 +750,18 @@ impl BankDraft {
 
     /// Validates the per-channel settings every generated channel shares.
     fn template(&self, scope: ModelScope) -> Result<ChannelTemplate, ModelError> {
+        if self.is_receive_only() {
+            return Ok(ChannelTemplate {
+                rx_tone: Tone::None,
+                tx_tone: Tone::None,
+                modulation: self.modulation,
+                bandwidth: self.bandwidth,
+                power: self.power,
+                step: FrequencyStep::from_hz(self.step_hz)
+                    .map_err(|_| error(scope, "step", "must be a non-zero number of hertz"))?,
+                flags: ChannelFlags::default().with(ChannelFlags::SCAN_SKIP, self.scan_skip),
+            });
+        }
         Ok(ChannelTemplate {
             rx_tone: self.rx_tone.validate(scope, "receive tone")?,
             tx_tone: self.tx_tone.validate(scope, "transmit tone")?,
@@ -1758,6 +1817,74 @@ mod tests {
         assert_eq!(summary.image_bytes, None);
         assert_eq!(summary.used_per_mille(), None);
         assert_eq!(summary.banks, 2);
+    }
+
+    #[test]
+    fn a_broadcast_channel_only_receives_whatever_its_transmit_fields_hold() {
+        let mut model = ProjectModel::new();
+        model.add_bank();
+        model.add_channel(0);
+        // A channel switched from FM to broadcast keeps what it had as FM:
+        // a split, tones and the transmit flags. None of it is used or checked.
+        let channel = &mut model.banks[0].channels[0];
+        channel.receive_mhz = "101.5".to_owned();
+        channel.transmit_mhz = "not a frequency".to_owned();
+        channel.modulation = Modulation::Broadcast;
+        channel.step_hz = 100_000;
+        channel.tx_tone = ToneDraft {
+            kind: ToneKind::Ctcss,
+            value: "77.0".to_owned(),
+        };
+        channel.busy_lockout = true;
+        channel.scan_skip = true;
+        let loaded = ProjectModel::from_image(&model.to_radio_image().unwrap()).unwrap();
+        let station = &loaded.banks[0].channels[0];
+        assert_eq!(station.receive_mhz, "101.500000");
+        assert!(station.transmit_mhz.is_empty(), "no transmit side");
+        assert_eq!(station.tx_tone.kind, ToneKind::None);
+        assert!(station.scan_skip && !station.busy_lockout);
+
+        // A broadcast bank sharing an offset and tones takes none of them.
+        let bank = &mut model.banks[0];
+        bank.shared = SharedSettings::none()
+            .with(SharedSettings::MODULATION, true)
+            .with(SharedSettings::OFFSET, true)
+            .with(SharedSettings::RX_TONE, true);
+        bank.modulation = Modulation::Broadcast;
+        bank.offset_hz = -600_000;
+        bank.rx_tone = ToneDraft {
+            kind: ToneKind::Ctcss,
+            value: "88.5".to_owned(),
+        };
+        assert!(bank.is_receive_only());
+        bank.channels[0].modulation = Modulation::Fm;
+        let loaded = ProjectModel::from_image(&model.to_radio_image().unwrap()).unwrap();
+        assert_eq!(loaded.banks[0].offset_hz, 0);
+        assert!(loaded.banks[0].channels[0].transmit_mhz.is_empty());
+
+        // So does a broadcast plan.
+        let mut plan = BankDraft {
+            name: "FM".to_owned(),
+            kind: BankKind::Generated,
+            base_mhz: "87.5".to_owned(),
+            spacing_hz: 100_000,
+            channel_count: 3,
+            modulation: Modulation::Broadcast,
+            step_hz: 100_000,
+            offset_hz: -600_000,
+            ..BankDraft::default()
+        };
+        plan.tx_tone = ToneDraft {
+            kind: ToneKind::Ctcss,
+            value: "77.0".to_owned(),
+        };
+        let model = ProjectModel {
+            banks: vec![plan],
+            ..ProjectModel::new()
+        };
+        let loaded = ProjectModel::from_image(&model.to_radio_image().unwrap()).unwrap();
+        assert_eq!(loaded.banks[0].offset_hz, 0);
+        assert_eq!(loaded.banks[0].tx_tone.kind, ToneKind::None);
     }
 
     #[test]

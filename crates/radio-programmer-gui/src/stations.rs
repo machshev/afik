@@ -237,7 +237,8 @@ pub fn station_bank(locator: &str, near: &[(&Station, f64)]) -> BankDraft {
         .map(|station| ChannelDraft {
             name: station.name.clone(),
             receive_mhz: format_mhz(station.frequency_hz),
-            transmit_mhz: format_mhz(station.frequency_hz),
+            // Receive only: a station has no transmit side.
+            transmit_mhz: String::new(),
             modulation: Modulation::Broadcast,
             bandwidth: Bandwidth::Wide,
             power: PowerLevel::Low1,
@@ -548,7 +549,7 @@ Site Ht,In-Use Aerial Ht,In-UseERP/HP,In-Use ERP/VP,Lat,Long,\r
         assert!(bank
             .channels
             .iter()
-            .all(|c| c.modulation == Modulation::Broadcast && c.receive_mhz == c.transmit_mhz));
+            .all(|c| c.modulation == Modulation::Broadcast && c.transmit_mhz.is_empty()));
         // The radio accepts it.
         let project = ProjectModel {
             banks: vec![bank],

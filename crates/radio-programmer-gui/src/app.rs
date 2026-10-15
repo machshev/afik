@@ -1933,35 +1933,9 @@ fn bank_header_buttons(ui: &mut egui::Ui) -> Option<BankAction> {
     action
 }
 
-/// Whether every channel in `bank` is a broadcast one, by the modulation the
-/// bank shares or, for a plan, its template.
-fn bank_is_broadcast(bank: &BankDraft) -> bool {
-    bank.modulation == Modulation::Broadcast
-        && (bank.kind == BankKind::Generated || bank.shared.contains(SharedSettings::MODULATION))
-}
-
-/// Keeps broadcast channels simplex, as the radio requires (`ADR-105`).
-///
-/// The editor hides their transmit settings, so a split left over from an
-/// earlier modulation could not be seen or fixed; this clears it instead.
-fn keep_broadcast_simplex(bank: &mut BankDraft) {
-    let whole_bank = bank_is_broadcast(bank);
-    if whole_bank {
-        bank.offset_hz = 0;
-    }
-    if bank.kind == BankKind::Named {
-        for channel in &mut bank.channels {
-            if whole_bank || channel.modulation == Modulation::Broadcast {
-                channel.transmit_mhz.clone_from(&channel.receive_mhz);
-            }
-        }
-    }
-}
-
 /// Draws one bank and, for a channel bank, its channels.
 fn bank_row_editor(ui: &mut egui::Ui, bank: &mut BankDraft) -> Option<BankAction> {
     let mut action = None;
-    keep_broadcast_simplex(bank);
     Grid::new("bank").num_columns(4).show(ui, |ui| {
         ui.label("Name");
         ui.add(TextEdit::singleline(&mut bank.name).desired_width(160.0));
@@ -1999,7 +1973,7 @@ fn bank_row_editor(ui: &mut egui::Ui, bank: &mut BankDraft) -> Option<BankAction
         }
         BankKind::Named => {
             let shared = bank.shared;
-            let whole_bank = bank_is_broadcast(bank);
+            let whole_bank = bank.is_receive_only();
             ui.indent("channels", |ui| {
                 for (row, channel) in bank.channels.iter_mut().enumerate() {
                     ui.push_id(row, |ui| {
@@ -2044,7 +2018,7 @@ fn shared_settings_editor(ui: &mut egui::Ui, bank: &mut BankDraft) {
         ui.weak("per channel");
     }
     // A broadcast bank only receives; the rest would be noise.
-    if bank_is_broadcast(bank) {
+    if bank.is_receive_only() {
         ui.end_row();
         if share_toggle(ui, &mut bank.shared, SharedSettings::STEP, "Step Hz") {
             ui.add(egui::DragValue::new(&mut bank.step_hz).speed(125.0));
@@ -2127,7 +2101,7 @@ fn generated_plan_editor(ui: &mut egui::Ui, bank: &mut BankDraft) {
     ui.end_row();
 
     plan_naming_editor(ui, bank);
-    let broadcast = bank.modulation == Modulation::Broadcast;
+    let broadcast = bank.is_receive_only();
 
     if !broadcast {
         ui.label("TX offset Hz");
@@ -3281,51 +3255,6 @@ mod tests {
         app.add_repeaters();
         assert_eq!(app.project.banks.len(), before, "refused, not added");
         assert!(app.status.contains("would not fit"), "{}", app.status);
-    }
-
-    #[test]
-    fn a_broadcast_bank_is_kept_simplex_since_its_transmit_side_is_hidden() {
-        use super::{bank_is_broadcast, keep_broadcast_simplex};
-        use crate::model::{BankDraft, BankKind, ChannelDraft, ProjectModel};
-        use radio_channel_plan::SharedSettings;
-        use radio_domain::Modulation;
-
-        // A channel switched to broadcast keeps the split it had as FM.
-        let station = ChannelDraft {
-            name: "CLASSIC".to_owned(),
-            receive_mhz: "101.5".to_owned(),
-            transmit_mhz: "101.6".to_owned(),
-            modulation: Modulation::Broadcast,
-            step_hz: 100_000,
-            ..ChannelDraft::default()
-        };
-        let mut bank = BankDraft {
-            name: "FM".to_owned(),
-            kind: BankKind::Named,
-            channels: vec![station],
-            ..BankDraft::default()
-        };
-        assert!(!bank_is_broadcast(&bank), "modulation is per channel");
-        let project = |bank: &BankDraft| ProjectModel {
-            banks: vec![bank.clone()],
-            ..ProjectModel::new()
-        };
-        assert!(project(&bank).to_radio_image().is_err());
-        keep_broadcast_simplex(&mut bank);
-        assert_eq!(bank.channels[0].transmit_mhz, "101.5");
-        project(&bank).to_radio_image().expect("simplex broadcast");
-
-        // A bank sharing broadcast also drops a shared offset.
-        bank.shared =
-            SharedSettings::from_bits(SharedSettings::MODULATION | SharedSettings::OFFSET).unwrap();
-        bank.modulation = Modulation::Broadcast;
-        bank.offset_hz = -600_000;
-        assert!(bank_is_broadcast(&bank));
-        keep_broadcast_simplex(&mut bank);
-        assert_eq!(bank.offset_hz, 0);
-        project(&bank)
-            .to_radio_image()
-            .expect("simplex broadcast bank");
     }
 
     #[test]
