@@ -135,7 +135,12 @@ programmed as ordinary banks.
   workspace clippy `-D warnings` clean, `cargo test --workspace` 800 passed 0
   failed, `tool/build-k5.sh --release` (flash image end `0x0000e56c`) and
   `tool/build-k1.sh --release` (71004 bytes) pass.
-- Next: step 5, bump the version, flash both radios and listen (`RISK-045`).
+- Step 5: `7.0.28` (`c964af1`) carries broadcast and `TXK5-059`'s tones;
+  K5 image end `0x0000ec7c` at `opt-level=z`. Flashed to the K5 (bootloader
+  `2.00.06`, CRC-32 `5c6dbbbe`, 240/240 pages acknowledged, not read back); not
+  yet observed on the radio.
+- Next: write the project with an FM broadcast bank from the studio, then on
+  the K5 listen, step and scan it and check the `RISK-045` list; then the K1.
 
 **`DUALW-064` is active alongside** (2026-10-14, operator request,
 `ADR-102`): two slots and dual watch.
