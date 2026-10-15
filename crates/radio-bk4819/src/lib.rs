@@ -24,7 +24,7 @@ use radio_tx_policy::{TxAuthorisation, TxRequest};
 const REG_MODE_CONTROL: RegisterAddress = RegisterAddress::known(0x30);
 const REG_FREQUENCY_LOW: RegisterAddress = RegisterAddress::known(0x38);
 const REG_FREQUENCY_HIGH: RegisterAddress = RegisterAddress::known(0x39);
-const REG_SQUELCH_STATUS: RegisterAddress = RegisterAddress::known(0x0C);
+pub(crate) const REG_SQUELCH_STATUS: RegisterAddress = RegisterAddress::known(0x0C);
 const REG_RSSI: RegisterAddress = RegisterAddress::known(0x67);
 
 const MODE_STANDBY: u16 = 0x0000;
@@ -209,6 +209,8 @@ pub struct Bk4819<B: RegisterBus> {
     pub(crate) gpio_out: u16,
     /// Chip variant values this driver writes.
     pub(crate) profile: ChipProfile,
+    /// Whether the receive tone or code was last found rather than lost.
+    pub(crate) tone_found: bool,
 }
 
 impl<B: RegisterBus> Bk4819<B> {
@@ -219,6 +221,7 @@ impl<B: RegisterBus> Bk4819<B> {
             state: DriverState::Unknown,
             gpio_out: receive::GPIO_OUT_DEFAULT,
             profile: receive::BK4819_PROFILE,
+            tone_found: false,
         }
     }
 
@@ -229,6 +232,7 @@ impl<B: RegisterBus> Bk4819<B> {
             state: DriverState::Unknown,
             gpio_out: receive::GPIO_OUT_DEFAULT,
             profile,
+            tone_found: false,
         }
     }
 
@@ -379,6 +383,10 @@ pub(crate) mod tests_support {
         pub(crate) operations: Vec<Operation>,
         fail_on_call: Option<usize>,
         calls: usize,
+        /// Interrupt flag words still to be raised, oldest first. While any
+        /// is pending `REG_0C` bit 0 reads set, and writing `REG_02` latches
+        /// the next one there, as the chip presents its requests.
+        pub(crate) interrupts: Vec<u16>,
     }
 
     impl FakeBus {
@@ -388,6 +396,7 @@ pub(crate) mod tests_support {
                 operations: Vec::new(),
                 fail_on_call,
                 calls: 0,
+                interrupts: Vec::new(),
             }
         }
 
@@ -416,7 +425,12 @@ pub(crate) mod tests_support {
 
         fn write(&mut self, address: RegisterAddress, value: u16) -> Result<(), Self::Error> {
             self.before_operation()?;
-            self.registers[usize::from(address.get())] = value;
+            let latched = if address.get() == 0x02 && !self.interrupts.is_empty() {
+                self.interrupts.remove(0)
+            } else {
+                value
+            };
+            self.registers[usize::from(address.get())] = latched;
             self.operations.push(Operation::Write(address, value));
             Ok(())
         }
@@ -424,7 +438,12 @@ pub(crate) mod tests_support {
         fn read(&mut self, address: RegisterAddress) -> Result<u16, Self::Error> {
             self.before_operation()?;
             self.operations.push(Operation::Read(address));
-            Ok(self.registers[usize::from(address.get())])
+            let value = self.registers[usize::from(address.get())];
+            Ok(if address.get() == 0x0C {
+                (value & !1) | u16::from(!self.interrupts.is_empty())
+            } else {
+                value
+            })
         }
     }
 }

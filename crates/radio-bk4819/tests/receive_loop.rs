@@ -43,6 +43,8 @@ impl core::fmt::Display for BusError {
 struct BusState {
     registers: [u16; 128],
     writes: Vec<(u8, u16)>,
+    /// Interrupt flag words the chip has still to present, oldest first.
+    interrupts: Vec<u16>,
 }
 
 impl Default for BusState {
@@ -50,6 +52,7 @@ impl Default for BusState {
         Self {
             registers: [0; 128],
             writes: Vec::new(),
+            interrupts: Vec::new(),
         }
     }
 }
@@ -86,6 +89,12 @@ impl FakeBus {
         self.state.borrow().written(address)
     }
 
+    /// Raises one interrupt request: `REG_0C` bit 0 reads set until a
+    /// `REG_02` write latches its flags there.
+    fn raise(&self, flags: u16) {
+        self.state.borrow_mut().interrupts.push(flags);
+    }
+
     fn wrote_transmit_mode(&self) -> bool {
         self.state
             .borrow()
@@ -100,13 +109,24 @@ impl RegisterBus for FakeBus {
 
     fn write(&mut self, address: RegisterAddress, value: u16) -> Result<(), Self::Error> {
         let mut state = self.state.borrow_mut();
-        state.registers[usize::from(address.get())] = value;
+        let latched = if address.get() == REG_INTERRUPT_FLAGS && !state.interrupts.is_empty() {
+            state.interrupts.remove(0)
+        } else {
+            value
+        };
+        state.registers[usize::from(address.get())] = latched;
         state.writes.push((address.get(), value));
         Ok(())
     }
 
     fn read(&mut self, address: RegisterAddress) -> Result<u16, Self::Error> {
-        Ok(self.state.borrow().registers[usize::from(address.get())])
+        let state = self.state.borrow();
+        let value = state.registers[usize::from(address.get())];
+        Ok(if address.get() == REG_SQUELCH_STATUS {
+            (value & !1) | u16::from(!state.interrupts.is_empty())
+        } else {
+            value
+        })
     }
 }
 
@@ -192,7 +212,7 @@ fn a_banked_scan_drives_the_receive_path_without_reaching_transmit() {
     // A carrier without the coded tone must not open audio.
     chip.set(REG_RSSI, 0x0100);
     chip.set(REG_SQUELCH_STATUS, 0x0002);
-    chip.set(REG_INTERRUPT_FLAGS, 1 << 6);
+    chip.raise(1 << 6);
     let metrics = radio
         .receive_metrics(activation.setup.tone)
         .expect("metrics");
@@ -207,7 +227,7 @@ fn a_banked_scan_drives_the_receive_path_without_reaching_transmit() {
     assert!(!update.audio_open);
 
     // The matching tone opens audio through the controller's decision.
-    chip.set(REG_INTERRUPT_FLAGS, 1 << 7);
+    chip.raise(1 << 7);
     let metrics = radio
         .receive_metrics(activation.setup.tone)
         .expect("metrics");
@@ -234,9 +254,9 @@ fn a_banked_scan_drives_the_receive_path_without_reaching_transmit() {
     assert_eq!(activation.setup.frequency.as_hz(), 145_300_000);
     apply(&mut radio, activation.setup, advanced.audio_open);
     assert_eq!(chip.written(REG_FREQUENCY_LOW), Some(0xB5D0));
-    // An untoned channel disables sub-audio decoding rather than leaving the
-    // previous channel's tone armed.
-    assert_eq!(chip.written(0x51), Some(0x904A));
+    // An untoned channel scans for any tone rather than leaving the previous
+    // channel's tone armed (`BK4819_SetScanFrequency`'s `REG_51`).
+    assert_eq!(chip.written(0x51), Some(0x0300));
 
     assert!(
         !chip.wrote_transmit_mode(),

@@ -89,6 +89,46 @@ const INTERRUPT_CTCSS_FOUND: u16 = 1 << 7;
 const INTERRUPT_CTCSS_LOST: u16 = 1 << 6;
 const INTERRUPT_CDCSS_FOUND: u16 = 1 << 9;
 const INTERRUPT_CDCSS_LOST: u16 = 1 << 8;
+/// `REG_0C` bit 0: the chip has an interrupt request pending.
+const INTERRUPT_REQUEST: u16 = 1;
+/// Most pending interrupts serviced in one sample; the source loops without
+/// a limit (`RISK` on the receive interrupt-clear loop).
+const MAX_INTERRUPTS_PER_SAMPLE: usize = 8;
+
+/// `REG_51` from `BK4819_SetScanFrequency` in both pinned trees: sub-audio TX
+/// off, CDCSS mode, both auto-bandwidth modes disabled. With it the chip
+/// reports any tone it hears in `REG_68`/`REG_69`.
+const SUB_AUDIO_SCAN: u16 = (1 << 9) | (1 << 8);
+const REG_CTCSS_SCAN: RegisterAddress = RegisterAddress::known(0x68);
+const REG_CDCSS_SCAN_HIGH: RegisterAddress = RegisterAddress::known(0x69);
+const REG_CDCSS_SCAN_LOW: RegisterAddress = RegisterAddress::known(0x6A);
+/// `REG_68`/`REG_69` bit 15 is clear when the scan found a tone or code.
+const SCAN_NOT_FOUND: u16 = 1 << 15;
+/// `BK4819_GetCxCSSScanResult`: tenths of a hertz = word * 4843 / 10000.
+const CTCSS_SCAN_NUMERATOR: u32 = 4_843;
+const CTCSS_SCAN_DENOMINATOR: u32 = 10_000;
+/// `DCS_GetCtcssCode` accepts the nearest tone only within 5 Hz.
+const CTCSS_SCAN_TOLERANCE_TENTHS: u16 = 50;
+
+/// `CTCSS_Options` in both pinned trees, in tenths of a hertz.
+pub const CTCSS_TONES: [u16; 50] = [
+    670, 693, 719, 744, 770, 797, 825, 854, 885, 915, 948, 974, 1000, 1035, 1072, 1109, 1148, 1188,
+    1230, 1273, 1318, 1365, 1413, 1462, 1514, 1567, 1598, 1622, 1655, 1679, 1713, 1738, 1773, 1799,
+    1835, 1862, 1899, 1928, 1966, 1995, 2035, 2065, 2107, 2181, 2257, 2291, 2336, 2418, 2503, 2541,
+];
+
+/// `DCS_Options` in both pinned trees: each code's nine bits, three per
+/// octal digit.
+const DCS_CODES: [u16; 104] = [
+    0x013, 0x015, 0x016, 0x019, 0x01A, 0x01E, 0x023, 0x027, 0x029, 0x02B, 0x02C, 0x035, 0x039,
+    0x03A, 0x03B, 0x03C, 0x04C, 0x04D, 0x04E, 0x052, 0x055, 0x059, 0x05A, 0x05C, 0x063, 0x065,
+    0x06A, 0x06D, 0x06E, 0x072, 0x075, 0x07A, 0x07C, 0x085, 0x08A, 0x093, 0x095, 0x096, 0x0A3,
+    0x0A4, 0x0A5, 0x0A6, 0x0A9, 0x0AA, 0x0AD, 0x0B1, 0x0B3, 0x0B5, 0x0B6, 0x0B9, 0x0BC, 0x0C6,
+    0x0C9, 0x0CD, 0x0D5, 0x0D9, 0x0DA, 0x0E3, 0x0E6, 0x0E9, 0x0EE, 0x0F4, 0x0F5, 0x0F9, 0x109,
+    0x10A, 0x10B, 0x113, 0x119, 0x11A, 0x125, 0x126, 0x12A, 0x12C, 0x12D, 0x132, 0x134, 0x135,
+    0x136, 0x143, 0x146, 0x14E, 0x153, 0x156, 0x15A, 0x166, 0x175, 0x186, 0x18A, 0x194, 0x197,
+    0x199, 0x19A, 0x1AC, 0x1B2, 0x1B4, 0x1C3, 0x1CA, 0x1D3, 0x1D9, 0x1DA, 0x1DC, 0x1E3, 0x1EC,
+];
 
 const GPIO_UHF_LNA: u16 = 0x40 >> 3;
 const GPIO_VHF_LNA: u16 = 0x40 >> 4;
@@ -524,15 +564,13 @@ impl ReadbackRegister {
     }
 }
 
-/// Latched tone-squelch state decoded from the interrupt-status register.
+/// Tone-squelch state kept from the found and lost interrupts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ToneStatus {
-    /// The configured tone or code was found.
+    /// The configured tone or code was last found.
     Matched,
-    /// The configured tone or code was lost.
+    /// The configured tone or code was lost, or not yet found.
     Lost,
-    /// Neither a found nor a lost event is latched.
-    Indeterminate,
 }
 
 impl<B: RegisterBus> Bk4819<B> {
@@ -624,6 +662,7 @@ impl<B: RegisterBus> Bk4819<B> {
         self.configure_sub_audio(setup.tone)?;
         self.write(REG_INTERRUPT_MASK, interrupt_mask(setup.tone))?;
         self.write(REG_INTERRUPT_FLAGS, 0)?;
+        self.tone_found = false;
         self.write_af_output(setup.modulation, setup.af)?;
 
         self.state = DriverState::Receiving {
@@ -690,13 +729,51 @@ impl<B: RegisterBus> Bk4819<B> {
         })
     }
 
+    /// Services pending interrupts as `CheckRadioInterrupts` does, clearing
+    /// `REG_02` before reading it, and keeps the last found or lost event.
     fn tone_status(&mut self, found: u16, lost: u16) -> Result<ToneStatus, DriverError<B::Error>> {
-        let flags = self.read(REG_INTERRUPT_FLAGS)?;
-        Ok(match (flags & found != 0, flags & lost != 0) {
-            (true, false) => ToneStatus::Matched,
-            (false, true) => ToneStatus::Lost,
-            _ => ToneStatus::Indeterminate,
+        for _ in 0..MAX_INTERRUPTS_PER_SAMPLE {
+            if self.read(crate::REG_SQUELCH_STATUS)? & INTERRUPT_REQUEST == 0 {
+                break;
+            }
+            self.write(REG_INTERRUPT_FLAGS, 0)?;
+            let flags = self.read(REG_INTERRUPT_FLAGS)?;
+            if flags & lost != 0 {
+                self.tone_found = false;
+            }
+            if flags & found != 0 {
+                self.tone_found = true;
+            }
+        }
+        Ok(if self.tone_found {
+            ToneStatus::Matched
+        } else {
+            ToneStatus::Lost
         })
+    }
+
+    /// Reads the tone or code the chip hears on a channel without a receive
+    /// tone, as `BK4819_GetCxCSSScanResult` does: DCS first, then CTCSS.
+    ///
+    /// A CTCSS reading is the nearest standard tone within 5 Hz and a DCS
+    /// word a standard code in normal polarity (`DCS_GetCtcssCode`,
+    /// `DCS_GetCdcssCode`); anything else is `None`.
+    pub fn detected_tone(&mut self) -> Result<Option<Tone>, DriverError<B::Error>> {
+        if !matches!(self.state, DriverState::Receiving { .. }) {
+            return Err(DriverError::InvalidState(self.state));
+        }
+        let high = self.read(REG_CDCSS_SCAN_HIGH)?;
+        if high & SCAN_NOT_FOUND == 0 {
+            let low = self.read(REG_CDCSS_SCAN_LOW)?;
+            let word = (u32::from(high & 0x0FFF) << 12) | u32::from(low & 0x0FFF);
+            return Ok(dcs_from_word(word));
+        }
+        let ctcss = self.read(REG_CTCSS_SCAN)?;
+        if ctcss & SCAN_NOT_FOUND != 0 {
+            return Ok(None);
+        }
+        let tenths = u32::from(ctcss & 0x1FFF) * CTCSS_SCAN_NUMERATOR / CTCSS_SCAN_DENOMINATOR;
+        Ok(nearest_ctcss(u16::try_from(tenths).unwrap_or(u16::MAX)).map(Tone::Ctcss))
     }
 
     fn configure_demodulator(
@@ -798,10 +875,7 @@ impl<B: RegisterBus> Bk4819<B> {
 
     pub(crate) fn configure_sub_audio(&mut self, tone: Tone) -> Result<(), DriverError<B::Error>> {
         match tone {
-            Tone::None => {
-                let disabled = self.profile.sub_audio_ctcss;
-                self.write(REG_SUB_AUDIO_CONTROL, disabled)
-            }
+            Tone::None => self.write(REG_SUB_AUDIO_CONTROL, SUB_AUDIO_SCAN),
             Tone::Ctcss(tenths_hz) => {
                 let ctcss = self.profile.sub_audio_ctcss;
                 self.write(REG_SUB_AUDIO_CONTROL, ctcss)?;
@@ -897,6 +971,37 @@ pub fn cdcss_code_word(code: u16, inverted: bool) -> u32 {
     } else {
         word
     }
+}
+
+/// The standard CTCSS tone nearest `tenths_hz`, if one is within 5 Hz.
+pub fn nearest_ctcss(tenths_hz: u16) -> Option<u16> {
+    CTCSS_TONES
+        .iter()
+        .copied()
+        .min_by_key(|tone| tone.abs_diff(tenths_hz))
+        .filter(|tone| tone.abs_diff(tenths_hz) < CTCSS_SCAN_TOLERANCE_TENTHS)
+}
+
+/// The standard DCS code a received 23-bit word carries, in any of its
+/// rotations, as `DCS_GetCdcssCode` finds it.
+fn dcs_from_word(mut word: u32) -> Option<Tone> {
+    for _ in 0..23 {
+        // The code's marker bit, 0x800, sits above its nine data bits.
+        if (word >> 9) & 0b111 == 0b100 {
+            let bits = u16::try_from(word & 0x1FF).unwrap_or(0);
+            if DCS_CODES.contains(&bits) {
+                let code = (bits >> 6) * 100 + ((bits >> 3) & 7) * 10 + (bits & 7);
+                if cdcss_code_word(code, false) == word {
+                    return Some(Tone::Dcs {
+                        code,
+                        inverted: false,
+                    });
+                }
+            }
+        }
+        word = (word >> 1) | ((word & 1) << 22);
+    }
+    None
 }
 
 fn golay_23_12(code: u32) -> u32 {
@@ -1299,18 +1404,21 @@ mod tests {
             .with_register(crate::REG_RSSI, 0x0064)
             .with_register(crate::REG_SQUELCH_STATUS, 0x0002)
             .with_register(super::REG_GLITCH, 0x00AB)
-            .with_register(super::REG_NOISE, 0x00FF)
-            .with_register(REG_INTERRUPT_FLAGS, 1 << 7);
+            .with_register(super::REG_NOISE, 0x00FF);
         let mut radio = Bk4819::new(bus);
         radio.recover_to_standby().unwrap();
         radio
             .configure_receive(&setup(Modulation::Fm, Tone::Ctcss(1_000), 145_500_000))
             .unwrap();
-        // Configuration clears latched flags; restore the sampled fixture.
-        radio
-            .bus_mut()
-            .set_register(REG_INTERRUPT_FLAGS, (1 << 7) | (1 << 3));
+        // Nothing found yet: the tone holds the audio.
+        assert_eq!(
+            radio.receive_metrics(Tone::Ctcss(1_000)).unwrap().tone,
+            Some(ToneStatus::Lost)
+        );
 
+        // Squelch found, then CTCSS found, raised as two requests.
+        radio.bus_mut().interrupts.extend([1 << 3, 1 << 7]);
+        radio.bus_mut().operations.clear();
         let metrics = radio.receive_metrics(Tone::Ctcss(1_000)).unwrap();
         assert_eq!(
             metrics,
@@ -1323,8 +1431,22 @@ mod tests {
             }
         );
         assert!(metrics.should_unmute());
+        // Each request is cleared before it is read, as the source does.
+        let serviced = radio
+            .bus()
+            .operations
+            .iter()
+            .filter(|operation| **operation == Operation::Write(REG_INTERRUPT_FLAGS, 0))
+            .count();
+        assert_eq!(serviced, 2);
 
-        radio.bus_mut().set_register(REG_INTERRUPT_FLAGS, 1 << 6);
+        // With no new request the tone stays found.
+        assert_eq!(
+            radio.receive_metrics(Tone::Ctcss(1_000)).unwrap().tone,
+            Some(ToneStatus::Matched)
+        );
+
+        radio.bus_mut().interrupts.push(1 << 6);
         let lost = radio.receive_metrics(Tone::Ctcss(1_000)).unwrap();
         assert_eq!(lost.tone, Some(ToneStatus::Lost));
         assert!(!lost.should_unmute());
@@ -1332,6 +1454,81 @@ mod tests {
         let carrier_only = radio.receive_metrics(Tone::None).unwrap();
         assert_eq!(carrier_only.tone, None);
         assert!(carrier_only.should_unmute());
+    }
+
+    #[test]
+    fn a_stuck_interrupt_request_is_serviced_a_bounded_number_of_times() {
+        let mut radio = Bk4819::new(FakeBus::new(None));
+        radio.recover_to_standby().unwrap();
+        radio
+            .configure_receive(&setup(
+                Modulation::Fm,
+                Tone::Dcs {
+                    code: 23,
+                    inverted: false,
+                },
+                145_500_000,
+            ))
+            .unwrap();
+        radio.bus_mut().interrupts.extend([1 << 9; 20]);
+        let metrics = radio
+            .receive_metrics(Tone::Dcs {
+                code: 23,
+                inverted: false,
+            })
+            .unwrap();
+        assert_eq!(metrics.tone, Some(ToneStatus::Matched));
+        assert_eq!(radio.bus().interrupts.len(), 12);
+    }
+
+    #[test]
+    fn without_a_receive_tone_the_chip_scans_for_one() {
+        let mut radio = Bk4819::with_profile(FakeBus::new(None), crate::BK4829_PROFILE);
+        radio.recover_to_standby().unwrap();
+        radio
+            .configure_receive(&setup(Modulation::Fm, Tone::None, 145_500_000))
+            .unwrap();
+        assert!(radio
+            .bus()
+            .operations
+            .contains(&Operation::Write(REG_SUB_AUDIO_CONTROL, 0x0300)));
+
+        let found = |radio: &mut Bk4819<FakeBus>, ctcss: u16, high: u16, low: u16| {
+            radio.bus_mut().set_register(super::REG_CTCSS_SCAN, ctcss);
+            radio
+                .bus_mut()
+                .set_register(super::REG_CDCSS_SCAN_HIGH, high);
+            radio.bus_mut().set_register(super::REG_CDCSS_SCAN_LOW, low);
+            radio.detected_tone().unwrap()
+        };
+        assert_eq!(found(&mut radio, 0x8000, 0x8000, 0), None);
+        // 1828 * 4843 / 10000 = 885 tenths: 88.5 Hz.
+        assert_eq!(found(&mut radio, 1828, 0x8000, 0), Some(Tone::Ctcss(885)));
+        // 52.0 Hz is more than 5 Hz below 67.0 Hz.
+        assert_eq!(found(&mut radio, 1074, 0x8000, 0), None);
+        // DCS 023N, word 0x763813, read in any rotation.
+        assert_eq!(
+            found(&mut radio, 0x8000, 0x0763, 0x0813),
+            Some(Tone::Dcs {
+                code: 23,
+                inverted: false
+            })
+        );
+        let rotated = (0x0076_3813_u32 << 5 | 0x0076_3813 >> 18) & 0x007F_FFFF;
+        assert_eq!(
+            found(
+                &mut radio,
+                0x8000,
+                u16::try_from(rotated >> 12).unwrap(),
+                u16::try_from(rotated & 0xFFF).unwrap()
+            ),
+            Some(Tone::Dcs {
+                code: 23,
+                inverted: false
+            })
+        );
+        // A word that is no standard code.
+        assert_eq!(found(&mut radio, 0x8000, 0x0123, 0x0456), None);
     }
 
     #[test]
