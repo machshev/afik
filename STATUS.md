@@ -104,8 +104,11 @@ VHF range makes marine duplex channels transmit instead. Gate: `cargo fmt
 --all --check` clean, `cargo clippy --workspace --all-targets -- -D
 warnings` clean, `cargo test --workspace` 840 passed 0 failed,
 `tool/build-k5.sh --release` (flash end `0x0000e83c`) and
-`tool/build-k1.sh --release` pass. Not flashed. Next: bump the version,
-flash the K5 and listen to a marine duplex channel.
+`tool/build-k1.sh --release` pass. `7.0.39` (`d092e8b`) flashed to the
+K5 (image end `0x0000e83c`, `tool/verify-k5-image.sh` passes, bootloader
+`2.00.06` confirmed by `identify` first, CRC-32 `0d78ebac`, 240/240 pages
+acknowledged, not read back). Next: listen to a marine duplex channel
+without a marine range, then with the Marine VHF range check it keys up.
 
 **`AIRPORT-068` is active alongside** (2026-10-15, operator request,
 `ADR-106`): step 1 done. The Banks tab has an Airports row: Sync fetches
