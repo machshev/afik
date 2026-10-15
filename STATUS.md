@@ -154,7 +154,8 @@ programmed as ordinary banks.
   path too, and the retune acknowledges it. Gate: `cargo fmt --all --check`
   clean, workspace clippy `-D warnings` clean, `cargo test --workspace` 813
   passed 0 failed, `tool/build-k5.sh --release` (end `0x0000f000`) and
-  `tool/build-k1.sh --release` pass. Not flashed.
+  `tool/build-k1.sh --release` pass. Observed on the K5 at `7.0.29`: a
+  new SQL level now holds off the PMR446 path.
 - Fix (operator report, `7.0.28`): stepping to a second broadcast station
   showed RX FAULT, because the BK4819 already asleep from the first was
   muted again and the driver refused; only a receiving chip is muted and
