@@ -42,7 +42,7 @@ use radio_channel_plan::{
 };
 use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, RadioConfig,
-    Tone,
+    RadioFlags, ScanResume, SquelchLevel, Tone,
 };
 
 use radio_tx_policy::{RangeError, TxPolicy, TxRange, MAX_TX_RANGES};
@@ -97,8 +97,27 @@ const LIST_HEADER_LEN: usize = 30;
 const BANK_ENTRY_HEADER_LEN: usize = 3;
 /// Largest list record: every field present at full width.
 const MAX_RECORD_LEN: usize = MAX_CHANNEL_NAME_LEN + 4 + 4 + 3 + 3 + 1 + 1 + 1 + 4;
-/// Payload offset meaning "none".
-const ABSENT: u16 = u16::MAX;
+/// Payload offset meaning "none". The radio configuration sits at offset 0,
+/// so nothing an index points to can, and an empty index is all zeros: the
+/// firmware's static index then costs no flash for its initial value.
+const ABSENT: u16 = 0;
+/// The configuration field of an index no image has filled; [`Index::config`]
+/// reports [`RadioConfig::conservative`] instead. All zeros, as above.
+const UNSET_CONFIG: RadioConfig = RadioConfig {
+    squelch: SquelchLevel::OPEN,
+    backlight_seconds: 0,
+    scan_resume: ScanResume::TimeOut,
+    scan_dwell_ms: 0,
+    scan_hold_ms: 0,
+    dual_watch: false,
+    battery_save_ratio: 0,
+    flags: match RadioFlags::from_bits(0) {
+        Ok(flags) => flags,
+        Err(_) => panic!("no flags is a valid flag set"),
+    },
+    tx_power: 0,
+    tx_timeout: 0,
+};
 
 /// Why a project cannot become a radio image.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -444,6 +463,8 @@ pub struct Block {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Index {
     config: RadioConfig,
+    /// Whether `config` came from an image.
+    configured: bool,
     /// Payload offset of the first TX range and how many there are.
     tx_ranges: u16,
     tx_range_count: u8,
@@ -633,7 +654,8 @@ impl Index {
     #[must_use]
     pub const fn empty() -> Self {
         Self {
-            config: RadioConfig::conservative(),
+            config: UNSET_CONFIG,
+            configured: false,
             tx_ranges: 0,
             tx_range_count: 0,
             blocks: [Block {
@@ -692,6 +714,7 @@ impl Index {
 
         let mut index = Self::empty();
         let config = read_array::<RADIO_CONFIG_ENCODED_LEN>(&mut read, 0)?;
+        index.configured = true;
         index.config = decode_radio_config(&ObjectRef::new(
             ObjectKey {
                 kind: ObjectKind::RadioConfig,
@@ -863,7 +886,11 @@ impl Index {
     /// The global receive configuration.
     #[must_use]
     pub const fn config(&self) -> RadioConfig {
-        self.config
+        if self.configured {
+            self.config
+        } else {
+            RadioConfig::conservative()
+        }
     }
 
     /// Channels the image selects.
@@ -1374,5 +1401,20 @@ mod tests {
         );
         assert!(Index::empty().is_empty());
         assert_eq!(NO_BANK, 0xFF);
+    }
+
+    #[test]
+    fn an_empty_index_holds_zeros_and_reports_the_conservative_config() {
+        // Zeros let the firmware's static index cost no flash; the accessors
+        // still read as an unprogrammed radio.
+        let empty = Index::empty();
+        assert_eq!(empty.config, super::UNSET_CONFIG);
+        assert!(empty.names.iter().all(|name| *name == 0));
+        assert_eq!(empty.config(), radio_domain::RadioConfig::conservative());
+        assert_ne!(
+            super::UNSET_CONFIG,
+            radio_domain::RadioConfig::conservative()
+        );
+        assert_eq!(super::ABSENT, 0);
     }
 }
