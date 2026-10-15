@@ -1817,7 +1817,13 @@ fn channel_row_editor(
     ui: &mut egui::Ui,
     channel: &mut ChannelDraft,
     shared: SharedSettings,
+    bank_broadcast: bool,
 ) -> Option<RowAction> {
+    // A broadcast channel only receives, so its transmit settings, tones,
+    // bandwidth and power are not shown.
+    let broadcast = bank_broadcast
+        || (!shared.contains(SharedSettings::MODULATION)
+            && channel.modulation == Modulation::Broadcast);
     let own = |ui: &mut egui::Ui, setting: u8, editor: &mut dyn FnMut(&mut egui::Ui)| {
         if shared.contains(setting) {
             ui.weak("from bank");
@@ -1830,38 +1836,44 @@ fn channel_row_editor(
         ui.add(TextEdit::singleline(&mut channel.name).desired_width(120.0));
         ui.end_row();
 
-        ui.label("Receive MHz");
+        ui.label(if broadcast { "MHz" } else { "Receive MHz" });
         ui.add(TextEdit::singleline(&mut channel.receive_mhz).desired_width(120.0));
-        ui.label("Transmit MHz");
-        own(ui, SharedSettings::OFFSET, &mut |ui| {
-            ui.add(TextEdit::singleline(&mut channel.transmit_mhz).desired_width(120.0));
-        });
+        if !broadcast {
+            ui.label("Transmit MHz");
+            own(ui, SharedSettings::OFFSET, &mut |ui| {
+                ui.add(TextEdit::singleline(&mut channel.transmit_mhz).desired_width(120.0));
+            });
+        }
         ui.end_row();
 
-        ui.label("RX tone");
-        own(ui, SharedSettings::RX_TONE, &mut |ui| {
-            tone_editor(ui, "rx", &mut channel.rx_tone);
-        });
-        ui.label("TX tone");
-        own(ui, SharedSettings::TX_TONE, &mut |ui| {
-            tone_editor(ui, "tx", &mut channel.tx_tone);
-        });
-        ui.end_row();
+        if !broadcast {
+            ui.label("RX tone");
+            own(ui, SharedSettings::RX_TONE, &mut |ui| {
+                tone_editor(ui, "rx", &mut channel.rx_tone);
+            });
+            ui.label("TX tone");
+            own(ui, SharedSettings::TX_TONE, &mut |ui| {
+                tone_editor(ui, "tx", &mut channel.tx_tone);
+            });
+            ui.end_row();
+        }
 
         ui.label("Modulation");
         own(ui, SharedSettings::MODULATION, &mut |ui| {
             modulation_editor(ui, &mut channel.modulation);
         });
-        ui.label("Bandwidth");
-        own(ui, SharedSettings::BANDWIDTH, &mut |ui| {
-            bandwidth_editor(ui, &mut channel.bandwidth);
-        });
-        ui.end_row();
+        if !broadcast {
+            ui.label("Bandwidth");
+            own(ui, SharedSettings::BANDWIDTH, &mut |ui| {
+                bandwidth_editor(ui, &mut channel.bandwidth);
+            });
+            ui.end_row();
 
-        ui.label("Power");
-        own(ui, SharedSettings::POWER, &mut |ui| {
-            power_editor(ui, &mut channel.power);
-        });
+            ui.label("Power");
+            own(ui, SharedSettings::POWER, &mut |ui| {
+                power_editor(ui, &mut channel.power);
+            });
+        }
         ui.label("Step Hz");
         own(ui, SharedSettings::STEP, &mut |ui| {
             ui.add(egui::DragValue::new(&mut channel.step_hz).speed(125.0));
@@ -1871,9 +1883,11 @@ fn channel_row_editor(
         ui.label("Flags");
         ui.horizontal_wrapped(|ui| {
             ui.checkbox(&mut channel.scan_skip, "Scan skip");
-            ui.checkbox(&mut channel.busy_lockout, "Busy lockout");
-            ui.checkbox(&mut channel.reverse, "Reverse");
-            ui.checkbox(&mut channel.compander, "Compander");
+            if !broadcast {
+                ui.checkbox(&mut channel.busy_lockout, "Busy lockout");
+                ui.checkbox(&mut channel.reverse, "Reverse");
+                ui.checkbox(&mut channel.compander, "Compander");
+            }
         });
         ui.end_row();
     });
@@ -1919,9 +1933,35 @@ fn bank_header_buttons(ui: &mut egui::Ui) -> Option<BankAction> {
     action
 }
 
+/// Whether every channel in `bank` is a broadcast one, by the modulation the
+/// bank shares or, for a plan, its template.
+fn bank_is_broadcast(bank: &BankDraft) -> bool {
+    bank.modulation == Modulation::Broadcast
+        && (bank.kind == BankKind::Generated || bank.shared.contains(SharedSettings::MODULATION))
+}
+
+/// Keeps broadcast channels simplex, as the radio requires (`ADR-105`).
+///
+/// The editor hides their transmit settings, so a split left over from an
+/// earlier modulation could not be seen or fixed; this clears it instead.
+fn keep_broadcast_simplex(bank: &mut BankDraft) {
+    let whole_bank = bank_is_broadcast(bank);
+    if whole_bank {
+        bank.offset_hz = 0;
+    }
+    if bank.kind == BankKind::Named {
+        for channel in &mut bank.channels {
+            if whole_bank || channel.modulation == Modulation::Broadcast {
+                channel.transmit_mhz.clone_from(&channel.receive_mhz);
+            }
+        }
+    }
+}
+
 /// Draws one bank and, for a channel bank, its channels.
 fn bank_row_editor(ui: &mut egui::Ui, bank: &mut BankDraft) -> Option<BankAction> {
     let mut action = None;
+    keep_broadcast_simplex(bank);
     Grid::new("bank").num_columns(4).show(ui, |ui| {
         ui.label("Name");
         ui.add(TextEdit::singleline(&mut bank.name).desired_width(160.0));
@@ -1959,6 +1999,7 @@ fn bank_row_editor(ui: &mut egui::Ui, bank: &mut BankDraft) -> Option<BankAction
         }
         BankKind::Named => {
             let shared = bank.shared;
+            let whole_bank = bank_is_broadcast(bank);
             ui.indent("channels", |ui| {
                 for (row, channel) in bank.channels.iter_mut().enumerate() {
                     ui.push_id(row, |ui| {
@@ -1966,7 +2007,9 @@ fn bank_row_editor(ui: &mut egui::Ui, bank: &mut BankDraft) -> Option<BankAction
                             .id_salt(row)
                             .default_open(true)
                             .show(ui, |ui| {
-                                if let Some(requested) = channel_row_editor(ui, channel, shared) {
+                                if let Some(requested) =
+                                    channel_row_editor(ui, channel, shared, whole_bank)
+                                {
                                     action = Some(BankAction::Channel(row, requested));
                                 }
                             });
@@ -1999,6 +2042,17 @@ fn shared_settings_editor(ui: &mut egui::Ui, bank: &mut BankDraft) {
         modulation_editor(ui, &mut bank.modulation);
     } else {
         ui.weak("per channel");
+    }
+    // A broadcast bank only receives; the rest would be noise.
+    if bank_is_broadcast(bank) {
+        ui.end_row();
+        if share_toggle(ui, &mut bank.shared, SharedSettings::STEP, "Step Hz") {
+            ui.add(egui::DragValue::new(&mut bank.step_hz).speed(125.0));
+        } else {
+            ui.weak("per channel");
+        }
+        ui.end_row();
+        return;
     }
     if share_toggle(ui, &mut bank.shared, SharedSettings::BANDWIDTH, "Bandwidth") {
         bandwidth_editor(ui, &mut bank.bandwidth);
@@ -2073,23 +2127,26 @@ fn generated_plan_editor(ui: &mut egui::Ui, bank: &mut BankDraft) {
     ui.end_row();
 
     plan_naming_editor(ui, bank);
+    let broadcast = bank.modulation == Modulation::Broadcast;
 
-    ui.label("TX offset Hz");
-    ui.add(
-        egui::DragValue::new(&mut bank.offset_hz)
-            .speed(1_000.0)
-            .range(-50_000_000..=50_000_000),
-    )
-    .on_hover_text(
-        "Zero is simplex. A repeater bank transmits a fixed distance from \
+    if !broadcast {
+        ui.label("TX offset Hz");
+        ui.add(
+            egui::DragValue::new(&mut bank.offset_hz)
+                .speed(1_000.0)
+                .range(-50_000_000..=50_000_000),
+        )
+        .on_hover_text(
+            "Zero is simplex. A repeater bank transmits a fixed distance from \
                  where it receives, such as -600000 for UK 2 m repeaters.",
-    );
-    ui.label(if bank.offset_hz == 0 {
-        "simplex".to_owned()
-    } else {
-        format!("repeater, {:+} kHz", bank.offset_hz / 1_000)
-    });
-    ui.end_row();
+        );
+        ui.label(if bank.offset_hz == 0 {
+            "simplex".to_owned()
+        } else {
+            format!("repeater, {:+} kHz", bank.offset_hz / 1_000)
+        });
+        ui.end_row();
+    }
 
     ui.label("Span");
     match bank.generated_span() {
@@ -2102,21 +2159,27 @@ fn generated_plan_editor(ui: &mut egui::Ui, bank: &mut BankDraft) {
     ui.end_row();
 
     // Every expanded channel shares these settings: they are stored
-    // once with the plan, not once per channel.
-    ui.label("RX tone");
-    tone_editor(ui, "plan-rx", &mut bank.rx_tone);
-    ui.label("TX tone");
-    tone_editor(ui, "plan-tx", &mut bank.tx_tone);
-    ui.end_row();
+    // once with the plan, not once per channel. A broadcast plan only
+    // receives, so its transmit settings, tones, bandwidth and power are not
+    // shown.
+    if !broadcast {
+        ui.label("RX tone");
+        tone_editor(ui, "plan-rx", &mut bank.rx_tone);
+        ui.label("TX tone");
+        tone_editor(ui, "plan-tx", &mut bank.tx_tone);
+        ui.end_row();
+    }
 
     ui.label("Modulation");
     modulation_editor(ui, &mut bank.modulation);
-    ui.label("Bandwidth");
-    bandwidth_editor(ui, &mut bank.bandwidth);
-    ui.end_row();
+    if !broadcast {
+        ui.label("Bandwidth");
+        bandwidth_editor(ui, &mut bank.bandwidth);
+        ui.end_row();
 
-    ui.label("Power");
-    power_editor(ui, &mut bank.power);
+        ui.label("Power");
+        power_editor(ui, &mut bank.power);
+    }
     ui.label("Step Hz");
     ui.add(egui::DragValue::new(&mut bank.step_hz).speed(125.0));
     ui.end_row();
@@ -2124,8 +2187,10 @@ fn generated_plan_editor(ui: &mut egui::Ui, bank: &mut BankDraft) {
     ui.label("Flags");
     ui.horizontal_wrapped(|ui| {
         ui.checkbox(&mut bank.scan_skip, "Scan skip");
-        ui.checkbox(&mut bank.busy_lockout, "Busy lockout");
-        ui.checkbox(&mut bank.compander, "Compander");
+        if !broadcast {
+            ui.checkbox(&mut bank.busy_lockout, "Busy lockout");
+            ui.checkbox(&mut bank.compander, "Compander");
+        }
     });
     ui.end_row();
 }
@@ -3216,6 +3281,51 @@ mod tests {
         app.add_repeaters();
         assert_eq!(app.project.banks.len(), before, "refused, not added");
         assert!(app.status.contains("would not fit"), "{}", app.status);
+    }
+
+    #[test]
+    fn a_broadcast_bank_is_kept_simplex_since_its_transmit_side_is_hidden() {
+        use super::{bank_is_broadcast, keep_broadcast_simplex};
+        use crate::model::{BankDraft, BankKind, ChannelDraft, ProjectModel};
+        use radio_channel_plan::SharedSettings;
+        use radio_domain::Modulation;
+
+        // A channel switched to broadcast keeps the split it had as FM.
+        let station = ChannelDraft {
+            name: "CLASSIC".to_owned(),
+            receive_mhz: "101.5".to_owned(),
+            transmit_mhz: "101.6".to_owned(),
+            modulation: Modulation::Broadcast,
+            step_hz: 100_000,
+            ..ChannelDraft::default()
+        };
+        let mut bank = BankDraft {
+            name: "FM".to_owned(),
+            kind: BankKind::Named,
+            channels: vec![station],
+            ..BankDraft::default()
+        };
+        assert!(!bank_is_broadcast(&bank), "modulation is per channel");
+        let project = |bank: &BankDraft| ProjectModel {
+            banks: vec![bank.clone()],
+            ..ProjectModel::new()
+        };
+        assert!(project(&bank).to_radio_image().is_err());
+        keep_broadcast_simplex(&mut bank);
+        assert_eq!(bank.channels[0].transmit_mhz, "101.5");
+        project(&bank).to_radio_image().expect("simplex broadcast");
+
+        // A bank sharing broadcast also drops a shared offset.
+        bank.shared =
+            SharedSettings::from_bits(SharedSettings::MODULATION | SharedSettings::OFFSET).unwrap();
+        bank.modulation = Modulation::Broadcast;
+        bank.offset_hz = -600_000;
+        assert!(bank_is_broadcast(&bank));
+        keep_broadcast_simplex(&mut bank);
+        assert_eq!(bank.offset_hz, 0);
+        project(&bank)
+            .to_radio_image()
+            .expect("simplex broadcast bank");
     }
 
     #[test]
