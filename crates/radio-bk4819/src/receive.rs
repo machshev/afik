@@ -750,6 +750,25 @@ impl<B: RegisterBus> Bk4819<B> {
         Ok(())
     }
 
+    /// Selects the receive front-end path, VHF or UHF LNA, for `frequency`
+    /// without retuning, from standby or receive.
+    ///
+    /// On the K1 the BK1080 broadcast receiver takes its signal through the
+    /// VHF LNA, so the reference selects it before broadcast plays
+    /// (`EVID-BCFM-066-001`); the outputs hold while the chip sleeps.
+    pub fn select_receive_path(
+        &mut self,
+        frequency: Frequency,
+    ) -> Result<(), DriverError<B::Error>> {
+        if !matches!(
+            self.state,
+            DriverState::Standby | DriverState::Receiving { .. }
+        ) {
+            return Err(DriverError::InvalidState(self.state));
+        }
+        self.select_filter_path(frequency)
+    }
+
     /// Routes or mutes demodulated audio while receiving.
     pub fn set_af_output(
         &mut self,

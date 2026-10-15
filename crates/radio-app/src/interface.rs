@@ -345,20 +345,29 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
     /// sleep; the next ordinary tune wakes it as battery save does.
     fn tune_broadcast(&mut self, setup: ChannelReceiveSetup, radio_wide: SquelchLevel) {
         self.set_speaker(false);
-        // Only a receiving chip has audio to mute; one already asleep, from an
-        // earlier broadcast tune or battery save, is left asleep. Muting a
-        // sleeping chip is refused, which latched RX FAULT on the second
-        // station (`7.0.28`).
-        if self.started
-            && !self.faulted
-            && matches!(self.radio.state(), DriverState::Receiving { .. })
-            && (self
-                .radio
-                .set_af_output(Modulation::Fm, AfOutput::Mute)
-                .is_err()
-                || self.radio.sleep().is_err())
-        {
-            self.faulted = true;
+        // The BK4819 still matters: on the K1 the BK1080 takes its signal
+        // through the VHF LNA the BK4819 switches, so the path is selected as
+        // the reference's `FM_Start` does, even straight after power-on, and
+        // holds while the chip sleeps. Without it a broadcast channel after
+        // PMR446 sat on the UHF LNA in silence (`7.0.35`).
+        if !self.started {
+            self.bring_up();
+        }
+        if !self.faulted {
+            // Only a receiving chip has audio to mute; muting a sleeping one
+            // is refused, which latched RX FAULT on the second station
+            // (`7.0.28`).
+            let receiving = matches!(self.radio.state(), DriverState::Receiving { .. });
+            let failed = (receiving
+                && self
+                    .radio
+                    .set_af_output(Modulation::Fm, AfOutput::Mute)
+                    .is_err())
+                || self.radio.select_receive_path(setup.frequency).is_err()
+                || self.radio.sleep().is_err();
+            if failed {
+                self.faulted = true;
+            }
         }
         self.audio_routed = false;
         self.asleep = false;
@@ -2845,6 +2854,59 @@ mod tests {
         assert!(!receiver.on_broadcast && !receiver.faulted);
         assert_eq!(receiver.broadcast.powered_down, 1);
         assert!(receiver.audio_routed);
+    }
+
+    #[test]
+    fn broadcast_selects_the_vhf_lna_the_k1_bk1080_listens_through() {
+        use super::Receiver;
+        use radio_channel_control::ChannelReceiveSetup;
+        use radio_domain::{Bandwidth, Frequency, FrequencyStep, Modulation, SquelchLevel, Tone};
+
+        const GPIO_OUT: usize = 0x33;
+        const UHF_LNA: u16 = 0x08;
+        const VHF_LNA: u16 = 0x04;
+        let setup = |hz, modulation| ChannelReceiveSetup {
+            frequency: Frequency::from_hz(hz).unwrap(),
+            modulation,
+            bandwidth: Bandwidth::Narrow,
+            tone: Tone::None,
+            squelch: SquelchLevel::CONSERVATIVE,
+            step: FrequencyStep::from_hz(100_000).unwrap(),
+        };
+
+        // Straight after power-on, before the BK4819 has tuned anything.
+        let chip = Shared::new();
+        let mut receiver = Receiver::new(
+            radio_bk4819::Bk4819::new(chip.clone()),
+            Chip::default(),
+            Amplifier::default(),
+        );
+        receiver.tune(
+            setup(101_500_000, Modulation::Broadcast),
+            SquelchLevel::CONSERVATIVE,
+        );
+        assert!(receiver.started && !receiver.faulted);
+        assert_eq!(chip.get(GPIO_OUT) & (UHF_LNA | VHF_LNA), VHF_LNA);
+
+        // After PMR446 on the UHF LNA.
+        receiver.tune(
+            setup(446_006_250, Modulation::Fm),
+            SquelchLevel::CONSERVATIVE,
+        );
+        assert_eq!(chip.get(GPIO_OUT) & (UHF_LNA | VHF_LNA), UHF_LNA);
+        receiver.tune(
+            setup(101_500_000, Modulation::Broadcast),
+            SquelchLevel::CONSERVATIVE,
+        );
+        assert!(!receiver.faulted);
+        assert_eq!(chip.get(GPIO_OUT) & (UHF_LNA | VHF_LNA), VHF_LNA);
+        // And on to the next station, the BK4819 already asleep.
+        receiver.tune(
+            setup(101_600_000, Modulation::Broadcast),
+            SquelchLevel::CONSERVATIVE,
+        );
+        assert!(!receiver.faulted);
+        assert_eq!(chip.get(GPIO_OUT) & (UHF_LNA | VHF_LNA), VHF_LNA);
     }
 
     #[test]
