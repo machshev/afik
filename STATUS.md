@@ -107,8 +107,12 @@ channels have a transmit side in the studio, so AM and USB channels, banks
 and plans, airport banks among them, are receive-only like broadcast; and
 channel rows start collapsed. Gate: `cargo fmt --all --check` clean,
 `cargo clippy --workspace --all-targets -- -D warnings` clean, `cargo test
---workspace` 833 passed 0 failed. Next: write a bank for the operator's
-locator to the K5 and listen to the local tower or ATIS.
+--workspace` 833 passed 0 failed. Studio (operator request): banks are
+reordered by dragging a grip on their header (`ProjectModel::move_bank_to`);
+Up and Down stay for the keyboard. Gate: fmt clean, workspace clippy `-D
+warnings` clean, `cargo test --workspace` 835 passed 0 failed. Next: write a
+bank for the operator's locator to the K5 and listen to the local tower or
+ATIS.
 
 **`BCFM-066` is active alongside** (2026-10-15, operator request,
 `ADR-105`): FM broadcast on K5 and K1 through their BK1080, stations
