@@ -8,6 +8,7 @@ extern crate std;
 pub mod aux_inputs;
 pub mod backlight;
 pub mod battery;
+pub mod bk1080_bus;
 pub mod bk4819_bus;
 pub mod clock_handoff;
 #[cfg(test)]
@@ -22,6 +23,8 @@ pub mod platform_display;
 pub mod protocol;
 #[cfg(feature = "py32f071-battery")]
 pub mod py32f071_battery;
+#[cfg(feature = "py32f071-bk1080")]
+pub mod py32f071_bk1080;
 #[cfg(feature = "py32f071-bk4819")]
 pub mod py32f071_bk4819;
 #[cfg(feature = "py32f071-clock-handoff")]

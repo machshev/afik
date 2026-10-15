@@ -113,7 +113,16 @@ programmed as ordinary banks.
   the reference seek test. A bus failure makes the next tune start from the
   table. Gate: `cargo fmt --all --check` clean, workspace clippy `-D
   warnings` clean, `cargo test --workspace` 785 passed 0 failed.
-- Next: step 3, the K5 (shared EEPROM I2C, PB15) and K1 (PF5/PF6) buses.
+- Step 3: the BK1080 I2C framing (`radio_bk1080::I2cRegisters` over a
+  byte-level `TwoWire`) is host tested. The K5 reaches the chip over the
+  EEPROM's `K5Bus` with PB15 as the enable line, high from boot; the K1 over
+  a new bit-banged bus on PF5/PF6 (`bk1080_bus`, host tested, and
+  `py32f071_bk1080`). `interface::run` takes the chip and powers it down at
+  start-up, as the reference does. Gate: `cargo fmt --all --check` clean,
+  workspace clippy `-D warnings` clean, `cargo test --workspace` 796 passed 0
+  failed, `tool/build-k5.sh --release` (flash image end `0x0000ece0` of
+  `0x0000f000`) and `tool/build-k1.sh --release` (69612 bytes) pass.
+- Next: step 4, play a broadcast slot on the BK1080.
 
 **`DUALW-064` is active alongside** (2026-10-14, operator request,
 `ADR-102`): two slots and dual watch.

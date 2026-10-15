@@ -112,6 +112,15 @@ pub trait Memory {
     }
 }
 
+/// The broadcast receiver (`ADR-105`): the target's BK1080 over its own bus,
+/// and a blocking delay for the chip's start-up and tune waits.
+pub struct Broadcast<F, W> {
+    /// The chip.
+    pub chip: radio_bk1080::Bk1080<F>,
+    /// Busy-waits the chip's sequences.
+    pub delay: W,
+}
+
 /// What differs between targets beyond their drivers.
 #[derive(Clone, Copy, Debug)]
 pub struct Target {

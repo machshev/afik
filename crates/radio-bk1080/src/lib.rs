@@ -8,6 +8,10 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+mod i2c;
+
+pub use i2c::{I2cRegisters, NotAcknowledged, TwoWire};
+
 use radio_domain::{Frequency, Modulation, BROADCAST_RASTER_HZ};
 
 /// Power configuration: enabled, audio on.

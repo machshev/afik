@@ -41,7 +41,7 @@ use radio_platform::tx_control::{self, Action, Controller as TxController, State
 use radio_tx_policy::{TxDenied, TxRequest, TxState};
 
 use crate::configuration::Programmed;
-use crate::drivers::{BatterySense, Display, Keypad, Memory, Speaker, Target};
+use crate::drivers::{BatterySense, Broadcast, Display, Keypad, Memory, Speaker, Target};
 use crate::keys::{Debouncer, Edge};
 use crate::operator_state::{OperatorState, OtherSlot};
 use crate::serial::read_image;
@@ -694,18 +694,19 @@ fn vfo_source<M>(slot: Slot, tx_power: u8) -> Option<Listening<M>> {
 /// the transmitter idle, so the radio is left receiving and the serial task
 /// keeps answering the host.
 ///
-/// `radio` is the target's BK4819 with its register bus and profile, and
-/// `battery` carries the target's discharge curve.
+/// `radio` is the target's BK4819 with its register bus and profile,
+/// `broadcast` its BK1080, and `battery` carries the target's discharge curve.
 ///
 /// # Panics
 ///
 /// Only on a broken internal invariant: a staged squelch level or a validated
 /// shared channel that has gone missing.
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
-pub async fn run<D, K, B, S, V, M>(
+pub async fn run<D, K, B, F, W, S, V, M>(
     mut display: D,
     mut keypad: K,
     radio: Bk4819<B>,
+    mut broadcast: Broadcast<F, W>,
     speaker: S,
     mut battery_sense: V,
     mut battery: Battery,
@@ -715,10 +716,15 @@ pub async fn run<D, K, B, S, V, M>(
     D: Display,
     K: Keypad,
     B: RegisterBus,
+    F: radio_bk1080::RegisterBus,
+    W: radio_bk1080::Delay,
     S: Speaker,
     V: BatterySense,
     M: Memory,
 {
+    // The broadcast receiver starts powered down, as the reference firmware
+    // leaves it at boot, until a broadcast channel is selected.
+    let _ = broadcast.chip.power_down();
     let mut frame = [0_u8; FRAME_BYTES];
     render_info_screen(
         &mut frame,

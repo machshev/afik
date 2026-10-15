@@ -17,8 +17,9 @@ use core::panic::PanicInfo;
 use cortex_m as _;
 use embassy_executor::Executor;
 use embassy_time::{Duration, Timer};
-use radio_app::drivers::{LinkError, SerialLink, Target};
+use radio_app::drivers::{Broadcast, LinkError, SerialLink, Target};
 use radio_app::TaskCell;
+use radio_bk1080::{Bk1080, I2cRegisters};
 use radio_bk4819::Bk4819;
 use radio_dp32g030::clock;
 use radio_dp32g030::dma::CircularReceiver;
@@ -32,6 +33,7 @@ use radio_dp32g030::UART1_BASE;
 use radio_firmware_k5::audio::SpeakerGate;
 use radio_firmware_k5::battery;
 use radio_firmware_k5::bk4819_bus::{K5Pins, K5RegisterBus};
+use radio_firmware_k5::broadcast::K5Broadcast;
 use radio_firmware_k5::display::K5Display;
 use radio_firmware_k5::drivers::{K5Battery, K5Keypad};
 use radio_firmware_k5::eeprom::{self, K5Bus};
@@ -133,6 +135,12 @@ impl Delay for BlockingDelay {
     }
 }
 
+impl radio_bk1080::Delay for BlockingDelay {
+    fn delay_ms(&mut self, milliseconds: u32) {
+        Delay::delay_ms(self, milliseconds);
+    }
+}
+
 fn main() -> ! {
     // The ports are gated on beside the UART, and the two pins are given an
     // explicit direction, because `AFIK-K5-1.0` did neither and was silent:
@@ -170,6 +178,8 @@ fn main() -> ! {
     let speaker = SpeakerGate::initialise();
     let keypad = K5Keypad::initialise();
     let radio = Bk4819::new(K5RegisterBus::new(K5Pins::initialise()));
+    // PB15 high leaves the BK1080 off until a broadcast channel is chosen.
+    let broadcast = Bk1080::new(I2cRegisters(K5Broadcast::initialise()));
 
     // SAFETY: `main` never returns and is the only code to touch this static,
     // so the executor lives for the rest of the image and is borrowed once.
@@ -185,8 +195,14 @@ fn main() -> ! {
             .expect("one serial task"),
         );
         spawner.spawn(
-            interface_task(K5Display::new(BlockingDelay), keypad, radio, speaker)
-                .expect("one interface task"),
+            interface_task(
+                K5Display::new(BlockingDelay),
+                keypad,
+                radio,
+                broadcast,
+                speaker,
+            )
+            .expect("one interface task"),
         );
     });
 }
@@ -203,12 +219,17 @@ fn interface_task(
     display: K5Display<BlockingDelay>,
     keypad: K5Keypad,
     radio: Bk4819<K5RegisterBus<K5Pins>>,
+    broadcast: Bk1080<I2cRegisters<K5Broadcast>>,
     speaker: SpeakerGate,
 ) -> impl Future<Output = ()> {
     radio_app::interface::run(
         display,
         keypad,
         radio,
+        Broadcast {
+            chip: broadcast,
+            delay: BlockingDelay,
+        },
         speaker,
         K5Battery,
         battery::new(),

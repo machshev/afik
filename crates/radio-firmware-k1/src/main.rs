@@ -23,12 +23,14 @@ use py32_hal::pac::RCC;
 use py32_hal::peripherals::{PA0, PA1, PA2, PA3, PA8, SPI1, SPI2};
 use py32_hal::spi::SpiTx;
 use py32_hal::usart::Uart;
-use radio_app::drivers::{Display, Keypad, LinkError, SerialLink, Speaker, Target};
+use radio_app::drivers::{Broadcast, Display, Keypad, LinkError, SerialLink, Speaker, Target};
 use radio_app::keys::Sample;
 use radio_app::operator_state::OperatorState;
 use radio_app::TaskCell;
+use radio_bk1080::{Bk1080, I2cRegisters};
 use radio_bk4819::{Bk4819, BK4829_PROFILE};
 use radio_firmware_k1::battery::Calibration;
+use radio_firmware_k1::bk1080_bus::BitBang;
 use radio_firmware_k1::bk4819_bus::ThreeWireBus;
 use radio_firmware_k1::display::{
     MemoryState, ResetCause, COLUMN_OFFSET, FRAME_BYTES, PAGES, SETUP_COMMANDS, WIDTH,
@@ -36,6 +38,7 @@ use radio_firmware_k1::display::{
 use radio_firmware_k1::keypad::{decode, KeypadScan};
 use radio_firmware_k1::memory_view::{fill_place, locate, ViewSpan};
 use radio_firmware_k1::py32f071_battery::BatterySense;
+use radio_firmware_k1::py32f071_bk1080::Bk1080Pins;
 use radio_firmware_k1::py32f071_bk4819::Bk4819Pins;
 use radio_firmware_k1::py32f071_eeprom::{RetainError, RetainedConfiguration};
 use radio_firmware_k1::py32f071_runtime::{compose, K1RuntimePeripherals};
@@ -135,6 +138,11 @@ fn main() -> ! {
         Output::new(p.PB8, Level::High, Speed::High),
         Flex::new(p.PB9),
     );
+    // The BK1080's own two-wire bus; the chip has no enable line here.
+    let broadcast_pins = Bk1080Pins::new(
+        Output::new(p.PF5, Level::High, Speed::VeryHigh),
+        Flex::new(p.PF6),
+    );
 
     // SAFETY: `main` never returns, so this stack allocation lives for the
     // executor's complete lifetime and no other mutable reference is retained.
@@ -157,6 +165,7 @@ fn main() -> ! {
             display,
             keypad,
             radio_pins,
+            broadcast_pins,
             K1Speaker {
                 pin: Some(p.PA8),
                 output: None,
@@ -183,6 +192,7 @@ fn ui_task(
     display: DisplayPins,
     keypad: KeypadPins,
     radio_pins: Bk4819Pins,
+    broadcast_pins: Bk1080Pins,
     speaker: K1Speaker,
     battery_sense: BatterySense,
 ) -> impl Future<Output = ()> {
@@ -193,12 +203,25 @@ fn ui_task(
         display,
         keypad,
         radio,
+        Broadcast {
+            chip: Bk1080::new(I2cRegisters(BitBang(broadcast_pins))),
+            delay: BlockingDelay,
+        },
         speaker,
         battery_sense,
         radio_firmware_k1::battery::new(),
         K1,
         &MEMORY,
     )
+}
+
+/// Busy-waits on the time driver, for the BK1080's start-up and tune waits.
+struct BlockingDelay;
+
+impl radio_bk1080::Delay for BlockingDelay {
+    fn delay_ms(&mut self, milliseconds: u32) {
+        embassy_time::block_for(embassy_time::Duration::from_millis(u64::from(milliseconds)));
+    }
 }
 
 #[allow(unsafe_code)]

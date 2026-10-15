@@ -28,6 +28,7 @@ py32f071-usart1 = [
 py32f071-spi1 = ["py32f071-hal-inventory"]
 py32f071-eeprom = ["py32f071-hal-inventory", "dep:embassy-time"]
 py32f071-bk4819 = ["py32f071-hal-inventory", "dep:cortex-m"]
+py32f071-bk1080 = ["py32f071-hal-inventory", "dep:cortex-m"]
 py32f071-battery = ["py32f071-hal-inventory"]
 py32f071-runtime-composition = [
     "embassy-runtime",
@@ -52,6 +53,7 @@ serial-drop-bytes = ["radio-app/serial-drop-bytes"]
 firmware = [
     "py32f071-runtime-init",
     "py32f071-bk4819",
+    "py32f071-bk1080",
     "py32f071-battery",
     "py32f071-eeprom",
     "dep:embassy-time",
@@ -62,6 +64,7 @@ firmware = [
 
 [dependencies]
 radio-app = { path = "../radio-app" }
+radio-bk1080 = { path = "../radio-bk1080" }
 radio-bk4819 = { path = "../radio-bk4819" }
 radio-eeprom = { path = "../radio-eeprom" }
 radio-storage = { path = "../radio-storage" }

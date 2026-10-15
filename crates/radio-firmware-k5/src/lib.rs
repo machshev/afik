@@ -8,6 +8,7 @@ extern crate std;
 pub mod audio;
 pub mod battery;
 pub mod bk4819_bus;
+pub mod broadcast;
 pub mod display;
 pub mod drivers;
 pub mod eeprom;

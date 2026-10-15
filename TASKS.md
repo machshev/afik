@@ -3117,7 +3117,7 @@
      64–108 MHz, off the 100 kHz raster or with a TX frequency; studio
      modulation choice and FM broadcast default sets. Done.
   2. `radio-bk1080` driver over a register bus, host tested. Done.
-  3. K5 bus (shared EEPROM I2C, PB15 enable) and K1 bus (PF5/PF6).
+  3. K5 bus (shared EEPROM I2C, PB15 enable) and K1 bus (PF5/PF6). Done.
   4. The interface plays a broadcast slot on the BK1080, BK4819 audio muted,
      and returns to the BK4819 for any other channel; simulator support.
   5. Version bump, flash both radios and listen.
