@@ -585,8 +585,10 @@ failed 2 ignored, `tool/test-k5-mem.sh` passes, `tool/build-k5.sh
 --release` (image end `0x0000e58c`), `tool/verify-k5-image.sh` and
 `tool/build-k1.sh --release` (73284 bytes) pass. `7.0.38` (`983f25e`, also
 `98a8fec` K1 broadcast LNA) flashed to the K1 (bootloader `7.03.01`, CRC-32
-`23be533e`, 287 pages acknowledged, not read back); the K5 is still on
-`7.0.37`. Next: K1 PMR446 squelch shut on noise at SQL 1-9 and open on a
+`23be533e`, 287 pages acknowledged, not read back). The K5 got `7.0.38`
+too, built from `983f25e` in a clean worktree (image end `0x0000e58c`,
+bootloader `2.00.06` confirmed by `identify` first, CRC-32 `6534be8a`,
+240/240 pages acknowledged, not read back). Next: K1 PMR446 squelch shut on noise at SQL 1-9 and open on a
 signal; K1 broadcast; then flash the K5 and check its squelch.
 
 **`TXK5-059` was paused** (2026-10-14) for `TXRANGE-062`; `TXK1-060` was started alongside.
