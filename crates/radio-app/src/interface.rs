@@ -7,7 +7,8 @@
 
 use embassy_time::{Duration, Instant, Timer};
 use radio_bk4819::{
-    AfOutput, Bk4819, ReadbackRegister, ReceiveSetup, RegisterBus, SquelchThresholds, ToneStatus,
+    AfOutput, Bk4819, DriverState, ReadbackRegister, ReceiveSetup, RegisterBus, SquelchThresholds,
+    ToneStatus,
 };
 use radio_channel_control::{
     BankedReceiveController, ChannelReceiveSetup, ChannelSelection, ChannelSource,
@@ -357,8 +358,13 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
     /// sleep; the next ordinary tune wakes it as battery save does.
     fn tune_broadcast(&mut self, setup: ChannelReceiveSetup, radio_wide: SquelchLevel) {
         self.set_speaker(false);
+        // Only a receiving chip has audio to mute; one already asleep, from an
+        // earlier broadcast tune or battery save, is left asleep. Muting a
+        // sleeping chip is refused, which latched RX FAULT on the second
+        // station (`7.0.28`).
         if self.started
             && !self.faulted
+            && matches!(self.radio.state(), DriverState::Receiving { .. })
             && (self
                 .radio
                 .set_af_output(Modulation::Fm, AfOutput::Mute)
@@ -2628,6 +2634,13 @@ mod tests {
             "silent until a reading"
         );
         assert!(!receiver.audio_routed, "the BK4819's audio stays off");
+        // Stepping to the next station leaves the sleeping BK4819 alone.
+        receiver.tune(
+            setup(97_700_000, Modulation::Broadcast),
+            SquelchLevel::CONSERVATIVE,
+        );
+        assert!(!receiver.faulted, "a second station must not fault");
+        assert_eq!(receiver.broadcast.tuned, Some(97_700_000));
 
         // Between stations the squelch stays shut; a station opens it.
         let reading = receiver.observe(true).unwrap();
