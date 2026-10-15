@@ -1,0 +1,14 @@
+[package]
+name = "radio-bk1080"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "BK1080 FM broadcast receiver driver over a register bus"
+
+[dependencies]
+radio-domain = { path = "../radio-domain" }
+
+[lints]
+workspace = true

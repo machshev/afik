@@ -5,6 +5,7 @@ members = [
     "crates/radio-aprs",
     "crates/radio-app",
     "crates/radio-bk4819",
+    "crates/radio-bk1080",
     "crates/radio-dp32g030",
     "crates/radio-firmware-k1",
     "crates/radio-firmware-k5",

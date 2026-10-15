@@ -106,7 +106,14 @@ programmed as ordinary banks.
   --workspace --all-targets -- -D warnings` clean, `cargo test --workspace`
   780 passed 0 failed, `tool/build-k5.sh --release` and
   `tool/build-k1.sh --release` pass.
-- Next: step 2, the `radio-bk1080` driver over a register bus.
+- Step 2: `radio-bk1080`, a `no_std` driver over a logical register bus with
+  an optional enable line: the reference table and calibration toggle on
+  first power-up, re-enable after, tune by 100 kHz channel and strobe in band
+  1 (76–108) or band 3 (64–76), mute, power down, and a signal reading with
+  the reference seek test. A bus failure makes the next tune start from the
+  table. Gate: `cargo fmt --all --check` clean, workspace clippy `-D
+  warnings` clean, `cargo test --workspace` 785 passed 0 failed.
+- Next: step 3, the K5 (shared EEPROM I2C, PB15) and K1 (PF5/PF6) buses.
 
 **`DUALW-064` is active alongside** (2026-10-14, operator request,
 `ADR-102`): two slots and dual watch.
