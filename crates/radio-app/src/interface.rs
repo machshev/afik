@@ -7,7 +7,7 @@
 
 use embassy_time::{Duration, Instant, Timer};
 use radio_bk4819::{
-    AfOutput, Bk4819, ReadbackRegister, ReceiveSetup, RegisterBus, SquelchThresholds,
+    AfOutput, Bk4819, ReadbackRegister, ReceiveSetup, RegisterBus, SquelchThresholds, ToneStatus,
 };
 use radio_channel_control::{
     BankedReceiveController, ChannelReceiveSetup, ChannelSelection, ChannelSource,
@@ -170,6 +170,10 @@ struct Receiver<B: RegisterBus, S: Speaker, C: BroadcastChip> {
     asleep: bool,
     /// The last tuned setup and radio-wide squelch, restored after TX.
     last_tune: Option<(ChannelReceiveSetup, SquelchLevel)>,
+    /// A tone heard on the open squelch of a channel without a receive tone.
+    heard_tone: Option<Tone>,
+    /// The last tone read and how many readings after it agreed.
+    tone_reading: Option<(Tone, u8)>,
 }
 
 impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
@@ -188,6 +192,8 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
             squelch_open: false,
             asleep: false,
             last_tune: None,
+            heard_tone: None,
+            tone_reading: None,
         }
     }
 
@@ -303,6 +309,8 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
     /// A level the controller has already forced open is left alone: that is
     /// monitoring, and monitoring outranks both.
     fn tune(&mut self, setup: ChannelReceiveSetup, radio_wide: SquelchLevel) {
+        // A tone heard on the previous channel says nothing about this one.
+        self.forget_tone();
         if matches!(setup.modulation, Modulation::Broadcast) {
             self.tune_broadcast(setup, radio_wide);
             return;
@@ -392,16 +400,24 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
         if self.faulted || !self.started {
             return None;
         }
-        match self.radio.receive_metrics(Tone::None) {
+        let tone = self.last_tune.map_or(Tone::None, |(setup, _)| setup.tone);
+        match self.radio.receive_metrics(tone) {
             Ok(metrics) => {
                 self.rssi_raw = u16::try_from(metrics.rssi_dbm_x2 + 320).unwrap_or(0);
-                self.squelch_open = metrics.squelch_open;
+                // A receive tone keeps the squelch, and the meter, shut until
+                // it is found.
+                self.squelch_open = metrics.should_unmute();
+                if tone == Tone::None && metrics.squelch_open {
+                    self.hear_tone();
+                } else {
+                    self.forget_tone();
+                }
                 if gate_locally {
                     self.gate_audio();
                 }
                 Some(ReceiveObservation {
                     squelch_open: metrics.squelch_open,
-                    tone_matched: None,
+                    tone_matched: metrics.tone.map(|status| status == ToneStatus::Matched),
                 })
             }
             Err(_) => {
@@ -409,6 +425,35 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
                 None
             }
         }
+    }
+
+    /// Reads the tone the chip hears and shows it once it is certain: a DCS
+    /// word carries its own check, and a CTCSS tone must read the same three
+    /// times running, as the reference's tone scan requires
+    /// (`SCAN_CSS_STATE_SCANNING`).
+    fn hear_tone(&mut self) {
+        let tone = match self.radio.detected_tone() {
+            Ok(Some(tone)) => tone,
+            Ok(None) => return,
+            Err(_) => {
+                self.faulted = true;
+                return;
+            }
+        };
+        let agreed = match self.tone_reading {
+            Some((last, agreed)) if last == tone => agreed.saturating_add(1),
+            _ => 0,
+        };
+        self.tone_reading = Some((tone, agreed));
+        if matches!(tone, Tone::Dcs { .. }) || agreed >= 2 {
+            self.heard_tone = Some(tone);
+        }
+    }
+
+    /// Clears the heard tone when the squelch closes or the channel changes.
+    fn forget_tone(&mut self) {
+        self.heard_tone = None;
+        self.tone_reading = None;
     }
 
     /// Sleeps the chip for battery save, silencing the speaker first.
@@ -2065,6 +2110,11 @@ fn slot_channel<'a, B: RegisterBus, S: Speaker, C: BroadcastChip, M: Memory>(
         meter: receiver
             .filter(|receiver| receiver.squelch_open)
             .map(|receiver| receiver.rssi_raw),
+        tx_tone: channel.tx_tone(),
+        rx_tone: controller.setup().tone,
+        heard_tone: receiver
+            .filter(|receiver| receiver.squelch_open)
+            .and_then(|receiver| receiver.heard_tone),
     })
 }
 
@@ -2403,6 +2453,98 @@ mod tests {
         fn read(&mut self, address: radio_bk4819::RegisterAddress) -> Result<u16, ()> {
             Ok(self.0[usize::from(address.get())])
         }
+    }
+
+    /// A BK4819 register file the test can still set once the receiver owns it.
+    #[derive(Clone)]
+    struct Shared(std::rc::Rc<core::cell::RefCell<[u16; 128]>>);
+
+    impl Shared {
+        fn new() -> Self {
+            Self(std::rc::Rc::new(core::cell::RefCell::new([0; 128])))
+        }
+
+        fn set(&self, address: usize, value: u16) {
+            self.0.borrow_mut()[address] = value;
+        }
+    }
+
+    impl radio_bk4819::RegisterBus for Shared {
+        type Error = ();
+        fn write(&mut self, address: radio_bk4819::RegisterAddress, value: u16) -> Result<(), ()> {
+            self.0.borrow_mut()[usize::from(address.get())] = value;
+            Ok(())
+        }
+        fn read(&mut self, address: radio_bk4819::RegisterAddress) -> Result<u16, ()> {
+            Ok(self.0.borrow()[usize::from(address.get())])
+        }
+    }
+
+    #[test]
+    fn an_open_squelch_shows_the_tone_heard_and_a_receive_tone_holds_it_shut() {
+        use super::Receiver;
+        use radio_channel_control::ChannelReceiveSetup;
+        use radio_domain::{Bandwidth, Frequency, FrequencyStep, Modulation, SquelchLevel, Tone};
+
+        const SQUELCH_STATUS: usize = 0x0C;
+        const CTCSS_SCAN: usize = 0x68;
+        const CDCSS_HIGH: usize = 0x69;
+        const CDCSS_LOW: usize = 0x6A;
+        let setup = |tone| ChannelReceiveSetup {
+            frequency: Frequency::from_hz(145_500_000).unwrap(),
+            modulation: Modulation::Fm,
+            bandwidth: Bandwidth::Narrow,
+            tone,
+            squelch: SquelchLevel::CONSERVATIVE,
+            step: FrequencyStep::from_hz(12_500).unwrap(),
+        };
+        let chip = Shared::new();
+        let mut receiver = Receiver::new(
+            radio_bk4819::Bk4819::new(chip.clone()),
+            Chip::default(),
+            Amplifier::default(),
+        );
+        receiver.tune(setup(Tone::None), SquelchLevel::CONSERVATIVE);
+        assert!(receiver.started && !receiver.faulted);
+
+        // A carrier with 88.5 Hz on it: shown on the third agreeing reading.
+        chip.set(SQUELCH_STATUS, 0x0002);
+        chip.set(CDCSS_HIGH, 0x8000);
+        chip.set(CTCSS_SCAN, 1828);
+        for _ in 0..2 {
+            assert!(receiver.observe(true).unwrap().squelch_open);
+            assert_eq!(receiver.heard_tone, None);
+        }
+        receiver.observe(true).unwrap();
+        assert_eq!(receiver.heard_tone, Some(Tone::Ctcss(885)));
+        // The squelch closing forgets it.
+        chip.set(SQUELCH_STATUS, 0);
+        receiver.observe(true).unwrap();
+        assert_eq!(receiver.heard_tone, None);
+
+        // A DCS word is shown at once.
+        chip.set(SQUELCH_STATUS, 0x0002);
+        chip.set(CDCSS_HIGH, 0x0763);
+        chip.set(CDCSS_LOW, 0x0813);
+        receiver.observe(true).unwrap();
+        assert_eq!(
+            receiver.heard_tone,
+            Some(Tone::Dcs {
+                code: 23,
+                inverted: false
+            })
+        );
+
+        // Retuning forgets it too; with a receive tone the carrier alone
+        // neither opens the squelch nor draws the meter.
+        receiver.tune(setup(Tone::Ctcss(885)), SquelchLevel::CONSERVATIVE);
+        assert_eq!(receiver.heard_tone, None);
+        chip.set(SQUELCH_STATUS, 0x0002);
+        let observation = receiver.observe(true).unwrap();
+        assert!(observation.squelch_open);
+        assert_eq!(observation.tone_matched, Some(false));
+        assert!(!receiver.squelch_open && !receiver.speaker.on);
+        assert_eq!(receiver.heard_tone, None);
     }
 
     #[derive(Default)]

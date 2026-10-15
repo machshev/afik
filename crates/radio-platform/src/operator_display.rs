@@ -5,7 +5,7 @@ use crate::operator_shell::TX_POWER_NOMINAL_MW;
 use crate::receive_app::Key;
 use crate::s_meter::{self, SReading};
 use radio_bk4819::SquelchThresholds;
-use radio_domain::{Bandwidth, Modulation, SquelchLevel, TxClass};
+use radio_domain::{Bandwidth, Modulation, SquelchLevel, Tone, TxClass};
 
 /// Visible display width in columns.
 pub const WIDTH: usize = 128;
@@ -269,6 +269,12 @@ pub struct SlotChannel<'a> {
     /// The chip's raw RSSI count while the receiver is on this slot and its
     /// squelch is open; no meter is drawn otherwise.
     pub meter: Option<u16>,
+    /// CTCSS or DCS sent when transmitting on this channel.
+    pub tx_tone: Tone,
+    /// CTCSS or DCS the receiver requires before it opens.
+    pub rx_tone: Tone,
+    /// A tone heard on the open squelch of a channel without a receive tone.
+    pub heard_tone: Option<Tone>,
 }
 
 /// Where one slot's channel sits.
@@ -629,7 +635,8 @@ const SLOT_B_Y: usize = 38;
 const SLOT_TEXT_X: usize = 10;
 
 /// Draws one slot in three rows: letter, name and place; frequency,
-/// modulation and power; and the meter while its squelch is open.
+/// modulation and power; and the meter while its squelch is open, else the
+/// channel's TX and RX tones.
 fn draw_slot(frame: &mut [u8; FRAME_BYTES], y: usize, slot: &SlotView<'_>) {
     if slot.selected {
         draw_inverted(frame, 0, y, slot.letter);
@@ -667,33 +674,100 @@ fn draw_slot(frame: &mut [u8; FRAME_BYTES], y: usize, slot: &SlotView<'_>) {
     draw_text(frame, WIDTH - 7 * 6, y + 9, &mode);
     draw_text(frame, WIDTH - 2 * 6, y + 9, &power_label(channel.power));
     if let Some(rssi_raw) = channel.meter {
-        draw_meter(frame, y + 18, rssi_raw, channel.frequency_hz);
+        // The receive tone, or one heard on a channel without one, is what
+        // opened this squelch.
+        let tone = match channel.rx_tone {
+            Tone::None => channel.heard_tone,
+            tone => Some(tone),
+        };
+        draw_meter(frame, y + 18, rssi_raw, channel.frequency_hz, tone);
+    } else {
+        for (x, marker, tone) in [
+            (SLOT_TEXT_X, b'T', channel.tx_tone),
+            (SLOT_TEXT_X + TONE_FIELD_BYTES * 6, b'R', channel.rx_tone),
+        ] {
+            if tone.is_some() {
+                draw_text(frame, x, y + 18, &[marker]);
+                draw_text(frame, x + 6, y + 18, &tone_label(tone));
+            }
+        }
+    }
+}
+
+/// Bytes of one tone field on the tone row: its marker, the tone and a gap.
+const TONE_FIELD_BYTES: usize = 7;
+
+/// A tone in five bytes: CTCSS hertz such as ` 88.5` or `123.0`, or a DCS
+/// code and polarity such as `D023N` or `D754I`.
+#[must_use]
+pub fn tone_label(tone: Tone) -> [u8; 5] {
+    let digit = |value: u16| b'0' + u8::try_from(value % 10).unwrap_or(0);
+    match tone {
+        Tone::None => *b"     ",
+        Tone::Ctcss(tenths) => {
+            let hundreds = if tenths >= 1_000 {
+                digit(tenths / 1_000)
+            } else {
+                b' '
+            };
+            [
+                hundreds,
+                digit(tenths / 100),
+                digit(tenths / 10),
+                b'.',
+                digit(tenths),
+            ]
+        }
+        Tone::Dcs { code, inverted } => [
+            b'D',
+            digit(code / 100),
+            digit(code / 10),
+            digit(code),
+            if inverted { b'I' } else { b'N' },
+        ],
     }
 }
 
 /// Pixel columns in one meter segment, the last of them a gap.
 const METER_SEGMENT: usize = 4;
-/// Left column of the meter's S reading, after the bar.
-const METER_LABEL_X: usize = SLOT_TEXT_X + s_meter::SEGMENTS as usize * METER_SEGMENT + 2;
+/// Narrower segments, so a tone fits where the dBm reading was.
+const METER_SEGMENT_WITH_TONE: usize = 3;
 
 /// Draws the calibrated S meter (`s_meter`): a bar of one segment per S unit
 /// and a taller one per 10 dB over S9, the reading such as `S9+20`, and the
-/// carrier in dBm at the right. An open squelch always draws at least one
-/// segment, so the meter is never present but empty.
-fn draw_meter(frame: &mut [u8; FRAME_BYTES], y: usize, rssi_raw: u16, frequency_hz: u32) {
+/// carrier in dBm at the right, or `tone` there in a narrower bar. An open
+/// squelch always draws at least one segment, so the meter is never present
+/// but empty.
+fn draw_meter(
+    frame: &mut [u8; FRAME_BYTES],
+    y: usize,
+    rssi_raw: u16,
+    frequency_hz: u32,
+    tone: Option<Tone>,
+) {
     let reading = SReading::from_rssi(rssi_raw, frequency_hz);
+    let width = if tone.is_some() {
+        METER_SEGMENT_WITH_TONE
+    } else {
+        METER_SEGMENT
+    };
     for segment in 0..usize::from(reading.segments().max(1)) {
-        let x = SLOT_TEXT_X + segment * METER_SEGMENT;
+        let x = SLOT_TEXT_X + segment * width;
         let bits = if segment < 9 {
             0b0111_1100
         } else {
             0b0111_1111
         };
-        for column in x..x + METER_SEGMENT - 1 {
+        for column in x..x + width - 1 {
             draw_column(frame, column, y, bits);
         }
     }
-    draw_text(frame, METER_LABEL_X, y, &reading.label());
+    let label_x = SLOT_TEXT_X + usize::from(s_meter::SEGMENTS) * width + 2;
+    draw_text(frame, label_x, y, &reading.label());
+    if let Some(tone) = tone {
+        draw_text(frame, WIDTH - 5 * 6, y, &tone_label(tone));
+        return;
+    }
     let dbm = dbm_digits(reading.dbm);
     let used = dbm.iter().position(|byte| *byte != b' ').unwrap_or(0);
     draw_text(frame, WIDTH - (dbm.len() - used) * 6, y, &dbm[used..]);
@@ -1572,7 +1646,7 @@ mod operating_screen_tests {
         step_label, ListRow, MemoryState, OperatingView, ResetCause, SelectorRow, SerialCounters,
         SlotChannel, SlotPlace, SlotView, FRAME_BYTES, LIST_NAME_BYTES, MEMORY_LABEL_BYTES,
     };
-    use radio_domain::{Bandwidth, Modulation};
+    use radio_domain::{Bandwidth, Modulation, Tone};
 
     const CHANNEL: SlotChannel<'static> = SlotChannel {
         name: b"2M CALL",
@@ -1585,6 +1659,9 @@ mod operating_screen_tests {
         bandwidth: Bandwidth::Narrow,
         power: 0,
         meter: None,
+        tx_tone: Tone::None,
+        rx_tone: Tone::None,
+        heard_tone: None,
     };
 
     fn view() -> OperatingView<'static> {
@@ -1899,7 +1976,8 @@ mod operating_screen_tests {
     /// count 140 is -90 dBm at the chip, -110 dBm at 2 m, which is S6.
     #[test]
     fn the_meter_shows_the_calibrated_s_reading_and_dbm() {
-        use super::{draw_text, METER_LABEL_X, SLOT_A_Y, WIDTH};
+        use super::{draw_text, SLOT_A_Y, SLOT_TEXT_X, WIDTH};
+        const METER_LABEL_X: usize = SLOT_TEXT_X + 15 * 4 + 2;
 
         let shows = |frame: &[u8; FRAME_BYTES], x: usize, text: &[u8]| {
             let mut drawn = *frame;
@@ -1925,6 +2003,88 @@ mod operating_screen_tests {
         let over = frame(220);
         assert!(shows(&over, METER_LABEL_X, b"S9+20"));
         assert!(shows(&over, WIDTH - 3 * 6, b"-70"));
+    }
+
+    /// The tone row shows what the channel sends and requires; on an open
+    /// squelch the tone that opened it takes the dBm's place.
+    #[test]
+    fn tones_show_on_the_tone_row_and_beside_the_meter() {
+        use super::{draw_text, tone_label, SLOT_A_Y, SLOT_TEXT_X, WIDTH};
+
+        assert_eq!(&tone_label(Tone::Ctcss(885)), b" 88.5");
+        assert_eq!(&tone_label(Tone::Ctcss(1_230)), b"123.0");
+        assert_eq!(
+            &tone_label(Tone::Dcs {
+                code: 23,
+                inverted: false
+            }),
+            b"D023N"
+        );
+        assert_eq!(
+            &tone_label(Tone::Dcs {
+                code: 754,
+                inverted: true
+            }),
+            b"D754I"
+        );
+
+        let shows = |frame: &[u8; FRAME_BYTES], x: usize, text: &[u8]| {
+            let mut drawn = *frame;
+            draw_text(&mut drawn, x, SLOT_A_Y + 18, text);
+            drawn == *frame
+        };
+        let render = |channel| {
+            let mut frame = [0_u8; FRAME_BYTES];
+            render_operating_screen(&mut frame, &with_a(channel));
+            frame
+        };
+        let repeater = SlotChannel {
+            tx_tone: Tone::Ctcss(770),
+            ..CHANNEL
+        };
+        let idle = render(repeater);
+        assert!(shows(&idle, SLOT_TEXT_X, b"T 77.0"));
+        assert!(!shows(&idle, SLOT_TEXT_X + 42, b"R"));
+        let toned = render(SlotChannel {
+            rx_tone: Tone::Ctcss(770),
+            ..repeater
+        });
+        assert!(shows(&toned, SLOT_TEXT_X + 42, b"R 77.0"));
+        // No tone anywhere: an empty row, as before.
+        assert_eq!(
+            render(CHANNEL),
+            render(SlotChannel {
+                heard_tone: None,
+                ..CHANNEL
+            })
+        );
+
+        // Open on a channel without a receive tone: the heard tone, not dBm.
+        let heard = render(SlotChannel {
+            meter: Some(140),
+            heard_tone: Some(Tone::Ctcss(1_230)),
+            ..repeater
+        });
+        assert!(shows(&heard, WIDTH - 5 * 6, b"123.0"));
+        assert!(shows(&heard, SLOT_TEXT_X + 15 * 3 + 2, b"S6"));
+        assert!(!shows(&heard, SLOT_TEXT_X, b"T"));
+        // The receive tone wins over anything heard.
+        let filtered = render(SlotChannel {
+            meter: Some(140),
+            rx_tone: Tone::Dcs {
+                code: 23,
+                inverted: false,
+            },
+            heard_tone: Some(Tone::Ctcss(1_230)),
+            ..repeater
+        });
+        assert!(shows(&filtered, WIDTH - 5 * 6, b"D023N"));
+        // Nothing heard: the dBm reading stays.
+        let plain = render(SlotChannel {
+            meter: Some(140),
+            ..CHANNEL
+        });
+        assert!(shows(&plain, WIDTH - 4 * 6, b"-110"));
     }
 
     #[test]
