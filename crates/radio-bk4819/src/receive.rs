@@ -110,15 +110,16 @@ const CTCSS_SCAN_DENOMINATOR: u32 = 10_000;
 /// `DCS_GetCtcssCode` accepts the nearest tone only within 5 Hz.
 const CTCSS_SCAN_TOLERANCE_TENTHS: u16 = 50;
 
-/// `CTCSS_Options` in both pinned trees, in tenths of a hertz.
-pub const CTCSS_TONES: [u16; 50] = [
+/// `CTCSS_Options` in both pinned trees, in tenths of a hertz. Only its
+/// packed form, [`CTCSS_STEPS`], is kept in the image.
+const CTCSS_TONES: [u16; 50] = [
     670, 693, 719, 744, 770, 797, 825, 854, 885, 915, 948, 974, 1000, 1035, 1072, 1109, 1148, 1188,
     1230, 1273, 1318, 1365, 1413, 1462, 1514, 1567, 1598, 1622, 1655, 1679, 1713, 1738, 1773, 1799,
     1835, 1862, 1899, 1928, 1966, 1995, 2035, 2065, 2107, 2181, 2257, 2291, 2336, 2418, 2503, 2541,
 ];
 
 /// `DCS_Options` in both pinned trees: each code's nine bits, three per
-/// octal digit.
+/// octal digit. Only its packed form, [`DCS_STANDARD`], is kept in the image.
 const DCS_CODES: [u16; 104] = [
     0x013, 0x015, 0x016, 0x019, 0x01A, 0x01E, 0x023, 0x027, 0x029, 0x02B, 0x02C, 0x035, 0x039,
     0x03A, 0x03B, 0x03C, 0x04C, 0x04D, 0x04E, 0x052, 0x055, 0x059, 0x05A, 0x05C, 0x063, 0x065,
@@ -129,6 +130,44 @@ const DCS_CODES: [u16; 104] = [
     0x136, 0x143, 0x146, 0x14E, 0x153, 0x156, 0x15A, 0x166, 0x175, 0x186, 0x18A, 0x194, 0x197,
     0x199, 0x19A, 0x1AC, 0x1B2, 0x1B4, 0x1C3, 0x1CA, 0x1D3, 0x1D9, 0x1DA, 0x1DC, 0x1E3, 0x1EC,
 ];
+
+/// The lowest CTCSS tone and each next tone's rise over the one before; no
+/// rise in the table exceeds 8.5 Hz, so each fits a byte.
+const FIRST_CTCSS: u16 = CTCSS_TONES[0];
+const CTCSS_STEPS: [u8; CTCSS_TONES.len() - 1] = {
+    let mut steps = [0; CTCSS_TONES.len() - 1];
+    let mut index = 0;
+    while index < steps.len() {
+        let rise = CTCSS_TONES[index + 1] - CTCSS_TONES[index];
+        assert!(rise > 0 && rise <= u8::MAX as u16);
+        // Checked just above; `try_from` is not available in a constant.
+        #[allow(clippy::cast_possible_truncation)]
+        {
+            steps[index] = rise as u8;
+        }
+        index += 1;
+    }
+    steps
+};
+
+/// One bit for each of the 512 nine-bit codes, set for the standard ones.
+const DCS_STANDARD: [u8; 64] = {
+    let mut bits = [0; 64];
+    let mut index = 0;
+    while index < DCS_CODES.len() {
+        let code = DCS_CODES[index] as usize;
+        bits[code / 8] |= 1 << (code % 8);
+        index += 1;
+    }
+    bits
+};
+
+/// Whether `bits` is one of the standard DCS codes.
+fn is_standard_dcs(bits: u16) -> bool {
+    DCS_STANDARD
+        .get(usize::from(bits / 8))
+        .is_some_and(|byte| byte & (1 << (bits % 8)) != 0)
+}
 
 const GPIO_UHF_LNA: u16 = 0x40 >> 3;
 const GPIO_VHF_LNA: u16 = 0x40 >> 4;
@@ -974,12 +1013,16 @@ pub fn cdcss_code_word(code: u16, inverted: bool) -> u32 {
 }
 
 /// The standard CTCSS tone nearest `tenths_hz`, if one is within 5 Hz.
-pub fn nearest_ctcss(tenths_hz: u16) -> Option<u16> {
-    CTCSS_TONES
-        .iter()
-        .copied()
-        .min_by_key(|tone| tone.abs_diff(tenths_hz))
-        .filter(|tone| tone.abs_diff(tenths_hz) < CTCSS_SCAN_TOLERANCE_TENTHS)
+fn nearest_ctcss(tenths_hz: u16) -> Option<u16> {
+    let mut tone = FIRST_CTCSS;
+    let mut nearest = tone;
+    for step in CTCSS_STEPS {
+        tone += u16::from(step);
+        if tone.abs_diff(tenths_hz) < nearest.abs_diff(tenths_hz) {
+            nearest = tone;
+        }
+    }
+    Some(nearest).filter(|tone| tone.abs_diff(tenths_hz) < CTCSS_SCAN_TOLERANCE_TENTHS)
 }
 
 /// The standard DCS code a received 23-bit word carries, in any of its
@@ -989,7 +1032,7 @@ fn dcs_from_word(mut word: u32) -> Option<Tone> {
         // The code's marker bit, 0x800, sits above its nine data bits.
         if (word >> 9) & 0b111 == 0b100 {
             let bits = u16::try_from(word & 0x1FF).unwrap_or(0);
-            if DCS_CODES.contains(&bits) {
+            if is_standard_dcs(bits) {
                 let code = (bits >> 6) * 100 + ((bits >> 3) & 7) * 10 + (bits & 7);
                 if cdcss_code_word(code, false) == word {
                     return Some(Tone::Dcs {
@@ -1479,6 +1522,26 @@ mod tests {
             .unwrap();
         assert_eq!(metrics.tone, Some(ToneStatus::Matched));
         assert_eq!(radio.bus().interrupts.len(), 12);
+    }
+
+    #[test]
+    fn the_packed_tone_tables_hold_exactly_the_reference_lists() {
+        let mut tone = super::FIRST_CTCSS;
+        let mut tones = std::vec![tone];
+        for step in super::CTCSS_STEPS {
+            tone += u16::from(step);
+            tones.push(tone);
+        }
+        assert_eq!(tones, super::CTCSS_TONES);
+        for tone in super::CTCSS_TONES {
+            assert_eq!(super::nearest_ctcss(tone), Some(tone));
+            assert_eq!(super::nearest_ctcss(tone + 1), Some(tone));
+        }
+        let standard: std::vec::Vec<u16> = (0..512)
+            .filter(|bits| super::is_standard_dcs(*bits))
+            .collect();
+        assert_eq!(standard, super::DCS_CODES);
+        assert!(!super::is_standard_dcs(512));
     }
 
     #[test]
