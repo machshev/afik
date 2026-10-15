@@ -302,6 +302,27 @@ impl SerialLink for Link {
     }
 }
 
+/// Byte-at-a-time `memcpy`, `memmove` and `memset`, and the ARM EABI entry
+/// points Rust actually calls.
+///
+/// compiler-builtins supplies word-copying versions tuned for speed, about
+/// 1.2 KiB together, as weak symbols. The K5's 60 KiB application region has
+/// no room for them, and nothing here copies enough for speed to matter: a
+/// whole display frame is 1 KiB, about 0.13 ms at 48 MHz. These are Thumb-1
+/// loops, written in assembly so the compiler cannot turn them back into
+/// calls to themselves. `memmove` copies forward when the destination is
+/// below the source and backward otherwise, so overlap is always safe.
+/// `__aeabi_memset` takes its fill and length the other way round from
+/// `memset`, and `__aeabi_memclr` fills with zero.
+mod mem {
+    // SAFETY: each routine reads and writes exactly the bytes its C or EABI
+    // contract names, uses only r0-r4 (r4 saved), keeps the stack balanced and
+    // returns per the AAPCS, so any caller of the standard symbols is served.
+    #![allow(unsafe_code)]
+
+    core::arch::global_asm!(include_str!("mem_routines.s"));
+}
+
 /// Startup work that has to touch memory the linker owns rather than Rust.
 mod startup {
     // SAFETY: every item in this module operates on the four linker-defined

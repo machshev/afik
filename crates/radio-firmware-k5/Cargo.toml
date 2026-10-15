@@ -12,6 +12,8 @@ autobins = false
 path = "src/lib.rs"
 
 [features]
+# Builds only the memory routine emulator test.
+mem-test = []
 firmware = [
     "dep:cortex-m",
     "dep:embassy-executor",
@@ -40,6 +42,13 @@ radio-flasher = { path = "../radio-flasher" }
 name = "radio-firmware-k5"
 path = "src/main.rs"
 required-features = ["firmware"]
+test = false
+
+# Runs the image's memory routines under `qemu-arm` (`tool/test-k5-mem.sh`).
+[[bin]]
+name = "k5-mem-test"
+path = "src/bin/mem_test.rs"
+required-features = ["mem-test"]
 test = false
 bench = false
 
