@@ -357,7 +357,19 @@ with its channels.
 
 ## Previous work package: TXK5-059
 
-**`TXK5-059` is paused** (2026-10-14) for `TXRANGE-062`; `TXK1-060` was started alongside.
+**`TXK5-059` step 2 is done** (2026-10-15, operator request): per-channel
+CTCSS/DCS on K5 and K1. PTT now keys the channel's transmit frequency,
+bandwidth and TX tone (it keyed the receive frequency, so a repeater was
+never reached); a receive tone gates the squelch; an untoned channel shows
+the tone heard beside the meter; each slot's third row shows `T`/`R` tones.
+Gate: `cargo fmt --all --check` clean, `cargo clippy --workspace
+--all-targets -- -D warnings` clean, `cargo test --workspace` 803 passed 0
+failed, `tool/build-k5.sh --release` (flash end `0x0000ec7c`) and
+`tool/build-k1.sh --release` (72,732 bytes) pass. Not flashed; it goes out
+in `7.0.28` with `BCFM-066`. Next: on a repeater, check it opens with its
+tone and that `T`/`R` and the heard tone show (`RISK-046`).
+
+**`TXK5-059` was paused** (2026-10-14) for `TXRANGE-062`; `TXK1-060` was started alongside.
 
 - K5 `7.0.2` and K1 `6.4T` are flashed. Both key up on PMR446 (`EVID-TX058-001`);
   K5 speech is now close to Armel (`EVID-TX059-001`).

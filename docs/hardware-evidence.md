@@ -3330,3 +3330,22 @@ the proven hardware reference.
   BK4819 receiving; its audio is muted while the squelch is closed.
 - **Confidence:** high that this is the reference behaviour (proven firmware);
   unobserved on AFIK hardware.
+
+### EVID-TX059-002 — CTCSS/DCS on TX and RX follow Armel's sub-audio calls
+
+- **Source:** K5 `radio.c:956-990` and K1 `App/radio.c:1025-1040`
+  (`RADIO_SetTxParameters`): after the PA bias and 10 ms, `BK4819_ExitSubAu`
+  (`REG_51 = 0`), `BK4819_SetCTCSSFrequency` or `BK4819_SetCDCSSCodeWord`, the
+  same writes receive uses (K5 `0x904A`/`0x8033`, K1 `0x9040`/`0xA033`);
+  the TX frequency, bandwidth and tone are `pTX`'s. Tone squelch:
+  `CheckRadioInterrupts` (K5 `app.c:654-690`) clears `REG_02` while `REG_0C`
+  bit 0 is set and reads the found/lost flags. Tone scan:
+  `BK4819_SetScanFrequency` writes `REG_51 = 0x0300` on both chips and
+  `BK4819_GetCxCSSScanResult` reads `REG_69`/`REG_6A` then `REG_68`
+  (bit 15 clear = found, CTCSS tenths = word × 4843 / 10000);
+  `scanner.c:445-480` accepts DCS at once and CTCSS on repeated readings.
+  `TX_freq_check` (`frequencies.c:162-170`) allows 18 MHz to 1300.000 MHz
+  inclusive, less 630–840 MHz.
+- **Scope:** AFIK runs the tone scan during ordinary receive, which the
+  reference does only in its scanner; untested on hardware (`RISK-046`).
+

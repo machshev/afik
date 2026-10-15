@@ -3004,7 +3004,8 @@
 
 ## TXK5-059 — Widen K5 TX: power levels, tones, measured power
 
-- **Status:** active (2026-10-13).
+- **Status:** active (2026-10-13); step 2 done 2026-10-15 at the operator's
+  request, per channel rather than radio-wide.
 - **Objective:** further power levels and CTCSS/DCS on TX; measure power and
   deviation on the bench and replace the nominal milliwatt figure.
 - **Steps (commit after each):**
@@ -3012,7 +3013,15 @@
      can transmit (new `tx_power` capability; K1 unchanged). Levels are Armel
      F4HWN Low1–Low4 (calibration low bias × 4/25, 4/19, 4/13, 4/10; nominally
      20/125/250/500 mW). The PMR446 policy ceiling of 500 mW still applies.
-  2. CTCSS/DCS as a radio-wide setting applied to receive and transmit.
+  2. ~~CTCSS/DCS as a radio-wide setting~~ Per-channel CTCSS/DCS (operator,
+     2026-10-15: "add per-channel tones on K5 and K1", and show the TX tone,
+     the RX tone, and a tone heard on an untoned channel). Done:
+     `a3ff935` TX tone after the bias (`EVID-TX059-002`); `7397311` PTT keys
+     the channel's transmit frequency, bandwidth and tone (it keyed the
+     receive frequency, so repeaters never opened) and 1300.000 MHz is
+     inclusive; `a3cc2c1` tone squelch from serviced interrupts and the tone
+     scan on untoned channels; `55d49ff` packed tone tables; `b3c8f82` RX tone
+     gating and the tone row and meter display. Unobserved (`RISK-046`).
   3. Flash; on the bench, compare the levels and check deviation on the SDR.
      Replace nominal milliwatts with measurements where a power meter is
      available.

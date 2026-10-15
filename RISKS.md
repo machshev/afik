@@ -1192,3 +1192,17 @@ lowered to the highest level within it (operator request), by nominal figures.
   scan it, check the meter against a known strong station; on the K5 also
   check keypad, display, serial programming, scan and dual watch behave as on
   `7.0.27`.
+
+## RISK-046 — CTCSS/DCS on air and the receive tone scan are unobserved
+
+- **State:** open (2026-10-15, `TXK5-059` step 2).
+- TX tones, tone squelch and repeater splits follow Armel's calls
+  (`EVID-TX059-002`) but no tone has been decoded by another radio, and tone
+  deviation is unmeasured. Showing a tone heard on an untoned channel runs
+  Armel's scan-mode `REG_51` during ordinary receive; whether `REG_68`/`REG_69`
+  report there, and whether that word changes receive audio, is unknown.
+- Experiment: key a 70 cm repeater channel and confirm it opens and the SDR
+  shows the input frequency and tone; listen on a toned channel with and
+  without the tone; receive a toned and a DCS signal on an untoned channel
+  and check the meter row shows them and audio is unchanged.
+
