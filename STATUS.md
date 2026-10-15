@@ -172,7 +172,8 @@ programmed as ordinary banks.
   the fix). Gate: `cargo fmt --all --check` clean, workspace clippy
   `-D warnings` clean, `cargo test --workspace` 813 passed 0 failed,
   `tool/build-k5.sh --release` and `tool/verify-k5-image.sh` pass (image
-  end `0x0000ec3c`). `7.0.30` (`eda05c1`) is built, not yet flashed.
+  end `0x0000ec3c`). `7.0.30` (`eda05c1`) flashed to the K5 (bootloader `2.00.06`, CRC-32
+  `21bbc96e`, 240/240 pages acknowledged, not read back); not yet observed.
 - Next: write the project with an FM broadcast bank from the studio, then on
   the K5 listen, step and scan it and check the `RISK-045` list; then the K1.
 
