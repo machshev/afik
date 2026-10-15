@@ -235,7 +235,8 @@ programmed as ordinary banks.
   BK4819 up if needed, selects the station's path and sleeps it
   (`98a8fec`, new test covers power-on and after PMR446). Gate: fmt clean,
   workspace clippy `-D warnings` clean, `cargo test --workspace` 822 passed
-  0 failed. Not yet flashed.
+  0 failed. Went out in `7.0.38`; observed on the K1: broadcast plays and
+  PMR446 squelch shuts on noise. `RISK-045` closed.
 - Change (operator request, studio): broadcast channels, shared broadcast
   banks and broadcast plans no longer show power, bandwidth, TX frequency
   or offset, tones, or busy lockout/reverse/compander; the studio keeps

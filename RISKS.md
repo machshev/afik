@@ -1176,7 +1176,7 @@ lowered to the highest level within it (operator request), by nominal figures.
 
 ## RISK-045 — Broadcast receive and the K5 `opt-level=z` image are unobserved
 
-- **State:** open (2026-10-15, `BCFM-066`).
+- **State:** closed (2026-10-16): broadcast observed on both radios.
 - The BK1080 sequences are the reference's, but AFIK has not yet driven the
   chip on either board: the K5's shared PA10/PA11 bus with the keypad, PB15's
   polarity, and the K1's PF5/PF6 timing are untested. A bus failure only
@@ -1198,7 +1198,10 @@ lowered to the highest level within it (operator request), by nominal figures.
   plays (Classic FM 101.5 among others) with no beat, steps and scans, and
   ordinary receive including GB3EL is unchanged. The K5 half is retired; the
   K1 (PF5/PF6) has not run broadcast yet.
-- Experiment: flash the K1; tune an FM broadcast bank, listen, step and
+- 2026-10-16, K1 `7.0.38` observed by the operator: broadcast plays once the
+  VHF LNA is selected (`98a8fec`; the K1's BK1080 hears the antenna through
+  it), and PMR446 squelch shuts on noise. Closed.
+- Experiment (done): flash the K1; tune an FM broadcast bank, listen, step and
   scan it, check the meter against a known strong station; on the K5 also
   check keypad, display, serial programming, scan and dual watch behave as on
   `7.0.27`.
