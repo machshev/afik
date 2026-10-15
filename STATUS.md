@@ -196,7 +196,12 @@ programmed as ordinary banks.
   `tool/verify-k5-image.sh` pass (image end `0x0000e8f4`). `7.0.33`
   (`278b9de`) flashed to the K5 (bootloader `2.00.06`, CRC-32 `b8e1edb2`,
   240/240 pages acknowledged, not read back), after two attempts failed at
-  page 0 while the studio held `/dev/ttyUSB0`; not yet observed.
+  page 0 while the studio held `/dev/ttyUSB0`. Observed: the beat is now
+  once a second, at the remaining read.
+- Fix: a heard station is not read at all unless a scan or dual watch needs
+  it (`62ac81c`). Gate (worktree off HEAD, without `TXK5-059`'s uncommitted
+  work): fmt clean, workspace clippy `-D warnings` clean, `cargo test
+  --workspace` 821 passed 0 failed. Goes out in `TXK5-059`'s `7.0.34`.
 - Next: write the project with an FM broadcast bank from the studio, then on
   the K5 listen, step and scan it and check the `RISK-045` list; then the K1.
 
