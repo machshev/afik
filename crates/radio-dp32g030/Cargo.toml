@@ -12,9 +12,11 @@ path = "src/lib.rs"
 
 [features]
 # The Embassy time driver on SysTick; the image routes the SysTick vector to it.
+# It counts millisecond periods, so Embassy ticks at 1 kHz.
 time-driver = [
     "dep:critical-section",
     "dep:embassy-time-driver",
+    "embassy-time-driver/tick-hz-1_000",
     "dep:embassy-time-queue-utils",
 ]
 
