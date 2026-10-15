@@ -187,6 +187,9 @@ struct Receiver<B: RegisterBus, S: Speaker, C: BroadcastChip> {
     heard_tone: Option<Tone>,
     /// The last tone read and how many readings after it agreed.
     tone_reading: Option<(Tone, u8)>,
+    /// Whether untoned channels run the tone scan to show the tone heard,
+    /// the operator's TONE HEARD experiment.
+    tone_scan: bool,
 }
 
 impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
@@ -208,6 +211,7 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
             last_tune: None,
             heard_tone: None,
             tone_reading: None,
+            tone_scan: false,
         }
     }
 
@@ -434,7 +438,7 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
                 // A receive tone keeps the squelch, and the meter, shut until
                 // it is found.
                 self.squelch_open = metrics.should_unmute();
-                if tone == Tone::None && metrics.squelch_open {
+                if self.tone_scan && tone == Tone::None && metrics.squelch_open {
                     self.hear_tone();
                 } else {
                     self.forget_tone();
@@ -475,6 +479,13 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
         if matches!(tone, Tone::Dcs { .. }) || agreed >= 2 {
             self.heard_tone = Some(tone);
         }
+    }
+
+    /// Switches the TONE HEARD experiment; it takes effect at the next tune.
+    fn set_tone_scan(&mut self, on: bool) {
+        self.tone_scan = on;
+        self.radio.set_untoned_tone_scan(on);
+        self.forget_tone();
     }
 
     /// Clears the heard tone when the squelch closes or the channel changes.
@@ -1395,6 +1406,17 @@ pub async fn run<D, K, B, F, W, S, V, M>(
             }
         }
 
+        // The TONE HEARD experiment changes how an untoned channel is set up,
+        // so switching it retunes the selected slot.
+        if shell.tone_heard() != receiver.tone_scan {
+            receiver.set_tone_scan(shell.tone_heard());
+            if pending.is_none() {
+                pending = activation
+                    .as_ref()
+                    .map(|(controller, _)| controller.setup());
+            }
+        }
+
         // Dual watch. Every action the operator takes is on the selected slot,
         // so any intent beyond a redraw brings the receiver back to it. While
         // dual watch runs, the receiver moves between the slots whenever the
@@ -1976,10 +1998,16 @@ fn render<B: RegisterBus, S: Speaker, C: BroadcastChip, M: Memory>(
             // Six rows where the target can transmit: page by whole screens,
             // as the TX power list does.
             let mut rows = [SelectorRow::default(); LIST_ROWS];
-            let cursor = usize::from(shell.settings_cursor());
+            let cursor = shell.settings_cursor();
             let first = cursor / LIST_ROWS * LIST_ROWS;
             let mut count = 0;
-            for (offset, setting) in shell.settings().iter().skip(first).take(LIST_ROWS).enumerate() {
+            for (offset, setting) in shell
+                .settings()
+                .iter()
+                .skip(first)
+                .take(LIST_ROWS)
+                .enumerate()
+            {
                 rows[offset] = match setting {
                     Setting::Squelch => SelectorRow::squelch_setting(shell.squelch().get()),
                     Setting::TxPower => SelectorRow::tx_power_setting(shell.tx_override()),
@@ -2584,6 +2612,10 @@ mod tests {
         fn set(&self, address: usize, value: u16) {
             self.0.borrow_mut()[address] = value;
         }
+
+        fn get(&self, address: usize) -> u16 {
+            self.0.borrow()[address]
+        }
     }
 
     impl radio_bk4819::RegisterBus for Shared {
@@ -2624,10 +2656,23 @@ mod tests {
         receiver.tune(setup(Tone::None), SquelchLevel::CONSERVATIVE);
         assert!(receiver.started && !receiver.faulted);
 
-        // A carrier with 88.5 Hz on it: shown on the third agreeing reading.
+        // With TONE HEARD off nothing is read, whatever the chip reports.
         chip.set(SQUELCH_STATUS, 0x0002);
         chip.set(CDCSS_HIGH, 0x8000);
         chip.set(CTCSS_SCAN, 1828);
+        for _ in 0..4 {
+            assert!(receiver.observe(true).unwrap().squelch_open);
+        }
+        assert_eq!(receiver.heard_tone, None);
+
+        // Switched off, the reference's untoned words; switched on, the next
+        // tune scans for a tone.
+        assert_eq!(chip.get(0x51), 0x904A);
+        receiver.set_tone_scan(true);
+        receiver.tune(setup(Tone::None), SquelchLevel::CONSERVATIVE);
+        assert_eq!(chip.get(0x51), 0x0300);
+
+        // A carrier with 88.5 Hz on it: shown on the third agreeing reading.
         for _ in 0..2 {
             assert!(receiver.observe(true).unwrap().squelch_open);
             assert_eq!(receiver.heard_tone, None);

@@ -384,6 +384,8 @@ struct Entry {
 
 /// Operator shell state.
 #[derive(Clone, Copy, Debug)]
+// Each flag is an independent operator switch or key state.
+#[allow(clippy::struct_excessive_bools)]
 pub struct Shell {
     screen: Screen,
     mode: Mode,
@@ -2317,9 +2319,16 @@ mod tests {
         for (time, expected) in [(0, true), (100, false)] {
             shell.press(Key::Menu, time, context(4, 0));
             for at in 0..row {
-                shell.press(Key::Down, time + 1 + u32::try_from(at).unwrap(), context(4, 0));
+                shell.press(
+                    Key::Down,
+                    time + 1 + u32::try_from(at).unwrap(),
+                    context(4, 0),
+                );
             }
-            assert_eq!(shell.press(Key::Menu, time + 20, context(4, 0)), Intent::Redraw);
+            assert_eq!(
+                shell.press(Key::Menu, time + 20, context(4, 0)),
+                Intent::Redraw
+            );
             assert_eq!(shell.tone_heard(), expected);
             assert_eq!(shell.screen(), Screen::Operating);
         }
