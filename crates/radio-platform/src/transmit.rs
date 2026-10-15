@@ -78,6 +78,9 @@ pub struct TxSetup {
     pub bandwidth: Bandwidth,
     /// CTCSS or DCS sent with the transmission.
     pub tone: Tone,
+    /// The channel's modulation, which the policy permits only as FM: a
+    /// broadcast, AM or USB channel never keys the radio.
+    pub modulation: Modulation,
 }
 
 impl TxSetup {
@@ -91,6 +94,7 @@ impl TxSetup {
             },
             bandwidth: Bandwidth::Narrow,
             tone: Tone::None,
+            modulation: Modulation::Fm,
         }
     }
 }
@@ -237,7 +241,7 @@ impl TxTarget {
         TxRequest {
             target_id: self.target_id,
             channel: setup.channel,
-            modulation: Modulation::Fm,
+            modulation: setup.modulation,
             bandwidth: setup.bandwidth,
             conducted_mw: TX_POWER_NOMINAL_MW
                 .get(usize::from(level))
@@ -524,7 +528,7 @@ mod tests {
 
     #[test]
     fn a_repeater_transmits_on_its_input_with_its_own_bandwidth() {
-        use radio_domain::{ActiveChannel, Bandwidth, Tone};
+        use radio_domain::{ActiveChannel, Bandwidth, Modulation, Tone};
         let policy = policy();
         // A 70 cm repeater: output 439.4, input 431.8 (outside the 433–434
         // amateur range programmed here), then input 433.4.
@@ -535,6 +539,7 @@ mod tests {
             },
             bandwidth,
             tone: Tone::Ctcss(885),
+            modulation: Modulation::Fm,
         };
         let request = |setup| K5.request(setup, TxState::Selected, 1, Some(15), 0, 30_000);
         let refused = request(repeater(431_800_000, Bandwidth::Narrow));
@@ -546,6 +551,14 @@ mod tests {
         let wide = request(repeater(433_400_000, Bandwidth::Wide));
         assert_eq!(wide.bandwidth, Bandwidth::Wide);
         assert_eq!(policy.authorise(&wide).unwrap_err(), TxDenied::Range);
+        // Inside a range, only FM keys the radio.
+        for modulation in [Modulation::Am, Modulation::Usb, Modulation::Broadcast] {
+            let other = request(TxSetup {
+                modulation,
+                ..repeater(433_400_000, Bandwidth::Narrow)
+            });
+            assert_eq!(policy.authorise(&other).unwrap_err(), TxDenied::Modulation);
+        }
     }
 
     #[test]

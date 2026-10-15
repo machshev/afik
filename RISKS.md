@@ -1173,3 +1173,22 @@ lowered to the highest level within it (operator request), by nominal figures.
 - Experiment: on a dummy load through an attenuator, key Low1, Mid and High
   on 145.500 MHz and record power and the second and third harmonics; then
   one frequency per other programmed band before any range there goes on air.
+
+## RISK-045 — Broadcast receive and the K5 `opt-level=z` image are unobserved
+
+- **State:** open (2026-10-15, `BCFM-066`).
+- The BK1080 sequences are the reference's, but AFIK has not yet driven the
+  chip on either board: the K5's shared PA10/PA11 bus with the keypad, PB15's
+  polarity, and the K1's PF5/PF6 timing are untested. A bus failure only
+  silences broadcast; the BK4819 path is untouched.
+- The meter reading assumes the BK1080 RSSI is in dBuV (`dBm = dBuV - 107`);
+  the station test is the reference's, so a weak station may stay squelched
+  unless the radio-wide squelch is open or the operator monitors.
+- The K5 image is now built at `opt-level=z` (about 3 KiB smaller than `s`),
+  which changes code for the whole image. Bit-banged delays are spin loops
+  and timers come from SysTick, so timing should hold, but slower code paths
+  (display, scan, dual watch) have not been watched at `z`.
+- Experiment: flash both radios; tune an FM broadcast bank, listen, step and
+  scan it, check the meter against a known strong station; on the K5 also
+  check keypad, display, serial programming, scan and dual watch behave as on
+  `7.0.27`.

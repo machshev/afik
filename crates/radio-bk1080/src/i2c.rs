@@ -51,6 +51,9 @@ impl<W: TwoWire> I2cRegisters<W> {
 impl<W: TwoWire> RegisterBus for I2cRegisters<W> {
     type Error = NotAcknowledged;
 
+    // Kept out of line: inlined at every register access, the bit-banged
+    // transaction would cost firmware hundreds of bytes it does not have.
+    #[inline(never)]
     fn write(&mut self, register: u8, value: u16) -> Result<(), NotAcknowledged> {
         self.address(register, false)?;
         let [high, low] = value.to_be_bytes();
@@ -63,6 +66,7 @@ impl<W: TwoWire> RegisterBus for I2cRegisters<W> {
         }
     }
 
+    #[inline(never)]
     fn read(&mut self, register: u8) -> Result<u16, NotAcknowledged> {
         self.address(register, true)?;
         let high = self.0.read(false);

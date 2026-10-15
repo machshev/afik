@@ -3118,6 +3118,8 @@
      modulation choice and FM broadcast default sets. Done.
   2. `radio-bk1080` driver over a register bus, host tested. Done.
   3. K5 bus (shared EEPROM I2C, PB15 enable) and K1 bus (PF5/PF6). Done.
-  4. The interface plays a broadcast slot on the BK1080, BK4819 audio muted,
-     and returns to the BK4819 for any other channel; simulator support.
+  4. The interface plays a broadcast slot on the BK1080, BK4819 asleep,
+     and returns to the BK4819 for any other channel; TX requests carry the
+     channel's modulation. Done. (The studio's simulator answers the memory
+     protocol only, so it has no chip to model.)
   5. Version bump, flash both radios and listen.

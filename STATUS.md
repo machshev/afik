@@ -122,7 +122,20 @@ programmed as ordinary banks.
   workspace clippy `-D warnings` clean, `cargo test --workspace` 796 passed 0
   failed, `tool/build-k5.sh --release` (flash image end `0x0000ece0` of
   `0x0000f000`) and `tool/build-k1.sh --release` (69612 bytes) pass.
-- Next: step 4, play a broadcast slot on the BK1080.
+- Step 4: a broadcast channel mutes and sleeps the BK4819 and plays the
+  BK1080; any other channel powers it down and wakes the BK4819. Its squelch
+  opens on the reference station test, or always with the radio-wide squelch
+  open or while monitoring, so scan stops on stations; battery save leaves it
+  alone; dual watch pauses while either slot is broadcast. TX requests now
+  carry the channel's modulation (they were always FM), so the policy refuses
+  broadcast, AM and USB channels even inside a range. K5 flash ran 304 bytes
+  over at `opt-level=s`, so `tool/build-k5.sh` builds at `z` (`RISK-045`).
+  Gate (another session has uncommitted work in the tree, so run on a clean
+  worktree at `a3cc2c1` plus this change): `cargo fmt --all --check` clean,
+  workspace clippy `-D warnings` clean, `cargo test --workspace` 800 passed 0
+  failed, `tool/build-k5.sh --release` (flash image end `0x0000e56c`) and
+  `tool/build-k1.sh --release` (71004 bytes) pass.
+- Next: step 5, bump the version, flash both radios and listen (`RISK-045`).
 
 **`DUALW-064` is active alongside** (2026-10-14, operator request,
 `ADR-102`): two slots and dual watch.

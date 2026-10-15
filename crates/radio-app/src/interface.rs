@@ -110,10 +110,50 @@ impl Delay for BlockingDelay {
     }
 }
 
+/// The broadcast receiver as the interface drives it (`ADR-105`).
+///
+/// A bus failure is not a receiver fault: the radio keeps working on every
+/// other channel and a broadcast channel simply stays silent.
+trait BroadcastChip {
+    /// Powers up if needed and tunes; `false` if the chip did not take it.
+    fn tune(&mut self, frequency: Frequency) -> bool;
+    /// Mutes or unmutes a powered chip.
+    fn set_muted(&mut self, muted: bool);
+    /// Powers the chip down.
+    fn power_down(&mut self);
+    /// Reads the received signal.
+    fn signal(&mut self) -> Option<radio_bk1080::Signal>;
+}
+
+impl<F: radio_bk1080::RegisterBus, W: radio_bk1080::Delay> BroadcastChip for Broadcast<F, W> {
+    fn tune(&mut self, frequency: Frequency) -> bool {
+        self.chip.tune(frequency, &mut self.delay).is_ok()
+    }
+
+    fn set_muted(&mut self, muted: bool) {
+        let _ = self.chip.set_muted(muted);
+    }
+
+    fn power_down(&mut self) {
+        let _ = self.chip.power_down();
+    }
+
+    fn signal(&mut self) -> Option<radio_bk1080::Signal> {
+        self.chip.signal().ok()
+    }
+}
+
 /// Receive state owned by the user interface task.
 #[allow(clippy::struct_excessive_bools)]
-struct Receiver<B: RegisterBus, S: Speaker> {
+struct Receiver<B: RegisterBus, S: Speaker, C: BroadcastChip> {
     radio: Bk4819<B>,
+    /// The BK1080, playing while a broadcast channel is tuned.
+    broadcast: C,
+    /// A broadcast channel is tuned: the BK1080 plays and the BK4819 sleeps.
+    on_broadcast: bool,
+    /// The broadcast audio passes whether or not a station is detected,
+    /// because the squelch is open or the operator is monitoring.
+    broadcast_open: bool,
     /// The receive audio amplifier.
     ///
     /// It is claimed the first time a channel is tuned rather than at boot,
@@ -132,10 +172,13 @@ struct Receiver<B: RegisterBus, S: Speaker> {
     last_tune: Option<(ChannelReceiveSetup, SquelchLevel)>,
 }
 
-impl<B: RegisterBus, S: Speaker> Receiver<B, S> {
-    fn new(radio: Bk4819<B>, speaker: S) -> Self {
+impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
+    fn new(radio: Bk4819<B>, broadcast: C, speaker: S) -> Self {
         Self {
             radio,
+            broadcast,
+            on_broadcast: false,
+            broadcast_open: false,
             speaker,
             faulted: false,
             started: false,
@@ -210,6 +253,13 @@ impl<B: RegisterBus, S: Speaker> Receiver<B, S> {
     }
 
     fn set_chip_audio(&mut self, enabled: bool) {
+        if self.on_broadcast {
+            self.broadcast.set_muted(!enabled);
+            if !enabled {
+                self.set_speaker(false);
+            }
+            return;
+        }
         if self.faulted || !self.started {
             return;
         }
@@ -253,6 +303,15 @@ impl<B: RegisterBus, S: Speaker> Receiver<B, S> {
     /// A level the controller has already forced open is left alone: that is
     /// monitoring, and monitoring outranks both.
     fn tune(&mut self, setup: ChannelReceiveSetup, radio_wide: SquelchLevel) {
+        if matches!(setup.modulation, Modulation::Broadcast) {
+            self.tune_broadcast(setup, radio_wide);
+            return;
+        }
+        if self.on_broadcast {
+            self.set_speaker(false);
+            self.broadcast.power_down();
+            self.on_broadcast = false;
+        }
         if !self.started {
             self.bring_up();
         }
@@ -284,9 +343,52 @@ impl<B: RegisterBus, S: Speaker> Receiver<B, S> {
         self.route_audio();
     }
 
+    /// Plays a broadcast channel on the BK1080.
+    ///
+    /// The BK4819 has nothing to receive there, so it is muted and put to
+    /// sleep; the next ordinary tune wakes it as battery save does.
+    fn tune_broadcast(&mut self, setup: ChannelReceiveSetup, radio_wide: SquelchLevel) {
+        self.set_speaker(false);
+        if self.started
+            && !self.faulted
+            && (self
+                .radio
+                .set_af_output(Modulation::Fm, AfOutput::Mute)
+                .is_err()
+                || self.radio.sleep().is_err())
+        {
+            self.faulted = true;
+        }
+        self.audio_routed = false;
+        self.asleep = false;
+        self.on_broadcast = true;
+        self.broadcast_open = setup.squelch.is_open() || radio_wide.is_open();
+        self.last_tune = Some((setup, radio_wide));
+        self.frequency_hz = setup.frequency.as_hz();
+        self.squelch_open = false;
+        if self.broadcast.tune(setup.frequency) {
+            self.speaker.claim();
+            self.gate_audio();
+        }
+    }
+
     /// Samples metrics from the tuned receiver.
     #[allow(clippy::single_match_else)]
     fn observe(&mut self, gate_locally: bool) -> Option<ReceiveObservation> {
+        if self.on_broadcast {
+            let signal = self.broadcast.signal()?;
+            // The BK1080 reports RSSI in dBuV; the meter takes the BK4819's
+            // count, dBm * 2 + 320, and 0 dBm is 107 dBuV at 50 ohms.
+            self.rssi_raw = u16::from(signal.rssi) * 2 + 106;
+            self.squelch_open = self.broadcast_open || signal.is_station();
+            if gate_locally {
+                self.gate_audio();
+            }
+            return Some(ReceiveObservation {
+                squelch_open: self.squelch_open,
+                tone_matched: None,
+            });
+        }
         if self.faulted || !self.started {
             return None;
         }
@@ -311,7 +413,7 @@ impl<B: RegisterBus, S: Speaker> Receiver<B, S> {
 
     /// Sleeps the chip for battery save, silencing the speaker first.
     fn sleep(&mut self) {
-        if self.faulted || !self.started || self.asleep {
+        if self.faulted || !self.started || self.asleep || self.on_broadcast {
             return;
         }
         self.set_speaker(false);
@@ -350,9 +452,9 @@ struct SharedApplyOutcome {
     complete: bool,
 }
 
-fn apply_shared_effects<B: RegisterBus, S: Speaker>(
+fn apply_shared_effects<B: RegisterBus, S: Speaker, C: BroadcastChip>(
     effects: SharedEffects,
-    receiver: &mut Receiver<B, S>,
+    receiver: &mut Receiver<B, S, C>,
 ) -> SharedApplyOutcome {
     let mut redraw = false;
     let mut complete = !receiver.faulted;
@@ -724,7 +826,7 @@ pub async fn run<D, K, B, F, W, S, V, M>(
 {
     // The broadcast receiver starts powered down, as the reference firmware
     // leaves it at boot, until a broadcast channel is selected.
-    let _ = broadcast.chip.power_down();
+    broadcast.power_down();
     let mut frame = [0_u8; FRAME_BYTES];
     render_info_screen(
         &mut frame,
@@ -775,7 +877,7 @@ pub async fn run<D, K, B, F, W, S, V, M>(
     let mut pending = activation.as_mut().and_then(|(_, setup)| setup.take());
     let mut other_activation = activate_other(&programmed, &shell, other_selected, memory);
 
-    let mut receiver = Receiver::new(radio, speaker);
+    let mut receiver = Receiver::new(radio, broadcast, speaker);
     // A reset can follow a panic in the middle of a transmission, so the PA
     // and chip TX are switched off before anything else uses the radio.
     let _ = receiver.radio.disable_pa();
@@ -1218,9 +1320,18 @@ pub async fn run<D, K, B, F, W, S, V, M>(
         // dual watch runs, the receiver moves between the slots whenever the
         // one it is on has been quiet for its dwell; scanning, a squelch being
         // staged, or a slot with nothing to tune stops it on the selected one.
+        // Nor does it move to or from a broadcast slot, which would chop the
+        // programme into dwells.
+        let broadcast = |activation: &Option<(BankedReceiveController<_>, _)>| {
+            activation.as_ref().is_some_and(|(controller, _)| {
+                matches!(controller.setup().modulation, Modulation::Broadcast)
+            })
+        };
         let watching = shell.dual_watch()
             && pending_operator_squelch.is_none()
             && other_activation.is_some()
+            && !broadcast(&activation)
+            && !broadcast(&other_activation)
             && activation.as_ref().is_some_and(|(controller, _)| {
                 !matches!(controller.state(), ReceiveState::Scanning(_))
             });
@@ -1623,10 +1734,12 @@ fn tx_setup<M: Memory>(controller: &BankedReceiveController<Listening<M>>) -> Tx
                 channel: channel.active(),
                 bandwidth: channel.bandwidth(),
                 tone: channel.tx_tone(),
+                modulation: channel.modulation(),
             }
         }
         ChannelSelection::Vfo => TxSetup {
             bandwidth: setup.bandwidth,
+            modulation: setup.modulation,
             ..TxSetup::simplex(setup.frequency)
         },
     }
@@ -1636,8 +1749,8 @@ fn tx_setup<M: Memory>(controller: &BankedReceiveController<Listening<M>>) -> Tx
 /// tone it sends. A frequency or bandwidth no programmed range permits is
 /// denied by policy.
 #[allow(clippy::too_many_arguments)]
-fn tx_request<B: RegisterBus, S: Speaker>(
-    receiver: &Receiver<B, S>,
+fn tx_request<B: RegisterBus, S: Speaker, C: BroadcastChip>(
+    receiver: &Receiver<B, S, C>,
     setup: Option<TxSetup>,
     scanning: bool,
     changing: bool,
@@ -1674,13 +1787,13 @@ fn tx_request<B: RegisterBus, S: Speaker>(
     clippy::too_many_lines,
     clippy::needless_range_loop
 )]
-fn render<B: RegisterBus, S: Speaker, M: Memory>(
+fn render<B: RegisterBus, S: Speaker, C: BroadcastChip, M: Memory>(
     frame: &mut [u8; FRAME_BYTES],
     shell: &Shell,
     controller: Option<&BankedReceiveController<Listening<M>>>,
     other: Option<&BankedReceiveController<Listening<M>>>,
     listening: Watching,
-    receiver: &Receiver<B, S>,
+    receiver: &Receiver<B, S, C>,
     battery_percent: Option<u8>,
     generation: u32,
     retained: bool,
@@ -1925,12 +2038,12 @@ fn render<B: RegisterBus, S: Speaker, M: Memory>(
 /// Builds what one slot shows from its controller. `receiver` is given only
 /// while the receiver is on this slot, and its meter only while the squelch is
 /// open.
-fn slot_channel<'a, B: RegisterBus, S: Speaker, M: Memory>(
+fn slot_channel<'a, B: RegisterBus, S: Speaker, C: BroadcastChip, M: Memory>(
     shell: &Shell,
     slot: Slot,
     controller: Option<&BankedReceiveController<Listening<M>>>,
     name: Option<&'a ChannelName>,
-    receiver: Option<&Receiver<B, S>>,
+    receiver: Option<&Receiver<B, S, C>>,
 ) -> Option<SlotChannel<'a>> {
     let controller = controller?;
     let channel = controller.channel();
@@ -2270,11 +2383,155 @@ mod tests {
         assert_eq!(normal.channel.transmit, hz(431_800_000));
         assert_eq!(normal.tone, Tone::Ctcss(770));
         assert_eq!(normal.bandwidth, Bandwidth::Wide);
+        assert_eq!(normal.modulation, Modulation::Fm, "the policy sees it");
         // Reverse listens on the input and transmits on the output.
         let reversed = setup(repeater(
             ChannelFlags::default().with(ChannelFlags::REVERSE, true),
         ));
         assert_eq!(reversed.channel.transmit, hz(439_400_000));
+    }
+
+    /// A BK4819 register file that accepts everything.
+    struct Registers([u16; 128]);
+
+    impl radio_bk4819::RegisterBus for Registers {
+        type Error = ();
+        fn write(&mut self, address: radio_bk4819::RegisterAddress, value: u16) -> Result<(), ()> {
+            self.0[usize::from(address.get())] = value;
+            Ok(())
+        }
+        fn read(&mut self, address: radio_bk4819::RegisterAddress) -> Result<u16, ()> {
+            Ok(self.0[usize::from(address.get())])
+        }
+    }
+
+    #[derive(Default)]
+    struct Chip {
+        tuned: Option<u32>,
+        muted: bool,
+        powered_down: u32,
+        station: bool,
+    }
+
+    impl super::BroadcastChip for Chip {
+        fn tune(&mut self, frequency: radio_domain::Frequency) -> bool {
+            self.tuned = Some(frequency.as_hz());
+            true
+        }
+        fn set_muted(&mut self, muted: bool) {
+            self.muted = muted;
+        }
+        fn power_down(&mut self) {
+            self.tuned = None;
+            self.powered_down += 1;
+        }
+        fn signal(&mut self) -> Option<radio_bk1080::Signal> {
+            Some(radio_bk1080::Signal {
+                rssi: if self.station { 40 } else { 0 },
+                snr: if self.station { 9 } else { 0 },
+                afc_railed: false,
+                deviation: 0,
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct Amplifier {
+        claimed: bool,
+        on: bool,
+    }
+
+    impl crate::drivers::Speaker for Amplifier {
+        fn claim(&mut self) {
+            self.claimed = true;
+        }
+        fn set_enabled(&mut self, enabled: bool) {
+            self.on = enabled;
+        }
+    }
+
+    #[test]
+    fn a_broadcast_channel_plays_on_the_bk1080_and_any_other_returns_to_the_bk4819() {
+        use super::Receiver;
+        use radio_channel_control::ChannelReceiveSetup;
+        use radio_domain::{Bandwidth, Frequency, FrequencyStep, Modulation, SquelchLevel, Tone};
+
+        let setup = |hz, modulation| ChannelReceiveSetup {
+            frequency: Frequency::from_hz(hz).unwrap(),
+            modulation,
+            bandwidth: Bandwidth::Wide,
+            tone: Tone::None,
+            squelch: SquelchLevel::CONSERVATIVE,
+            step: FrequencyStep::from_hz(100_000).unwrap(),
+        };
+        let mut receiver = Receiver::new(
+            radio_bk4819::Bk4819::new(Registers([0; 128])),
+            Chip::default(),
+            Amplifier::default(),
+        );
+        receiver.tune(
+            setup(145_500_000, Modulation::Fm),
+            SquelchLevel::CONSERVATIVE,
+        );
+        assert!(receiver.started && !receiver.on_broadcast);
+
+        receiver.tune(
+            setup(97_600_000, Modulation::Broadcast),
+            SquelchLevel::CONSERVATIVE,
+        );
+        assert!(receiver.on_broadcast && !receiver.faulted);
+        assert_eq!(receiver.broadcast.tuned, Some(97_600_000));
+        assert!(
+            receiver.speaker.claimed && !receiver.speaker.on,
+            "silent until a reading"
+        );
+        assert!(!receiver.audio_routed, "the BK4819's audio stays off");
+
+        // Between stations the squelch stays shut; a station opens it.
+        let reading = receiver.observe(true).unwrap();
+        assert!(!reading.squelch_open && !receiver.speaker.on);
+        receiver.broadcast.station = true;
+        assert!(receiver.observe(true).unwrap().squelch_open);
+        assert!(receiver.speaker.on);
+        // Battery save leaves a playing programme alone.
+        receiver.sleep();
+        assert!(!receiver.asleep && receiver.speaker.on);
+        receiver.set_chip_audio(false);
+        assert!(receiver.broadcast.muted && !receiver.speaker.on);
+
+        receiver.tune(
+            setup(145_500_000, Modulation::Fm),
+            SquelchLevel::CONSERVATIVE,
+        );
+        assert!(!receiver.on_broadcast && !receiver.faulted);
+        assert_eq!(receiver.broadcast.powered_down, 1);
+        assert!(receiver.audio_routed);
+    }
+
+    #[test]
+    fn an_open_squelch_plays_broadcast_noise_too() {
+        use super::Receiver;
+        use radio_channel_control::ChannelReceiveSetup;
+        use radio_domain::{Bandwidth, Frequency, FrequencyStep, Modulation, SquelchLevel, Tone};
+
+        let mut receiver = Receiver::new(
+            radio_bk4819::Bk4819::new(Registers([0; 128])),
+            Chip::default(),
+            Amplifier::default(),
+        );
+        receiver.tune(
+            ChannelReceiveSetup {
+                frequency: Frequency::from_hz(88_000_000).unwrap(),
+                modulation: Modulation::Broadcast,
+                bandwidth: Bandwidth::Wide,
+                tone: Tone::None,
+                squelch: SquelchLevel::CONSERVATIVE,
+                step: FrequencyStep::from_hz(100_000).unwrap(),
+            },
+            SquelchLevel::OPEN,
+        );
+        assert!(receiver.observe(true).unwrap().squelch_open);
+        assert!(receiver.speaker.on);
     }
 
     #[test]
