@@ -10,8 +10,8 @@ use radio_bk4819::{
     AfOutput, Bk4819, ReadbackRegister, ReceiveSetup, RegisterBus, SquelchThresholds,
 };
 use radio_channel_control::{
-    BankedReceiveController, ChannelReceiveSetup, ChannelSource, ReceiveObservation, ReceiveState,
-    ReceiveUpdate, TimerDirective, TimerToken,
+    BankedReceiveController, ChannelReceiveSetup, ChannelSelection, ChannelSource,
+    ReceiveObservation, ReceiveState, ReceiveUpdate, TimerDirective, TimerToken,
 };
 use radio_channel_plan::{BankName, ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord};
 use radio_domain::{
@@ -36,7 +36,7 @@ use radio_platform::ptt::PttFilter;
 use radio_platform::receive_app::{
     Effect as SharedEffect, Effects as SharedEffects, Event as SharedEvent, ReceiveApp,
 };
-use radio_platform::transmit::{self, Delay, TxCalibration, TxTarget};
+use radio_platform::transmit::{self, Delay, TxCalibration, TxSetup, TxTarget};
 use radio_platform::tx_control::{self, Action, Controller as TxController, State as TxPhase};
 use radio_tx_policy::{TxDenied, TxRequest, TxState};
 
@@ -150,7 +150,12 @@ impl<B: RegisterBus, S: Speaker> Receiver<B, S> {
 
     /// Executes one TX controller effect; receive restore re-tunes the last
     /// setup through the ordinary receive path.
-    fn transmit_effect(&mut self, effect: &tx_control::Effect<'_>, bias: Option<u8>) -> bool {
+    fn transmit_effect(
+        &mut self,
+        effect: &tx_control::Effect<'_>,
+        bias: Option<u8>,
+        tone: Tone,
+    ) -> bool {
         match effect.action() {
             Action::RestoreReceive => {
                 let Some((setup, squelch)) = self.last_tune else {
@@ -168,6 +173,7 @@ impl<B: RegisterBus, S: Speaker> Receiver<B, S> {
                 transmit::execute(
                     effect,
                     bias,
+                    tone,
                     None,
                     &mut self.radio,
                     || {},
@@ -777,7 +783,7 @@ pub async fn run<D, K, B, S, V, M>(
     // something to restore.
     let mut tx: Option<TxController> = None;
     let mut ptt = PttFilter::new(keypad.ptt_pressed(), Instant::now().as_millis());
-    let mut tx_tuned_hz = 0_u32;
+    let mut tx_tuned: Option<TxSetup> = None;
     let mut tx_revision = 1_u32;
     // Present only while the selected complete setup is one of the common
     // PMR446 examples. Arbitrary programmed channels and the VFO use the
@@ -923,13 +929,16 @@ pub async fn run<D, K, B, S, V, M>(
         }
         // PTT transmits on the selected slot, whichever one dual watch has
         // the receiver on.
-        let tx_frequency_hz = activation
-            .as_ref()
-            .map_or(receiver.frequency_hz, |(controller, _)| {
-                controller.setup().frequency.as_hz()
-            });
-        if tx_frequency_hz != tx_tuned_hz {
-            tx_tuned_hz = tx_frequency_hz;
+        let tx_setup = activation.as_ref().map_or_else(
+            || {
+                Frequency::from_hz(receiver.frequency_hz)
+                    .ok()
+                    .map(TxSetup::simplex)
+            },
+            |(controller, _)| Some(tx_setup(controller)),
+        );
+        if tx_setup != tx_tuned {
+            tx_tuned = tx_setup;
             tx_revision = tx_revision.saturating_add(1);
         }
         // The handset's class switches narrow the programmed ranges, and
@@ -944,13 +953,11 @@ pub async fn run<D, K, B, S, V, M>(
                     .as_ref()
                     .map(|(controller, _)| controller.channel()),
             ),
-            Frequency::from_hz(tx_frequency_hz)
-                .ok()
-                .and_then(|frequency| tx_policy_now.max_mw_at(frequency)),
+            tx_setup.and_then(|setup| tx_policy_now.max_mw_at(setup.channel.transmit)),
         );
         let tx_request = tx_request(
             &receiver,
-            tx_frequency_hz,
+            tx_setup,
             context.scanning,
             pending.is_some() || pending_operator_squelch.is_some(),
             tx_revision,
@@ -981,9 +988,9 @@ pub async fn run<D, K, B, S, V, M>(
                 tx_refused = refused;
                 redraw = true;
             }
-            let bias = tx_request.1;
-            transmit::run_effects(controller, &tx_policy, &tx_request.0, tx_now, |effect| {
-                receiver.transmit_effect(effect, bias)
+            let (request, bias, tone) = tx_request;
+            transmit::run_effects(controller, &tx_policy, &request, tx_now, |effect| {
+                receiver.transmit_effect(effect, bias, tone)
             });
             // Keys, host requests and sampling all touch the radio, so they
             // wait until the controller has restored receive.
@@ -1598,12 +1605,34 @@ fn tx_refusal(
     }
 }
 
-/// Builds the TX request for the selected slot's frequency, and the bias it
-/// would use. Off-raster, wide, or non-PMR446 tuning is denied by policy.
+/// What PTT transmits with: a memory channel's transmit frequency, bandwidth
+/// and TX tone, so a repeater channel keys its input; simplex on a frequency
+/// tuned away from the channel.
+fn tx_setup<M: Memory>(controller: &BankedReceiveController<Listening<M>>) -> TxSetup {
+    let setup = controller.setup();
+    match controller.selection() {
+        ChannelSelection::Memory { .. } => {
+            let channel = controller.channel();
+            TxSetup {
+                channel: channel.active(),
+                bandwidth: channel.bandwidth(),
+                tone: channel.tx_tone(),
+            }
+        }
+        ChannelSelection::Vfo => TxSetup {
+            bandwidth: setup.bandwidth,
+            ..TxSetup::simplex(setup.frequency)
+        },
+    }
+}
+
+/// Builds the TX request for the selected slot, the bias it would use and the
+/// tone it sends. A frequency or bandwidth no programmed range permits is
+/// denied by policy.
 #[allow(clippy::too_many_arguments)]
 fn tx_request<B: RegisterBus, S: Speaker>(
     receiver: &Receiver<B, S>,
-    frequency_hz: u32,
+    setup: Option<TxSetup>,
     scanning: bool,
     changing: bool,
     revision: u32,
@@ -1611,9 +1640,8 @@ fn tx_request<B: RegisterBus, S: Speaker>(
     tx: TxTarget,
     level: u8,
     timeout_ms: u32,
-) -> (TxRequest, Option<u8>) {
-    let frequency = Frequency::from_hz(frequency_hz).ok();
-    let state = if receiver.faulted || !receiver.started || frequency.is_none() {
+) -> (TxRequest, Option<u8>, Tone) {
+    let state = if receiver.faulted || !receiver.started || setup.is_none() {
         TxState::Faulted
     } else if scanning {
         TxState::Scanning
@@ -1622,15 +1650,16 @@ fn tx_request<B: RegisterBus, S: Speaker>(
     } else {
         TxState::Selected
     };
-    let bias = calibration
-        .zip(frequency)
-        .and_then(|(calibration, frequency)| tx.bias(calibration, frequency.as_hz(), level));
-    let frequency = frequency.unwrap_or_else(|| {
-        Frequency::from_hz(446_006_250).expect("PMR446 channel 1 is a frequency")
+    let bias = calibration.zip(setup).and_then(|(calibration, setup)| {
+        tx.bias(calibration, setup.channel.transmit.as_hz(), level)
+    });
+    let setup = setup.unwrap_or_else(|| {
+        TxSetup::simplex(Frequency::from_hz(446_006_250).expect("PMR446 channel 1 is a frequency"))
     });
     (
-        tx.request(frequency, state, revision, bias, level, timeout_ms),
+        tx.request(setup, state, revision, bias, level, timeout_ms),
         bias,
+        setup.tone,
     )
 }
 
@@ -1941,6 +1970,23 @@ mod tests {
 
     const VFO_HZ: u32 = 145_500_000;
 
+    // A single record is read from the source itself, never memory.
+    struct NoMemory;
+    impl crate::drivers::Memory for NoMemory {
+        fn read(&mut self, _: u16, _: &mut [u8]) -> bool {
+            false
+        }
+        fn write(&mut self, _: u16, _: &[u8; radio_platform::memory_link::WRITE_BYTES]) -> bool {
+            false
+        }
+        fn read_battery_calibration(&mut self) -> Option<radio_platform::battery::Calibration> {
+            None
+        }
+        fn read_tx_calibration(&mut self) -> Option<radio_platform::transmit::TxCalibration> {
+            None
+        }
+    }
+
     fn place(memory_mode: bool) -> OperatorState {
         OperatorState {
             memory_mode,
@@ -2175,6 +2221,54 @@ mod tests {
         shell.press(Key::Digit(6), 3, context());
         assert_eq!(chosen_power(&shell, Some(vfo)), 5);
         assert_eq!(chosen_power(&shell, None), 5);
+    }
+
+    #[test]
+    fn a_repeater_channel_transmits_on_its_input_with_its_tone_and_bandwidth() {
+        use super::tx_setup;
+        use radio_channel_control::BankedReceiveController;
+        use radio_channel_plan::{ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord};
+        use radio_domain::{
+            Bandwidth, ChannelId, Frequency, FrequencyStep, Modulation, RadioConfig, Tone,
+        };
+
+        let hz = |hz| Frequency::from_hz(hz).unwrap();
+        let repeater = |flags| {
+            ChannelRecord::new(ChannelDefinition {
+                id: ChannelId::new(1),
+                name: ChannelName::new("GB3XX").unwrap(),
+                receive: hz(439_400_000),
+                transmit: hz(431_800_000),
+                rx_tone: Tone::None,
+                tx_tone: Tone::Ctcss(770),
+                modulation: Modulation::Fm,
+                bandwidth: Bandwidth::Wide,
+                power: PowerLevel::Low1,
+                step: FrequencyStep::from_hz(12_500).unwrap(),
+                flags,
+                bank: None,
+            })
+            .unwrap()
+        };
+        let setup = |record| {
+            let (controller, _) = BankedReceiveController::activate(
+                Listening::<NoMemory>::Vfo(record),
+                RadioConfig::conservative(),
+                None,
+            )
+            .unwrap();
+            tx_setup(&controller)
+        };
+        let normal = setup(repeater(ChannelFlags::default()));
+        assert_eq!(normal.channel.receive, hz(439_400_000));
+        assert_eq!(normal.channel.transmit, hz(431_800_000));
+        assert_eq!(normal.tone, Tone::Ctcss(770));
+        assert_eq!(normal.bandwidth, Bandwidth::Wide);
+        // Reverse listens on the input and transmits on the output.
+        let reversed = setup(repeater(
+            ChannelFlags::default().with(ChannelFlags::REVERSE, true),
+        ));
+        assert_eq!(reversed.channel.transmit, hz(439_400_000));
     }
 
     #[test]

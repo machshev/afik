@@ -10,13 +10,16 @@
 //! calibration bias for the band in use multiplied by 4 and divided by the
 //! target's divider, or Mid or High, the unit's mid and high calibration rows as
 //! the reference uses them. The bands are Armel's seven with the wide receive
-//! range both sources build with, 18 MHz to 1.3 GHz less the chip's 630–840 MHz
-//! gap: what the reference transmits on with its frequency lock off. The milliwatt figures in
+//! range both sources build with, 18 MHz to 1.3 GHz inclusive less the chip's
+//! 630–840 MHz gap: what `TX_freq_check` allows with its frequency lock off.
+//!
+//! A transmission uses the selected channel's transmit frequency, bandwidth
+//! and TX tone ([`TxSetup`]), as `RADIO_SetTxParameters` uses `pTX`. The milliwatt figures in
 //! [`crate::operator_shell::TX_POWER_NOMINAL_MW`] are Armel's documented
 //! nominal outputs, not measurements.
 
 use radio_bk4819::{Bk4819, ReceiveSetup, RegisterBus};
-use radio_domain::{ActiveChannel, Bandwidth, Frequency, Modulation};
+use radio_domain::{ActiveChannel, Bandwidth, Frequency, Modulation, Tone};
 use radio_tx_policy::{ConfigurationIdentity, RuleRange, TxEnvelope, TxPolicy, TxRequest, TxState};
 
 use crate::operator_shell::{LOW_POWER_LEVELS, TX_POWER_LEVELS, TX_POWER_NOMINAL_MW};
@@ -30,7 +33,8 @@ pub const HARDWARE_MAX_MW: u32 = 5_000;
 const MAX_EFFECTS_PER_PASS: usize = 8;
 
 /// `frequencyBandTable` in both Armel sources with `ENABLE_WIDE_RX`, in 10 Hz
-/// units, lower inclusive and upper exclusive. Band `n`'s calibration rows
+/// units, lower inclusive and upper exclusive except the last, whose upper
+/// edge `TX_freq_check` allows. Band `n`'s calibration rows
 /// start `n * 16` bytes into [`TxCalibration`].
 const BANDS: [(i32, i32); 7] = [
     (1_800_000, 10_800_000),
@@ -65,6 +69,32 @@ pub trait Delay {
     fn delay_ms(&mut self, milliseconds: u32);
 }
 
+/// What the selected slot transmits with.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TxSetup {
+    /// Receive and transmit frequencies, a repeater's output and input.
+    pub channel: ActiveChannel,
+    /// Occupied bandwidth.
+    pub bandwidth: Bandwidth,
+    /// CTCSS or DCS sent with the transmission.
+    pub tone: Tone,
+}
+
+impl TxSetup {
+    /// Simplex narrow FM without a tone, as the VFO transmits.
+    #[must_use]
+    pub const fn simplex(frequency: Frequency) -> Self {
+        Self {
+            channel: ActiveChannel {
+                receive: frequency,
+                transmit: frequency,
+            },
+            bandwidth: Bandwidth::Narrow,
+            tone: Tone::None,
+        }
+    }
+}
+
 /// One target's fixed transmit facts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TxTarget {
@@ -87,9 +117,13 @@ fn band(frequency: i32) -> Option<usize> {
     if (CHIP_GAP.0..CHIP_GAP.1).contains(&frequency) {
         return None;
     }
+    let last = BANDS.len() - 1;
     BANDS
         .iter()
-        .position(|(lower, upper)| (*lower..*upper).contains(&frequency))
+        .enumerate()
+        .position(|(index, (lower, upper))| {
+            (*lower..*upper).contains(&frequency) || (index == last && frequency == *upper)
+        })
 }
 
 /// The power level to transmit at: `selected`, lowered to the highest level
@@ -172,7 +206,7 @@ impl TxTarget {
                 }),
                 Some(RuleRange {
                     first_hz: band_hz(CHIP_GAP.1),
-                    last_hz: band_hz(BANDS[BANDS.len() - 1].1) - FREQUENCY_RESOLUTION_HZ,
+                    last_hz: band_hz(BANDS[BANDS.len() - 1].1),
                     max_conducted_mw: HARDWARE_MAX_MW,
                     wide_fm: true,
                 }),
@@ -183,7 +217,8 @@ impl TxTarget {
         }
     }
 
-    /// Builds the complete simplex narrow-FM request for one frequency.
+    /// Builds the complete FM request for `setup`; the policy checks its
+    /// transmit frequency and bandwidth.
     ///
     /// The calibration envelope is present
     /// only when a bias for `level` was derived from this unit's calibration.
@@ -192,7 +227,7 @@ impl TxTarget {
     #[must_use]
     pub fn request(
         &self,
-        frequency: Frequency,
+        setup: TxSetup,
         state: TxState,
         revision: u32,
         bias: Option<u8>,
@@ -201,12 +236,9 @@ impl TxTarget {
     ) -> TxRequest {
         TxRequest {
             target_id: self.target_id,
-            channel: ActiveChannel {
-                receive: frequency,
-                transmit: frequency,
-            },
+            channel: setup.channel,
             modulation: Modulation::Fm,
-            bandwidth: Bandwidth::Narrow,
+            bandwidth: setup.bandwidth,
             conducted_mw: TX_POWER_NOMINAL_MW
                 .get(usize::from(level))
                 .copied()
@@ -225,10 +257,12 @@ impl TxTarget {
 }
 
 /// Executes one controller effect against the radio, muting receive audio
-/// before preparation. Returns whether the whole operation completed.
+/// before preparation and sending `tone` once the bias has settled. Returns
+/// whether the whole operation completed.
 pub fn execute<B: RegisterBus, D: Delay>(
     effect: &Effect<'_>,
     bias: Option<u8>,
+    tone: Tone,
     receive: Option<ReceiveSetup>,
     radio: &mut Bk4819<B>,
     mute_audio: impl FnOnce(),
@@ -258,9 +292,11 @@ pub fn execute<B: RegisterBus, D: Delay>(
                 return false;
             }
             delay.delay_ms(AFTER_PA_ENABLE_MS);
-            let biased = radio.set_pa_bias(request, token, bias).is_ok();
+            if radio.set_pa_bias(request, token, bias).is_err() {
+                return false;
+            }
             delay.delay_ms(AFTER_BIAS_MS);
-            biased
+            radio.set_transmit_tone(request, token, tone).is_ok()
         }
         (Action::PrepareTransmit | Action::EnableTransmit | Action::EnablePa, None) => false,
     }
@@ -297,7 +333,7 @@ pub fn run_effects(
 
 #[cfg(test)]
 mod tests {
-    use super::TxTarget;
+    use super::{TxSetup, TxTarget};
     use crate::operator_shell::TX_TIMEOUT_CHOICES;
     use radio_domain::{Frequency, TxClass};
     use radio_tx_policy::{TxDenied, TxPolicy, TxRange, TxState};
@@ -313,6 +349,10 @@ mod tests {
 
     fn pmr(hz: u32) -> Frequency {
         Frequency::from_hz(hz).unwrap()
+    }
+
+    fn simplex(hz: u32) -> TxSetup {
+        TxSetup::simplex(pmr(hz))
     }
 
     /// A flat low row of 0x5F and mid and high rows of the kind a K5 backup
@@ -364,11 +404,14 @@ mod tests {
         // An unprogrammed band, the chip gap and beyond 1.3 GHz have none.
         assert_eq!(K5.bias(rows, 220_000_000, 4), None, "band 3 unprogrammed");
         assert_eq!(K5.bias(rows, 700_000_000, 4), None, "chip gap");
-        assert_eq!(K5.bias(rows, 1_300_000_000, 4), None);
+        assert_eq!(K5.bias(rows, 1_300_000_010, 4), None);
+        // 1.3 GHz itself is the top band's upper point.
+        rows[6 * 16..6 * 16 + 9].copy_from_slice(&[40, 40, 40, 80, 100, 120, 1, 2, 3]);
+        assert_eq!(K5.bias(rows, 1_300_000_000, 4), Some(120));
     }
 
     #[test]
-    fn the_hardware_reaches_18_mhz_to_1_3_ghz_less_the_chip_gap() {
+    fn the_hardware_reaches_18_mhz_to_1_3_ghz_inclusive_less_the_chip_gap() {
         let wide = |first_hz, last_hz| TxRange {
             class: TxClass::Experimental,
             first_hz,
@@ -380,7 +423,7 @@ mod tests {
         let policy = TxPolicy::new(&[wide(1_000_000, 1_400_000_000)]).unwrap();
         let at = |hz| {
             policy
-                .authorise(&K5.request(pmr(hz), TxState::Selected, 1, Some(15), 0, 30_000))
+                .authorise(&K5.request(simplex(hz), TxState::Selected, 1, Some(15), 0, 30_000))
                 .map(|_| ())
         };
         assert!(at(18_000_000).is_ok());
@@ -388,8 +431,8 @@ mod tests {
         assert_eq!(at(630_000_000).unwrap_err(), TxDenied::Hardware);
         assert_eq!(at(839_999_990).unwrap_err(), TxDenied::Hardware);
         assert!(at(840_000_000).is_ok());
-        assert!(at(1_299_999_990).is_ok());
-        assert_eq!(at(1_300_000_000).unwrap_err(), TxDenied::Hardware);
+        assert!(at(1_300_000_000).is_ok(), "TX_freq_check allows the edge");
+        assert_eq!(at(1_300_000_010).unwrap_err(), TxDenied::Hardware);
         assert_eq!(at(17_999_990).unwrap_err(), TxDenied::Hardware);
     }
 
@@ -452,7 +495,7 @@ mod tests {
         let policy = policy();
         let level = level_within(5, policy.max_mw_at(pmr(446_006_250)));
         let request = K5.request(
-            pmr(446_006_250),
+            simplex(446_006_250),
             TxState::Selected,
             1,
             Some(15),
@@ -468,7 +511,7 @@ mod tests {
         for minutes in 1..=u32::from(TX_TIMEOUT_CHOICES) {
             let timeout_ms = minutes * 60_000;
             let request = K5.request(
-                pmr(446_006_250),
+                simplex(446_006_250),
                 TxState::Selected,
                 1,
                 Some(15),
@@ -480,9 +523,35 @@ mod tests {
     }
 
     #[test]
+    fn a_repeater_transmits_on_its_input_with_its_own_bandwidth() {
+        use radio_domain::{ActiveChannel, Bandwidth, Tone};
+        let policy = policy();
+        // A 70 cm repeater: output 439.4, input 431.8 (outside the 433–434
+        // amateur range programmed here), then input 433.4.
+        let repeater = |input_hz, bandwidth| TxSetup {
+            channel: ActiveChannel {
+                receive: pmr(439_400_000),
+                transmit: pmr(input_hz),
+            },
+            bandwidth,
+            tone: Tone::Ctcss(885),
+        };
+        let request = |setup| K5.request(setup, TxState::Selected, 1, Some(15), 0, 30_000);
+        let refused = request(repeater(431_800_000, Bandwidth::Narrow));
+        assert_eq!(refused.channel.transmit, pmr(431_800_000));
+        assert_eq!(policy.authorise(&refused).unwrap_err(), TxDenied::Range);
+        let narrow = request(repeater(433_400_000, Bandwidth::Narrow));
+        assert!(policy.authorise(&narrow).is_ok());
+        // These ranges do not permit wide FM.
+        let wide = request(repeater(433_400_000, Bandwidth::Wide));
+        assert_eq!(wide.bandwidth, Bandwidth::Wide);
+        assert_eq!(policy.authorise(&wide).unwrap_err(), TxDenied::Range);
+    }
+
+    #[test]
     fn only_programmed_frequencies_inside_the_calibrated_band_are_authorised() {
         let policy = policy();
-        let selected = |hz| K1.request(pmr(hz), TxState::Selected, 1, Some(15), 0, 30_000);
+        let selected = |hz| K1.request(simplex(hz), TxState::Selected, 1, Some(15), 0, 30_000);
         assert!(policy.authorise(&selected(446_006_250)).is_ok());
         assert!(policy.authorise(&selected(446_193_750)).is_ok());
         assert_eq!(
@@ -503,9 +572,16 @@ mod tests {
             policy.authorise(&selected(145_500_000)).is_ok(),
             "2 m amateur"
         );
-        let scanning = K1.request(pmr(446_006_250), TxState::Scanning, 1, Some(15), 0, 30_000);
+        let scanning = K1.request(
+            simplex(446_006_250),
+            TxState::Scanning,
+            1,
+            Some(15),
+            0,
+            30_000,
+        );
         assert_eq!(policy.authorise(&scanning).unwrap_err(), TxDenied::State);
-        let uncalibrated = K1.request(pmr(446_006_250), TxState::Selected, 1, None, 0, 30_000);
+        let uncalibrated = K1.request(simplex(446_006_250), TxState::Selected, 1, None, 0, 30_000);
         assert_eq!(
             policy.authorise(&uncalibrated).unwrap_err(),
             TxDenied::Calibration
