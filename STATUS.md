@@ -184,7 +184,17 @@ programmed as ordinary banks.
   `-D warnings` clean, `cargo test --workspace` 813 passed 0 failed,
   `tool/build-k5.sh --release` and `tool/verify-k5-image.sh` pass (image
   end `0x0000ec3c`). `7.0.30` (`eda05c1`) flashed to the K5 (bootloader `2.00.06`, CRC-32
-  `21bbc96e`, 240/240 pages acknowledged, not read back); not yet observed.
+  `21bbc96e`, 240/240 pages acknowledged, not read back), then replaced by
+  `7.0.31`/`7.0.32` (`TXK5-059`). Observed at `7.0.32`: Classic FM 101.5 and
+  most of the JO02eh bank play, with a background beat Armel does not have.
+- Fix (operator report, `7.0.32`): the speaker followed every 60 ms station
+  test and each reading is bit-banged bus traffic. A heard station now
+  plays until the channel changes (readings still feed a scan), and the
+  BK1080 is read once a second unless scanning or watching (`d0e922f`).
+  Gate: fmt clean, workspace clippy `-D warnings` clean, `cargo test
+  --workspace` 818 passed 0 failed, `tool/build-k5.sh --release` and
+  `tool/verify-k5-image.sh` pass (image end `0x0000e8f4`). `7.0.33`
+  (`278b9de`, CRC-32 `b8e1edb2`) built, not yet flashed.
 - Next: write the project with an FM broadcast bank from the studio, then on
   the K5 listen, step and scan it and check the `RISK-045` list; then the K1.
 
