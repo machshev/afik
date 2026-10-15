@@ -1,5 +1,6 @@
 //! Hardware-independent ST7565-compatible display commands and fixed witness.
 
+use crate::catch::Phase as CatchPhase;
 use crate::display::{BootStage, ReceiveDiagnostic};
 use crate::operator_shell::TX_POWER_NOMINAL_MW;
 use crate::receive_app::Key;
@@ -1041,6 +1042,55 @@ pub fn render_selector_list(
     }
 }
 
+/// What the frequency and tone catch screen shows.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CatchView {
+    /// What the catch is doing.
+    pub phase: CatchPhase,
+    /// The caught frequency, once three readings agree.
+    pub frequency_hz: Option<u32>,
+    /// The tone or code read so far.
+    pub tone: Option<Tone>,
+    /// Whether Menu can put the frequency in the VFO.
+    pub to_vfo: bool,
+}
+
+/// Produces the frequency and tone catch screen (F then 4, `FC`).
+pub fn render_catch_screen(frame: &mut [u8; FRAME_BYTES], view: &CatchView) {
+    frame.fill(0);
+    let title = b"FREQ CATCH";
+    draw_text(frame, (WIDTH - title.len() * 6) / 2, 0, title);
+    let state: &[u8] = match view.phase {
+        CatchPhase::Frequency => b"FINDING FREQUENCY",
+        CatchPhase::Tone => b"FINDING TONE",
+        CatchPhase::Done => b"CAUGHT",
+    };
+    draw_text(frame, 0, 14, state);
+    match view.frequency_hz {
+        Some(hertz) => {
+            let text = megahertz(hertz);
+            // Below 1 GHz the leading zero says nothing.
+            let text = if text[0] == b'0' {
+                &text[1..]
+            } else {
+                &text[..]
+            };
+            draw_text(frame, 0, 28, text);
+            draw_text(frame, text.len() * 6 + 6, 28, b"MHZ");
+        }
+        None => draw_text(frame, 0, 28, b"---.----- MHZ"),
+    }
+    draw_text(frame, 0, 42, b"TONE");
+    match view.tone {
+        Some(tone) => draw_text(frame, 5 * 6, 42, &tone_label(tone)),
+        None if view.phase == CatchPhase::Done => draw_text(frame, 5 * 6, 42, b"NONE"),
+        None => draw_text(frame, 5 * 6, 42, b"-----"),
+    }
+    if view.frequency_hz.is_some() && view.to_vfo {
+        draw_text(frame, 0, 56, b"MENU TO VFO");
+    }
+}
+
 /// Produces the image and storage information screen.
 ///
 /// This is the display-side witness for a flashed image: the identity string,
@@ -1648,6 +1698,59 @@ mod tests {
                 assert_ne!(frames[first], frames[second]);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod catch_screen_tests {
+    use super::{draw_text, render_catch_screen, CatchView, FRAME_BYTES};
+    use crate::catch::Phase;
+    use radio_domain::Tone;
+
+    fn shows(frame: &[u8; FRAME_BYTES], x: usize, y: usize, text: &[u8]) -> bool {
+        let mut drawn = *frame;
+        draw_text(&mut drawn, x, y, text);
+        drawn == *frame
+    }
+
+    fn render(view: CatchView) -> [u8; FRAME_BYTES] {
+        let mut frame = [0_u8; FRAME_BYTES];
+        render_catch_screen(&mut frame, &view);
+        frame
+    }
+
+    #[test]
+    fn the_catch_shows_its_phase_frequency_and_tone() {
+        let finding = render(CatchView {
+            phase: Phase::Frequency,
+            frequency_hz: None,
+            tone: None,
+            to_vfo: true,
+        });
+        assert!(shows(&finding, 0, 14, b"FINDING FREQUENCY"));
+        assert!(shows(&finding, 0, 28, b"---.----- MHZ"));
+        assert!(shows(&finding, 0, 42, b"TONE -----"));
+        assert!(!shows(&finding, 0, 56, b"MENU"));
+
+        let caught = render(CatchView {
+            phase: Phase::Done,
+            frequency_hz: Some(430_837_500),
+            tone: Some(Tone::Ctcss(1567)),
+            to_vfo: true,
+        });
+        assert!(shows(&caught, 0, 14, b"CAUGHT"));
+        assert!(shows(&caught, 0, 28, b"430.83750 MHZ"));
+        assert!(shows(&caught, 0, 42, b"TONE 156.7"));
+        assert!(shows(&caught, 0, 56, b"MENU TO VFO"));
+
+        let untoned = render(CatchView {
+            phase: Phase::Done,
+            frequency_hz: Some(145_500_000),
+            tone: None,
+            to_vfo: false,
+        });
+        assert!(shows(&untoned, 0, 42, b"TONE NONE"));
+        assert!(!shows(&untoned, 0, 56, b"MENU"));
     }
 }
 

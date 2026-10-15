@@ -21,12 +21,13 @@ use radio_domain::{
 };
 use radio_platform::backlight::Backlight;
 use radio_platform::battery::Battery;
+use radio_platform::catch::{self, Catch, Next as CatchNext, Phase as CatchPhase};
 use radio_platform::configuration_change::{ConfigurationAcknowledgement, ConfigurationCandidate};
 use radio_platform::dual_watch::{DualWatch, Listening as Watching};
 use radio_platform::operator_display::{
-    render_channel_list, render_info_screen, render_operating_screen, render_selector_list,
-    ListRow, MemoryState, OperatingView, SelectorRow, SlotChannel, SlotPlace, SlotView, TxRefusal,
-    FRAME_BYTES, LIST_ROWS,
+    render_catch_screen, render_channel_list, render_info_screen, render_operating_screen,
+    render_selector_list, CatchView, ListRow, MemoryState, OperatingView, SelectorRow, SlotChannel,
+    SlotPlace, SlotView, TxRefusal, FRAME_BYTES, LIST_ROWS,
 };
 use radio_platform::operator_shell::{
     Context, Intent, Mode, Screen, Setting, Shell, Slot, SlotId, Source, HOLD_MILLISECONDS,
@@ -81,6 +82,11 @@ const SCAN_SAMPLE_MILLISECONDS: u64 = 5;
 /// 60 ms receive interval (`7.0.32`); the reference firmware reads nothing
 /// while it plays.
 const BROADCAST_SAMPLE_MILLISECONDS: u64 = 1_000;
+
+/// Where a catch starts when the slot is a broadcast station, which the
+/// BK4819 cannot receive: any frequency it can, since the scan looks across
+/// the band.
+const CATCH_START_HZ: u32 = 145_500_000;
 
 /// Interval between user interface passes.
 const LOOP_MILLISECONDS: u64 = 5;
@@ -190,6 +196,8 @@ struct Receiver<B: RegisterBus, S: Speaker, C: BroadcastChip> {
     /// Whether untoned channels run the tone scan to show the tone heard,
     /// the operator's TONE HEARD experiment.
     tone_scan: bool,
+    /// Whether a frequency or tone catch has the chip; the next tune ends it.
+    catching: bool,
 }
 
 impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
@@ -212,6 +220,7 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
             heard_tone: None,
             tone_reading: None,
             tone_scan: false,
+            catching: false,
         }
     }
 
@@ -328,6 +337,7 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
     /// A level the controller has already forced open is left alone: that is
     /// monitoring, and monitoring outranks both.
     fn tune(&mut self, setup: ChannelReceiveSetup, radio_wide: SquelchLevel) {
+        self.end_catch();
         // A tone heard on the previous channel says nothing about this one.
         self.forget_tone();
         if matches!(setup.modulation, Modulation::Broadcast) {
@@ -488,6 +498,105 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
         self.tone_reading = Some((tone, agreed));
         if matches!(tone, Tone::Dcs { .. }) || agreed >= 2 {
             self.heard_tone = Some(tone);
+        }
+    }
+
+    /// Starts a frequency and tone catch (F then 4): the speaker off, the
+    /// BK4819 receiving (woken from a broadcast slot or battery save) and the
+    /// reference's frequency scan started. The run loop stops sampling while
+    /// it runs, and the next tune ends it.
+    fn start_catch(&mut self) {
+        self.set_speaker(false);
+        self.audio_routed = false;
+        self.squelch_open = false;
+        self.forget_tone();
+        if self.on_broadcast {
+            self.broadcast.power_down();
+            self.on_broadcast = false;
+        }
+        if !self.started {
+            self.bring_up();
+        }
+        let frequency = self
+            .last_tune
+            .filter(|(setup, _)| !matches!(setup.modulation, Modulation::Broadcast))
+            .map_or(CATCH_START_HZ, |(setup, _)| setup.frequency.as_hz());
+        if self.faulted
+            || self.catch_tune(frequency).is_err()
+            || self.radio.start_frequency_scan().is_err()
+        {
+            self.faulted = true;
+        }
+        self.asleep = false;
+        self.catching = true;
+    }
+
+    /// Receives `hertz` muted and untoned, ready for a scan.
+    fn catch_tune(&mut self, hertz: u32) -> Result<(), ()> {
+        let frequency = Frequency::from_hz(hertz).map_err(|_| ())?;
+        let setup = ReceiveSetup {
+            frequency,
+            modulation: Modulation::Fm,
+            bandwidth: Bandwidth::Narrow,
+            tone: Tone::None,
+            squelch: SquelchThresholds::for_level(SquelchLevel::OPEN),
+            af: AfOutput::Mute,
+        };
+        self.radio.configure_receive(&setup).map_err(|_| ())
+    }
+
+    /// Reads the chip for one catch poll and does what the catch decides.
+    /// Returns whether anything shown changed.
+    fn poll_catch(&mut self, catch: &mut Catch) -> bool {
+        if self.faulted {
+            return false;
+        }
+        let before = *catch;
+        let next = match catch.phase() {
+            CatchPhase::Frequency => match self.radio.frequency_scan_result() {
+                Ok(Some(frequency)) => catch.frequency_reading(frequency.as_hz()),
+                Ok(None) => CatchNext::Wait,
+                Err(_) => {
+                    self.faulted = true;
+                    return true;
+                }
+            },
+            CatchPhase::Tone => {
+                let Ok(tone) = self.radio.detected_tone() else {
+                    self.faulted = true;
+                    return true;
+                };
+                catch.tone_reading(tone)
+            }
+            CatchPhase::Done => CatchNext::Wait,
+        };
+        let applied = match next {
+            CatchNext::Wait => Ok(()),
+            CatchNext::RestartFrequency => self.radio.restart_frequency_scan().map_err(|_| ()),
+            CatchNext::StartTone(hertz) => self
+                .radio
+                .stop_scan()
+                .map_err(|_| ())
+                .and_then(|()| self.catch_tune(hertz))
+                .and_then(|()| self.radio.start_tone_scan().map_err(|_| ())),
+            CatchNext::RestartTone => self.radio.start_tone_scan().map_err(|_| ()),
+            CatchNext::Stop => self.radio.stop_scan().map_err(|_| ()),
+        };
+        if applied.is_err() {
+            self.faulted = true;
+        }
+        *catch != before
+    }
+
+    /// Ends a catch: the chip stopped, so the tune that follows restores
+    /// receive with the frequency scan off.
+    fn end_catch(&mut self) {
+        if core::mem::take(&mut self.catching)
+            && self.started
+            && !self.faulted
+            && self.radio.stop_scan().is_err()
+        {
+            self.faulted = true;
         }
     }
 
@@ -1052,6 +1161,9 @@ pub async fn run<D, K, B, F, W, S, V, M>(
     // reading there was busy, and whether the last pass was transmitting.
     let mut watch = DualWatch::new();
     let mut watched_busy = false;
+    // A frequency and tone catch (F then 4), when it next reads the chip, and
+    // whether it has started; it starts once the bus is free.
+    let mut catching: Option<(Catch, Instant, bool)> = None;
     let mut transmitted = false;
     // Whether PTT is held after the policy refused the press, so the screen
     // says why nothing went out.
@@ -1198,7 +1310,8 @@ pub async fn run<D, K, B, F, W, S, V, M>(
         let tx_request = tx_request(
             &receiver,
             tx_setup,
-            context.scanning,
+            // A catch has the chip scanning, so PTT is refused as in a scan.
+            context.scanning || catching.is_some(),
             pending.is_some() || pending_operator_squelch.is_some(),
             tx_revision,
             tx_calibration,
@@ -1396,6 +1509,39 @@ pub async fn run<D, K, B, F, W, S, V, M>(
                 }
                 redraw = true;
             }
+            Intent::StartCatch => {
+                cancel_pending_squelch(
+                    &mut shell,
+                    &mut shared_receive,
+                    &mut pending_shared_squelch,
+                    &mut pending_operator_squelch,
+                );
+                catching = Some((Catch::new(), Instant::now(), false));
+                redraw = true;
+            }
+            // Leaving the catch retunes the selected slot, which ends it.
+            Intent::StopCatch => {
+                catching = None;
+                pending = activation
+                    .as_ref()
+                    .map(|(controller, _)| controller.setup());
+                redraw = true;
+            }
+            // Menu puts a caught frequency in the VFO, then rebuilds the slot
+            // as VFO/MR does.
+            Intent::UseCatch => {
+                let caught = catching
+                    .as_ref()
+                    .and_then(|(catch, _, _)| catch.frequency_hz());
+                if caught.is_some_and(|hertz| shell.catch_to_vfo(hertz)) {
+                    catching = None;
+                    let _ = pending.take();
+                    activation = activate(&programmed, &shell, selected, memory);
+                    pending = activation.as_mut().and_then(|(_, setup)| setup.take());
+                    scan_timer = None;
+                    redraw = true;
+                }
+            }
             Intent::SelectNext
             | Intent::SelectPrevious
             | Intent::SelectIndex(_)
@@ -1440,6 +1586,7 @@ pub async fn run<D, K, B, F, W, S, V, M>(
             })
         };
         let watching = shell.dual_watch()
+            && catching.is_none()
             && pending_operator_squelch.is_none()
             && other_activation.is_some()
             && !broadcast(&activation)
@@ -1578,7 +1725,22 @@ pub async fn run<D, K, B, F, W, S, V, M>(
                 None => {}
             }
         }
-        if let Some(setup) = pending.filter(|_| bus_available()) {
+        if let Some((catch, next_poll, started)) = catching.as_mut() {
+            if bus_available() {
+                let poll = Duration::from_millis(u64::from(catch::POLL_MILLISECONDS));
+                if !*started {
+                    receiver.start_catch();
+                    *started = true;
+                    *next_poll = Instant::now() + poll;
+                    redraw = true;
+                } else if Instant::now() >= *next_poll {
+                    redraw |= receiver.poll_catch(catch);
+                    *next_poll = Instant::now() + poll;
+                }
+            }
+        }
+        // A retune waits for the catch to end; the tune then ends it.
+        if let Some(setup) = pending.filter(|_| bus_available() && catching.is_none()) {
             if let Some(channel) = shared_channel(setup) {
                 let had_shared = shared_receive.is_some();
                 let initial_squelch = pending_operator_squelch.unwrap_or(setup.squelch);
@@ -1778,6 +1940,7 @@ pub async fn run<D, K, B, F, W, S, V, M>(
                 target.identity,
                 memory,
                 tx_refused,
+                catching.as_ref().map(|(catch, _, _)| catch),
             );
             if !display.frame(&frame).await {
                 return;
@@ -1922,6 +2085,7 @@ fn render<B: RegisterBus, S: Speaker, C: BroadcastChip, M: Memory>(
     identity: &[u8],
     memory: &'static TaskCell<Option<M>>,
     tx_refused: Option<TxRefusal>,
+    catch: Option<&Catch>,
 ) {
     // Only an empty memory has no controller: the VFO always has one.
     let visible = controller.map_or(0, BankedReceiveController::visible_channels);
@@ -2163,6 +2327,18 @@ fn render<B: RegisterBus, S: Speaker, C: BroadcastChip, M: Memory>(
             peripheral_clock_khz(),
             reset_cause(),
         ),
+        Screen::Catch => {
+            let catch = catch.copied().unwrap_or_default();
+            render_catch_screen(
+                frame,
+                &CatchView {
+                    phase: catch.phase(),
+                    frequency_hz: catch.frequency_hz(),
+                    tone: catch.tone(),
+                    to_vfo: shell.capabilities().vfo,
+                },
+            );
+        }
     }
 }
 
@@ -2643,6 +2819,75 @@ mod tests {
         fn read(&mut self, address: radio_bk4819::RegisterAddress) -> Result<u16, ()> {
             Ok(self.0.borrow()[usize::from(address.get())])
         }
+    }
+
+    #[test]
+    fn a_catch_finds_the_frequency_then_the_tone_and_a_tune_ends_it() {
+        use super::Receiver;
+        use radio_channel_control::ChannelReceiveSetup;
+        use radio_domain::{Bandwidth, Frequency, FrequencyStep, Modulation, SquelchLevel, Tone};
+        use radio_platform::catch::{Catch, Phase};
+
+        const FREQUENCY_SCAN: usize = 0x32;
+        const SCAN_HIGH: usize = 0x0D;
+        const SCAN_LOW: usize = 0x0E;
+        const CTCSS_SCAN: usize = 0x68;
+        const CDCSS_HIGH: usize = 0x69;
+        let setup = ChannelReceiveSetup {
+            frequency: Frequency::from_hz(145_500_000).unwrap(),
+            modulation: Modulation::Fm,
+            bandwidth: Bandwidth::Narrow,
+            tone: Tone::None,
+            squelch: SquelchLevel::CONSERVATIVE,
+            step: FrequencyStep::from_hz(12_500).unwrap(),
+        };
+        let chip = Shared::new();
+        let mut receiver = Receiver::new(
+            radio_bk4819::Bk4819::new(chip.clone()),
+            Chip::default(),
+            Amplifier::default(),
+        );
+        receiver.tune(setup, SquelchLevel::CONSERVATIVE);
+        receiver.start_catch();
+        assert!(!receiver.faulted && receiver.catching);
+        assert!(!receiver.speaker.on && !receiver.audio_routed);
+        assert_eq!(chip.get(FREQUENCY_SCAN), 0x0245);
+
+        let mut catch = Catch::new();
+        chip.set(SCAN_HIGH, 0x8000);
+        assert!(!receiver.poll_catch(&mut catch), "still scanning");
+        // 430.8375 MHz in 10 Hz units, three times.
+        chip.set(SCAN_HIGH, 0x0291);
+        chip.set(SCAN_LOW, 0x67E6);
+        for _ in 0..3 {
+            receiver.poll_catch(&mut catch);
+        }
+        assert_eq!(catch.phase(), Phase::Tone);
+        assert_eq!(catch.frequency_hz(), Some(430_837_500));
+        // The frequency scan is off and the tone scan runs on the catch.
+        assert_eq!(chip.get(FREQUENCY_SCAN), 0x0244);
+        assert_eq!(chip.get(0x51), 0x0300);
+        assert_eq!(
+            u32::from(chip.get(0x39)) * 65_536 + u32::from(chip.get(0x38)),
+            43_083_750
+        );
+
+        // 156.7 Hz three times: 3236 * 4843 / 10000 = 1567 tenths.
+        chip.set(CDCSS_HIGH, 0x8000);
+        chip.set(CTCSS_SCAN, 3236);
+        for _ in 0..3 {
+            receiver.poll_catch(&mut catch);
+        }
+        assert_eq!(catch.phase(), Phase::Done);
+        assert_eq!(catch.tone(), Some(Tone::Ctcss(1567)));
+        assert_eq!(chip.get(0x30), 0, "the chip is stopped");
+        assert!(!receiver.faulted);
+
+        // The retune that follows ends the catch and restores receive.
+        receiver.tune(setup, SquelchLevel::CONSERVATIVE);
+        assert!(!receiver.catching && !receiver.faulted && receiver.audio_routed);
+        assert_ne!(chip.get(0x30), 0);
+        assert_eq!(chip.get(0x51), 0x904A);
     }
 
     #[test]

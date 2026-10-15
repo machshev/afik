@@ -7,6 +7,7 @@ extern crate std;
 
 pub mod backlight;
 pub mod battery;
+pub mod catch;
 pub mod configuration;
 pub mod configuration_change;
 pub mod display;

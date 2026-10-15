@@ -192,6 +192,8 @@ pub enum Screen {
     TxClassList,
     /// Image identity and storage state.
     Info,
+    /// The frequency and tone catch (F then 4, `FC`).
+    Catch,
 }
 
 /// One row of the settings menu.
@@ -311,6 +313,12 @@ pub enum Intent {
     /// Select the calling channel of the active view, if it has one (F then
     /// 9, Call).
     SelectCalling,
+    /// Start catching the strongest carrier and its tone (F then 4, `FC`).
+    StartCatch,
+    /// Leave the catch and return to the selected slot.
+    StopCatch,
+    /// Put what was caught in the VFO ([`Shell::catch_to_vfo`]).
+    UseCatch,
 }
 
 /// Target capabilities which gate operator screens without changing their
@@ -713,6 +721,23 @@ impl Shell {
         self.dual_watch = on;
     }
 
+    /// Puts a caught frequency in the selected slot's VFO and shows the
+    /// operating screen; the caller rebuilds the slot as for VFO/MR. Refused,
+    /// leaving the catch open, without a VFO or off its range.
+    pub fn catch_to_vfo(&mut self, hertz: u32) -> bool {
+        if self.screen != Screen::Catch
+            || !self.capabilities.vfo
+            || !(VFO_MINIMUM_HZ..=VFO_MAXIMUM_HZ).contains(&hertz)
+        {
+            return false;
+        }
+        self.mode = Mode::Vfo;
+        self.vfo_hz = hertz;
+        self.entry = None;
+        self.screen = Screen::Operating;
+        true
+    }
+
     /// Reports whether untoned channels show the tone heard.
     #[must_use]
     pub const fn tone_heard(&self) -> bool {
@@ -1052,6 +1077,11 @@ impl Shell {
                 self.entry = None;
                 Intent::SelectCalling
             }
+            Key::Digit(4) => {
+                self.entry = None;
+                self.screen = Screen::Catch;
+                Intent::StartCatch
+            }
             _ => Intent::Redraw,
         }
     }
@@ -1162,6 +1192,7 @@ impl Shell {
             ),
             Screen::TxClassList => self.step_row(direction, self.tx_class_rows(), Cursor::TxClass),
             Screen::Info => Intent::Redraw,
+            Screen::Catch => Intent::Idle,
         }
     }
 
@@ -1331,6 +1362,8 @@ impl Shell {
                 self.screen = Screen::Operating;
                 Intent::Redraw
             }
+            // The target knows what was caught; it calls `catch_to_vfo`.
+            Screen::Catch => Intent::UseCatch,
         }
     }
 
@@ -1378,6 +1411,10 @@ impl Shell {
         if self.screen == Screen::Operating {
             return Intent::Idle;
         }
+        if self.screen == Screen::Catch {
+            self.screen = Screen::Operating;
+            return Intent::StopCatch;
+        }
         // Exit unwinds one step, so a value list returns to the menu that opened
         // it rather than throwing the operator all the way out.
         self.screen = if matches!(
@@ -1420,7 +1457,7 @@ impl Shell {
                 self.tx_timeout_cursor = choice;
                 return self.confirm(context);
             }
-            Screen::Settings | Screen::TxClassList => return Intent::Idle,
+            Screen::Settings | Screen::TxClassList | Screen::Catch => return Intent::Idle,
             _ => {}
         }
         let mut entry = self.entry.unwrap_or(Entry {
@@ -2303,6 +2340,44 @@ mod tests {
         shell.press(Key::Menu, 3, context(4, 1));
         assert_eq!(shell.press(Key::Function, 4, context(4, 1)), Intent::Idle);
         assert!(!shell.function_pending());
+    }
+
+    #[test]
+    fn f_then_4_opens_the_catch_and_menu_puts_it_in_the_vfo() {
+        let mut shell = memory_shell(&[2, 5]);
+        shell.press(Key::Function, 10, context(2, 0));
+        assert_eq!(
+            shell.press(Key::Digit(4), 11, context(2, 0)),
+            Intent::StartCatch
+        );
+        assert_eq!(shell.screen(), Screen::Catch);
+        // Nothing else acts on the catch.
+        for (key, time) in [(Key::Up, 12), (Key::Down, 13), (Key::Digit(7), 14)] {
+            assert_eq!(shell.press(key, time, context(2, 0)), Intent::Idle);
+        }
+        assert_eq!(shell.entry(), None);
+        // Menu asks the target, which knows what was caught.
+        assert_eq!(shell.press(Key::Menu, 15, context(2, 0)), Intent::UseCatch);
+        assert_eq!(shell.screen(), Screen::Catch);
+        assert!(!shell.catch_to_vfo(10_000), "below the VFO range");
+        assert_eq!(shell.screen(), Screen::Catch);
+        assert!(shell.catch_to_vfo(430_837_500));
+        assert_eq!(shell.mode(), Mode::Vfo);
+        assert_eq!(shell.vfo_hz(), 430_837_500);
+        assert_eq!(shell.screen(), Screen::Operating);
+        // Only from the catch.
+        assert!(!shell.catch_to_vfo(145_500_000));
+        assert_eq!(shell.vfo_hz(), 430_837_500);
+    }
+
+    #[test]
+    fn exit_leaves_the_catch() {
+        let mut shell = memory_shell(&[2, 5]);
+        shell.press(Key::Function, 10, context(2, 0));
+        shell.press(Key::Digit(4), 11, context(2, 0));
+        assert_eq!(shell.press(Key::Exit, 12, context(2, 0)), Intent::StopCatch);
+        assert_eq!(shell.screen(), Screen::Operating);
+        assert_eq!(shell.mode(), Mode::Memory);
     }
 
     #[test]
