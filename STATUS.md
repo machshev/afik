@@ -162,7 +162,17 @@ programmed as ordinary banks.
   slept now (`a885bbf`, test steps two stations).
 - `7.0.29` (`500c087`, also `TXK5-059`'s squelch fix): flashed to the K5
   (bootloader `2.00.06`, CRC-32 `f62c2fb9`, 240/240 pages acknowledged, not
-  read back; image end `0x0000ec3c`); not yet observed on the radio.
+  read back; image end `0x0000ec3c`). Observed: stepping and the return to
+  ordinary channels work, with no RX FAULT, but WFM channels were silent.
+- Fix (operator report, `7.0.29`): no broadcast audio, because
+  `tune_broadcast` left `audio_routed` false and the run loop only samples
+  routed audio, so the squelch never opened the speaker. A BK1080 tune now
+  routes audio, a broadcast mute un-routes it, and battery save stays off
+  on broadcast (`67ff234`; the test now asserts routing and fails without
+  the fix). Gate: `cargo fmt --all --check` clean, workspace clippy
+  `-D warnings` clean, `cargo test --workspace` 813 passed 0 failed,
+  `tool/build-k5.sh --release` and `tool/verify-k5-image.sh` pass (image
+  end `0x0000ec3c`). `7.0.30` (`eda05c1`) is built, not yet flashed.
 - Next: write the project with an FM broadcast bank from the studio, then on
   the K5 listen, step and scan it and check the `RISK-045` list; then the K1.
 
