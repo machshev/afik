@@ -211,6 +211,9 @@ pub struct Bk4819<B: RegisterBus> {
     pub(crate) profile: ChipProfile,
     /// Whether the receive tone or code was last found rather than lost.
     pub(crate) tone_found: bool,
+    /// Whether an untoned channel receives in the tone scan rather than the
+    /// reference's tail detection; an operator experiment (`RISK-046`).
+    pub(crate) scan_untoned: bool,
 }
 
 impl<B: RegisterBus> Bk4819<B> {
@@ -222,6 +225,7 @@ impl<B: RegisterBus> Bk4819<B> {
             gpio_out: receive::GPIO_OUT_DEFAULT,
             profile: receive::BK4819_PROFILE,
             tone_found: false,
+            scan_untoned: false,
         }
     }
 
@@ -233,6 +237,7 @@ impl<B: RegisterBus> Bk4819<B> {
             gpio_out: receive::GPIO_OUT_DEFAULT,
             profile,
             tone_found: false,
+            scan_untoned: false,
         }
     }
 

@@ -107,6 +107,15 @@ const MAX_INTERRUPTS_PER_SAMPLE: usize = 8;
 /// untoned channels used it and a toned signal (GB3EL's output) went silent.
 const SUB_AUDIO_SCAN: u16 = (1 << 9) | (1 << 8);
 const REG_CTCSS_SCAN: RegisterAddress = RegisterAddress::known(0x68);
+/// `REG_32`, frequency scan control: `BK4819_EnableFrequencyScan` and
+/// `BK4819_DisableFrequencyScan`, 0.2 s scan time, enable in bit 0.
+const REG_FREQUENCY_SCAN: RegisterAddress = RegisterAddress::known(0x32);
+const FREQUENCY_SCAN_OFF: u16 = 290 << 1;
+const FREQUENCY_SCAN_ON: u16 = FREQUENCY_SCAN_OFF | 1;
+/// `REG_0D`/`REG_0E`, the frequency scan result in 10 Hz units; `REG_0D`
+/// bit 15 is set while the scan is still running.
+const REG_FREQUENCY_SCAN_HIGH: RegisterAddress = RegisterAddress::known(0x0D);
+const REG_FREQUENCY_SCAN_LOW: RegisterAddress = RegisterAddress::known(0x0E);
 const REG_CDCSS_SCAN_HIGH: RegisterAddress = RegisterAddress::known(0x69);
 const REG_CDCSS_SCAN_LOW: RegisterAddress = RegisterAddress::known(0x6A);
 /// `REG_68`/`REG_69` bit 15 is clear when the scan found a tone or code.
@@ -805,15 +814,81 @@ impl<B: RegisterBus> Bk4819<B> {
         })
     }
 
-    /// Puts the receiving chip into the reference's tone scan
-    /// (`BK4819_SetScanFrequency`'s `REG_51`), so [`Self::detected_tone`] can
-    /// read what it hears. Ordinary receive must not stay in it; the next
-    /// receive configuration leaves it.
+    /// Chooses how the next receive setup treats a channel without a receive
+    /// tone: the reference's tail detection (`false`, the default) or the tone
+    /// scan, so [`Self::detected_tone`] reads what it hears during ordinary
+    /// receive, as `7.0.28`–`7.0.30` did. An operator experiment (`RISK-046`).
+    pub fn set_untoned_tone_scan(&mut self, scan: bool) {
+        self.scan_untoned = scan;
+    }
+
+    /// Starts, or restarts after a reading, the reference's tone scan on the
+    /// tuned frequency, as `BK4819_SetScanFrequency` does: its `REG_51`, then
+    /// receive turned on again (`BK4819_RX_TurnOn`). The next receive
+    /// configuration leaves it.
     pub fn start_tone_scan(&mut self) -> Result<(), DriverError<B::Error>> {
         if !matches!(self.state, DriverState::Receiving { .. }) {
             return Err(DriverError::InvalidState(self.state));
         }
-        self.write(REG_SUB_AUDIO_CONTROL, SUB_AUDIO_SCAN)
+        self.write(REG_SUB_AUDIO_CONTROL, SUB_AUDIO_SCAN)?;
+        self.write(REG_POWER_BLOCKS, self.profile.receive_power_blocks)?;
+        self.write(REG_MODE_CONTROL, MODE_STANDBY)?;
+        self.write(REG_MODE_CONTROL, self.profile.receive_mode)
+    }
+
+    /// Starts the reference's frequency scan (`SCANNER_Start(false)`): both
+    /// LNA paths cleared, as `BK4819_PickRXFilterPathBasedOnFrequency` does for
+    /// its `0xFFFFFFFF` sentinel, then `BK4819_EnableFrequencyScan`.
+    pub fn start_frequency_scan(&mut self) -> Result<(), DriverError<B::Error>> {
+        if !matches!(self.state, DriverState::Receiving { .. }) {
+            return Err(DriverError::InvalidState(self.state));
+        }
+        self.gpio_out &= !(GPIO_VHF_LNA | GPIO_UHF_LNA);
+        self.write(REG_GPIO_OUT, self.gpio_out)?;
+        self.write(REG_FREQUENCY_SCAN, FREQUENCY_SCAN_ON)
+    }
+
+    /// Starts the next frequency scan after a reading, as the reference's
+    /// scanner does: disabled, then enabled again.
+    pub fn restart_frequency_scan(&mut self) -> Result<(), DriverError<B::Error>> {
+        if !matches!(self.state, DriverState::Receiving { .. }) {
+            return Err(DriverError::InvalidState(self.state));
+        }
+        self.write(REG_FREQUENCY_SCAN, FREQUENCY_SCAN_OFF)?;
+        self.write(REG_FREQUENCY_SCAN, FREQUENCY_SCAN_ON)
+    }
+
+    /// The strongest carrier the frequency scan found, as
+    /// `BK4819_GetFrequencyScanResult` reads it, or `None` while it runs.
+    pub fn frequency_scan_result(&mut self) -> Result<Option<Frequency>, DriverError<B::Error>> {
+        if !matches!(self.state, DriverState::Receiving { .. }) {
+            return Err(DriverError::InvalidState(self.state));
+        }
+        let high = self.read(REG_FREQUENCY_SCAN_HIGH)?;
+        if high & SCAN_NOT_FOUND != 0 {
+            return Ok(None);
+        }
+        let low = self.read(REG_FREQUENCY_SCAN_LOW)?;
+        let word = (u32::from(high & 0x07FF) << 16) | u32::from(low);
+        Ok(word
+            .checked_mul(10)
+            .and_then(|hertz| Frequency::from_hz(hertz).ok()))
+    }
+
+    /// Ends a frequency or tone scan as `BK4819_StopScan` does: frequency
+    /// scan off and the chip disabled (`REG_30 = 0`), in standby until the
+    /// next receive configuration.
+    pub fn stop_scan(&mut self) -> Result<(), DriverError<B::Error>> {
+        if !matches!(
+            self.state,
+            DriverState::Standby | DriverState::Receiving { .. }
+        ) {
+            return Err(DriverError::InvalidState(self.state));
+        }
+        self.write(REG_FREQUENCY_SCAN, FREQUENCY_SCAN_OFF)?;
+        self.write(REG_MODE_CONTROL, MODE_STANDBY)?;
+        self.state = DriverState::Standby;
+        Ok(())
     }
 
     /// Reads the tone or code the chip hears during a tone scan, as
@@ -941,6 +1016,7 @@ impl<B: RegisterBus> Bk4819<B> {
         match tone {
             // `RADIO_SetupRegisters`' `CODE_TYPE_OFF`: `BK4819_SetCTCSSFrequency`
             // then `BK4819_SetTailDetection`, whose `REG_07` replaces the first.
+            Tone::None if self.scan_untoned => self.write(REG_SUB_AUDIO_CONTROL, SUB_AUDIO_SCAN),
             Tone::None => {
                 self.write(REG_SUB_AUDIO_CONTROL, self.profile.sub_audio_ctcss)?;
                 self.write(
@@ -1657,6 +1733,109 @@ mod tests {
     }
 
     #[test]
+    fn the_untoned_tone_scan_experiment_restores_the_old_receive_word() {
+        let mut radio = Bk4819::new(FakeBus::new(None));
+        radio.recover_to_standby().unwrap();
+        radio.set_untoned_tone_scan(true);
+        radio
+            .configure_receive(&setup(Modulation::Fm, Tone::None, 430_837_500))
+            .unwrap();
+        assert!(radio
+            .bus()
+            .operations
+            .contains(&Operation::Write(REG_SUB_AUDIO_CONTROL, 0x0300)));
+        assert!(!radio
+            .bus()
+            .operations
+            .contains(&Operation::Write(REG_SUB_AUDIO_FREQUENCY, 0x21CE)));
+        // A receive tone is unaffected, and switching back restores the
+        // reference's words.
+        radio.bus_mut().operations.clear();
+        radio
+            .configure_receive(&setup(Modulation::Fm, Tone::Ctcss(1567), 430_837_500))
+            .unwrap();
+        assert!(radio
+            .bus()
+            .operations
+            .contains(&Operation::Write(REG_SUB_AUDIO_CONTROL, 0x904A)));
+        radio.set_untoned_tone_scan(false);
+        radio
+            .configure_receive(&setup(Modulation::Fm, Tone::None, 430_837_500))
+            .unwrap();
+        assert!(radio
+            .bus()
+            .operations
+            .contains(&Operation::Write(REG_SUB_AUDIO_FREQUENCY, 0x21CE)));
+    }
+
+    #[test]
+    fn a_frequency_scan_follows_the_reference_scanner() {
+        use super::{REG_FREQUENCY_SCAN, REG_FREQUENCY_SCAN_HIGH, REG_FREQUENCY_SCAN_LOW};
+        use crate::REG_MODE_CONTROL;
+
+        let mut radio = Bk4819::new(FakeBus::new(None));
+        radio.recover_to_standby().unwrap();
+        assert!(
+            radio.start_frequency_scan().is_err(),
+            "only while receiving"
+        );
+        radio
+            .configure_receive(&setup(Modulation::Fm, Tone::None, 145_500_000))
+            .unwrap();
+        radio.bus_mut().operations.clear();
+        radio.start_frequency_scan().unwrap();
+        // Both LNA paths cleared over RX enable, then `REG_32 = 0x0245`.
+        assert_eq!(
+            radio.bus().operations,
+            [
+                Operation::Write(REG_GPIO_OUT, 0x9040),
+                Operation::Write(REG_FREQUENCY_SCAN, 0x0245),
+            ]
+        );
+
+        // Still scanning: bit 15 set.
+        radio
+            .bus_mut()
+            .set_register(REG_FREQUENCY_SCAN_HIGH, 0x8000);
+        assert_eq!(radio.frequency_scan_result().unwrap(), None);
+        // 430.8375 MHz is 43_083_750 tens of hertz: 0x0291_67E6.
+        radio
+            .bus_mut()
+            .set_register(REG_FREQUENCY_SCAN_HIGH, 0x0291);
+        radio.bus_mut().set_register(REG_FREQUENCY_SCAN_LOW, 0x67E6);
+        assert_eq!(
+            radio.frequency_scan_result().unwrap(),
+            Some(Frequency::from_hz(430_837_500).unwrap())
+        );
+
+        radio.bus_mut().operations.clear();
+        radio.restart_frequency_scan().unwrap();
+        assert_eq!(
+            radio.bus().operations,
+            [
+                Operation::Write(REG_FREQUENCY_SCAN, 0x0244),
+                Operation::Write(REG_FREQUENCY_SCAN, 0x0245),
+            ]
+        );
+
+        radio.bus_mut().operations.clear();
+        radio.stop_scan().unwrap();
+        assert_eq!(
+            radio.bus().operations,
+            [
+                Operation::Write(REG_FREQUENCY_SCAN, 0x0244),
+                Operation::Write(REG_MODE_CONTROL, 0),
+            ]
+        );
+        assert_eq!(radio.state(), DriverState::Standby);
+        assert!(radio.frequency_scan_result().is_err());
+        // Receive comes back from standby.
+        radio
+            .configure_receive(&setup(Modulation::Fm, Tone::None, 145_500_000))
+            .unwrap();
+    }
+
+    #[test]
     fn a_tone_scan_reads_the_tone_the_chip_hears() {
         let mut radio = Bk4819::with_profile(FakeBus::new(None), crate::BK4829_PROFILE);
         radio.recover_to_standby().unwrap();
@@ -1664,10 +1843,18 @@ mod tests {
         radio
             .configure_receive(&setup(Modulation::Fm, Tone::None, 145_500_000))
             .unwrap();
+        radio.bus_mut().operations.clear();
         radio.start_tone_scan().unwrap();
+        // `BK4819_SetScanFrequency`: the scan word, then `BK4819_RX_TurnOn`
+        // with the BK4829 power blocks.
         assert_eq!(
-            radio.bus().operations.last(),
-            Some(&Operation::Write(REG_SUB_AUDIO_CONTROL, 0x0300))
+            radio.bus().operations,
+            [
+                Operation::Write(REG_SUB_AUDIO_CONTROL, 0x0300),
+                Operation::Write(super::REG_POWER_BLOCKS, 0x9F1F),
+                Operation::Write(crate::REG_MODE_CONTROL, 0),
+                Operation::Write(crate::REG_MODE_CONTROL, 0xBFF1),
+            ]
         );
 
         let found = |radio: &mut Bk4819<FakeBus>, ctcss: u16, high: u16, low: u16| {
