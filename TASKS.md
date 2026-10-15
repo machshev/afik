@@ -3127,7 +3127,7 @@
 
 ## BCFM-066 — FM broadcast receive on K5 and K1
 
-- **Status:** active (2026-10-15), operator request (`ADR-105`).
+- **Status:** done (2026-10-16), operator request (`ADR-105`).
 - **Objective:** listen to FM broadcast on both radios through their BK1080,
   with stations programmed in the studio as ordinary banks.
 - **Steps (commit after each):**
@@ -3140,11 +3140,15 @@
      and returns to the BK4819 for any other channel; TX requests carry the
      channel's modulation. Done. (The studio's simulator answers the memory
      protocol only, so it has no chip to model.)
-  5. Version bump, flash both radios and listen.
+  5. Version bump, flash both radios and listen. Done: the K5 at `7.0.34`
+     after fixes for routing (`67ff234`), the beat (`d0e922f`, `62ac81c`);
+     the K1 at `7.0.38` after selecting the VHF LNA (`98a8fec`).
   6. Operator request (2026-10-15, "Can we add UK radio stations", "Based on
      the gridsquare"): the studio adds the UK FM stations near the locator
      from Ofcom's VHF transmitter list, synced and cached like the ETCC
-     repeaters (`ADR-104`). Done (`c909445`).
+     repeaters (`ADR-104`). Done (`c909445`); ranked by estimated strength
+     with no radius (`1c467ff`), one shared locator (`d7c1a32`), and
+     broadcast receive-only in the studio (`faacb47`).
 
 ## AIRPORT-068 — Airport frequencies near the locator
 
