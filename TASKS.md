@@ -3132,3 +3132,7 @@
      channel's modulation. Done. (The studio's simulator answers the memory
      protocol only, so it has no chip to model.)
   5. Version bump, flash both radios and listen.
+  6. Operator request (2026-10-15, "Can we add UK radio stations", "Based on
+     the gridsquare"): the studio adds the UK FM stations near the locator
+     from Ofcom's VHF transmitter list, synced and cached like the ETCC
+     repeaters (`ADR-104`). Done (`c909445`).

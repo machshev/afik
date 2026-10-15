@@ -139,6 +139,15 @@ programmed as ordinary banks.
   K5 image end `0x0000ec7c` at `opt-level=z`. Flashed to the K5 (bootloader
   `2.00.06`, CRC-32 `5c6dbbbe`, 240/240 pages acknowledged, not read back); not
   yet observed on the radio.
+- Step 6 (studio): Banks tab, "UK FM stations near" the repeaters' locator,
+  radius (default 100 km) and count (default 30). Sync from Ofcom caches
+  `txparamsvhf.csv` in `$XDG_CACHE_HOME/afik/ofcom`; Add ranks transmitters
+  by ERP over distance squared, keeps one per station and per frequency,
+  and adds a broadcast bank `FM <LOCATOR>` in frequency order named by RDS.
+  Against the live list (2,091 transmitters) IO91WM gives 91 stations within
+  100 km. Layout not checked on screen. Gate: `cargo fmt --all --check`
+  clean, workspace clippy `-D warnings` clean, `cargo test --workspace` 810
+  passed 0 failed.
 - Next: write the project with an FM broadcast bank from the studio, then on
   the K5 listen, step and scan it and check the `RISK-045` list; then the K1.
 
