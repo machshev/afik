@@ -2195,7 +2195,7 @@ fn bank_row_editor(ui: &mut egui::Ui, bank: &mut BankDraft) -> Option<BankAction
                     ui.push_id(row, |ui| {
                         egui::CollapsingHeader::new(channel_row_label(row, channel))
                             .id_salt(row)
-                            .default_open(true)
+                            .default_open(false)
                             .show(ui, |ui| {
                                 if let Some(requested) =
                                     channel_row_editor(ui, channel, shared, bank_modulation)
@@ -3029,6 +3029,23 @@ mod tests {
     }
 
     /// Clicks the primary button at `at` over two frames of the Banks tab.
+    /// Opens a channel row, which starts collapsed, by clicking its header.
+    fn open_channel(context: &eframe::egui::Context, app: &mut StudioApp, bank: usize, row: usize) {
+        let label = channel_row_label(row, &app.project.banks[bank].channels[row]);
+        let output = frame(context, app, Vec::new());
+        let at = output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                eframe::egui::Shape::Text(text) if text.galley.text() == label => {
+                    Some(text.pos + eframe::egui::vec2(2.0, 2.0))
+                }
+                _ => None,
+            })
+            .expect("the channel header is drawn");
+        click(context, app, at);
+    }
+
     fn click(context: &eframe::egui::Context, app: &mut StudioApp, at: eframe::egui::Pos2) {
         use eframe::egui::{Event, Modifiers, PointerButton};
         let button = |pressed| Event::PointerButton {
@@ -3110,6 +3127,10 @@ mod tests {
             .with(radio_channel_plan::SharedSettings::POWER, true);
         frame(&context, &mut app, Vec::new());
         let output = frame(&context, &mut app, Vec::new());
+        // Channel rows start collapsed.
+        assert!(text_left_edges(&output, "from bank").is_empty());
+        open_channel(&context, &mut app, 0, 0);
+        let output = frame(&context, &mut app, Vec::new());
         // Power is shared; the other six settings stay per channel.
         assert_eq!(text_left_edges(&output, "from bank").len(), 1);
         assert_eq!(text_left_edges(&output, "per channel").len(), 6);
@@ -3150,6 +3171,7 @@ mod tests {
         app.add_bank(BankKind::Named);
         app.project.add_channel(0);
         frame(&context, &mut app, Vec::new());
+        open_channel(&context, &mut app, 0, 0);
         focus_field(&context, &mut app, |app| {
             app.project.banks[0].channels[0].receive_mhz.clone()
         });
