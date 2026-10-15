@@ -146,8 +146,8 @@ pub struct StudioApp {
     stations: Option<StationList>,
     /// An Ofcom fetch running on a worker.
     station_sync: Option<stations::SyncJob>,
-    /// The radius and count stations are added for, at the repeaters'
-    /// locator, and the state file they are remembered in.
+    /// How many stations are added, at the repeaters' locator, and the state
+    /// file it is remembered in.
     station_area: StationArea,
     station_area_file: Option<PathBuf>,
 }
@@ -223,7 +223,7 @@ impl StudioApp {
             .as_ref()
             .ok_or("sync the FM station list from Ofcom first")?;
         let locator = &self.repeater_area.locator;
-        let mut near = stations::nearby(&list.stations, locator, self.station_area.radius_km)?;
+        let mut near = stations::strongest(&list.stations, locator)?;
         let in_range = near.len();
         near.truncate(usize::from(self.station_area.max_channels));
         let (project, bank_bytes) = self.with_bank(stations::station_bank(locator, &near));
@@ -252,15 +252,10 @@ impl StudioApp {
         let Ok(preview) = self.station_preview() else {
             return synced;
         };
-        let radius = self.station_area.radius_km;
-        let taking = if preview.taken < preview.in_range {
-            format!(
-                "{} stations within {radius} km, strongest {} taken",
-                preview.in_range, preview.taken
-            )
-        } else {
-            format!("{} stations within {radius} km", preview.in_range)
-        };
+        let taking = format!(
+            "Strongest {} of {} stations, furthest transmitter {:.0} km",
+            preview.taken, preview.in_range, preview.furthest_km
+        );
         format!("{taking}{}. {synced}", cost(&preview))
     }
 
@@ -276,7 +271,7 @@ impl StudioApp {
         let locator = self.repeater_area.locator.trim().to_ascii_uppercase();
         let area = self.station_area.clone();
         if preview.taken == 0 {
-            self.status = format!("No FM stations within {} km of {locator}.", area.radius_km);
+            self.status = format!("No FM stations for {locator}.");
             return;
         }
         if preview.project.banks.len() > usize::from(MAX_BANKS) {
@@ -293,9 +288,9 @@ impl StudioApp {
         }
         self.project = preview.project;
         self.status = format!(
-            "Added {} FM stations within {} km of {locator}, in frequency order (furthest \
+            "Added the {} strongest FM stations at {locator}, in frequency order (furthest \
              transmitter {:.0} km).",
-            preview.taken, area.radius_km, preview.furthest_km
+            preview.taken, preview.furthest_km
         );
         if let Some(file) = &self.station_area_file {
             if let Err(error) = area.save(file) {
@@ -1005,7 +1000,7 @@ impl StudioApp {
 
 /// The repeater or station bank an area would add, and what it would cost.
 struct AreaPreview {
-    /// Repeaters or stations within the radius.
+    /// Repeaters within the radius, or every station ranked.
     in_range: usize,
     /// How many of them, nearest or strongest first, the bank takes.
     taken: usize,
@@ -1284,18 +1279,6 @@ impl StudioApp {
                     .desired_width(70.0),
             )
             .on_hover_text("Your Maidenhead locator, shared with the repeaters");
-            ui.label("within");
-            ComboBox::from_id_salt("station-radius")
-                .selected_text(format!("{} km", self.station_area.radius_km))
-                .show_ui(ui, |ui| {
-                    for km in stations::RADII_KM {
-                        ui.selectable_value(
-                            &mut self.station_area.radius_km,
-                            km,
-                            format!("{km} km"),
-                        );
-                    }
-                });
             ui.label("strongest");
             ui.add(
                 egui::DragValue::new(&mut self.station_area.max_channels)
@@ -3226,6 +3209,7 @@ mod tests {
             site: String::new(),
             frequency_hz: mhz * 100_000,
             erp_watts: kw * 1_000.0,
+            height_m: None,
             latitude,
             longitude: -0.12,
         };
@@ -3245,13 +3229,10 @@ mod tests {
             synced: std::time::SystemTime::now(),
         });
         app.repeater_area.locator = "io91wm".to_owned();
-        app.station_area = StationArea {
-            radius_km: 100,
-            max_channels: 30,
-        };
+        app.station_area = StationArea { max_channels: 30 };
         let source = app.station_source();
         assert!(
-            source.starts_with("2 stations within 100 km, bank "),
+            source.starts_with("Strongest 3 of 3 stations, furthest transmitter "),
             "{source}"
         );
 
@@ -3263,20 +3244,21 @@ mod tests {
         let names: Vec<_> = bank.channels.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, ["CLASSIC"]);
 
-        // Again with room for both: the same bank, now in frequency order.
+        // Again with room for all: the same bank, now in frequency order, and
+        // with no distance cut-off the far transmitter is taken too.
         app.station_area.max_channels = 30;
         app.add_stations();
         assert_eq!(app.project.banks.len(), banks + 1);
         let bank = app.project.banks.last().unwrap();
         let names: Vec<_> = bank.channels.iter().map(|c| c.name.as_str()).collect();
-        assert_eq!(names, ["CLASSIC", "LOCAL"]);
+        assert_eq!(names, ["FAR AWAY", "CLASSIC", "LOCAL"]);
         assert!(bank
             .channels
             .iter()
             .all(|c| c.modulation == Modulation::Broadcast));
         assert!(app.project.validate().is_ok());
         assert!(
-            app.status.starts_with("Added 2 FM stations"),
+            app.status.starts_with("Added the 3 strongest FM stations"),
             "{}",
             app.status
         );

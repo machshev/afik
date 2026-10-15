@@ -3,8 +3,8 @@
 //!
 //! As with the repeaters, the studio fetches only when the operator presses
 //! Sync; otherwise it reads the raw CSV cached in `$XDG_CACHE_HOME/afik/ofcom`.
-//! The locator is the repeaters' own; the radius and how many stations to
-//! take are kept in `$XDG_STATE_HOME/afik/station-area`.
+//! The locator is the repeaters' own; how many stations to take is kept in
+//! `$XDG_STATE_HOME/afik/station-area`.
 
 use std::{
     collections::HashSet,
@@ -36,13 +36,10 @@ const AREA_FILE: &str = "station-area";
 pub const DEFAULT_MAX_CHANNELS: u16 = 30;
 /// The most the operator can ask for; a whole region rarely has more.
 pub const MAX_CHANNELS_LIMIT: u16 = 200;
-/// The radius offered before the operator chooses one, in kilometres: high
-/// power FM carries well beyond a repeater's reach.
-pub const DEFAULT_RADIUS_KM: u16 = 100;
-/// The radii the studio offers, in kilometres.
-pub const RADII_KM: [u16; 7] = [20, 50, 75, 100, 150, 200, 300];
 /// The raster broadcast channels sit on.
 const RASTER_HZ: u32 = 100_000;
+/// A handheld's aerial height, for the radio horizon.
+const RECEIVER_HEIGHT_M: f64 = 2.0;
 
 /// One transmitter of one station.
 #[derive(Clone, Debug, PartialEq)]
@@ -58,6 +55,9 @@ pub struct Station {
     pub frequency_hz: u32,
     /// In-use effective radiated power, the larger polarisation, in watts.
     pub erp_watts: f64,
+    /// Aerial height above sea level, site plus mast, in metres, where the
+    /// list gives it.
+    pub height_m: Option<f64>,
     /// Site latitude in degrees north.
     pub latitude: f64,
     /// Site longitude in degrees east.
@@ -124,6 +124,9 @@ pub fn parse(csv: &str) -> Result<Vec<Station>, String> {
     let vertical_at = column("In-Use ERP/VP")?;
     let latitude_at = column("Lat")?;
     let longitude_at = column("Long")?;
+    // Heights only sharpen the ranking; a list without them still reads.
+    let site_height_at = column("Site Ht").ok();
+    let aerial_height_at = column("In-Use Aerial Ht").ok();
     let mut stations: Vec<Station> = rows
         .filter_map(|row| {
             let field = |at: usize| row.get(at).map_or("", String::as_str);
@@ -154,6 +157,9 @@ pub fn parse(csv: &str) -> Result<Vec<Station>, String> {
                 site: field(site_at).trim().to_owned(),
                 frequency_hz,
                 erp_watts: kilowatts * 1_000.0,
+                height_m: site_height_at
+                    .zip(aerial_height_at)
+                    .and_then(|(site, aerial)| Some(number(field(site))? + number(field(aerial))?)),
                 latitude: number(field(latitude_at))?,
                 longitude: number(field(longitude_at))?,
             })
@@ -170,26 +176,41 @@ pub fn parse(csv: &str) -> Result<Vec<Station>, String> {
     Ok(stations)
 }
 
-/// The stations within `radius_km` of `locator`, strongest first, each with
-/// its transmitter's distance in kilometres.
+/// The estimated strength of `station` at `km`: power over distance squared,
+/// falling a further fourth power of distance beyond the radio horizon, so a
+/// big transmitter far past it ranks below a small local one.
+fn strength(station: &Station, km: f64) -> f64 {
+    let near = station.erp_watts / km.max(1.0).powi(2);
+    let Some(height_m) = station.height_m else {
+        return near;
+    };
+    // The 4/3-earth radio horizon, in kilometres, for heights in metres.
+    let horizon_km = 4.12 * (height_m.max(0.0).sqrt() + RECEIVER_HEIGHT_M.sqrt());
+    if km <= horizon_km {
+        near
+    } else {
+        near * (horizon_km / km).powi(4)
+    }
+}
+
+/// Every station as heard at `locator`, strongest first, each with its
+/// transmitter's distance in kilometres.
 ///
-/// Strength is estimated as power over distance squared. Each station keeps
-/// only its strongest transmitter, and each frequency only its strongest
-/// station, so a bank holds one channel per programme.
-pub fn nearby<'a>(
+/// Strength is [`strength`], with no distance cut-off: a cut-off dropped a
+/// 122 kW main transmitter at 57 km and kept 130 W relays at 25 km. Each
+/// station keeps only its strongest transmitter, and each frequency only its
+/// strongest station, so a bank holds one channel per programme.
+pub fn strongest<'a>(
     stations: &'a [Station],
     locator: &str,
-    radius_km: u16,
 ) -> Result<Vec<(&'a Station, f64)>, String> {
     let home = locator_centre(locator)?;
-    let strength = |station: &Station, km: f64| station.erp_watts / km.max(1.0).powi(2);
     let mut near: Vec<_> = stations
         .iter()
         .map(|station| {
             let km = distance_km(home, (station.latitude, station.longitude));
             (station, km)
         })
-        .filter(|&(_, km)| km <= f64::from(radius_km))
         .collect();
     near.sort_by(|a, b| {
         strength(b.0, b.1)
@@ -204,7 +225,7 @@ pub fn nearby<'a>(
     Ok(near)
 }
 
-/// Builds the bank for the stations `nearby` chose, in frequency order, each
+/// Builds the bank for the stations `strongest` chose, in frequency order, each
 /// played by the broadcast receiver and never transmitted (`ADR-105`).
 pub fn station_bank(locator: &str, near: &[(&Station, f64)]) -> BankDraft {
     let mut name = format!("FM {}", locator.trim().to_ascii_uppercase());
@@ -325,12 +346,10 @@ impl StationCache {
     }
 }
 
-/// The radius and station count the operator last chose; the locator is
-/// the repeaters' own.
+/// The station count the operator last chose; the locator is the
+/// repeaters' own.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StationArea {
-    /// Distance within which transmitters are taken, in kilometres.
-    pub radius_km: u16,
     /// How many stations, strongest first, the bank takes.
     pub max_channels: u16,
 }
@@ -338,7 +357,6 @@ pub struct StationArea {
 impl Default for StationArea {
     fn default() -> Self {
         Self {
-            radius_km: DEFAULT_RADIUS_KM,
             max_channels: DEFAULT_MAX_CHANNELS,
         }
     }
@@ -350,31 +368,25 @@ impl StationArea {
         paths::state_dir().map(|dir| dir.join(AREA_FILE))
     }
 
-    /// Reads `RADIUS_KM MAX_CHANNELS`; anything missing or unreadable gives
-    /// its default.
+    /// Reads `MAX_CHANNELS`, the last word, so a file from when a radius
+    /// came first still reads; anything missing or unreadable gives the
+    /// default.
     pub fn load(file: &Path) -> Self {
         let text = fs::read_to_string(file).unwrap_or_default();
-        let mut words = text.split_whitespace();
-        let mut number = |limit: u16, default: u16| {
-            words
-                .next()
-                .and_then(|word| word.parse().ok())
-                .filter(|value| (1..=limit).contains(value))
-                .unwrap_or(default)
-        };
-        let radius_km = number(crate::repeaters::MAX_RADIUS_KM, DEFAULT_RADIUS_KM);
-        let max_channels = number(MAX_CHANNELS_LIMIT, DEFAULT_MAX_CHANNELS);
-        Self {
-            radius_km,
-            max_channels,
-        }
+        let max_channels = text
+            .split_whitespace()
+            .last()
+            .and_then(|word| word.parse().ok())
+            .filter(|value| (1..=MAX_CHANNELS_LIMIT).contains(value))
+            .unwrap_or(DEFAULT_MAX_CHANNELS);
+        Self { max_channels }
     }
 
     /// Writes the area for the next start.
     pub fn save(&self, file: &Path) -> Result<(), String> {
         file.parent()
             .map_or(Ok(()), fs::create_dir_all)
-            .and_then(|()| fs::write(file, format!("{} {}\n", self.radius_km, self.max_channels)))
+            .and_then(|()| fs::write(file, format!("{}\n", self.max_channels)))
             .map_err(|error| format!("{}: {error}", file.display()))
     }
 }
@@ -410,7 +422,7 @@ impl SyncJob {
 #[cfg(test)]
 mod tests {
     use super::{
-        nearby, parse, records, station_bank, StationArea, StationCache, TRANSMITTERS_URL,
+        parse, records, station_bank, strongest, StationArea, StationCache, TRANSMITTERS_URL,
     };
     use crate::model::ProjectModel;
     use radio_domain::Modulation;
@@ -418,15 +430,15 @@ mod tests {
     /// Rows in the shape Ofcom publishes, trimmed to the columns used plus
     /// a few it has around them.
     const VHF: &str = "Date,Station,Area,Site,Licence ,Frequency,NGR,RDS PS,RDS PI,\
-In-UseERP/HP,In-Use ERP/VP,Lat,Long,\r
-01/01/2020,BBC Radio 4 (FM),London,Wrotham,BBC,93.5,TQ,_BBC_R4_,C204,\"124.999,996\",\"124.999,996\",51.320705,0.287703,\r
-01/01/2020,BBC Radio 4 (FM),London,Crystal Palace,BBC,93.2,TQ,_BBC_R4_,C204,\"0.000,000\",\"4.000,000\",51.424171,-0.074944,\r
-01/01/2020,Classic FM,London,Wrotham,CR1,100.9,TQ,Classic_,C2,\"124.999,996\",\"124.999,996\",51.320705,0.287703,\r
-01/01/2020,\"Rainbow Radio, London\",London,Crystal Palace,CR2,92.4,TQ,RAINBOW,C3,\"0.030,000\",\"0.030,000\",51.424171,-0.074944,\r
-01/01/2020,Local Two,Kent,Wrotham,CR3,92.4,TQ,,C4,\"0.010,000\",\"0.010,000\",51.320705,0.287703,\r
-01/01/2020,Off Air,London,Crystal Palace,CR4,95.0,TQ,OFF,C5,\"0.000,000\",\"0.000,000\",51.424171,-0.074944,\r
-01/01/2020,Radio Scotland,Glasgow,Black Hill,BBC,94.3,NS,_BBC__SCOT_,C6,\"125.000,000\",\"125.000,000\",55.861,-3.873,\r
-01/01/2020,Odd Raster,London,Crystal Palace,CR5,95.05,TQ,ODD,C7,\"1.000,000\",\"1.000,000\",51.424171,-0.074944,\r
+Site Ht,In-Use Aerial Ht,In-UseERP/HP,In-Use ERP/VP,Lat,Long,\r
+01/01/2020,BBC Radio 4 (FM),London,Wrotham,BBC,93.5,TQ,_BBC_R4_,C204,219,150,\"124.999,996\",\"124.999,996\",51.320705,0.287703,\r
+01/01/2020,BBC Radio 4 (FM),London,Crystal Palace,BBC,93.2,TQ,_BBC_R4_,C204,110,170,\"0.000,000\",\"4.000,000\",51.424171,-0.074944,\r
+01/01/2020,Classic FM,London,Wrotham,CR1,100.9,TQ,Classic_,C2,219,150,\"124.999,996\",\"124.999,996\",51.320705,0.287703,\r
+01/01/2020,\"Rainbow Radio, London\",London,Crystal Palace,CR2,92.4,TQ,RAINBOW,C3,110,40,\"0.030,000\",\"0.030,000\",51.424171,-0.074944,\r
+01/01/2020,Local Two,Kent,Wrotham,CR3,92.4,TQ,,C4,219,20,\"0.010,000\",\"0.010,000\",51.320705,0.287703,\r
+01/01/2020,Off Air,London,Crystal Palace,CR4,95.0,TQ,OFF,C5,110,40,\"0.000,000\",\"0.000,000\",51.424171,-0.074944,\r
+01/01/2020,Radio Scotland,Glasgow,Black Hill,BBC,94.3,NS,_BBC__SCOT_,C6,275,200,\"125.000,000\",\"125.000,000\",55.861,-3.873,\r
+01/01/2020,Odd Raster,London,Crystal Palace,CR5,95.05,TQ,ODD,C7,110,40,\"1.000,000\",\"1.000,000\",51.424171,-0.074944,\r
 ";
 
     fn scratch(name: &str) -> std::path::PathBuf {
@@ -475,8 +487,9 @@ In-UseERP/HP,In-Use ERP/VP,Lat,Long,\r
     #[test]
     fn each_programme_and_frequency_keeps_its_strongest_transmitter() {
         let stations = parse(VHF).unwrap();
-        // IO91WM, central London: Crystal Palace about 11 km, Wrotham 36 km.
-        let near = nearby(&stations, "IO91WM", 100).unwrap();
+        // IO91WM, central London: Crystal Palace about 11 km, Wrotham 36 km,
+        // Black Hill in Scotland about 550 km.
+        let near = strongest(&stations, "IO91WM").unwrap();
         let chosen: Vec<_> = near
             .iter()
             .map(|(s, _)| (s.name.as_str(), s.frequency_hz))
@@ -489,25 +502,34 @@ In-UseERP/HP,In-Use ERP/VP,Lat,Long,\r
                 ("CLASSIC", 100_900_000),
                 // 92.4 MHz goes to the stronger of the two stations on it.
                 ("RAINBOW", 92_400_000),
+                // No distance cut-off: a far station still ranks, but past
+                // the radio horizon it falls below even 30 W nearby.
+                ("BBC SCOT", 94_300_000),
             ]
         );
-        // Within 20 km only Crystal Palace, about 11 km away, is in range.
-        let close: Vec<_> = nearby(&stations, "IO91WM", 20)
+        // Without heights the ranking is power over distance squared, and
+        // 125 kW at 550 km would beat 30 W at 11 km.
+        let flat: Vec<_> = stations
+            .iter()
+            .map(|s| super::Station {
+                height_m: None,
+                ..s.clone()
+            })
+            .collect();
+        let names: Vec<_> = strongest(&flat, "IO91WM")
             .unwrap()
             .iter()
-            .map(|(s, _)| (s.name.as_str(), s.site.as_str()))
+            .map(|(s, _)| s.name.clone())
             .collect();
-        assert_eq!(
-            close,
-            [("BBC R4", "Crystal Palace"), ("RAINBOW", "Crystal Palace")]
-        );
-        assert!(nearby(&stations, "nonsense", 100).is_err());
+        assert_eq!(names, ["BBC R4", "CLASSIC", "BBC SCOT", "RAINBOW"]);
+        assert!(strongest(&stations, "nonsense").is_err());
     }
 
     #[test]
     fn the_bank_plays_each_station_in_frequency_order_and_never_transmits() {
         let stations = parse(VHF).unwrap();
-        let near = nearby(&stations, "io91wm", 100).unwrap();
+        let mut near = strongest(&stations, "io91wm").unwrap();
+        near.truncate(3);
         let bank = station_bank("io91wm", &near);
         assert_eq!(bank.name, "FM IO91WM");
         let channels: Vec<_> = bank
@@ -560,12 +582,12 @@ In-UseERP/HP,In-Use ERP/VP,Lat,Long,\r
         let dir = scratch("area");
         let file = dir.join("station-area");
         assert_eq!(StationArea::load(&file), StationArea::default());
-        let area = StationArea {
-            radius_km: 50,
-            max_channels: 12,
-        };
+        let area = StationArea { max_channels: 12 };
         area.save(&file).unwrap();
         assert_eq!(StationArea::load(&file), area);
+        // A file from when the radius came first keeps its count.
+        std::fs::write(&file, "50 30\n").unwrap();
+        assert_eq!(StationArea::load(&file).max_channels, 30);
         std::fs::write(&file, "0 9999\n").unwrap();
         assert_eq!(StationArea::load(&file), StationArea::default());
         let _ = std::fs::remove_dir_all(dir);
