@@ -585,8 +585,13 @@ impl RepeaterArea {
 /// Fetches one URL over HTTPS. Text that is not UTF-8 is replaced rather
 /// than refused, so a stray byte in a list does not stop a sync.
 pub(crate) fn fetch(url: &str) -> Result<String, String> {
+    fetch_within(url, TIMEOUT)
+}
+
+/// Fetches one URL as [`fetch`] does, allowing `timeout` for a slow server.
+pub(crate) fn fetch_within(url: &str, timeout: Duration) -> Result<String, String> {
     let agent = ureq::AgentBuilder::new()
-        .timeout(TIMEOUT)
+        .timeout(timeout)
         .user_agent(concat!("afik-studio/", env!("CARGO_PKG_VERSION")))
         .build();
     let response = agent

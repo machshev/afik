@@ -219,7 +219,7 @@ const AIR_GUARD: PresetList = PresetList {
 ///
 /// Channels 1 to 28 run from 156.050 MHz and 60 to 88 from 156.025 MHz, both
 /// at 50 kHz, interleaving at 25 kHz.
-const fn marine_hz(channel: u32) -> u32 {
+pub(crate) const fn marine_hz(channel: u32) -> u32 {
     if channel >= 60 {
         156_025_000 + (channel - 60) * 50_000
     } else {
@@ -228,7 +228,7 @@ const fn marine_hz(channel: u32) -> u32 {
 }
 
 /// Coast stations transmit 4.6 MHz above the ship on a duplex channel.
-const MARINE_DUPLEX_OFFSET_HZ: u32 = 4_600_000;
+pub(crate) const MARINE_DUPLEX_OFFSET_HZ: u32 = 4_600_000;
 
 /// The international duplex channels of ITU Radio Regulations Appendix 18,
 /// used for public correspondence and port operations through coast stations.

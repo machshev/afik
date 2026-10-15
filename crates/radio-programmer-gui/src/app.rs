@@ -24,6 +24,7 @@ use crate::{
     airports::{self, AirportArea, AirportCache, AirportList},
     device::{DeviceChoice, DeviceChooser},
     flash_tab::FlashTab,
+    marine::{self, MarineArea, MarineCache, MarineList},
     model::{
         move_to, BankDraft, BankKind, ChannelDraft, ModelError, ProjectModel, StorageSummary,
         ToneDraft, ToneKind, TxRangeDraft, MAX_PROJECT_IMAGE_BYTES, RADIO_IMAGE_BYTES,
@@ -163,6 +164,16 @@ pub struct StudioApp {
     /// repeaters' locator, and the state file they are remembered in.
     airport_area: AirportArea,
     airport_area_file: Option<PathBuf>,
+    /// Where the `OpenStreetMap` marine channels are cached, and what was
+    /// last read.
+    marine_cache: MarineCache,
+    marine: Option<MarineList>,
+    /// An Overpass query running on a worker.
+    marine_sync: Option<marine::SyncJob>,
+    /// The radius and count local marine channels are added for, at the
+    /// repeaters' locator, and the state file they are remembered in.
+    marine_area: MarineArea,
+    marine_area_file: Option<PathBuf>,
 }
 
 impl StudioApp {
@@ -185,7 +196,156 @@ impl StudioApp {
         if let Some(file) = &app.airport_area_file {
             app.airport_area = AirportArea::load(file);
         }
+        app.use_marine_cache(MarineCache::open());
+        app.marine_area_file = marine::area_file();
+        if let Some(file) = &app.marine_area_file {
+            app.marine_area = MarineArea::load(file);
+        }
         app
+    }
+
+    /// Reads the marine channel list from `cache`, which a sync then writes.
+    ///
+    /// Reading never fetches: the network is used only when Sync is pressed.
+    pub fn use_marine_cache(&mut self, cache: MarineCache) {
+        self.marine = match cache.load() {
+            Ok(list) => list,
+            Err(error) => {
+                log::warn!("reading the marine cache: {error}");
+                None
+            }
+        };
+        self.marine_cache = cache;
+    }
+
+    /// Starts asking Overpass for the marine channels on the map.
+    fn sync_marine(&mut self) {
+        if self.marine_sync.is_some() {
+            return;
+        }
+        if self.marine_cache.dir().is_none() {
+            self.refuse("Cannot sync marine channels: no XDG cache directory or HOME is set.");
+            return;
+        }
+        log::info!("syncing marine VHF channels from OpenStreetMap");
+        "Syncing marine VHF channels from OpenStreetMap (about a minute)..."
+            .clone_into(&mut self.status);
+        self.marine_sync = Some(marine::SyncJob::start(self.marine_cache.clone()));
+    }
+
+    /// Takes in a finished marine sync.
+    fn poll_marine_sync(&mut self) {
+        let Some(outcome) = self.marine_sync.as_ref().and_then(marine::SyncJob::poll) else {
+            return;
+        };
+        self.marine_sync = None;
+        match outcome {
+            Ok(list) => {
+                self.status = format!(
+                    "Synced {} places with marine VHF channels from OpenStreetMap.",
+                    list.places.len()
+                );
+                log::info!("{}", self.status);
+                self.marine = Some(list);
+            }
+            // The cache is untouched, so the previous list still applies.
+            Err(error) => self.fail(
+                "syncing marine channels",
+                format!("Marine sync failed: {error}"),
+            ),
+        }
+    }
+
+    /// Builds the marine bank the area would add, and the project it would
+    /// make, as [`Self::repeater_preview`] does. Without a sync the bank
+    /// holds the core channels alone.
+    fn marine_preview(&self) -> Result<AreaPreview, String> {
+        let locator = &self.repeater_area.locator;
+        let mut near = if let Some(list) = &self.marine {
+            marine::nearby(&list.places, locator, self.marine_area.radius_km)?
+        } else {
+            repeaters::locator_centre(locator)?;
+            Vec::new()
+        };
+        let in_range = near.len();
+        near.truncate(usize::from(self.marine_area.max_channels));
+        let (project, bank_bytes) = self.with_bank(marine::marine_bank(locator, &near));
+        Ok(AreaPreview {
+            in_range,
+            taken: near.len(),
+            furthest_km: near.iter().map(|local| local.km).fold(0.0, f64::max),
+            bank_bytes,
+            project,
+        })
+    }
+
+    /// Describes the marine list, what the area would add, and its cost.
+    fn marine_source(&self) -> String {
+        if self.marine_sync.is_some() {
+            return "Syncing...".to_owned();
+        }
+        let synced = self.marine.as_ref().map_or_else(
+            || "Not synced: the core channels only.".to_owned(),
+            |list| {
+                format!(
+                    "{} places from OpenStreetMap (ODbL), synced {}.",
+                    list.places.len(),
+                    age(list.synced)
+                )
+            },
+        );
+        let Ok(preview) = self.marine_preview() else {
+            return synced;
+        };
+        let taking = format!(
+            "{} core and nearest {} of {} local channels, furthest {:.0} km",
+            marine::CORE_CHANNELS,
+            preview.taken,
+            preview.in_range,
+            preview.furthest_km
+        );
+        format!("{taking}{}. {synced}", cost(&preview))
+    }
+
+    /// Adds a bank of the core marine channels and those used near the
+    /// locator.
+    fn add_marine(&mut self) {
+        let preview = match self.marine_preview() {
+            Ok(preview) => preview,
+            Err(error) => {
+                self.refuse(&format!("Cannot add marine channels: {error}."));
+                return;
+            }
+        };
+        let locator = self.repeater_area.locator.trim().to_ascii_uppercase();
+        let area = self.marine_area.clone();
+        if preview.project.banks.len() > usize::from(MAX_BANKS) {
+            self.status =
+                format!("A radio holds {MAX_BANKS} banks and the project already has them.");
+            return;
+        }
+        if too_big(&preview.project) {
+            self.refuse(&format!(
+                "{} marine channels would not fit the radio; take fewer.",
+                marine::CORE_CHANNELS + preview.taken
+            ));
+            return;
+        }
+        self.project = preview.project;
+        self.status = format!(
+            "Added {} core and {} local marine channels near {locator} (furthest {:.0} km). \
+             Local channels are OpenStreetMap data (ODbL), mapped by volunteers; check \
+             before relying on them. Without a marine TX range the radio listens to both \
+             sides of a duplex channel.",
+            marine::CORE_CHANNELS,
+            preview.taken,
+            preview.furthest_km
+        );
+        if let Some(file) = &self.marine_area_file {
+            if let Err(error) = area.save(file) {
+                log::warn!("could not remember the marine area: {error}");
+            }
+        }
     }
 
     /// Reads the airport frequency list from `cache`, which a sync then
@@ -729,6 +889,11 @@ impl StudioApp {
             airport_sync: None,
             airport_area: AirportArea::default(),
             airport_area_file: None,
+            marine_cache: MarineCache::none(),
+            marine: None,
+            marine_sync: None,
+            marine_area: MarineArea::default(),
+            marine_area_file: None,
         };
         if let Some(baud) = options.baud {
             app.chooser.baud = baud;
@@ -1234,11 +1399,13 @@ impl eframe::App for StudioApp {
         self.poll_repeater_sync();
         self.poll_station_sync();
         self.poll_airport_sync();
+        self.poll_marine_sync();
         if self.job.is_some()
             || self.satellite_sync.is_some()
             || self.repeater_sync.is_some()
             || self.station_sync.is_some()
             || self.airport_sync.is_some()
+            || self.marine_sync.is_some()
         {
             context.request_repaint_after(std::time::Duration::from_millis(50));
         }
@@ -1420,6 +1587,7 @@ impl StudioApp {
         });
         self.station_bar(ui);
         self.airport_bar(ui);
+        self.marine_bar(ui);
         ui.separator();
     }
 
@@ -1436,7 +1604,7 @@ impl StudioApp {
                 )
                 .on_hover_text(
                     "Your Maidenhead locator, 4 to 8 characters, for the repeaters, FM \
-                     stations and airports below",
+                     stations, airports and marine channels below",
                 )
                 .changed();
             if edited {
@@ -1542,6 +1710,58 @@ impl StudioApp {
                 self.sync_airports();
             }
             ui.label(self.airport_source());
+        });
+    }
+
+    /// The row that adds the marine channels near the shared locator.
+    fn marine_bar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Marine within");
+            ComboBox::from_id_salt("marine-radius")
+                .selected_text(format!("{} km", self.marine_area.radius_km))
+                .show_ui(ui, |ui| {
+                    for km in repeaters::RADII_KM {
+                        ui.selectable_value(
+                            &mut self.marine_area.radius_km,
+                            km,
+                            format!("{km} km"),
+                        );
+                    }
+                });
+            ui.label("nearest");
+            ui.add(
+                egui::DragValue::new(&mut self.marine_area.max_channels)
+                    .range(1..=airports::MAX_CHANNELS_LIMIT),
+            )
+            .on_hover_text("How many local channels the bank takes, nearest place first");
+            if ui
+                .button("Add")
+                .on_hover_text(
+                    "Adds one FM bank: 16, 67, 6, 8, 72, 77, M and M2, then the channels the \
+                     harbours, marinas, locks and lookouts in range list on OpenStreetMap, \
+                     each named after its nearest place, replacing one for the same locator. \
+                     A duplex channel keeps both frequencies; without a marine TX range the \
+                     radio listens to both sides",
+                )
+                .clicked()
+            {
+                self.add_marine();
+            }
+            if ui
+                .add_enabled(
+                    self.marine_sync.is_none(),
+                    egui::Button::new("Sync from OpenStreetMap"),
+                )
+                .on_hover_text(
+                    "Asks the Overpass API for every place in the world tagged with a marine \
+                     VHF channel (OpenStreetMap, ODbL, about 1.5 MB, takes about a minute) \
+                     and caches it; the studio never fetches on its own",
+                )
+                .clicked()
+            {
+                self.sync_marine();
+            }
+            ui.label(self.marine_source());
         });
     }
 
@@ -3547,6 +3767,42 @@ mod tests {
         assert_eq!(synced.channels[0].transmit_mhz, "145.850000");
         assert_eq!(synced.channels[0].tx_tone.value, "67.0");
         assert!(app.project.validate().is_ok());
+    }
+
+    #[test]
+    fn marine_channels_are_the_core_until_synced_then_the_nearest_places() {
+        use crate::marine::{channel, MarineList, MarinePlace, CORE_CHANNELS};
+
+        let mut app = simulated("marine");
+        assert!(app.marine.is_none(), "tests never read the real cache");
+        app.repeater_area.locator = "JO01HP".to_owned();
+        let source = app.marine_source();
+        assert!(source.starts_with("8 core and nearest 0 of 0"), "{source}");
+        let banks = app.project.banks.len();
+        app.add_marine();
+        let bank = app.project.banks.last().unwrap();
+        assert_eq!(bank.name, "SEA JO01HP");
+        assert_eq!(bank.channels.len(), CORE_CHANNELS);
+
+        app.marine = Some(MarineList {
+            places: vec![MarinePlace {
+                name: "BURNHAM".to_owned(),
+                latitude: 51.627,
+                longitude: 0.806,
+                channels: vec![channel("80").unwrap(), channel("16").unwrap()],
+            }],
+            synced: std::time::SystemTime::now(),
+        });
+        app.add_marine();
+        assert_eq!(app.project.banks.len(), banks + 1, "replaced, not added");
+        let bank = app.project.banks.last().unwrap();
+        assert_eq!(bank.channels.len(), CORE_CHANNELS + 1);
+        assert_eq!(bank.channels[CORE_CHANNELS].name, "80 BURNHAM");
+        assert!(app.project.validate().is_ok());
+
+        app.repeater_area.locator = "nonsense".to_owned();
+        app.add_marine();
+        assert!(app.status.starts_with("Cannot add marine channels"));
     }
 
     #[test]

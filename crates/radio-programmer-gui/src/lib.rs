@@ -12,6 +12,7 @@ pub mod device;
 pub mod flash;
 pub mod flash_tab;
 pub mod logging;
+pub mod marine;
 pub mod model;
 pub mod paths;
 pub mod presets;
