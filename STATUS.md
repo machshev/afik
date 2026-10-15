@@ -175,6 +175,10 @@ programmed TX ranges protect channel and VFO mode alike.
   repeaters are about 10%; 386 of the 483 fit an empty radio. Gate: fmt
   and clippy clean, `cargo test --workspace` 776 passed 0 failed 2
   ignored; the live ETCC test passed.
+- Studio (operator request): each bank header has Up and Down beside Delete,
+  so collapsed banks reorder in place; the Move buttons inside an open bank
+  are gone. Gate: fmt and clippy clean, `cargo test --workspace` 777 passed
+  0 failed 2 ignored.
 - Step 5 (hardware, partial): on `7.0.22` with PMR446 channels in A and B,
   the other slot was never heard and scan never stopped at the 90 ms dwell;
   programmed at 200 ms both work (`EVID-K5-036`). `RadioConfig::conservative()`

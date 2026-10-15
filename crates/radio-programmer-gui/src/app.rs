@@ -1127,7 +1127,8 @@ impl StudioApp {
             .map(|(row, bank)| bank_row_columns(row, bank))
             .collect();
         let widths = column_widths(ui, &headers);
-        let delete_width = button_width(ui, "Delete");
+        let buttons_width =
+            button_width(ui, "Delete") + button_width(ui, "Down") + button_width(ui, "Up");
         ScrollArea::vertical().show(ui, |ui| {
             for (row, bank) in self.project.banks.iter_mut().enumerate() {
                 ui.push_id(row, |ui| {
@@ -1142,7 +1143,7 @@ impl StudioApp {
                     }
                     state
                         .show_header(ui, |ui| {
-                            let gap = column_gap(ui.available_width() - delete_width, &widths);
+                            let gap = column_gap(ui.available_width() - buttons_width, &widths);
                             for (text, width) in headers[row].iter().zip(widths) {
                                 let label = egui::Label::new(RichText::new(text).strong())
                                     .sense(egui::Sense::click());
@@ -1152,19 +1153,10 @@ impl StudioApp {
                                 }
                                 ui.add_space((width - response.rect.width()).max(0.0) + gap);
                             }
-                            // The header runs the full width, Delete at its right.
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if ui
-                                        .button("Delete")
-                                        .on_hover_text("Delete this bank and every channel in it")
-                                        .clicked()
-                                    {
-                                        action = Some((row, BankAction::Remove));
-                                    }
-                                },
-                            );
+                            // The header runs the full width, its buttons at the right.
+                            if let Some(requested) = bank_header_buttons(ui) {
+                                action = Some((row, requested));
+                            }
                         })
                         .body(|ui| {
                             if let Some(requested) = bank_row_editor(ui, bank) {
@@ -1666,6 +1658,36 @@ fn channel_row_editor(
     action
 }
 
+/// Draws a bank header's buttons at its right edge, so a collapsed bank can
+/// be moved or deleted.
+fn bank_header_buttons(ui: &mut egui::Ui) -> Option<BankAction> {
+    let mut action = None;
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        if ui
+            .button("Delete")
+            .on_hover_text("Delete this bank and every channel in it")
+            .clicked()
+        {
+            action = Some(BankAction::Remove);
+        }
+        if ui
+            .button("Down")
+            .on_hover_text("Move this bank one place later")
+            .clicked()
+        {
+            action = Some(BankAction::MoveDown);
+        }
+        if ui
+            .button("Up")
+            .on_hover_text("Move this bank one place earlier")
+            .clicked()
+        {
+            action = Some(BankAction::MoveUp);
+        }
+    });
+    action
+}
+
 /// Draws one bank and, for a channel bank, its channels.
 fn bank_row_editor(ui: &mut egui::Ui, bank: &mut BankDraft) -> Option<BankAction> {
     let mut action = None;
@@ -1688,14 +1710,6 @@ fn bank_row_editor(ui: &mut egui::Ui, bank: &mut BankDraft) -> Option<BankAction
                 shared_settings_editor(ui, bank);
             }
             BankKind::Generated => generated_plan_editor(ui, bank),
-        }
-    });
-    ui.horizontal_wrapped(|ui| {
-        if ui.button("Move up").clicked() {
-            action = Some(BankAction::MoveUp);
-        }
-        if ui.button("Move down").clicked() {
-            action = Some(BankAction::MoveDown);
         }
     });
     match bank.kind {
@@ -2504,6 +2518,61 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// Returns the centre of each drawn text equal to `text`, in drawing order.
+    fn text_centres(output: &eframe::egui::FullOutput, text: &str) -> Vec<eframe::egui::Pos2> {
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                eframe::egui::Shape::Text(shape) if shape.galley.text() == text => {
+                    Some(shape.visual_bounding_rect().center())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Clicks the primary button at `at` over two frames of the Banks tab.
+    fn click(context: &eframe::egui::Context, app: &mut StudioApp, at: eframe::egui::Pos2) {
+        use eframe::egui::{Event, Modifiers, PointerButton};
+        let button = |pressed| Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        frame(context, app, vec![Event::PointerMoved(at), button(true)]);
+        frame(context, app, vec![button(false)]);
+        frame(context, app, Vec::new());
+    }
+
+    #[test]
+    fn a_collapsed_bank_moves_with_the_buttons_on_its_header() {
+        let context = eframe::egui::Context::default();
+        let mut app = app_in(&scratch("reorder"), &Options::default());
+        for name in ["A", "B", "C"] {
+            app.add_bank(BankKind::Named);
+            app.project.banks.last_mut().unwrap().name = name.to_owned();
+        }
+        let names = |app: &StudioApp| -> Vec<String> {
+            app.project.banks.iter().map(|b| b.name.clone()).collect()
+        };
+        frame(&context, &mut app, Vec::new());
+        let output = frame(&context, &mut app, Vec::new());
+        let downs = text_centres(&output, "Down");
+        let ups = text_centres(&output, "Up");
+        assert_eq!((downs.len(), ups.len()), (3, 3), "one pair per header");
+
+        click(&context, &mut app, downs[0]);
+        assert_eq!(names(&app), ["B", "A", "C"]);
+        click(&context, &mut app, ups[2]);
+        assert_eq!(names(&app), ["B", "C", "A"]);
+        // Up on the first bank and Down on the last change nothing.
+        click(&context, &mut app, ups[0]);
+        click(&context, &mut app, downs[2]);
+        assert_eq!(names(&app), ["B", "C", "A"]);
     }
 
     #[test]
