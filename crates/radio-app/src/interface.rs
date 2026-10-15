@@ -22,7 +22,7 @@ use radio_domain::{
 use radio_platform::backlight::Backlight;
 use radio_platform::battery::Battery;
 use radio_platform::catch::{self, Catch, Next as CatchNext, Phase as CatchPhase};
-use radio_platform::dual_watch::{DualWatch, Listening as Watching};
+use radio_platform::dual_watch::{DualWatch, Listening as Watching, Side, Stop, Stops};
 use radio_platform::operator_display::{
     render_catch_screen, render_info_screen, render_operating_screen, render_selector_list,
     CatchView, MemoryState, OperatingView, SelectorRow, SlotChannel, SlotPlace, SlotView,
@@ -37,7 +37,7 @@ use radio_platform::ptt::PttFilter;
 use radio_platform::squelch::SquelchCalibration;
 use radio_platform::transmit::{self, Delay, TxCalibration, TxSetup, TxTarget};
 use radio_platform::tx_control::{self, Action, Controller as TxController, State as TxPhase};
-use radio_tx_policy::{TxDenied, TxRequest, TxState};
+use radio_tx_policy::{TxDenied, TxPolicy, TxRequest, TxState};
 
 use crate::configuration::Programmed;
 use crate::drivers::{BatterySense, Broadcast, Display, Keypad, Memory, Speaker, Target};
@@ -1444,18 +1444,30 @@ pub async fn run<D, K, B, F, W, S, V, M>(
         // one it is on has been quiet for its dwell; scanning, a squelch being
         // staged, or a slot with nothing to tune stops it on the selected one.
         // Nor does it move to or from a broadcast slot, which would chop the
-        // programme into dwells.
+        // programme into dwells. A duplex channel the ranges do not let
+        // transmit is watched on both its frequencies the same way, with or
+        // without dual watch (`ADR-108`).
         let broadcast = |activation: &Option<(BankedReceiveController<_>, _)>| {
             activation.as_ref().is_some_and(|(controller, _)| {
                 matches!(controller.setup().modulation, Modulation::Broadcast)
             })
         };
-        let watching = shell.dual_watch()
+        let both = |activation: &Option<(BankedReceiveController<_>, _)>| {
+            activation
+                .as_ref()
+                .is_some_and(|(controller, _)| listens_both(controller, &tx_policy_now))
+        };
+        let stops = Stops {
+            selected_duplex: both(&activation),
+            other: shell.dual_watch()
+                && other_activation.is_some()
+                && !broadcast(&other_activation),
+            other_duplex: both(&other_activation),
+        };
+        let watching = stops.any_beyond_home()
             && catching.is_none()
             && pending_operator_squelch.is_none()
-            && other_activation.is_some()
             && !broadcast(&activation)
-            && !broadcast(&other_activation)
             && activation.as_ref().is_some_and(|(controller, _)| {
                 !matches!(controller.state(), ReceiveState::Scanning(_))
             });
@@ -1467,16 +1479,16 @@ pub async fn run<D, K, B, F, W, S, V, M>(
         }
         if watching && pending.is_none() {
             let dwell = programmed.config().scan_dwell_ms;
-            pending = match watch.poll(now, dwell, watched_busy) {
-                Some(Watching::Selected) => activation
-                    .as_ref()
-                    .map(|(controller, _)| controller.setup()),
-                Some(Watching::Other) => other_activation
-                    .as_ref()
-                    .map(|(controller, _)| controller.setup()),
-                None => None,
-            };
-            // A move between quiet slots changes nothing on screen.
+            pending = watch
+                .poll(now, dwell, stops, watched_busy)
+                .and_then(|stop| {
+                    match stop.slot {
+                        Watching::Selected => activation.as_ref(),
+                        Watching::Other => other_activation.as_ref(),
+                    }
+                    .map(|(controller, _)| side_setup(controller, stop.side))
+                });
+            // A move between quiet stops changes nothing on screen.
             quiet_retune = pending.is_some();
         }
 
@@ -1609,7 +1621,7 @@ pub async fn run<D, K, B, F, W, S, V, M>(
         }
         let pending_tune = pending.map(|setup| match (rx_switch, activation.as_ref()) {
             (Some((_, on)), Some((controller, _)))
-                if watch.listening() == Watching::Selected && setup == controller.setup() =>
+                if watch.stop() == Stop::HOME && setup == controller.setup() =>
             {
                 ChannelReceiveSetup {
                     tone: switched_rx_tone(
@@ -1710,7 +1722,8 @@ pub async fn run<D, K, B, F, W, S, V, M>(
                 &shell,
                 activation.as_ref().map(|(controller, _)| controller),
                 other_activation.as_ref().map(|(controller, _)| controller),
-                watch.listening(),
+                watch.stop(),
+                &tx_policy_now,
                 &receiver,
                 battery.percent(),
                 generation,
@@ -1783,6 +1796,42 @@ fn tx_refusal(
         }
         (tx_control::Event::Released, _) => None,
         _ => shown,
+    }
+}
+
+/// Whether the receiver also listens on a memory channel's transmit
+/// frequency: the channel is duplex and the programmed ranges would not let
+/// it transmit there (`ADR-108`).
+fn listens_both<M: Memory>(
+    controller: &BankedReceiveController<Listening<M>>,
+    policy: &TxPolicy,
+) -> bool {
+    let channel = controller.channel();
+    let active = channel.active();
+    matches!(controller.selection(), ChannelSelection::Memory { .. })
+        && active.transmit != active.receive
+        && !matches!(channel.modulation(), Modulation::Broadcast)
+        && !policy.may_transmit(active.transmit, channel.modulation(), channel.bandwidth())
+}
+
+/// What tunes one side of a slot's channel: the slot's own setup, or on the
+/// transmit side the same with the transmit frequency, and the transmit tone
+/// that the stations there send.
+fn side_setup<M: Memory>(
+    controller: &BankedReceiveController<Listening<M>>,
+    side: Side,
+) -> ChannelReceiveSetup {
+    let setup = controller.setup();
+    match side {
+        Side::Receive => setup,
+        Side::Transmit => {
+            let channel = controller.channel();
+            ChannelReceiveSetup {
+                frequency: channel.active().transmit,
+                tone: channel.tx_tone(),
+                ..setup
+            }
+        }
     }
 }
 
@@ -1860,7 +1909,8 @@ fn render<B: RegisterBus, S: Speaker, C: BroadcastChip, M: Memory>(
     shell: &Shell,
     controller: Option<&BankedReceiveController<Listening<M>>>,
     other: Option<&BankedReceiveController<Listening<M>>>,
-    listening: Watching,
+    listening: Stop,
+    tx_policy: &TxPolicy,
     receiver: &Receiver<B, S, C>,
     battery_percent: Option<u8>,
     generation: u32,
@@ -1885,7 +1935,8 @@ fn render<B: RegisterBus, S: Speaker, C: BroadcastChip, M: Memory>(
                 shell.slot(),
                 controller,
                 selected_name.as_ref(),
-                (listening == Watching::Selected).then_some(receiver),
+                (listening.slot == Watching::Selected).then_some((receiver, listening.side)),
+                tx_policy,
                 rx_switch,
             );
             let other = slot_channel(
@@ -1893,7 +1944,8 @@ fn render<B: RegisterBus, S: Speaker, C: BroadcastChip, M: Memory>(
                 shell.other_slot(),
                 other,
                 other_name.as_ref(),
-                (listening == Watching::Other).then_some(receiver),
+                (listening.slot == Watching::Other).then_some((receiver, listening.side)),
+                tx_policy,
                 None,
             );
             let (a, b) = match shell.active_slot() {
@@ -2135,18 +2187,29 @@ fn slot_channel<'a, B: RegisterBus, S: Speaker, C: BroadcastChip, M: Memory>(
     slot: Slot,
     controller: Option<&BankedReceiveController<Listening<M>>>,
     name: Option<&'a ChannelName>,
-    receiver: Option<&Receiver<B, S, C>>,
+    tuned: Option<(&Receiver<B, S, C>, Side)>,
+    tx_policy: &TxPolicy,
     rx_switch: Option<bool>,
 ) -> Option<SlotChannel<'a>> {
     let controller = controller?;
     let channel = controller.channel();
+    let receiver = tuned.map(|(receiver, _)| receiver);
+    // A duplex channel heard on its transmit side shows that frequency while
+    // the squelch is open there, so the operator sees which side is talking.
+    let heard = tuned
+        .filter(|(receiver, side)| receiver.squelch_open && *side == Side::Transmit)
+        .map_or_else(
+            || controller.setup().frequency,
+            |_| channel.active().transmit,
+        );
     let tx_tone = match slot.mode {
         Mode::Vfo => slot.vfo_tx_tone,
         Mode::Memory => channel.tx_tone(),
     };
     Some(SlotChannel {
         name: name.map_or(&[][..], |name| name.as_bytes()),
-        frequency_hz: controller.setup().frequency.as_hz(),
+        frequency_hz: heard.as_hz(),
+        listens_both: listens_both(controller, tx_policy),
         place: match slot.mode {
             Mode::Vfo => SlotPlace::Vfo {
                 step_hz: slot.vfo_step_hz(),
@@ -2570,6 +2633,77 @@ mod tests {
         assert_eq!(vfo.tone, Tone::Ctcss(1567));
         assert_eq!(vfo.channel.receive, vfo.channel.transmit);
         assert_eq!(tx_setup(&controller, Tone::None).tone, Tone::None);
+    }
+
+    #[test]
+    fn a_duplex_channel_the_ranges_refuse_is_heard_on_both_sides() {
+        use super::{listens_both, side_setup};
+        use radio_channel_control::BankedReceiveController;
+        use radio_channel_plan::{ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord};
+        use radio_domain::{
+            Bandwidth, ChannelId, Frequency, FrequencyStep, Modulation, RadioConfig, Tone, TxClass,
+        };
+        use radio_platform::dual_watch::Side;
+        use radio_tx_policy::{ClassSet, TxPolicy, TxRange};
+
+        let hz = |hz| Frequency::from_hz(hz).unwrap();
+        // Marine channel 24: the coast station on 161.800, ships on 157.200.
+        let channel = |transmit_hz| {
+            ChannelRecord::new(ChannelDefinition {
+                id: ChannelId::new(1),
+                name: ChannelName::new("24").unwrap(),
+                receive: hz(161_800_000),
+                transmit: hz(transmit_hz),
+                rx_tone: Tone::None,
+                tx_tone: Tone::Ctcss(770),
+                modulation: Modulation::Fm,
+                bandwidth: Bandwidth::Wide,
+                power: PowerLevel::Low1,
+                step: FrequencyStep::from_hz(25_000).unwrap(),
+                flags: ChannelFlags::default(),
+                bank: None,
+            })
+            .unwrap()
+        };
+        let controller = |record| {
+            BankedReceiveController::activate(
+                Listening::<NoMemory>::Vfo(record),
+                RadioConfig::conservative(),
+                None,
+            )
+            .unwrap()
+            .0
+        };
+        let marine = TxRange {
+            class: TxClass::Marine,
+            first_hz: 156_000_000,
+            last_hz: 162_025_000,
+            max_mw: 5_000,
+            wide_fm: true,
+            raster_hz: 25_000,
+        };
+        let licensed = TxPolicy::new(&[marine]).unwrap();
+        let unlicensed = TxPolicy::deny_all();
+
+        let duplex = controller(channel(157_200_000));
+        assert!(listens_both(&duplex, &unlicensed));
+        let ship = side_setup(&duplex, Side::Transmit);
+        assert_eq!(ship.frequency, hz(157_200_000));
+        assert_eq!(ship.tone, Tone::Ctcss(770), "the ships' tone, if any");
+        assert_eq!(ship.bandwidth, Bandwidth::Wide);
+        assert_eq!(side_setup(&duplex, Side::Receive), duplex.setup());
+        // A licence's range lets it transmit, so it is an ordinary channel;
+        // switching the class off on the handset listens to both again.
+        assert!(!listens_both(&duplex, &licensed));
+        assert!(listens_both(&duplex, &licensed.restricted(ClassSet::NONE)));
+        // Simplex has one side; the VFO tunes one frequency.
+        assert!(!listens_both(
+            &controller(channel(161_800_000)),
+            &unlicensed
+        ));
+        let mut tuned = controller(channel(157_200_000));
+        tuned.enter_vfo().unwrap();
+        assert!(!listens_both(&tuned, &unlicensed));
     }
 
     /// A BK4819 register file that accepts everything.

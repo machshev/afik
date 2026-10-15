@@ -359,3 +359,22 @@ fn every_changed_request_fact_invalidates_the_token() {
 fn the_policy_stays_small_enough_for_the_k5() {
     assert!(core::mem::size_of::<TxPolicy>() <= 256);
 }
+
+#[test]
+fn may_transmit_answers_what_a_key_up_would_meet_power_aside() {
+    let policy = policy();
+    let hz = |hz| Frequency::from_hz(hz).unwrap();
+    let fm = Modulation::Fm;
+    assert!(policy.may_transmit(hz(145_500_000), fm, Bandwidth::Wide));
+    assert!(policy.may_transmit(hz(446_018_750), fm, Bandwidth::Narrow));
+    // Off every range, such as a marine channel, or off the raster, wide
+    // where only narrow is allowed, or not FM.
+    assert!(!policy.may_transmit(hz(156_800_000), fm, Bandwidth::Wide));
+    assert!(!policy.may_transmit(hz(446_010_000), fm, Bandwidth::Narrow));
+    assert!(!policy.may_transmit(hz(446_018_750), fm, Bandwidth::Wide));
+    assert!(!policy.may_transmit(hz(145_500_000), Modulation::Am, Bandwidth::Wide));
+    // The handset's class switch takes a range away.
+    let lent = policy.restricted(ClassSet::NONE.with(TxClass::LicenceFreePlan, true));
+    assert!(!lent.may_transmit(hz(145_500_000), fm, Bandwidth::Wide));
+    assert!(!TxPolicy::deny_all().may_transmit(hz(145_500_000), fm, Bandwidth::Narrow));
+}

@@ -10,7 +10,7 @@
 #![forbid(unsafe_code)]
 
 use core::fmt;
-use radio_domain::{Bandwidth, Frequency, TxClass};
+use radio_domain::{Bandwidth, Frequency, Modulation, TxClass};
 
 mod request;
 
@@ -60,10 +60,16 @@ impl TxRange {
     }
 
     const fn permits(&self, request: &TxRequest) -> bool {
-        let hz = request.channel.transmit.as_hz();
-        (self.raster_hz == 0 || (hz - self.first_hz) % self.raster_hz as u32 == 0)
+        self.fits(request.channel.transmit, request.bandwidth)
             && request.conducted_mw <= self.max_mw as u32
-            && (self.wide_fm || !matches!(request.bandwidth, Bandwidth::Wide))
+    }
+
+    /// Whether a contained `frequency` is on the raster and `bandwidth` is
+    /// allowed: everything a range checks but the power.
+    const fn fits(&self, frequency: Frequency, bandwidth: Bandwidth) -> bool {
+        let hz = frequency.as_hz();
+        (self.raster_hz == 0 || (hz - self.first_hz) % self.raster_hz as u32 == 0)
+            && (self.wide_fm || !matches!(bandwidth, Bandwidth::Wide))
     }
 }
 
@@ -194,6 +200,29 @@ impl TxPolicy {
             .filter(|range| range.contains(frequency))
             .map(|range| range.max_mw)
             .min()
+    }
+
+    /// Whether these ranges would let a channel transmit on `frequency` with
+    /// `modulation` and `bandwidth` at some power: FM, inside a range, and
+    /// on the raster and bandwidth of every range containing it.
+    ///
+    /// The radio listens to both sides of a duplex channel this refuses
+    /// (`ADR-108`). It grants nothing: every key-up is still authorised in
+    /// full.
+    #[must_use]
+    pub fn may_transmit(
+        &self,
+        frequency: Frequency,
+        modulation: Modulation,
+        bandwidth: Bandwidth,
+    ) -> bool {
+        let mut containing = self
+            .ranges()
+            .filter(|range| range.contains(frequency))
+            .peekable();
+        matches!(modulation, Modulation::Fm)
+            && containing.peek().is_some()
+            && containing.all(|range| range.fits(frequency, bandwidth))
     }
 
     /// Finds the class of the range permitting `request`.

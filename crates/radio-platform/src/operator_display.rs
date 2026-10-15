@@ -256,8 +256,12 @@ pub struct SlotView<'a> {
 pub struct SlotChannel<'a> {
     /// Channel name, or `VFO`.
     pub name: &'a [u8],
-    /// Receive frequency in hertz.
+    /// Frequency heard, in hertz: the receive frequency, or a listen-only
+    /// duplex channel's transmit frequency while that side is talking.
     pub frequency_hz: u32,
+    /// The channel is duplex and may not transmit, so both its sides are
+    /// listened to (`ADR-108`); `DX` takes the place of the power level.
+    pub listens_both: bool,
     /// The channel's bank and its one-based number in the view, or the VFO's
     /// step in hertz.
     pub place: SlotPlace,
@@ -662,7 +666,12 @@ fn draw_slot(frame: &mut [u8; FRAME_BYTES], y: usize, slot: &SlotView<'_>) {
     draw_text(frame, SLOT_TEXT_X, y + 9, frequency);
     let mode = modulation_label(channel.modulation, channel.bandwidth);
     draw_text(frame, WIDTH - 7 * 6, y + 9, &mode);
-    draw_text(frame, WIDTH - 2 * 6, y + 9, &power_label(channel.power));
+    let power = if channel.listens_both {
+        *b"DX"
+    } else {
+        power_label(channel.power)
+    };
+    draw_text(frame, WIDTH - 2 * 6, y + 9, &power);
     if let Some(rssi_raw) = channel.meter {
         // The receive tone, or one heard on a channel without one, is what
         // opened this squelch.
@@ -1708,6 +1717,7 @@ mod operating_screen_tests {
     const CHANNEL: SlotChannel<'static> = SlotChannel {
         name: b"2M CALL",
         frequency_hz: 145_500_000,
+        listens_both: false,
         place: SlotPlace::Memory {
             bank: Some(3),
             number: 3,
@@ -1760,6 +1770,29 @@ mod operating_screen_tests {
         let mut frame = [0xFF_u8; FRAME_BYTES];
         render_operating_screen(&mut frame, view);
         frame
+    }
+
+    #[test]
+    fn a_channel_heard_on_both_sides_shows_dx_for_its_power() {
+        use super::{draw_text, SLOT_A_Y, WIDTH};
+
+        let shows = |frame: &[u8; FRAME_BYTES], text: &[u8]| {
+            let mut drawn = *frame;
+            draw_text(&mut drawn, WIDTH - 2 * 6, SLOT_A_Y + 9, text);
+            drawn == *frame
+        };
+        let mut frame = [0_u8; FRAME_BYTES];
+        render_operating_screen(&mut frame, &with_a(CHANNEL));
+        assert!(shows(&frame, b"L1") && !shows(&frame, b"DX"));
+        render_operating_screen(
+            &mut frame,
+            &with_a(SlotChannel {
+                listens_both: true,
+                power: 5,
+                ..CHANNEL
+            }),
+        );
+        assert!(shows(&frame, b"DX"));
     }
 
     /// An indicator is only useful if it is believed when it says nearly flat.
