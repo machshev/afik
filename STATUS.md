@@ -523,6 +523,18 @@ TX sends it and the tone row shows it (`70fd395`). Gate: `cargo fmt --all
 flashed. Next: flash; catch a toned radio, Menu, check `T` shows the tone
 and the other radio hears it with tone squelch on.
 
+Side key 1 (operator request): on the operating screen it switches tone
+squelch on the selected slot; on requires the channel's RX tone or, without
+one, its TX tone (repeater output, caught VFO tone), off opens on any
+carrier; it starts as programmed, belongs to that channel or VFO and is never
+stored; the tone row shows the tone in force. The channel list is gone
+(up/down and digits select) and the VFO step list is SETTINGS > VFO STEP
+(`59da9e1`). Gate: `cargo fmt --all --check` clean, workspace clippy
+`-D warnings` clean, `cargo test --workspace` 831 passed 0 failed 2 ignored,
+`tool/build-k5.sh --release` (image end `0x0000ed34`, 716 bytes spare),
+`tool/verify-k5-image.sh` and `tool/build-k1.sh --release` pass. `7.0.36`
+(`3d21797`) is built, not flashed.
+
 **`TXK5-059` was paused** (2026-10-14) for `TXRANGE-062`; `TXK1-060` was started alongside.
 
 - K5 `7.0.2` and K1 `6.4T` are flashed. Both key up on PMR446 (`EVID-TX058-001`);
