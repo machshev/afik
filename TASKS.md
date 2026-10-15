@@ -3028,7 +3028,9 @@
      tone is no longer shown (`83328d7`, `7.0.31`).
   2a. Operator request (2026-10-15): a channel and tone detect screen on
      F 4 (FC), which runs `Bk4819::start_tone_scan` and `detected_tone` only
-     while it is open.
+     while it is open. Done (`55cfce1`, frequency then tone, after the
+     reference scanner; Menu puts the frequency in the VFO), with SETTINGS >
+     TONE HEARD as the operator's experiment (`832503f`). `7.0.34`.
   3. Flash; on the bench, compare the levels and check deviation on the SDR.
      Replace nominal milliwatts with measurements where a power meter is
      available.

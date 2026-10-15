@@ -1188,6 +1188,12 @@ lowered to the highest level within it (operator request), by nominal figures.
   which changes code for the whole image. Bit-banged delays are spin loops
   and timers come from SysTick, so timing should hold, but slower code paths
   (display, scan, dual watch) have not been watched at `z`.
+- 2026-10-15, `7.0.34`: the K5 needed 1.7 KiB more for the F 4 catch. Now
+  Embassy ticks at 1 kHz (timestamps are whole milliseconds), the static
+  index is zero-initialised, names skip UTF-8 validation, and `memcpy`,
+  `memmove` and `memset` are byte loops (`tool/test-k5-mem.sh` runs them
+  under qemu-arm). 792 bytes are left; anything that copies a lot is now
+  slower, and none of this has run on the radio yet.
 - Experiment: flash both radios; tune an FM broadcast bank, listen, step and
   scan it, check the meter against a known strong station; on the K5 also
   check keypad, display, serial programming, scan and dual watch behave as on

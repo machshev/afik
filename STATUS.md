@@ -478,6 +478,22 @@ GB3EL's kerchunk and tail after keying it (`EVID-RX-067-001`). Next:
 weak-signal sensitivity and meter against `7.0.31`, WFM audio, then the
 F 4 tone detect screen (`TXK5-059` step 2a).
 
+`TXK5-059` step 2a (operator request): SETTINGS > TONE HEARD (off at
+start-up, never stored) runs the tone scan on untoned channels and shows the
+heard tone, to compare receive against Armel (`832503f`); F 4 opens FREQ
+CATCH, the reference scanner's frequency then tone catch, and Menu puts the
+caught frequency in the VFO (`55cfce1`). The K5 was 1,704 bytes over; it now
+fits with 792 to spare after the 1 kHz tick (`18f1167`), ASCII name bytes
+(`4806a9e`), a zero empty index (`9541f9a`) and byte-loop memory routines
+(`660fd3c`, `RISK-045`). Gate: `cargo fmt --all --check` clean, workspace
+clippy `-D warnings` clean, `cargo test --workspace` 831 passed 0 failed 2
+ignored, `tool/test-k5-mem.sh` passes, `tool/build-k5.sh --release` (image
+end `0x0000ece8`) and `tool/verify-k5-image.sh` pass, `tool/build-k1.sh
+--release` (75508 bytes) passes. `7.0.34` (`51c4507`) is built, not
+flashed; it also carries `62ac81c` (playing broadcast left unread). Next:
+flash; check boot and receive, F 4 on a keyed radio, TONE HEARD on and off
+against GB3EL, and the WFM beat.
+
 **`TXK5-059` was paused** (2026-10-14) for `TXRANGE-062`; `TXK1-060` was started alongside.
 
 - K5 `7.0.2` and K1 `6.4T` are flashed. Both key up on PMR446 (`EVID-TX058-001`);
