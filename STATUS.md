@@ -93,6 +93,15 @@ programmed TX ranges protect channel and VFO mode alike.
   refused. On the K1, repeat in VFO mode. Measure Mid/High on a dummy load
   (`RISK-040`). Then the K1's NOR erase plan; then CTCSS/DCS.
 
+**`DUPLEX-069` is active alongside** (2026-10-16, operator request,
+`ADR-108`): receive-only duplex channels. Step 1: `ChannelFlags::
+RECEIVE_ONLY_DUPLEX` (bit 5, image format unchanged) needs two frequencies
+and no broadcast; the radio's TX request carries `receive_only` from the
+channel and `radio-tx-policy` refuses it (`TxDenied::ReceiveOnly`). Gate:
+`cargo fmt --all --check` clean, `cargo clippy --workspace --all-targets --
+-D warnings` clean, `cargo test --workspace` 838 passed 0 failed. Next:
+the firmware listens to both sides in turn.
+
 **`AIRPORT-068` is active alongside** (2026-10-15, operator request,
 `ADR-106`): step 1 done. The Banks tab has an Airports row: Sync fetches
 OurAirports' airport and frequency lists into the XDG cache; Add takes the

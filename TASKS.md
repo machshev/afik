@@ -3168,3 +3168,21 @@
      rows start collapsed (operator request). Done (`bd2c1e5`).
   3. Write a bank for the operator's locator to the K5 and hear the local
      tower or ATIS.
+
+## DUPLEX-069 — Receive-only duplex channels
+
+- **Status:** active (2026-10-16), operator request ("a new channel type RO
+  duplex when active it has a special dual watch mode that listens on both
+  the RX and TX sides so we can hear both sides of the conversation";
+  `ADR-108`).
+- **Objective:** a receive-only duplex channel, such as a marine duplex
+  channel, lets the operator hear the coast station and the ship.
+- **Steps (commit after each):**
+  1. `ChannelFlags::RECEIVE_ONLY_DUPLEX`, checked in records and plans;
+     `TxRequest::receive_only` and `TxDenied::ReceiveOnly`. Done (`79c9a3b`).
+  2. Firmware: while such a channel is selected the receiver alternates
+     between its two frequencies as dual watch does between slots, holding
+     on a busy side; the screen shows which side is heard.
+  3. Studio: an RO duplex channel type with no transmit side but its second
+     frequency; the marine duplex preset uses it.
+  4. Version bump, flash the K5, hear a coast station and a ship.

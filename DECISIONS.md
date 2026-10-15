@@ -1826,3 +1826,17 @@ meaning.
   power or TX flags, as `ADR-105` already did for broadcast; AM and USB keep
   their bandwidth. The image is unchanged: the record still carries the
   receive frequency as its transmit one.
+
+## ADR-108 — Receive-only duplex channels listen to both sides
+
+- **Date:** 2026-10-16
+- **Status:** accepted, operator request (`DUPLEX-069`).
+- A channel flag, not a modulation: bit 5 of the channel flags, so the image
+  format stays 6 and older firmware refuses such a record as reserved. The
+  record's transmit frequency is the second frequency listened to; a record
+  or plan with the flag needs two frequencies and cannot be broadcast.
+- It never transmits. The radio sets `TxRequest::receive_only` from the
+  selected channel and `radio-tx-policy` refuses it, so a range covering the
+  frequency does not matter.
+- Listening to both is the slot dual-watch timing applied to the channel's
+  two frequencies, holding on whichever side is busy.
