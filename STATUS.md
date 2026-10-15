@@ -495,9 +495,10 @@ fits with 792 to spare after the 1 kHz tick (`18f1167`), ASCII name bytes
 clippy `-D warnings` clean, `cargo test --workspace` 831 passed 0 failed 2
 ignored, `tool/test-k5-mem.sh` passes, `tool/build-k5.sh --release` (image
 end `0x0000ece8`) and `tool/verify-k5-image.sh` pass, `tool/build-k1.sh
---release` (75508 bytes) passes. `7.0.34` (`51c4507`) is built, not
-flashed; it also carries `62ac81c` (playing broadcast left unread). Next:
-flash; check boot and receive, F 4 on a keyed radio, TONE HEARD on and off
+--release` (75508 bytes) passes. `7.0.34` (`51c4507`), which also
+carries `62ac81c` (playing broadcast left unread), is flashed to the K5
+(bootloader `2.00.06`, CRC-32 `4c921cd0`, 240/240 pages acknowledged, not
+read back). Next: check boot and receive, F 4 on a keyed radio, TONE HEARD on and off
 against GB3EL, and the WFM beat.
 
 **`TXK5-059` was paused** (2026-10-14) for `TXRANGE-062`; `TXK1-060` was started alongside.
