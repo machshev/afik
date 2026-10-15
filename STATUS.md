@@ -201,7 +201,9 @@ programmed as ordinary banks.
 - Fix: a heard station is not read at all unless a scan or dual watch needs
   it (`62ac81c`). Gate (worktree off HEAD, without `TXK5-059`'s uncommitted
   work): fmt clean, workspace clippy `-D warnings` clean, `cargo test
-  --workspace` 821 passed 0 failed. Goes out in `TXK5-059`'s `7.0.34`.
+  --workspace` 821 passed 0 failed. Went out in `TXK5-059`'s `7.0.34`.
+  Observed on the K5 at `7.0.34`: broadcast plays clean with no beat, steps
+  and scans; ordinary receive unchanged. Next: the K1.
 - Change (operator request, studio): broadcast channels, shared broadcast
   banks and broadcast plans no longer show power, bandwidth, TX frequency
   or offset, tones, or busy lockout/reverse/compander; the studio keeps

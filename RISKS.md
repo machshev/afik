@@ -1194,7 +1194,11 @@ lowered to the highest level within it (operator request), by nominal figures.
   `memmove` and `memset` are byte loops (`tool/test-k5-mem.sh` runs them
   under qemu-arm). 792 bytes are left; anything that copies a lot is now
   slower, and none of this has run on the radio yet.
-- Experiment: flash both radios; tune an FM broadcast bank, listen, step and
+- 2026-10-15, K5 `7.0.34` observed by the operator: the JO02eh FM bank
+  plays (Classic FM 101.5 among others) with no beat, steps and scans, and
+  ordinary receive including GB3EL is unchanged. The K5 half is retired; the
+  K1 (PF5/PF6) has not run broadcast yet.
+- Experiment: flash the K1; tune an FM broadcast bank, listen, step and
   scan it, check the meter against a known strong station; on the K5 also
   check keypad, display, serial programming, scan and dual watch behave as on
   `7.0.27`.
