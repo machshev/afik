@@ -273,8 +273,6 @@ pub struct SlotChannel<'a> {
     pub tx_tone: Tone,
     /// CTCSS or DCS the receiver requires before it opens.
     pub rx_tone: Tone,
-    /// A tone heard on the open squelch of a channel without a receive tone.
-    pub heard_tone: Option<Tone>,
 }
 
 /// Where one slot's channel sits.
@@ -674,12 +672,8 @@ fn draw_slot(frame: &mut [u8; FRAME_BYTES], y: usize, slot: &SlotView<'_>) {
     draw_text(frame, WIDTH - 7 * 6, y + 9, &mode);
     draw_text(frame, WIDTH - 2 * 6, y + 9, &power_label(channel.power));
     if let Some(rssi_raw) = channel.meter {
-        // The receive tone, or one heard on a channel without one, is what
-        // opened this squelch.
-        let tone = match channel.rx_tone {
-            Tone::None => channel.heard_tone,
-            tone => Some(tone),
-        };
+        // A receive tone is what opened this squelch.
+        let tone = channel.rx_tone.is_some().then_some(channel.rx_tone);
         draw_meter(frame, y + 18, rssi_raw, channel.frequency_hz, tone);
     } else {
         for (x, marker, tone) in [
@@ -1661,7 +1655,6 @@ mod operating_screen_tests {
         meter: None,
         tx_tone: Tone::None,
         rx_tone: Tone::None,
-        heard_tone: None,
     };
 
     fn view() -> OperatingView<'static> {
@@ -2050,39 +2043,24 @@ mod operating_screen_tests {
             ..repeater
         });
         assert!(shows(&toned, SLOT_TEXT_X + 42, b"R 77.0"));
-        // No tone anywhere: an empty row, as before.
-        assert_eq!(
-            render(CHANNEL),
-            render(SlotChannel {
-                heard_tone: None,
-                ..CHANNEL
-            })
-        );
 
-        // Open on a channel without a receive tone: the heard tone, not dBm.
-        let heard = render(SlotChannel {
-            meter: Some(140),
-            heard_tone: Some(Tone::Ctcss(1_230)),
-            ..repeater
-        });
-        assert!(shows(&heard, WIDTH - 5 * 6, b"123.0"));
-        assert!(shows(&heard, SLOT_TEXT_X + 15 * 3 + 2, b"S6"));
-        assert!(!shows(&heard, SLOT_TEXT_X, b"T"));
-        // The receive tone wins over anything heard.
+        // Open on a toned channel: the receive tone, not dBm, beside the
+        // meter, and the T and R row gives way to it.
         let filtered = render(SlotChannel {
             meter: Some(140),
             rx_tone: Tone::Dcs {
                 code: 23,
                 inverted: false,
             },
-            heard_tone: Some(Tone::Ctcss(1_230)),
             ..repeater
         });
         assert!(shows(&filtered, WIDTH - 5 * 6, b"D023N"));
-        // Nothing heard: the dBm reading stays.
+        assert!(shows(&filtered, SLOT_TEXT_X + 15 * 3 + 2, b"S6"));
+        assert!(!shows(&filtered, SLOT_TEXT_X, b"T"));
+        // Open without a receive tone: the dBm reading.
         let plain = render(SlotChannel {
             meter: Some(140),
-            ..CHANNEL
+            ..repeater
         });
         assert!(shows(&plain, WIDTH - 4 * 6, b"-110"));
     }

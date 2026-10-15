@@ -254,9 +254,11 @@ fn a_banked_scan_drives_the_receive_path_without_reaching_transmit() {
     assert_eq!(activation.setup.frequency.as_hz(), 145_300_000);
     apply(&mut radio, activation.setup, advanced.audio_open);
     assert_eq!(chip.written(REG_FREQUENCY_LOW), Some(0xB5D0));
-    // An untoned channel scans for any tone rather than leaving the previous
-    // channel's tone armed (`BK4819_SetScanFrequency`'s `REG_51`).
-    assert_eq!(chip.written(0x51), Some(0x0300));
+    // An untoned channel takes the reference's untoned sub-audio words rather
+    // than leaving the previous channel's tone armed: CTCSS `REG_51` and 55 Hz
+    // tail detection in `REG_07`.
+    assert_eq!(chip.written(0x51), Some(0x904A));
+    assert_eq!(chip.written(0x07), Some(0x21CE));
 
     assert!(
         !chip.wrote_transmit_mode(),

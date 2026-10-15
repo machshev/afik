@@ -69,6 +69,11 @@ const AF_FM: u16 = 1;
 const AF_BASEBAND2: u16 = 5;
 
 const SUB_AUDIO_MODE_CTC1: u16 = 0;
+/// `REG_07` bits 15:13 = 1: CTC2, the receive tail detector.
+const SUB_AUDIO_MODE_CTC2: u16 = 1 << 13;
+/// `BK4819_SetTailDetection(550)`: QS's 55 Hz tail tone, `(253910 + 275) /
+/// 550` for the 26 MHz crystal. Both pinned trees use it on untoned channels.
+const TAIL_DETECTION_55_HZ: u16 = 462;
 const CDCSS_BAUD_CONTROL_WORD: u16 = 2775;
 const CDCSS_HIGH_HALF: u16 = 1 << 15;
 const CTCSS_CONTROL_NUMERATOR: u32 = 206_488;
@@ -97,7 +102,9 @@ const MAX_INTERRUPTS_PER_SAMPLE: usize = 8;
 
 /// `REG_51` from `BK4819_SetScanFrequency` in both pinned trees: sub-audio TX
 /// off, CDCSS mode, both auto-bandwidth modes disabled. With it the chip
-/// reports any tone it hears in `REG_68`/`REG_69`.
+/// reports any tone it hears in `REG_68`/`REG_69`. The reference writes it
+/// only for its tone scan, never for ordinary receive: on `7.0.28`–`7.0.30`
+/// untoned channels used it and a toned signal (GB3EL's output) went silent.
 const SUB_AUDIO_SCAN: u16 = (1 << 9) | (1 << 8);
 const REG_CTCSS_SCAN: RegisterAddress = RegisterAddress::known(0x68);
 const REG_CDCSS_SCAN_HIGH: RegisterAddress = RegisterAddress::known(0x69);
@@ -791,8 +798,19 @@ impl<B: RegisterBus> Bk4819<B> {
         })
     }
 
-    /// Reads the tone or code the chip hears on a channel without a receive
-    /// tone, as `BK4819_GetCxCSSScanResult` does: DCS first, then CTCSS.
+    /// Puts the receiving chip into the reference's tone scan
+    /// (`BK4819_SetScanFrequency`'s `REG_51`), so [`Self::detected_tone`] can
+    /// read what it hears. Ordinary receive must not stay in it; the next
+    /// receive configuration leaves it.
+    pub fn start_tone_scan(&mut self) -> Result<(), DriverError<B::Error>> {
+        if !matches!(self.state, DriverState::Receiving { .. }) {
+            return Err(DriverError::InvalidState(self.state));
+        }
+        self.write(REG_SUB_AUDIO_CONTROL, SUB_AUDIO_SCAN)
+    }
+
+    /// Reads the tone or code the chip hears during a tone scan, as
+    /// `BK4819_GetCxCSSScanResult` does: DCS first, then CTCSS.
     ///
     /// A CTCSS reading is the nearest standard tone within 5 Hz and a DCS
     /// word a standard code in normal polarity (`DCS_GetCtcssCode`,
@@ -914,7 +932,15 @@ impl<B: RegisterBus> Bk4819<B> {
 
     pub(crate) fn configure_sub_audio(&mut self, tone: Tone) -> Result<(), DriverError<B::Error>> {
         match tone {
-            Tone::None => self.write(REG_SUB_AUDIO_CONTROL, SUB_AUDIO_SCAN),
+            // `RADIO_SetupRegisters`' `CODE_TYPE_OFF`: `BK4819_SetCTCSSFrequency`
+            // then `BK4819_SetTailDetection`, whose `REG_07` replaces the first.
+            Tone::None => {
+                self.write(REG_SUB_AUDIO_CONTROL, self.profile.sub_audio_ctcss)?;
+                self.write(
+                    REG_SUB_AUDIO_FREQUENCY,
+                    SUB_AUDIO_MODE_CTC2 | TAIL_DETECTION_55_HZ,
+                )
+            }
             Tone::Ctcss(tenths_hz) => {
                 let ctcss = self.profile.sub_audio_ctcss;
                 self.write(REG_SUB_AUDIO_CONTROL, ctcss)?;
@@ -1545,16 +1571,55 @@ mod tests {
     }
 
     #[test]
-    fn without_a_receive_tone_the_chip_scans_for_one() {
+    fn without_a_receive_tone_the_chip_detects_tails_as_the_reference_does() {
+        // (profile, CTCSS REG_51) from Armel K5 `bk4819.c` and K1 `bk4829.c`.
+        for (profile, ctcss) in [
+            (crate::BK4819_PROFILE, 0x904A),
+            (crate::BK4829_PROFILE, 0x9040),
+        ] {
+            let mut radio = Bk4819::with_profile(FakeBus::new(None), profile);
+            radio.recover_to_standby().unwrap();
+            radio
+                .configure_receive(&setup(Modulation::Fm, Tone::None, 430_837_500))
+                .unwrap();
+            let sub_audio: std::vec::Vec<_> = radio
+                .bus()
+                .operations
+                .iter()
+                .filter(|operation| {
+                    matches!(
+                        operation,
+                        Operation::Write(register, _)
+                            if *register == REG_SUB_AUDIO_CONTROL
+                                || *register == REG_SUB_AUDIO_FREQUENCY
+                    )
+                })
+                .copied()
+                .collect();
+            // 55 Hz tail detection, CTC2: 0x2000 | 462.
+            assert_eq!(
+                sub_audio,
+                [
+                    Operation::Write(REG_SUB_AUDIO_CONTROL, ctcss),
+                    Operation::Write(REG_SUB_AUDIO_FREQUENCY, 0x21CE),
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn a_tone_scan_reads_the_tone_the_chip_hears() {
         let mut radio = Bk4819::with_profile(FakeBus::new(None), crate::BK4829_PROFILE);
         radio.recover_to_standby().unwrap();
+        assert!(radio.start_tone_scan().is_err(), "only while receiving");
         radio
             .configure_receive(&setup(Modulation::Fm, Tone::None, 145_500_000))
             .unwrap();
-        assert!(radio
-            .bus()
-            .operations
-            .contains(&Operation::Write(REG_SUB_AUDIO_CONTROL, 0x0300)));
+        radio.start_tone_scan().unwrap();
+        assert_eq!(
+            radio.bus().operations.last(),
+            Some(&Operation::Write(REG_SUB_AUDIO_CONTROL, 0x0300))
+        );
 
         let found = |radio: &mut Bk4819<FakeBus>, ctcss: u16, high: u16, low: u16| {
             radio.bus_mut().set_register(super::REG_CTCSS_SCAN, ctcss);
