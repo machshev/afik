@@ -155,6 +155,13 @@ programmed as ordinary banks.
   clean, workspace clippy `-D warnings` clean, `cargo test --workspace` 813
   passed 0 failed, `tool/build-k5.sh --release` (end `0x0000f000`) and
   `tool/build-k1.sh --release` pass. Not flashed.
+- Fix (operator report, `7.0.28`): stepping to a second broadcast station
+  showed RX FAULT, because the BK4819 already asleep from the first was
+  muted again and the driver refused; only a receiving chip is muted and
+  slept now (`a885bbf`, test steps two stations).
+- `7.0.29` (`500c087`, also `TXK5-059`'s squelch fix): flashed to the K5
+  (bootloader `2.00.06`, CRC-32 `f62c2fb9`, 240/240 pages acknowledged, not
+  read back; image end `0x0000ec3c`); not yet observed on the radio.
 - Next: write the project with an FM broadcast bank from the studio, then on
   the K5 listen, step and scan it and check the `RISK-045` list; then the K1.
 
