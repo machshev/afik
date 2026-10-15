@@ -68,9 +68,6 @@ pub enum PlanError {
     /// A broadcast channel was off the broadcast receiver's 64–108 MHz,
     /// 100 kHz raster, or had a transmit frequency of its own.
     Broadcast,
-    /// A receive-only duplex channel was broadcast, or had no second
-    /// frequency to listen on.
-    ReceiveOnlyDuplex,
 }
 
 impl fmt::Display for PlanError {
@@ -97,9 +94,6 @@ impl fmt::Display for PlanError {
             Self::CallingOutOfRange => formatter.write_str("calling-channel index is outside bank"),
             Self::Broadcast => formatter
                 .write_str("broadcast channels must be simplex, 64-108 MHz, on a 100 kHz raster"),
-            Self::ReceiveOnlyDuplex => formatter.write_str(
-                "receive-only duplex channels need two frequencies and cannot be broadcast",
-            ),
         }
     }
 }
@@ -422,11 +416,6 @@ impl GeneratedBank {
         {
             return Err(PlanError::Broadcast);
         }
-        if template.flags.contains(ChannelFlags::RECEIVE_ONLY_DUPLEX)
-            && (matches!(template.modulation, Modulation::Broadcast) || offset.as_hz() == 0)
-        {
-            return Err(PlanError::ReceiveOnlyDuplex);
-        }
         let plan = Self {
             id,
             name,
@@ -746,12 +735,8 @@ impl ChannelFlags {
     /// go-to-calling and the default dual-watch partner once, against the flag,
     /// rather than once per channel kind.
     pub const CALLING: u8 = 0b0001_0000;
-    /// Receive-only duplex: the radio listens on the receive and transmit
-    /// frequencies in turn, so both sides of a duplex conversation are heard,
-    /// and the channel never transmits (`ADR-108`).
-    pub const RECEIVE_ONLY_DUPLEX: u8 = 0b0010_0000;
     /// Bits which must be zero in this format version.
-    pub const RESERVED: u8 = 0b1100_0000;
+    pub const RESERVED: u8 = 0b1110_0000;
 
     /// Returns the flag field with no flag set.
     #[must_use]
@@ -862,12 +847,6 @@ impl ChannelRecord {
         {
             return Err(PlanError::Broadcast);
         }
-        if definition.flags.contains(ChannelFlags::RECEIVE_ONLY_DUPLEX)
-            && (matches!(definition.modulation, Modulation::Broadcast)
-                || definition.transmit == definition.receive)
-        {
-            return Err(PlanError::ReceiveOnlyDuplex);
-        }
         Ok(Self {
             id: definition.id,
             name: definition.name,
@@ -960,12 +939,6 @@ impl ChannelRecord {
     /// Reports whether bank scanning skips this channel.
     pub const fn is_scan_skipped(self) -> bool {
         self.flags.contains(ChannelFlags::SCAN_SKIP)
-    }
-
-    /// Reports whether the channel listens on both its frequencies and never
-    /// transmits.
-    pub const fn is_receive_only_duplex(self) -> bool {
-        self.flags.contains(ChannelFlags::RECEIVE_ONLY_DUPLEX)
     }
 
     /// Resolves the operating frequencies, honouring the reverse flag.
@@ -1613,49 +1586,6 @@ mod tests {
     }
 
     #[test]
-    fn a_receive_only_duplex_channel_has_two_frequencies_and_is_not_broadcast() {
-        let duplex = ChannelFlags::empty().with(ChannelFlags::RECEIVE_ONLY_DUPLEX, true);
-        let mut coast = definition();
-        coast.receive = Frequency::from_hz(161_200_000).unwrap();
-        coast.transmit = Frequency::from_hz(156_600_000).unwrap();
-        coast.flags = duplex;
-        assert!(ChannelRecord::new(coast).unwrap().is_receive_only_duplex());
-        assert!(!ChannelRecord::new(definition())
-            .unwrap()
-            .is_receive_only_duplex());
-        let mut simplex = coast;
-        simplex.transmit = simplex.receive;
-        assert_eq!(
-            ChannelRecord::new(simplex),
-            Err(PlanError::ReceiveOnlyDuplex)
-        );
-        let mut broadcast = coast;
-        broadcast.modulation = Modulation::Broadcast;
-        assert!(ChannelRecord::new(broadcast).is_err());
-
-        let plan = |offset| {
-            let spacing = FrequencyStep::from_hz(25_000).unwrap();
-            let mut template = ChannelTemplate::narrow_fm(spacing);
-            template.flags = duplex;
-            GeneratedBank::linear_from_offset_with(
-                BankId::new(1),
-                BankName::new("RO DUPLEX").unwrap(),
-                Frequency::from_hz(156_050_000).unwrap(),
-                spacing,
-                4,
-                template,
-                Offset::from_hz(offset),
-            )
-        };
-        assert!(plan(4_600_000)
-            .unwrap()
-            .channel_record(0)
-            .unwrap()
-            .is_receive_only_duplex());
-        assert_eq!(plan(0), Err(PlanError::ReceiveOnlyDuplex));
-    }
-
-    #[test]
     fn a_bank_fills_in_the_settings_it_shares_and_leaves_the_rest() {
         let settings = BankSettings {
             shared: SharedSettings::none()
@@ -1721,8 +1651,8 @@ mod tests {
             .unwrap()
             .is_member_of(BankId::new(2)));
 
-        assert_eq!(ChannelFlags::from_bits(0x40), Err(PlanError::ReservedFlag));
-        assert_eq!(ChannelFlags::from_bits(0x3F).unwrap().bits(), 0x3F);
+        assert_eq!(ChannelFlags::from_bits(0x20), Err(PlanError::ReservedFlag));
+        assert_eq!(ChannelFlags::from_bits(0x1F).unwrap().bits(), 0x1F);
         assert_eq!(BankFlags::from_bits(0x02), Err(PlanError::ReservedFlag));
 
         let bank = ChannelBank::new(

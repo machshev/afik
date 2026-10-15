@@ -111,9 +111,6 @@ pub struct TxRequest {
     pub channel: ActiveChannel,
     /// Exact requested modulation.
     pub modulation: Modulation,
-    /// The selected channel only receives, such as a receive-only duplex
-    /// channel; it never transmits, whatever range covers it.
-    pub receive_only: bool,
     /// Exact requested bandwidth.
     pub bandwidth: Bandwidth,
     /// Requested conducted power in integer milliwatts; never silently clamped.
@@ -147,9 +144,6 @@ impl TxRequest {
         }
         if self.modulation != Modulation::Fm {
             return Err(TxDenied::Modulation);
-        }
-        if self.receive_only {
-            return Err(TxDenied::ReceiveOnly);
         }
         let class = policy.permitting(self)?;
         if !self.hardware.is_some_and(|limits| limits.permits(self)) {

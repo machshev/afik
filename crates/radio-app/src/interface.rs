@@ -1802,7 +1802,6 @@ fn tx_setup<M: Memory>(
                 bandwidth: channel.bandwidth(),
                 tone: channel.tx_tone(),
                 modulation: channel.modulation(),
-                receive_only: channel.is_receive_only_duplex(),
             }
         }
         ChannelSelection::Vfo => TxSetup {
@@ -2557,12 +2556,6 @@ mod tests {
             ChannelFlags::default().with(ChannelFlags::REVERSE, true),
         ));
         assert_eq!(reversed.channel.transmit, hz(439_400_000));
-        assert!(!normal.receive_only && !reversed.receive_only);
-        // A receive-only duplex channel asks the policy to refuse it.
-        let listener = setup(repeater(
-            ChannelFlags::default().with(ChannelFlags::RECEIVE_ONLY_DUPLEX, true),
-        ));
-        assert!(listener.receive_only);
 
         // In VFO mode the VFO's own tone goes out, simplex: the channel's
         // split and tone are not the VFO's.

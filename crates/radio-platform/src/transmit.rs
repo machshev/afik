@@ -81,8 +81,6 @@ pub struct TxSetup {
     /// The channel's modulation, which the policy permits only as FM: a
     /// broadcast, AM or USB channel never keys the radio.
     pub modulation: Modulation,
-    /// The channel only receives, which the policy refuses to key.
-    pub receive_only: bool,
 }
 
 impl TxSetup {
@@ -97,7 +95,6 @@ impl TxSetup {
             bandwidth: Bandwidth::Narrow,
             tone: Tone::None,
             modulation: Modulation::Fm,
-            receive_only: false,
         }
     }
 }
@@ -245,7 +242,6 @@ impl TxTarget {
             target_id: self.target_id,
             channel: setup.channel,
             modulation: setup.modulation,
-            receive_only: setup.receive_only,
             bandwidth: setup.bandwidth,
             conducted_mw: TX_POWER_NOMINAL_MW
                 .get(usize::from(level))
@@ -544,7 +540,6 @@ mod tests {
             bandwidth,
             tone: Tone::Ctcss(885),
             modulation: Modulation::Fm,
-            receive_only: false,
         };
         let request = |setup| K5.request(setup, TxState::Selected, 1, Some(15), 0, 30_000);
         let refused = request(repeater(431_800_000, Bandwidth::Narrow));
@@ -552,15 +547,6 @@ mod tests {
         assert_eq!(policy.authorise(&refused).unwrap_err(), TxDenied::Range);
         let narrow = request(repeater(433_400_000, Bandwidth::Narrow));
         assert!(policy.authorise(&narrow).is_ok());
-        // A receive-only channel is refused wherever it would transmit.
-        let listener = request(TxSetup {
-            receive_only: true,
-            ..repeater(433_400_000, Bandwidth::Narrow)
-        });
-        assert_eq!(
-            policy.authorise(&listener).unwrap_err(),
-            TxDenied::ReceiveOnly
-        );
         // These ranges do not permit wide FM.
         let wide = request(repeater(433_400_000, Bandwidth::Wide));
         assert_eq!(wide.bandwidth, Bandwidth::Wide);

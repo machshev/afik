@@ -71,7 +71,6 @@ pub fn request(channel: ActiveChannel) -> TxRequest {
         target_id: 1,
         channel,
         modulation: Modulation::Fm,
-        receive_only: false,
         bandwidth: Bandwidth::Narrow,
         conducted_mw: 100,
         timeout_ms: 1_000,
