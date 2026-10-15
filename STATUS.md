@@ -509,6 +509,17 @@ carries `62ac81c` (playing broadcast left unread), is flashed to the K5
 read back). Next: check boot and receive, F 4 on a keyed radio, TONE HEARD on and off
 against GB3EL, and the WFM beat.
 
+VFO TX tone (operator request): each slot's VFO has a TX tone, none by
+default and not kept across a power cycle; Menu on the F 4 catch puts the
+caught tone in the VFO with the frequency (an untoned catch clears it), VFO
+TX sends it and the tone row shows it (`70fd395`). Gate: `cargo fmt --all
+--check` clean, workspace clippy `-D warnings` clean, `cargo test
+--workspace` 832 passed 0 failed 2 ignored, `tool/build-k5.sh --release`
+(image end `0x0000ed64`, 668 bytes spare), `tool/verify-k5-image.sh` and
+`tool/build-k1.sh --release` pass. `7.0.35` (`35b65b3`) is built, not
+flashed. Next: flash; catch a toned radio, Menu, check `T` shows the tone
+and the other radio hears it with tone squelch on.
+
 **`TXK5-059` was paused** (2026-10-14) for `TXRANGE-062`; `TXK1-060` was started alongside.
 
 - K5 `7.0.2` and K1 `6.4T` are flashed. Both key up on PMR446 (`EVID-TX058-001`);
