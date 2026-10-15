@@ -114,17 +114,23 @@ pub struct FixedName<const CAPACITY: usize> {
 impl<const CAPACITY: usize> FixedName<CAPACITY> {
     /// Constructs a non-empty printable ASCII name.
     pub fn new(name: &str) -> Result<Self, PlanError> {
+        Self::from_bytes(name.as_bytes())
+    }
+
+    /// Constructs a name from printable ASCII bytes, without the UTF-8
+    /// validation a `str` costs the size-bound firmware.
+    fn from_bytes(name: &[u8]) -> Result<Self, PlanError> {
         if name.is_empty()
             || name.len() > CAPACITY
             || !name
-                .bytes()
-                .all(|byte| byte.is_ascii_graphic() || byte == b' ')
+                .iter()
+                .all(|byte| byte.is_ascii_graphic() || *byte == b' ')
         {
             return Err(PlanError::InvalidName);
         }
 
         let mut bytes = [0; CAPACITY];
-        bytes[..name.len()].copy_from_slice(name.as_bytes());
+        bytes[..name.len()].copy_from_slice(name);
         Ok(Self {
             bytes,
             len: u8::try_from(name.len()).map_err(|_| PlanError::InvalidName)?,
@@ -137,14 +143,18 @@ impl<const CAPACITY: usize> FixedName<CAPACITY> {
         if length == 0 || length > CAPACITY || bytes[length..].iter().any(|byte| *byte != 0) {
             return Err(PlanError::InvalidName);
         }
-        let name = str::from_utf8(&bytes[..length]).map_err(|_| PlanError::InvalidName)?;
-        Self::new(name)
+        Self::from_bytes(&bytes[..length])
     }
 
     /// Returns the name as a string.
     pub fn as_str(&self) -> &str {
         // Construction permits ASCII only, so this cannot fail.
-        str::from_utf8(&self.bytes[..usize::from(self.len)]).unwrap_or("")
+        str::from_utf8(self.as_bytes()).unwrap_or("")
+    }
+
+    /// Returns the name's printable ASCII bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..usize::from(self.len)]
     }
 
     /// Returns the fixed-size encoded field.
@@ -1236,6 +1246,35 @@ mod tests {
         SharedSettings,
     };
     use radio_domain::{BankId, Frequency, FrequencyStep, Offset};
+
+    #[test]
+    fn a_name_field_is_printable_ascii_read_as_bytes() {
+        let mut field = [0_u8; 12];
+        field[..5].copy_from_slice(b"GB3EL");
+        let name = ChannelName::from_field(field, 5).unwrap();
+        assert_eq!(name.as_bytes(), b"GB3EL");
+        assert_eq!(name.as_str(), "GB3EL");
+        // UTF-8 that is not ASCII, a control byte, and bytes past the length.
+        field[..2].copy_from_slice(&[0xC3, 0xA9]);
+        assert_eq!(
+            ChannelName::from_field(field, 5),
+            Err(PlanError::InvalidName)
+        );
+        field[..2].copy_from_slice(b"\tB");
+        assert_eq!(
+            ChannelName::from_field(field, 5),
+            Err(PlanError::InvalidName)
+        );
+        field[..2].copy_from_slice(b"GB");
+        assert_eq!(
+            ChannelName::from_field(field, 4),
+            Err(PlanError::InvalidName)
+        );
+        assert_eq!(
+            ChannelName::from_field([0; 12], 0),
+            Err(PlanError::InvalidName)
+        );
+    }
 
     #[test]
     fn linear_bank_expands_lazily() {

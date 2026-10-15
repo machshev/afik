@@ -2159,8 +2159,7 @@ fn render<B: RegisterBus, S: Speaker, C: BroadcastChip, M: Memory>(
                         let name = bank_name(bank, memory);
                         SelectorRow::bank(
                             bank.get(),
-                            name.as_ref()
-                                .map_or(&[][..], |name| name.as_str().as_bytes()),
+                            name.as_ref().map_or(&[][..], |name| name.as_bytes()),
                             active,
                         )
                     }
@@ -2304,7 +2303,7 @@ fn render<B: RegisterBus, S: Speaker, C: BroadcastChip, M: Memory>(
                 };
                 rows[usize::from(offset)] = ListRow::new(
                     position.saturating_add(1),
-                    channel.name().as_str().as_bytes(),
+                    channel.name().as_bytes(),
                     active,
                 );
                 count += 1;
@@ -2356,7 +2355,7 @@ fn slot_channel<'a, B: RegisterBus, S: Speaker, C: BroadcastChip, M: Memory>(
     let controller = controller?;
     let channel = controller.channel();
     Some(SlotChannel {
-        name: name.map_or(&[][..], |name| name.as_str().as_bytes()),
+        name: name.map_or(&[][..], |name| name.as_bytes()),
         frequency_hz: controller.setup().frequency.as_hz(),
         place: match slot.mode {
             Mode::Vfo => SlotPlace::Vfo {
