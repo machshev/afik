@@ -19,7 +19,7 @@
 //! No intent can transmit. The set deliberately contains selection, bank
 //! filtering, VFO tuning, and monitoring only.
 
-use radio_domain::{BankId, SquelchLevel, TxClass, MAX_SQUELCH_LEVEL};
+use radio_domain::{BankId, SquelchLevel, Tone, TxClass, MAX_SQUELCH_LEVEL};
 use radio_tx_policy::ClassSet;
 
 use crate::receive_app::Key;
@@ -136,6 +136,8 @@ pub struct Slot {
     pub vfo_hz: u32,
     /// Index into [`VFO_STEPS_HZ`].
     pub step_index: usize,
+    /// The tone the VFO transmits with: none, or one the F 4 catch heard.
+    pub vfo_tx_tone: Tone,
 }
 
 impl Slot {
@@ -145,6 +147,7 @@ impl Slot {
         bank_filter: None,
         vfo_hz: VFO_DEFAULT_HZ,
         step_index: 1,
+        vfo_tx_tone: Tone::None,
     };
 
     /// Returns the VFO tuning step in hertz.
@@ -404,6 +407,7 @@ pub struct Shell {
     bank_count: usize,
     source_cursor: usize,
     vfo_hz: u32,
+    vfo_tx_tone: Tone,
     step_index: usize,
     step_cursor: usize,
     settings_cursor: usize,
@@ -458,6 +462,7 @@ impl Shell {
             bank_count: 0,
             source_cursor: 0,
             vfo_hz: VFO_DEFAULT_HZ,
+            vfo_tx_tone: Tone::None,
             step_index: 1,
             step_cursor: 1,
             settings_cursor: 0,
@@ -701,6 +706,7 @@ impl Shell {
             bank_filter: self.bank_filter,
             vfo_hz: self.vfo_hz,
             step_index: self.step_index,
+            vfo_tx_tone: self.vfo_tx_tone,
         }
     }
 
@@ -721,10 +727,17 @@ impl Shell {
         self.dual_watch = on;
     }
 
-    /// Puts a caught frequency in the selected slot's VFO and shows the
-    /// operating screen; the caller rebuilds the slot as for VFO/MR. Refused,
-    /// leaving the catch open, without a VFO or off its range.
-    pub fn catch_to_vfo(&mut self, hertz: u32) -> bool {
+    /// Returns the tone the selected slot's VFO transmits with.
+    #[must_use]
+    pub const fn vfo_tx_tone(&self) -> Tone {
+        self.vfo_tx_tone
+    }
+
+    /// Puts a caught frequency in the selected slot's VFO, with the caught
+    /// tone (or none) to transmit, and shows the operating screen; the caller
+    /// rebuilds the slot as for VFO/MR. Refused, leaving the catch open,
+    /// without a VFO or off its range.
+    pub fn catch_to_vfo(&mut self, hertz: u32, tone: Option<Tone>) -> bool {
         if self.screen != Screen::Catch
             || !self.capabilities.vfo
             || !(VFO_MINIMUM_HZ..=VFO_MAXIMUM_HZ).contains(&hertz)
@@ -733,6 +746,7 @@ impl Shell {
         }
         self.mode = Mode::Vfo;
         self.vfo_hz = hertz;
+        self.vfo_tx_tone = tone.unwrap_or(Tone::None);
         self.entry = None;
         self.screen = Screen::Operating;
         true
@@ -756,6 +770,7 @@ impl Shell {
         self.mode = self.other.mode;
         self.bank_filter = self.other.bank_filter;
         self.vfo_hz = self.other.vfo_hz;
+        self.vfo_tx_tone = self.other.vfo_tx_tone;
         self.step_index = self.other.step_index;
         self.step_cursor = self.step_index;
         self.other = selected;
@@ -2344,6 +2359,8 @@ mod tests {
 
     #[test]
     fn f_then_4_opens_the_catch_and_menu_puts_it_in_the_vfo() {
+        use radio_domain::Tone;
+
         let mut shell = memory_shell(&[2, 5]);
         shell.press(Key::Function, 10, context(2, 0));
         assert_eq!(
@@ -2359,15 +2376,32 @@ mod tests {
         // Menu asks the target, which knows what was caught.
         assert_eq!(shell.press(Key::Menu, 15, context(2, 0)), Intent::UseCatch);
         assert_eq!(shell.screen(), Screen::Catch);
-        assert!(!shell.catch_to_vfo(10_000), "below the VFO range");
+        assert!(!shell.catch_to_vfo(10_000, None), "below the VFO range");
         assert_eq!(shell.screen(), Screen::Catch);
-        assert!(shell.catch_to_vfo(430_837_500));
+        assert!(shell.catch_to_vfo(438_437_500, Some(Tone::Ctcss(1567))));
         assert_eq!(shell.mode(), Mode::Vfo);
-        assert_eq!(shell.vfo_hz(), 430_837_500);
+        assert_eq!(shell.vfo_hz(), 438_437_500);
+        assert_eq!(shell.vfo_tx_tone(), Tone::Ctcss(1567));
         assert_eq!(shell.screen(), Screen::Operating);
         // Only from the catch.
-        assert!(!shell.catch_to_vfo(145_500_000));
-        assert_eq!(shell.vfo_hz(), 430_837_500);
+        assert!(!shell.catch_to_vfo(145_500_000, None));
+        assert_eq!(shell.vfo_hz(), 438_437_500);
+
+        // Each slot keeps its own VFO tone across A/B.
+        shell.press(Key::Function, 20, context(2, 0));
+        assert_eq!(
+            shell.press(Key::Digit(2), 21, context(2, 0)),
+            Intent::SwapSlot
+        );
+        assert_eq!(shell.vfo_tx_tone(), Tone::None);
+        assert_eq!(shell.other_slot().vfo_tx_tone, Tone::Ctcss(1567));
+        // An untoned catch clears it.
+        shell.press(Key::Function, 22, context(2, 0));
+        shell.press(Key::Digit(2), 23, context(2, 0));
+        shell.press(Key::Function, 24, context(2, 0));
+        shell.press(Key::Digit(4), 25, context(2, 0));
+        assert!(shell.catch_to_vfo(145_500_000, None));
+        assert_eq!(shell.vfo_tx_tone(), Tone::None);
     }
 
     #[test]

@@ -897,6 +897,7 @@ fn adopt_place(shell: &mut Shell, programmed: &Programmed, place: Option<Operato
                     bank_filter: other.bank,
                     vfo_hz: other.vfo_hz,
                     step_index: usize::from(other.step_index),
+                    vfo_tx_tone: Tone::None,
                 },
             );
         }
@@ -1287,7 +1288,7 @@ pub async fn run<D, K, B, F, W, S, V, M>(
                     .ok()
                     .map(TxSetup::simplex)
             },
-            |(controller, _)| Some(tx_setup(controller)),
+            |(controller, _)| Some(tx_setup(controller, shell.vfo_tx_tone())),
         );
         if tx_setup != tx_tuned {
             tx_tuned = tx_setup;
@@ -1532,8 +1533,8 @@ pub async fn run<D, K, B, F, W, S, V, M>(
             Intent::UseCatch => {
                 let caught = catching
                     .as_ref()
-                    .and_then(|(catch, _, _)| catch.frequency_hz());
-                if caught.is_some_and(|hertz| shell.catch_to_vfo(hertz)) {
+                    .and_then(|(catch, _, _)| Some((catch.frequency_hz()?, catch.tone())));
+                if caught.is_some_and(|(hertz, tone)| shell.catch_to_vfo(hertz, tone)) {
                     catching = None;
                     let _ = pending.take();
                     activation = activate(&programmed, &shell, selected, memory);
@@ -2009,7 +2010,10 @@ fn tx_refusal(
 /// What PTT transmits with: a memory channel's transmit frequency, bandwidth
 /// and TX tone, so a repeater channel keys its input; simplex on a frequency
 /// tuned away from the channel.
-fn tx_setup<M: Memory>(controller: &BankedReceiveController<Listening<M>>) -> TxSetup {
+fn tx_setup<M: Memory>(
+    controller: &BankedReceiveController<Listening<M>>,
+    vfo_tone: Tone,
+) -> TxSetup {
     let setup = controller.setup();
     match controller.selection() {
         ChannelSelection::Memory { .. } => {
@@ -2024,6 +2028,7 @@ fn tx_setup<M: Memory>(controller: &BankedReceiveController<Listening<M>>) -> Tx
         ChannelSelection::Vfo => TxSetup {
             bandwidth: setup.bandwidth,
             modulation: setup.modulation,
+            tone: vfo_tone,
             ..TxSetup::simplex(setup.frequency)
         },
     }
@@ -2372,7 +2377,10 @@ fn slot_channel<'a, B: RegisterBus, S: Speaker, C: BroadcastChip, M: Memory>(
         meter: receiver
             .filter(|receiver| receiver.squelch_open)
             .map(|receiver| receiver.rssi_raw),
-        tx_tone: channel.tx_tone(),
+        tx_tone: match slot.mode {
+            Mode::Vfo => slot.vfo_tx_tone,
+            Mode::Memory => channel.tx_tone(),
+        },
         rx_tone: controller.setup().tone,
         heard_tone: receiver
             .filter(|receiver| receiver.squelch_open)
@@ -2762,7 +2770,7 @@ mod tests {
                 None,
             )
             .unwrap();
-            tx_setup(&controller)
+            tx_setup(&controller, Tone::None)
         };
         let normal = setup(repeater(ChannelFlags::default()));
         assert_eq!(normal.channel.receive, hz(439_400_000));
@@ -2775,6 +2783,20 @@ mod tests {
             ChannelFlags::default().with(ChannelFlags::REVERSE, true),
         ));
         assert_eq!(reversed.channel.transmit, hz(439_400_000));
+
+        // In VFO mode the VFO's own tone goes out, simplex: the channel's
+        // split and tone are not the VFO's.
+        let (mut controller, _) = BankedReceiveController::activate(
+            Listening::<NoMemory>::Vfo(repeater(ChannelFlags::default())),
+            RadioConfig::conservative(),
+            None,
+        )
+        .unwrap();
+        controller.enter_vfo().unwrap();
+        let vfo = tx_setup(&controller, Tone::Ctcss(1567));
+        assert_eq!(vfo.tone, Tone::Ctcss(1567));
+        assert_eq!(vfo.channel.receive, vfo.channel.transmit);
+        assert_eq!(tx_setup(&controller, Tone::None).tone, Tone::None);
     }
 
     /// A BK4819 register file that accepts everything.
