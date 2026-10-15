@@ -176,6 +176,8 @@ fn is_standard_dcs(bits: u16) -> bool {
         .is_some_and(|byte| byte & (1 << (bits % 8)) != 0)
 }
 
+/// `REG_33` bit for logical GPIO0, `BK4819_GPIO0_PIN28_RX_ENABLE`.
+pub(crate) const GPIO_RX_ENABLE: u16 = 0x40;
 const GPIO_UHF_LNA: u16 = 0x40 >> 3;
 const GPIO_VHF_LNA: u16 = 0x40 >> 4;
 /// Boundary between the VHF and UHF receive filter paths in hertz.
@@ -705,6 +707,11 @@ impl<B: RegisterBus> Bk4819<B> {
         self.write(REG_MODE_CONTROL, receive_mode)?;
 
         self.select_filter_path(setup.frequency)?;
+        // `RADIO_SetupRegisters` turns RX enable on after the filter path on
+        // every receive setup; TX clears it. Without it `7.0.31` and earlier
+        // heard nearby radios but not GB3EL at 12 km, which Armel hears.
+        self.gpio_out |= GPIO_RX_ENABLE;
+        self.write(REG_GPIO_OUT, self.gpio_out)?;
         self.configure_sub_audio(setup.tone)?;
         self.write(REG_INTERRUPT_MASK, interrupt_mask(setup.tone))?;
         self.write(REG_INTERRUPT_FLAGS, 0)?;
@@ -1113,6 +1120,48 @@ mod tests {
             squelch: thresholds(),
             af: AfOutput::Demodulated,
         }
+    }
+
+    #[test]
+    fn receive_turns_rx_enable_on_and_restores_it_after_transmit() {
+        use crate::tx_fixture::{channel, policy, request};
+        use radio_domain::TxClass;
+
+        let last_gpio = |radio: &Bk4819<FakeBus>| {
+            radio
+                .bus()
+                .operations
+                .iter()
+                .rev()
+                .find_map(|operation| match operation {
+                    Operation::Write(address, value) if *address == REG_GPIO_OUT => Some(*value),
+                    _ => None,
+                })
+                .expect("REG_33 is written")
+        };
+        let mut radio = Bk4819::new(FakeBus::new(None));
+        radio.recover_to_standby().unwrap();
+        radio.initialise().unwrap();
+        // GB3EL's output: UHF LNA (0x08) and RX enable (0x40) over the
+        // default outputs, as `RADIO_SetupRegisters` leaves them.
+        radio
+            .configure_receive(&setup(Modulation::Fm, Tone::None, 430_837_500))
+            .unwrap();
+        assert_eq!(last_gpio(&radio), 0x9048);
+
+        // TX clears RX enable; the next receive setup sets it again.
+        let policy = policy(true);
+        let request = request(channel(TxClass::LicenceFreePlan));
+        let token = policy.authorise(&request).unwrap();
+        radio.prepare_transmit(&request, &token).unwrap();
+        assert_eq!(last_gpio(&radio) & 0x40, 0);
+        radio.enable_transmit(&request, &token).unwrap();
+        radio.disable_pa().unwrap();
+        radio.disable_transmit().unwrap();
+        radio
+            .configure_receive(&setup(Modulation::Fm, Tone::None, 430_837_500))
+            .unwrap();
+        assert_eq!(last_gpio(&radio), 0x9048);
     }
 
     #[test]

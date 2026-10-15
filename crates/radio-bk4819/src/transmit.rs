@@ -28,8 +28,8 @@ use radio_domain::{Bandwidth, Frequency, Modulation, Tone};
 use radio_tx_policy::{TxAuthorisation, TxRequest};
 
 use crate::receive::{
-    AfOutput, REG_AGC_CONTROL, REG_AM_DEMODULATOR, REG_FILTER_BANDWIDTH, REG_GPIO_OUT,
-    REG_POWER_BLOCKS, REG_SUB_AUDIO_CONTROL,
+    AfOutput, GPIO_RX_ENABLE, REG_AGC_CONTROL, REG_AM_DEMODULATOR, REG_FILTER_BANDWIDTH,
+    REG_GPIO_OUT, REG_POWER_BLOCKS, REG_SUB_AUDIO_CONTROL,
 };
 use crate::{
     Bk4819, DriverError, DriverState, FrequencyWord, RegisterAddress, RegisterBus,
@@ -54,8 +54,6 @@ const COMPANDER_ENABLE: u16 = 1 << 3;
 /// `REG_31` bit 1 enables the scrambler (`BK4819_DisableScramble`).
 const SCRAMBLE_ENABLE: u16 = 1 << 1;
 
-/// `REG_33` bit for logical GPIO0, the RX enable output.
-const GPIO_RX_ENABLE: u16 = 0x40;
 /// `REG_33` bit for logical GPIO1, the PA enable output.
 pub const GPIO_PA_ENABLE: u16 = 0x40 >> 1;
 
