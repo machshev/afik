@@ -208,6 +208,12 @@ programmed as ordinary banks.
   them simplex since the split is hidden. Gate: fmt clean, workspace
   clippy `-D warnings` clean, `cargo test --workspace` 832 passed 0 failed.
   Layout not checked on screen.
+- Change (operator request, studio): broadcast is receive-only in the
+  model. A broadcast channel, bank or plan validates with no transmit side
+  (TX frequency, offset, tones and TX flags ignored; loaded TX is empty),
+  replacing the editor's copy of RX into TX (`faacb47`). Gate: fmt
+  clean, workspace clippy `-D warnings` clean, `cargo test --workspace` 832
+  passed 0 failed.
 - Next: write the project with an FM broadcast bank from the studio, then on
   the K5 listen, step and scan it and check the `RISK-045` list; then the K1.
 
