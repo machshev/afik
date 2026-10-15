@@ -12,6 +12,7 @@ use embassy_sync::signal::Signal;
 use embassy_time::Instant;
 use radio_platform::battery::Calibration;
 use radio_platform::operator_display::{MemoryState, ResetCause, SerialCounters};
+use radio_platform::squelch::SquelchCalibration;
 use radio_platform::transmit::TxCalibration;
 
 use radio_storage::radio_image::Index;
@@ -43,6 +44,10 @@ pub(crate) static BATTERY_CALIBRATION: Signal<CriticalSectionRawMutex, Option<Ca
 
 /// The PMR446 low-power TX bias bytes, read once by the serial task.
 pub(crate) static TX_CALIBRATION: Signal<CriticalSectionRawMutex, Option<TxCalibration>> =
+    Signal::new();
+
+/// The unit's squelch tables, read once by the serial task.
+pub(crate) static SQUELCH_CALIBRATION: Signal<CriticalSectionRawMutex, Option<SquelchCalibration>> =
     Signal::new();
 
 /// Raised for every host request, so the interface task can ignore PTT while

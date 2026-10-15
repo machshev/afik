@@ -21,5 +21,6 @@ pub mod receive_app;
 pub mod s_meter;
 pub mod serial;
 pub mod serial_control;
+pub mod squelch;
 pub mod transmit;
 pub mod tx_control;

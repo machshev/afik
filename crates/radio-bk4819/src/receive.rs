@@ -450,8 +450,9 @@ impl SquelchThresholds {
 
     /// Returns AFIK's own thresholds for one operator squelch level.
     ///
-    /// The per-unit calibration this radio was factory-programmed with is not
-    /// readable evidence yet, so these are AFIK's values, not the unit's. They
+    /// The fallback for a radio whose calibration has no usable set for the
+    /// level ([`SquelchThresholds::from_calibration`] is used otherwise), so
+    /// these are AFIK's values, not the unit's. They
     /// are deliberately conservative about what they claim: only the RSSI pair
     /// varies with the level, and the noise and glitch pairs are left one step
     /// below their permissive maximum so they satisfy the hysteresis rule
@@ -500,6 +501,31 @@ impl SquelchThresholds {
         }
         let count = SQUELCH_BASE_RSSI as i16 + SQUELCH_RSSI_STEP as i16 * level.get() as i16;
         Some(count / 2 - 160)
+    }
+
+    /// Returns one level's thresholds from the unit's calibration, as
+    /// `RADIO_ConfigureSquelchAndOutputPower` reads and writes them: six rows
+    /// of the band's table, in its order (open RSSI, close RSSI, open noise,
+    /// close noise, close glitch, open glitch). Factory tables are taken as
+    /// the reference takes them, so the noise and glitch pairs are not held to
+    /// [`SquelchThresholds::new`]'s hysteresis rule: the K1's low-band glitch
+    /// rows open above where they close. `None` when the RSSI pair is not
+    /// ordered or a noise threshold is out of range, as erased (`0xFF`)
+    /// calibration is.
+    #[must_use]
+    pub const fn from_calibration(rows: [u8; 6]) -> Option<Self> {
+        let [open_rssi, close_rssi, open_noise, close_noise, close_glitch, open_glitch] = rows;
+        if open_rssi <= close_rssi || open_noise > 0x7F || close_noise > 0x7F {
+            return None;
+        }
+        Some(Self {
+            open_rssi,
+            close_rssi,
+            open_noise,
+            close_noise,
+            open_glitch,
+            close_glitch,
+        })
     }
 
     /// Validates one complete calibration-supplied threshold set.
@@ -1712,6 +1738,57 @@ mod tests {
             .collect();
         assert_eq!(standard, super::DCS_CODES);
         assert!(!super::is_standard_dcs(512));
+    }
+
+    #[test]
+    fn calibrated_thresholds_are_written_as_the_reference_writes_them() {
+        use super::{REG_SQUELCH_CLOSE_GLITCH, REG_SQUELCH_NOISE, REG_SQUELCH_OPEN_GLITCH};
+        // The K1's UHF SQL 3 column, and its low-band SQL 3 column whose glitch
+        // pair opens above where it closes.
+        let uhf = SquelchThresholds::from_calibration([98, 95, 38, 41, 14, 11]).unwrap();
+        let vhf = SquelchThresholds::from_calibration([111, 108, 40, 45, 10, 15]).unwrap();
+        for (squelch, glitch_close, glitch_open, noise, rssi) in [
+            (
+                uhf,
+                14,
+                11,
+                u16::from_be_bytes([41, 38]),
+                u16::from_be_bytes([98, 95]),
+            ),
+            (
+                vhf,
+                10,
+                15,
+                u16::from_be_bytes([45, 40]),
+                u16::from_be_bytes([111, 108]),
+            ),
+        ] {
+            let mut radio = Bk4819::new(FakeBus::new(None));
+            radio.recover_to_standby().unwrap();
+            radio
+                .configure_receive(&ReceiveSetup {
+                    squelch,
+                    ..setup(Modulation::Fm, Tone::None, 446_006_250)
+                })
+                .unwrap();
+            let operations = &radio.bus().operations;
+            assert!(operations.contains(&Operation::Write(
+                REG_SQUELCH_CLOSE_GLITCH,
+                0xA000 | glitch_close
+            )));
+            assert!(operations.contains(&Operation::Write(
+                REG_SQUELCH_OPEN_GLITCH,
+                (1 << 14) | (5 << 11) | (6 << 9) | glitch_open
+            )));
+            assert!(operations.contains(&Operation::Write(REG_SQUELCH_NOISE, noise)));
+            assert!(operations.contains(&Operation::Write(REG_SQUELCH_RSSI, rssi)));
+        }
+        // Erased calibration, and an RSSI pair that would never shut.
+        assert_eq!(SquelchThresholds::from_calibration([0xFF; 6]), None);
+        assert_eq!(
+            SquelchThresholds::from_calibration([90, 95, 38, 41, 14, 11]),
+            None
+        );
     }
 
     #[test]

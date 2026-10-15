@@ -7,6 +7,9 @@
 
 use radio_platform::battery::Calibration;
 use radio_platform::operator_display::FRAME_BYTES;
+use radio_platform::squelch::{
+    SquelchCalibration, SQUELCH_CALIBRATION_ADDRESS, SQUELCH_CALIBRATION_BYTES,
+};
 use radio_platform::transmit::{TxCalibration, TxTarget};
 
 use radio_platform::memory_link::{PLACE_ORIGIN, WRITE_BYTES};
@@ -81,6 +84,14 @@ pub trait Memory {
     fn read_battery_calibration(&mut self) -> Option<Calibration>;
     /// Reads the PMR446 low-power TX bias bytes from the vendor block.
     fn read_tx_calibration(&mut self) -> Option<TxCalibration>;
+
+    /// Reads the unit's squelch tables, which both radios' memory views
+    /// serve from the vendor calibration at `0x1E00`.
+    fn read_squelch_calibration(&mut self) -> Option<SquelchCalibration> {
+        let mut bytes = [0_u8; SQUELCH_CALIBRATION_BYTES];
+        self.read(SQUELCH_CALIBRATION_ADDRESS, &mut bytes)
+            .then(|| SquelchCalibration::new(bytes))
+    }
 
     /// Makes what a host has written durable, once the host has gone quiet.
     ///

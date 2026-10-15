@@ -21,7 +21,7 @@ use crate::drivers::{Memory, SerialLink};
 use crate::state::{
     count, hold_bus_idle, Publication, TaskCell, BATTERY_CALIBRATION, INDEX, OPERATOR_PLACE,
     PROGRAMMED, SERIAL_ACTIVITY, SERIAL_ANSWERED, SERIAL_DISCARDED, SERIAL_ERRORS, SERIAL_RECEIVED,
-    TX_CALIBRATION, TX_POLICY,
+    SQUELCH_CALIBRATION, TX_CALIBRATION, TX_POLICY,
 };
 use radio_tx_policy::TxPolicy;
 
@@ -74,6 +74,8 @@ pub async fn run<L: SerialLink, M: Memory>(
     BATTERY_CALIBRATION
         .signal(memory.with_mut(|cell| cell.as_mut().and_then(M::read_battery_calibration)));
     TX_CALIBRATION.signal(memory.with_mut(|cell| cell.as_mut().and_then(M::read_tx_calibration)));
+    SQUELCH_CALIBRATION
+        .signal(memory.with_mut(|cell| cell.as_mut().and_then(M::read_squelch_calibration)));
 
     // The place is read beside the configuration it refers to and published
     // with it, so the interface never restores a channel into a channel list it

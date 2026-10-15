@@ -34,6 +34,7 @@ use radio_platform::operator_shell::{
 };
 use radio_platform::power_save::{self, PowerSave};
 use radio_platform::ptt::PttFilter;
+use radio_platform::squelch::SquelchCalibration;
 use radio_platform::transmit::{self, Delay, TxCalibration, TxSetup, TxTarget};
 use radio_platform::tx_control::{self, Action, Controller as TxController, State as TxPhase};
 use radio_tx_policy::{TxDenied, TxRequest, TxState};
@@ -46,7 +47,7 @@ use crate::serial::read_image;
 use crate::state::{
     bus_available, now_ms, peripheral_clock_khz, reset_cause, serial_counters, Publication,
     TaskCell, BATTERY_CALIBRATION, INDEX, OPERATOR_PLACE, PROGRAMMED, SERIAL_ACTIVITY,
-    TX_CALIBRATION, TX_POLICY,
+    SQUELCH_CALIBRATION, TX_CALIBRATION, TX_POLICY,
 };
 
 /// Interval between receive samples while audio is routed.
@@ -187,6 +188,8 @@ struct Receiver<B: RegisterBus, S: Speaker, C: BroadcastChip> {
     tone_scan: bool,
     /// Whether a frequency or tone catch has the chip; the next tune ends it.
     catching: bool,
+    /// The unit's squelch tables, once the serial task has read them.
+    squelch_calibration: Option<SquelchCalibration>,
 }
 
 impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
@@ -210,6 +213,7 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
             tone_reading: None,
             tone_scan: false,
             catching: false,
+            squelch_calibration: None,
         }
     }
 
@@ -319,11 +323,14 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
             modulation: setup.modulation,
             bandwidth: setup.bandwidth,
             tone: setup.tone,
-            squelch: SquelchThresholds::for_level(if setup.squelch.is_open() {
-                setup.squelch
-            } else {
-                radio_wide
-            }),
+            squelch: self.thresholds(
+                setup.frequency,
+                if setup.squelch.is_open() {
+                    setup.squelch
+                } else {
+                    radio_wide
+                },
+            ),
             af: AfOutput::Demodulated,
         };
         if self.radio.configure_receive(&request).is_err() {
@@ -463,6 +470,16 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
         if matches!(tone, Tone::Dcs { .. }) || agreed >= 2 {
             self.heard_tone = Some(tone);
         }
+    }
+
+    /// The squelch thresholds for `level` at `frequency`: the unit's own
+    /// calibrated noise, glitch and RSSI set as the reference uses it, or
+    /// AFIK's RSSI-only set when the unit has none for that level. Level zero
+    /// never shuts.
+    fn thresholds(&self, frequency: Frequency, level: SquelchLevel) -> SquelchThresholds {
+        self.squelch_calibration
+            .and_then(|calibration| calibration.thresholds(frequency.as_hz(), level))
+            .unwrap_or_else(|| SquelchThresholds::for_level(level))
     }
 
     /// Starts a frequency and tone catch (F then 4): the speaker off, the
@@ -1137,6 +1154,16 @@ pub async fn run<D, K, B, F, W, S, V, M>(
 
         if let Some(calibration) = TX_CALIBRATION.try_take() {
             tx_calibration = calibration;
+        }
+        // The squelch tables change how every level is set, so the selected
+        // slot is retuned with them.
+        if let Some(calibration) = SQUELCH_CALIBRATION.try_take() {
+            receiver.squelch_calibration = calibration;
+            if pending.is_none() {
+                pending = activation
+                    .as_ref()
+                    .map(|(controller, _)| controller.setup());
+            }
         }
         // PTT transmits on the selected slot, whichever one dual watch has
         // the receiver on.
@@ -2586,6 +2613,49 @@ mod tests {
         fn read(&mut self, address: radio_bk4819::RegisterAddress) -> Result<u16, ()> {
             Ok(self.0.borrow()[usize::from(address.get())])
         }
+    }
+
+    #[test]
+    fn a_tune_uses_the_units_squelch_calibration_once_it_has_it() {
+        use super::Receiver;
+        use radio_channel_control::ChannelReceiveSetup;
+        use radio_domain::{Bandwidth, Frequency, FrequencyStep, Modulation, SquelchLevel, Tone};
+        use radio_platform::squelch::{SquelchCalibration, SQUELCH_CALIBRATION_BYTES};
+
+        const SQUELCH_RSSI: usize = 0x78;
+        const SQUELCH_NOISE: usize = 0x4F;
+        let level = SquelchLevel::new(3).unwrap();
+        let setup = ChannelReceiveSetup {
+            frequency: Frequency::from_hz(446_006_250).unwrap(),
+            modulation: Modulation::Fm,
+            bandwidth: Bandwidth::Narrow,
+            tone: Tone::None,
+            squelch: level,
+            step: FrequencyStep::from_hz(12_500).unwrap(),
+        };
+        let chip = Shared::new();
+        let mut receiver = Receiver::new(
+            radio_bk4819::Bk4819::new(chip.clone()),
+            Chip::default(),
+            Amplifier::default(),
+        );
+        // Without calibration, AFIK's RSSI-only set: open at 44 + 16 * 3.
+        receiver.tune(setup, level);
+        assert_eq!(chip.get(SQUELCH_RSSI) >> 8, 92);
+        assert_eq!(chip.get(SQUELCH_NOISE), (0x7F << 8) | 0x7E);
+
+        // The K1's UHF SQL 3 column: RSSI 98/95, noise 38/41.
+        let mut bytes = [0xFF_u8; SQUELCH_CALIBRATION_BYTES];
+        for (row, value) in [98_u8, 95, 38, 41, 14, 11].into_iter().enumerate() {
+            bytes[row * 0x10 + 3] = value;
+        }
+        receiver.squelch_calibration = Some(SquelchCalibration::new(bytes));
+        receiver.tune(setup, level);
+        assert_eq!(chip.get(SQUELCH_RSSI), u16::from_be_bytes([98, 95]));
+        assert_eq!(chip.get(SQUELCH_NOISE), u16::from_be_bytes([41, 38]));
+        // A level the unit has no usable set for falls back.
+        receiver.tune(setup, SquelchLevel::new(4).unwrap());
+        assert_eq!(chip.get(SQUELCH_RSSI) >> 8, 44 + 16 * 4);
     }
 
     #[test]
