@@ -255,7 +255,7 @@ impl ChannelDraft {
     /// Builds a draft from a validated channel record.
     pub fn from_record(record: ChannelRecord) -> Self {
         let flags = record.flags();
-        let receive_only = record.modulation() == Modulation::Broadcast;
+        let receive_only = record.modulation().is_receive_only();
         Self {
             name: record.name().as_str().to_owned(),
             receive_mhz: format_mhz(record.receive().as_hz()),
@@ -293,13 +293,14 @@ impl ChannelDraft {
             .map_err(|_| error(scope, "name", "must be 1 to 12 printable characters"))?;
         let receive = parse_frequency(&self.receive_mhz)
             .ok_or_else(|| error(scope, "receive", "is not a frequency in megahertz"))?;
-        // A broadcast channel only receives: whatever its row holds for the
-        // transmit side, it has none (`ADR-105`).
+        // Only FM transmits: whatever an AM, USB or broadcast row holds for
+        // the transmit side, it has none (`ADR-105`, `ADR-107`).
         let receive_only = if shared.contains(SharedSettings::MODULATION) {
             bank.settings().modulation
         } else {
             self.modulation
-        } == Modulation::Broadcast;
+        }
+        .is_receive_only();
         let transmit = if receive_only || shared.contains(SharedSettings::OFFSET) {
             receive
         } else {
@@ -604,11 +605,11 @@ impl BankDraft {
         })
     }
 
-    /// Whether every channel in the bank is a broadcast one, which only
-    /// receives: by the modulation the bank shares or, for a plan, its
+    /// Whether every channel in the bank only receives, being AM, USB or
+    /// broadcast: by the modulation the bank shares or, for a plan, its
     /// template.
     pub fn is_receive_only(&self) -> bool {
-        self.modulation == Modulation::Broadcast
+        self.modulation.is_receive_only()
             && (self.kind == BankKind::Generated
                 || self.shared.contains(SharedSettings::MODULATION))
     }
@@ -1885,6 +1886,42 @@ mod tests {
         let loaded = ProjectModel::from_image(&model.to_radio_image().unwrap()).unwrap();
         assert_eq!(loaded.banks[0].offset_hz, 0);
         assert_eq!(loaded.banks[0].tx_tone.kind, ToneKind::None);
+    }
+
+    #[test]
+    fn only_fm_channels_have_a_transmit_side() {
+        let mut model = ProjectModel::new();
+        model.add_bank();
+        model.add_channel(0);
+        model.add_channel(0);
+        model.add_channel(0);
+        for (channel, modulation) in model.banks[0].channels.iter_mut().zip([
+            Modulation::Am,
+            Modulation::Usb,
+            Modulation::Fm,
+        ]) {
+            channel.receive_mhz = "121.5".to_owned();
+            channel.transmit_mhz = String::new();
+            channel.modulation = modulation;
+        }
+        // AM and USB need no transmit frequency; FM still does.
+        let errors = model.to_radio_image().unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].field, "transmit");
+        assert_eq!(errors[0].scope, ModelScope::Channel { bank: 0, row: 2 });
+        model.banks[0].channels.truncate(2);
+        let loaded = ProjectModel::from_image(&model.to_radio_image().unwrap()).unwrap();
+        for channel in &loaded.banks[0].channels {
+            assert_eq!(channel.receive_mhz, "121.500000");
+            assert!(channel.transmit_mhz.is_empty(), "no transmit side");
+        }
+        // A bank sharing AM is receive-only too.
+        let bank = &mut model.banks[0];
+        bank.shared = SharedSettings::none().with(SharedSettings::MODULATION, true);
+        bank.modulation = Modulation::Am;
+        assert!(bank.is_receive_only());
+        bank.modulation = Modulation::Fm;
+        assert!(!bank.is_receive_only());
     }
 
     #[test]

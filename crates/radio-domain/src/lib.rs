@@ -177,6 +177,12 @@ pub const BROADCAST_LAST_HZ: u32 = 108_000_000;
 pub const BROADCAST_RASTER_HZ: u32 = 100_000;
 
 impl Modulation {
+    /// Whether channels of this modulation only receive: everything but FM,
+    /// the one modulation `radio-tx-policy` transmits.
+    pub const fn is_receive_only(self) -> bool {
+        !matches!(self, Self::Fm)
+    }
+
     /// Whether the broadcast receiver can tune `frequency`: inside
     /// [`BROADCAST_FIRST_HZ`]..=[`BROADCAST_LAST_HZ`] on the 100 kHz raster.
     pub const fn is_broadcast_frequency(frequency: Frequency) -> bool {

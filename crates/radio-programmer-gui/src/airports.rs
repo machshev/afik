@@ -217,7 +217,7 @@ pub fn nearby<'a>(
 }
 
 /// Builds the receive-only AM bank for the frequencies `nearby` chose, in
-/// its order; no TX range covers the airband, so the radio never transmits.
+/// its order.
 pub fn airport_bank(locator: &str, near: &[(&AirportFrequency, f64)]) -> BankDraft {
     let mut name = format!("AIR {}", locator.trim().to_ascii_uppercase());
     name.truncate(MAX_BANK_NAME_LEN);
@@ -226,8 +226,8 @@ pub fn airport_bank(locator: &str, near: &[(&AirportFrequency, f64)]) -> BankDra
         .map(|(frequency, _)| ChannelDraft {
             name: frequency.name.clone(),
             receive_mhz: format_mhz(frequency.frequency_hz),
-            // Simplex; no TX range covers the airband, so it is never used.
-            transmit_mhz: format_mhz(frequency.frequency_hz),
+            // AM only receives (`ADR-107`).
+            transmit_mhz: String::new(),
             modulation: Modulation::Am,
             bandwidth: Bandwidth::Narrow,
             power: PowerLevel::Low1,
@@ -549,7 +549,7 @@ mod tests {
         assert!(bank
             .channels
             .iter()
-            .all(|c| c.modulation == Modulation::Am && c.transmit_mhz == c.receive_mhz));
+            .all(|c| c.modulation == Modulation::Am && c.transmit_mhz.is_empty()));
         assert!(bank.channels.iter().any(|c| c.receive_mhz == "121.933330"));
         // The radio accepts it.
         let project = ProjectModel {

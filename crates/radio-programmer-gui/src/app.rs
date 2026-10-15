@@ -2026,13 +2026,18 @@ fn channel_row_editor(
     ui: &mut egui::Ui,
     channel: &mut ChannelDraft,
     shared: SharedSettings,
-    bank_broadcast: bool,
+    bank_modulation: Modulation,
 ) -> Option<RowAction> {
-    // A broadcast channel only receives, so its transmit settings, tones,
-    // bandwidth and power are not shown.
-    let broadcast = bank_broadcast
-        || (!shared.contains(SharedSettings::MODULATION)
-            && channel.modulation == Modulation::Broadcast);
+    // Only an FM channel transmits; any other only receives, so its transmit
+    // settings, tones and power are not shown, nor a broadcast one's
+    // bandwidth.
+    let modulation = if shared.contains(SharedSettings::MODULATION) {
+        bank_modulation
+    } else {
+        channel.modulation
+    };
+    let receive_only = modulation.is_receive_only();
+    let broadcast = modulation == Modulation::Broadcast;
     let own = |ui: &mut egui::Ui, setting: u8, editor: &mut dyn FnMut(&mut egui::Ui)| {
         if shared.contains(setting) {
             ui.weak("from bank");
@@ -2045,9 +2050,9 @@ fn channel_row_editor(
         ui.add(TextEdit::singleline(&mut channel.name).desired_width(120.0));
         ui.end_row();
 
-        ui.label(if broadcast { "MHz" } else { "Receive MHz" });
+        ui.label(if receive_only { "MHz" } else { "Receive MHz" });
         ui.add(TextEdit::singleline(&mut channel.receive_mhz).desired_width(120.0));
-        if !broadcast {
+        if !receive_only {
             ui.label("Transmit MHz");
             own(ui, SharedSettings::OFFSET, &mut |ui| {
                 ui.add(TextEdit::singleline(&mut channel.transmit_mhz).desired_width(120.0));
@@ -2055,7 +2060,7 @@ fn channel_row_editor(
         }
         ui.end_row();
 
-        if !broadcast {
+        if !receive_only {
             ui.label("RX tone");
             own(ui, SharedSettings::RX_TONE, &mut |ui| {
                 tone_editor(ui, "rx", &mut channel.rx_tone);
@@ -2076,8 +2081,10 @@ fn channel_row_editor(
             own(ui, SharedSettings::BANDWIDTH, &mut |ui| {
                 bandwidth_editor(ui, &mut channel.bandwidth);
             });
-            ui.end_row();
+        }
+        ui.end_row();
 
+        if !receive_only {
             ui.label("Power");
             own(ui, SharedSettings::POWER, &mut |ui| {
                 power_editor(ui, &mut channel.power);
@@ -2092,7 +2099,7 @@ fn channel_row_editor(
         ui.label("Flags");
         ui.horizontal_wrapped(|ui| {
             ui.checkbox(&mut channel.scan_skip, "Scan skip");
-            if !broadcast {
+            if !receive_only {
                 ui.checkbox(&mut channel.busy_lockout, "Busy lockout");
                 ui.checkbox(&mut channel.reverse, "Reverse");
                 ui.checkbox(&mut channel.compander, "Compander");
@@ -2182,7 +2189,7 @@ fn bank_row_editor(ui: &mut egui::Ui, bank: &mut BankDraft) -> Option<BankAction
         }
         BankKind::Named => {
             let shared = bank.shared;
-            let whole_bank = bank.is_receive_only();
+            let bank_modulation = bank.modulation;
             ui.indent("channels", |ui| {
                 for (row, channel) in bank.channels.iter_mut().enumerate() {
                     ui.push_id(row, |ui| {
@@ -2191,7 +2198,7 @@ fn bank_row_editor(ui: &mut egui::Ui, bank: &mut BankDraft) -> Option<BankAction
                             .default_open(true)
                             .show(ui, |ui| {
                                 if let Some(requested) =
-                                    channel_row_editor(ui, channel, shared, whole_bank)
+                                    channel_row_editor(ui, channel, shared, bank_modulation)
                                 {
                                     action = Some(BankAction::Channel(row, requested));
                                 }
@@ -2226,9 +2233,18 @@ fn shared_settings_editor(ui: &mut egui::Ui, bank: &mut BankDraft) {
     } else {
         ui.weak("per channel");
     }
-    // A broadcast bank only receives; the rest would be noise.
+    // A broadcast bank has one bandwidth, and a receive-only one no transmit
+    // side; the rest would be noise.
+    if bank.modulation != Modulation::Broadcast || !bank.shared.contains(SharedSettings::MODULATION)
+    {
+        if share_toggle(ui, &mut bank.shared, SharedSettings::BANDWIDTH, "Bandwidth") {
+            bandwidth_editor(ui, &mut bank.bandwidth);
+        } else {
+            ui.weak("per channel");
+        }
+    }
+    ui.end_row();
     if bank.is_receive_only() {
-        ui.end_row();
         if share_toggle(ui, &mut bank.shared, SharedSettings::STEP, "Step Hz") {
             ui.add(egui::DragValue::new(&mut bank.step_hz).speed(125.0));
         } else {
@@ -2237,12 +2253,6 @@ fn shared_settings_editor(ui: &mut egui::Ui, bank: &mut BankDraft) {
         ui.end_row();
         return;
     }
-    if share_toggle(ui, &mut bank.shared, SharedSettings::BANDWIDTH, "Bandwidth") {
-        bandwidth_editor(ui, &mut bank.bandwidth);
-    } else {
-        ui.weak("per channel");
-    }
-    ui.end_row();
 
     if share_toggle(ui, &mut bank.shared, SharedSettings::POWER, "Power") {
         power_editor(ui, &mut bank.power);
@@ -2310,9 +2320,10 @@ fn generated_plan_editor(ui: &mut egui::Ui, bank: &mut BankDraft) {
     ui.end_row();
 
     plan_naming_editor(ui, bank);
-    let broadcast = bank.is_receive_only();
+    let receive_only = bank.is_receive_only();
+    let broadcast = bank.modulation == Modulation::Broadcast;
 
-    if !broadcast {
+    if !receive_only {
         ui.label("TX offset Hz");
         ui.add(
             egui::DragValue::new(&mut bank.offset_hz)
@@ -2342,10 +2353,10 @@ fn generated_plan_editor(ui: &mut egui::Ui, bank: &mut BankDraft) {
     ui.end_row();
 
     // Every expanded channel shares these settings: they are stored
-    // once with the plan, not once per channel. A broadcast plan only
-    // receives, so its transmit settings, tones, bandwidth and power are not
-    // shown.
-    if !broadcast {
+    // once with the plan, not once per channel. Only an FM plan transmits;
+    // any other has no transmit settings, tones or power shown, nor a
+    // broadcast plan its bandwidth.
+    if !receive_only {
         ui.label("RX tone");
         tone_editor(ui, "plan-rx", &mut bank.rx_tone);
         ui.label("TX tone");
@@ -2358,8 +2369,10 @@ fn generated_plan_editor(ui: &mut egui::Ui, bank: &mut BankDraft) {
     if !broadcast {
         ui.label("Bandwidth");
         bandwidth_editor(ui, &mut bank.bandwidth);
-        ui.end_row();
+    }
+    ui.end_row();
 
+    if !receive_only {
         ui.label("Power");
         power_editor(ui, &mut bank.power);
     }
@@ -2370,7 +2383,7 @@ fn generated_plan_editor(ui: &mut egui::Ui, bank: &mut BankDraft) {
     ui.label("Flags");
     ui.horizontal_wrapped(|ui| {
         ui.checkbox(&mut bank.scan_skip, "Scan skip");
-        if !broadcast {
+        if !receive_only {
             ui.checkbox(&mut bank.busy_lockout, "Busy lockout");
             ui.checkbox(&mut bank.compander, "Compander");
         }
