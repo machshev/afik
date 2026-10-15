@@ -1209,16 +1209,9 @@ impl StudioApp {
                 }
             }
         });
+        self.locator_bar(ui);
         ui.horizontal_wrapped(|ui| {
-            ui.label("UK repeaters near");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.repeater_area.locator)
-                    .hint_text("IO91WM")
-                    .char_limit(8)
-                    .desired_width(70.0),
-            )
-            .on_hover_text("Your Maidenhead locator, 4 to 8 characters");
-            ui.label("within");
+            ui.label("UK repeaters within");
             ComboBox::from_id_salt("repeater-radius")
                 .selected_text(format!("{} km", self.repeater_area.radius_km))
                 .show_ui(ui, |ui| {
@@ -1268,18 +1261,45 @@ impl StudioApp {
         ui.separator();
     }
 
-    /// The row that adds the UK FM stations near the repeaters' locator.
+    /// The row holding the locator the repeaters and stations share.
+    fn locator_bar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Your locator");
+            let edited = ui
+                .add(
+                    egui::TextEdit::singleline(&mut self.repeater_area.locator)
+                        .hint_text("IO91WM")
+                        .char_limit(8)
+                        .desired_width(70.0),
+                )
+                .on_hover_text(
+                    "Your Maidenhead locator, 4 to 8 characters, for both the repeaters \
+                     and the FM stations below",
+                )
+                .changed();
+            if edited {
+                self.remember_locator();
+            }
+        });
+    }
+
+    /// Keeps a locator edit for the next start once it reads as one, so the
+    /// repeaters and the stations always share what was last typed.
+    fn remember_locator(&self) {
+        if repeaters::locator_centre(&self.repeater_area.locator).is_err() {
+            return;
+        }
+        if let Some(file) = &self.repeater_area_file {
+            if let Err(error) = self.repeater_area.save(file) {
+                log::warn!("could not remember the locator: {error}");
+            }
+        }
+    }
+
+    /// The row that adds the UK FM stations near the shared locator.
     fn station_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
-            ui.label("UK FM stations near");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.repeater_area.locator)
-                    .hint_text("IO91WM")
-                    .char_limit(8)
-                    .desired_width(70.0),
-            )
-            .on_hover_text("Your Maidenhead locator, shared with the repeaters");
-            ui.label("strongest");
+            ui.label("UK FM stations, strongest");
             ui.add(
                 egui::DragValue::new(&mut self.station_area.max_channels)
                     .range(1..=stations::MAX_CHANNELS_LIMIT),
@@ -3196,6 +3216,22 @@ mod tests {
         app.add_repeaters();
         assert_eq!(app.project.banks.len(), before, "refused, not added");
         assert!(app.status.contains("would not fit"), "{}", app.status);
+    }
+
+    #[test]
+    fn a_locator_edit_is_kept_once_it_reads_as_one() {
+        use crate::repeaters::RepeaterArea;
+
+        let mut app = simulated("locator");
+        let file = scratch("locator-state").join("repeater-area");
+        app.repeater_area_file = Some(file.clone());
+        app.repeater_area.locator = "JO0".to_owned();
+        app.remember_locator();
+        assert!(!file.exists(), "half a locator is not kept");
+        app.repeater_area.locator = "JO02eh".to_owned();
+        app.remember_locator();
+        assert_eq!(RepeaterArea::load(&file).locator, "JO02eh");
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
     }
 
     #[test]
