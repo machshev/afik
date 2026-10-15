@@ -148,6 +148,13 @@ programmed as ordinary banks.
   100 km. Layout not checked on screen. Gate: `cargo fmt --all --check`
   clean, workspace clippy `-D warnings` clean, `cargo test --workspace` 810
   passed 0 failed.
+- Fix (operator report): the handset squelch list never took a new level
+  on a channel off the common PMR446 path or in VFO mode, because staging
+  required the shared receive app. `stage_squelch` now stages on the banked
+  path too, and the retune acknowledges it. Gate: `cargo fmt --all --check`
+  clean, workspace clippy `-D warnings` clean, `cargo test --workspace` 813
+  passed 0 failed, `tool/build-k5.sh --release` (end `0x0000f000`) and
+  `tool/build-k1.sh --release` pass. Not flashed.
 - Next: write the project with an FM broadcast bank from the studio, then on
   the K5 listen, step and scan it and check the `RISK-045` list; then the K1.
 

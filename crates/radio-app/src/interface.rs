@@ -647,6 +647,45 @@ fn apply(
     }
 }
 
+/// Stages a handset squelch choice against a retune of the current setup,
+/// so it is accepted only once the receiver has taken it.
+///
+/// Stages only when there is a setup to retune and no earlier bus operation
+/// is pending. On the common PMR446 path the shared app must also produce the
+/// tune for this level; it is not asked to stage a change this adapter cannot
+/// immediately acknowledge, which would leave its pending state behind a
+/// rejected choice. Every other channel and the VFO use the banked controller
+/// alone, and the retune itself is the acknowledgement.
+fn stage_squelch(
+    level: SquelchLevel,
+    current: Option<ChannelReceiveSetup>,
+    pending: &mut Option<ChannelReceiveSetup>,
+    shared_receive: &mut Option<ReceiveApp>,
+    pending_shared_squelch: &mut Option<SharedEffects>,
+    pending_operator_squelch: &mut Option<SquelchLevel>,
+) -> bool {
+    let Some(mut setup) = current else {
+        return false;
+    };
+    if pending.is_some() || pending_operator_squelch.is_some() || pending_shared_squelch.is_some() {
+        return false;
+    }
+    if let Some(app) = shared_receive.as_mut() {
+        let effects = app.apply(SharedEvent::SetSquelch(level));
+        if !effects
+            .iter()
+            .any(|effect| matches!(effect, SharedEffect::Tune { squelch, .. } if squelch == level))
+        {
+            return false;
+        }
+        *pending_shared_squelch = Some(effects);
+    }
+    *pending_operator_squelch = Some(level);
+    setup.squelch = level;
+    *pending = Some(setup);
+    true
+}
+
 /// Rolls back the adapter-local squelch staging before replacing its receive
 /// activation. The shared app is cancelled before its instance is dropped,
 /// so no later target operation can acknowledge the wrong generation.
@@ -1263,48 +1302,17 @@ pub async fn run<D, K, B, F, W, S, V, M>(
             // Squelch is a radio-wide setting, so it applies with or without a
             // channel to hear it on and is handled before the guard below.
             Intent::SetSquelch(level) => {
-                // Stage only when the target is available and no earlier bus
-                // operation is pending. In particular, do not ask the shared
-                // app to stage a change that this adapter cannot immediately
-                // acknowledge: that would leave its pending state behind a
-                // rejected handset choice.
-                let mut staged = pending.is_none()
-                    && pending_operator_squelch.is_none()
-                    && pending_shared_squelch.is_none()
-                    && activation.is_some()
-                    && shared_receive.is_some();
-                if staged {
-                    if let Some(app) = shared_receive.as_mut() {
-                        let effects = app.apply(SharedEvent::SetSquelch(level));
-                        if effects.iter().any(|effect| {
-                            matches!(
-                                effect,
-                                SharedEffect::Tune { squelch, .. } if squelch == level
-                            )
-                        }) {
-                            pending_shared_squelch = Some(effects);
-                        } else {
-                            staged = false;
-                        }
-                    } else {
-                        staged = false;
-                    }
-                }
-                if staged {
-                    pending_operator_squelch = Some(level);
-                    if let Some((controller, _)) = activation.as_ref() {
-                        let mut setup = controller.setup();
-                        setup.squelch = level;
-                        pending = Some(setup);
-                    } else {
-                        pending_operator_squelch = None;
-                        pending_shared_squelch = None;
-                        if let Some(app) = shared_receive.as_mut() {
-                            let _ = app.apply(SharedEvent::CancelSquelch);
-                        }
-                        staged = false;
-                    }
-                } else {
+                let staged = stage_squelch(
+                    level,
+                    activation
+                        .as_ref()
+                        .map(|(controller, _)| controller.setup()),
+                    &mut pending,
+                    &mut shared_receive,
+                    &mut pending_shared_squelch,
+                    &mut pending_operator_squelch,
+                );
+                if !staged {
                     shell.reject_squelch();
                 }
                 redraw = true;
@@ -2135,7 +2143,7 @@ fn bank_name<M: Memory>(bank: BankId, memory: &'static TaskCell<Option<M>>) -> O
 
 #[cfg(test)]
 mod tests {
-    use super::{adopt_publication, chosen_power, vfo_source, Listening, Selected};
+    use super::{adopt_publication, chosen_power, stage_squelch, vfo_source, Listening, Selected};
     use crate::configuration::Programmed;
     use crate::operator_state::OperatorState;
     use radio_domain::BankId;
@@ -2200,6 +2208,80 @@ mod tests {
             &mut None,
         );
         (shell, selected)
+    }
+
+    fn setup(frequency_hz: u32) -> radio_channel_control::ChannelReceiveSetup {
+        use radio_domain::{Bandwidth, Frequency, FrequencyStep, Modulation, SquelchLevel, Tone};
+        radio_channel_control::ChannelReceiveSetup {
+            frequency: Frequency::from_hz(frequency_hz).unwrap(),
+            modulation: Modulation::Fm,
+            bandwidth: Bandwidth::Narrow,
+            tone: Tone::None,
+            squelch: SquelchLevel::new(3).unwrap(),
+            step: FrequencyStep::from_hz(12_500).unwrap(),
+        }
+    }
+
+    #[test]
+    fn squelch_stages_on_a_channel_off_the_common_pmr_path() {
+        let level = radio_domain::SquelchLevel::new(6).unwrap();
+        let (mut pending, mut shared, mut shared_effects, mut operator) = (None, None, None, None);
+        assert!(stage_squelch(
+            level,
+            Some(setup(VFO_HZ)),
+            &mut pending,
+            &mut shared,
+            &mut shared_effects,
+            &mut operator,
+        ));
+        assert_eq!(pending.map(|setup| setup.squelch), Some(level));
+        assert_eq!(operator, Some(level));
+        assert!(shared_effects.is_none());
+    }
+
+    #[test]
+    fn squelch_stages_through_the_shared_app_on_a_pmr_channel() {
+        let level = radio_domain::SquelchLevel::new(6).unwrap();
+        let mut shared = Some(radio_platform::receive_app::ReceiveApp::new());
+        let _ = shared
+            .as_mut()
+            .unwrap()
+            .apply(radio_platform::receive_app::Event::Start);
+        let (mut pending, mut shared_effects, mut operator) = (None, None, None);
+        assert!(stage_squelch(
+            level,
+            Some(setup(446_006_250)),
+            &mut pending,
+            &mut shared,
+            &mut shared_effects,
+            &mut operator,
+        ));
+        assert_eq!(pending.map(|setup| setup.squelch), Some(level));
+        assert!(shared_effects.is_some());
+    }
+
+    #[test]
+    fn squelch_is_refused_without_a_channel_or_behind_a_pending_tune() {
+        let level = radio_domain::SquelchLevel::new(6).unwrap();
+        let (mut shared, mut shared_effects, mut operator) = (None, None, None);
+        assert!(!stage_squelch(
+            level,
+            None,
+            &mut None,
+            &mut shared,
+            &mut shared_effects,
+            &mut operator,
+        ));
+        let mut pending = Some(setup(VFO_HZ));
+        assert!(!stage_squelch(
+            level,
+            Some(setup(VFO_HZ)),
+            &mut pending,
+            &mut shared,
+            &mut shared_effects,
+            &mut operator,
+        ));
+        assert!(operator.is_none());
     }
 
     #[test]
