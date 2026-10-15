@@ -535,6 +535,18 @@ stored; the tone row shows the tone in force. The channel list is gone
 `tool/verify-k5-image.sh` and `tool/build-k1.sh --release` pass. `7.0.36`
 (`3d21797`) is built, not flashed.
 
+One receive path (operator request): PMR446 channels no longer go through
+the first slice's shared receive application; every channel and the VFO
+tune, sample, monitor and stage squelch through the banked controller
+(`e02b9ea`). Gate: `cargo fmt --all --check` clean, workspace clippy
+`-D warnings` clean, `cargo test --workspace` 821 passed 0 failed 2 ignored
+(the removed adapter's tests went with it), `tool/test-k5-mem.sh` passes,
+`tool/build-k5.sh --release` (image end `0x0000e0d4`, 3,884 bytes spare),
+`tool/verify-k5-image.sh` and `tool/build-k1.sh --release` pass. `7.0.37`
+(`ad5a0b3`, includes `7.0.36`) is built, not flashed. Next: flash; check
+PMR446 receive, SQL and monitor there, side key 1, VFO STEP, the F 4 catch
+to VFO with tone.
+
 **`TXK5-059` was paused** (2026-10-14) for `TXRANGE-062`; `TXK1-060` was started alongside.
 
 - K5 `7.0.2` and K1 `6.4T` are flashed. Both key up on PMR446 (`EVID-TX058-001`);
