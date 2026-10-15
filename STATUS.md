@@ -93,6 +93,18 @@ programmed TX ranges protect channel and VFO mode alike.
   refused. On the K1, repeat in VFO mode. Measure Mid/High on a dummy load
   (`RISK-040`). Then the K1's NOR erase plan; then CTCSS/DCS.
 
+**`MARINE-070` is active alongside** (2026-10-16, operator request,
+`ADR-109`): step 1 done. The Banks tab has a Marine row: Sync asks Overpass
+for every OpenStreetMap place tagged with a marine VHF channel and caches
+it; Add builds one FM wide bank `SEA <locator>` of the core (16, 67, 6, 8,
+72, 77, M, M2), then each channel the places in the radius list, under its
+nearest place. Against the live data (2 789 places) JO01HP gives 80
+Burnham and 65 Coastwatch in 30 km, IO70LI Fowey 12 and Mevagissey 14,
+JO02BF and IO91WM nothing local (`RISK-048`). Gate: `cargo fmt --all
+--check` clean, `cargo clippy --workspace --all-targets -- -D warnings`
+clean, `cargo test --workspace` 848 passed 0 failed. Next: write a coastal
+bank to the K5 and listen.
+
 **`DUPLEX-069` is active alongside** (2026-10-16, operator request,
 `ADR-108`): a duplex memory channel the programmed TX ranges refuse is
 heard on both sides. The first try, a receive-only flag, was reverted on

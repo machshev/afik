@@ -1842,3 +1842,21 @@ meaning.
   then the other slot's, a dwell each, holding on a busy one. The transmit
   side listens with the channel's TX tone, which is what stations there
   send.
+
+## ADR-109 — The studio adds marine channels near a locator from OpenStreetMap
+
+- **Date:** 2026-10-16
+- **Status:** accepted, operator request (`MARINE-070`).
+- No open dataset lists port and marina channels with positions except
+  OpenStreetMap (ODbL): `vhf`, `contact:vhf`, four `seamark:*:channel` keys
+  and `waterway:ukw_channel`, about 3 000 places worldwide, thin in the UK
+  (about 110). The NGA World Port Index has no channel numbers. One Overpass
+  query for the world (about a minute, 1.4 MB) is synced on request and
+  cached raw in `$XDG_CACHE_HOME/afik/osm-marine`, as `ADR-106` does.
+- Because the map is thin, every bank starts with a fixed core: 16, 67, 6,
+  8, 72, 77, M and M2. Local channels follow, nearest place first, each
+  channel once under its nearest place's name; the core works unsynced.
+- Values are read for Appendix 18 voice channels (not 70, 75, 76), 31 (the
+  Dutch marina channel), `nA` on a duplex channel as simplex on the ship's
+  frequency, `M`/`M1`/`37A` and `M2`; a part giving a frequency is skipped.
+  Duplex channels keep both frequencies, so `ADR-108` applies.

@@ -3190,3 +3190,17 @@
   3. Version bump, flash the K5, hear a coast station and a ship on a
      marine duplex channel; add the Marine VHF range and check it keys up
      instead.
+
+## MARINE-070 — Marine channels near the locator
+
+- **Status:** active (2026-10-16), operator request ("Can we do a similar
+  thing with marine band?", then "go with OSM plus the fixed core";
+  `ADR-109`).
+- **Objective:** the studio adds the marine VHF channels in use near the
+  operator's locator, and the core channels anywhere, as one FM bank.
+- **Steps (commit after each):**
+  1. Sync and cache every OpenStreetMap place tagged with a marine VHF
+     channel from Overpass; read the free-text channel values; add the core
+     then the nearest place's channels from the studio. Done (`559276e`).
+  2. Write a bank for a coastal locator to the K5 and hear a local port or
+     marina channel, both sides of a duplex one (`DUPLEX-069`).

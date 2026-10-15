@@ -1234,3 +1234,13 @@ lowered to the highest level within it (operator request), by nominal figures.
   when it adds a bank. Receive only, so a wrong entry costs a silent channel.
 - Experiment: compare the bank for a familiar locator against the national
   AIP and listen to each channel.
+
+## RISK-048 — Marine channels on OpenStreetMap are sparse volunteer data
+
+- **State:** open (2026-10-16, `MARINE-070`).
+- Most UK ports, VTS and harbour channels are not mapped, and a tag may be
+  stale or name a channel for another use. The studio always adds the core
+  and says the local channels are volunteer data. Receive only without a
+  marine range, so a wrong entry costs a silent channel.
+- Experiment: compare the bank for a familiar coastal locator against the
+  harbour's published channels and listen to each.
