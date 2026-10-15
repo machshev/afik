@@ -2,8 +2,9 @@
 //!
 //! Every register address and value in this module is taken from the pinned
 //! K1 reference firmware recorded in `docs/hardware-evidence.md`. Nothing here
-//! can request transmit mode: the only mode-control word written is the
-//! documented receive block.
+//! can request transmit mode: the only mode-control words written are the
+//! documented receive block and, while a scan probes, that block with its AF
+//! DAC cleared.
 
 use core::fmt;
 
@@ -99,6 +100,16 @@ const INTERRUPT_REQUEST: u16 = 1;
 /// Most pending interrupts serviced in one sample; the source loops without
 /// a limit (`RISK` on the receive interrupt-clear loop).
 const MAX_INTERRUPTS_PER_SAMPLE: usize = 8;
+/// `REG_30` bit enabling the AF DAC (`BK4819_REG_30_ENABLE_AF_DAC`), cleared
+/// while a scan probes so nothing it passes reaches the speaker.
+const MODE_AF_DAC: u16 = 1 << 9;
+/// Glitch count below which a probe reads the RSSI, as the reference's fast
+/// scan waits (`SCAN_FAST_GLITCH_THRESHOLD`).
+const PROBE_GLITCH_SETTLED: u16 = 200;
+/// Glitch reads a probe makes at most before it reads the RSSI anyway. The
+/// reference waits up to 50 us; one read over the bit-banged bus takes
+/// longer than a few of those.
+const PROBE_GLITCH_READS: usize = 8;
 
 /// `REG_51` from `BK4819_SetScanFrequency` in both pinned trees: sub-audio TX
 /// off, CDCSS mode, both auto-bandwidth modes disabled. With it the chip
@@ -503,6 +514,12 @@ impl SquelchThresholds {
         Some(count / 2 - 160)
     }
 
+    /// The RSSI count the squelch opens at; zero never shuts.
+    #[must_use]
+    pub const fn open_rssi(&self) -> u8 {
+        self.open_rssi
+    }
+
     /// Returns one level's thresholds from the unit's calibration, as
     /// `RADIO_ConfigureSquelchAndOutputPower` reads and writes them: six rows
     /// of the band's table, in its order (open RSSI, close RSSI, open noise,
@@ -813,6 +830,50 @@ impl<B: RegisterBus> Bk4819<B> {
             return Err(DriverError::InvalidState(self.state));
         }
         self.read(register.register())
+    }
+
+    /// Retunes only the synthesiser to `frequency` and reads the carrier
+    /// there, for a scan's quick check (`ADR-110`).
+    ///
+    /// The reference's fast scan (`ScanFastTune`, Armel
+    /// `App/app/chFrScanner.c`) writes the frequency, the filter path only
+    /// when the 280 MHz split is crossed, and `REG_30` off then on again with
+    /// the AF DAC cleared so nothing reaches the speaker; demodulator, gain,
+    /// squelch and tone setup stay as the last full setup left them. The
+    /// next [`Self::configure_receive`] restores everything.
+    pub fn probe(&mut self, frequency: Frequency) -> Result<u16, DriverError<B::Error>> {
+        let DriverState::Receiving { frequency: tuned } = self.state else {
+            return Err(DriverError::InvalidState(self.state));
+        };
+        let word = FrequencyWord::from_frequency(frequency)?;
+        if (tuned.as_hz() < RECEIVE_FILTER_PATH_BOUNDARY_HZ)
+            != (frequency.as_hz() < RECEIVE_FILTER_PATH_BOUNDARY_HZ)
+        {
+            self.select_filter_path(frequency)?;
+        }
+        self.write(REG_FREQUENCY_LOW, word.low())?;
+        self.write(REG_FREQUENCY_HIGH, word.high())?;
+        self.write(REG_MODE_CONTROL, MODE_STANDBY)?;
+        self.write(REG_MODE_CONTROL, self.profile.receive_mode & !MODE_AF_DAC)?;
+        self.state = DriverState::Receiving { frequency };
+        self.probe_again()
+    }
+
+    /// Reads the carrier on the probed frequency again, as `ScanFastReadRssi`
+    /// does: a bounded wait while the glitch count shows the synthesiser
+    /// still settling, then the RSSI twice, keeping the second because the
+    /// first may predate the retune.
+    pub fn probe_again(&mut self) -> Result<u16, DriverError<B::Error>> {
+        if !matches!(self.state, DriverState::Receiving { .. }) {
+            return Err(DriverError::InvalidState(self.state));
+        }
+        for _ in 0..PROBE_GLITCH_READS {
+            if self.read(REG_GLITCH)? & GLITCH_MASK < PROBE_GLITCH_SETTLED {
+                break;
+            }
+        }
+        self.read(crate::REG_RSSI)?;
+        Ok(self.read(crate::REG_RSSI)? & crate::RSSI_MASK)
     }
 
     /// Samples RSSI, glitch, noise, carrier squelch, and tone status.
@@ -1310,6 +1371,64 @@ mod tests {
         assert_eq!(radio.state(), DriverState::Standby);
         radio.configure_receive(&tuned).unwrap();
         assert!(matches!(radio.state(), DriverState::Receiving { .. }));
+    }
+
+    #[test]
+    fn a_probe_retunes_only_the_synthesiser_and_keeps_the_second_rssi() {
+        use super::{MODE_AF_DAC, REG_GLITCH};
+        use crate::{FrequencyWord, MODE_STANDBY, REG_FREQUENCY_LOW, REG_RSSI};
+
+        let mut radio = Bk4819::new(FakeBus::new(None).with_register(REG_RSSI, 0xFE64));
+        radio.recover_to_standby().unwrap();
+        assert!(
+            radio
+                .probe(Frequency::from_hz(446_006_250).unwrap())
+                .is_err(),
+            "only a receiving chip is probed"
+        );
+        radio
+            .configure_receive(&setup(Modulation::Fm, Tone::None, 446_006_250))
+            .unwrap();
+        radio.bus_mut().operations.clear();
+
+        let next = Frequency::from_hz(446_018_750).unwrap();
+        let word = FrequencyWord::from_frequency(next).unwrap();
+        assert_eq!(radio.probe(next).unwrap(), 0x64);
+        assert_eq!(
+            radio.bus().operations,
+            [
+                Operation::Write(REG_FREQUENCY_LOW, word.low()),
+                Operation::Write(REG_FREQUENCY_HIGH, word.high()),
+                Operation::Write(REG_MODE_CONTROL, MODE_STANDBY),
+                Operation::Write(REG_MODE_CONTROL, MODE_RECEIVE & !MODE_AF_DAC),
+                Operation::Read(REG_GLITCH),
+                Operation::Read(REG_RSSI),
+                Operation::Read(REG_RSSI),
+            ]
+        );
+        assert_eq!(radio.state(), DriverState::Receiving { frequency: next });
+
+        // Crossing the 280 MHz split selects the other filter path first.
+        radio.bus_mut().operations.clear();
+        radio
+            .probe(Frequency::from_hz(145_500_000).unwrap())
+            .unwrap();
+        assert!(matches!(
+            radio.bus().operations[0],
+            Operation::Write(REG_GPIO_OUT, _)
+        ));
+
+        // An unsettled synthesiser is waited for, but only so long.
+        radio.bus_mut().set_register(REG_GLITCH, 0x00FF);
+        radio.bus_mut().operations.clear();
+        radio.probe_again().unwrap();
+        let glitch_reads = radio
+            .bus()
+            .operations
+            .iter()
+            .filter(|operation| **operation == Operation::Read(REG_GLITCH))
+            .count();
+        assert_eq!(glitch_reads, super::PROBE_GLITCH_READS);
     }
 
     #[test]

@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 
 mod banked;
+mod quiet;
 
 pub use banked::{
     BankedReceiveController, ChannelActivation as BankedChannelActivation, ChannelMemory,
@@ -11,6 +12,7 @@ pub use banked::{
     ReceiveError, ReceiveMode, ReceiveObservation, ReceiveState, ReceiveUpdate,
     ScanPhase as BankedScanPhase,
 };
+pub use quiet::QuietGate;
 
 use core::fmt;
 use radio_channel_plan::{GeneratedBank, PlanError};

@@ -1860,3 +1860,20 @@ meaning.
   Dutch marina channel), `nA` on a duplex channel as simplex on the ship's
   frequency, `M`/`M1`/`37A` and `M2`; a part giving a frequency is skipped.
   Duplex channels keep both frequencies, so `ADR-108` applies.
+
+## ADR-110 — A scan checks the carrier before it tunes a channel fully
+
+- **Date:** 2026-10-16
+- **Status:** accepted, operator request (`SCAN-071`).
+- Armel's fast scan (`ENABLE_FEAT_F4HWN_SCAN_FASTER`, on by default,
+  `App/app/chFrScanner.c` at `0ade03c`) scans 59 channels in about 3 s. AFIK
+  set up every channel in full, redrew the screen and waited the whole
+  200 ms dwell, about 12 s. Proven reference behaviour (`EVID-TX056-003`),
+  so implemented as found.
+- Before a scanned channel's full setup the radio retunes only the
+  synthesiser, reads the RSSI and compares it with the noise floor learned
+  on this pass and the squelch's open threshold (`QuietGate`). A quiet
+  channel is skipped at once; a candidate gets the full setup and the dwell,
+  which now counts from when the channel is tuned and drawn. A squelch that
+  never shuts, a modulation change and broadcast channels take the full
+  setup as before.

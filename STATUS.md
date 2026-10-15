@@ -93,6 +93,16 @@ programmed TX ranges protect channel and VFO mode alike.
   refused. On the K1, repeat in VFO mode. Measure Mid/High on a dummy load
   (`RISK-040`). Then the K1's NOR erase plan; then CTCSS/DCS.
 
+**`SCAN-071` is active alongside** (2026-10-16, operator request,
+`ADR-110`): a memory scan skips quiet channels as Armel's fast scan does.
+Step 1: `Bk4819::probe` retunes only the synthesiser and reads the RSSI;
+`QuietGate` is the reference's noise-floor test; the banked controller has
+`skip_quiet` and `restart_dwell`. Gate: `cargo fmt --all --check` clean,
+`cargo clippy -p radio-bk4819 -p radio-channel-control --all-targets -- -D
+warnings` clean, `cargo test -p radio-channel-control` 31 passed 0 failed,
+`cargo test -p radio-bk4819` passed 0 failed. Next: wire the probe into the
+run loop.
+
 **`MARINE-070` is active alongside** (2026-10-16, operator request,
 `ADR-109`): step 1 done. The Banks tab has a Marine row: Sync asks Overpass
 for every OpenStreetMap place tagged with a marine VHF channel and caches

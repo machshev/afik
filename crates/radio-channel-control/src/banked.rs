@@ -813,6 +813,30 @@ impl<C: ChannelSource> BankedReceiveController<C> {
         })
     }
 
+    /// Moves a scan on from a channel a quick carrier check found quiet,
+    /// without waiting out its dwell, as the reference's fast scan does
+    /// (`ADR-110`).
+    pub fn skip_quiet(&mut self) -> Result<ReceiveUpdate, ReceiveError> {
+        if !matches!(self.state, ReceiveState::Scanning(ScanPhase::Dwell)) {
+            return Err(ReceiveError::InvalidState(self.state));
+        }
+        self.advance_scan()
+    }
+
+    /// Starts a scanned channel's dwell again, so it counts from when the
+    /// receiver is listening there rather than from when the scan chose it.
+    pub fn restart_dwell(&mut self) -> Result<ReceiveUpdate, ReceiveError> {
+        if !matches!(self.state, ReceiveState::Scanning(ScanPhase::Dwell)) {
+            return Err(ReceiveError::InvalidState(self.state));
+        }
+        let timer = self.fresh_timer(self.config.scan_dwell_ms)?;
+        Ok(ReceiveUpdate {
+            activation: None,
+            audio_open: self.audio_open,
+            timer,
+        })
+    }
+
     /// Applies one adapter observation, updating audio gating and scanning.
     pub fn observe(
         &mut self,
@@ -1406,6 +1430,57 @@ mod tests {
         assert_eq!(
             controller.stop_scanning(),
             Err(ReceiveError::InvalidState(ReceiveState::Idle))
+        );
+    }
+
+    #[test]
+    fn a_quiet_channel_is_skipped_and_a_dwell_restarts_on_a_fresh_token() {
+        let mut controller = controller(RadioConfig::conservative(), Some(BankId::new(1)));
+        assert_eq!(
+            controller.skip_quiet(),
+            Err(ReceiveError::InvalidState(ReceiveState::Idle))
+        );
+        assert_eq!(
+            controller.restart_dwell(),
+            Err(ReceiveError::InvalidState(ReceiveState::Idle))
+        );
+        let start = controller.start_scanning().unwrap();
+        let first = armed(start.timer);
+
+        // Channel 2 is scan-skipped, so a quiet channel 1 moves on to 3.
+        let skipped = controller.skip_quiet().unwrap();
+        assert_eq!(controller.channel().id(), ChannelId::new(3));
+        assert!(skipped.activation.is_some());
+        let second = armed(skipped.timer);
+        assert_ne!(first, second);
+
+        let restarted = controller.restart_dwell().unwrap();
+        assert!(restarted.activation.is_none());
+        let third = armed(restarted.timer);
+        assert_ne!(second, third);
+        // Only the newest dwell moves the scan on.
+        assert_eq!(
+            controller.timer_elapsed(second).unwrap().timer,
+            TimerDirective::Unchanged
+        );
+        controller.timer_elapsed(third).unwrap();
+        assert_eq!(controller.channel().id(), ChannelId::new(1));
+
+        // A busy channel is held, and a hold is neither skipped nor restarted.
+        controller
+            .observe(ReceiveObservation {
+                squelch_open: true,
+                tone_matched: None,
+            })
+            .unwrap();
+        let held = ReceiveState::Scanning(ScanPhase::Hold);
+        assert_eq!(
+            controller.skip_quiet(),
+            Err(ReceiveError::InvalidState(held))
+        );
+        assert_eq!(
+            controller.restart_dwell(),
+            Err(ReceiveError::InvalidState(held))
         );
     }
 
