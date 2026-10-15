@@ -3158,5 +3158,9 @@
   1. Sync and cache OurAirports' airport and frequency lists; parse,
      join, convert channel names to carriers, choose by radius from the
      shared locator, and add the bank from the studio. Done (`ad4a194`).
-  2. Write a bank for the operator's locator to the K5 and hear the local
+  2. Operator request ("I don't think the radio is capable of TX with
+     AM"): only FM channels have a transmit side in the studio; AM and USB
+     are receive-only like broadcast (`ADR-107`). Done (`71ce2b3`). Channel
+     rows start collapsed (operator request). Done (`bd2c1e5`).
+  3. Write a bank for the operator's locator to the K5 and hear the local
      tower or ATIS.

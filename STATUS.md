@@ -102,7 +102,12 @@ the live data JO02BF gives 33 frequencies in 50 km (Cambridge, Duxford,
 Wyton...), IO83VJ 13, IO91WM 64. A fetch over the 64 MiB bound now fails
 rather than caching a cut-off list. Gate: `cargo fmt --all --check` clean,
 `cargo clippy --workspace --all-targets -- -D warnings` clean, `cargo test
---workspace` 832 passed 0 failed. Next: write a bank for the operator's
+--workspace` 832 passed 0 failed. Step 2 (2026-10-16, `ADR-107`): only FM
+channels have a transmit side in the studio, so AM and USB channels, banks
+and plans, airport banks among them, are receive-only like broadcast; and
+channel rows start collapsed. Gate: `cargo fmt --all --check` clean,
+`cargo clippy --workspace --all-targets -- -D warnings` clean, `cargo test
+--workspace` 833 passed 0 failed. Next: write a bank for the operator's
 locator to the K5 and listen to the local tower or ATIS.
 
 **`BCFM-066` is active alongside** (2026-10-15, operator request,

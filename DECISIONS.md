@@ -1815,3 +1815,14 @@ meaning.
   operator-chosen radius, nearest first, a shared frequency kept once for the
   nearest airport. Channels are simplex AM narrow; no TX range covers the
   airband, so they never transmit.
+
+## ADR-107 — Only FM channels have a transmit side in the studio
+
+- **Date:** 2026-10-16
+- **Status:** accepted, operator request (`AIRPORT-068`).
+- `radio-tx-policy` transmits analog FM alone, so an AM, USB or broadcast
+  channel, bank or plan only receives (`Modulation::is_receive_only`). The
+  studio neither asks for nor stores its transmit frequency, offset, tones,
+  power or TX flags, as `ADR-105` already did for broadcast; AM and USB keep
+  their bandwidth. The image is unchanged: the record still carries the
+  receive frequency as its transmit one.
