@@ -25,8 +25,8 @@ use crate::{
     device::{DeviceChoice, DeviceChooser},
     flash_tab::FlashTab,
     model::{
-        BankDraft, BankKind, ChannelDraft, ModelError, ProjectModel, StorageSummary, ToneDraft,
-        ToneKind, TxRangeDraft, MAX_PROJECT_IMAGE_BYTES, RADIO_IMAGE_BYTES,
+        move_to, BankDraft, BankKind, ChannelDraft, ModelError, ProjectModel, StorageSummary,
+        ToneDraft, ToneKind, TxRangeDraft, MAX_PROJECT_IMAGE_BYTES, RADIO_IMAGE_BYTES,
     },
     presets::{satellite_bank, PRESETS, SATELLITE_PRESET, TX_RANGE_PRESETS},
     projects::ProjectStore,
@@ -36,6 +36,9 @@ use crate::{
     stations::{self, StationArea, StationCache, StationList},
     DeviceSelector, Options,
 };
+
+/// The grip a bank is dragged by.
+const DRAG_HANDLE: &str = "\u{2630}";
 
 /// Columns in a bank row's header.
 const BANK_COLUMNS: usize = 4;
@@ -1567,10 +1570,15 @@ impl StudioApp {
             .map(|(row, bank)| bank_row_columns(row, bank))
             .collect();
         let widths = column_widths(ui, &headers);
-        let buttons_width =
-            button_width(ui, "Delete") + button_width(ui, "Down") + button_width(ui, "Up");
+        let buttons_width = button_width(ui, "Delete")
+            + button_width(ui, "Down")
+            + button_width(ui, "Up")
+            + button_width(ui, DRAG_HANDLE);
         ScrollArea::vertical().show(ui, |ui| {
+            // Each bank row's top and bottom, for where a dragged one lands.
+            let mut spans = Vec::with_capacity(headers.len());
             for (row, bank) in self.project.banks.iter_mut().enumerate() {
+                let top = ui.cursor().top();
                 ui.push_id(row, |ui| {
                     // Banks are keyed by row, not by their label: the label
                     // shows what is being edited, and a key that changed with
@@ -1583,6 +1591,7 @@ impl StudioApp {
                     }
                     state
                         .show_header(ui, |ui| {
+                            bank_drag_handle(ui, id.with("drag"), row, &headers[row][0]);
                             let gap = column_gap(ui.available_width() - buttons_width, &widths);
                             for (text, width) in headers[row].iter().zip(widths) {
                                 let label = egui::Label::new(RichText::new(text).strong())
@@ -1605,6 +1614,10 @@ impl StudioApp {
                         });
                     ui.separator();
                 });
+                spans.push((top, ui.cursor().top()));
+            }
+            if let Some(change) = drop_bank(ui, &spans) {
+                action = Some(change);
             }
         });
         let context = ui.ctx().clone();
@@ -1613,22 +1626,13 @@ impl StudioApp {
             state.toggle(ui);
             state.store(&context);
         }
-        // Open and collapsed banks stay so when their rows move.
         if let Some((row, change)) = action {
-            let mut open: Vec<bool> = ids
-                .iter()
-                .map(|id| CollapsingState::load_with_default_open(&context, *id, false).is_open())
-                .collect();
-            reorder_open(&mut open, row, change);
-            for (id, open) in ids.iter().zip(open) {
-                let mut state = CollapsingState::load_with_default_open(&context, *id, false);
-                state.set_open(open);
-                state.store(&context);
-            }
+            keep_open_state(&context, &ids, row, change);
         }
         match action {
             Some((row, BankAction::MoveUp)) => self.project.move_bank(row, true),
             Some((row, BankAction::MoveDown)) => self.project.move_bank(row, false),
+            Some((row, BankAction::MoveTo(slot))) => self.project.move_bank_to(row, slot),
             Some((row, BankAction::Remove)) => {
                 self.project.banks.remove(row);
             }
@@ -1990,6 +1994,19 @@ enum RowAction {
     Remove,
 }
 
+/// The bank row being dragged by its handle.
+struct BankDrag(usize);
+
+/// Where a bank dropped at `pointer_y` lands: before the first bank whose
+/// middle is below the pointer, or last. `spans` are each bank row's top and
+/// bottom.
+fn drop_slot(spans: &[(f32, f32)], pointer_y: f32) -> usize {
+    spans
+        .iter()
+        .take_while(|(top, bottom)| pointer_y > (top + bottom) / 2.0)
+        .count()
+}
+
 /// What one bank asked the editor to do.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum BankAction {
@@ -1997,6 +2014,9 @@ enum BankAction {
     MoveUp,
     /// Move the bank one place later.
     MoveDown,
+    /// Move the bank to just before the bank now at this row, or last at the
+    /// bank count: where it was dragged to.
+    MoveTo(usize),
     /// Delete the bank and its channels.
     Remove,
     /// Append a channel to the bank.
@@ -2005,11 +2025,67 @@ enum BankAction {
     Channel(usize, RowAction),
 }
 
+/// Draws the grip bank `row` is dragged by; while dragged it carries the
+/// bank's `name`.
+fn bank_drag_handle(ui: &mut egui::Ui, id: egui::Id, row: usize, name: &str) {
+    let dragged = ui.ctx().is_being_dragged(id);
+    ui.dnd_drag_source(id, BankDrag(row), |ui| {
+        if dragged {
+            ui.label(RichText::new(format!("{DRAG_HANDLE} {name}")).strong());
+        } else {
+            ui.label(DRAG_HANDLE);
+        }
+    })
+    .response
+    .on_hover_text("Drag to move this bank");
+}
+
+/// Shows where a dragged bank would land and, when it is released over the
+/// bank list, the move it asks for. Escape cancels a drag.
+fn drop_bank(ui: &egui::Ui, spans: &[(f32, f32)]) -> Option<(usize, BankAction)> {
+    let dragged = egui::DragAndDrop::payload::<BankDrag>(ui.ctx())?;
+    let pointer = ui.ctx().pointer_interact_pos()?;
+    if !ui.clip_rect().contains(pointer) {
+        return None;
+    }
+    let slot = drop_slot(spans, pointer.y);
+    let y = spans.get(slot).map_or_else(
+        || spans.last().map_or(pointer.y, |span| span.1),
+        |span| span.0,
+    );
+    ui.painter().hline(
+        ui.max_rect().x_range(),
+        y,
+        egui::Stroke::new(2.0_f32, ui.visuals().selection.stroke.color),
+    );
+    if !ui.input(|input| input.pointer.any_released()) {
+        return None;
+    }
+    egui::DragAndDrop::clear_payload(ui.ctx());
+    Some((dragged.0, BankAction::MoveTo(slot)))
+}
+
+/// Keeps open and collapsed banks so when `change` on `row` moves the rows
+/// whose headers are `ids`.
+fn keep_open_state(context: &egui::Context, ids: &[egui::Id], row: usize, change: BankAction) {
+    let mut open: Vec<bool> = ids
+        .iter()
+        .map(|id| CollapsingState::load_with_default_open(context, *id, false).is_open())
+        .collect();
+    reorder_open(&mut open, row, change);
+    for (id, open) in ids.iter().zip(open) {
+        let mut state = CollapsingState::load_with_default_open(context, *id, false);
+        state.set_open(open);
+        state.store(context);
+    }
+}
+
 /// Moves the open flags of bank rows the way `action` on `row` moves the rows.
 fn reorder_open(open: &mut [bool], row: usize, action: BankAction) {
     match action {
         BankAction::MoveUp if row > 0 && row < open.len() => open.swap(row, row - 1),
         BankAction::MoveDown if row + 1 < open.len() => open.swap(row, row + 1),
+        BankAction::MoveTo(slot) => move_to(open, row, slot),
         BankAction::Remove if row < open.len() => {
             open[row..].rotate_left(1);
             if let Some(last) = open.last_mut() {
@@ -3028,7 +3104,6 @@ mod tests {
             .collect()
     }
 
-    /// Clicks the primary button at `at` over two frames of the Banks tab.
     /// Opens a channel row, which starts collapsed, by clicking its header.
     fn open_channel(context: &eframe::egui::Context, app: &mut StudioApp, bank: usize, row: usize) {
         let label = channel_row_label(row, &app.project.banks[bank].channels[row]);
@@ -3046,6 +3121,7 @@ mod tests {
         click(context, app, at);
     }
 
+    /// Clicks the primary button at `at` over two frames of the Banks tab.
     fn click(context: &eframe::egui::Context, app: &mut StudioApp, at: eframe::egui::Pos2) {
         use eframe::egui::{Event, Modifiers, PointerButton};
         let button = |pressed| Event::PointerButton {
@@ -3302,6 +3378,74 @@ mod tests {
         reorder_open(&mut open, 3, BankAction::MoveDown);
         reorder_open(&mut open, 0, BankAction::AddChannel);
         assert_eq!(open, [true, true, false, false]);
+        reorder_open(&mut open, 0, BankAction::MoveTo(4));
+        assert_eq!(open, [true, false, false, true]);
+        reorder_open(&mut open, 3, BankAction::MoveTo(1));
+        assert_eq!(open, [true, true, false, false]);
+    }
+
+    #[test]
+    fn a_dragged_bank_lands_before_the_first_bank_whose_middle_is_below() {
+        use super::drop_slot;
+        let spans = [(0.0, 20.0), (20.0, 100.0), (100.0, 120.0)];
+        assert_eq!(drop_slot(&spans, -5.0), 0);
+        assert_eq!(drop_slot(&spans, 9.0), 0);
+        assert_eq!(drop_slot(&spans, 11.0), 1);
+        // An open bank's middle is far below its header.
+        assert_eq!(drop_slot(&spans, 59.0), 1);
+        assert_eq!(drop_slot(&spans, 61.0), 2);
+        assert_eq!(drop_slot(&spans, 500.0), 3);
+        assert_eq!(drop_slot(&[], 10.0), 0);
+    }
+
+    #[test]
+    fn a_bank_dragged_by_its_handle_moves_where_it_is_dropped() {
+        use eframe::egui::{vec2, Event, Modifiers, PointerButton, Pos2};
+        let context = eframe::egui::Context::default();
+        let mut app = app_in(&scratch("drag"), &Options::default());
+        for name in ["A", "B", "C"] {
+            app.add_bank(BankKind::Named);
+            app.project.banks.last_mut().unwrap().name = name.to_owned();
+        }
+        let names = |app: &StudioApp| -> Vec<String> {
+            app.project.banks.iter().map(|b| b.name.clone()).collect()
+        };
+        let drag = |app: &mut StudioApp, from: Pos2, to: Pos2| {
+            let button = |pos, pressed| Event::PointerButton {
+                pos,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            };
+            frame(
+                &context,
+                app,
+                vec![Event::PointerMoved(from), button(from, true)],
+            );
+            frame(
+                &context,
+                app,
+                vec![Event::PointerMoved(from + vec2(0.0, 10.0))],
+            );
+            frame(&context, app, vec![Event::PointerMoved(to)]);
+            frame(&context, app, vec![Event::PointerMoved(to)]);
+            frame(&context, app, vec![button(to, false)]);
+            frame(&context, app, Vec::new());
+        };
+        frame(&context, &mut app, Vec::new());
+        let output = frame(&context, &mut app, Vec::new());
+        let handles = text_centres(&output, super::DRAG_HANDLE);
+        assert_eq!(handles.len(), 3, "one handle per header");
+
+        // A below the last bank, which is open for editing, goes last.
+        drag(&mut app, handles[0], handles[2] + vec2(0.0, 400.0));
+        assert_eq!(names(&app), ["B", "C", "A"]);
+        // C above the first bank goes first.
+        drag(&mut app, handles[1], handles[0] - vec2(0.0, 8.0));
+        assert_eq!(names(&app), ["C", "B", "A"]);
+        // Dropped where it already is, nothing moves.
+        drag(&mut app, handles[1], handles[1] + vec2(0.0, 2.0));
+        assert_eq!(names(&app), ["C", "B", "A"]);
     }
 
     #[test]

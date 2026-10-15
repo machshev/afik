@@ -1060,6 +1060,12 @@ impl ProjectModel {
         });
     }
 
+    /// Moves bank `from` to just before the bank now at `slot`; `slot` equal
+    /// to the bank count moves it last.
+    pub fn move_bank_to(&mut self, from: usize, slot: usize) {
+        move_to(&mut self.banks, from, slot);
+    }
+
     /// Moves bank `row` one place earlier (`up`) or later in the radio's order.
     pub fn move_bank(&mut self, row: usize, up: bool) {
         let other = if up {
@@ -1409,6 +1415,19 @@ fn format_tenths(tenths_hz: u16) -> String {
     format!("{}.{}", tenths_hz / 10, tenths_hz % 10)
 }
 
+/// Moves `items[from]` to just before what is now at `slot`, or last when
+/// `slot` is the length. Anything out of range changes nothing.
+pub(crate) fn move_to<T>(items: &mut [T], from: usize, slot: usize) {
+    if from >= items.len() || slot > items.len() {
+        return;
+    }
+    if slot > from + 1 {
+        items[from..slot].rotate_left(1);
+    } else if slot < from {
+        items[slot..=from].rotate_right(1);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1657,6 +1676,25 @@ mod tests {
         model.move_bank(0, true);
         model.move_bank(1, false);
         assert_eq!(model.banks[0].name, "PMR446");
+
+        // Dragged: before the bank at a slot, or last at the count.
+        model.add_bank();
+        let names = |model: &ProjectModel| -> Vec<String> {
+            model.banks.iter().map(|b| b.name.clone()).collect()
+        };
+        let order = names(&model);
+        model.move_bank_to(0, 3);
+        assert_eq!(names(&model), [&*order[1], &*order[2], &*order[0]]);
+        model.move_bank_to(2, 0);
+        assert_eq!(names(&model), order);
+        model.move_bank_to(0, 1);
+        model.move_bank_to(1, 1);
+        model.move_bank_to(9, 0);
+        model.move_bank_to(0, 9);
+        assert_eq!(names(&model), order, "no move, or out of range");
+        model.move_bank_to(1, 0);
+        assert_eq!(names(&model), [&*order[1], &*order[0], &*order[2]]);
+        model.move_bank_to(1, 0);
 
         model.duplicate_channel(1, 0);
         assert_eq!(model.banks[1].channels.len(), 2);
