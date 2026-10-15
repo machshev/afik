@@ -8,9 +8,6 @@
 //! (`EVID-K1-064`), which the stock K1 firmware addresses at the same offsets
 //! the K5 uses from `0x1E00`: TX bias at `+0xD0`, battery at `+0x140`.
 //!
-//! The configuration region is one 4 KiB sector, so the image part above it
-//! holds nothing and reads as erased, as unwritten EEPROM does.
-//!
 //! The window is read through the vendor read, which takes no region and so
 //! can never become a write.
 
@@ -19,16 +16,12 @@ use radio_platform::memory_link::{CALIBRATION_ORIGIN, PLACE_ORIGIN, VIEW_BYTES};
 
 /// External-memory address of the vendor calibration block.
 pub const VENDOR_CALIBRATION_ORIGIN: u32 = 0x01_0000;
-/// Image bytes the K1's configuration region stores.
-pub const STORED_IMAGE_BYTES: u16 = 0x1000;
 
 /// Where one read of the view is served from.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ViewSpan {
     /// Offset into the AFIK configuration region.
     Image(u32),
-    /// Image bytes beyond what the region stores, which read as erased.
-    Unstored,
     /// Offset into the view's place record.
     Place(usize),
     /// Absolute external-memory address in the vendor calibration block.
@@ -45,10 +38,8 @@ pub fn locate(address: u16, length: usize) -> Option<ViewSpan> {
     let calibration = usize::from(CALIBRATION_ORIGIN);
     if length == 0 || end > usize::from(VIEW_BYTES) {
         None
-    } else if end <= usize::from(STORED_IMAGE_BYTES) {
+    } else if end <= place {
         Some(ViewSpan::Image(u32::from(address)))
-    } else if start >= usize::from(STORED_IMAGE_BYTES) && end <= place {
-        Some(ViewSpan::Unstored)
     } else if start >= place && end <= calibration {
         Some(ViewSpan::Place(start - place))
     } else if start >= calibration {
@@ -83,8 +74,8 @@ mod tests {
     fn each_part_of_the_view_maps_to_its_own_storage() {
         assert_eq!(locate(0x0000, 0x80), Some(ViewSpan::Image(0)));
         assert_eq!(locate(0x0F80, 0x80), Some(ViewSpan::Image(0x0F80)));
-        assert_eq!(locate(0x1000, 0x80), Some(ViewSpan::Unstored));
-        assert_eq!(locate(0x1C80, 0x80), Some(ViewSpan::Unstored));
+        assert_eq!(locate(0x1000, 0x80), Some(ViewSpan::Image(0x1000)));
+        assert_eq!(locate(0x1C80, 0x80), Some(ViewSpan::Image(0x1C80)));
         assert_eq!(locate(0x1D00, 0x80), Some(ViewSpan::Place(0)));
         assert_eq!(locate(0x1D80, 0x80), Some(ViewSpan::Place(0x80)));
         assert_eq!(
@@ -110,7 +101,7 @@ mod tests {
         assert_eq!(locate(0x1FF0, 0x20), None);
         assert_eq!(locate(0x2000, 1), None);
         assert_eq!(locate(0xFFFF, 0x80), None);
-        assert_eq!(locate(0x0FF0, 0x20), None);
+        assert_eq!(locate(0x0FF0, 0x20), Some(ViewSpan::Image(0x0FF0)));
         assert_eq!(locate(0x1CF0, 0x20), None);
         assert_eq!(locate(0x1DF0, 0x20), None);
     }

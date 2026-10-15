@@ -31,11 +31,16 @@ use radio_platform::transmit::{TxCalibration, TX_CALIBRATION_BYTES};
 /// half of the evidenced part and far above anything that map can grow into, so
 /// an AFIK configuration and the vendor's data cannot meet. `radio-eeprom`
 /// refuses a region below its own bound as well.
-pub const CONFIGURATION_ORIGIN: u32 = 0x10_0000;
-/// Bytes claimed for the configuration, one erase sector.
-pub const CONFIGURATION_BYTES: u32 = 4_096;
-// The memory view serves exactly this much of the image from the region.
-const _: () = assert!(CONFIGURATION_BYTES == crate::memory_view::STORED_IMAGE_BYTES as u32);
+///
+/// Up to `7.0.26` the configuration was the single sector at `0x100000`, which
+/// held only 4 KiB of the image region; it now has two sectors of its own
+/// above the place, and the old sector is left as it is.
+pub const CONFIGURATION_ORIGIN: u32 = 0x10_8000;
+/// Bytes claimed for the configuration, two erase sectors.
+pub const CONFIGURATION_BYTES: u32 = 8_192;
+// The whole image region of the memory view is stored.
+const _: () =
+    assert!(CONFIGURATION_BYTES >= radio_platform::memory_link::IMAGE_REGION_BYTES as u32);
 
 /// First address of the region holding where the operator left the radio.
 ///
@@ -48,7 +53,7 @@ const _: () = assert!(CONFIGURATION_BYTES == crate::memory_view::STORED_IMAGE_BY
 pub const OPERATOR_STATE_ORIGIN: u32 = 0x10_1000;
 /// First address of the sector host writes are staged in before they replace
 /// the configuration, so a host can write only the blocks it changed.
-pub const STAGING_ORIGIN: u32 = 0x10_2000;
+pub const STAGING_ORIGIN: u32 = 0x10_A000;
 // A host write block is one staged block.
 const _: () = assert!(BLOCK_BYTES == radio_platform::memory_link::WRITE_BYTES);
 /// Vendor address of the TX bias table, every band's rows.

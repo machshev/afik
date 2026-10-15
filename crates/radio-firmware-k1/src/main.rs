@@ -441,10 +441,6 @@ impl radio_app::drivers::Memory for Memory {
     fn read(&mut self, address: u16, output: &mut [u8]) -> bool {
         match locate(address, output.len()) {
             Some(ViewSpan::Image(offset)) => self.0.read_configuration(offset, output),
-            Some(ViewSpan::Unstored) => {
-                output.fill(0xFF);
-                true
-            }
             Some(ViewSpan::Place(offset)) => {
                 let record = self.0.read_operator_state().map(|state| state.encode());
                 fill_place(offset, record, output);

@@ -789,19 +789,13 @@ where
     T: Read + Write,
     F: FnMut(u16, u16),
 {
-    let too_large = |capacity| FlashError::ConfigurationImageTooLarge {
-        bytes: image.len(),
-        capacity,
-    };
     if image.len() > IMAGE_REGION {
-        return Err(too_large(IMAGE_REGION));
+        return Err(FlashError::ConfigurationImageTooLarge {
+            bytes: image.len(),
+            capacity: IMAGE_REGION,
+        });
     }
     let firmware = afik_memory_hello(transport)?;
-    // The K1 stores one 4 KiB sector of the image region.
-    if firmware.version().starts_with(AFIK_K1_IDENTITY_PREFIX) && image.len() > AFIK_K1_IMAGE_BYTES
-    {
-        return Err(too_large(AFIK_K1_IMAGE_BYTES));
-    }
     // The image is written in whole blocks; a short last block keeps the
     // bytes after the image as they are.
     let span = image.len().div_ceil(EEPROM_WRITE_BYTES) * EEPROM_WRITE_BYTES;
@@ -1396,8 +1390,6 @@ const AFIK_K5_EEPROM_SINCE: [u32; 3] = [7, 0, 6];
 const AFIK_K1_EEPROM_SINCE: [u32; 3] = [7, 0, 25];
 /// First AFIK version, K5 or K1, which loads a format 5 image from memory.
 const AFIK_MEMORY_SINCE: [u32; 3] = [7, 0, 17];
-/// Bytes of the image region an AFIK K1 stores: one sector of its NOR memory.
-const AFIK_K1_IMAGE_BYTES: usize = 0x1000;
 /// Bytes of the configuration image region at the start of an AFIK radio's
 /// memory view (`ADR-100`).
 const IMAGE_REGION: usize = radio_platform::memory_link::IMAGE_REGION_BYTES as usize;
@@ -3051,21 +3043,9 @@ mod tests {
         }
 
         #[test]
-        fn a_k1_takes_an_image_up_to_its_one_sector() {
-            let mut radio = MemoryRadio::new(b"AFIK-K1-7.0.26");
-            let error = write_afik_image(&mut radio, &vec![0x5A; 0x1001], |_, _| {}).unwrap_err();
-            assert!(
-                matches!(
-                    error,
-                    FlashError::ConfigurationImageTooLarge {
-                        capacity: 0x1000,
-                        ..
-                    }
-                ),
-                "{error}"
-            );
-            assert_eq!(radio.writes(), 0);
-            write_afik_image(&mut radio, &vec![0x5A; 0x1000], |_, _| {}).unwrap();
+        fn a_k1_takes_an_image_filling_the_whole_region() {
+            let mut radio = MemoryRadio::new(b"AFIK-K1-7.0.27");
+            write_afik_image(&mut radio, &vec![0x5A; IMAGE_REGION], |_, _| {}).unwrap();
         }
     }
 }
