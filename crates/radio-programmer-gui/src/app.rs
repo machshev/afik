@@ -21,6 +21,7 @@ use radio_tx_policy::MAX_TX_RANGES;
 use radio_programmer_serial::SUPPORTED_BAUDS;
 
 use crate::{
+    airports::{self, AirportArea, AirportCache, AirportList},
     device::{DeviceChoice, DeviceChooser},
     flash_tab::FlashTab,
     model::{
@@ -150,6 +151,15 @@ pub struct StudioApp {
     /// file it is remembered in.
     station_area: StationArea,
     station_area_file: Option<PathBuf>,
+    /// Where the `OurAirports` lists are cached, and what was last read.
+    airport_cache: AirportCache,
+    airports: Option<AirportList>,
+    /// An `OurAirports` fetch running on a worker.
+    airport_sync: Option<airports::SyncJob>,
+    /// The radius and count airport frequencies are added for, at the
+    /// repeaters' locator, and the state file they are remembered in.
+    airport_area: AirportArea,
+    airport_area_file: Option<PathBuf>,
 }
 
 impl StudioApp {
@@ -167,7 +177,148 @@ impl StudioApp {
         if let Some(file) = &app.station_area_file {
             app.station_area = StationArea::load(file);
         }
+        app.use_airport_cache(AirportCache::open());
+        app.airport_area_file = AirportArea::file();
+        if let Some(file) = &app.airport_area_file {
+            app.airport_area = AirportArea::load(file);
+        }
         app
+    }
+
+    /// Reads the airport frequency list from `cache`, which a sync then
+    /// writes.
+    ///
+    /// Reading never fetches: the network is used only when Sync is pressed.
+    pub fn use_airport_cache(&mut self, cache: AirportCache) {
+        self.airports = match cache.load() {
+            Ok(list) => list,
+            Err(error) => {
+                log::warn!("reading the airport cache: {error}");
+                None
+            }
+        };
+        self.airport_cache = cache;
+    }
+
+    /// Starts fetching the airport lists from `OurAirports`.
+    fn sync_airports(&mut self) {
+        if self.airport_sync.is_some() {
+            return;
+        }
+        if self.airport_cache.dir().is_none() {
+            self.refuse("Cannot sync airports: no XDG cache directory or HOME is set.");
+            return;
+        }
+        log::info!("syncing airport frequencies from OurAirports");
+        "Syncing airport frequencies from OurAirports...".clone_into(&mut self.status);
+        self.airport_sync = Some(airports::SyncJob::start(self.airport_cache.clone()));
+    }
+
+    /// Takes in a finished airport sync.
+    fn poll_airport_sync(&mut self) {
+        let Some(outcome) = self.airport_sync.as_ref().and_then(airports::SyncJob::poll) else {
+            return;
+        };
+        self.airport_sync = None;
+        match outcome {
+            Ok(list) => {
+                self.status = format!(
+                    "Synced {} airband frequencies from OurAirports.",
+                    list.frequencies.len()
+                );
+                log::info!("{}", self.status);
+                self.airports = Some(list);
+            }
+            // The cache is untouched, so the previous list still applies.
+            Err(error) => self.fail("syncing airports", format!("Airport sync failed: {error}")),
+        }
+    }
+
+    /// Builds the airport bank the area would add, and the project it would
+    /// make, as [`Self::repeater_preview`] does.
+    fn airport_preview(&self) -> Result<AreaPreview, String> {
+        let list = self
+            .airports
+            .as_ref()
+            .ok_or("sync the airport list from OurAirports first")?;
+        let locator = &self.repeater_area.locator;
+        let mut near = airports::nearby(&list.frequencies, locator, self.airport_area.radius_km)?;
+        let in_range = near.len();
+        near.truncate(usize::from(self.airport_area.max_channels));
+        let (project, bank_bytes) = self.with_bank(airports::airport_bank(locator, &near));
+        Ok(AreaPreview {
+            in_range,
+            taken: near.len(),
+            furthest_km: near.iter().map(|(_, km)| *km).fold(0.0, f64::max),
+            bank_bytes,
+            project,
+        })
+    }
+
+    /// Describes the airport list, what the area would add, and its cost.
+    fn airport_source(&self) -> String {
+        if self.airport_sync.is_some() {
+            return "Syncing...".to_owned();
+        }
+        let Some(list) = &self.airports else {
+            return "Not synced.".to_owned();
+        };
+        let synced = format!(
+            "{} frequencies from OurAirports, synced {}.",
+            list.frequencies.len(),
+            age(list.synced)
+        );
+        let Ok(preview) = self.airport_preview() else {
+            return synced;
+        };
+        let taking = format!(
+            "Nearest {} of {} frequencies, furthest airport {:.0} km",
+            preview.taken, preview.in_range, preview.furthest_km
+        );
+        format!("{taking}{}. {synced}", cost(&preview))
+    }
+
+    /// Adds a bank of the frequencies of the airports near the locator.
+    fn add_airports(&mut self) {
+        let preview = match self.airport_preview() {
+            Ok(preview) => preview,
+            Err(error) => {
+                self.refuse(&format!("Cannot add airports: {error}."));
+                return;
+            }
+        };
+        let locator = self.repeater_area.locator.trim().to_ascii_uppercase();
+        let area = self.airport_area.clone();
+        if preview.taken == 0 {
+            self.status = format!(
+                "No airport frequencies within {} km of {locator}.",
+                area.radius_km
+            );
+            return;
+        }
+        if preview.project.banks.len() > usize::from(MAX_BANKS) {
+            self.status =
+                format!("A radio holds {MAX_BANKS} banks and the project already has them.");
+            return;
+        }
+        if too_big(&preview.project) {
+            self.refuse(&format!(
+                "{} airport frequencies would not fit the radio; take fewer.",
+                preview.taken
+            ));
+            return;
+        }
+        self.project = preview.project;
+        self.status = format!(
+            "Added {} airport frequencies near {locator}, nearest airport first (furthest \
+             {:.0} km). OurAirports is maintained by volunteers; check before relying on it.",
+            preview.taken, preview.furthest_km
+        );
+        if let Some(file) = &self.airport_area_file {
+            if let Err(error) = area.save(file) {
+                log::warn!("could not remember the airport area: {error}");
+            }
+        }
     }
 
     /// Reads the FM station list from `cache`, which a sync then writes.
@@ -570,6 +721,11 @@ impl StudioApp {
             station_sync: None,
             station_area: StationArea::default(),
             station_area_file: None,
+            airport_cache: AirportCache::none(),
+            airports: None,
+            airport_sync: None,
+            airport_area: AirportArea::default(),
+            airport_area_file: None,
         };
         if let Some(baud) = options.baud {
             app.chooser.baud = baud;
@@ -1074,10 +1230,12 @@ impl eframe::App for StudioApp {
         self.poll_satellite_sync();
         self.poll_repeater_sync();
         self.poll_station_sync();
+        self.poll_airport_sync();
         if self.job.is_some()
             || self.satellite_sync.is_some()
             || self.repeater_sync.is_some()
             || self.station_sync.is_some()
+            || self.airport_sync.is_some()
         {
             context.request_repaint_after(std::time::Duration::from_millis(50));
         }
@@ -1258,10 +1416,11 @@ impl StudioApp {
             ui.label(self.repeater_source());
         });
         self.station_bar(ui);
+        self.airport_bar(ui);
         ui.separator();
     }
 
-    /// The row holding the locator the repeaters and stations share.
+    /// The row holding the locator the repeaters, stations and airports share.
     fn locator_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             ui.label("Your locator");
@@ -1273,8 +1432,8 @@ impl StudioApp {
                         .desired_width(70.0),
                 )
                 .on_hover_text(
-                    "Your Maidenhead locator, 4 to 8 characters, for both the repeaters \
-                     and the FM stations below",
+                    "Your Maidenhead locator, 4 to 8 characters, for the repeaters, FM \
+                     stations and airports below",
                 )
                 .changed();
             if edited {
@@ -1330,6 +1489,56 @@ impl StudioApp {
                 self.sync_stations();
             }
             ui.label(self.station_source());
+        });
+    }
+
+    /// The row that adds the airport frequencies near the shared locator.
+    fn airport_bar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Airports within");
+            ComboBox::from_id_salt("airport-radius")
+                .selected_text(format!("{} km", self.airport_area.radius_km))
+                .show_ui(ui, |ui| {
+                    for km in repeaters::RADII_KM {
+                        ui.selectable_value(
+                            &mut self.airport_area.radius_km,
+                            km,
+                            format!("{km} km"),
+                        );
+                    }
+                });
+            ui.label("nearest");
+            ui.add(
+                egui::DragValue::new(&mut self.airport_area.max_channels)
+                    .range(1..=airports::MAX_CHANNELS_LIMIT),
+            )
+            .on_hover_text("How many frequencies the bank takes, nearest airport first");
+            if ui
+                .button("Add")
+                .on_hover_text(
+                    "Adds the airband frequencies (tower, ground, approach, ATIS...) of the \
+                     airports in range as one receive-only AM bank, nearest airport first, \
+                     replacing one for the same locator",
+                )
+                .clicked()
+            {
+                self.add_airports();
+            }
+            if ui
+                .add_enabled(
+                    self.airport_sync.is_none(),
+                    egui::Button::new("Sync from OurAirports"),
+                )
+                .on_hover_text(
+                    "Fetches the worldwide airport and frequency lists from OurAirports \
+                     (public domain, about 14 MB) and caches them; the studio never fetches \
+                     on its own",
+                )
+                .clicked()
+            {
+                self.sync_airports();
+            }
+            ui.label(self.airport_source());
         });
     }
 

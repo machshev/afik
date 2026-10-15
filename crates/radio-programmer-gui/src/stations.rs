@@ -66,7 +66,7 @@ pub struct Station {
 
 /// Splits CSV text into records, honouring quoted fields with doubled
 /// quotes and line breaks inside them.
-fn records(text: &str) -> Vec<Vec<String>> {
+pub(crate) fn records(text: &str) -> Vec<Vec<String>> {
     let mut records = Vec::new();
     let mut record = Vec::new();
     let mut field = String::new();

@@ -61,8 +61,9 @@ pub const RADII_KM: [u16; 12] = [
 /// The largest radius accepted; the whole UK is within it of anywhere in it.
 pub const MAX_RADIUS_KM: u16 = 1_500;
 const TIMEOUT: Duration = Duration::from_secs(30);
-/// The response is about half a megabyte; this bounds a misbehaving server.
-const MAX_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
+/// The largest list fetched is `OurAirports`' airports, about 13 MB; this
+/// bounds a misbehaving server.
+const MAX_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
 /// Receive coverage the BK4819 datasheet states, in hertz.
 const RECEIVE_BANDS: [(u64, u64); 2] = [(18_000_000, 660_000_000), (840_000_000, 1_300_000_000)];
 /// ETCC system types which are repeaters: analogue voice, multimode (analogue
@@ -595,9 +596,13 @@ pub(crate) fn fetch(url: &str) -> Result<String, String> {
     let mut body = Vec::new();
     response
         .into_reader()
-        .take(MAX_RESPONSE_BYTES)
+        .take(MAX_RESPONSE_BYTES + 1)
         .read_to_end(&mut body)
         .map_err(|error| format!("{url}: {error}"))?;
+    // A cut-off list could still parse, missing whatever came last.
+    if body.len() as u64 > MAX_RESPONSE_BYTES {
+        return Err(format!("{url}: over {MAX_RESPONSE_BYTES} bytes"));
+    }
     Ok(String::from_utf8_lossy(&body).into_owned())
 }
 
