@@ -194,7 +194,9 @@ programmed as ordinary banks.
   Gate: fmt clean, workspace clippy `-D warnings` clean, `cargo test
   --workspace` 818 passed 0 failed, `tool/build-k5.sh --release` and
   `tool/verify-k5-image.sh` pass (image end `0x0000e8f4`). `7.0.33`
-  (`278b9de`, CRC-32 `b8e1edb2`) built, not yet flashed.
+  (`278b9de`) flashed to the K5 (bootloader `2.00.06`, CRC-32 `b8e1edb2`,
+  240/240 pages acknowledged, not read back), after two attempts failed at
+  page 0 while the studio held `/dev/ttyUSB0`; not yet observed.
 - Next: write the project with an FM broadcast bank from the studio, then on
   the K5 listen, step and scan it and check the `RISK-045` list; then the K1.
 

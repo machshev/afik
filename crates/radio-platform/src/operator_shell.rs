@@ -212,6 +212,10 @@ pub enum Setting {
     TxClasses,
     /// Whether the radio listens to the other slot between signals.
     DualWatch,
+    /// Whether channels without a receive tone show the tone heard, which
+    /// runs the reference's tone scan during ordinary receive; an operator
+    /// experiment, off at start-up (`RISK-046`).
+    ToneHeard,
 }
 
 /// Every settings row, in the order the menu lists them.
@@ -225,19 +229,21 @@ pub enum Setting {
 /// milliseconds instead of a menu's worth of rows.
 ///
 /// Dual watch qualifies because whether a second channel is worth hearing
-/// depends on what the operator is doing at the time.
-pub const SETTINGS: [Setting; 2] = [Setting::Squelch, Setting::DualWatch];
+/// depends on what the operator is doing at the time. Tone heard is an
+/// experiment the operator switches while comparing receive against Armel.
+pub const SETTINGS: [Setting; 3] = [Setting::Squelch, Setting::DualWatch, Setting::ToneHeard];
 
 /// Settings rows on a target that can transmit. TX power qualifies for the
 /// same reason squelch does: the right level depends on where the operator is.
 /// The TX timeout does too: a net with long overs needs a longer one. The TX
 /// classes switch lets the owner narrow what a borrowed radio may transmit.
-pub const SETTINGS_WITH_TX: [Setting; 5] = [
+pub const SETTINGS_WITH_TX: [Setting; 6] = [
     Setting::Squelch,
     Setting::TxPower,
     Setting::TxTimeout,
     Setting::TxClasses,
     Setting::DualWatch,
+    Setting::ToneHeard,
 ];
 
 /// Every TX class, in the order the class list shows them.
@@ -415,6 +421,8 @@ pub struct Shell {
     other: Slot,
     /// Whether the radio listens to the other slot between signals.
     dual_watch: bool,
+    /// Whether untoned channels show the tone heard; never stored.
+    tone_heard: bool,
     capabilities: Capabilities,
 }
 
@@ -458,6 +466,7 @@ impl Shell {
             active: SlotId::A,
             other: Slot::VFO,
             dual_watch: false,
+            tone_heard: false,
             capabilities: Capabilities::K1,
         }
     }
@@ -700,6 +709,12 @@ impl Shell {
     /// Switches dual watch, as a configuration or the retained place says.
     pub fn set_dual_watch(&mut self, on: bool) {
         self.dual_watch = on;
+    }
+
+    /// Reports whether untoned channels show the tone heard.
+    #[must_use]
+    pub const fn tone_heard(&self) -> bool {
+        self.tone_heard
     }
 
     /// Reports whether F was pressed and waits for the key it modifies.
@@ -1246,6 +1261,12 @@ impl Shell {
                     // both slots are.
                     Some(Setting::DualWatch) => {
                         self.dual_watch = !self.dual_watch;
+                        self.screen = Screen::Operating;
+                    }
+                    // As dual watch: the operating screen is where the
+                    // heard tone shows.
+                    Some(Setting::ToneHeard) => {
+                        self.tone_heard = !self.tone_heard;
                         self.screen = Screen::Operating;
                     }
                     // A menu row with nothing behind it cannot open a screen the
@@ -2280,6 +2301,28 @@ mod tests {
         shell.press(Key::Menu, 3, context(4, 1));
         assert_eq!(shell.press(Key::Function, 4, context(4, 1)), Intent::Idle);
         assert!(!shell.function_pending());
+    }
+
+    #[test]
+    fn the_settings_menu_switches_tone_heard_off_at_start_up() {
+        for settings in [&SETTINGS[..], &SETTINGS_WITH_TX[..]] {
+            assert_eq!(settings.last(), Some(&Setting::ToneHeard));
+        }
+        let mut shell = memory_shell(&[]);
+        assert!(!shell.tone_heard());
+        let row = SETTINGS_WITH_TX
+            .iter()
+            .position(|setting| *setting == Setting::ToneHeard)
+            .expect("tone heard row");
+        for (time, expected) in [(0, true), (100, false)] {
+            shell.press(Key::Menu, time, context(4, 0));
+            for at in 0..row {
+                shell.press(Key::Down, time + 1 + u32::try_from(at).unwrap(), context(4, 0));
+            }
+            assert_eq!(shell.press(Key::Menu, time + 20, context(4, 0)), Intent::Redraw);
+            assert_eq!(shell.tone_heard(), expected);
+            assert_eq!(shell.screen(), Screen::Operating);
+        }
     }
 
     #[test]
