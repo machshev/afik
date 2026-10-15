@@ -155,6 +155,10 @@ programmed as ordinary banks.
   horizon from Ofcom's site plus aerial height, and the bank takes the
   strongest N (`1c467ff`). Gate: `cargo fmt --all --check` clean, workspace
   clippy `-D warnings` clean, `cargo test --workspace` 816 passed 0 failed.
+- Change (operator request): one "Your locator" row above the repeater and
+  station rows, kept in `repeater-area` as soon as it parses. Gate: fmt
+  clean, workspace clippy `-D warnings` clean, `cargo test --workspace` 817
+  passed 0 failed. Layout not checked on screen.
 - Fix (operator report): the handset squelch list never took a new level
   on a channel off the common PMR446 path or in VFO mode, because staging
   required the shared receive app. `stage_squelch` now stages on the banked
