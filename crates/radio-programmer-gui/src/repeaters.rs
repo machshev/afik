@@ -38,8 +38,22 @@ pub const MAX_REPEATER_CHANNELS: usize = 40;
 /// The radius offered before the operator chooses one, in kilometres.
 pub const DEFAULT_RADIUS_KM: u16 = 50;
 /// The radii the studio offers, in kilometres: from a handheld's reach of
-/// a hilltop repeater to a mobile's on a good day.
-pub const RADII_KM: [u16; 8] = [10, 20, 30, 50, 75, 100, 150, 200];
+/// a hilltop repeater up to the whole UK. The bank still takes only the
+/// nearest [`MAX_REPEATER_CHANNELS`].
+pub const RADII_KM: [u16; 12] = [
+    10,
+    20,
+    30,
+    50,
+    75,
+    100,
+    150,
+    200,
+    300,
+    500,
+    1_000,
+    MAX_RADIUS_KM,
+];
 /// The largest radius accepted; the whole UK is within it of anywhere in it.
 pub const MAX_RADIUS_KM: u16 = 1_500;
 const TIMEOUT: Duration = Duration::from_secs(30);
@@ -631,6 +645,15 @@ mod tests {
         };
         area.save(&file).unwrap();
         assert_eq!(RepeaterArea::load(&file), area);
+        // Every radius offered, up to the whole UK, comes back as saved.
+        for radius_km in super::RADII_KM {
+            let area = RepeaterArea {
+                locator: "IO91WM".to_owned(),
+                radius_km,
+            };
+            area.save(&file).unwrap();
+            assert_eq!(RepeaterArea::load(&file), area);
+        }
         std::fs::write(&file, "IO91WM lots\n").unwrap();
         assert_eq!(RepeaterArea::load(&file).radius_km, 50);
         std::fs::remove_dir_all(dir).unwrap();

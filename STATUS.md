@@ -161,7 +161,7 @@ programmed TX ranges protect channel and VFO mode alike.
 - Studio (operator request, `ADR-104`): UK repeaters near a locator. Sync
   from ETCC fetches the RSGB repeater list (`api-beta.rsgb.online`) into
   `$XDG_CACHE_HOME/afik/etcc`; Add builds one bank `RPT <locator>` of the
-  operational analogue FM repeaters within the chosen radius (10–200 km),
+  operational analogue FM repeaters within the chosen radius (10–1500 km),
   nearest first, at most 40, each receiving the output and transmitting on
   the input with its CTCSS tone. The locator and radius are kept in
   `$XDG_STATE_HOME/afik/repeater-area`. 482 repeaters live; 30 within 50 km
