@@ -1209,5 +1209,7 @@ lowered to the highest level within it (operator request), by nominal figures.
   TX tone and split work; its toned output then went silent on the untoned
   channel while the tone scan `REG_51` was in force. `7.0.31` drops the scan
   from ordinary receive; it was still silent. `7.0.32` sets RX enable on
-  every receive setup, which no earlier AFIK image did.
+  every receive setup, which no earlier AFIK image did, and the K5 now
+  hears GB3EL's kerchunk and tail (`EVID-RX-067-001`). Still open: tone
+  deviation, tone squelch and DCS on air.
 

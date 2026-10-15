@@ -456,8 +456,10 @@ cleared it for TX. It is now set on every receive setup (`5ee8395`). Gate:
 `cargo test --workspace` 818 passed 0 failed 2 ignored, K5 (image end
 `0x0000e8bc`) and K1 (72020 bytes) release images build. `7.0.32`
 (`10d3a85`) flashed to the K5 (bootloader `2.00.06`, CRC-32 `4607267d`,
-240/240 pages acknowledged, not read back). Next: GB3EL kerchunk and tail,
-weak-signal sensitivity and meter against `7.0.31`, WFM audio.
+240/240 pages acknowledged, not read back). Observed: the K5 now hears
+GB3EL's kerchunk and tail after keying it (`EVID-RX-067-001`). Next:
+weak-signal sensitivity and meter against `7.0.31`, WFM audio, then the
+F 4 tone detect screen (`TXK5-059` step 2a).
 
 **`TXK5-059` was paused** (2026-10-14) for `TXRANGE-062`; `TXK1-060` was started alongside.
 

@@ -3346,6 +3346,23 @@ the proven hardware reference.
   `scanner.c:445-480` accepts DCS at once and CTCSS on repeated readings.
   `TX_freq_check` (`frequencies.c:162-170`) allows 18 MHz to 1300.000 MHz
   inclusive, less 630–840 MHz.
-- **Scope:** AFIK runs the tone scan during ordinary receive, which the
-  reference does only in its scanner; untested on hardware (`RISK-046`).
+- **Scope:** AFIK ran the tone scan during ordinary receive until `7.0.31`,
+  which the reference does only in its scanner; ordinary receive now uses
+  `CODE_TYPE_OFF`'s words (`REG_07 = 0x21CE` on untoned channels).
+- **Observed, K5 `7.0.30`–`7.0.32`, 2026-10-15:** a GB3EL channel (RX
+  430.8375, TX 438.4375 with 156.7 Hz) opened the repeater, heard on an
+  Armel radio, so the TX split and CTCSS work on air. See
+  `EVID-RX-067-001` for receive.
+
+### EVID-RX-067-001 — RX enable is needed for full receive sensitivity
+
+- **Source:** K5 `radio.c:591` (`RADIO_SetupRegisters`) and K1 `App/radio.c`
+  set `BK4819_GPIO0_PIN28_RX_ENABLE` (`REG_33` `0x40`) after the filter path
+  on every receive setup; TX clears it.
+- **Observed, K5, 2026-10-15:** up to `7.0.31` AFIK never set the bit. The K5
+  heard an Armel radio beside it on 430.8375 (with or without 156.7 Hz) but
+  not GB3EL's output at 12 km, which the Armel radio heard clearly. `7.0.32`
+  sets it on every receive setup and the K5 now hears GB3EL's kerchunk and
+  tail. Confidence: high for the bit's effect on this unit; the gain in
+  sensitivity is unmeasured.
 
