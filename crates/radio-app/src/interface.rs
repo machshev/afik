@@ -25,9 +25,9 @@ use radio_platform::catch::{self, Catch, Next as CatchNext, Phase as CatchPhase}
 use radio_platform::configuration_change::{ConfigurationAcknowledgement, ConfigurationCandidate};
 use radio_platform::dual_watch::{DualWatch, Listening as Watching};
 use radio_platform::operator_display::{
-    render_catch_screen, render_channel_list, render_info_screen, render_operating_screen,
-    render_selector_list, CatchView, ListRow, MemoryState, OperatingView, SelectorRow, SlotChannel,
-    SlotPlace, SlotView, TxRefusal, FRAME_BYTES, LIST_ROWS,
+    render_catch_screen, render_info_screen, render_operating_screen, render_selector_list,
+    CatchView, MemoryState, OperatingView, SelectorRow, SlotChannel, SlotPlace, SlotView,
+    TxRefusal, FRAME_BYTES, LIST_ROWS,
 };
 use radio_platform::operator_shell::{
     Context, Intent, Mode, Screen, Setting, Shell, Slot, SlotId, Source, HOLD_MILLISECONDS,
@@ -1165,6 +1165,9 @@ pub async fn run<D, K, B, F, W, S, V, M>(
     // A frequency and tone catch (F then 4), when it next reads the chip, and
     // whether it has started; it starts once the bus is free.
     let mut catching: Option<(Catch, Instant, bool)> = None;
+    // Side key 1's tone squelch switch: the selection it was made on and
+    // whether tone squelch is on there. Another selection clears it.
+    let mut rx_switch: Option<(RxToneKey, bool)> = None;
     let mut transmitted = false;
     // Whether PTT is held after the policy refused the press, so the screen
     // says why nothing went out.
@@ -1510,6 +1513,19 @@ pub async fn run<D, K, B, F, W, S, V, M>(
                 }
                 redraw = true;
             }
+            Intent::ToggleRxTone => {
+                if let Some((controller, _)) = activation.as_ref() {
+                    if !matches!(controller.setup().modulation, Modulation::Broadcast) {
+                        let key = rx_tone_key(&shell, controller);
+                        let on = rx_switch
+                            .filter(|(at, _)| *at == key)
+                            .map_or(controller.setup().tone.is_some(), |(_, on)| on);
+                        rx_switch = Some((key, !on));
+                        pending = Some(controller.setup());
+                        redraw = true;
+                    }
+                }
+            }
             Intent::StartCatch => {
                 cancel_pending_squelch(
                     &mut shell,
@@ -1740,8 +1756,31 @@ pub async fn run<D, K, B, F, W, S, V, M>(
                 }
             }
         }
+        // The tone squelch switch belongs to one selection; tuning that
+        // selection applies it.
+        let selected_key = activation
+            .as_ref()
+            .map(|(controller, _)| rx_tone_key(&shell, controller));
+        if rx_switch.is_some_and(|(key, _)| Some(key) != selected_key) {
+            rx_switch = None;
+        }
+        let pending_tune = pending.map(|setup| match (rx_switch, activation.as_ref()) {
+            (Some((_, on)), Some((controller, _)))
+                if watch.listening() == Watching::Selected && setup == controller.setup() =>
+            {
+                ChannelReceiveSetup {
+                    tone: switched_rx_tone(
+                        setup.tone,
+                        tx_setup.map_or(Tone::None, |setup| setup.tone),
+                        Some(on),
+                    ),
+                    ..setup
+                }
+            }
+            _ => setup,
+        });
         // A retune waits for the catch to end; the tune then ends it.
-        if let Some(setup) = pending.filter(|_| bus_available() && catching.is_none()) {
+        if let Some(setup) = pending_tune.filter(|_| bus_available() && catching.is_none()) {
             if let Some(channel) = shared_channel(setup) {
                 let had_shared = shared_receive.is_some();
                 let initial_squelch = pending_operator_squelch.unwrap_or(setup.squelch);
@@ -1942,6 +1981,7 @@ pub async fn run<D, K, B, F, W, S, V, M>(
                 memory,
                 tx_refused,
                 catching.as_ref().map(|(catch, _, _)| catch),
+                rx_switch.map(|(_, on)| on),
             );
             if !display.frame(&frame).await {
                 return;
@@ -2091,6 +2131,7 @@ fn render<B: RegisterBus, S: Speaker, C: BroadcastChip, M: Memory>(
     memory: &'static TaskCell<Option<M>>,
     tx_refused: Option<TxRefusal>,
     catch: Option<&Catch>,
+    rx_switch: Option<bool>,
 ) {
     // Only an empty memory has no controller: the VFO always has one.
     let visible = controller.map_or(0, BankedReceiveController::visible_channels);
@@ -2106,6 +2147,7 @@ fn render<B: RegisterBus, S: Speaker, C: BroadcastChip, M: Memory>(
                 controller,
                 selected_name.as_ref(),
                 (listening == Watching::Selected).then_some(receiver),
+                rx_switch,
             );
             let other = slot_channel(
                 shell,
@@ -2113,6 +2155,7 @@ fn render<B: RegisterBus, S: Speaker, C: BroadcastChip, M: Memory>(
                 other,
                 other_name.as_ref(),
                 (listening == Watching::Other).then_some(receiver),
+                None,
             );
             let (a, b) = match shell.active_slot() {
                 SlotId::A => (selected, other),
@@ -2206,6 +2249,7 @@ fn render<B: RegisterBus, S: Speaker, C: BroadcastChip, M: Memory>(
                         SelectorRow::tx_classes_setting(on, programmed)
                     }
                     Setting::DualWatch => SelectorRow::dual_watch_setting(shell.dual_watch()),
+                    Setting::VfoStep => SelectorRow::vfo_step_setting(shell.vfo_step_hz()),
                     Setting::ToneHeard => SelectorRow::tone_heard_setting(shell.tone_heard()),
                 };
                 count += 1;
@@ -2290,36 +2334,6 @@ fn render<B: RegisterBus, S: Speaker, C: BroadcastChip, M: Memory>(
             }
             render_selector_list(frame, b"STEP", &rows[..count], shell.step_cursor() - first);
         }
-        Screen::ChannelList => {
-            let mut rows = [ListRow::default(); LIST_ROWS];
-            let visible_rows = u16::try_from(LIST_ROWS).unwrap_or(u16::MAX);
-            // Scroll by whole pages so the cursor is always on screen without
-            // the list jittering under a single key press.
-            let first = shell.cursor() / visible_rows * visible_rows;
-            let mut count = 0;
-            for offset in 0..visible_rows {
-                let position = first + offset;
-                let Some((channel, active)) = controller.and_then(|controller| {
-                    controller
-                        .visible_channel(position)
-                        .map(|channel| (channel, position == controller.visible_position()))
-                }) else {
-                    break;
-                };
-                rows[usize::from(offset)] = ListRow::new(
-                    position.saturating_add(1),
-                    channel.name().as_bytes(),
-                    active,
-                );
-                count += 1;
-            }
-            render_channel_list(
-                frame,
-                &rows[..count],
-                usize::from(shell.cursor() - first),
-                visible,
-            );
-        }
         Screen::Info => render_info_screen(
             frame,
             identity,
@@ -2350,15 +2364,47 @@ fn render<B: RegisterBus, S: Speaker, C: BroadcastChip, M: Memory>(
 /// Builds what one slot shows from its controller. `receiver` is given only
 /// while the receiver is on this slot, and its meter only while the squelch is
 /// open.
+/// The selection side key 1's tone squelch switch belongs to: the selected
+/// slot and its memory channel, or its VFO.
+type RxToneKey = (SlotId, Option<u16>);
+
+fn rx_tone_key<M: Memory>(
+    shell: &Shell,
+    controller: &BankedReceiveController<Listening<M>>,
+) -> RxToneKey {
+    let channel = match controller.selection() {
+        ChannelSelection::Memory { .. } => Some(controller.channel().id().get()),
+        ChannelSelection::Vfo => None,
+    };
+    (shell.active_slot(), channel)
+}
+
+/// The receive tone with side key 1's switch applied: as programmed when
+/// unswitched, none when off, and when on the programmed receive tone or,
+/// without one, the transmit tone, as a repeater's output carries its input's.
+fn switched_rx_tone(programmed: Tone, transmit: Tone, on: Option<bool>) -> Tone {
+    match on {
+        None => programmed,
+        Some(false) => Tone::None,
+        Some(true) if programmed.is_some() => programmed,
+        Some(true) => transmit,
+    }
+}
+
 fn slot_channel<'a, B: RegisterBus, S: Speaker, C: BroadcastChip, M: Memory>(
     shell: &Shell,
     slot: Slot,
     controller: Option<&BankedReceiveController<Listening<M>>>,
     name: Option<&'a ChannelName>,
     receiver: Option<&Receiver<B, S, C>>,
+    rx_switch: Option<bool>,
 ) -> Option<SlotChannel<'a>> {
     let controller = controller?;
     let channel = controller.channel();
+    let tx_tone = match slot.mode {
+        Mode::Vfo => slot.vfo_tx_tone,
+        Mode::Memory => channel.tx_tone(),
+    };
     Some(SlotChannel {
         name: name.map_or(&[][..], |name| name.as_bytes()),
         frequency_hz: controller.setup().frequency.as_hz(),
@@ -2377,11 +2423,8 @@ fn slot_channel<'a, B: RegisterBus, S: Speaker, C: BroadcastChip, M: Memory>(
         meter: receiver
             .filter(|receiver| receiver.squelch_open)
             .map(|receiver| receiver.rssi_raw),
-        tx_tone: match slot.mode {
-            Mode::Vfo => slot.vfo_tx_tone,
-            Mode::Memory => channel.tx_tone(),
-        },
-        rx_tone: controller.setup().tone,
+        tx_tone,
+        rx_tone: switched_rx_tone(controller.setup().tone, tx_tone, rx_switch),
         heard_tone: receiver
             .filter(|receiver| receiver.squelch_open)
             .and_then(|receiver| receiver.heard_tone),
@@ -2734,6 +2777,28 @@ mod tests {
         shell.press(Key::Digit(6), 3, context());
         assert_eq!(chosen_power(&shell, Some(vfo)), 5);
         assert_eq!(chosen_power(&shell, None), 5);
+    }
+
+    #[test]
+    fn side_1_switches_tone_squelch_to_the_receive_or_transmit_tone() {
+        use super::switched_rx_tone;
+        use radio_domain::Tone;
+
+        let rx = Tone::Ctcss(885);
+        let tx = Tone::Ctcss(1567);
+        // Unswitched: as programmed.
+        assert_eq!(switched_rx_tone(rx, tx, None), rx);
+        assert_eq!(switched_rx_tone(Tone::None, tx, None), Tone::None);
+        // Off: any carrier.
+        assert_eq!(switched_rx_tone(rx, tx, Some(false)), Tone::None);
+        // On: the receive tone, or the transmit tone a repeater's output
+        // carries when the channel has none; nothing to require without either.
+        assert_eq!(switched_rx_tone(rx, tx, Some(true)), rx);
+        assert_eq!(switched_rx_tone(Tone::None, tx, Some(true)), tx);
+        assert_eq!(
+            switched_rx_tone(Tone::None, Tone::None, Some(true)),
+            Tone::None
+        );
     }
 
     #[test]

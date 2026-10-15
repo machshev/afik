@@ -177,8 +177,6 @@ pub enum Screen {
     /// The active channel or VFO frequency, and the receive state.
     #[default]
     Operating,
-    /// Scrollable list of the channels in the active view.
-    ChannelList,
     /// The VFO and every populated bank.
     SourceList,
     /// The selectable VFO tuning steps.
@@ -217,6 +215,8 @@ pub enum Setting {
     TxClasses,
     /// Whether the radio listens to the other slot between signals.
     DualWatch,
+    /// The selected slot's VFO tuning step.
+    VfoStep,
     /// Whether channels without a receive tone show the tone heard, which
     /// runs the reference's tone scan during ordinary receive; an operator
     /// experiment, off at start-up (`RISK-046`).
@@ -236,18 +236,26 @@ pub enum Setting {
 /// Dual watch qualifies because whether a second channel is worth hearing
 /// depends on what the operator is doing at the time. Tone heard is an
 /// experiment the operator switches while comparing receive against Armel.
-pub const SETTINGS: [Setting; 3] = [Setting::Squelch, Setting::DualWatch, Setting::ToneHeard];
+///
+/// The VFO step moved here from side key 1, which now switches tone squelch.
+pub const SETTINGS: [Setting; 4] = [
+    Setting::Squelch,
+    Setting::DualWatch,
+    Setting::VfoStep,
+    Setting::ToneHeard,
+];
 
 /// Settings rows on a target that can transmit. TX power qualifies for the
 /// same reason squelch does: the right level depends on where the operator is.
 /// The TX timeout does too: a net with long overs needs a longer one. The TX
 /// classes switch lets the owner narrow what a borrowed radio may transmit.
-pub const SETTINGS_WITH_TX: [Setting; 6] = [
+pub const SETTINGS_WITH_TX: [Setting; 7] = [
     Setting::Squelch,
     Setting::TxPower,
     Setting::TxTimeout,
     Setting::TxClasses,
     Setting::DualWatch,
+    Setting::VfoStep,
     Setting::ToneHeard,
 ];
 
@@ -316,6 +324,10 @@ pub enum Intent {
     /// Select the calling channel of the active view, if it has one (F then
     /// 9, Call).
     SelectCalling,
+    /// Switch tone squelch on the selected slot (side key 1): on, it opens
+    /// only for the channel's receive tone, or its transmit tone when it has
+    /// none; off, on any carrier.
+    ToggleRxTone,
     /// Start catching the strongest carrier and its tone (F then 4, `FC`).
     StartCatch,
     /// Leave the catch and return to the selected slot.
@@ -400,7 +412,6 @@ struct Entry {
 pub struct Shell {
     screen: Screen,
     mode: Mode,
-    cursor: u16,
     entry: Option<Entry>,
     bank_filter: Option<BankId>,
     banks: [Option<BankId>; MAX_BANKS as usize],
@@ -455,7 +466,6 @@ impl Shell {
             // Nothing is programmed until a host says otherwise, and the VFO is
             // the source which always has something to tune.
             mode: Mode::Vfo,
-            cursor: 0,
             entry: None,
             bank_filter: None,
             banks: [None; MAX_BANKS as usize],
@@ -776,7 +786,6 @@ impl Shell {
         self.other = selected;
         self.active = self.active.other();
         self.entry = None;
-        self.cursor = 0;
         self.source_cursor = self.source_row();
     }
 
@@ -811,12 +820,6 @@ impl Shell {
     #[must_use]
     pub const fn screen(&self) -> Screen {
         self.screen
-    }
-
-    /// Returns the channel-list cursor position.
-    #[must_use]
-    pub const fn cursor(&self) -> u16 {
-        self.cursor
     }
 
     /// Returns the active bank filter.
@@ -885,7 +888,6 @@ impl Shell {
         self.mode = Mode::Memory;
         self.other.mode = Mode::Memory;
         self.entry = None;
-        self.cursor = 0;
         self.source_cursor = self.source_row();
     }
 
@@ -898,7 +900,6 @@ impl Shell {
     pub fn restore_source(&mut self, memory_mode: bool, bank: Option<BankId>) {
         self.screen = Screen::Operating;
         self.entry = None;
-        self.cursor = 0;
         self.mode = if memory_mode { Mode::Memory } else { Mode::Vfo };
         self.bank_filter = bank.filter(|bank| self.banks[..self.bank_count].contains(&Some(*bank)));
         self.source_cursor = self.source_row();
@@ -948,7 +949,6 @@ impl Shell {
         self.banks = banks;
         self.bank_count = count.min(MAX_BANKS as usize);
         self.entry = None;
-        self.cursor = 0;
         if self
             .other
             .bank_filter
@@ -1007,7 +1007,10 @@ impl Shell {
             // Menu opens settings from the operating screen, as on the stock
             // and Armel firmware, so side key one opens the channel or step
             // list that Menu used to.
-            Key::Side1 => self.open_list(context),
+            Key::Side1 if self.screen == Screen::Operating => {
+                self.entry = None;
+                Intent::ToggleRxTone
+            }
             Key::Side2 => Intent::ToggleMonitor,
             // Receive-only: the image constructs no transmit path, so the
             // push-to-talk input cannot reach the radio.
@@ -1030,8 +1033,8 @@ impl Shell {
             }
             Key::Menu => self.confirm(context),
             Key::Exit => self.cancel(),
-            Key::Up => self.step(Direction::Up, context),
-            Key::Down => self.step(Direction::Down, context),
+            Key::Up => self.step(Direction::Up),
+            Key::Down => self.step(Direction::Down),
             Key::Digit(0) => self.digit(0, now_ms, context),
             Key::Digit(1) => self.digit(1, now_ms, context),
             Key::Digit(2) => self.digit(2, now_ms, context),
@@ -1042,7 +1045,7 @@ impl Shell {
             Key::Digit(7) => self.digit(7, now_ms, context),
             Key::Digit(8) => self.digit(8, now_ms, context),
             Key::Digit(9) => self.digit(9, now_ms, context),
-            Key::Ptt | Key::Star | Key::Digit(_) => Intent::Idle,
+            Key::Ptt | Key::Side1 | Key::Star | Key::Digit(_) => Intent::Idle,
         }
     }
 
@@ -1084,7 +1087,6 @@ impl Shell {
                     Mode::Vfo => Mode::Memory,
                 };
                 self.entry = None;
-                self.cursor = 0;
                 self.source_cursor = self.source_row();
                 Intent::ToggleVfo
             }
@@ -1151,7 +1153,7 @@ impl Shell {
         self.commit_entry(entry, context)
     }
 
-    fn step(&mut self, direction: Direction, context: Context) -> Intent {
+    fn step(&mut self, direction: Direction) -> Intent {
         self.entry = None;
         match self.screen {
             Screen::Operating => match self.mode {
@@ -1167,30 +1169,6 @@ impl Shell {
                     Direction::Down => Intent::SelectNext,
                 },
             },
-            Screen::ChannelList => {
-                if context.visible_channels == 0 {
-                    self.cursor = 0;
-                    return Intent::Redraw;
-                }
-                let last = context.visible_channels - 1;
-                self.cursor = match direction {
-                    Direction::Up => {
-                        if self.cursor == 0 {
-                            last
-                        } else {
-                            self.cursor - 1
-                        }
-                    }
-                    Direction::Down => {
-                        if self.cursor >= last {
-                            0
-                        } else {
-                            self.cursor + 1
-                        }
-                    }
-                };
-                Intent::Redraw
-            }
             Screen::SourceList => self.step_row(direction, self.source_rows(), Cursor::Source),
             Screen::StepList => self.step_row(direction, VFO_STEPS_HZ.len(), Cursor::Step),
             Screen::Settings => self.step_row(direction, self.settings().len(), Cursor::Settings),
@@ -1313,6 +1291,10 @@ impl Shell {
                     }
                     // As dual watch: the operating screen is where the
                     // heard tone shows.
+                    Some(Setting::VfoStep) => {
+                        self.screen = Screen::StepList;
+                        self.step_cursor = self.step_index;
+                    }
                     Some(Setting::ToneHeard) => {
                         self.tone_heard = !self.tone_heard;
                         self.screen = Screen::Operating;
@@ -1365,14 +1347,6 @@ impl Shell {
                 Intent::Redraw
             }
             Screen::Operating => self.open_settings(),
-            Screen::ChannelList => {
-                self.screen = Screen::Operating;
-                if self.cursor < context.visible_channels {
-                    Intent::SelectIndex(self.cursor)
-                } else {
-                    Intent::Redraw
-                }
-            }
             Screen::Info => {
                 self.screen = Screen::Operating;
                 Intent::Redraw
@@ -1380,28 +1354,6 @@ impl Shell {
             // The target knows what was caught; it calls `catch_to_vfo`.
             Screen::Catch => Intent::UseCatch,
         }
-    }
-
-    /// Opens the list the operator acts on in this mode, or closes it.
-    ///
-    /// Memory channels in memory mode, tuning steps in the VFO.
-    fn open_list(&mut self, context: Context) -> Intent {
-        self.entry = None;
-        if matches!(self.screen, Screen::ChannelList | Screen::StepList) {
-            self.screen = Screen::Operating;
-            return Intent::Redraw;
-        }
-        match self.mode {
-            Mode::Vfo => {
-                self.screen = Screen::StepList;
-                self.step_cursor = self.step_index;
-            }
-            Mode::Memory => {
-                self.screen = Screen::ChannelList;
-                self.cursor = context.active_index;
-            }
-        }
-        Intent::Redraw
     }
 
     /// Commits a squelch choice after the receive application and target
@@ -1434,7 +1386,11 @@ impl Shell {
         // it rather than throwing the operator all the way out.
         self.screen = if matches!(
             self.screen,
-            Screen::SquelchList | Screen::TxPowerList | Screen::TxTimeoutList | Screen::TxClassList
+            Screen::SquelchList
+                | Screen::TxPowerList
+                | Screen::TxTimeoutList
+                | Screen::TxClassList
+                | Screen::StepList
         ) {
             Screen::Settings
         } else {
@@ -1605,7 +1561,6 @@ impl Shell {
                 self.bank_filter = Some(bank);
             }
         }
-        self.cursor = 0;
         Intent::SetSource(selected)
     }
 }
@@ -1654,6 +1609,24 @@ mod tests {
             *slot = Some(BankId::new(*id));
         }
         (banks, ids.len())
+    }
+
+    /// Opens the VFO step list the way an operator does: Menu, down to the
+    /// VFO STEP row, Menu.
+    fn open_step_list(shell: &mut Shell, at: u32) {
+        shell.press(Key::Menu, at, context(0, 0));
+        let row = shell
+            .settings()
+            .iter()
+            .position(|setting| *setting == Setting::VfoStep)
+            .expect("VFO step row");
+        let mut time = at;
+        while shell.settings_cursor() != row {
+            time += 1;
+            shell.press(Key::Down, time, context(0, 0));
+        }
+        shell.press(Key::Menu, time + 1, context(0, 0));
+        assert_eq!(shell.screen(), Screen::StepList);
     }
 
     /// Returns a shell listening to every programmed channel, as an operator
@@ -1767,8 +1740,7 @@ mod tests {
     #[test]
     fn the_step_list_opens_on_the_step_in_force_and_applies_the_chosen_one() {
         let mut shell = Shell::new();
-        assert_eq!(shell.press(Key::Side1, 0, context(0, 0)), Intent::Redraw);
-        assert_eq!(shell.screen(), Screen::StepList);
+        open_step_list(&mut shell, 0);
         assert_eq!(shell.step_cursor(), shell.step_index());
 
         shell.press(Key::Up, 10, context(0, 0));
@@ -1865,8 +1837,7 @@ mod tests {
         shell.press(Key::Exit, 50, context(8, 0));
 
         // Step list: opens on the step in force.
-        shell.press(Key::Side1, 60, context(0, 0));
-        assert_eq!(shell.screen(), Screen::StepList);
+        open_step_list(&mut shell, 60);
         assert_eq!(shell.step_cursor(), 1);
         shell.press(Key::Up, 70, context(0, 0));
         assert_eq!(shell.step_cursor(), 0);
@@ -1874,6 +1845,7 @@ mod tests {
         shell.press(Key::Down, 90, context(0, 0));
         assert_eq!(shell.step_cursor(), 2);
         shell.press(Key::Exit, 100, context(0, 0));
+        shell.press(Key::Exit, 105, context(0, 0));
 
         // The VFO is the exception: up is a larger frequency, not a lower row.
         let before = shell.vfo_hz();
@@ -1952,15 +1924,16 @@ mod tests {
         assert_eq!(shell.press(Key::Exit, 40, context(0, 0)), Intent::Redraw);
         assert_eq!(shell.screen(), Screen::Operating);
 
-        // Menu opens the menu, as on the stock and Armel firmware, and side
-        // key one opens and closes the list Menu used to.
+        // Menu opens the menu, as on the stock and Armel firmware; the step
+        // list is one of its rows, and Exit unwinds back to it.
         assert_eq!(shell.press(Key::Menu, 50, context(0, 0)), Intent::Redraw);
         assert_eq!(shell.screen(), Screen::Settings);
         assert_eq!(shell.press(Key::Exit, 60, context(0, 0)), Intent::Redraw);
         assert_eq!(shell.screen(), Screen::Operating);
-        assert_eq!(shell.press(Key::Side1, 70, context(0, 0)), Intent::Redraw);
-        assert_eq!(shell.screen(), Screen::StepList);
-        assert_eq!(shell.press(Key::Side1, 80, context(0, 0)), Intent::Redraw);
+        open_step_list(&mut shell, 70);
+        assert_eq!(shell.press(Key::Exit, 100, context(0, 0)), Intent::Redraw);
+        assert_eq!(shell.screen(), Screen::Settings);
+        assert_eq!(shell.press(Key::Exit, 110, context(0, 0)), Intent::Redraw);
         assert_eq!(shell.screen(), Screen::Operating);
     }
 
@@ -2084,7 +2057,7 @@ mod tests {
     }
 
     #[test]
-    fn the_operating_screen_steps_channels_and_the_list_moves_a_cursor() {
+    fn the_operating_screen_steps_channels_and_side_1_switches_tone_squelch() {
         let mut shell = memory_shell(&[0]);
         // Positions are drawn downwards, so the down key walks towards the last
         // channel and the up key walks back towards the first.
@@ -2097,31 +2070,47 @@ mod tests {
             Intent::SelectPrevious
         );
 
-        assert_eq!(shell.press(Key::Side1, 30, context(4, 1)), Intent::Redraw);
-        assert_eq!(shell.screen(), Screen::ChannelList);
-        assert_eq!(shell.cursor(), 1, "the list opens on the active channel");
-        shell.press(Key::Down, 40, context(4, 1));
-        shell.press(Key::Down, 50, context(4, 1));
-        assert_eq!(shell.cursor(), 3);
-        shell.press(Key::Down, 60, context(4, 1));
-        assert_eq!(shell.cursor(), 0, "the cursor wraps at the end of the view");
-        shell.press(Key::Up, 65, context(4, 1));
-        assert_eq!(shell.cursor(), 3, "up wraps back to the last row");
-        shell.press(Key::Up, 66, context(4, 1));
-        shell.press(Key::Up, 67, context(4, 1));
-        shell.press(Key::Up, 68, context(4, 1));
-        assert_eq!(shell.cursor(), 0, "up walks towards the first row");
+        // Side key 1 no longer opens a list: it switches tone squelch, and
+        // only on the operating screen.
         assert_eq!(
-            shell.press(Key::Menu, 70, context(4, 1)),
-            Intent::SelectIndex(0)
+            shell.press(Key::Side1, 30, context(4, 1)),
+            Intent::ToggleRxTone
         );
         assert_eq!(shell.screen(), Screen::Operating);
+        shell.press(Key::Menu, 40, context(4, 1));
+        assert_eq!(shell.screen(), Screen::Settings);
+        assert_eq!(shell.press(Key::Side1, 50, context(4, 1)), Intent::Idle);
+        assert_eq!(shell.screen(), Screen::Settings);
+    }
+
+    #[test]
+    fn the_vfo_step_list_opens_from_settings_and_exit_returns_there() {
+        let mut shell = Shell::new();
+        let row = SETTINGS_WITH_TX
+            .iter()
+            .position(|setting| *setting == Setting::VfoStep)
+            .expect("VFO step row");
+        shell.press(Key::Menu, 0, context(1, 0));
+        for at in 0..row {
+            shell.press(Key::Down, 1 + u32::try_from(at).unwrap(), context(1, 0));
+        }
+        shell.press(Key::Menu, 20, context(1, 0));
+        assert_eq!(shell.screen(), Screen::StepList);
+        assert_eq!(shell.step_cursor(), shell.step_index());
+        assert_eq!(shell.press(Key::Exit, 30, context(1, 0)), Intent::Redraw);
+        assert_eq!(shell.screen(), Screen::Settings);
+        shell.press(Key::Menu, 40, context(1, 0));
+        shell.press(Key::Down, 50, context(1, 0));
+        let chosen = shell.step_cursor();
+        assert_eq!(shell.press(Key::Menu, 60, context(1, 0)), Intent::Redraw);
+        assert_eq!(shell.screen(), Screen::Operating);
+        assert_eq!(shell.step_index(), chosen);
     }
 
     #[test]
     fn exit_leaves_a_screen_without_changing_the_selection() {
         let mut shell = memory_shell(&[0]);
-        shell.press(Key::Side1, 10, context(4, 2));
+        shell.press(Key::Menu, 10, context(4, 2));
         shell.press(Key::Up, 20, context(4, 2));
         assert_eq!(shell.press(Key::Exit, 30, context(4, 2)), Intent::Redraw);
         assert_eq!(shell.screen(), Screen::Operating);
@@ -2223,6 +2212,7 @@ mod tests {
                         | Intent::SetSource(_)
                         | Intent::TuneVfo
                         | Intent::ToggleMonitor
+                        | Intent::ToggleRxTone
                         | Intent::SetSquelch(_)
                         | Intent::StartScan
                         | Intent::StopScan
@@ -2499,9 +2489,9 @@ mod tests {
         // Neither is a hold on a list the operator is part way through.
         let mut shell = Shell::new();
         shell.select_memory();
-        assert_eq!(shell.press(Key::Side1, 0, context(4, 0)), Intent::Redraw);
-        assert_eq!(shell.screen(), Screen::ChannelList);
-        assert_eq!(shell.press(Key::Star, 10, context(4, 0)), Intent::Redraw);
+        assert_eq!(shell.press(Key::Menu, 0, context(4, 0)), Intent::Redraw);
+        assert_eq!(shell.screen(), Screen::Settings);
+        shell.press(Key::Star, 10, context(4, 0));
         assert_eq!(shell.hold(Key::Star, context(4, 0)), Intent::Idle);
     }
 

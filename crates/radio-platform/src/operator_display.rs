@@ -382,6 +382,16 @@ impl SelectorRow {
         Self::with_label(&step_label(step_hz), active)
     }
 
+    /// Builds the settings-menu row for the selected slot's VFO step, such as
+    /// `VFO STEP 6.25K`.
+    #[must_use]
+    pub fn vfo_step_setting(step_hz: u32) -> Self {
+        let mut label = [b' '; LIST_NAME_BYTES];
+        label[..8].copy_from_slice(b"VFO STEP");
+        label[9..].copy_from_slice(&short_step_label(step_hz));
+        Self::with_label(&label, false)
+    }
+
     /// Builds the settings-menu row for the radio-wide squelch level.
     ///
     /// The row carries its own value, so the operator can read the setting
@@ -561,40 +571,6 @@ fn milliwatts_label(level: u8) -> [u8; 5] {
         }
     }
     label
-}
-
-/// One channel list row.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ListRow {
-    /// One-based position in the active view.
-    pub position: u16,
-    /// Channel name bytes.
-    pub name: [u8; LIST_NAME_BYTES],
-    /// Used name bytes.
-    pub name_len: u8,
-    /// Whether this row is the channel the receiver is tuned to.
-    pub active: bool,
-}
-
-impl ListRow {
-    /// Builds a row, truncating a longer name to the visible width.
-    #[must_use]
-    pub fn new(position: u16, name: &[u8], active: bool) -> Self {
-        let mut row = Self {
-            position,
-            name: [0; LIST_NAME_BYTES],
-            name_len: 0,
-            active,
-        };
-        let length = name.len().min(LIST_NAME_BYTES);
-        row.name[..length].copy_from_slice(&name[..length]);
-        row.name_len = u8::try_from(length).unwrap_or(0);
-        row
-    }
-
-    fn name(&self) -> &[u8] {
-        &self.name[..usize::from(self.name_len)]
-    }
 }
 
 /// Produces the operating screen: a status row, then slot A and slot B.
@@ -974,41 +950,6 @@ pub fn battery_label(percent: Option<u8>) -> [u8; BATTERY_LABEL_BYTES] {
     }
     label[2] = b'0' + percent % 10;
     label
-}
-
-/// Produces the scrollable channel list.
-///
-/// `cursor_row` selects which of the supplied rows is marked. A view with no
-/// channels renders an explicit empty message rather than a blank screen.
-pub fn render_channel_list(
-    frame: &mut [u8; FRAME_BYTES],
-    rows: &[ListRow],
-    cursor_row: usize,
-    total: u16,
-) {
-    frame.fill(0);
-    if rows.is_empty() {
-        draw_text(frame, 4, 0, b"CHANNELS");
-        draw_text(frame, 4, 24, b"NONE PROGRAMMED");
-        draw_text(frame, 4, 40, b"USE AFIK STUDIO");
-        return;
-    }
-    let mut header = *b"CHANNELS 00";
-    write_two_digits(&mut header[9..], total);
-    draw_text(frame, 0, 0, &header);
-    for (index, row) in rows.iter().take(LIST_ROWS).enumerate() {
-        let y = 12 + index * 11;
-        if index == cursor_row {
-            draw_text(frame, 0, y, b">");
-        }
-        let mut number = *b"00 ";
-        write_two_digits(&mut number[..2], row.position);
-        draw_text(frame, 6, y, &number);
-        draw_text(frame, 6 + 3 * 6, y, row.name());
-        if row.active {
-            draw_text(frame, WIDTH - 6, y, b"*");
-        }
-    }
 }
 
 /// Produces one titled selector list: receive sources or tuning steps.
@@ -1758,9 +1699,9 @@ mod catch_screen_tests {
 mod operating_screen_tests {
     use super::{modulation_label, place_label, power_label, short_step_label};
     use super::{
-        render_channel_list, render_info_screen, render_operating_screen, render_selector_list,
-        step_label, ListRow, MemoryState, OperatingView, ResetCause, SelectorRow, SerialCounters,
-        SlotChannel, SlotPlace, SlotView, FRAME_BYTES, LIST_NAME_BYTES, MEMORY_LABEL_BYTES,
+        render_info_screen, render_operating_screen, render_selector_list, step_label, MemoryState,
+        OperatingView, ResetCause, SelectorRow, SerialCounters, SlotChannel, SlotPlace, SlotView,
+        FRAME_BYTES, LIST_NAME_BYTES, MEMORY_LABEL_BYTES,
     };
     use radio_domain::{Bandwidth, Modulation, Tone};
 
@@ -2215,6 +2156,10 @@ mod operating_screen_tests {
         assert_eq!(&power_label(4), b" M");
         assert_eq!(&power_label(5), b" H");
         assert_eq!(&short_step_label(6_250), b"6.25K");
+        assert_eq!(
+            SelectorRow::vfo_step_setting(6_250).label(),
+            b"VFO STEP 6.25K"
+        );
         assert_eq!(&short_step_label(12_500), b"12.5K");
         assert_eq!(&short_step_label(25_000), b"25K  ");
         assert_eq!(&short_step_label(100_000), b"100K ");
@@ -2249,34 +2194,6 @@ mod operating_screen_tests {
             }
             seen[usize::from(level)] = frame;
         }
-    }
-
-    #[test]
-    fn the_channel_list_marks_the_cursor_and_the_active_channel() {
-        let rows = [
-            ListRow::new(1, b"2M CALL", false),
-            ListRow::new(2, b"2M FM", true),
-            ListRow::new(3, b"70CM", false),
-        ];
-        let mut cursor_first = [0_u8; FRAME_BYTES];
-        render_channel_list(&mut cursor_first, &rows, 0, 3);
-        let mut cursor_second = [0_u8; FRAME_BYTES];
-        render_channel_list(&mut cursor_second, &rows, 1, 3);
-        assert_ne!(cursor_first, cursor_second);
-        assert!(cursor_first.iter().any(|byte| *byte != 0));
-    }
-
-    #[test]
-    fn an_empty_channel_list_says_so_instead_of_going_blank() {
-        let mut frame = [0_u8; FRAME_BYTES];
-        render_channel_list(&mut frame, &[], 0, 0);
-        assert!(frame.iter().any(|byte| *byte != 0));
-    }
-
-    #[test]
-    fn a_long_channel_name_is_truncated_to_the_visible_width() {
-        let row = ListRow::new(1, b"A VERY LONG CHANNEL NAME", false);
-        assert_eq!(usize::from(row.name_len), LIST_NAME_BYTES);
     }
 
     #[test]
