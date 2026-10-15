@@ -202,6 +202,12 @@ programmed as ordinary banks.
   it (`62ac81c`). Gate (worktree off HEAD, without `TXK5-059`'s uncommitted
   work): fmt clean, workspace clippy `-D warnings` clean, `cargo test
   --workspace` 821 passed 0 failed. Goes out in `TXK5-059`'s `7.0.34`.
+- Change (operator request, studio): broadcast channels, shared broadcast
+  banks and broadcast plans no longer show power, bandwidth, TX frequency
+  or offset, tones, or busy lockout/reverse/compander; the studio keeps
+  them simplex since the split is hidden. Gate: fmt clean, workspace
+  clippy `-D warnings` clean, `cargo test --workspace` 832 passed 0 failed.
+  Layout not checked on screen.
 - Next: write the project with an FM broadcast bank from the studio, then on
   the K5 listen, step and scan it and check the `RISK-045` list; then the K1.
 
