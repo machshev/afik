@@ -203,7 +203,10 @@ programmed as ordinary banks.
   work): fmt clean, workspace clippy `-D warnings` clean, `cargo test
   --workspace` 821 passed 0 failed. Went out in `TXK5-059`'s `7.0.34`.
   Observed on the K5 at `7.0.34`: broadcast plays clean with no beat, steps
-  and scans; ordinary receive unchanged. Next: the K1.
+  and scans; ordinary receive unchanged.
+- K1: `7.0.35` (`43e3122`, built in a clean worktree off HEAD) flashed
+  (bootloader `7.03.01`, CRC-32 `82e05d57`, 295/295 pages acknowledged, not
+  read back, 75,412 bytes); broadcast not yet observed on the K1.
 - Change (operator request, studio): broadcast channels, shared broadcast
   banks and broadcast plans no longer show power, bandwidth, TX frequency
   or offset, tones, or busy lockout/reverse/compander; the studio keeps
