@@ -210,7 +210,46 @@ impl StudioApp {
         }
     }
 
-    /// Describes the repeater list and what the area would add.
+    /// Builds the repeater bank the area would add, and the project it would
+    /// make: the bank replaces one of the same name, else follows the rest.
+    fn repeater_preview(&self) -> Result<RepeaterPreview, String> {
+        let list = self
+            .repeaters
+            .as_ref()
+            .ok_or("sync the repeater list from the ETCC first")?;
+        let area = &self.repeater_area;
+        let mut near = repeaters::nearby(&list.repeaters, &area.locator, area.radius_km)?;
+        let in_range = near.len();
+        near.truncate(usize::from(area.max_channels));
+        let bank = repeaters::repeater_bank(&area.locator, &near);
+        let mut project = self.project.clone();
+        if let Some(existing) = project.banks.iter().position(|b| b.name == bank.name) {
+            project.banks[existing] = bank.clone();
+        } else {
+            project.banks.push(bank.clone());
+        }
+        // What the bank alone costs: its image less an empty project's.
+        let bank_only = ProjectModel {
+            banks: vec![bank],
+            ..ProjectModel::new()
+        };
+        let bank_bytes = match (
+            bank_only.to_radio_image(),
+            ProjectModel::new().to_radio_image(),
+        ) {
+            (Ok(with), Ok(without)) => Some(with.len().saturating_sub(without.len())),
+            _ => None,
+        };
+        Ok(RepeaterPreview {
+            in_range,
+            taken: near.len(),
+            furthest_km: near.last().map_or(0.0, |(_, km)| *km),
+            bank_bytes,
+            project,
+        })
+    }
+
+    /// Describes the repeater list, what the area would add, and its cost.
     fn repeater_source(&self) -> String {
         if self.repeater_sync.is_some() {
             return "Syncing...".to_owned();
@@ -223,46 +262,72 @@ impl StudioApp {
             list.repeaters.len(),
             age(list.synced)
         );
-        let area = &self.repeater_area;
-        match repeaters::nearby(&list.repeaters, &area.locator, area.radius_km) {
-            Ok(near) => format!("{} within {} km. {synced}", near.len(), area.radius_km),
-            Err(_) => synced,
-        }
+        let Ok(preview) = self.repeater_preview() else {
+            return synced;
+        };
+        let radius = self.repeater_area.radius_km;
+        let taking = if preview.taken < preview.in_range {
+            format!(
+                "{} within {radius} km, nearest {} taken",
+                preview.in_range, preview.taken
+            )
+        } else {
+            format!("{} within {radius} km", preview.in_range)
+        };
+        let bank = preview.bank_bytes.map_or_else(
+            || ", bank too big for the radio".to_owned(),
+            |bytes| {
+                format!(
+                    ", bank {}",
+                    memory_percent((bytes * 1_000).div_ceil(RADIO_IMAGE_BYTES))
+                )
+            },
+        );
+        let total = match preview.project.to_radio_image() {
+            Ok(image) => format!(
+                ", project {} after adding",
+                memory_percent((image.len() * 1_000).div_ceil(RADIO_IMAGE_BYTES))
+            ),
+            Err(_) if too_big(&preview.project) => {
+                ", project too big for the radio after adding".to_owned()
+            }
+            // Another bank does not validate; the usage bar already says so.
+            Err(_) => String::new(),
+        };
+        format!("{taking}{bank}{total}. {synced}")
     }
 
     /// Adds a bank of the repeaters near the locator, nearest first.
     fn add_repeaters(&mut self) {
-        let Some(list) = &self.repeaters else {
-            self.refuse("Sync the repeater list from the ETCC first.");
-            return;
-        };
-        let area = self.repeater_area.clone();
-        let near = match repeaters::nearby(&list.repeaters, &area.locator, area.radius_km) {
-            Ok(near) => near,
+        let preview = match self.repeater_preview() {
+            Ok(preview) => preview,
             Err(error) => {
                 self.refuse(&format!("Cannot add repeaters: {error}."));
                 return;
             }
         };
-        if near.is_empty() {
+        let area = self.repeater_area.clone();
+        if preview.taken == 0 {
             self.status = format!(
                 "No FM repeaters within {} km of {}.",
                 area.radius_km, area.locator
             );
             return;
         }
-        let bank = repeaters::repeater_bank(&area.locator, &near);
-        let furthest = near.last().map_or(0.0, |(_, km)| *km);
-        let count = near.len();
-        if let Some(existing) = self.project.banks.iter().position(|b| b.name == bank.name) {
-            self.project.banks[existing] = bank;
-        } else if self.project.banks.len() >= usize::from(MAX_BANKS) {
+        if preview.project.banks.len() > usize::from(MAX_BANKS) {
             self.status =
                 format!("A radio holds {MAX_BANKS} banks and the project already has them.");
             return;
-        } else {
-            self.project.banks.push(bank);
         }
+        if too_big(&preview.project) {
+            self.refuse(&format!(
+                "{} repeaters would not fit the radio; take fewer.",
+                preview.taken
+            ));
+            return;
+        }
+        self.project = preview.project;
+        let (count, furthest) = (preview.taken, preview.furthest_km);
         self.status = format!(
             "Added {count} repeaters within {} km of {}, nearest first (furthest {furthest:.0} \
              km). Confirm each against the ETCC list before use.",
@@ -798,6 +863,25 @@ impl StudioApp {
     }
 }
 
+/// The repeater bank an area would add, and what it would cost.
+struct RepeaterPreview {
+    /// Repeaters within the radius.
+    in_range: usize,
+    /// How many of them, nearest first, the bank takes.
+    taken: usize,
+    furthest_km: f64,
+    /// Bytes the bank adds to a radio image, when it compiles.
+    bank_bytes: Option<usize>,
+    /// The project with the bank added or replaced.
+    project: ProjectModel,
+}
+
+/// Whether a project validates but does not fit a radio's image, which is
+/// the one way its compile fails once validation has passed.
+fn too_big(project: &ProjectModel) -> bool {
+    matches!(project.to_radio_image(), Err(errors) if errors.iter().any(|e| e.field == "radio image"))
+}
+
 /// Says how long ago a cache was written.
 fn age(written: std::time::SystemTime) -> String {
     let age = written.elapsed().unwrap_or_default().as_secs();
@@ -981,15 +1065,21 @@ impl StudioApp {
                         );
                     }
                 });
+            ui.label("nearest");
+            ui.add(
+                egui::DragValue::new(&mut self.repeater_area.max_channels)
+                    .range(1..=repeaters::MAX_CHANNELS_LIMIT),
+            )
+            .on_hover_text("How many repeaters the bank takes, nearest first");
             // Always enabled: a disabled button here cuts the Tab order
             // short in egui 0.29, and Add explains itself when unsynced.
             if ui
                 .button("Add")
-                .on_hover_text(format!(
-                    "Adds the FM repeaters in range as one bank, nearest first, at most {}; \
-                     each receives the output and transmits on the input with its CTCSS tone",
-                    repeaters::MAX_REPEATER_CHANNELS
-                ))
+                .on_hover_text(
+                    "Adds the nearest FM repeaters in range as one bank, replacing one for \
+                     the same locator; each receives the output and transmits on the input \
+                     with its CTCSS tone",
+                )
                 .clicked()
             {
                 self.add_repeaters();
@@ -2762,8 +2852,22 @@ mod tests {
         app.repeater_area = RepeaterArea {
             locator: "io91wm".to_owned(),
             radius_km: 50,
+            max_channels: 40,
         };
-        assert!(app.repeater_source().starts_with("2 within 50 km."));
+        let source = app.repeater_source();
+        assert!(source.starts_with("2 within 50 km, bank "), "{source}");
+        assert!(source.contains("% after adding."), "{source}");
+
+        // The limit takes the nearest only.
+        app.repeater_area.max_channels = 1;
+        let source = app.repeater_source();
+        assert!(
+            source.starts_with("2 within 50 km, nearest 1 taken, bank "),
+            "{source}"
+        );
+        app.add_repeaters();
+        assert_eq!(app.project.banks.last().unwrap().channels.len(), 1);
+        app.repeater_area.max_channels = 40;
         app.add_repeaters();
         let bank = app.project.banks.last().unwrap();
         assert_eq!(bank.name, "RPT IO91WM");
@@ -2780,6 +2884,36 @@ mod tests {
         app.repeater_area.locator = "nonsense".to_owned();
         app.add_repeaters();
         assert_eq!(app.project.banks.len(), banks + 1);
+
+        // More repeaters than a radio holds: the cost says so.
+        // Full-length names and frequencies too far apart to store short.
+        app.repeaters.as_mut().unwrap().repeaters = (0..500_u32)
+            .map(|n| Repeater {
+                output_hz: 29_000_000 + n * 1_250_000,
+                input_hz: 29_100_000 + n * 1_250_000,
+                ..repeater(&format!("GB3R{n:08}"), 51.52, -0.12)
+            })
+            .collect();
+        app.repeater_area.locator = "IO91WM".to_owned();
+        app.repeater_area.max_channels = crate::repeaters::MAX_CHANNELS_LIMIT;
+        let source = app.repeater_source();
+        assert!(
+            source.contains(", bank 95.0%, project 95.4% after"),
+            "{source}"
+        );
+        // With a second copy already in the project, the two do not fit.
+        let mut copy = app.repeater_preview().unwrap().project.banks.pop().unwrap();
+        "COPY".clone_into(&mut copy.name);
+        app.project.banks.push(copy);
+        let source = app.repeater_source();
+        assert!(
+            source.contains(", bank 95.0%, project too big for the radio after adding."),
+            "{source}"
+        );
+        let before = app.project.banks.len();
+        app.add_repeaters();
+        assert_eq!(app.project.banks.len(), before, "refused, not added");
+        assert!(app.status.contains("would not fit"), "{}", app.status);
     }
 
     #[test]

@@ -169,6 +169,12 @@ programmed TX ranges protect channel and VFO mode alike.
   workspace clippy `-D warnings` clean, `cargo test --workspace` 776 passed
   0 failed 2 ignored; `cargo test -p radio-programmer-gui the_live_etcc --
   --ignored` passed against the ETCC API.
+  Follow-up: the bank's size is chosen (nearest 1–500, default 40, kept
+  with the area), and the row shows the bank's share of radio storage and
+  the project's after adding; Add refuses a bank that would not fit. 40
+  repeaters are about 10%; 386 of the 483 fit an empty radio. Gate: fmt
+  and clippy clean, `cargo test --workspace` 776 passed 0 failed 2
+  ignored; the live ETCC test passed.
 - Step 5 (hardware, partial): on `7.0.22` with PMR446 channels in A and B,
   the other slot was never heard and scan never stopped at the 90 ms dwell;
   programmed at 200 ms both work (`EVID-K5-036`). `RadioConfig::conservative()`

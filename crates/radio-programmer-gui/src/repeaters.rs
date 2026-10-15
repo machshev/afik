@@ -32,14 +32,18 @@ pub const SYSTEMS_URL: &str = "https://api-beta.rsgb.online/all/systems";
 const CACHE_DIR: &str = "etcc";
 const SYSTEMS_FILE: &str = "systems.json";
 const AREA_FILE: &str = "repeater-area";
-/// The most repeaters one bank takes, nearest first: about a quarter of the
-/// radio's image.
-pub const MAX_REPEATER_CHANNELS: usize = 40;
+/// How many repeaters a bank takes before the operator chooses: about a
+/// tenth of the radio's image.
+pub const DEFAULT_MAX_CHANNELS: u16 = 40;
+/// The most the operator can ask for: more than the UK list holds, so the
+/// storage the studio shows, not this, is what limits a bank. About 380
+/// repeaters fit an otherwise empty radio.
+pub const MAX_CHANNELS_LIMIT: u16 = 500;
 /// The radius offered before the operator chooses one, in kilometres.
 pub const DEFAULT_RADIUS_KM: u16 = 50;
 /// The radii the studio offers, in kilometres: from a handheld's reach of
 /// a hilltop repeater up to the whole UK. The bank still takes only the
-/// nearest [`MAX_REPEATER_CHANNELS`].
+/// nearest [`RepeaterArea::max_channels`].
 pub const RADII_KM: [u16; 12] = [
     10,
     20,
@@ -215,8 +219,8 @@ pub fn distance_km(from: (f64, f64), to: (f64, f64)) -> f64 {
     2.0 * EARTH_RADIUS_KM * a.sqrt().asin()
 }
 
-/// The repeaters within `radius_km` of `locator`, nearest first, at most
-/// [`MAX_REPEATER_CHANNELS`] of them, each with its distance in kilometres.
+/// Every repeater within `radius_km` of `locator`, nearest first, each with
+/// its distance in kilometres.
 pub fn nearby<'a>(
     repeaters: &'a [Repeater],
     locator: &str,
@@ -232,7 +236,6 @@ pub fn nearby<'a>(
         .filter(|&(_, km)| km <= f64::from(radius_km))
         .collect();
     near.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.callsign.cmp(&b.0.callsign)));
-    near.truncate(MAX_REPEATER_CHANNELS);
     Ok(near)
 }
 
@@ -372,6 +375,8 @@ pub struct RepeaterArea {
     pub locator: String,
     /// Distance within which repeaters are taken, in kilometres.
     pub radius_km: u16,
+    /// How many of them, nearest first, the bank takes.
+    pub max_channels: u16,
 }
 
 impl Default for RepeaterArea {
@@ -379,6 +384,7 @@ impl Default for RepeaterArea {
         Self {
             locator: String::new(),
             radius_km: DEFAULT_RADIUS_KM,
+            max_channels: DEFAULT_MAX_CHANNELS,
         }
     }
 }
@@ -389,17 +395,26 @@ impl RepeaterArea {
         paths::state_dir().map(|dir| dir.join(AREA_FILE))
     }
 
-    /// Reads `LOCATOR RADIUS_KM`; anything unreadable gives the default.
+    /// Reads `LOCATOR RADIUS_KM MAX_CHANNELS`; anything missing or
+    /// unreadable gives its default, so older files still load.
     pub fn load(file: &Path) -> Self {
         let text = fs::read_to_string(file).unwrap_or_default();
         let mut words = text.split_whitespace();
         let locator = words.next().unwrap_or_default().to_owned();
-        let radius_km = words
-            .next()
-            .and_then(|word| word.parse().ok())
-            .filter(|km| (1..=MAX_RADIUS_KM).contains(km))
-            .unwrap_or(DEFAULT_RADIUS_KM);
-        Self { locator, radius_km }
+        let mut number = |limit: u16, default: u16| {
+            words
+                .next()
+                .and_then(|word| word.parse().ok())
+                .filter(|value| (1..=limit).contains(value))
+                .unwrap_or(default)
+        };
+        let radius_km = number(MAX_RADIUS_KM, DEFAULT_RADIUS_KM);
+        let max_channels = number(MAX_CHANNELS_LIMIT, DEFAULT_MAX_CHANNELS);
+        Self {
+            locator,
+            radius_km,
+            max_channels,
+        }
     }
 
     /// Writes the area for the next start.
@@ -409,7 +424,12 @@ impl RepeaterArea {
             .and_then(|()| {
                 fs::write(
                     file,
-                    format!("{} {}\n", self.locator.trim(), self.radius_km),
+                    format!(
+                        "{} {} {}\n",
+                        self.locator.trim(),
+                        self.radius_km,
+                        self.max_channels
+                    ),
                 )
             })
             .map_err(|error| format!("{}: {error}", file.display()))
@@ -467,7 +487,7 @@ impl SyncJob {
 mod tests {
     use super::{
         distance_km, locator_centre, nearby, parse, repeater_bank, RepeaterArea, RepeaterCache,
-        SYSTEMS_URL,
+        MAX_RADIUS_KM, SYSTEMS_URL,
     };
 
     /// Systems in the shape the ETCC returns, trimmed to the fields used.
@@ -597,6 +617,7 @@ mod tests {
         assert!(near.windows(2).all(|pair| pair[0].1 <= pair[1].1));
         // Brecon is about 230 km away.
         let wide = nearby(&repeaters, "IO91WM", 300).unwrap();
+        assert_eq!(wide.len(), 5, "no limit here; the bank's is the caller's");
         assert_eq!(wide.last().unwrap().0.callsign, "GB3BB");
         assert_eq!(nearby(&repeaters, "IO91WM", 1).unwrap().len(), 1);
         assert!(nearby(&repeaters, "nonsense", 50).is_err());
@@ -642,6 +663,7 @@ mod tests {
         let area = RepeaterArea {
             locator: "IO91WM".to_owned(),
             radius_km: 30,
+            max_channels: 12,
         };
         area.save(&file).unwrap();
         assert_eq!(RepeaterArea::load(&file), area);
@@ -650,12 +672,17 @@ mod tests {
             let area = RepeaterArea {
                 locator: "IO91WM".to_owned(),
                 radius_km,
+                max_channels: 150,
             };
             area.save(&file).unwrap();
             assert_eq!(RepeaterArea::load(&file), area);
         }
         std::fs::write(&file, "IO91WM lots\n").unwrap();
         assert_eq!(RepeaterArea::load(&file).radius_km, 50);
+        // A file from before the channel limit keeps its radius.
+        std::fs::write(&file, "IO91WM 75\n").unwrap();
+        let old = RepeaterArea::load(&file);
+        assert_eq!((old.radius_km, old.max_channels), (75, 40));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -678,6 +705,16 @@ mod tests {
         project.banks.push(repeater_bank("IO91WM", &near));
         assert!(project.validate().is_ok(), "the bank validates");
         project.to_radio_image().expect("the bank fits a radio");
+        // How many of the nearest repeaters a radio holds, for the limit.
+        let all = nearby(&list.repeaters, "IO91WM", MAX_RADIUS_KM).unwrap();
+        let fits = |count: usize| {
+            let mut whole = crate::model::ProjectModel::new();
+            whole.banks.push(repeater_bank("IO91WM", &all[..count]));
+            whole.to_radio_image().ok().map(|image| image.len())
+        };
+        let most = (1..=all.len()).rev().find(|&count| fits(count).is_some());
+        println!("{most:?} of {} repeaters fit a radio", all.len());
+        assert!(most.is_some_and(|most| most >= 100), "{most:?}");
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

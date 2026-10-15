@@ -1774,5 +1774,7 @@ meaning.
   of the operator's locator square to the centre of the repeater's; many
   ETCC locators are four characters, so distances are approximate.
 - "Likely range" is an operator-chosen radius, not a propagation model; the
-  bank takes the nearest 40 so it stays about a quarter of the image. The TX
-  ranges still decide what may transmit.
+  bank takes the nearest N (default 40, about a tenth of the image), and the
+  studio shows what the bank and the project would take before adding,
+  refusing one that does not fit. The TX ranges still decide what may
+  transmit.
