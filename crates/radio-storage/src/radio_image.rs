@@ -1316,6 +1316,20 @@ mod tests {
     }
 
     #[test]
+    fn a_receive_only_duplex_channel_comes_back_listening_to_both_sides() {
+        let mut coast = channel(1, "24", 161_800_000, 157_200_000, Some(0));
+        coast.bandwidth = Bandwidth::Wide;
+        coast.flags = ChannelFlags::default().with(ChannelFlags::RECEIVE_ONLY_DUPLEX, true);
+        let coast = record(coast);
+        let image = compiled(&[coast], &[]);
+        let index = index(&image).expect("index");
+        let back = index.channel_at(reader(&image), 0).unwrap();
+        same_channel(&back, &coast);
+        assert!(back.is_receive_only_duplex());
+        assert_eq!(back.transmit().as_hz(), 157_200_000);
+    }
+
+    #[test]
     fn a_host_reads_back_each_bank_and_plan_it_wrote() {
         let image = compiled(&pmr(), &[plan()]);
         let index = index(&image).expect("index");

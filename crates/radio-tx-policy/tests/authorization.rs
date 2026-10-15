@@ -320,6 +320,14 @@ fn analog_fm_only() {
 }
 
 #[test]
+fn a_receive_only_channel_never_transmits() {
+    let mut candidate = request();
+    assert!(policy().authorise(&candidate).is_ok());
+    candidate.receive_only = true;
+    denied(&candidate, TxDenied::ReceiveOnly);
+}
+
+#[test]
 fn every_changed_request_fact_invalidates_the_token() {
     let policy = policy();
     let original = request();

@@ -1905,7 +1905,7 @@ mod tests {
             (30, 3),
             (31, 2),
             (32, 3),
-            (38, 0x20),
+            (38, 0x40),
         ] {
             assert_eq!(
                 decode_channel(&mutate(index, value)),

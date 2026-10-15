@@ -299,6 +299,8 @@ pub enum TxDenied {
     Power,
     /// Only analog FM is transmitted.
     Modulation,
+    /// The selected channel only receives.
+    ReceiveOnly,
     /// Hardware limits are absent, malformed, or exceeded.
     Hardware,
     /// Calibration limits are absent, malformed, or exceeded.
