@@ -713,7 +713,7 @@ impl<B: RegisterBus> Bk4819<B> {
                     self.write(REG_DEMODULATOR_2A, 0x7434)?;
                 }
             }
-            Modulation::Fm | Modulation::Usb => {
+            Modulation::Fm | Modulation::Usb | Modulation::Broadcast => {
                 self.write(REG_AM_DEMODULATOR, am_control & !1)?;
                 if legacy {
                     self.write(REG_DEMODULATOR_42, 0x6B5A)?;
@@ -856,6 +856,8 @@ impl<B: RegisterBus> Bk4819<B> {
             AfOutput::Demodulated => match modulation {
                 Modulation::Fm | Modulation::Am => AF_FM,
                 Modulation::Usb => AF_BASEBAND2,
+                // Broadcast audio comes from the BK1080, never this chip.
+                Modulation::Broadcast => AF_MUTE,
             },
         };
         let fixed = self.profile.af_fixed_bits;

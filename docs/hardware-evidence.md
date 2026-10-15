@@ -3308,3 +3308,25 @@ the proven hardware reference.
 - **Scope:** relative listening only; deviation was not measured. Which of
   the six registers mattered was not isolated. The K1 keeps them because its
   Armel driver writes them; K1 speech level is untested on these builds.
+
+### EVID-BCFM-066-001 — BK1080 broadcast receiver on K5 and K1
+
+- **Source:** K5 `driver/bk1080.c`, `driver/gpio.h:48`, `board.c:91-112`,
+  `app/fm.c` (`armel/uv-k5-firmware-custom` tree in `../uv-k5-firmware-custom`);
+  K1 `App/driver/bk1080.c`, `App/driver/i2c.c`, `App/board.c:119-124`
+  (pin `fe9c4e9`, `EVID-TX056-003`).
+- **K5:** BK1080 at I2C address `0x80` on the EEPROM bus (PA10 clock, PA11
+  data); PB15 output, low enables the chip, high at boot and on power-down.
+- **K1:** same address, its own bit-banged I2C on PF5 clock and PF6 data,
+  push-pull with SDA turned to input to read; no enable pin.
+- **Register use (both):** the 34-word table written from register 0, 250 ms,
+  register 25 `0xA83C` then `0xA8BC`, 60 ms; register 5 `0x0A1F`; tune by
+  register 3 = channel then channel `| 0x8000` 10 ms later, channel in
+  100 kHz units above the band floor (band 3 64–76 MHz, band 1 76–108 MHz, in
+  register 5 bits 7:6). Mute register 2 `0x4201`, unmute `0x0201`, power-down
+  `0x0241`. Register byte order is high byte first; the register address is
+  sent shifted left one with the read/write bit.
+- **Audio:** broadcast mode switches the speaker amplifier on and leaves the
+  BK4819 receiving; its audio is muted while the squelch is closed.
+- **Confidence:** high that this is the reference behaviour (proven firmware);
+  unobserved on AFIK hardware.

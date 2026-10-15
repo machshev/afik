@@ -1778,3 +1778,22 @@ meaning.
   studio shows what the bank and the project would take before adding,
   refusing one that does not fit. The TX ranges still decide what may
   transmit.
+
+## ADR-105 — FM broadcast is a bank modulation, played by the BK1080
+
+- **Date:** 2026-10-15
+- **Status:** accepted, operator request (`BCFM-066`).
+- Broadcast stations are ordinary channels and banks, programmed in the
+  studio like any other. Modulation value 3, `Broadcast`, marks them; it fits
+  the existing two mode bits, so the image format is unchanged and an older
+  radio refuses such an image rather than misreading it.
+- A broadcast channel is simplex, 64–108 MHz, on the 100 kHz raster the
+  reference firmware tunes the BK1080 on (`EVID-BCFM-066-001`); channel
+  records and generated plans refuse anything else, so the studio refuses it
+  before writing and the radio again on load. The receiver is chosen by
+  modulation, not frequency, so 4 m NFM near 70 MHz stays on the BK4819.
+- TX on a broadcast channel is refused by `radio-tx-policy`, which permits
+  only analog FM.
+- Both radios have a BK1080 (K5: shared EEPROM I2C on PA10/PA11, enable PB15
+  active low; K1: its own I2C on PF5/PF6, no enable), driven from the Armel
+  sources' register table.

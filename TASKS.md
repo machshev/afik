@@ -3106,3 +3106,18 @@
      6 dB per unit, S9+10 to S9+60); the slot meter draws one segment per S
      unit, a taller one per 10 dB over S9, the reading and the dBm.
   2. Flash and compare against a known signal (`RISK-043`).
+
+## BCFM-066 — FM broadcast receive on K5 and K1
+
+- **Status:** active (2026-10-15), operator request (`ADR-105`).
+- **Objective:** listen to FM broadcast on both radios through their BK1080,
+  with stations programmed in the studio as ordinary banks.
+- **Steps (commit after each):**
+  1. `Modulation::Broadcast`; channels and plans refuse broadcast off
+     64–108 MHz, off the 100 kHz raster or with a TX frequency; studio
+     modulation choice and FM broadcast default sets. Done.
+  2. `radio-bk1080` driver over a register bus, host tested.
+  3. K5 bus (shared EEPROM I2C, PB15 enable) and K1 bus (PF5/PF6).
+  4. The interface plays a broadcast slot on the BK1080, BK4819 audio muted,
+     and returns to the BK4819 for any other channel; simulator support.
+  5. Version bump, flash both radios and listen.

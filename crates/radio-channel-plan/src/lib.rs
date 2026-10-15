@@ -6,7 +6,7 @@
 use core::{fmt, str};
 use radio_domain::{
     ActiveChannel, Bandwidth, BankId, ChannelId, DomainError, Frequency, FrequencyStep, Modulation,
-    Offset, PowerLevel, Tone,
+    Offset, PowerLevel, Tone, BROADCAST_RASTER_HZ,
 };
 
 /// Maximum encoded byte length of a generated bank name.
@@ -65,6 +65,9 @@ pub enum PlanError {
     CallingOutOfRange,
     /// A stored plan named an encoding family this build does not define.
     UnsupportedEncoding,
+    /// A broadcast channel was off the broadcast receiver's 64–108 MHz,
+    /// 100 kHz raster, or had a transmit frequency of its own.
+    Broadcast,
 }
 
 impl fmt::Display for PlanError {
@@ -89,6 +92,8 @@ impl fmt::Display for PlanError {
                 formatter.write_str("unsupported channel-plan encoding family")
             }
             Self::CallingOutOfRange => formatter.write_str("calling-channel index is outside bank"),
+            Self::Broadcast => formatter
+                .write_str("broadcast channels must be simplex, 64-108 MHz, on a 100 kHz raster"),
         }
     }
 }
@@ -393,6 +398,14 @@ impl GeneratedBank {
         // a constructed plan can overflow the frequency representation.
         base.checked_apply_offset(offset)?;
         last.checked_apply_offset(offset)?;
+        if matches!(template.modulation, Modulation::Broadcast)
+            && (offset.as_hz() != 0
+                || spacing.as_hz() % BROADCAST_RASTER_HZ != 0
+                || !Modulation::is_broadcast_frequency(base)
+                || !Modulation::is_broadcast_frequency(last))
+        {
+            return Err(PlanError::Broadcast);
+        }
         let plan = Self {
             id,
             name,
@@ -817,6 +830,12 @@ impl ChannelRecord {
         validate_tone(definition.tx_tone)?;
         if definition.bank.is_some_and(|bank| bank.get() >= MAX_BANKS) {
             return Err(PlanError::BankOutOfRange);
+        }
+        if matches!(definition.modulation, Modulation::Broadcast)
+            && (definition.transmit != definition.receive
+                || !Modulation::is_broadcast_frequency(definition.receive))
+        {
+            return Err(PlanError::Broadcast);
         }
         Ok(Self {
             id: definition.id,
@@ -1487,6 +1506,44 @@ mod tests {
             inverted: false,
         };
         assert_eq!(ChannelRecord::new(bad_code), Err(PlanError::InvalidTone));
+    }
+
+    #[test]
+    fn broadcast_channels_stay_on_the_broadcast_receivers_raster() {
+        let station = |hz| {
+            let mut definition = definition();
+            definition.receive = Frequency::from_hz(hz).unwrap();
+            definition.transmit = definition.receive;
+            definition.modulation = Modulation::Broadcast;
+            ChannelRecord::new(definition)
+        };
+        assert!(station(97_600_000).is_ok());
+        assert_eq!(station(97_650_000), Err(PlanError::Broadcast));
+        assert_eq!(station(145_000_000), Err(PlanError::Broadcast));
+        let mut split = definition();
+        split.modulation = Modulation::Broadcast;
+        split.receive = Frequency::from_hz(97_600_000).unwrap();
+        split.transmit = Frequency::from_hz(97_700_000).unwrap();
+        assert_eq!(ChannelRecord::new(split), Err(PlanError::Broadcast));
+
+        let band = |base, spacing, count| {
+            let spacing = FrequencyStep::from_hz(spacing).unwrap();
+            let mut template = ChannelTemplate::narrow_fm(spacing);
+            template.modulation = Modulation::Broadcast;
+            GeneratedBank::linear_simplex_with(
+                BankId::new(1),
+                BankName::new("FM").unwrap(),
+                Frequency::from_hz(base).unwrap(),
+                spacing,
+                count,
+                template,
+            )
+        };
+        let uk = band(87_500_000, 100_000, 206).unwrap();
+        assert_eq!(uk.channel(205).unwrap().receive.as_hz(), 108_000_000);
+        assert_eq!(band(87_500_000, 100_000, 207), Err(PlanError::Broadcast));
+        assert_eq!(band(87_500_000, 50_000, 2), Err(PlanError::Broadcast));
+        assert_eq!(band(63_900_000, 100_000, 2), Err(PlanError::Broadcast));
     }
 
     #[test]

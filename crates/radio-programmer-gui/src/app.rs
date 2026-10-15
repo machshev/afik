@@ -2065,11 +2065,13 @@ fn modulation_editor(ui: &mut egui::Ui, modulation: &mut Modulation) {
             Modulation::Fm => "FM",
             Modulation::Am => "AM",
             Modulation::Usb => "USB",
+            Modulation::Broadcast => "Broadcast FM",
         })
         .show_ui(ui, |ui| {
             ui.selectable_value(modulation, Modulation::Fm, "FM");
             ui.selectable_value(modulation, Modulation::Am, "AM");
             ui.selectable_value(modulation, Modulation::Usb, "USB");
+            ui.selectable_value(modulation, Modulation::Broadcast, "Broadcast FM");
         });
 }
 

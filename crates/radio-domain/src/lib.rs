@@ -163,6 +163,26 @@ pub enum Modulation {
     Am = 1,
     /// Upper-sideband receive-only demodulation.
     Usb = 2,
+    /// Wide FM broadcast, received by the separate broadcast receiver and
+    /// never transmitted (`ADR-105`).
+    Broadcast = 3,
+}
+
+/// Lowest broadcast receive frequency: the bottom of the BK1080's 64–76 MHz
+/// band.
+pub const BROADCAST_FIRST_HZ: u32 = 64_000_000;
+/// Highest broadcast receive frequency: the top of its 76–108 MHz band.
+pub const BROADCAST_LAST_HZ: u32 = 108_000_000;
+/// The broadcast receiver tunes in whole 100 kHz channels.
+pub const BROADCAST_RASTER_HZ: u32 = 100_000;
+
+impl Modulation {
+    /// Whether the broadcast receiver can tune `frequency`: inside
+    /// [`BROADCAST_FIRST_HZ`]..=[`BROADCAST_LAST_HZ`] on the 100 kHz raster.
+    pub const fn is_broadcast_frequency(frequency: Frequency) -> bool {
+        let hz = frequency.as_hz();
+        hz >= BROADCAST_FIRST_HZ && hz <= BROADCAST_LAST_HZ && hz % BROADCAST_RASTER_HZ == 0
+    }
 }
 
 impl TryFrom<u8> for Modulation {
@@ -173,6 +193,7 @@ impl TryFrom<u8> for Modulation {
             0 => Ok(Self::Fm),
             1 => Ok(Self::Am),
             2 => Ok(Self::Usb),
+            3 => Ok(Self::Broadcast),
             _ => Err(DomainError::OutOfRange),
         }
     }
@@ -597,7 +618,15 @@ mod tests {
         assert_eq!(SquelchLevel::new(10), Err(DomainError::OutOfRange));
 
         assert_eq!(Modulation::try_from(2), Ok(Modulation::Usb));
-        assert_eq!(Modulation::try_from(3), Err(DomainError::OutOfRange));
+        assert_eq!(Modulation::try_from(3), Ok(Modulation::Broadcast));
+        assert_eq!(Modulation::try_from(4), Err(DomainError::OutOfRange));
+        let broadcast = |hz| Modulation::is_broadcast_frequency(Frequency::from_hz(hz).unwrap());
+        assert!(broadcast(64_000_000));
+        assert!(broadcast(97_600_000));
+        assert!(broadcast(108_000_000));
+        assert!(!broadcast(63_900_000));
+        assert!(!broadcast(108_100_000));
+        assert!(!broadcast(97_650_000));
         assert_eq!(Bandwidth::try_from(1), Ok(Bandwidth::Wide));
         assert_eq!(Bandwidth::try_from(2), Err(DomainError::OutOfRange));
         assert_eq!(PowerLevel::try_from(5), Ok(PowerLevel::High));

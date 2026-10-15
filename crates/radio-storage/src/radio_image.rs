@@ -984,7 +984,7 @@ mod tests {
     };
     use radio_channel_plan::{
         BankFlags, BankName, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
-        ChannelRecord, GeneratedBank,
+        ChannelRecord, ChannelTemplate, GeneratedBank,
     };
     use radio_domain::{
         Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel,
@@ -1260,6 +1260,32 @@ mod tests {
             "a plan names its own bank"
         );
         assert!(index.bank_name(reader(&image), BankId::new(1)).is_none());
+    }
+
+    #[test]
+    fn broadcast_stations_and_plans_come_back_as_broadcast() {
+        let mut station = channel(1, "RADIO 4", 93_500_000, 93_500_000, Some(0));
+        station.modulation = Modulation::Broadcast;
+        station.bandwidth = Bandwidth::Wide;
+        let station = record(station);
+        let spacing = FrequencyStep::from_hz(100_000).unwrap();
+        let mut template = ChannelTemplate::narrow_fm(spacing);
+        template.modulation = Modulation::Broadcast;
+        let band = GeneratedBank::linear_simplex_with(
+            BankId::new(2),
+            BankName::new("FM").unwrap(),
+            Frequency::from_hz(87_500_000).unwrap(),
+            spacing,
+            206,
+            template,
+        )
+        .unwrap();
+        let image = compiled(&[station], &[band]);
+        let index = index(&image).expect("index");
+        same_channel(&index.channel_at(reader(&image), 0).unwrap(), &station);
+        let last = index.channel_at(reader(&image), 206).unwrap();
+        assert_eq!(last.modulation(), Modulation::Broadcast);
+        assert_eq!(last.receive().as_hz(), 108_000_000);
     }
 
     #[test]

@@ -502,6 +502,22 @@ const SATELLITES: PresetSplitList = PresetSplitList {
     step_hz: 5_000,
 };
 
+/// A broadcast plan on the 100 kHz raster, received by the BK1080 and never
+/// transmitted (`ADR-105`).
+const fn broadcast(name: &'static str, base_hz: u32, channels: u16) -> PresetPlan {
+    PresetPlan {
+        modulation: Modulation::Broadcast,
+        bandwidth: Bandwidth::Wide,
+        ..listen(name, "FM", 1, base_hz, 100_000, channels)
+    }
+}
+
+/// FM broadcast as in Europe and the Americas: 87.5 to 108.0 MHz.
+const FM_BROADCAST: PresetPlan = broadcast("FM BROADCAST", 87_500_000, 206);
+
+/// FM broadcast including the Japanese band: 76.0 to 108.0 MHz.
+const FM_BROADCAST_WIDE: PresetPlan = broadcast("FM 76-108", 76_000_000, 321);
+
 /// Every selectable preset in display order.
 pub const PRESETS: &[Preset] = &[
     Preset {
@@ -605,6 +621,22 @@ pub const PRESETS: &[Preset] = &[
                  digipeater on 145.825 MHz.",
         plans: &[],
         lists: &[APRS],
+        splits: &[],
+    },
+    Preset {
+        name: "FM broadcast",
+        detail: "87.5-108.0 MHz at 100 kHz, 206 stations in one stored plan, \
+                 played through the broadcast receiver. Never transmits.",
+        plans: &[FM_BROADCAST],
+        lists: &[],
+        splits: &[],
+    },
+    Preset {
+        name: "FM broadcast 76-108 MHz",
+        detail: "76.0-108.0 MHz at 100 kHz, 321 stations in one stored plan, \
+                 covering the Japanese band as well. Never transmits.",
+        plans: &[FM_BROADCAST_WIDE],
+        lists: &[],
         splits: &[],
     },
     Preset {
@@ -938,7 +970,7 @@ fn split_bank<'a>(
 mod tests {
     use super::PRESETS;
     use crate::model::{BankKind, ProjectModel, ValidatedBank, RADIO_IMAGE_BYTES};
-    use radio_domain::Bandwidth;
+    use radio_domain::{Bandwidth, Modulation};
 
     #[test]
     fn every_tx_range_preset_validates_and_covers_its_calling_frequencies() {
@@ -1183,6 +1215,28 @@ mod tests {
             plan.channel_record(759).unwrap().receive().as_hz(),
             136_975_000
         );
+    }
+
+    #[test]
+    fn the_broadcast_presets_span_their_bands_on_the_broadcast_receiver() {
+        for (name, first, last) in [
+            ("FM broadcast", 87_500_000, 108_000_000),
+            ("FM broadcast 76-108 MHz", 76_000_000, 108_000_000),
+        ] {
+            let preset = PRESETS.iter().find(|p| p.name() == name).expect(name);
+            let project = preset.build();
+            assert_eq!(project.banks.len(), 1, "{name} is one stored plan");
+            let ValidatedBank::Generated(plan) = project.banks[0].validate(0).expect("plan") else {
+                panic!("{name} is a generated plan");
+            };
+            let count = plan.channel_count();
+            let first_record = plan.channel_record(0).unwrap();
+            let last_record = plan.channel_record(count - 1).unwrap();
+            assert_eq!(first_record.receive().as_hz(), first);
+            assert_eq!(last_record.receive().as_hz(), last);
+            assert_eq!(first_record.modulation(), Modulation::Broadcast);
+            assert_eq!(last_record.transmit(), last_record.receive());
+        }
     }
 
     #[test]

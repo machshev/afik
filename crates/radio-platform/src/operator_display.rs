@@ -764,7 +764,7 @@ pub fn place_label(bank: Option<u16>, number: u16) -> [u8; 7] {
 }
 
 /// Renders a modulation as the stock firmware names it: `NFM`, ` FM`, ` AM`
-/// or `USB`.
+/// or `USB`, with broadcast as `WFM`.
 #[must_use]
 pub fn modulation_label(modulation: Modulation, bandwidth: Bandwidth) -> [u8; 3] {
     match (modulation, bandwidth) {
@@ -772,6 +772,7 @@ pub fn modulation_label(modulation: Modulation, bandwidth: Bandwidth) -> [u8; 3]
         (Modulation::Fm, Bandwidth::Wide) => *b" FM",
         (Modulation::Am, _) => *b" AM",
         (Modulation::Usb, _) => *b"USB",
+        (Modulation::Broadcast, _) => *b"WFM",
     }
 }
 
@@ -1682,7 +1683,12 @@ mod operating_screen_tests {
         fixed.extend_from_slice(b"DUAL WATCH OFF");
         fixed.extend_from_slice(&place_label(None, 12));
         fixed.extend_from_slice(&place_label(Some(3), 999));
-        for modulation in [Modulation::Fm, Modulation::Am, Modulation::Usb] {
+        for modulation in [
+            Modulation::Fm,
+            Modulation::Am,
+            Modulation::Usb,
+            Modulation::Broadcast,
+        ] {
             for bandwidth in [Bandwidth::Narrow, Bandwidth::Wide] {
                 fixed.extend_from_slice(&modulation_label(modulation, bandwidth));
             }

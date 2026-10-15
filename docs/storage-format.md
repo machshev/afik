@@ -181,7 +181,7 @@ RX tone kind   : u8  (0 none, 1 CTCSS, 2 DCS, 3 DCS inverted)
 RX tone value  : u16 little endian (CTCSS tenths of a hertz, or DCS octal code)
 TX tone kind   : u8
 TX tone value  : u16 little endian
-modulation     : u8  (0 FM, 1 AM, 2 USB)
+modulation     : u8  (0 FM, 1 AM, 2 USB, 3 broadcast)
 bandwidth      : u8  (0 narrow, 1 wide)
 power          : u8  (0x80 | level 0-5: 20, 125, 250, 500 mW, 2, 5 W;
                       untagged 0, 1, 2 is an older low, medium, high:

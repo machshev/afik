@@ -93,6 +93,21 @@ programmed TX ranges protect channel and VFO mode alike.
   refused. On the K1, repeat in VFO mode. Measure Mid/High on a dummy load
   (`RISK-040`). Then the K1's NOR erase plan; then CTCSS/DCS.
 
+**`BCFM-066` is active alongside** (2026-10-15, operator request,
+`ADR-105`): FM broadcast on K5 and K1 through their BK1080, stations
+programmed as ordinary banks.
+
+- Step 1: `Modulation::Broadcast` (mode value 3, image format unchanged).
+  Channel records and generated plans refuse broadcast off 64–108 MHz, off
+  the 100 kHz raster or with a TX frequency of its own; TX is refused by the
+  policy's FM-only check. The studio offers Broadcast FM as a modulation and
+  two default sets, FM broadcast (87.5–108 MHz, 206 stations) and 76–108 MHz
+  (321), each one plan. Gate: `cargo fmt --all --check` clean, `cargo clippy
+  --workspace --all-targets -- -D warnings` clean, `cargo test --workspace`
+  780 passed 0 failed, `tool/build-k5.sh --release` and
+  `tool/build-k1.sh --release` pass.
+- Next: step 2, the `radio-bk1080` driver over a register bus.
+
 **`DUALW-064` is active alongside** (2026-10-14, operator request,
 `ADR-102`): two slots and dual watch.
 
