@@ -74,6 +74,14 @@ const RF_SAMPLE_MILLISECONDS: u64 = 60;
 /// This must not quietly become a second one.
 const SCAN_SAMPLE_MILLISECONDS: u64 = 5;
 
+/// Interval between broadcast receiver samples when not scanning.
+///
+/// A reading only feeds the meter once the station is playing, and each one
+/// is bit-banged bus traffic that beat through the programme at the
+/// 60 ms receive interval (`7.0.32`); the reference firmware reads nothing
+/// while it plays.
+const BROADCAST_SAMPLE_MILLISECONDS: u64 = 1_000;
+
 /// Interval between user interface passes.
 const LOOP_MILLISECONDS: u64 = 5;
 
@@ -155,6 +163,10 @@ struct Receiver<B: RegisterBus, S: Speaker, C: BroadcastChip> {
     /// The broadcast audio passes whether or not a station is detected,
     /// because the squelch is open or the operator is monitoring.
     broadcast_open: bool,
+    /// A station has been heard on this broadcast channel, so its audio
+    /// stays on until the channel changes. Gating each reading chopped the
+    /// programme whenever one fell short of the station test (`7.0.32`).
+    broadcast_heard: bool,
     /// The receive audio amplifier.
     ///
     /// It is claimed the first time a channel is tuned rather than at boot,
@@ -180,6 +192,7 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
             broadcast,
             on_broadcast: false,
             broadcast_open: false,
+            broadcast_heard: false,
             speaker,
             faulted: false,
             started: false,
@@ -370,6 +383,7 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
         self.asleep = false;
         self.on_broadcast = true;
         self.broadcast_open = setup.squelch.is_open() || radio_wide.is_open();
+        self.broadcast_heard = false;
         self.last_tune = Some((setup, radio_wide));
         self.frequency_hz = setup.frequency.as_hz();
         self.squelch_open = false;
@@ -391,9 +405,11 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
             // The BK1080 reports RSSI in dBuV; the meter takes the BK4819's
             // count, dBm * 2 + 320, and 0 dBm is 107 dBuV at 50 ohms.
             self.rssi_raw = u16::from(signal.rssi) * 2 + 106;
+            // The reading still tells a scan whether this is a station.
             self.squelch_open = self.broadcast_open || signal.is_station();
+            self.broadcast_heard |= self.squelch_open;
             if gate_locally {
-                self.gate_audio();
+                self.speaker.set_enabled(self.broadcast_heard);
             }
             return Some(ReceiveObservation {
                 squelch_open: self.squelch_open,
@@ -1651,6 +1667,8 @@ pub async fn run<D, K, B, F, W, S, V, M>(
             next_sample = Instant::now()
                 + Duration::from_millis(if scanning || watching {
                     SCAN_SAMPLE_MILLISECONDS
+                } else if receiver.on_broadcast {
+                    BROADCAST_SAMPLE_MILLISECONDS
                 } else {
                     RF_SAMPLE_MILLISECONDS
                 });
@@ -2664,6 +2682,13 @@ mod tests {
         receiver.broadcast.station = true;
         assert!(receiver.observe(true).unwrap().squelch_open);
         assert!(receiver.speaker.on);
+        // A reading short of the station test still tells a scan, but the
+        // programme plays on rather than chopping.
+        receiver.broadcast.station = false;
+        assert!(!receiver.observe(true).unwrap().squelch_open);
+        assert!(receiver.speaker.on, "a heard station keeps playing");
+        receiver.broadcast.station = true;
+        receiver.observe(true).unwrap();
         // Battery save leaves a playing programme alone.
         receiver.sleep();
         assert!(!receiver.asleep && receiver.speaker.on);
