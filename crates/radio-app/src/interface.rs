@@ -409,6 +409,16 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
         }
     }
 
+    /// Whether the run loop should sample the receiver at all.
+    ///
+    /// A broadcast station once heard plays on unread unless a scan or dual
+    /// watch needs the readings: even one read a second beat through the
+    /// programme (`7.0.33`), and the reference firmware reads nothing while
+    /// it plays. The meter keeps the last reading.
+    const fn wants_sample(&self, scanning_or_watching: bool) -> bool {
+        !(self.on_broadcast && self.broadcast_heard) || scanning_or_watching
+    }
+
     /// Samples metrics from the tuned receiver.
     #[allow(clippy::single_match_else)]
     fn observe(&mut self, gate_locally: bool) -> Option<ReceiveObservation> {
@@ -1673,6 +1683,12 @@ pub async fn run<D, K, B, F, W, S, V, M>(
         } else if receiver.audio_routed
             && !receiver.asleep
             && Instant::now() >= next_sample
+            && receiver.wants_sample(
+                watching
+                    || activation.as_ref().is_some_and(|(controller, _)| {
+                        matches!(controller.state(), ReceiveState::Scanning(_))
+                    }),
+            )
             && bus_available()
         {
             let was_open = receiver.squelch_open;
@@ -2804,9 +2820,14 @@ mod tests {
         // Between stations the squelch stays shut; a station opens it.
         let reading = receiver.observe(true).unwrap();
         assert!(!reading.squelch_open && !receiver.speaker.on);
+        assert!(receiver.wants_sample(false), "still looking for a station");
         receiver.broadcast.station = true;
         assert!(receiver.observe(true).unwrap().squelch_open);
         assert!(receiver.speaker.on);
+        // A playing station is left unread unless a scan or dual watch needs
+        // the readings.
+        assert!(!receiver.wants_sample(false));
+        assert!(receiver.wants_sample(true));
         // A reading short of the station test still tells a scan, but the
         // programme plays on rather than chopping.
         receiver.broadcast.station = false;
