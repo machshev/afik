@@ -262,6 +262,7 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
     fn set_chip_audio(&mut self, enabled: bool) {
         if self.on_broadcast {
             self.broadcast.set_muted(!enabled);
+            self.audio_routed = enabled;
             if !enabled {
                 self.set_speaker(false);
             }
@@ -381,6 +382,10 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
         self.frequency_hz = setup.frequency.as_hz();
         self.squelch_open = false;
         if self.broadcast.tune(setup.frequency) {
+            // The receive audio now comes from the BK1080. The run loop only
+            // samples routed audio, and without samples the squelch never
+            // opened: `7.0.29` tuned stations in silence.
+            self.audio_routed = true;
             self.speaker.claim();
             self.gate_audio();
         }
@@ -1512,7 +1517,8 @@ pub async fn run<D, K, B, F, W, S, V, M>(
                 || shell.entry().is_some()
                 || pending.is_some()
                 || pending_operator_squelch.is_some()
-                || !receiver.audio_routed;
+                || !receiver.audio_routed
+                || receiver.on_broadcast;
             let save_ratio = programmed.config().battery_save_ratio;
             match power_save.poll(now, save_ratio, active) {
                 Some(power_save::Action::Sleep) => receiver.sleep(),
@@ -2715,7 +2721,10 @@ mod tests {
             receiver.speaker.claimed && !receiver.speaker.on,
             "silent until a reading"
         );
-        assert!(!receiver.audio_routed, "the BK4819's audio stays off");
+        assert!(
+            receiver.audio_routed,
+            "the BK1080's audio is routed, so the run loop samples it"
+        );
         // Stepping to the next station leaves the sleeping BK4819 alone.
         receiver.tune(
             setup(97_700_000, Modulation::Broadcast),
@@ -2735,6 +2744,9 @@ mod tests {
         assert!(!receiver.asleep && receiver.speaker.on);
         receiver.set_chip_audio(false);
         assert!(receiver.broadcast.muted && !receiver.speaker.on);
+        assert!(!receiver.audio_routed);
+        receiver.set_chip_audio(true);
+        assert!(!receiver.broadcast.muted && receiver.audio_routed);
 
         receiver.tune(
             setup(145_500_000, Modulation::Fm),
