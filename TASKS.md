@@ -3022,6 +3022,13 @@
      inclusive; `a3cc2c1` tone squelch from serviced interrupts and the tone
      scan on untoned channels; `55d49ff` packed tone tables; `b3c8f82` RX tone
      gating and the tone row and meter display. Unobserved (`RISK-046`).
+     Fix (operator report, `7.0.30`): GB3EL opened with its tone, but its
+     toned output went silent on the untoned channel; untoned receive now
+     uses the reference's tail detection, not the tone scan, and the heard
+     tone is no longer shown (`83328d7`, `7.0.31`).
+  2a. Operator request (2026-10-15): a channel and tone detect screen on
+     F 4 (FC), which runs `Bk4819::start_tone_scan` and `detected_tone` only
+     while it is open.
   3. Flash; on the bench, compare the levels and check deviation on the SDR.
      Replace nominal milliwatts with measurements where a power meter is
      available.

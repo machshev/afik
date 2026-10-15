@@ -417,6 +417,24 @@ failed, `tool/build-k5.sh --release` (flash end `0x0000ec7c`) and
 in `7.0.28` with `BCFM-066`. Next: on a repeater, check it opens with its
 tone and that `T`/`R` and the heard tone show (`RISK-046`).
 
+Fix (operator report, `7.0.30`): the K5 opened GB3EL, heard on another
+radio, but never heard its output; a brief tone showed and the meter fell.
+Since `a3cc2c1` an untoned channel kept the chip in the reference's
+tone-scan `REG_51` (`0x0300`); it now writes Armel's `CODE_TYPE_OFF` words,
+the chip's CTCSS `REG_51` and 55 Hz tail detection (`REG_07 = 0x21CE`), and
+the heard-tone readout is gone (`83328d7`; the operator wants a tone
+detect screen on F 4 instead, `TXK5-059` step 2a). Gate: `cargo fmt --all
+--check` clean, workspace clippy `-D warnings` clean, `cargo test
+--workspace` 816 passed 0 failed 2 ignored, `tool/build-k5.sh --release`
+(image end `0x0000e894`) and `tool/build-k1.sh --release` (71980 bytes)
+pass. `7.0.31` (`21cf881`) flashed to the K5 (bootloader `2.00.06`, CRC-32
+`38c26eca`, 240/240 pages acknowledged, not read back), replacing `7.0.30`.
+`nix develop path:.` failed copying the tree into a full store (23 GB free),
+so the flasher ran under `cargo run` in the existing shell. Next: on GB3EL,
+key up and check the kerchunk and other users are heard (`RISK-046`); also
+check WFM audio, since `BCFM-066`'s broadcast fix (`67ff234`) is still
+unobserved on hardware.
+
 **`TXK5-059` was paused** (2026-10-14) for `TXRANGE-062`; `TXK1-060` was started alongside.
 
 - K5 `7.0.2` and K1 `6.4T` are flashed. Both key up on PMR446 (`EVID-TX058-001`);

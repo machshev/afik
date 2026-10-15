@@ -1205,4 +1205,8 @@ lowered to the highest level within it (operator request), by nominal figures.
   shows the input frequency and tone; listen on a toned channel with and
   without the tone; receive a toned and a DCS signal on an untoned channel
   and check the meter row shows them and audio is unchanged.
+- 2026-10-15, `7.0.30`: the K5 opened GB3EL (heard on another radio), so
+  TX tone and split work; its toned output then went silent on the untoned
+  channel while the tone scan `REG_51` was in force. `7.0.31` drops the scan
+  from ordinary receive; hearing GB3EL on it confirms the cause.
 
