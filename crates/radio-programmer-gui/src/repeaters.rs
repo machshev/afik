@@ -86,9 +86,9 @@ pub struct Repeater {
     pub ctcss_tenths_hz: Option<u16>,
     /// A 25 kHz channel rather than 12.5 kHz.
     pub wide: bool,
-    /// Latitude of its locator square's centre, in degrees north.
+    /// Latitude of its grid square's centre, in degrees north.
     pub latitude: f64,
-    /// Longitude of its locator square's centre, in degrees east.
+    /// Longitude of its grid square's centre, in degrees east.
     pub longitude: f64,
 }
 
@@ -98,6 +98,10 @@ pub struct Repeater {
 /// output), carries analogue FM, and the radio can receive both its output and
 /// its input. Whether a channel may transmit is still decided by the
 /// programmed TX ranges.
+///
+/// A repeater is placed at its national grid reference, a 1 km square, where
+/// the ETCC gives one. Its locator is the fallback: about a quarter of them
+/// are only a 4-character square, up to 80 km from the repeater.
 pub fn parse(json: &str) -> Result<Vec<Repeater>, String> {
     let systems = match serde_json::from_str(json) {
         Ok(Value::Object(mut body)) => match body.remove("data") {
@@ -123,7 +127,11 @@ pub fn parse(json: &str) -> Result<Vec<Repeater>, String> {
                 .is_some_and(|modes| modes.iter().any(|mode| mode.as_str() == Some("A")))
         })
         .filter_map(|system| {
-            let (latitude, longitude) = locator_centre(text(system, "locator")?).ok()?;
+            let (latitude, longitude) = system
+                .get("extraDetails")
+                .and_then(|details| text(details, "ngr"))
+                .and_then(|reference| grid_reference_centre(reference).ok())
+                .or_else(|| locator_centre(text(system, "locator")?).ok())?;
             Some(Repeater {
                 callsign: sanitise(text(system, "repeater")?, MAX_CHANNEL_NAME_LEN)?,
                 town: text(system, "town").unwrap_or_default().to_owned(),
@@ -208,6 +216,143 @@ pub fn locator_centre(locator: &str) -> Result<(f64, f64), String> {
         size = degrees;
     }
     Ok((latitude + size / 4.0, longitude + size / 2.0))
+}
+
+/// A transverse Mercator national grid: its ellipsoid and projection.
+struct NationalGrid {
+    /// Semi-major and semi-minor axes in metres.
+    a: f64,
+    b: f64,
+    /// Scale factor on the central meridian.
+    f0: f64,
+    /// True origin in degrees.
+    latitude0: f64,
+    longitude0: f64,
+    /// False origin in metres.
+    easting0: f64,
+    northing0: f64,
+}
+
+/// The Ordnance Survey National Grid (OSGB36, Airy 1830).
+const OS_GRID: NationalGrid = NationalGrid {
+    a: 6_377_563.396,
+    b: 6_356_256.909,
+    f0: 0.999_601_271_7,
+    latitude0: 49.0,
+    longitude0: -2.0,
+    easting0: 400_000.0,
+    northing0: -100_000.0,
+};
+
+/// The Irish Grid (Ireland 1965, Airy modified), which Northern Ireland uses.
+const IRISH_GRID: NationalGrid = NationalGrid {
+    a: 6_377_340.189,
+    b: 6_356_034.447,
+    f0: 1.000_035,
+    latitude0: 53.5,
+    longitude0: -8.0,
+    easting0: 200_000.0,
+    northing0: 250_000.0,
+};
+
+/// The centre of a national grid reference square, as latitude and longitude
+/// in degrees: Ordnance Survey letters and digits such as `TL5480`, or the
+/// Irish grid as the ETCC writes it, `I` then its letter, such as `IJ4076`.
+///
+/// The datum is left as the grid's own; its difference from WGS84, about
+/// 120 m, is far inside any square the ETCC gives.
+pub fn grid_reference_centre(reference: &str) -> Result<(f64, f64), String> {
+    let refused = || format!("{reference:?} is not a national grid reference");
+    let clean: String = reference.chars().filter(|c| *c != ' ').collect();
+    let clean = clean.to_ascii_uppercase();
+    let letters = clean.bytes().take_while(u8::is_ascii_uppercase).count();
+    let digits = &clean[letters..];
+    if digits.is_empty()
+        || digits.len() % 2 != 0
+        || digits.len() > 10
+        || !digits.bytes().all(|b| b.is_ascii_digit())
+    {
+        return Err(refused());
+    }
+    // A letter's place in the 5 by 5 grid of squares, which leaves out I.
+    let place = |letter: u8| match letter {
+        b'A'..=b'H' => Some(i32::from(letter - b'A')),
+        b'J'..=b'Z' => Some(i32::from(letter - b'A') - 1),
+        _ => None,
+    };
+    let bytes = clean.as_bytes();
+    let (grid, east_100km, north_100km) = match letters {
+        2 if bytes[0] == b'I' => {
+            let square = place(bytes[1]).ok_or_else(refused)?;
+            (&IRISH_GRID, square % 5, 4 - square / 5)
+        }
+        2 => {
+            let (major, minor) = (
+                place(bytes[0]).ok_or_else(refused)?,
+                place(bytes[1]).ok_or_else(refused)?,
+            );
+            (
+                &OS_GRID,
+                (major - 2).rem_euclid(5) * 5 + minor % 5,
+                19 - (major / 5) * 5 - minor / 5,
+            )
+        }
+        _ => return Err(refused()),
+    };
+    let half = digits.len() / 2;
+    let size = 10_f64.powi(5 - i32::try_from(half).map_err(|_| refused())?);
+    let offset = |text: &str| text.parse::<u32>().map(f64::from).map_err(|_| refused());
+    let easting = f64::from(east_100km) * 100_000.0 + offset(&digits[..half])? * size + size / 2.0;
+    let northing =
+        f64::from(north_100km) * 100_000.0 + offset(&digits[half..])? * size + size / 2.0;
+    Ok(grid.to_latitude_longitude(easting, northing))
+}
+
+impl NationalGrid {
+    /// Inverse transverse Mercator, as in the Ordnance Survey's guide to
+    /// coordinate systems in Great Britain, annex C.
+    fn to_latitude_longitude(&self, easting: f64, northing: f64) -> (f64, f64) {
+        let Self { a, b, f0, .. } = *self;
+        let (latitude0, longitude0) = (self.latitude0.to_radians(), self.longitude0.to_radians());
+        let e2 = 1.0 - (b * b) / (a * a);
+        let n = (a - b) / (a + b);
+        let meridional = |latitude: f64| {
+            let (d, s) = (latitude - latitude0, latitude + latitude0);
+            b * f0
+                * ((1.0 + n + 1.25 * n * n + 1.25 * n.powi(3)) * d
+                    - (3.0 * n + 3.0 * n * n + 21.0 / 8.0 * n.powi(3)) * d.sin() * s.cos()
+                    + (15.0 / 8.0) * (n * n + n.powi(3)) * (2.0 * d).sin() * (2.0 * s).cos()
+                    - (35.0 / 24.0) * n.powi(3) * (3.0 * d).sin() * (3.0 * s).cos())
+        };
+        let mut latitude = latitude0;
+        let mut m = 0.0;
+        for _ in 0..16 {
+            latitude += (northing - self.northing0 - m) / (a * f0);
+            m = meridional(latitude);
+            if (northing - self.northing0 - m).abs() < 0.01 {
+                break;
+            }
+        }
+        let sin2 = latitude.sin().powi(2);
+        let nu = a * f0 / (1.0 - e2 * sin2).sqrt();
+        let rho = a * f0 * (1.0 - e2) / (1.0 - e2 * sin2).powf(1.5);
+        let eta2 = nu / rho - 1.0;
+        let (t, sec) = (latitude.tan(), 1.0 / latitude.cos());
+        let (t2, t4) = (t * t, t.powi(4));
+        let vii = t / (2.0 * rho * nu);
+        let viii = t / (24.0 * rho * nu.powi(3)) * (5.0 + 3.0 * t2 + eta2 - 9.0 * t2 * eta2);
+        let ix = t / (720.0 * rho * nu.powi(5)) * (61.0 + 90.0 * t2 + 45.0 * t4);
+        let x = sec / nu;
+        let xi = sec / (6.0 * nu.powi(3)) * (nu / rho + 2.0 * t2);
+        let xii = sec / (120.0 * nu.powi(5)) * (5.0 + 28.0 * t2 + 24.0 * t4);
+        let xiia =
+            sec / (5040.0 * nu.powi(7)) * (61.0 + 662.0 * t2 + 1320.0 * t4 + 720.0 * t.powi(6));
+        let de = easting - self.easting0;
+        let latitude = latitude - vii * de.powi(2) + viii * de.powi(4) - ix * de.powi(6);
+        let longitude =
+            longitude0 + x * de - xi * de.powi(3) + xii * de.powi(5) - xiia * de.powi(7);
+        (latitude.to_degrees(), longitude.to_degrees())
+    }
 }
 
 /// Great-circle distance between two points in degrees, in kilometres.
@@ -487,8 +632,8 @@ impl SyncJob {
 #[cfg(test)]
 mod tests {
     use super::{
-        distance_km, locator_centre, nearby, parse, repeater_bank, RepeaterArea, RepeaterCache,
-        MAX_RADIUS_KM, SYSTEMS_URL,
+        distance_km, grid_reference_centre, locator_centre, nearby, parse, repeater_bank,
+        RepeaterArea, RepeaterCache, MAX_RADIUS_KM, SYSTEMS_URL,
     };
 
     /// Systems in the shape the ETCC returns, trimmed to the fields used.
@@ -565,6 +710,72 @@ mod tests {
         for bad in ["", "I", "IO9", "SA00", "IO9A", "IO91ZZ", "IO91WMAA"] {
             assert!(locator_centre(bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn a_grid_reference_gives_the_centre_of_its_square() {
+        let near = |(lat, lon): (f64, f64), (want_lat, want_lon): (f64, f64), degrees: f64| {
+            assert!(
+                (lat - want_lat).abs() < degrees && (lon - want_lon).abs() < degrees,
+                "({lat}, {lon}) is not ({want_lat}, {want_lon})"
+            );
+        };
+        // The Ordnance Survey's worked example, TG 51409 13177, is
+        // 52 39 27.2531 N, 1 43 4.5177 E on OSGB36; this is its 1 m centre.
+        near(
+            grid_reference_centre("TG 51409 13177").unwrap(),
+            (52.657_570_3, 1.717_921_6),
+            1e-5,
+        );
+        // GB3EL's square at Ely, which the ETCC locates only as JO02.
+        near(
+            grid_reference_centre("tl5480").unwrap(),
+            (52.40, 0.27),
+            0.01,
+        );
+        // Shetland's and Scilly's corners of the lettering.
+        near(
+            grid_reference_centre("HU4741").unwrap(),
+            (60.15, -1.15),
+            0.02,
+        );
+        near(
+            grid_reference_centre("SV9010").unwrap(),
+            (49.91, -6.31),
+            0.02,
+        );
+        // Belfast City Hall on the Irish grid, J 338 742.
+        near(
+            grid_reference_centre("IJ338742").unwrap(),
+            (54.597, -5.930),
+            0.01,
+        );
+        for bad in [
+            "", "TL", "TL548", "TL54A0", "II5480", "XI5480", "T5480", "TLL5480",
+        ] {
+            assert!(grid_reference_centre(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_repeater_is_placed_by_its_grid_reference_before_its_locator() {
+        let systems = r#"{"data": [
+            {"type": "AV", "status": "OPERATIONAL", "modeCodes": ["A"],
+             "repeater": "GB3EL", "town": "ELY", "tx": 430837500, "rx": 438437500,
+             "ctcss": 156.7, "txbw": 12.5, "locator": "JO02",
+             "extraDetails": {"ngr": "TL5480"}},
+            {"type": "AV", "status": "OPERATIONAL", "modeCodes": ["A"],
+             "repeater": "GB3PY", "town": "CAMBRIDGE", "tx": 145762500, "rx": 145162500,
+             "ctcss": 77.0, "txbw": 12.5, "locator": "JO02BF",
+             "extraDetails": {"ngr": ""}}
+        ]}"#;
+        let repeaters = parse(systems).unwrap();
+        let ely = &repeaters[0];
+        assert!((ely.latitude - 52.40).abs() < 0.01 && (ely.longitude - 0.27).abs() < 0.01);
+        let near = nearby(&repeaters, "JO02EH", 50).unwrap();
+        let names: Vec<_> = near.iter().map(|(r, _)| r.callsign.as_str()).collect();
+        assert_eq!(names, ["GB3EL", "GB3PY"]);
+        assert!(near[0].1 < 15.0, "{}", near[0].1);
     }
 
     #[test]

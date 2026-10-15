@@ -259,6 +259,14 @@ programmed as ordinary banks.
   repeaters are about 10%; 386 of the 483 fit an empty radio. Gate: fmt
   and clippy clean, `cargo test --workspace` 776 passed 0 failed 2
   ignored; the live ETCC test passed.
+  Fix (operator report: GB3EL, GB3EZ and GB3EA missing near JO02eh): 470
+  ETCC entries give only a 4-character locator, so all three sat at JO02's
+  centre, 47 km away, behind farther repeaters. A repeater is now placed at
+  its national grid reference (OS or Irish grid, 1 km square; inverse
+  transverse Mercator), with the locator as fallback. From JO02eh they are
+  now 12, 18 and 28 km, first, second and fifth. Gate: `cargo fmt --all
+  --check` clean, workspace clippy `-D warnings` clean, `cargo test
+  --workspace` 815 passed 0 failed 2 ignored.
 - Studio (operator request): each bank header has Up and Down beside Delete,
   so collapsed banks reorder in place; the Move buttons inside an open bank
   are gone. Gate: fmt and clippy clean, `cargo test --workspace` 777 passed
