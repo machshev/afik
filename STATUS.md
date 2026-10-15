@@ -249,8 +249,19 @@ programmed TX ranges protect channel and VFO mode alike.
   `cargo test --workspace` 767 passed 0 failed, `tool/build-k1.sh --release`
   (static RAM 5740, headroom 10644) and `tool/build-k5.sh --release` pass.
   `7.0.26` flashed to the K1 (bootloader `7.03.01`, CRC-32 `20e02321`,
-  266/266 pages acknowledged, not read back). Next: write the project from
-  the studio, power-cycle, and read it back.
+  266/266 pages acknowledged, not read back).
+- K1 image capacity: `7.0.26` stored only 4 KiB of the 7424-byte image
+  region, so the studio's meter (which divides by the region) overstated the
+  K1's room. The configuration is now two sectors at `0x108000` with
+  two-sector staging at `0x10A000` (`Staged` takes up to two sectors, a
+  128-byte bitmap); the old sector at `0x100000` is left untouched, so a
+  project written on `7.0.26` must be written again. The host's K1 4 KiB
+  refusal is gone. Gate: `cargo fmt --all --check` clean, workspace clippy
+  `-D warnings` clean, `cargo test --workspace` 776 passed 0 failed,
+  `tool/build-k1.sh --release` (static RAM 5804, headroom 10580) and
+  `tool/build-k5.sh --release` pass. `7.0.27` flashed to the K1 (bootloader
+  `7.03.01`, CRC-32 `650f2449`, 266/266 pages acknowledged, not read back).
+  Next: write the project from the studio, power-cycle, and read it back.
 - `7.0.24` flashed to the K5 (bootloader `2.00.06`, CRC-32 `17aef08b`,
   240/240 pages acknowledged, not read back; K5 flash end `0x0000e810`, K1
   release builds). It carries the S meter and `b066148` (TX on every
