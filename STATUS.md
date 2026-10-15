@@ -556,6 +556,22 @@ CRC-32 `f3dd2cea`, 240/240 pages acknowledged, not read back). Next: check
 PMR446 receive, SQL and monitor there, side key 1, VFO STEP, the F 4 catch
 to VFO with tone.
 
+Calibrated squelch (other session's report: the K1 at `7.0.35` held
+PMR446 open on S8 noise once RX enable made its front end live): the radio
+reads its squelch tables (`0x1E00` from 174 MHz, `0x1E60` below; the K1
+view maps them onto `0x010000`) and sets RSSI, noise and glitch for levels
+1-9 as the stock firmware does; a level without a usable set keeps AFIK's
+RSSI-only thresholds (`c954977`). Armel's more-sensitive variant inverts the
+hysteresis and is not taken. Gate: `cargo fmt --all --check` clean,
+workspace clippy `-D warnings` clean, `cargo test --workspace` 826 passed 0
+failed 2 ignored, `tool/test-k5-mem.sh` passes, `tool/build-k5.sh
+--release` (image end `0x0000e58c`), `tool/verify-k5-image.sh` and
+`tool/build-k1.sh --release` (73284 bytes) pass. `7.0.38` (`983f25e`, also
+`98a8fec` K1 broadcast LNA) flashed to the K1 (bootloader `7.03.01`, CRC-32
+`23be533e`, 287 pages acknowledged, not read back); the K5 is still on
+`7.0.37`. Next: K1 PMR446 squelch shut on noise at SQL 1-9 and open on a
+signal; K1 broadcast; then flash the K5 and check its squelch.
+
 **`TXK5-059` was paused** (2026-10-14) for `TXRANGE-062`; `TXK1-060` was started alongside.
 
 - K5 `7.0.2` and K1 `6.4T` are flashed. Both key up on PMR446 (`EVID-TX058-001`);
