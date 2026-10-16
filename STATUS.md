@@ -226,8 +226,9 @@ bytes (`k5-2.00.06-7.0.47-20261016.bin`, CRC-32 `175c57e4`): the image
 region is erased but its first byte `A`, and the place record holds only
 its first byte, so each write lands its first data byte and no more.
 Bisect `7.0.48`: the 7.0.40 wait (48 passes, uncalibrated) on the
-current code, to tell bus timing from the rest. Next: flash it and write
-the project from the studio, read the timings, and check a channel change
+current code, to tell bus timing from the rest; flashed (`3866909`,
+bootloader `2.00.06` by `identify` first, CRC-32 `3138fbdf`, 240/240 pages
+acknowledged, not read back). Next: write the project from the studio, read the timings, and check a channel change
 survives a power cycle (EEPROM writes use the new timing).
 
 **`DUPLEX-069` is active alongside** (2026-10-16, operator request,
