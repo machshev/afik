@@ -247,7 +247,9 @@ looked like a station. The BK1080 shares the bus, so its transactions now
 claim it at the `7.0.40` wait (48 passes, `K5Bus::claim_conservative`)
 while the EEPROM keeps the calibrated one. Same gate, 870 passed 0
 failed, K5 (flash end `0x0000eebc`) and K1 release images build.
-`7.0.50`. Next: flash, check FM unmutes at once, and that a channel
+`7.0.50` (`276deb7`) flashed to the K5 (bootloader `2.00.06` by
+`identify` first, CRC-32 `dfba28a4`, 240/240 pages acknowledged, not read
+back). Next: check FM unmutes at once, and that a channel
 change survives a power cycle.
 
 **`DUPLEX-069` is active alongside** (2026-10-16, operator request,
