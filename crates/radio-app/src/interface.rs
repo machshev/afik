@@ -45,9 +45,9 @@ use crate::keys::{Debouncer, Edge};
 use crate::operator_state::{OperatorState, OtherSlot};
 use crate::serial::read_image;
 use crate::state::{
-    bus_available, now_ms, peripheral_clock_khz, reset_cause, serial_counters, Publication,
-    TaskCell, BATTERY_CALIBRATION, INDEX, OPERATOR_PLACE, PROGRAMMED, SERIAL_ACTIVITY,
-    SQUELCH_CALIBRATION, TX_CALIBRATION, TX_POLICY,
+    boot_times, bus_available, mark_boot, now_ms, peripheral_clock_khz, reset_cause,
+    serial_counters, Publication, TaskCell, BATTERY_CALIBRATION, BOOT_FIRST_FRAME_MS, INDEX,
+    OPERATOR_PLACE, PROGRAMMED, SERIAL_ACTIVITY, SQUELCH_CALIBRATION, TX_CALIBRATION, TX_POLICY,
 };
 
 /// Interval between receive samples while audio is routed.
@@ -1053,10 +1053,12 @@ pub async fn run<D, K, B, F, W, S, V, M>(
         serial_counters(),
         peripheral_clock_khz(),
         reset_cause(),
+        boot_times(),
     );
     if !display.initialise().await || !display.frame(&frame).await {
         return;
     }
+    mark_boot(&BOOT_FIRST_FRAME_MS);
 
     // The operator interface does not wait for the serial task. Waiting for its
     // first publication tied the whole radio to that task starting: when it
@@ -2268,6 +2270,7 @@ fn render<B: RegisterBus, S: Speaker, C: BroadcastChip, M: Memory>(
             serial_counters(),
             peripheral_clock_khz(),
             reset_cause(),
+            boot_times(),
         ),
         Screen::Catch => {
             let catch = catch.copied().unwrap_or_default();

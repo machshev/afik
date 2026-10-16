@@ -20,9 +20,10 @@ use radio_storage::radio_image::{Index, HEADER_LEN};
 use crate::configuration::Programmed;
 use crate::drivers::{Memory, SerialLink};
 use crate::state::{
-    count, hold_bus_idle, Publication, TaskCell, BATTERY_CALIBRATION, INDEX, OPERATOR_PLACE,
-    PROGRAMMED, SERIAL_ACTIVITY, SERIAL_ANSWERED, SERIAL_DISCARDED, SERIAL_ERRORS, SERIAL_RECEIVED,
-    SQUELCH_CALIBRATION, TX_CALIBRATION, TX_POLICY,
+    count, hold_bus_idle, mark_boot, Publication, TaskCell, BATTERY_CALIBRATION, BOOT_LOADED_MS,
+    BOOT_SERIAL_START_MS, INDEX, OPERATOR_PLACE, PROGRAMMED, SERIAL_ACTIVITY, SERIAL_ANSWERED,
+    SERIAL_DISCARDED, SERIAL_ERRORS, SERIAL_RECEIVED, SQUELCH_CALIBRATION, TX_CALIBRATION,
+    TX_POLICY,
 };
 use radio_tx_policy::TxPolicy;
 
@@ -56,6 +57,7 @@ pub async fn run<L: SerialLink, M: Memory>(
     identity: &'static [u8],
     memory: &'static TaskCell<Option<M>>,
 ) {
+    mark_boot(&BOOT_SERIAL_START_MS);
     let identity = ApplicationIdentity::new(identity).expect("printable bounded identity");
     // Publish before touching the memory, so the interface starts on the VFO
     // at once rather than waiting on a slow or broken memory.
@@ -92,6 +94,7 @@ pub async fn run<L: SerialLink, M: Memory>(
         Some(squelch) => programmed.with_squelch(squelch),
         None => programmed,
     };
+    mark_boot(&BOOT_LOADED_MS);
     PROGRAMMED.signal(Publication {
         programmed,
         generation,

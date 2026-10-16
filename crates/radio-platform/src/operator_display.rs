@@ -1057,6 +1057,7 @@ pub fn render_info_screen(
     serial: SerialCounters,
     peripheral_clock_khz: u32,
     reset: ResetCause,
+    boot: BootTimes,
 ) {
     frame.fill(0);
     let width = identity.len() * 6;
@@ -1068,22 +1069,23 @@ pub fn render_info_screen(
     // and rejects every packet is asking to be told what the radio thinks its
     // clock is.
     let mut generation_label = *b"GEN000000 CLK00000";
-    let mut value = generation;
-    for index in (3..9).rev() {
-        generation_label[index] = b'0' + u8::try_from(value % 10).unwrap_or(0);
-        value /= 10;
-    }
-    let mut clock = peripheral_clock_khz;
-    for index in (13..18).rev() {
-        generation_label[index] = b'0' + u8::try_from(clock % 10).unwrap_or(0);
-        clock /= 10;
-    }
+    write_digits(&mut generation_label[3..9], generation);
+    write_digits(&mut generation_label[13..18], peripheral_clock_khz);
     draw_text(frame, 0, 18, &generation_label);
 
     let mut channel_label = *b"CHANNELS 00 RST ....";
     write_two_digits(&mut channel_label[9..11], channels);
     channel_label[16..20].copy_from_slice(&reset.name());
     draw_text(frame, 0, 32, &channel_label);
+
+    // When boot reached each stage, so a slow start can be placed without a
+    // host: `S` the serial task starting, `L` the stored configuration loaded,
+    // `F` the interface's first frame, each in milliseconds since reset.
+    let mut timing = *b"S0000 L0000 F0000";
+    write_digits(&mut timing[1..5], boot.serial_start_ms.min(9_999));
+    write_digits(&mut timing[7..11], boot.loaded_ms.min(9_999));
+    write_digits(&mut timing[13..17], boot.first_frame_ms.min(9_999));
+    draw_text(frame, 0, 39, &timing);
 
     draw_text(
         frame,
@@ -1113,10 +1115,10 @@ pub fn render_info_screen(
     // across this display; they wrap at a thousand, which is enough to tell
     // moving from not moving.
     let mut link = *b"RX000 TX000 D000 E000";
-    write_three_digits(&mut link[2..5], serial.received);
-    write_three_digits(&mut link[8..11], serial.answered);
-    write_three_digits(&mut link[13..16], serial.discarded);
-    write_three_digits(&mut link[18..21], serial.errors);
+    write_digits(&mut link[2..5], u32::from(serial.received));
+    write_digits(&mut link[8..11], u32::from(serial.answered));
+    write_digits(&mut link[13..16], u32::from(serial.discarded));
+    write_digits(&mut link[18..21], u32::from(serial.errors));
     draw_text(frame, 0, 8, &link);
 }
 
@@ -1172,6 +1174,27 @@ impl ResetCause {
     }
 }
 
+/// Milliseconds since reset at which boot reached each stage, or zero for a
+/// stage not reached yet.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct BootTimes {
+    /// The serial task started and is about to open the memory.
+    pub serial_start_ms: u32,
+    /// The stored configuration was loaded and published.
+    pub loaded_ms: u32,
+    /// The interface drew its first frame.
+    pub first_frame_ms: u32,
+}
+
+/// Writes `value` in decimal across the whole field, keeping its low digits.
+fn write_digits(field: &mut [u8], value: u32) {
+    let mut remaining = value;
+    for byte in field.iter_mut().rev() {
+        *byte = b'0' + u8::try_from(remaining % 10).unwrap_or(0);
+        remaining /= 10;
+    }
+}
+
 /// Serial-link counters shown on the information screen.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct SerialCounters {
@@ -1188,18 +1211,6 @@ pub struct SerialCounters {
     /// it. Both leave `received` at zero, because a byte which does not frame is
     /// never delivered to be counted.
     pub errors: u16,
-}
-
-/// Writes one three-digit decimal field.
-fn write_three_digits(field: &mut [u8], value: u16) {
-    if field.len() < 3 {
-        return;
-    }
-    let mut remaining = value % 1_000;
-    for index in (0..3).rev() {
-        field[index] = b'0' + u8::try_from(remaining % 10).unwrap_or(0);
-        remaining /= 10;
-    }
 }
 
 /// What the radio found when it looked for its external configuration memory.
@@ -1708,9 +1719,9 @@ mod catch_screen_tests {
 mod operating_screen_tests {
     use super::{modulation_label, place_label, power_label, short_step_label};
     use super::{
-        render_info_screen, render_operating_screen, render_selector_list, step_label, MemoryState,
-        OperatingView, ResetCause, SelectorRow, SerialCounters, SlotChannel, SlotPlace, SlotView,
-        FRAME_BYTES, LIST_NAME_BYTES, MEMORY_LABEL_BYTES,
+        render_info_screen, render_operating_screen, render_selector_list, step_label, BootTimes,
+        MemoryState, OperatingView, ResetCause, SelectorRow, SerialCounters, SlotChannel,
+        SlotPlace, SlotView, FRAME_BYTES, LIST_NAME_BYTES, MEMORY_LABEL_BYTES,
     };
     use radio_domain::{Bandwidth, Modulation, Tone};
 
@@ -2333,6 +2344,7 @@ mod operating_screen_tests {
             },
             24_000,
             ResetCause::default(),
+            BootTimes::default(),
         );
         let mut unstored = [0_u8; FRAME_BYTES];
         render_info_screen(
@@ -2345,6 +2357,7 @@ mod operating_screen_tests {
             SerialCounters::default(),
             24_000,
             ResetCause::default(),
+            BootTimes::default(),
         );
         assert_ne!(retained, unstored);
         assert!(retained.iter().any(|byte| *byte != 0));
@@ -2389,6 +2402,7 @@ mod operating_screen_tests {
             SerialCounters::default(),
             48_000,
             ResetCause::default(),
+            BootTimes::default(),
         );
         let mut erroring = [0_u8; FRAME_BYTES];
         render_info_screen(
@@ -2406,8 +2420,45 @@ mod operating_screen_tests {
             },
             48_000,
             ResetCause::default(),
+            BootTimes::default(),
         );
         assert_ne!(silent, erroring);
+    }
+
+    #[test]
+    fn boot_timings_reach_the_information_screen() {
+        let render = |boot| {
+            let mut frame = [0_u8; FRAME_BYTES];
+            render_info_screen(
+                &mut frame,
+                b"AFIK-K5-7.0",
+                0,
+                0,
+                false,
+                MemoryState::Absent,
+                SerialCounters::default(),
+                48_000,
+                ResetCause::default(),
+                boot,
+            );
+            frame
+        };
+        let early = render(BootTimes {
+            serial_start_ms: 40,
+            loaded_ms: 300,
+            first_frame_ms: 60,
+        });
+        let late = render(BootTimes {
+            serial_start_ms: 40,
+            loaded_ms: 1_500,
+            first_frame_ms: 60,
+        });
+        assert_ne!(early, late);
+        assert_ne!(render(BootTimes::default()), early);
+        // A field keeps the low digits of a larger value.
+        let mut field = [0_u8; 4];
+        super::write_digits(&mut field, 12_345);
+        assert_eq!(&field, b"2345");
     }
 
     #[test]
@@ -2449,6 +2500,7 @@ mod operating_screen_tests {
             SerialCounters::default(),
             48_000,
             ResetCause(0b0000_1000),
+            BootTimes::default(),
         );
         let mut software = [0_u8; FRAME_BYTES];
         render_info_screen(
@@ -2461,6 +2513,7 @@ mod operating_screen_tests {
             SerialCounters::default(),
             48_000,
             ResetCause(0b0001_0000),
+            BootTimes::default(),
         );
         assert_ne!(power, software);
     }

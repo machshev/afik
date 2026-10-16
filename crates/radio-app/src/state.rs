@@ -11,7 +11,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::Instant;
 use radio_platform::battery::Calibration;
-use radio_platform::operator_display::{MemoryState, ResetCause, SerialCounters};
+use radio_platform::operator_display::{BootTimes, MemoryState, ResetCause, SerialCounters};
 use radio_platform::squelch::SquelchCalibration;
 use radio_platform::transmit::TxCalibration;
 
@@ -173,6 +173,27 @@ pub(crate) fn serial_counters() -> SerialCounters {
         answered: shown(&SERIAL_ANSWERED),
         discarded: shown(&SERIAL_DISCARDED),
         errors: shown(&SERIAL_ERRORS),
+    }
+}
+
+/// Milliseconds since reset at which the serial task started.
+pub(crate) static BOOT_SERIAL_START_MS: AtomicU32 = AtomicU32::new(0);
+/// Milliseconds since reset at which the stored configuration was loaded.
+pub(crate) static BOOT_LOADED_MS: AtomicU32 = AtomicU32::new(0);
+/// Milliseconds since reset at which the interface drew its first frame.
+pub(crate) static BOOT_FIRST_FRAME_MS: AtomicU32 = AtomicU32::new(0);
+
+/// Records that boot reached a stage now.
+pub(crate) fn mark_boot(stage: &AtomicU32) {
+    stage.store(now_ms(), Ordering::Relaxed);
+}
+
+/// Returns when boot reached each stage, for the information screen.
+pub(crate) fn boot_times() -> BootTimes {
+    BootTimes {
+        serial_start_ms: BOOT_SERIAL_START_MS.load(Ordering::Relaxed),
+        loaded_ms: BOOT_LOADED_MS.load(Ordering::Relaxed),
+        first_frame_ms: BOOT_FIRST_FRAME_MS.load(Ordering::Relaxed),
     }
 }
 
