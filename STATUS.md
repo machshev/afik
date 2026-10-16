@@ -218,7 +218,10 @@ only before each rising clock edge, so the clock was low for one wait,
 about 1.2 µs once a wait was a measured microsecond, under the EEPROM's
 1.3 µs minimum. Every edge is now followed by a wait, as the reference
 `i2c.c` does. Same gate, 870 passed 0 failed, K5 (flash end
-`0x0000ee1c`) and K1 release images build. `7.0.47`. Next: read the timings, and check a channel change
+`0x0000ee1c`) and K1 release images build. `7.0.47` (`99ef5b3`)
+flashed to the K5 (bootloader `2.00.06` by `identify` first, CRC-32
+`c3437775`, 240/240 pages acknowledged, not read back). Next: write the
+project from the studio, read the timings, and check a channel change
 survives a power cycle (EEPROM writes use the new timing).
 
 **`DUPLEX-069` is active alongside** (2026-10-16, operator request,
