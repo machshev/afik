@@ -239,9 +239,10 @@ acknowledgement makes the line an output first; calibration is back on.
 Same gate, 870 passed 0 failed, K5 (flash end `0x0000ee9c`) and K1
 release images build. `7.0.49` (`9fe9242`) flashed to the K5
 (bootloader `2.00.06` by `identify` first, CRC-32 `1cd3c0a7`, 240/240
-pages acknowledged, not read back). Next: back up the EEPROM to confirm
-reads, then write the project from the studio, read the timings, and check a channel change
-survives a power cycle (EEPROM writes use the new timing).
+pages acknowledged, not read back). Hardware: boots with the stored
+configuration, `S0318 L0949 F0205`; the studio wrote and verified the
+3873-byte image (473 blocks changed). Next: check a channel change
+survives a power cycle and FM broadcast still plays (both use this bus).
 
 **`DUPLEX-069` is active alongside** (2026-10-16, operator request,
 `ADR-108`): a duplex memory channel the programmed TX ranges refuse is
