@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod airfields;
 pub mod airports;
 pub mod app;
 pub mod device;

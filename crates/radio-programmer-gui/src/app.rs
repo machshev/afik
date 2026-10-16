@@ -21,6 +21,7 @@ use radio_tx_policy::MAX_TX_RANGES;
 use radio_programmer_serial::SUPPORTED_BAUDS;
 
 use crate::{
+    airfields::{self, AirfieldArea},
     airports::{self, AirportArea, AirportCache, AirportList},
     device::{DeviceChoice, DeviceChooser},
     flash_tab::FlashTab,
@@ -97,6 +98,7 @@ enum Generator {
     Beacons,
     Stations,
     Airports,
+    Airfields,
     Marine,
 }
 
@@ -162,12 +164,13 @@ fn generator_tab(
 const GENERATORS_TITLE: &str = "Banks near your locator";
 
 impl Generator {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::Repeaters,
         Self::Gateways,
         Self::Beacons,
         Self::Stations,
         Self::Airports,
+        Self::Airfields,
         Self::Marine,
     ];
 
@@ -178,6 +181,7 @@ impl Generator {
             Self::Beacons => "UK beacons",
             Self::Stations => "UK FM stations",
             Self::Airports => "Airports",
+            Self::Airfields => "Airfields",
             Self::Marine => "Marine",
         }
     }
@@ -310,6 +314,9 @@ pub struct StudioApp {
     /// The same for beacons.
     beacon_area: AirportArea,
     beacon_area_file: Option<PathBuf>,
+    /// The same for the small airfields, from the airports' list.
+    airfield_area: AirfieldArea,
+    airfield_area_file: Option<PathBuf>,
 }
 
 impl StudioApp {
@@ -344,6 +351,10 @@ impl StudioApp {
         app.beacon_area_file = repeaters::beacon_area_file();
         if let Some(file) = &app.beacon_area_file {
             app.beacon_area = AirportArea::load_or(file, &beacon_area_default());
+        }
+        app.airfield_area_file = airfields::area_file();
+        if let Some(file) = &app.airfield_area_file {
+            app.airfield_area = AirfieldArea::load(file);
         }
         app
     }
@@ -488,6 +499,97 @@ impl StudioApp {
         if let Some(file) = &self.marine_area_file {
             if let Err(error) = area.save(file) {
                 log::warn!("could not remember the marine area: {error}");
+            }
+        }
+    }
+
+    /// Builds the airfield bank the area would add, and the project it would
+    /// make, as [`Self::repeater_preview`] does. Without the airports' list
+    /// the bank holds the sporting core alone.
+    fn airfield_preview(&self) -> Result<AreaPreview, String> {
+        let locator = &self.repeater_area.locator;
+        let mut near = if let Some(list) = &self.airports {
+            airfields::nearby(&list.frequencies, locator, self.airfield_area.radius_km)?
+        } else {
+            repeaters::locator_centre(locator)?;
+            Vec::new()
+        };
+        let in_range = near.len();
+        near.truncate(usize::from(self.airfield_area.max_channels));
+        let (project, bank_bytes) = self.with_bank(airfields::airfield_bank(locator, &near));
+        Ok(AreaPreview {
+            in_range,
+            taken: near.len(),
+            furthest_km: near.last().map_or(0.0, |(_, km)| *km),
+            bank_bytes,
+            project,
+        })
+    }
+
+    /// Describes the airfield list, what the area would add, and its cost.
+    fn airfield_source(&self) -> String {
+        if self.airport_sync.is_some() {
+            return "Syncing...".to_owned();
+        }
+        let synced = self.airports.as_ref().map_or_else(
+            || "Not synced: the sporting frequencies only.".to_owned(),
+            |list| {
+                format!(
+                    "{} small-field frequencies from OurAirports, synced {}.",
+                    list.frequencies.iter().filter(|f| f.small).count(),
+                    age(list.synced)
+                )
+            },
+        );
+        let Ok(preview) = self.airfield_preview() else {
+            return synced;
+        };
+        let taking = format!(
+            "{} sporting and nearest {} of {} local frequencies, furthest {:.0} km",
+            airfields::CORE_CHANNELS,
+            preview.taken,
+            preview.in_range,
+            preview.furthest_km
+        );
+        format!("{taking}{}. {synced}", cost(&preview))
+    }
+
+    /// Adds a bank of the UK sporting frequencies and those of the small
+    /// fields near the locator.
+    fn add_airfields(&mut self) {
+        let preview = match self.airfield_preview() {
+            Ok(preview) => preview,
+            Err(error) => {
+                self.refuse(&format!("Cannot add airfields: {error}."));
+                return;
+            }
+        };
+        let locator = self.repeater_area.locator.trim().to_ascii_uppercase();
+        let area = self.airfield_area.clone();
+        if preview.project.banks.len() > usize::from(MAX_BANKS) {
+            self.status =
+                format!("A radio holds {MAX_BANKS} banks and the project already has them.");
+            return;
+        }
+        if too_big(&preview.project) {
+            self.refuse(&format!(
+                "{} airfield frequencies would not fit the radio; take fewer.",
+                airfields::CORE_CHANNELS + preview.taken
+            ));
+            return;
+        }
+        self.project = preview.project;
+        self.status = format!(
+            "Added {} sporting and {} local airfield frequencies near {locator} (furthest \
+             {:.0} km), receive only. The sporting set is CAP 1606's, which the CAA has \
+             withdrawn; a field's own frequency comes first.",
+            airfields::CORE_CHANNELS,
+            preview.taken,
+            preview.furthest_km
+        );
+        if let Some(file) = &self.airfield_area_file {
+            if let Err(error) = area.save(file) {
+                log::warn!("could not remember the airfield area: {error}");
             }
         }
     }
@@ -1157,6 +1259,8 @@ impl StudioApp {
             gateway_area_file: None,
             beacon_area: beacon_area_default(),
             beacon_area_file: None,
+            airfield_area: AirfieldArea::default(),
+            airfield_area_file: None,
         };
         if let Some(baud) = options.baud {
             app.chooser.baud = baud;
@@ -1855,6 +1959,7 @@ impl StudioApp {
                                 Generator::Beacons => self.etcc_bar(ui, EtccKind::Beacons),
                                 Generator::Stations => self.station_bar(ui),
                                 Generator::Airports => self.airport_bar(ui),
+                                Generator::Airfields => self.airfield_bar(ui),
                                 Generator::Marine => self.marine_bar(ui),
                             }
                         });
@@ -2107,6 +2212,58 @@ impl StudioApp {
                 self.sync_airports();
             }
             ui.label(self.airport_source());
+        });
+    }
+
+    /// The row that adds the gliding and small-airfield frequencies near the
+    /// shared locator.
+    fn airfield_bar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Airfields within");
+            ComboBox::from_id_salt("airfield-radius")
+                .selected_text(format!("{} km", self.airfield_area.radius_km))
+                .show_ui(ui, |ui| {
+                    for km in repeaters::RADII_KM {
+                        ui.selectable_value(
+                            &mut self.airfield_area.radius_km,
+                            km,
+                            format!("{km} km"),
+                        );
+                    }
+                });
+            ui.label("nearest");
+            ui.add(
+                egui::DragValue::new(&mut self.airfield_area.max_channels)
+                    .range(1..=airports::MAX_CHANNELS_LIMIT),
+            )
+            .on_hover_text("How many local frequencies the bank takes, nearest field first");
+            if ui
+                .button("Add")
+                .on_hover_text(
+                    "Adds one receive-only AM bank: SafetyCom and the UK gliding, \
+                     microlight, balloon and parachuting frequencies, then those of the \
+                     airstrips, gliding sites and heliports in range, replacing one for the \
+                     same locator",
+                )
+                .clicked()
+            {
+                self.add_airfields();
+            }
+            if ui
+                .add_enabled(
+                    self.airport_sync.is_none(),
+                    egui::Button::new("Sync from OurAirports"),
+                )
+                .on_hover_text(
+                    "Fetches the worldwide airport and frequency lists from OurAirports \
+                     (public domain, about 14 MB), which the Airports tab shares, and caches \
+                     them; the studio never fetches on its own",
+                )
+                .clicked()
+            {
+                self.sync_airports();
+            }
+            ui.label(self.airfield_source());
         });
     }
 
@@ -3672,6 +3829,7 @@ mod tests {
             (Generator::Beacons, "UK beacons within"),
             (Generator::Stations, "UK FM stations, strongest"),
             (Generator::Airports, "Airports within"),
+            (Generator::Airfields, "Airfields within"),
             (Generator::Marine, "Marine within"),
         ];
         for generator in Generator::ALL {
@@ -4264,6 +4422,38 @@ mod tests {
         app.repeater_area.locator = "nonsense".to_owned();
         app.add_marine();
         assert!(app.status.starts_with("Cannot add marine channels"));
+    }
+
+    #[test]
+    fn airfields_start_with_the_sporting_core_unsynced() {
+        use crate::airfields::CORE_CHANNELS;
+
+        let mut app = simulated("airfields");
+        assert!(app.airports.is_none(), "tests never read the real cache");
+        let banks = app.project.banks.len();
+        app.add_airfields();
+        assert!(
+            app.status.starts_with("Cannot add airfields"),
+            "{}",
+            app.status
+        );
+        assert_eq!(app.project.banks.len(), banks);
+
+        "IO91WM".clone_into(&mut app.repeater_area.locator);
+        let source = app.airfield_source();
+        assert!(
+            source.starts_with("9 sporting and nearest 0 of 0 local frequencies"),
+            "{source}"
+        );
+        assert!(source.ends_with("Not synced: the sporting frequencies only."));
+        app.add_airfields();
+        let bank = app.project.banks.last().unwrap();
+        assert_eq!(bank.name, "FLD IO91WM");
+        assert_eq!(bank.channels.len(), CORE_CHANNELS);
+        assert_eq!(bank.channels[0].name, "SAFETYCOM");
+        assert!(app.project.validate().is_ok());
+        app.add_airfields();
+        assert_eq!(app.project.banks.len(), banks + 1, "replaced, not added");
     }
 
     #[test]

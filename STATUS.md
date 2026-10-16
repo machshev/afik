@@ -124,8 +124,14 @@ bank `GW <locator>` with access tones, beacons a receive-only USB bank
 `BCN <locator>` 700 Hz below each carrier, 300 km by default. Gate: `cargo
 fmt --all --check` clean, `cargo clippy -p radio-programmer-gui
 --all-targets -- -D warnings` clean, `cargo test -p radio-programmer-gui
---lib` 157 passed 0 failed 2 ignored. Next (step 2): gliding and small
-airfields from OpenStreetMap.
+--lib` 157 passed 0 failed 2 ignored. Step 2: an Airfields tab adds `FLD
+<locator>`, receive-only AM: the UK sporting set from CAP 1606 (Safetycom,
+gliding, microlight, balloon, parachuting), then the small fields
+`OurAirports` lists in range, from the airports' cache (`ADR-112`;
+OpenStreetMap tags only about 22 UK aerodromes). Gate: fmt clean, `cargo
+clippy -p radio-programmer-gui --all-targets -- -D warnings` clean, `cargo
+test -p radio-programmer-gui --lib` 160 passed 0 failed 2 ignored. Next
+(step 3): repeaters outside the UK.
 
 **`MARINE-070` is active alongside** (2026-10-16, operator request,
 `ADR-109`): step 1 done. The Banks tab has a Marine row: Sync asks Overpass

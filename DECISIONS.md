@@ -1901,3 +1901,22 @@ meaning.
 - A beacon channel is USB, receive-only (`ADR-107`), tuned 700 Hz below the
   carrier so a keyed carrier is heard as a 700 Hz tone, with a 100 Hz step.
   Beacons default to a 300 km radius, gateways to the repeaters' 50 km.
+
+## ADR-112 — Airfields: the UK sporting set, then small fields from OurAirports
+
+- **Date:** 2026-10-16
+- **Status:** accepted, operator request (`GEN-072`).
+- OpenStreetMap was the proposed source, but of 837 UK aerodromes and
+  gliding sites only about 22 carry a frequency tag. `OurAirports`, already
+  cached for the Airports tab, lists 168 UK small fields with frequencies,
+  so no new source is synced.
+- Every bank `FLD <locator>` starts with a fixed core, as the marine bank
+  does: Safetycom 135.480, gliding 129.980, 130.105, 130.130, 130.405 and
+  129.905, microlight 129.830, balloon 122.480 and parachute drop zone
+  130.530, as CAP 1606 version 4 (May 2019) names them. The CAA has
+  withdrawn CAP 1606 in favour of its frequency assignments, and no
+  downloadable list was found, so a field's own frequency is the one to use.
+- Local channels are the frequencies of small airports, heliports, balloon
+  ports and seaplane bases in range, nearest first, each carrier once and
+  none already in the core; a nearer large airport sharing a carrier does
+  not hide a field. AM, receive only (`ADR-107`).

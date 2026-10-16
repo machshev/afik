@@ -3234,8 +3234,10 @@
 - **Steps (commit after each):**
   1. UK gateways and UK beacons from the ETCC list the repeaters already
      cache: gateways an FM simplex bank with access tones, beacons a
-     receive-only USB bank 700 Hz below each carrier.
-  2. Gliding and small airfields from OpenStreetMap through Overpass.
+     receive-only USB bank 700 Hz below each carrier. Done (`efb10e4`).
+  2. Gliding and small airfields: the UK sporting core, then the small
+     fields in the airports' `OurAirports` list (OpenStreetMap holds a
+     frequency for only about 22 UK aerodromes; `ADR-112`). Done.
   3. Repeaters outside the UK from an open worldwide list.
   4. Write a beacon bank to the K5 and hear GB3VHF or another beacon as a
      tone.

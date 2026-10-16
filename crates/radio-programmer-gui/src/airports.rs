@@ -63,7 +63,13 @@ pub struct AirportFrequency {
     pub latitude: f64,
     /// Airport longitude in degrees east.
     pub longitude: f64,
+    /// Whether it is a small field: an airstrip, gliding site, heliport,
+    /// balloon port or seaplane base rather than a medium or large airport.
+    pub small: bool,
 }
+
+/// `OurAirports` types of a small field.
+const SMALL_TYPES: [&str; 4] = ["small_airport", "heliport", "balloonport", "seaplane_base"];
 
 /// The carrier of an airband frequency as listed, in hertz.
 ///
@@ -72,7 +78,7 @@ pub struct AirportFrequency {
 /// 15 (two thirds in). A name ending in 20 is a 25 kHz frequency cut to two
 /// decimals, such as `123.07` for 123.075. Anything else is off both grids
 /// and is refused, as is anything outside the VHF airband.
-fn carrier_hz(mhz: &str) -> Option<u32> {
+pub(crate) fn carrier_hz(mhz: &str) -> Option<u32> {
     let mhz: f64 = mhz.trim().parse().ok()?;
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let khz = (mhz * 1_000.0).round() as u32;
@@ -144,7 +150,7 @@ pub fn parse(airports_csv: &str, frequencies_csv: &str) -> Result<Vec<AirportFre
             "longitude_deg",
         ],
     )?;
-    let airports: HashMap<String, (String, String, f64, f64)> = rows
+    let airports: HashMap<String, (String, String, f64, f64, bool)> = rows
         .filter_map(|row| {
             let field = |at: usize| row.get(at).map_or("", String::as_str).trim();
             let id = field(id_at);
@@ -158,6 +164,7 @@ pub fn parse(airports_csv: &str, frequencies_csv: &str) -> Result<Vec<AirportFre
                     field(name_at).to_owned(),
                     field(latitude_at).parse().ok()?,
                     field(longitude_at).parse().ok()?,
+                    SMALL_TYPES.contains(&field(type_at)),
                 ),
             ))
         })
@@ -166,7 +173,7 @@ pub fn parse(airports_csv: &str, frequencies_csv: &str) -> Result<Vec<AirportFre
     let mut frequencies: Vec<AirportFrequency> = listed
         .into_iter()
         .filter_map(|(id, kind, frequency_hz)| {
-            let (ident, airport, latitude, longitude) = airports.get(&id)?;
+            let (ident, airport, latitude, longitude, small) = airports.get(&id)?;
             Some(AirportFrequency {
                 name: sanitise(&format!("{ident} {kind}"), MAX_CHANNEL_NAME_LEN)?,
                 ident: ident.clone(),
@@ -174,6 +181,7 @@ pub fn parse(airports_csv: &str, frequencies_csv: &str) -> Result<Vec<AirportFre
                 frequency_hz,
                 latitude: *latitude,
                 longitude: *longitude,
+                small: *small,
             })
         })
         .collect();
@@ -197,9 +205,22 @@ pub fn nearby<'a>(
     locator: &str,
     radius_km: u16,
 ) -> Result<Vec<(&'a AirportFrequency, f64)>, String> {
+    nearby_matching(frequencies, locator, radius_km, |_| true, HashSet::new())
+}
+
+/// The frequencies `keep` accepts, chosen and ordered as [`nearby`] does,
+/// leaving out every carrier already in `taken`.
+pub(crate) fn nearby_matching<'a>(
+    frequencies: &'a [AirportFrequency],
+    locator: &str,
+    radius_km: u16,
+    keep: impl Fn(&AirportFrequency) -> bool,
+    mut taken: HashSet<u32>,
+) -> Result<Vec<(&'a AirportFrequency, f64)>, String> {
     let home = locator_centre(locator)?;
     let mut near: Vec<_> = frequencies
         .iter()
+        .filter(|frequency| keep(frequency))
         .map(|frequency| {
             let km = distance_km(home, (frequency.latitude, frequency.longitude));
             (frequency, km)
@@ -211,7 +232,6 @@ pub fn nearby<'a>(
             .then(a.0.ident.cmp(&b.0.ident))
             .then(a.0.frequency_hz.cmp(&b.0.frequency_hz))
     });
-    let mut taken = HashSet::new();
     near.retain(|(frequency, _)| taken.insert(frequency.frequency_hz));
     Ok(near)
 }
@@ -219,22 +239,32 @@ pub fn nearby<'a>(
 /// Builds the receive-only AM bank for the frequencies `nearby` chose, in
 /// its order.
 pub fn airport_bank(locator: &str, near: &[(&AirportFrequency, f64)]) -> BankDraft {
-    let mut name = format!("AIR {}", locator.trim().to_ascii_uppercase());
-    name.truncate(MAX_BANK_NAME_LEN);
     let channels = near
         .iter()
-        .map(|(frequency, _)| ChannelDraft {
-            name: frequency.name.clone(),
-            receive_mhz: format_mhz(frequency.frequency_hz),
-            // AM only receives (`ADR-107`).
-            transmit_mhz: String::new(),
-            modulation: Modulation::Am,
-            bandwidth: Bandwidth::Narrow,
-            power: PowerLevel::Low1,
-            step_hz: STEP_HZ,
-            ..ChannelDraft::default()
-        })
+        .map(|(frequency, _)| am_channel(&frequency.name, frequency.frequency_hz))
         .collect();
+    am_bank("AIR", locator, channels)
+}
+
+/// One receive-only airband channel.
+pub(crate) fn am_channel(name: &str, frequency_hz: u32) -> ChannelDraft {
+    ChannelDraft {
+        name: name.to_owned(),
+        receive_mhz: format_mhz(frequency_hz),
+        // AM only receives (`ADR-107`).
+        transmit_mhz: String::new(),
+        modulation: Modulation::Am,
+        bandwidth: Bandwidth::Narrow,
+        power: PowerLevel::Low1,
+        step_hz: STEP_HZ,
+        ..ChannelDraft::default()
+    }
+}
+
+/// A receive-only AM bank named `prefix` and the locator.
+pub(crate) fn am_bank(prefix: &str, locator: &str, channels: Vec<ChannelDraft>) -> BankDraft {
+    let mut name = format!("{prefix} {}", locator.trim().to_ascii_uppercase());
+    name.truncate(MAX_BANK_NAME_LEN);
     BankDraft {
         name,
         kind: BankKind::Named,
