@@ -10,46 +10,55 @@ pub const CAPACITY: usize = 8 * 1024;
 /// Only write size evidenced by the pinned V1 firmware.
 pub const WRITE_BLOCK_BYTES: usize = 8;
 // The pinned firmware waits 8 ms. Polling remains bounded but permits at least
-// that interval at the sourced one-microsecond bit timing, where one poll (a
-// start, the address byte and a stop) takes some 36 waits.
+// that interval: one poll (a start, the address byte and a stop) takes some 36
+// waits of 650 ns.
 const READY_POLLS: usize = 2_048;
-/// Spin-loop passes in one bus edge wait.
+/// Spin-loop passes in one bus wait of [`WAIT_NANOSECONDS`].
 ///
-/// The reference firmware waits one microsecond per edge (`i2c.c`,
-/// `SYSTICK_DelayUs(1)`) on this bus, for the EEPROM and the BK1080 alike.
-/// How many passes make a microsecond depends on the flash wait states the
-/// part runs with, so [`calibrate`] measures it at boot. Until then this
+/// The clock is held high for one wait and low for two, the I2C fast-mode
+/// minimums of 0.6 µs and 1.3 µs, and a start or stop holds for one. The
+/// reference firmware waits a microsecond after every edge (`i2c.c`); holding
+/// each half of the clock only as long as it must takes about two thirds of
+/// that per bit. How many passes make a wait depends on the flash wait states
+/// the part runs with, so [`calibrate`] measures it at boot. Until then this
 /// assumes a pass takes the fewest cycles it can, [`CYCLES_PER_SPIN`] at
-/// 48 MHz, which can only make the wait longer than a microsecond.
-static SPINS_PER_EDGE: AtomicU32 = AtomicU32::new(UNCALIBRATED_SPINS_PER_EDGE);
+/// 48 MHz, which can only make a wait longer.
+static SPINS_PER_WAIT: AtomicU32 = AtomicU32::new(UNCALIBRATED_SPINS_PER_WAIT);
+/// Nanoseconds in one bus wait.
+const WAIT_NANOSECONDS: u32 = 650;
 /// Fewest cycles one spin-loop pass takes: compare, branch, `yield`, subtract
 /// and the taken branch back.
 const CYCLES_PER_SPIN: u32 = 6;
-/// Spin passes per edge before calibration.
-const UNCALIBRATED_SPINS_PER_EDGE: u32 = 48_u32.div_ceil(CYCLES_PER_SPIN);
+/// Spin passes per wait before calibration.
+const UNCALIBRATED_SPINS_PER_WAIT: u32 = cycles_per_wait(48_000_000).div_ceil(CYCLES_PER_SPIN);
 /// Spin passes [`calibrate`] times.
 pub const CALIBRATION_SPINS: u32 = 64;
 
-/// Adopts an edge wait of one microsecond at `clock_hz`, given the cycles
+/// Cycles in one wait at `clock_hz`, rounded up.
+const fn cycles_per_wait(clock_hz: u32) -> u32 {
+    (clock_hz / 1_000 * WAIT_NANOSECONDS).div_ceil(1_000_000)
+}
+
+/// Adopts a wait of [`WAIT_NANOSECONDS`] at `clock_hz`, given the cycles
 /// [`CALIBRATION_SPINS`] passes of [`spin`] were measured to take.
 pub fn calibrate(clock_hz: u32, cycles: u32) {
-    if let Some(spins) = spins_per_edge(clock_hz, cycles) {
-        SPINS_PER_EDGE.store(spins, Ordering::Relaxed);
+    if let Some(spins) = spins_per_wait(clock_hz, cycles) {
+        SPINS_PER_WAIT.store(spins, Ordering::Relaxed);
     }
 }
 
-/// Spin passes that take at least a microsecond, from a measurement of
-/// [`CALIBRATION_SPINS`] passes; `None` for a measurement that cannot be one.
+/// Spin passes that take at least [`WAIT_NANOSECONDS`], from a measurement
+/// of [`CALIBRATION_SPINS`] passes; `None` for a measurement that cannot be
+/// one.
 ///
 /// The measurement includes the call around the passes, which makes a pass
 /// look slightly dearer than it is, so one pass is added back.
-pub const fn spins_per_edge(clock_hz: u32, cycles: u32) -> Option<u32> {
+pub const fn spins_per_wait(clock_hz: u32, cycles: u32) -> Option<u32> {
     if cycles < CALIBRATION_SPINS {
         return None;
     }
-    let cycles_per_microsecond = clock_hz.div_ceil(1_000_000);
-    let spins = (cycles_per_microsecond * CALIBRATION_SPINS).div_ceil(cycles) + 1;
-    if spins > UNCALIBRATED_SPINS_PER_EDGE * 8 {
+    let spins = (cycles_per_wait(clock_hz) * CALIBRATION_SPINS).div_ceil(cycles) + 1;
+    if spins > UNCALIBRATED_SPINS_PER_WAIT * 8 {
         return None;
     }
     Some(spins)
@@ -199,52 +208,51 @@ impl Bus for K5Bus {
     }
     fn start(&mut self) {
         high(11);
-        delay();
+        wait();
         high(10);
-        delay();
+        wait();
         low(11);
-        delay();
+        wait();
         low(10);
-        delay();
+        wait();
     }
     fn stop(&mut self) {
         low(11);
-        delay();
+        wait();
         low(10);
-        delay();
+        wait();
         high(10);
-        delay();
+        wait();
         high(11);
-        delay();
+        wait();
+        wait();
     }
-    // Every edge is followed by a wait, as the reference firmware's `i2c.c`
-    // does, so the clock is low for two waits and high for at least one. With
-    // a wait only before each rising edge, the clock was low for one wait,
-    // under the EEPROM's 1.3 µs minimum once a wait was a true microsecond,
-    // and writes failed their read-back.
+    // The clock is low for two waits and high for one. With one wait each it
+    // was low for under the EEPROM's 1.3 µs once a wait was a measured
+    // microsecond.
     fn write(&mut self, mut byte: u8) -> bool {
         low(10);
-        delay();
         for _ in 0..8 {
             if byte & 0x80 == 0 {
                 low(11);
             } else {
                 high(11);
             }
-            delay();
+            wait();
+            wait();
             high(10);
-            delay();
+            wait();
             low(10);
-            delay();
             byte <<= 1;
         }
         gpio::set_input(Port::A, 11);
-        delay();
+        wait();
+        wait();
         high(10);
-        delay();
+        wait();
         let acknowledged = !gpio::read_pin(Port::A, 11);
         low(10);
-        delay();
+        wait();
         high(11);
         acknowledged
     }
@@ -253,14 +261,14 @@ impl Bus for K5Bus {
         let mut value = 0;
         for _ in 0..8 {
             low(10);
-            delay();
+            wait();
+            wait();
             high(10);
-            delay();
-            delay();
+            wait();
             value = (value << 1) | u8::from(gpio::read_pin(Port::A, 11));
         }
         low(10);
-        delay();
+        wait();
         // Output first: a level written while the pin is an input does not
         // take, so the acknowledgement went out high and the EEPROM stopped
         // after the first byte of every read (7.0.46 to 7.0.48).
@@ -270,11 +278,11 @@ impl Bus for K5Bus {
         } else {
             low(11);
         }
-        delay();
+        wait();
         high(10);
-        delay();
+        wait();
         low(10);
-        delay();
+        wait();
         high(11);
         value
     }
@@ -288,8 +296,8 @@ fn high(pin: u8) {
     gpio::write_pin(Port::A, pin, true);
     gpio::set_output(Port::A, pin);
 }
-fn delay() {
-    spin(SPINS_PER_EDGE.load(Ordering::Relaxed));
+fn wait() {
+    spin(SPINS_PER_WAIT.load(Ordering::Relaxed));
 }
 
 /// Runs `passes` spin-loop passes; what [`calibrate`] times.
@@ -332,16 +340,17 @@ mod tests {
         }
     }
     #[test]
-    fn the_edge_wait_is_a_measured_microsecond() {
-        use super::{spins_per_edge, CALIBRATION_SPINS};
-        // Six cycles a pass, no wait states: 48 cycles is eight passes, and
-        // one is added back for the call the measurement includes.
-        assert_eq!(spins_per_edge(48_000_000, CALIBRATION_SPINS * 6), Some(9));
+    fn a_wait_is_a_measured_650_nanoseconds() {
+        use super::{spins_per_wait, CALIBRATION_SPINS};
+        // 650 ns at 48 MHz is 32 cycles. Six cycles a pass, no wait states:
+        // six passes, and one is added back for the call the measurement
+        // includes.
+        assert_eq!(spins_per_wait(48_000_000, CALIBRATION_SPINS * 6), Some(7));
         // Wait states tripling a pass's cost leave a third as many passes.
-        assert_eq!(spins_per_edge(48_000_000, CALIBRATION_SPINS * 18), Some(4));
+        assert_eq!(spins_per_wait(48_000_000, CALIBRATION_SPINS * 18), Some(3));
         // A measurement no spin loop could produce keeps the safe default.
-        assert_eq!(spins_per_edge(48_000_000, 0), None);
-        assert_eq!(spins_per_edge(48_000_000, CALIBRATION_SPINS - 1), None);
+        assert_eq!(spins_per_wait(48_000_000, 0), None);
+        assert_eq!(spins_per_wait(48_000_000, CALIBRATION_SPINS - 1), None);
     }
 
     #[test]

@@ -260,7 +260,13 @@ failed, K5 (flash end `0x0000eec4`) and K1 release images build.
 `7.0.51` (`186c772`) flashed to the K5 (bootloader `2.00.06` by
 `identify` first, CRC-32 `d094e56b`, 240/240 pages acknowledged, not read
 back). Hardware: FM plays at once on every station change (operator).
-Next: check an FM scan still stops on stations, and that a channel
+Bus trim (operator request): a wait is now a calibrated 650 ns, the clock
+high for one and low for two (fast-mode 0.6 and 1.3 µs minimums), start
+and stop holds one, bus free two; a bit takes about 1.95 µs where it took
+3. Faster than the reference's microsecond per edge, so writes and FM
+need a hardware check. Same gate, 871 passed 0 failed, K5 (flash end
+`0x0000eedc`) and K1 release images build. `7.0.52`. Next: flash, read
+the boot timings, check a studio write, an FM station, an FM scan, and that a channel
 change survives a power cycle.
 
 **`DUPLEX-069` is active alongside** (2026-10-16, operator request,
