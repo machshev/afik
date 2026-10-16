@@ -267,8 +267,11 @@ and stop holds one, bus free two; a bit takes about 1.95 µs where it took
 need a hardware check. Same gate, 871 passed 0 failed, K5 (flash end
 `0x0000eedc`) and K1 release images build. `7.0.52` (`9b682f7`) flashed
 to the K5 (bootloader `2.00.06` by `identify` first, CRC-32 `dcc5906c`,
-240/240 pages acknowledged, not read back). Next: read the boot timings, check a studio write, an FM station, an FM scan, and that a channel
-change survives a power cycle.
+240/240 pages acknowledged, not read back). Hardware: `S0318 L0901
+F0205` (load about 583 ms, was 631) and a studio write works. The bus
+now moves the image in well under 100 ms, so most of the load is
+elsewhere, likely decoding. Next: check an FM station, an FM scan, and
+that a channel change survives a power cycle on `7.0.52`.
 
 **`DUPLEX-069` is active alongside** (2026-10-16, operator request,
 `ADR-108`): a duplex memory channel the programmed TX ranges refuse is
