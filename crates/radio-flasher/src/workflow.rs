@@ -80,6 +80,8 @@ pub enum FlashError {
     ProtectedFirmware,
     /// A beacon belongs to bootloader v5 or another unsupported protocol.
     UnsupportedBootloader(u16),
+    /// A page-write beacon reported a bootloader version no workflow covers.
+    UnsupportedBootloaderVersion(String),
     /// The operator did not supply the exact qualified-hardware phrase.
     TargetNotConfirmed,
     /// The typed image CRC-32 did not select the actual padded image.
@@ -207,6 +209,9 @@ impl fmt::Display for FlashError {
             }
             Self::UnsupportedBootloader(command) => {
                 write!(formatter, "unsupported bootloader beacon: 0x{command:04x}")
+            }
+            Self::UnsupportedBootloaderVersion(version) => {
+                write!(formatter, "unsupported bootloader version: {version}")
             }
             Self::TargetNotConfirmed => formatter.write_str("qualified K5 V1 target not confirmed"),
             Self::ImageNotConfirmed { expected, supplied } => write!(
@@ -1642,11 +1647,7 @@ fn parse_bootloader_beacon(packet: &Packet) -> Result<BootloaderInfo, FlashError
     }
     require_packet(payload, COMMAND_V2_BEACON, 32, 36, "bootloader-v2 beacon")?;
     let version = parse_text(&payload[20..36], "bootloader-v2 version")?;
-    if !version.starts_with("2.")
-        || version
-            .bytes()
-            .any(|byte| !byte.is_ascii_digit() && byte != b'.')
-    {
+    if !is_k5_v1_bootloader(&version) {
         return Err(FlashError::InvalidText("bootloader-v2 version"));
     }
     Ok(BootloaderInfo { version })
@@ -1660,21 +1661,25 @@ fn parse_bootloader_family(packet: &Packet) -> Result<BootloaderFamily, FlashErr
     }
     require_packet(payload, COMMAND_V2_BEACON, 32, 36, "bootloader beacon")?;
     let version = parse_text(&payload[20..36], "bootloader version")?;
-    if version.starts_with("2.")
-        && version
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || byte == b'.')
-    {
+    if is_k5_v1_bootloader(&version) {
         return Ok(BootloaderFamily::K5V1(BootloaderInfo { version }));
     }
-    if version.starts_with("7.03.")
-        && version
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || byte == b'.')
-    {
+    if version.starts_with("7.03.") && is_numeric_version(&version) {
         return Ok(BootloaderFamily::K1(BootloaderInfo { version }));
     }
-    Err(FlashError::InvalidText("supported bootloader version"))
+    Err(FlashError::UnsupportedBootloaderVersion(version))
+}
+
+/// The K5 V1 page-write bootloaders: `2.*`, and the `4.00.01` that
+/// `EVID-K5-012` and `EVID-K5-017` show on the same DP32G030 generation.
+fn is_k5_v1_bootloader(version: &str) -> bool {
+    (version.starts_with("2.") || version.starts_with("4.")) && is_numeric_version(version)
+}
+
+fn is_numeric_version(version: &str) -> bool {
+    version
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || byte == b'.')
 }
 
 fn version_request(version: &FirmwareVersion) -> [u8; 20] {
@@ -1937,13 +1942,17 @@ mod tests {
     }
 
     fn beacon() -> Vec<u8> {
+        beacon_with_version(*b"2.00.06\0")
+    }
+
+    fn beacon_with_version(version: [u8; 8]) -> Vec<u8> {
         let mut payload = vec![0_u8; 36];
         payload[0..4].copy_from_slice(&[0x18, 0x05, 0x20, 0x00]);
         payload[4..20].copy_from_slice(&[
             0x01, 0x02, 0x02, 0x06, 0x1C, 0x53, 0x50, 0x4A, 0x37, 0x47, 0xFF, 0x0F, 0x8C, 0x00,
             0x53, 0x00,
         ]);
-        payload[20..28].copy_from_slice(b"2.00.06\0");
+        payload[20..28].copy_from_slice(&version);
         payload[28..36].copy_from_slice(&[0x34, 0x0A, 0, 0, 0, 0, 0, 0x20]);
         encode_response(&payload)
     }
@@ -2010,6 +2019,29 @@ mod tests {
         let last = requests.last().unwrap();
         assert_eq!(u16::from_le_bytes([last[8], last[9]]), 239);
         assert_eq!(&last[16..], &image.bytes()[0xEF00..0xF000]);
+    }
+
+    #[test]
+    fn a_4_00_01_bootloader_takes_the_k5_v1_page_write() {
+        let mut raw = valid_raw(0xA5);
+        raw.extend_from_slice(b"AFIK-K5-2.3T");
+        let image = ApplicationImage::from_raw(&raw).unwrap();
+        let version = FirmwareVersion::new("2.01.23").unwrap();
+        let mut responses = beacon_with_version(*b"4.00.01\0");
+        responses.extend(beacon_with_version(*b"4.00.01\0"));
+        for page in 0..FLASH_PAGE_COUNT {
+            responses.extend(acknowledgement(u16::try_from(page).unwrap(), 0));
+        }
+        let mut transport = ScriptedTransport::new(responses, 1);
+        let report = flash_afik_application(
+            &mut transport,
+            &image,
+            &version,
+            TEST_TRANSACTION_ID,
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(report.pages_acknowledged, 240);
     }
 
     #[test]
@@ -2165,19 +2197,24 @@ mod tests {
             BootloaderFamily::K1(ref info) if info.version() == "7.03.01"
         ));
 
+        let mut v4_payload = k1_payload.clone();
+        v4_payload[20..27].copy_from_slice(b"4.00.01");
+        let mut v4 = ScriptedTransport::new(encode_response_with_trailer(&v4_payload, 0x6ED1), 1);
+        assert!(matches!(
+            detect_bootloader(&mut v4).unwrap(),
+            BootloaderFamily::K5V1(ref info) if info.version() == "4.00.01"
+        ));
+
         let mut unknown_payload = k1_payload;
         unknown_payload[20..27].copy_from_slice(b"7.04.01");
         let mut unknown = ScriptedTransport::new(encode_response(&unknown_payload), 1);
-        assert!(matches!(
-            detect_bootloader(&mut unknown),
-            Err(FlashError::InvalidText("supported bootloader version"))
-        ));
+        let error = detect_bootloader(&mut unknown).unwrap_err();
+        assert_eq!(error.to_string(), "unsupported bootloader version: 7.04.01");
     }
 
     #[test]
     fn observation_reports_an_unfamiliar_version_instead_of_refusing_it() {
-        // The UV-5R Plus of `EVID-K5-012`. `detect_bootloader` refuses it,
-        // which is `RISK-037`'s wrong discriminator; observation must not.
+        // The UV-5R Plus of `EVID-K5-012`.
         let mut payload = vec![0_u8; 36];
         payload[0..4].copy_from_slice(&[0x18, 0x05, 0x20, 0x00]);
         payload[20..27].copy_from_slice(b"4.00.01");
