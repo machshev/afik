@@ -144,7 +144,11 @@ named in the error. Gate: fmt clean, workspace clippy `-D warnings` clean,
 `cargo test --workspace` 862 passed 0 failed. With a family chosen by
 hand, a Force checkbox flashes it over any page-write bootloader version
 (`VersionCheck::Any`; `0x057A` still refused); detection stays the
-default. Same gate, 866 passed 0 failed. Next: flash 7.0.40 to the
+default. Same gate, 866 passed 0 failed. The first studio flash of the
+`4.00.01` unit failed at page 0: the bootloader beaconed on and refused
+`2.01.23`. A bootloader other than `2.*` is now sent the wildcard
+`*.01.23` (K5TOOL's documented bypass, egzumer's `fw-pack.py`). Same
+gate, 867 passed 0 failed. Next: flash 7.0.40 to the
 `4.00.01` unit from the studio and confirm it boots; then write a coastal
 bank to the K5 and listen.
 
