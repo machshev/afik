@@ -4,7 +4,7 @@
 
 use std::process::ExitCode;
 
-use radio_programmer_gui::{app::StudioApp, logging, parse_options, HELP};
+use radio_programmer_gui::{app::StudioApp, logging, parse_options, theme, HELP};
 
 fn main() -> ExitCode {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
@@ -34,7 +34,10 @@ fn main() -> ExitCode {
     match eframe::run_native(
         "AFIK Studio",
         native_options,
-        Box::new(move |_context| Ok(Box::new(StudioApp::new(&options)))),
+        Box::new(move |creation| {
+            theme::apply(&creation.egui_ctx);
+            Ok(Box::new(StudioApp::new(&options)))
+        }),
     ) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

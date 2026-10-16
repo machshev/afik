@@ -146,7 +146,8 @@ fn generator_tab(
         };
         ui.painter().rect(rect, rounding, fill, stroke);
         let colour = if selected {
-            visuals.strong_text_color()
+            // The theme's accent.
+            visuals.selection.stroke.color
         } else {
             visuals.text_color()
         };
