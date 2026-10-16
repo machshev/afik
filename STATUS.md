@@ -209,8 +209,9 @@ calibrated at boot from `SysTick` cycles (`time_driver::cycles_taken`,
 long under flash wait states; and an edge writes only the level, the data
 line's direction turning around explicitly. Gate: fmt clean, workspace
 clippy `-D warnings` clean, `cargo test --workspace` 870 passed 0 failed,
-K5 (flash end `0x0000edec`) and K1 release images build. `7.0.46`, not
-flashed. Next: flash, read the timings, and check a channel change
+K5 (flash end `0x0000edec`) and K1 release images build. `7.0.46`
+(`4679874`) flashed to the K5 (bootloader `2.00.06` by `identify` first,
+CRC-32 `fbcb61d7`, 240/240 pages acknowledged, not read back). Next: read the timings, and check a channel change
 survives a power cycle (EEPROM writes use the new timing).
 
 **`DUPLEX-069` is active alongside** (2026-10-16, operator request,
