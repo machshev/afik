@@ -2944,6 +2944,21 @@ or hardware/calibration envelope is established here. `RISK-007`, `RISK-038`,
   `RISK-037`'s open `4.00.01` item for writing.
 - **Confidence:** high for this unit; one flash.
 
+### EVID-K5-038 — A GPIO level written while the pin is an input does not take
+
+- **Source:** `2.00.06` unit, AFIK `7.0.46`–`7.0.48`, `afik-flasher
+  backup-eeprom` (`k5-2.00.06-7.0.47-20261016.bin`).
+- **Observation (2026-10-16):** with the EEPROM bus writing PA11's level
+  before making it an output for the master's read acknowledgement, every
+  128-byte read returned its first byte and `0xFF` after it, the vendor
+  calibration at `0x1E00` included, and every studio write failed its
+  read-back. Writing the direction first (as `7.0.40` did) is the fix.
+- **Inference:** a `GPIOA` data write for a pin configured as input does
+  not set the level it later drives, so the acknowledgement went out high
+  and the EEPROM ended the read.
+- **Confidence:** medium; inferred from the read pattern, not measured on
+  the pin.
+
 ### Pinned source provenance
 
 K1 references below are relative to [Armel commit

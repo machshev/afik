@@ -228,7 +228,17 @@ its first byte, so each write lands its first data byte and no more.
 Bisect `7.0.48`: the 7.0.40 wait (48 passes, uncalibrated) on the
 current code, to tell bus timing from the rest; flashed (`3866909`,
 bootloader `2.00.06` by `identify` first, CRC-32 `3138fbdf`, 240/240 pages
-acknowledged, not read back). Next: write the project from the studio, read the timings, and check a channel change
+acknowledged, not read back). The studio write still timed out, and the
+backup explains it: every 128-byte read gives its first byte and `0xFF`
+after it, the vendor calibration included, so reads, not the EEPROM, were
+wrong. Since 7.0.46 the master's read acknowledgement wrote PA11's level
+before making it an output, and that level does not take (`EVID-K5-038`),
+so the EEPROM ended each read after one byte and every write failed its
+read-back. Edges again set the direction with the level, and the
+acknowledgement makes the line an output first; calibration is back on.
+Same gate, 870 passed 0 failed, K5 (flash end `0x0000ee9c`) and K1
+release images build. `7.0.49`. Next: flash, back up the EEPROM to
+confirm reads, then write the project from the studio, read the timings, and check a channel change
 survives a power cycle (EEPROM writes use the new timing).
 
 **`DUPLEX-069` is active alongside** (2026-10-16, operator request,

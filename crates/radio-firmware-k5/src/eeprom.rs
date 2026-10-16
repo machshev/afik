@@ -21,9 +21,7 @@ const READY_POLLS: usize = 2_048;
 /// part runs with, so [`calibrate`] measures it at boot. Until then this
 /// assumes a pass takes the fewest cycles it can, [`CYCLES_PER_SPIN`] at
 /// 48 MHz, which can only make the wait longer than a microsecond.
-// Bisect (7.0.48): the 7.0.40 wait, uncalibrated, to test whether bus timing
-// is what stops writes.
-static SPINS_PER_EDGE: AtomicU32 = AtomicU32::new(48);
+static SPINS_PER_EDGE: AtomicU32 = AtomicU32::new(UNCALIBRATED_SPINS_PER_EDGE);
 /// Fewest cycles one spin-loop pass takes: compare, branch, `yield`, subtract
 /// and the taken branch back.
 const CYCLES_PER_SPIN: u32 = 6;
@@ -190,7 +188,6 @@ impl K5Bus {
             portcon::enable_input(Port::A, pin);
             portcon::disable_open_drain(Port::A, pin);
             high(pin);
-            gpio::set_output(Port::A, pin);
         }
         Self
     }
@@ -249,7 +246,6 @@ impl Bus for K5Bus {
         low(10);
         delay();
         high(11);
-        gpio::set_output(Port::A, 11);
         acknowledged
     }
     fn read(&mut self, final_byte: bool) -> u8 {
@@ -265,12 +261,15 @@ impl Bus for K5Bus {
         }
         low(10);
         delay();
+        // Output first: a level written while the pin is an input does not
+        // take, so the acknowledgement went out high and the EEPROM stopped
+        // after the first byte of every read (7.0.46 to 7.0.48).
+        gpio::set_output(Port::A, 11);
         if final_byte {
             high(11);
         } else {
             low(11);
         }
-        gpio::set_output(Port::A, 11);
         delay();
         high(10);
         delay();
@@ -281,14 +280,13 @@ impl Bus for K5Bus {
     }
 }
 
-// Both lines are outputs from `initialise` on, and the data line turns
-// around explicitly where a read or an acknowledgement needs it, so an edge
-// only writes the level.
 fn low(pin: u8) {
     gpio::write_pin(Port::A, pin, false);
+    gpio::set_output(Port::A, pin);
 }
 fn high(pin: u8) {
     gpio::write_pin(Port::A, pin, true);
+    gpio::set_output(Port::A, pin);
 }
 fn delay() {
     spin(SPINS_PER_EDGE.load(Ordering::Relaxed));
