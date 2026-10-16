@@ -3219,6 +3219,7 @@
      `restart_dwell` on the banked controller.
   2. The run loop probes a scanned channel before its full setup, skips it
      when quiet, restarts the dwell once a candidate is tuned and drawn, and
-     redraws a run of quiet skips at the meter rate. Default dwell 90 ms.
+     redraws a run of quiet skips at the meter rate. The 200 ms default
+     dwell stays, since dual watch shares it (`EVID-K5-036`). Done.
   3. Flash the K5 and time a 59-channel scan; check it still stops on a
      keyed PMR446 channel.

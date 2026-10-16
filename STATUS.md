@@ -100,8 +100,20 @@ Step 1: `Bk4819::probe` retunes only the synthesiser and reads the RSSI;
 `skip_quiet` and `restart_dwell`. Gate: `cargo fmt --all --check` clean,
 `cargo clippy -p radio-bk4819 -p radio-channel-control --all-targets -- -D
 warnings` clean, `cargo test -p radio-channel-control` 31 passed 0 failed,
-`cargo test -p radio-bk4819` passed 0 failed. Next: wire the probe into the
-run loop.
+`cargo test -p radio-bk4819` 38 passed 0 failed. Step 2: the run loop
+probes a scanned channel before its full setup and passes a quiet one at
+once, relearning the floor on a new scan, after a reception and at each
+wrap; a candidate is set up, drawn, and its dwell restarted from there;
+quiet skips redraw at the meter rate. A probed channel the scan stops on,
+or a TX restore or wake there, is set up in full. The 200 ms default dwell
+stays: dual watch shares it and failed at 90 ms on the K5 with no redraw
+involved (`EVID-K5-036`), and only candidates wait it out now. Gate: `cargo
+fmt --all --check` clean, `cargo clippy --workspace --all-targets -- -D
+warnings` clean, `cargo test --workspace` 856 passed 0 failed,
+`tool/build-k5.sh --release` (flash end `0x0000ee4c`, 436 bytes under the
+`0xf000` limit) and `tool/build-k1.sh --release` pass. `7.0.40` is the image
+to flash. Next (step 3, hardware): flash the K5, time a scan of the
+59-channel bank, and key a PMR446 channel to check it still stops there.
 
 **`MARINE-070` is active alongside** (2026-10-16, operator request,
 `ADR-109`): step 1 done. The Banks tab has a Marine row: Sync asks Overpass

@@ -11,8 +11,8 @@ use radio_bk4819::{
     ToneStatus,
 };
 use radio_channel_control::{
-    BankedReceiveController, ChannelReceiveSetup, ChannelSelection, ChannelSource,
-    ReceiveObservation, ReceiveState, ReceiveUpdate, TimerDirective, TimerToken,
+    BankedReceiveController, BankedScanPhase, ChannelReceiveSetup, ChannelSelection, ChannelSource,
+    QuietGate, ReceiveObservation, ReceiveState, ReceiveUpdate, TimerDirective, TimerToken,
 };
 use radio_channel_plan::{BankName, ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord};
 use radio_domain::{
@@ -78,6 +78,10 @@ const SCAN_SAMPLE_MILLISECONDS: u64 = 5;
 /// 60 ms receive interval (`7.0.32`); the reference firmware reads nothing
 /// while it plays.
 const BROADCAST_SAMPLE_MILLISECONDS: u64 = 1_000;
+
+/// How long a scan probe waits before reading a near-threshold carrier
+/// again, as the reference's fast scan does (`SCAN_FAST_RECHECK_DELAY_US`).
+const PROBE_RECHECK_MICROSECONDS: u64 = 350;
 
 /// Where a catch starts when the slot is a broadcast station, which the
 /// BK4819 cannot receive: any frequency it can, since the scan looks across
@@ -190,6 +194,9 @@ struct Receiver<B: RegisterBus, S: Speaker, C: BroadcastChip> {
     catching: bool,
     /// The unit's squelch tables, once the serial task has read them.
     squelch_calibration: Option<SquelchCalibration>,
+    /// A scan probed the tuned channel's carrier without setting it up in
+    /// full (`ADR-110`); the next full tune ends it.
+    probed: bool,
 }
 
 impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
@@ -214,6 +221,7 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
             tone_scan: false,
             catching: false,
             squelch_calibration: None,
+            probed: false,
         }
     }
 
@@ -323,20 +331,14 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
             modulation: setup.modulation,
             bandwidth: setup.bandwidth,
             tone: setup.tone,
-            squelch: self.thresholds(
-                setup.frequency,
-                if setup.squelch.is_open() {
-                    setup.squelch
-                } else {
-                    radio_wide
-                },
-            ),
+            squelch: self.squelch_for(setup, radio_wide),
             af: AfOutput::Demodulated,
         };
         if self.radio.configure_receive(&request).is_err() {
             self.faulted = true;
             return;
         }
+        self.probed = false;
         self.last_tune = Some((setup, radio_wide));
         self.asleep = false;
         self.frequency_hz = setup.frequency.as_hz();
@@ -344,6 +346,74 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
         self.squelch_open = false;
         let _ = self.radio.read_back(ReadbackRegister::FilterBandwidth);
         self.route_audio();
+    }
+
+    /// The squelch thresholds `setup` is tuned with.
+    fn squelch_for(
+        &self,
+        setup: ChannelReceiveSetup,
+        radio_wide: SquelchLevel,
+    ) -> SquelchThresholds {
+        self.thresholds(
+            setup.frequency,
+            if setup.squelch.is_open() {
+                setup.squelch
+            } else {
+                radio_wide
+            },
+        )
+    }
+
+    /// Checks the carrier on a scanned channel before it is set up in full,
+    /// as the reference's fast scan does (`ADR-110`): `Some(false)` when it
+    /// is quiet and the scan may move straight on, `Some(true)` when it may
+    /// carry a signal, and `None` when it cannot be probed and needs the full
+    /// setup anyway — the chip is not receiving RF in the same modulation, or
+    /// the squelch never shuts. `recheck` waits before a near-threshold
+    /// carrier is read again.
+    fn probe(
+        &mut self,
+        setup: ChannelReceiveSetup,
+        gate: &mut QuietGate,
+        recheck: impl FnOnce(),
+    ) -> Option<bool> {
+        let same_modulation = self
+            .last_tune
+            .is_some_and(|(last, _)| last.modulation == setup.modulation);
+        if self.faulted
+            || !self.started
+            || self.asleep
+            || self.on_broadcast
+            || self.catching
+            || !same_modulation
+            || matches!(setup.modulation, Modulation::Broadcast)
+        {
+            return None;
+        }
+        let open = u16::from(self.squelch_for(setup, setup.squelch).open_rssi());
+        if open == 0 {
+            return None;
+        }
+        let Ok(mut rssi) = self.radio.probe(setup.frequency) else {
+            self.faulted = true;
+            return None;
+        };
+        // The chip is on this channel now: a TX restore or a wake from
+        // battery save sets it up in full there.
+        self.probed = true;
+        self.last_tune = Some((setup, setup.squelch));
+        self.frequency_hz = setup.frequency.as_hz();
+        self.forget_tone();
+        if gate.is_near(rssi, open) {
+            recheck();
+            let Ok(again) = self.radio.probe_again() else {
+                self.faulted = true;
+                return None;
+            };
+            rssi = rssi.max(again);
+        }
+        self.rssi_raw = rssi;
+        Some(gate.judge(rssi, open))
     }
 
     /// Plays a broadcast channel on the BK1080.
@@ -1045,6 +1115,10 @@ pub async fn run<D, K, B, F, W, S, V, M>(
     let mut held_since: Option<u32> = None;
     // The scan timer the controller asked for, and when it expires.
     let mut scan_timer: Option<(TimerToken, Instant)> = None;
+    // The noise floor a scan pass has learned, and whether the channel just
+    // set up in full starts its dwell once it is drawn (`ADR-110`).
+    let mut quiet_gate = QuietGate::new();
+    let mut restart_dwell = false;
     // Which slot dual watch has the receiver on, whether the last settled
     // reading there was busy, and whether the last pass was transmitting.
     let mut watch = DualWatch::new();
@@ -1634,9 +1708,57 @@ pub async fn run<D, K, B, F, W, S, V, M>(
             }
             _ => setup,
         });
+        // A scan only probes the channel it moves to; a quiet one is passed
+        // over at once and only a candidate is set up and dwelt on
+        // (`ADR-110`). Anything else forgets the floor a pass has learned:
+        // the reference relearns it after a reception and on each new scan.
+        let dwelling = pending_operator_squelch.is_none()
+            && activation.as_ref().is_some_and(|(controller, _)| {
+                controller.state() == ReceiveState::Scanning(BankedScanPhase::Dwell)
+            });
+        if !dwelling {
+            quiet_gate.reset();
+        }
+        // A probed channel the scan has stopped on is set up in full.
+        if receiver.probed && pending_tune.is_none() && !dwelling {
+            pending = activation
+                .as_ref()
+                .map(|(controller, _)| controller.setup());
+        }
         // A retune waits for the catch to end; the tune then ends it.
-        if let Some(setup) = pending_tune.filter(|_| bus_available() && catching.is_none()) {
+        let quiet = match pending_tune.filter(|_| dwelling && bus_available() && catching.is_none())
+        {
+            Some(setup) => {
+                receiver.probe(setup, &mut quiet_gate, || {
+                    embassy_time::block_for(Duration::from_micros(PROBE_RECHECK_MICROSECONDS));
+                }) == Some(false)
+            }
+            None => false,
+        };
+        if quiet {
+            pending = None;
+            if let Some((controller, _)) = activation.as_mut() {
+                let from = controller.index();
+                if let Ok(update) = controller.skip_quiet() {
+                    // Back at the start of the list: relearn the floor.
+                    if controller.index() <= from {
+                        quiet_gate.reset();
+                    }
+                    apply(update, &mut pending, &mut scan_timer);
+                }
+            }
+            // A run of quiet channels is shown at the meter's rate, not
+            // redrawn for each one it passes.
+            if Instant::now() >= next_meter_redraw {
+                next_meter_redraw =
+                    Instant::now() + Duration::from_millis(METER_REDRAW_MILLISECONDS);
+                redraw = true;
+            }
+        } else if let Some(setup) = pending_tune.filter(|_| bus_available() && catching.is_none()) {
             receiver.tune(setup, setup.squelch);
+            // The dwell counts from when this channel is tuned and drawn,
+            // not from when the scan chose it.
+            restart_dwell = dwelling;
             if let Some(level) = pending_operator_squelch.take() {
                 if receiver.faulted {
                     shell.reject_squelch();
@@ -1739,6 +1861,13 @@ pub async fn run<D, K, B, F, W, S, V, M>(
                 return;
             }
             redraw = false;
+        }
+        if core::mem::take(&mut restart_dwell) {
+            if let Some((controller, _)) = activation.as_mut() {
+                if let Ok(update) = controller.restart_dwell() {
+                    apply(update, &mut pending, &mut scan_timer);
+                }
+            }
         }
 
         Timer::after(Duration::from_millis(if context.scanning {
@@ -2859,6 +2988,70 @@ mod tests {
         assert!(!receiver.catching && !receiver.faulted && receiver.audio_routed);
         assert_ne!(chip.get(0x30), 0);
         assert_eq!(chip.get(0x51), 0x904A);
+    }
+
+    #[test]
+    fn a_scan_probe_passes_quiet_channels_and_rechecks_a_near_one() {
+        use super::Receiver;
+        use radio_channel_control::{ChannelReceiveSetup, QuietGate};
+        use radio_domain::{Bandwidth, Frequency, FrequencyStep, Modulation, SquelchLevel, Tone};
+
+        const MODE: usize = 0x30;
+        const RSSI: usize = 0x67;
+        let setup = |hertz, modulation, squelch| ChannelReceiveSetup {
+            frequency: Frequency::from_hz(hertz).unwrap(),
+            modulation,
+            bandwidth: Bandwidth::Narrow,
+            tone: Tone::None,
+            squelch,
+            step: FrequencyStep::from_hz(12_500).unwrap(),
+        };
+        let level = SquelchLevel::CONSERVATIVE;
+        let chip = Shared::new();
+        let mut receiver = Receiver::new(
+            radio_bk4819::Bk4819::new(chip.clone()),
+            Chip::default(),
+            Amplifier::default(),
+        );
+        let mut gate = QuietGate::new();
+        let mut rechecks = 0;
+        let first = setup(446_006_250, Modulation::Fm, level);
+        // Nothing tuned yet: the first channel is set up in full.
+        assert_eq!(receiver.probe(first, &mut gate, || rechecks += 1), None);
+        receiver.tune(first, level);
+        let tuned_mode = chip.get(MODE);
+
+        // Level 3 opens at count 92. A floor of 40 is learned and passed.
+        chip.set(RSSI, 40);
+        let second = setup(446_018_750, Modulation::Fm, level);
+        assert_eq!(
+            receiver.probe(second, &mut gate, || rechecks += 1),
+            Some(false)
+        );
+        assert!(receiver.probed && !receiver.faulted);
+        assert_eq!(receiver.last_tune, Some((second, level)));
+        assert_eq!(chip.get(MODE), tuned_mode & !(1 << 9), "the AF DAC is off");
+        assert_eq!(rechecks, 0);
+        // A carrier at the threshold is read again, then dwelt on.
+        chip.set(RSSI, 92);
+        assert_eq!(
+            receiver.probe(first, &mut gate, || rechecks += 1),
+            Some(true)
+        );
+        assert_eq!(rechecks, 1);
+        assert_eq!(receiver.rssi_raw, 92);
+
+        // The full tune ends the probe.
+        receiver.tune(first, level);
+        assert!(!receiver.probed);
+        assert_eq!(chip.get(MODE), tuned_mode);
+
+        // Another modulation, or a squelch that never shuts, is not probed.
+        let am = setup(118_000_000, Modulation::Am, level);
+        assert_eq!(receiver.probe(am, &mut gate, || rechecks += 1), None);
+        let open = setup(446_018_750, Modulation::Fm, SquelchLevel::OPEN);
+        assert_eq!(receiver.probe(open, &mut gate, || rechecks += 1), None);
+        assert!(!receiver.probed);
     }
 
     #[test]
