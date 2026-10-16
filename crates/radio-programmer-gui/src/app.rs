@@ -31,7 +31,7 @@ use crate::{
     },
     presets::{satellite_bank, PRESETS, SATELLITE_PRESET, TX_RANGE_PRESETS},
     projects::ProjectStore,
-    repeaters::{self, RepeaterArea, RepeaterCache, RepeaterList},
+    repeaters::{self, Repeater, RepeaterArea, RepeaterCache, RepeaterList},
     satellites::{SatelliteCache, SatelliteList, SyncJob},
     session::{DeviceJob, DeviceOutcome, DeviceSession, JobKind},
     stations::{self, StationArea, StationCache, StationList},
@@ -93,6 +93,8 @@ enum Tab {
 enum Generator {
     #[default]
     Repeaters,
+    Gateways,
+    Beacons,
     Stations,
     Airports,
     Marine,
@@ -160,8 +162,10 @@ fn generator_tab(
 const GENERATORS_TITLE: &str = "Banks near your locator";
 
 impl Generator {
-    const ALL: [Self; 4] = [
+    const ALL: [Self; 6] = [
         Self::Repeaters,
+        Self::Gateways,
+        Self::Beacons,
         Self::Stations,
         Self::Airports,
         Self::Marine,
@@ -170,9 +174,43 @@ impl Generator {
     const fn label(self) -> &'static str {
         match self {
             Self::Repeaters => "UK repeaters",
+            Self::Gateways => "UK gateways",
+            Self::Beacons => "UK beacons",
             Self::Stations => "UK FM stations",
             Self::Airports => "Airports",
             Self::Marine => "Marine",
+        }
+    }
+}
+
+/// The ETCC systems other than repeaters a bank is built from, out of the
+/// repeaters' list.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EtccKind {
+    Gateways,
+    Beacons,
+}
+
+impl EtccKind {
+    /// What the bank holds, as the status line names them.
+    const fn noun(self) -> &'static str {
+        match self {
+            Self::Gateways => "gateways",
+            Self::Beacons => "beacons",
+        }
+    }
+
+    fn systems(self, list: &RepeaterList) -> &[Repeater] {
+        match self {
+            Self::Gateways => &list.gateways,
+            Self::Beacons => &list.beacons,
+        }
+    }
+
+    fn bank(self, locator: &str, near: &[(&Repeater, f64)]) -> BankDraft {
+        match self {
+            Self::Gateways => repeaters::gateway_bank(locator, near),
+            Self::Beacons => repeaters::beacon_bank(locator, near),
         }
     }
 }
@@ -265,6 +303,13 @@ pub struct StudioApp {
     /// repeaters' locator, and the state file they are remembered in.
     marine_area: MarineArea,
     marine_area_file: Option<PathBuf>,
+    /// The radius and count gateways are added for, at the repeaters'
+    /// locator, and the state file they are remembered in.
+    gateway_area: AirportArea,
+    gateway_area_file: Option<PathBuf>,
+    /// The same for beacons.
+    beacon_area: AirportArea,
+    beacon_area_file: Option<PathBuf>,
 }
 
 impl StudioApp {
@@ -291,6 +336,14 @@ impl StudioApp {
         app.marine_area_file = marine::area_file();
         if let Some(file) = &app.marine_area_file {
             app.marine_area = MarineArea::load(file);
+        }
+        app.gateway_area_file = repeaters::gateway_area_file();
+        if let Some(file) = &app.gateway_area_file {
+            app.gateway_area = AirportArea::load(file);
+        }
+        app.beacon_area_file = repeaters::beacon_area_file();
+        if let Some(file) = &app.beacon_area_file {
+            app.beacon_area = AirportArea::load_or(file, &beacon_area_default());
         }
         app
     }
@@ -876,6 +929,120 @@ impl StudioApp {
         }
     }
 
+    /// The radius and count chosen for `kind`.
+    const fn etcc_area(&self, kind: EtccKind) -> &AirportArea {
+        match kind {
+            EtccKind::Gateways => &self.gateway_area,
+            EtccKind::Beacons => &self.beacon_area,
+        }
+    }
+
+    /// Builds the gateway or beacon bank the area would add, and the project
+    /// it would make, as [`Self::repeater_preview`] does.
+    fn etcc_preview(&self, kind: EtccKind) -> Result<AreaPreview, String> {
+        let list = self
+            .repeaters
+            .as_ref()
+            .ok_or("sync the repeater list from the ETCC first")?;
+        let locator = &self.repeater_area.locator;
+        let area = self.etcc_area(kind);
+        let mut near = repeaters::nearby(kind.systems(list), locator, area.radius_km)?;
+        let in_range = near.len();
+        near.truncate(usize::from(area.max_channels));
+        let (project, bank_bytes) = self.with_bank(kind.bank(locator, &near));
+        Ok(AreaPreview {
+            in_range,
+            taken: near.len(),
+            furthest_km: near.last().map_or(0.0, |(_, km)| *km),
+            bank_bytes,
+            project,
+        })
+    }
+
+    /// Describes the gateways or beacons, what the area would add, and its
+    /// cost.
+    fn etcc_source(&self, kind: EtccKind) -> String {
+        if self.repeater_sync.is_some() {
+            return "Syncing...".to_owned();
+        }
+        let Some(list) = &self.repeaters else {
+            return "Not synced.".to_owned();
+        };
+        let synced = format!(
+            "{} {} from the ETCC, synced {}.",
+            kind.systems(list).len(),
+            kind.noun(),
+            age(list.synced)
+        );
+        let Ok(preview) = self.etcc_preview(kind) else {
+            return synced;
+        };
+        let radius = self.etcc_area(kind).radius_km;
+        let taking = if preview.taken < preview.in_range {
+            format!(
+                "{} within {radius} km, nearest {} taken",
+                preview.in_range, preview.taken
+            )
+        } else {
+            format!("{} within {radius} km", preview.in_range)
+        };
+        format!("{taking}{}. {synced}", cost(&preview))
+    }
+
+    /// Adds a bank of the gateways or beacons near the locator, nearest
+    /// first.
+    fn add_etcc(&mut self, kind: EtccKind) {
+        let noun = kind.noun();
+        let preview = match self.etcc_preview(kind) {
+            Ok(preview) => preview,
+            Err(error) => {
+                self.refuse(&format!("Cannot add {noun}: {error}."));
+                return;
+            }
+        };
+        let area = self.etcc_area(kind).clone();
+        let locator = self.repeater_area.locator.trim().to_ascii_uppercase();
+        if preview.taken == 0 {
+            self.status = format!("No {noun} within {} km of {locator}.", area.radius_km);
+            return;
+        }
+        if preview.project.banks.len() > usize::from(MAX_BANKS) {
+            self.status =
+                format!("A radio holds {MAX_BANKS} banks and the project already has them.");
+            return;
+        }
+        if too_big(&preview.project) {
+            self.refuse(&format!(
+                "{} {noun} would not fit the radio; take fewer.",
+                preview.taken
+            ));
+            return;
+        }
+        self.project = preview.project;
+        let (count, furthest) = (preview.taken, preview.furthest_km);
+        let use_note = match kind {
+            EtccKind::Gateways => "Confirm each against the ETCC list before use.",
+            EtccKind::Beacons => {
+                "Each listens on USB just below the carrier, so the beacon is heard as a \
+                 tone; it never transmits."
+            }
+        };
+        self.status = format!(
+            "Added {count} {noun} within {} km of {locator}, nearest first (furthest \
+             {furthest:.0} km). {use_note}",
+            area.radius_km
+        );
+        let file = match kind {
+            EtccKind::Gateways => &self.gateway_area_file,
+            EtccKind::Beacons => &self.beacon_area_file,
+        };
+        if let Some(file) = file {
+            if let Err(error) = area.save(file) {
+                log::warn!("could not remember the {noun} area: {error}");
+            }
+        }
+    }
+
     /// Reads the satellite list from `cache`, which a sync then writes.
     ///
     /// Reading never fetches: the network is used only when Sync is pressed.
@@ -986,6 +1153,10 @@ impl StudioApp {
             marine_sync: None,
             marine_area: MarineArea::default(),
             marine_area_file: None,
+            gateway_area: AirportArea::default(),
+            gateway_area_file: None,
+            beacon_area: beacon_area_default(),
+            beacon_area_file: None,
         };
         if let Some(baud) = options.baud {
             app.chooser.baud = baud;
@@ -1427,6 +1598,15 @@ struct AreaPreview {
     project: ProjectModel,
 }
 
+/// The beacon radius and count before the operator chooses: wider than the
+/// other generators', since beacons are meant to be heard from afar.
+fn beacon_area_default() -> AirportArea {
+    AirportArea {
+        radius_km: repeaters::DEFAULT_BEACON_RADIUS_KM,
+        ..AirportArea::default()
+    }
+}
+
 /// What a previewed bank costs, and the project's use after adding it.
 fn cost(preview: &AreaPreview) -> String {
     let bank = preview.bank_bytes.map_or_else(
@@ -1671,6 +1851,8 @@ impl StudioApp {
                             ui.set_width(ui.available_width());
                             match self.generator {
                                 Generator::Repeaters => self.repeater_bar(ui),
+                                Generator::Gateways => self.etcc_bar(ui, EtccKind::Gateways),
+                                Generator::Beacons => self.etcc_bar(ui, EtccKind::Beacons),
                                 Generator::Stations => self.station_bar(ui),
                                 Generator::Airports => self.airport_bar(ui),
                                 Generator::Marine => self.marine_bar(ui),
@@ -1746,6 +1928,67 @@ impl StudioApp {
         });
     }
 
+    /// The row that adds the UK gateways or beacons near the shared locator,
+    /// from the repeaters' ETCC list.
+    fn etcc_bar(&mut self, ui: &mut egui::Ui, kind: EtccKind) {
+        ui.horizontal_wrapped(|ui| {
+            let (label, salt, add_help) = match kind {
+                EtccKind::Gateways => (
+                    "UK gateways within",
+                    "gateway-radius",
+                    "Adds the nearest analogue FM gateways (simplex internet nodes) in range \
+                     as one bank, replacing one for the same locator; each is simplex on the \
+                     node's frequency with its CTCSS tone",
+                ),
+                EtccKind::Beacons => (
+                    "UK beacons within",
+                    "beacon-radius",
+                    "Adds the nearest beacons in range as one receive-only USB bank, \
+                     replacing one for the same locator; each is tuned 700 Hz below the \
+                     carrier so the beacon is heard as a tone",
+                ),
+            };
+            let area = match kind {
+                EtccKind::Gateways => &mut self.gateway_area,
+                EtccKind::Beacons => &mut self.beacon_area,
+            };
+            ui.label(label);
+            ComboBox::from_id_salt(salt)
+                .selected_text(format!("{} km", area.radius_km))
+                .show_ui(ui, |ui| {
+                    for km in repeaters::RADII_KM {
+                        ui.selectable_value(&mut area.radius_km, km, format!("{km} km"));
+                    }
+                });
+            ui.label("nearest");
+            ui.add(
+                egui::DragValue::new(&mut area.max_channels)
+                    .range(1..=airports::MAX_CHANNELS_LIMIT),
+            )
+            .on_hover_text(format!(
+                "How many {} the bank takes, nearest first",
+                kind.noun()
+            ));
+            if ui.button("Add").on_hover_text(add_help).clicked() {
+                self.add_etcc(kind);
+            }
+            if ui
+                .add_enabled(
+                    self.repeater_sync.is_none(),
+                    egui::Button::new("Sync from ETCC"),
+                )
+                .on_hover_text(
+                    "Fetches the UK repeater, gateway and beacon list from the RSGB ETCC and \
+                     caches it; the studio never fetches on its own",
+                )
+                .clicked()
+            {
+                self.sync_repeaters();
+            }
+            ui.label(self.etcc_source(kind));
+        });
+    }
+
     /// The row holding the locator the repeaters, stations and airports share.
     fn locator_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
@@ -1758,8 +2001,7 @@ impl StudioApp {
                         .desired_width(70.0),
                 )
                 .on_hover_text(
-                    "Your Maidenhead locator, 4 to 8 characters, for the repeaters, FM \
-                     stations, airports and marine channels below",
+                    "Your Maidenhead locator, 4 to 8 characters, for every generator below",
                 )
                 .changed();
             if edited {
@@ -3165,9 +3407,11 @@ mod tests {
         bank_row_columns, channel_row_label, column_gap, memory_percent, scan_resume_label,
         tx_power_label, tx_timeout_label, StudioApp, Tab, MIN_COLUMN_GAP,
     };
-    use super::{Generator, RadioSection, TxClass, TxRangeDraft, GENERATORS_TITLE, MAX_TX_RANGES};
+    use super::{
+        EtccKind, Generator, RadioSection, TxClass, TxRangeDraft, GENERATORS_TITLE, MAX_TX_RANGES,
+    };
     use crate::{model::BankKind, projects::ProjectStore, DeviceSelector, Options};
-    use radio_domain::ScanResume;
+    use radio_domain::{Modulation, ScanResume};
     use std::path::PathBuf;
 
     /// The studio names each TX choice as the handset menu lists it.
@@ -3424,6 +3668,8 @@ mod tests {
         let mut app = app_in(&scratch("generators"), &Options::default());
         let rows = [
             (Generator::Repeaters, "UK repeaters within"),
+            (Generator::Gateways, "UK gateways within"),
+            (Generator::Beacons, "UK beacons within"),
             (Generator::Stations, "UK FM stations, strongest"),
             (Generator::Airports, "Airports within"),
             (Generator::Marine, "Marine within"),
@@ -4021,6 +4267,70 @@ mod tests {
     }
 
     #[test]
+    fn gateways_and_beacons_come_from_the_repeater_list() {
+        use crate::repeaters::{Repeater, RepeaterList};
+
+        let system = |callsign: &str, hz: u32, latitude: f64| Repeater {
+            callsign: callsign.to_owned(),
+            town: String::new(),
+            output_hz: hz,
+            input_hz: hz,
+            ctcss_tenths_hz: None,
+            wide: false,
+            latitude,
+            longitude: -0.12,
+        };
+        let mut app = simulated("etcc-kinds");
+        assert_eq!(app.etcc_source(EtccKind::Beacons), "Not synced.");
+        let banks = app.project.banks.len();
+        app.add_etcc(EtccKind::Beacons);
+        assert_eq!(app.project.banks.len(), banks, "nothing without a sync");
+        assert!(
+            app.status.starts_with("Cannot add beacons"),
+            "{}",
+            app.status
+        );
+
+        app.repeaters = Some(RepeaterList {
+            repeaters: Vec::new(),
+            gateways: vec![system("MB7NEAR", 145_337_500, 51.52)],
+            beacons: vec![
+                system("GB3VHF", 144_430_000, 51.3),
+                // About 280 km north: inside the beacons' wider default.
+                system("GB3FAR", 432_490_000, 54.0),
+            ],
+            synced: std::time::SystemTime::now(),
+        });
+        "IO91WM".clone_into(&mut app.repeater_area.locator);
+        assert_eq!(app.beacon_area.radius_km, 300);
+        let source = app.etcc_source(EtccKind::Beacons);
+        assert!(source.starts_with("2 within 300 km, bank "), "{source}");
+        assert!(source.ends_with("2 beacons from the ETCC, synced just now."));
+        app.add_etcc(EtccKind::Beacons);
+        let bank = app.project.banks.last().unwrap();
+        assert_eq!(bank.name, "BCN IO91WM");
+        let names: Vec<_> = bank.channels.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["GB3VHF", "GB3FAR"]);
+        assert!(bank
+            .channels
+            .iter()
+            .all(|c| c.modulation == Modulation::Usb));
+
+        app.gateway_area.radius_km = 10;
+        app.add_etcc(EtccKind::Gateways);
+        assert_eq!(app.project.banks.len(), banks + 2);
+        let bank = app.project.banks.last().unwrap();
+        assert_eq!(bank.name, "GW IO91WM");
+        assert_eq!(bank.channels[0].transmit_mhz, "145.337500");
+        assert!(app.project.validate().is_ok());
+
+        app.beacon_area.radius_km = 10;
+        app.add_etcc(EtccKind::Beacons);
+        assert_eq!(app.status, "No beacons within 10 km of IO91WM.");
+        assert_eq!(app.project.banks.len(), banks + 2);
+    }
+
+    #[test]
     fn repeaters_near_a_locator_are_added_nearest_first_once_synced() {
         use crate::repeaters::{Repeater, RepeaterArea, RepeaterList};
 
@@ -4047,6 +4357,8 @@ mod tests {
                 repeater("GB3NEAR", 51.52, -0.12),
                 repeater("GB3OUT", 53.0, -0.1),
             ],
+            gateways: Vec::new(),
+            beacons: Vec::new(),
             synced: std::time::SystemTime::now(),
         });
         app.repeater_area = RepeaterArea {

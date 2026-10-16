@@ -32,6 +32,11 @@ pub const SYSTEMS_URL: &str = "https://api-beta.rsgb.online/all/systems";
 const CACHE_DIR: &str = "etcc";
 const SYSTEMS_FILE: &str = "systems.json";
 const AREA_FILE: &str = "repeater-area";
+const GATEWAY_AREA_FILE: &str = "gateway-area";
+const BEACON_AREA_FILE: &str = "beacon-area";
+/// The radius beacons are taken within before the operator chooses one, in
+/// kilometres: a beacon is put up to be heard far beyond a repeater's reach.
+pub const DEFAULT_BEACON_RADIUS_KM: u16 = 300;
 /// How many repeaters a bank takes before the operator chooses: about a
 /// tenth of the radio's image.
 pub const DEFAULT_MAX_CHANNELS: u16 = 40;
@@ -69,6 +74,15 @@ const RECEIVE_BANDS: [(u64, u64); 2] = [(18_000_000, 660_000_000), (840_000_000,
 /// ETCC system types which are repeaters: analogue voice, multimode (analogue
 /// and digital), and linked. Gateways are single-frequency internet nodes.
 const REPEATER_TYPES: [&str; 3] = ["AV", "DM", "RL"];
+/// The ETCC system type of an analogue gateway.
+const GATEWAY_TYPE: &str = "AG";
+/// The ETCC system type of a beacon.
+const BEACON_TYPE: &str = "BN";
+/// How far below a beacon's carrier its USB channel is tuned, in hertz, so
+/// its keyed carrier is heard as a tone of this pitch.
+pub const BEACON_TONE_HZ: u32 = 700;
+/// The tuning step of a beacon channel, fine enough to tune in a tone.
+const BEACON_STEP_HZ: u32 = 100;
 /// Mean Earth radius in kilometres.
 const EARTH_RADIUS_KM: f64 = 6_371.0;
 
@@ -93,6 +107,18 @@ pub struct Repeater {
     pub longitude: f64,
 }
 
+/// The systems a studio bank can be built from, each ordered by callsign.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Systems {
+    /// FM repeaters: hear the output, transmit on the input.
+    pub repeaters: Vec<Repeater>,
+    /// Analogue gateways: single-frequency internet nodes, so the output and
+    /// input are the same.
+    pub gateways: Vec<Repeater>,
+    /// Beacons, which only send: the output and input are both the carrier.
+    pub beacons: Vec<Repeater>,
+}
+
 /// Picks the FM repeaters out of the ETCC systems response.
 ///
 /// A system is taken when it is a repeater type, operational (or at reduced
@@ -104,6 +130,14 @@ pub struct Repeater {
 /// the ETCC gives one. Its locator is the fallback: about a quarter of them
 /// are only a 4-character square, up to 80 km from the repeater.
 pub fn parse(json: &str) -> Result<Vec<Repeater>, String> {
+    Ok(parse_systems(json)?.repeaters)
+}
+
+/// Picks the repeaters, analogue gateways and beacons out of the ETCC
+/// systems response, each as [`parse`] picks the repeaters. A gateway must
+/// carry analogue FM as a repeater does; a beacon is taken whatever it sends,
+/// on its carrier alone.
+pub fn parse_systems(json: &str) -> Result<Systems, String> {
     let systems = match serde_json::from_str(json) {
         Ok(Value::Object(mut body)) => match body.remove("data") {
             Some(Value::Array(systems)) => systems,
@@ -112,41 +146,63 @@ pub fn parse(json: &str) -> Result<Vec<Repeater>, String> {
         Ok(_) => return Err("ETCC systems: expected an object".to_owned()),
         Err(error) => return Err(format!("ETCC systems: {error}")),
     };
-    let mut repeaters: Vec<Repeater> = systems
-        .iter()
-        .filter(|system| REPEATER_TYPES.contains(&text(system, "type").unwrap_or_default()))
-        .filter(|system| {
-            matches!(
-                text(system, "status"),
-                Some("OPERATIONAL" | "REDUCED OUTPUT")
-            )
-        })
-        .filter(|system| {
-            system
-                .get("modeCodes")
-                .and_then(Value::as_array)
-                .is_some_and(|modes| modes.iter().any(|mode| mode.as_str() == Some("A")))
-        })
-        .filter_map(|system| {
-            let (latitude, longitude) = system
-                .get("extraDetails")
-                .and_then(|details| text(details, "ngr"))
-                .and_then(|reference| grid_reference_centre(reference).ok())
-                .or_else(|| locator_centre(text(system, "locator")?).ok())?;
-            Some(Repeater {
-                callsign: sanitise(text(system, "repeater")?, MAX_CHANNEL_NAME_LEN)?,
-                town: text(system, "town").unwrap_or_default().to_owned(),
-                output_hz: receivable(system, "tx")?,
-                input_hz: receivable(system, "rx")?,
-                ctcss_tenths_hz: system.get("ctcss").and_then(Value::as_f64).and_then(ctcss),
-                wide: system.get("txbw").and_then(Value::as_f64) == Some(25.0),
-                latitude,
-                longitude,
+    let take = |types: &[&str], analogue: bool| {
+        let mut found: Vec<Repeater> = systems
+            .iter()
+            .filter(|system| types.contains(&text(system, "type").unwrap_or_default()))
+            .filter(|system| {
+                matches!(
+                    text(system, "status"),
+                    Some("OPERATIONAL" | "REDUCED OUTPUT")
+                )
             })
-        })
-        .collect();
-    repeaters.sort_by(|a, b| a.callsign.cmp(&b.callsign));
-    Ok(repeaters)
+            .filter(|system| {
+                !analogue
+                    || system
+                        .get("modeCodes")
+                        .and_then(Value::as_array)
+                        .is_some_and(|modes| modes.iter().any(|mode| mode.as_str() == Some("A")))
+            })
+            .filter_map(|system| located(system, analogue))
+            .collect();
+        found.sort_by(|a, b| a.callsign.cmp(&b.callsign));
+        found
+    };
+    Ok(Systems {
+        repeaters: take(&REPEATER_TYPES, true),
+        gateways: take(&[GATEWAY_TYPE], true),
+        beacons: take(&[BEACON_TYPE], false),
+    })
+}
+
+/// One system with its position, or none if the radio cannot receive it or
+/// it has no usable callsign or place. One without an input, a beacon, is
+/// given its output as its input.
+fn located(system: &Value, has_input: bool) -> Option<Repeater> {
+    let (latitude, longitude) = system
+        .get("extraDetails")
+        .and_then(|details| text(details, "ngr"))
+        .and_then(|reference| grid_reference_centre(reference).ok())
+        .or_else(|| locator_centre(text(system, "locator")?).ok())?;
+    let output_hz = receivable(system, "tx")?;
+    Some(Repeater {
+        callsign: sanitise(text(system, "repeater")?, MAX_CHANNEL_NAME_LEN)?,
+        town: text(system, "town").unwrap_or_default().to_owned(),
+        output_hz,
+        input_hz: if has_input {
+            receivable(system, "rx")?
+        } else {
+            output_hz
+        },
+        ctcss_tenths_hz: system
+            .get("ctcss")
+            .and_then(Value::as_f64)
+            .and_then(ctcss)
+            .filter(|_| has_input),
+        wide: system.get("txbw").and_then(Value::as_f64) == Some(25.0),
+        latitude,
+        longitude,
+    })
 }
 
 fn text<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
@@ -389,8 +445,61 @@ pub fn nearby<'a>(
 /// channel receives the output and transmits on the input with the access
 /// tone, and keeps its own bandwidth.
 pub fn repeater_bank(locator: &str, near: &[(&Repeater, f64)]) -> BankDraft {
-    let mut name = format!("RPT {}", locator.trim().to_ascii_uppercase());
+    fm_bank("RPT", locator, near)
+}
+
+/// Builds the bank for the gateways `nearby` chose, in their order: each
+/// channel is simplex on the node's frequency with its access tone.
+pub fn gateway_bank(locator: &str, near: &[(&Repeater, f64)]) -> BankDraft {
+    fm_bank("GW", locator, near)
+}
+
+/// The bank name for `prefix` and the locator, cut to what a radio holds.
+fn bank_name(prefix: &str, locator: &str) -> String {
+    let mut name = format!("{prefix} {}", locator.trim().to_ascii_uppercase());
     name.truncate(MAX_BANK_NAME_LEN);
+    name
+}
+
+/// Builds the bank for the beacons `nearby` chose, in their order: each
+/// channel receives USB [`BEACON_TONE_HZ`] below the carrier, so a keyed
+/// carrier is heard as a tone, and never transmits (`ADR-107`).
+pub fn beacon_bank(locator: &str, near: &[(&Repeater, f64)]) -> BankDraft {
+    let channels = near
+        .iter()
+        .map(|(beacon, _)| ChannelDraft {
+            name: beacon.callsign.clone(),
+            receive_mhz: format_mhz(beacon.output_hz - BEACON_TONE_HZ),
+            transmit_mhz: String::new(),
+            modulation: Modulation::Usb,
+            bandwidth: Bandwidth::Narrow,
+            power: PowerLevel::Low1,
+            step_hz: BEACON_STEP_HZ,
+            ..ChannelDraft::default()
+        })
+        .collect();
+    BankDraft {
+        name: bank_name("BCN", locator),
+        kind: BankKind::Named,
+        scan_enabled: true,
+        shared: SharedSettings::from_bits(
+            SharedSettings::MODULATION | SharedSettings::STEP | SharedSettings::POWER,
+        )
+        .unwrap_or_default(),
+        modulation: Modulation::Usb,
+        bandwidth: Bandwidth::Narrow,
+        power: PowerLevel::Low1,
+        step_hz: BEACON_STEP_HZ,
+        channels,
+        ..BankDraft::default()
+    }
+}
+
+/// An FM bank named `prefix` and the locator: each channel receives the
+/// output and transmits on the input with the access tone, and keeps its own
+/// bandwidth.
+fn fm_bank(prefix: &str, locator: &str, near: &[(&Repeater, f64)]) -> BankDraft {
+    let name = bank_name(prefix, locator);
     let channels = near
         .iter()
         .map(|(repeater, _)| ChannelDraft {
@@ -435,6 +544,10 @@ pub fn repeater_bank(locator: &str, near: &[(&Repeater, f64)]) -> BankDraft {
 pub struct RepeaterList {
     /// Every FM repeater, ordered by callsign.
     pub repeaters: Vec<Repeater>,
+    /// Every analogue gateway, ordered by callsign.
+    pub gateways: Vec<Repeater>,
+    /// Every beacon the radio can hear, ordered by callsign.
+    pub beacons: Vec<Repeater>,
     /// When the cache was last written.
     pub synced: SystemTime,
 }
@@ -482,8 +595,11 @@ impl RepeaterCache {
         let synced = fs::metadata(&path)
             .and_then(|meta| meta.modified())
             .map_err(failed)?;
+        let systems = parse_systems(&json)?;
         Ok(Some(RepeaterList {
-            repeaters: parse(&json)?,
+            repeaters: systems.repeaters,
+            gateways: systems.gateways,
+            beacons: systems.beacons,
             synced,
         }))
     }
@@ -582,6 +698,17 @@ impl RepeaterArea {
     }
 }
 
+/// The state file the gateway radius and count are kept in; they read and
+/// write as the airports' do.
+pub fn gateway_area_file() -> Option<PathBuf> {
+    paths::state_dir().map(|dir| dir.join(GATEWAY_AREA_FILE))
+}
+
+/// The state file the beacon radius and count are kept in.
+pub fn beacon_area_file() -> Option<PathBuf> {
+    paths::state_dir().map(|dir| dir.join(BEACON_AREA_FILE))
+}
+
 /// Fetches one URL over HTTPS. Text that is not UTF-8 is replaced rather
 /// than refused, so a stray byte in a list does not stop a sync.
 pub(crate) fn fetch(url: &str) -> Result<String, String> {
@@ -641,10 +768,14 @@ impl SyncJob {
 
 #[cfg(test)]
 mod tests {
+    use radio_domain::{Modulation, Tone};
+
     use super::{
-        distance_km, grid_reference_centre, locator_centre, nearby, parse, repeater_bank,
-        RepeaterArea, RepeaterCache, MAX_RADIUS_KM, SYSTEMS_URL,
+        beacon_bank, distance_km, gateway_bank, grid_reference_centre, locator_centre, nearby,
+        parse, parse_systems, repeater_bank, RepeaterArea, RepeaterCache, MAX_RADIUS_KM,
+        SYSTEMS_URL,
     };
+    use crate::model::ToneDraft;
 
     /// Systems in the shape the ETCC returns, trimmed to the fields used.
     const SYSTEMS: &str = r#"{"data": [
@@ -680,7 +811,22 @@ mod tests {
          "txbw": 12.5, "locator": "IO91WM"},
         {"type": "AV", "status": "OPERATIONAL", "modeCodes": ["A"], "repeater": "GB3BAD",
          "town": "NOWHERE", "tx": 145675000, "rx": 145075000, "ctcss": 0,
-         "txbw": 12.5, "locator": "ZZ99"}
+         "txbw": 12.5, "locator": "ZZ99"},
+        {"type": "AG", "status": "OPERATIONAL", "modeCodes": ["D"], "repeater": "MB7DIG",
+         "town": "LONDON", "tx": 430100000, "rx": 430100000, "ctcss": 0,
+         "txbw": 12.5, "locator": "IO91WM"},
+        {"type": "BN", "status": "OPERATIONAL", "modeCodes": ["B"], "repeater": "GB3VHF",
+         "town": "WROTHAM", "tx": 144430000, "rx": 0, "ctcss": 0, "txbw": 1,
+         "locator": "JO01EH"},
+        {"type": "BN", "status": "OPERATIONAL", "modeCodes": ["B"], "repeater": "GB3UHF",
+         "town": "WROTHAM", "tx": 432430000, "rx": 0, "ctcss": 0, "txbw": 1,
+         "locator": "JO01EH"},
+        {"type": "BN", "status": "NOT OPERATIONAL", "modeCodes": ["B"], "repeater": "GB3OLD",
+         "town": "WROTHAM", "tx": 50050000, "rx": 0, "ctcss": 0, "txbw": 1,
+         "locator": "JO01EH"},
+        {"type": "BN", "status": "OPERATIONAL", "modeCodes": ["B"], "repeater": "G0HF",
+         "town": "KENT", "tx": 10139930, "rx": 0, "ctcss": 0, "txbw": 0.5,
+         "locator": "JO01NT"}
     ]}"#;
 
     fn scratch(name: &str) -> std::path::PathBuf {
@@ -786,6 +932,85 @@ mod tests {
         let names: Vec<_> = near.iter().map(|(r, _)| r.callsign.as_str()).collect();
         assert_eq!(names, ["GB3EL", "GB3PY"]);
         assert!(near[0].1 < 15.0, "{}", near[0].1);
+    }
+
+    #[test]
+    fn gateways_are_analogue_nodes_on_one_frequency() {
+        let gateways = parse_systems(SYSTEMS).expect("parses").gateways;
+        let summary: Vec<_> = gateways
+            .iter()
+            .map(|g| {
+                (
+                    g.callsign.as_str(),
+                    g.output_hz,
+                    g.input_hz,
+                    g.ctcss_tenths_hz,
+                )
+            })
+            .collect();
+        // The digital-only node is left out.
+        assert_eq!(summary, [("MB7GATE", 145_337_500, 145_337_500, Some(770))]);
+        let near = nearby(&gateways, "IO91WM", 10).unwrap();
+        let bank = gateway_bank("io91wm", &near);
+        assert_eq!(bank.name, "GW IO91WM");
+        let channel = &bank.channels[0];
+        assert_eq!(channel.name, "MB7GATE");
+        assert_eq!(channel.receive_mhz, "145.337500");
+        assert_eq!(channel.transmit_mhz, "145.337500");
+        assert_eq!(channel.modulation, Modulation::Fm);
+        assert_eq!(channel.tx_tone, ToneDraft::from_tone(Tone::Ctcss(770)));
+    }
+
+    #[test]
+    fn beacons_the_radio_can_hear_are_tuned_below_their_carrier() {
+        let beacons = parse_systems(SYSTEMS).expect("parses").beacons;
+        let summary: Vec<_> = beacons
+            .iter()
+            .map(|b| {
+                (
+                    b.callsign.as_str(),
+                    b.output_hz,
+                    b.input_hz,
+                    b.ctcss_tenths_hz,
+                )
+            })
+            .collect();
+        // Not operational, and below the radio's coverage, are left out.
+        assert_eq!(
+            summary,
+            [
+                ("GB3UHF", 432_430_000, 432_430_000, None),
+                ("GB3VHF", 144_430_000, 144_430_000, None),
+            ]
+        );
+        let near = nearby(&beacons, "JO01EH", 300).unwrap();
+        let bank = beacon_bank("JO01EH", &near);
+        assert_eq!(bank.name, "BCN JO01EH");
+        assert_eq!(bank.modulation, Modulation::Usb);
+        let tuned: Vec<_> = bank
+            .channels
+            .iter()
+            .map(|c| {
+                (
+                    c.receive_mhz.as_str(),
+                    c.transmit_mhz.as_str(),
+                    c.modulation,
+                )
+            })
+            .collect();
+        assert_eq!(
+            tuned,
+            [
+                ("432.429300", "", Modulation::Usb),
+                ("144.429300", "", Modulation::Usb),
+            ]
+        );
+        // A receive-only bank compiles without a transmit side.
+        let project = crate::model::ProjectModel {
+            banks: vec![bank],
+            ..crate::model::ProjectModel::new()
+        };
+        assert!(project.to_radio_image().is_ok());
     }
 
     #[test]

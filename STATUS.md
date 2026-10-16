@@ -117,6 +117,16 @@ confirmed by `identify` first, CRC-32 `e0d9ccc2`, 240/240 pages
 acknowledged, not read back). Next (step 3): time a scan of the 59-channel
 bank, and key a PMR446 channel to check it still stops there.
 
+**`GEN-072` is active alongside** (2026-10-16, operator request,
+`ADR-111`): step 1 done. The Banks tab has UK gateways and UK beacons tabs,
+both built from the ETCC list the repeaters sync: gateways an FM simplex
+bank `GW <locator>` with access tones, beacons a receive-only USB bank
+`BCN <locator>` 700 Hz below each carrier, 300 km by default. Gate: `cargo
+fmt --all --check` clean, `cargo clippy -p radio-programmer-gui
+--all-targets -- -D warnings` clean, `cargo test -p radio-programmer-gui
+--lib` 157 passed 0 failed 2 ignored. Next (step 2): gliding and small
+airfields from OpenStreetMap.
+
 **`MARINE-070` is active alongside** (2026-10-16, operator request,
 `ADR-109`): step 1 done. The Banks tab has a Marine row: Sync asks Overpass
 for every OpenStreetMap place tagged with a marine VHF channel and caches

@@ -1887,3 +1887,17 @@ meaning.
   (bundled, SIL OFL, licence beside it in `assets/fonts`), roomier spacing,
   6 px rounding and an Adwaita-like light and dark palette with one blue
   accent, following the system's preference. No theme crate is added.
+
+## ADR-111 — Gateways and beacons come from the repeaters' ETCC list
+
+- **Date:** 2026-10-16
+- **Status:** accepted, operator request (`GEN-072`).
+- The ETCC systems list the repeaters sync already holds analogue gateways
+  (`AG`) and beacons (`BN`), so neither needs a new source or cache. A
+  gateway is taken as a repeater is (operational, analogue FM, receivable)
+  and is simplex with its CTCSS tone. A beacon is taken whatever it sends,
+  if the radio can receive its carrier: of the 32 operational, 13 (10 m to
+  23 cm).
+- A beacon channel is USB, receive-only (`ADR-107`), tuned 700 Hz below the
+  carrier so a keyed carrier is heard as a 700 Hz tone, with a 100 Hz step.
+  Beacons default to a 300 km radius, gateways to the repeaters' 50 km.

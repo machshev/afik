@@ -3223,3 +3223,19 @@
      dwell stays, since dual watch shares it (`EVID-K5-036`). Done.
   3. Flash the K5 and time a 59-channel scan; check it still stops on a
      keyed PMR446 channel.
+
+## GEN-072 — Further bank generators near the locator
+
+- **Status:** active (2026-10-16), operator request ("Can we create further
+  bank generators?", then chose UK beacons, UK gateways, worldwide
+  repeaters and gliding/airfields; `ADR-111`).
+- **Objective:** the Banks tab adds more banks for the shared locator, each
+  on its own generator tab.
+- **Steps (commit after each):**
+  1. UK gateways and UK beacons from the ETCC list the repeaters already
+     cache: gateways an FM simplex bank with access tones, beacons a
+     receive-only USB bank 700 Hz below each carrier.
+  2. Gliding and small airfields from OpenStreetMap through Overpass.
+  3. Repeaters outside the UK from an open worldwide list.
+  4. Write a beacon bank to the K5 and hear GB3VHF or another beacon as a
+     tone.

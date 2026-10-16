@@ -372,6 +372,12 @@ impl AirportArea {
     /// Reads `RADIUS_KM MAX_CHANNELS`; anything missing or unreadable gives
     /// its default.
     pub fn load(file: &Path) -> Self {
+        Self::load_or(file, &Self::default())
+    }
+
+    /// Reads the area as [`Self::load`] does, with `defaults` for anything
+    /// missing or unreadable.
+    pub fn load_or(file: &Path, defaults: &Self) -> Self {
         let text = fs::read_to_string(file).unwrap_or_default();
         let mut words = text.split_whitespace();
         let mut number = |limit: u16, default: u16| {
@@ -381,8 +387,8 @@ impl AirportArea {
                 .filter(|value| (1..=limit).contains(value))
                 .unwrap_or(default)
         };
-        let radius_km = number(MAX_RADIUS_KM, DEFAULT_RADIUS_KM);
-        let max_channels = number(MAX_CHANNELS_LIMIT, DEFAULT_MAX_CHANNELS);
+        let radius_km = number(MAX_RADIUS_KM, defaults.radius_km);
+        let max_channels = number(MAX_CHANNELS_LIMIT, defaults.max_channels);
         Self {
             radius_km,
             max_channels,
