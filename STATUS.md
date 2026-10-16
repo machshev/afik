@@ -159,8 +159,10 @@ almost at once. The first sampling pass now fills the average back to
 back (`Battery::conversions_due`), and adopting the calibration redraws.
 Gate: fmt clean, workspace clippy `-D warnings` clean, `cargo test
 --workspace` 868 passed 0 failed, `tool/build-k5.sh --release` (flash
-end `0x0000eebc`) and `tool/build-k1.sh --release` pass. `7.0.41`, not
-flashed. Next: flash and check the battery shows on the first screen.
+end `0x0000eebc`) and `tool/build-k1.sh --release` pass. `7.0.41` (`a61b51d`) flashed to the K5 (`tool/verify-k5-image.sh`
+passes, bootloader `2.00.06` by `identify` first, CRC-32 `c44f1e01`,
+240/240 pages acknowledged, not read back). Next: check the battery shows
+on the first screen.
 
 **`DUPLEX-069` is active alongside** (2026-10-16, operator request,
 `ADR-108`): a duplex memory channel the programmed TX ranges refuse is
