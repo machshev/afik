@@ -148,9 +148,10 @@ default. Same gate, 866 passed 0 failed. The first studio flash of the
 `4.00.01` unit failed at page 0: the bootloader beaconed on and refused
 `2.01.23`. A bootloader other than `2.*` is now sent the wildcard
 `*.01.23` (K5TOOL's documented bypass, egzumer's `fw-pack.py`). Same
-gate, 867 passed 0 failed. Next: flash 7.0.40 to the
-`4.00.01` unit from the studio and confirm it boots; then write a coastal
-bank to the K5 and listen.
+gate, 867 passed 0 failed. Hardware: the `4.00.01` unit took 7.0.40
+from the studio and boots `AFIK-K5-7.0.40`; the current project was then
+downloaded (`EVID-K5-037`). Next: write a coastal bank to the K5 and
+listen.
 
 **`DUPLEX-069` is active alongside** (2026-10-16, operator request,
 `ADR-108`): a duplex memory channel the programmed TX ranges refuse is

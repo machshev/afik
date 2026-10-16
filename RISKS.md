@@ -823,9 +823,10 @@
   entry, and tests with real captured frames rather than host-encoded ones.
 - **Wrong discriminator:** per `EVID-K5-015`, the family is signalled by the
   beacon command and AFIK gates on the version-string prefix instead. Since
-  2026-10-16 the K5 V1 path accepts `2.*` and `4.*`, so `4.00.01` is no longer
-  refused; the page-write on `4.00.01` is untried on hardware until the first
-  flash of that unit.
+  2026-10-16 the K5 V1 path accepts `2.*` and `4.*`, and `EVID-K5-037` flashed
+  and booted AFIK on a `4.00.01` unit using the `*` negotiation wildcard. Still
+  open: a bootloader version neither family names, which the studio's Force
+  option writes as the operator's chosen family.
 - **Taxonomy is incomplete:** per `EVID-K5-016`, no reviewed external project
   records a `4.00.*` bootloader, and none can query the processor. The published
   V1/V2/V3 tables cannot be used to decide what this unit is, in either

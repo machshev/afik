@@ -1273,6 +1273,8 @@ explicitly bounded.
   of assuming `EVID-K5-011` applies to it, and require a distinct classification
   and target-confirmation phrase. `UV-K5-V1-DP32G030` asserts a bootloader-v2
   unit and must not be reused for this radio.
+  **Superseded** by `EVID-K5-037`, which flashed AFIK to a `4.00.01` unit on the
+  K5 V1 path.
 - **Required experiment:** return the unit to normal mode and record the
   application identity from one read-only hello; photograph the model, revision
   and MCU markings per `EVID-K5-008`; and establish the page protocol read-only
@@ -2924,6 +2926,23 @@ or hardware/calibration envelope is established here. `RISK-007`, `RISK-038`,
 - **What it changed:** `RadioConfig::conservative()` now has a 200 ms dwell.
   The real floor lies between 90 and 200 ms and has not been bisected.
 - **Confidence:** medium; one unit, observed by the operator, not timed.
+
+### EVID-K5-037 — A `4.00.01` bootloader takes AFIK under the `*` wildcard
+
+- **Source:** a new K5 running armel firmware, studio Flash tab on
+  `usb-1a86_USB_Serial`, `radio-flasher` at `3e7c0ae`.
+- **Observation (2026-10-16):** `afik-flasher identify` read `0x0518`,
+  page-write, bootloader `4.00.01`, the version of `EVID-K5-012`. Negotiating
+  `2.01.23`, the bootloader kept beaconing and acknowledged no page (`page
+  acknowledgement does not match page 0x0000`) and stayed in flashing mode.
+  Negotiating `*.01.23` it took all 240 pages; after a power cycle the radio
+  booted `AFIK-K5-7.0.40`, and the operator then downloaded the current
+  project.
+- **Inference:** the bootloader matches the negotiated version against its
+  own major digit, and `*` bypasses that, as K5TOOL documents. `4.00.01` is a
+  K5 V1 page-write bootloader with the `2.00.06` geometry, which settles
+  `RISK-037`'s open `4.00.01` item for writing.
+- **Confidence:** high for this unit; one flash.
 
 ### Pinned source provenance
 
