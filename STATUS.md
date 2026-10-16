@@ -131,8 +131,11 @@ fmt clean, workspace clippy `-D warnings` clean, `cargo test --workspace`
 857 passed 0 failed. They sit in a bordered panel, "Banks near your
 locator", the chosen generator's row in an inner panel under its tabs
 (same gate, 857 passed). The tabs are painted as rounded-top tabs, the
-chosen one joined to the panel (same gate, 858 passed). Next: write a
-coastal bank to the K5 and listen.
+chosen one joined to the panel (same gate, 858 passed). The studio has
+its own theme (`ADR-110`): Inter, roomier spacing, Adwaita-like light and
+dark palettes following the system. Gate: fmt clean, workspace clippy `-D
+warnings` clean, `cargo test --workspace` 861 passed 0 failed. Next:
+write a coastal bank to the K5 and listen.
 
 **`DUPLEX-069` is active alongside** (2026-10-16, operator request,
 `ADR-108`): a duplex memory channel the programmed TX ranges refuse is

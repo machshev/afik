@@ -1877,3 +1877,13 @@ meaning.
   which now counts from when the channel is tuned and drawn. A squelch that
   never shuts, a modulation change and broadcast channels take the full
   setup as before.
+
+## ADR-110 — The studio draws with its own theme
+
+- **Date:** 2026-10-16
+- **Status:** accepted, operator request.
+- egui draws every widget itself, so the studio cannot look native; a new
+  toolkit would mean rewriting it. Instead `theme::apply` sets Inter
+  (bundled, SIL OFL, licence beside it in `assets/fonts`), roomier spacing,
+  6 px rounding and an Adwaita-like light and dark palette with one blue
+  accent, following the system's preference. No theme crate is added.
