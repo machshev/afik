@@ -21,7 +21,9 @@ const READY_POLLS: usize = 2_048;
 /// part runs with, so [`calibrate`] measures it at boot. Until then this
 /// assumes a pass takes the fewest cycles it can, [`CYCLES_PER_SPIN`] at
 /// 48 MHz, which can only make the wait longer than a microsecond.
-static SPINS_PER_EDGE: AtomicU32 = AtomicU32::new(UNCALIBRATED_SPINS_PER_EDGE);
+// Bisect (7.0.48): the 7.0.40 wait, uncalibrated, to test whether bus timing
+// is what stops writes.
+static SPINS_PER_EDGE: AtomicU32 = AtomicU32::new(48);
 /// Fewest cycles one spin-loop pass takes: compare, branch, `yield`, subtract
 /// and the taken branch back.
 const CYCLES_PER_SPIN: u32 = 6;

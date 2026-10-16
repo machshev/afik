@@ -220,8 +220,14 @@ about 1.2 µs once a wait was a measured microsecond, under the EEPROM's
 `i2c.c` does. Same gate, 870 passed 0 failed, K5 (flash end
 `0x0000ee1c`) and K1 release images build. `7.0.47` (`99ef5b3`)
 flashed to the K5 (bootloader `2.00.06` by `identify` first, CRC-32
-`c3437775`, 240/240 pages acknowledged, not read back). Next: write the
-project from the studio, read the timings, and check a channel change
+`c3437775`, 240/240 pages acknowledged, not read back). Hardware: the
+studio write still timed out. `afik-flasher backup-eeprom` read all 8192
+bytes (`k5-2.00.06-7.0.47-20261016.bin`, CRC-32 `175c57e4`): the image
+region is erased but its first byte `A`, and the place record holds only
+its first byte, so each write lands its first data byte and no more.
+Bisect `7.0.48`: the 7.0.40 wait (48 passes, uncalibrated) on the
+current code, to tell bus timing from the rest. Next: flash it and write
+the project from the studio, read the timings, and check a channel change
 survives a power cycle (EEPROM writes use the new timing).
 
 **`DUPLEX-069` is active alongside** (2026-10-16, operator request,
