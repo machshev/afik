@@ -108,6 +108,20 @@ impl Battery {
         self.filled = (self.filled + 1).min(SAMPLES);
     }
 
+    /// Returns how many conversions the next sampling pass should take.
+    ///
+    /// Until the average is full this is every conversion still missing, so
+    /// the indicator appears on the first pass after boot, as the reference
+    /// firmware's back-to-back boot conversions do; after that it is one.
+    #[must_use]
+    pub const fn conversions_due(&self) -> usize {
+        if self.filled < SAMPLES {
+            SAMPLES - self.filled
+        } else {
+            1
+        }
+    }
+
     /// Returns the averaged pack voltage in hundredths of a volt.
     ///
     /// This is `None` until the radio has both a calibration and a full set of
@@ -230,6 +244,21 @@ mod tests {
             Some(760),
             "the calibration count is 7.60 V by definition"
         );
+    }
+
+    /// One pass after boot fills the average; later passes add one each.
+    #[test]
+    fn the_first_pass_takes_every_missing_conversion() {
+        let mut battery = Battery::new(CURVE);
+        battery.calibrate(Calibration::from_vendor_block(&block(2_200)));
+        assert_eq!(battery.conversions_due(), SAMPLES);
+        battery.sample(2_200);
+        assert_eq!(battery.conversions_due(), SAMPLES - 1);
+        for _ in 0..battery.conversions_due() {
+            battery.sample(2_200);
+        }
+        assert_eq!(battery.centivolts(), Some(760));
+        assert_eq!(battery.conversions_due(), 1);
     }
 
     #[test]

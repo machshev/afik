@@ -1176,16 +1176,20 @@ pub async fn run<D, K, B, F, W, S, V, M>(
 
         if let Some(calibration) = BATTERY_CALIBRATION.try_take() {
             battery.calibrate(calibration);
+            redraw = true;
         }
 
         // The converter is on no shared bus, so this needs no quiet link and
-        // costs one short blocking conversion. A pack discharges over hours;
-        // sampling it every couple of seconds is already generous, and the
-        // first full set of samples is what the indicator waits for.
+        // costs short blocking conversions. A pack discharges over hours;
+        // sampling it every couple of seconds is already generous. The first
+        // pass fills the whole average back to back, so the indicator shows
+        // as soon as the calibration is in rather than after a full ring.
         if Instant::now() >= next_battery_sample {
             let previous = battery.percent();
-            if let Some(raw) = battery_sense.read() {
-                battery.sample(raw);
+            for _ in 0..battery.conversions_due() {
+                if let Some(raw) = battery_sense.read() {
+                    battery.sample(raw);
+                }
             }
             next_battery_sample = Instant::now() + Duration::from_secs(BATTERY_SAMPLE_SECONDS);
             if battery.percent() != previous {

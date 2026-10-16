@@ -153,6 +153,15 @@ from the studio and boots `AFIK-K5-7.0.40`; the current project was then
 downloaded (`EVID-K5-037`). Next: write a coastal bank to the K5 and
 listen.
 
+Battery at boot (operator report, 2026-10-16): the indicator took about
+6 s to appear (four conversions 2 s apart) where the reference shows it
+almost at once. The first sampling pass now fills the average back to
+back (`Battery::conversions_due`), and adopting the calibration redraws.
+Gate: fmt clean, workspace clippy `-D warnings` clean, `cargo test
+--workspace` 868 passed 0 failed, `tool/build-k5.sh --release` (flash
+end `0x0000eebc`) and `tool/build-k1.sh --release` pass. `7.0.41`, not
+flashed. Next: flash and check the battery shows on the first screen.
+
 **`DUPLEX-069` is active alongside** (2026-10-16, operator request,
 `ADR-108`): a duplex memory channel the programmed TX ranges refuse is
 heard on both sides. The first try, a receive-only flag, was reverted on
