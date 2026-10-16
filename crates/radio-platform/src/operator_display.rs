@@ -1041,56 +1041,39 @@ pub fn render_catch_screen(frame: &mut [u8; FRAME_BYTES], view: &CatchView) {
     }
 }
 
+/// Produces the boot screen: the image identity alone, since nothing has been
+/// read from memory yet when it is drawn.
+pub fn render_boot_screen(frame: &mut [u8; FRAME_BYTES], identity: &[u8]) {
+    frame.fill(0);
+    let width = identity.len() * 6;
+    draw_text(frame, WIDTH.saturating_sub(width) / 2, 28, identity);
+}
+
 /// Produces the image and storage information screen.
 ///
-/// This is the display-side witness for a flashed image: the identity string,
-/// the active configuration generation the host programmed, and whether that
-/// configuration was restored from the radio's own retained storage.
-#[allow(clippy::too_many_arguments)]
+/// The identity of the flashed image, how many channels the stored
+/// configuration holds and whether there is one, the memory it lives in and
+/// how much of the configuration region it uses, and how long boot took.
 pub fn render_info_screen(
     frame: &mut [u8; FRAME_BYTES],
     identity: &[u8],
-    generation: u32,
     channels: u16,
     retained: bool,
     memory: MemoryState,
-    serial: SerialCounters,
-    peripheral_clock_khz: u32,
-    reset: ResetCause,
+    used: MemoryUse,
     boot: BootTimes,
 ) {
     frame.fill(0);
     let width = identity.len() * 6;
     draw_text(frame, WIDTH.saturating_sub(width) / 2, 0, identity);
 
-    // The peripheral clock sits beside the generation because this image does
-    // not configure the clock, it inherits whatever the bootloader left. Every
-    // baud rate is derived from this number, so a serial link which hears bytes
-    // and rejects every packet is asking to be told what the radio thinks its
-    // clock is.
-    let mut generation_label = *b"GEN000000 CLK00000";
-    write_digits(&mut generation_label[3..9], generation);
-    write_digits(&mut generation_label[13..18], peripheral_clock_khz);
-    draw_text(frame, 0, 18, &generation_label);
-
-    let mut channel_label = *b"CHANNELS 00 RST ....";
-    write_two_digits(&mut channel_label[9..11], channels);
-    channel_label[16..20].copy_from_slice(&reset.name());
-    draw_text(frame, 0, 32, &channel_label);
-
-    // When boot reached each stage, so a slow start can be placed without a
-    // host: `S` the serial task starting, `L` the stored configuration loaded,
-    // `F` the interface's first frame, each in milliseconds since reset.
-    let mut timing = *b"S0000 L0000 F0000";
-    write_digits(&mut timing[1..5], boot.serial_start_ms.min(9_999));
-    write_digits(&mut timing[7..11], boot.loaded_ms.min(9_999));
-    write_digits(&mut timing[13..17], boot.first_frame_ms.min(9_999));
-    draw_text(frame, 0, 39, &timing);
-
+    let mut channel_label = *b"CHANNELS 000";
+    write_digits(&mut channel_label[9..12], u32::from(channels.min(999)));
+    draw_text(frame, 0, 12, &channel_label);
     draw_text(
         frame,
         0,
-        46,
+        22,
         if retained {
             b"STORED IN RADIO"
         } else {
@@ -1100,78 +1083,29 @@ pub fn render_info_screen(
 
     // The external memory is where a configuration lives, so its state belongs
     // on the screen the operator can reach without a host.
-    draw_text(frame, 0, 56, &memory.label());
+    draw_text(frame, 0, 32, &memory.label());
+    let mut use_label = *b"USED 0000 OF 0000";
+    write_digits(&mut use_label[5..9], u32::from(used.bytes.min(9_999)));
+    write_digits(&mut use_label[13..17], u32::from(used.capacity.min(9_999)));
+    draw_text(frame, 0, 42, &use_label);
 
-    // Serial counters, so an operator with no host can see whether the radio is
-    // hearing anything at all. `RISK-036` is what these are for: a silent
-    // host exchange is otherwise indistinguishable from a dead interface.
-    // `D` is packets which arrived complete and failed to decode. Without it,
-    // a frame the radio heard and rejected is indistinguishable from one it
-    // never received: both read as bytes in and nothing answered.
-    // `E` is receiver errors: bytes the UART could not frame at the configured
-    // baud. Without it, a link running at the wrong rate is indistinguishable
-    // from a silent one, because both leave `RX` at zero — the receive path
-    // only counts bytes it framed. Three digits each is what fits four fields
-    // across this display; they wrap at a thousand, which is enough to tell
-    // moving from not moving.
-    let mut link = *b"RX000 TX000 D000 E000";
-    write_digits(&mut link[2..5], u32::from(serial.received));
-    write_digits(&mut link[8..11], u32::from(serial.answered));
-    write_digits(&mut link[13..16], u32::from(serial.discarded));
-    write_digits(&mut link[18..21], u32::from(serial.errors));
-    draw_text(frame, 0, 8, &link);
+    // When boot reached each stage, so a slow start can be placed without a
+    // host: `S` the serial task starting, `L` the stored configuration loaded,
+    // `F` the interface's first frame, each in milliseconds since reset.
+    let mut timing = *b"S0000 L0000 F0000";
+    write_digits(&mut timing[1..5], boot.serial_start_ms.min(9_999));
+    write_digits(&mut timing[7..11], boot.loaded_ms.min(9_999));
+    write_digits(&mut timing[13..17], boot.first_frame_ms.min(9_999));
+    draw_text(frame, 0, 56, &timing);
 }
 
-/// Why the radio last reset, as `RCC_CSR` recorded it.
-///
-/// The byte is bits 24 to 31 of that register, which is where every reset flag
-/// on this part lives. Bit positions come from the pinned metapac definition
-/// for this chip and nowhere else: 25 option-byte loader, 26 pin, 27 power,
-/// 28 software, 29 independent watchdog, 30 window watchdog.
-///
-/// `RISK-036` is what this is for. A radio which restarts when a host speaks to
-/// it is a different fault depending on whether that restart was a brown-out, a
-/// watchdog, or the software asking for it, and the part already knows which.
+/// How much of the configuration region the stored image takes, in bytes.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ResetCause(pub u8);
-
-impl ResetCause {
-    /// Option byte loader reset.
-    const OBL: u8 = 1 << 1;
-    /// Reset pin.
-    const PIN: u8 = 1 << 2;
-    /// Power or brown-out reset.
-    const PWR: u8 = 1 << 3;
-    /// Software-requested reset, which is what the panic handler now does.
-    const SFT: u8 = 1 << 4;
-    /// Independent watchdog reset.
-    const IWDG: u8 = 1 << 5;
-    /// Window watchdog reset.
-    const WWDG: u8 = 1 << 6;
-
-    /// Names the cause, or gives the raw flags when more than one is set.
-    ///
-    /// Naming one flag is what an operator can read back. More than one is
-    /// unusual and interesting, so those are shown as `x` and the raw hex
-    /// rather than collapsed into a name which would hide the others.
-    #[must_use]
-    pub fn name(&self) -> [u8; 4] {
-        match self.0 {
-            0 => *b"NONE",
-            Self::OBL => *b"OBL ",
-            Self::PIN => *b"PIN ",
-            Self::PWR => *b"PWR ",
-            Self::SFT => *b"SFT ",
-            Self::IWDG => *b"IWDG",
-            Self::WWDG => *b"WWDG",
-            raw => {
-                let mut name = *b"x   ";
-                name[1] = hex_digit(raw >> 4);
-                name[2] = hex_digit(raw & 0x0f);
-                name
-            }
-        }
-    }
+pub struct MemoryUse {
+    /// Bytes the stored image occupies, header included; zero for none.
+    pub bytes: u16,
+    /// Bytes the region holds.
+    pub capacity: u16,
 }
 
 /// Milliseconds since reset at which boot reached each stage, or zero for a
@@ -1193,24 +1127,6 @@ fn write_digits(field: &mut [u8], value: u32) {
         *byte = b'0' + u8::try_from(remaining % 10).unwrap_or(0);
         remaining /= 10;
     }
-}
-
-/// Serial-link counters shown on the information screen.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct SerialCounters {
-    /// Bytes the radio has received, which wraps.
-    pub received: u16,
-    /// Frames the radio has answered, which wraps.
-    pub answered: u16,
-    /// Complete packets the radio rejected as malformed, which wraps.
-    pub discarded: u16,
-    /// Receiver errors: bytes which arrived and could not be framed, which
-    /// wraps.
-    ///
-    /// This separates a link at the wrong baud rate from a link with nothing on
-    /// it. Both leave `received` at zero, because a byte which does not frame is
-    /// never delivered to be counted.
-    pub errors: u16,
 }
 
 /// What the radio found when it looked for its external configuration memory.
@@ -1719,8 +1635,8 @@ mod catch_screen_tests {
 mod operating_screen_tests {
     use super::{modulation_label, place_label, power_label, short_step_label};
     use super::{
-        render_info_screen, render_operating_screen, render_selector_list, step_label, BootTimes,
-        MemoryState, OperatingView, ResetCause, SelectorRow, SerialCounters, SlotChannel,
+        render_boot_screen, render_info_screen, render_operating_screen, render_selector_list,
+        step_label, BootTimes, MemoryState, MemoryUse, OperatingView, SelectorRow, SlotChannel,
         SlotPlace, SlotView, FRAME_BYTES, LIST_NAME_BYTES, MEMORY_LABEL_BYTES,
     };
     use radio_domain::{Bandwidth, Modulation, Tone};
@@ -2326,41 +2242,50 @@ mod operating_screen_tests {
         assert_eq!(row.label().len(), LIST_NAME_BYTES);
     }
 
+    fn info(channels: u16, retained: bool, used: MemoryUse, boot: BootTimes) -> [u8; FRAME_BYTES] {
+        let mut frame = [0_u8; FRAME_BYTES];
+        render_info_screen(
+            &mut frame,
+            b"AFIK-K5-7.0",
+            channels,
+            retained,
+            MemoryState::Present([0, 0, 0]),
+            used,
+            boot,
+        );
+        frame
+    }
+
     #[test]
     fn the_info_screen_separates_retained_and_unstored_configurations() {
-        let mut retained = [0_u8; FRAME_BYTES];
-        render_info_screen(
-            &mut retained,
-            b"AFIK-K1-3.2",
-            7,
-            16,
-            true,
-            MemoryState::Present([0x68, 0x40, 0x15]),
-            SerialCounters {
-                received: 12,
-                answered: 3,
-                discarded: 2,
-                errors: 0,
-            },
-            24_000,
-            ResetCause::default(),
-            BootTimes::default(),
-        );
-        let mut unstored = [0_u8; FRAME_BYTES];
-        render_info_screen(
-            &mut unstored,
-            b"AFIK-K1-3.2",
-            0,
-            5,
-            false,
-            MemoryState::Absent,
-            SerialCounters::default(),
-            24_000,
-            ResetCause::default(),
-            BootTimes::default(),
-        );
+        let used = MemoryUse {
+            bytes: 3_873,
+            capacity: 7_424,
+        };
+        let retained = info(322, true, used, BootTimes::default());
+        let unstored = info(0, false, MemoryUse::default(), BootTimes::default());
         assert_ne!(retained, unstored);
         assert!(retained.iter().any(|byte| *byte != 0));
+        // How much of the region the image takes is shown.
+        let fuller = MemoryUse {
+            bytes: 7_000,
+            ..used
+        };
+        assert_ne!(retained, info(322, true, fuller, BootTimes::default()));
+    }
+
+    #[test]
+    fn the_boot_screen_shows_the_identity_and_nothing_read_from_memory() {
+        let mut boot = [0_u8; FRAME_BYTES];
+        render_boot_screen(&mut boot, b"AFIK-K5-7.0");
+        assert!(boot.iter().any(|byte| *byte != 0));
+        let mut other = [0_u8; FRAME_BYTES];
+        render_boot_screen(&mut other, b"AFIK-K5-7.1");
+        assert_ne!(boot, other);
+        assert_ne!(
+            boot,
+            info(0, false, MemoryUse::default(), BootTimes::default())
+        );
     }
 
     #[test]
@@ -2387,62 +2312,8 @@ mod operating_screen_tests {
     }
 
     #[test]
-    fn a_receiver_error_is_visible_even_when_nothing_was_received() {
-        // The case RISK-036 could not distinguish: a link at the wrong baud
-        // rate delivers no bytes to count, so `RX` stays at zero whether or not
-        // anything is on the wire. `E` is what separates them.
-        let mut silent = [0_u8; FRAME_BYTES];
-        render_info_screen(
-            &mut silent,
-            b"AFIK-K1-5.9",
-            0,
-            0,
-            false,
-            MemoryState::Absent,
-            SerialCounters::default(),
-            48_000,
-            ResetCause::default(),
-            BootTimes::default(),
-        );
-        let mut erroring = [0_u8; FRAME_BYTES];
-        render_info_screen(
-            &mut erroring,
-            b"AFIK-K1-5.9",
-            0,
-            0,
-            false,
-            MemoryState::Absent,
-            SerialCounters {
-                received: 0,
-                answered: 0,
-                discarded: 0,
-                errors: 42,
-            },
-            48_000,
-            ResetCause::default(),
-            BootTimes::default(),
-        );
-        assert_ne!(silent, erroring);
-    }
-
-    #[test]
     fn boot_timings_reach_the_information_screen() {
-        let render = |boot| {
-            let mut frame = [0_u8; FRAME_BYTES];
-            render_info_screen(
-                &mut frame,
-                b"AFIK-K5-7.0",
-                0,
-                0,
-                false,
-                MemoryState::Absent,
-                SerialCounters::default(),
-                48_000,
-                ResetCause::default(),
-                boot,
-            );
-            frame
-        };
+        let render = |boot| info(0, false, MemoryUse::default(), boot);
         let early = render(BootTimes {
             serial_start_ms: 40,
             loaded_ms: 300,
@@ -2459,62 +2330,5 @@ mod operating_screen_tests {
         let mut field = [0_u8; 4];
         super::write_digits(&mut field, 12_345);
         assert_eq!(&field, b"2345");
-    }
-
-    #[test]
-    fn every_single_reset_flag_has_its_own_name() {
-        // Bit positions are the metapac's, offset by 24 because the byte kept
-        // is bits 24 to 31 of RCC_CSR.
-        let named = [
-            (0b0000_0000, *b"NONE"),
-            (0b0000_0010, *b"OBL "),
-            (0b0000_0100, *b"PIN "),
-            (0b0000_1000, *b"PWR "),
-            (0b0001_0000, *b"SFT "),
-            (0b0010_0000, *b"IWDG"),
-            (0b0100_0000, *b"WWDG"),
-        ];
-        for (raw, expected) in named {
-            assert_eq!(ResetCause(raw).name(), expected);
-        }
-    }
-
-    #[test]
-    fn more_than_one_flag_shows_the_raw_byte_rather_than_hiding_flags() {
-        // A pin reset and a power reset together is not either one of them, and
-        // naming one would discard the other.
-        assert_eq!(ResetCause(0b0000_1100).name(), *b"x0C ");
-        assert_eq!(ResetCause(0b1111_1111).name(), *b"xFF ");
-    }
-
-    #[test]
-    fn the_reset_cause_reaches_the_information_screen() {
-        let mut power = [0_u8; FRAME_BYTES];
-        render_info_screen(
-            &mut power,
-            b"AFIK-K1-6.0",
-            0,
-            0,
-            false,
-            MemoryState::Absent,
-            SerialCounters::default(),
-            48_000,
-            ResetCause(0b0000_1000),
-            BootTimes::default(),
-        );
-        let mut software = [0_u8; FRAME_BYTES];
-        render_info_screen(
-            &mut software,
-            b"AFIK-K1-6.0",
-            0,
-            0,
-            false,
-            MemoryState::Absent,
-            SerialCounters::default(),
-            48_000,
-            ResetCause(0b0001_0000),
-            BootTimes::default(),
-        );
-        assert_ne!(power, software);
     }
 }

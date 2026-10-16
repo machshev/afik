@@ -20,10 +20,9 @@ use radio_storage::radio_image::{Index, HEADER_LEN};
 use crate::configuration::Programmed;
 use crate::drivers::{Memory, SerialLink};
 use crate::state::{
-    count, hold_bus_idle, mark_boot, Publication, TaskCell, BATTERY_CALIBRATION, BOOT_LOADED_MS,
-    BOOT_SERIAL_START_MS, INDEX, OPERATOR_PLACE, PROGRAMMED, SERIAL_ACTIVITY, SERIAL_ANSWERED,
-    SERIAL_DISCARDED, SERIAL_ERRORS, SERIAL_RECEIVED, SQUELCH_CALIBRATION, TX_CALIBRATION,
-    TX_POLICY,
+    hold_bus_idle, mark_boot, Publication, TaskCell, BATTERY_CALIBRATION, BOOT_LOADED_MS,
+    BOOT_SERIAL_START_MS, INDEX, OPERATOR_PLACE, PROGRAMMED, SERIAL_ACTIVITY, SQUELCH_CALIBRATION,
+    TX_CALIBRATION, TX_POLICY,
 };
 use radio_tx_policy::TxPolicy;
 
@@ -125,9 +124,6 @@ pub async fn run<L: SerialLink, M: Memory>(
         {
             Either3::First(Ok(received_count)) => received_count,
             Either3::First(Err(_)) => {
-                // This arm firing while nothing is received is what a wrong
-                // baud rate looks like.
-                count(&SERIAL_ERRORS);
                 // Yield before retrying so a persistent receiver error can never
                 // starve the interface task.
                 Timer::after_millis(1).await;
@@ -165,19 +161,14 @@ pub async fn run<L: SerialLink, M: Memory>(
             }
         };
         for &byte in &received[..received_count] {
-            count(&SERIAL_RECEIVED);
             hold_bus_idle();
-            // `RISK-036`: with this feature the byte is counted and dropped,
-            // and nothing below this line runs.
+            // `RISK-036`: with this feature the byte is dropped, and nothing
+            // below this line runs.
             if cfg!(feature = "serial-drop-bytes") {
                 continue;
             }
             let request = match decoder.push(byte) {
-                Push::Idle => continue,
-                Push::Rejected => {
-                    count(&SERIAL_DISCARDED);
-                    continue;
-                }
+                Push::Idle | Push::Rejected => continue,
                 Push::Request(request) => request,
             };
             SERIAL_ACTIVITY.signal(());
@@ -216,7 +207,6 @@ pub async fn run<L: SerialLink, M: Memory>(
                 }
             };
             if let Some(length) = length {
-                count(&SERIAL_ANSWERED);
                 link.write(&response[..length]).await;
             }
             hold_bus_idle();

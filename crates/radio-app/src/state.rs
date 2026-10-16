@@ -11,7 +11,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::Instant;
 use radio_platform::battery::Calibration;
-use radio_platform::operator_display::{BootTimes, MemoryState, ResetCause, SerialCounters};
+use radio_platform::operator_display::{BootTimes, MemoryState};
 use radio_platform::squelch::SquelchCalibration;
 use radio_platform::transmit::TxCalibration;
 
@@ -139,43 +139,6 @@ pub(crate) fn bus_available() -> bool {
     now_ms() >= LINK_QUIET_UNTIL.load(Ordering::Relaxed)
 }
 
-/// Bytes the serial task has received, for the information screen.
-pub(crate) static SERIAL_RECEIVED: AtomicU32 = AtomicU32::new(0);
-/// Frames the serial task has answered, for the information screen.
-pub(crate) static SERIAL_ANSWERED: AtomicU32 = AtomicU32::new(0);
-/// Complete packets the serial task rejected as malformed.
-///
-/// A frame heard and rejected otherwise looks the same as a frame never
-/// received. Counting them is what tells those apart without a host.
-pub(crate) static SERIAL_DISCARDED: AtomicU32 = AtomicU32::new(0);
-/// Receiver errors: bytes which arrived and could not be framed.
-///
-/// A byte the link cannot frame is never delivered, so it cannot be counted as
-/// received. Without this, a link running at the wrong baud rate looks exactly
-/// like a link with nothing on it (`RISK-036`).
-pub(crate) static SERIAL_ERRORS: AtomicU32 = AtomicU32::new(0);
-
-/// Adds one to a counter only its owning task writes; this core has no atomic
-/// read-modify-write, so a load and store is sufficient.
-pub(crate) fn count(counter: &AtomicU32) {
-    counter.store(
-        counter.load(Ordering::Relaxed).wrapping_add(1),
-        Ordering::Relaxed,
-    );
-}
-
-/// Returns the current serial counters.
-pub(crate) fn serial_counters() -> SerialCounters {
-    let shown =
-        |counter: &AtomicU32| u16::try_from(counter.load(Ordering::Relaxed) % 1_000).unwrap_or(0);
-    SerialCounters {
-        received: shown(&SERIAL_RECEIVED),
-        answered: shown(&SERIAL_ANSWERED),
-        discarded: shown(&SERIAL_DISCARDED),
-        errors: shown(&SERIAL_ERRORS),
-    }
-}
-
 /// Milliseconds since reset at which the serial task started.
 pub(crate) static BOOT_SERIAL_START_MS: AtomicU32 = AtomicU32::new(0);
 /// Milliseconds since reset at which the stored configuration was loaded.
@@ -195,29 +158,4 @@ pub(crate) fn boot_times() -> BootTimes {
         loaded_ms: BOOT_LOADED_MS.load(Ordering::Relaxed),
         first_frame_ms: BOOT_FIRST_FRAME_MS.load(Ordering::Relaxed),
     }
-}
-
-/// Peripheral clock the target runs its links from, in kilohertz.
-static PERIPHERAL_CLOCK_KHZ: AtomicU32 = AtomicU32::new(0);
-/// Reset flags the target read at boot.
-static RESET_CAUSE: AtomicU32 = AtomicU32::new(0);
-
-/// Records, for the information screen, the clock every baud rate is derived
-/// from. A wrong clock is otherwise visible only as a link which hears bytes
-/// and rejects every packet.
-pub fn set_peripheral_clock_khz(khz: u32) {
-    PERIPHERAL_CLOCK_KHZ.store(khz, Ordering::Relaxed);
-}
-
-/// Records, for the information screen, why the radio last reset.
-pub fn set_reset_cause(cause: ResetCause) {
-    RESET_CAUSE.store(u32::from(cause.0), Ordering::Relaxed);
-}
-
-pub(crate) fn peripheral_clock_khz() -> u32 {
-    PERIPHERAL_CLOCK_KHZ.load(Ordering::Relaxed)
-}
-
-pub(crate) fn reset_cause() -> ResetCause {
-    ResetCause(u8::try_from(RESET_CAUSE.load(Ordering::Relaxed) & 0xff).unwrap_or(0))
 }

@@ -19,4 +19,4 @@ pub mod operator_state;
 pub mod serial;
 mod state;
 
-pub use state::{set_peripheral_clock_khz, set_reset_cause, TaskCell};
+pub use state::TaskCell;

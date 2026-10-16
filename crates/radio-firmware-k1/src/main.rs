@@ -19,7 +19,6 @@ use embassy_executor::Executor;
 use embassy_time::Timer;
 use py32_hal::gpio::{Flex, Input, Level, Output, Pull, Speed};
 use py32_hal::mode::Async;
-use py32_hal::pac::RCC;
 use py32_hal::peripherals::{PA0, PA1, PA2, PA3, PA8, SPI1, SPI2};
 use py32_hal::spi::SpiTx;
 use py32_hal::usart::Uart;
@@ -33,7 +32,7 @@ use radio_firmware_k1::battery::Calibration;
 use radio_firmware_k1::bk1080_bus::BitBang;
 use radio_firmware_k1::bk4819_bus::ThreeWireBus;
 use radio_firmware_k1::display::{
-    MemoryState, ResetCause, COLUMN_OFFSET, FRAME_BYTES, PAGES, SETUP_COMMANDS, WIDTH,
+    MemoryState, COLUMN_OFFSET, FRAME_BYTES, PAGES, SETUP_COMMANDS, WIDTH,
 };
 use radio_firmware_k1::keypad::{decode, KeypadScan};
 use radio_firmware_k1::memory_view::{fill_place, locate, ViewSpan};
@@ -80,16 +79,6 @@ fn main() -> ! {
     let Ok(runtime_init) = init() else {
         fail_closed();
     };
-    radio_app::set_peripheral_clock_khz(runtime_init.clocks.pclk1_hz() / 1_000);
-
-    // Why the radio last reset, taken before anything else can provoke one and
-    // cleared immediately so the next boot reports its own cause rather than
-    // inheriting this one. `RISK-036`: the unit restarts when a host speaks to
-    // it, and this is the part saying whether that was a brown-out, a watchdog,
-    // or software asking.
-    let csr = RCC.csr().read();
-    radio_app::set_reset_cause(ResetCause(u8::try_from((csr.0 >> 24) & 0xff).unwrap_or(0)));
-    RCC.csr().modify(|register| register.set_rmvf(true));
 
     let p = runtime_init.peripherals;
     let Ok(runtime) = compose(K1RuntimePeripherals {
@@ -512,8 +501,7 @@ fn fail_closed() -> ! {
 ///
 /// A spin loop here is what an unexplainable radio looks like: the display
 /// holds its last frame, the keypad is dead, and the link is silent. Resetting
-/// restores receive-only operation, and the next boot reports the software
-/// reset flag from `RCC_CSR`.
+/// restores receive-only operation.
 ///
 /// This is a deliberate change from stopping forever. A restart also ends a
 /// transmission: the interface task switches the PA and chip TX off before it

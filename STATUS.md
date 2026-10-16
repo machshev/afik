@@ -190,7 +190,15 @@ configuration is published, at most 3 s. Names no longer pass through
 clean, `cargo test --workspace` 871 passed 0 failed, K5 (flash end
 `0x0000eedc`) and K1 release images build. `7.0.44` (`af48c71`) flashed
 to the K5 (bootloader `2.00.06` by `identify` first, CRC-32 `b2a65839`,
-240/240 pages acknowledged, not read back). Next: read the timings again.
+240/240 pages acknowledged, not read back). Info screen tidy (operator
+request): the boot screen is now the identity alone, since memory has not
+been read when it shows; the information screen keeps channels, stored or
+not, the memory label, `USED n OF 7424` image bytes (`Index::image_bytes`)
+and the boot timings. The link counters, generation, clock and reset
+cause are gone from the screen and from both targets. Gate: fmt clean,
+workspace clippy `-D warnings` clean, `cargo test --workspace` 868 passed
+0 failed, K5 (flash end `0x0000ee30`) and K1 release images build.
+`7.0.45`.
 
 **`DUPLEX-069` is active alongside** (2026-10-16, operator request,
 `ADR-108`): a duplex memory channel the programmed TX ranges refuse is

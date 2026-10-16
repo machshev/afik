@@ -23,10 +23,11 @@ use radio_platform::backlight::Backlight;
 use radio_platform::battery::Battery;
 use radio_platform::catch::{self, Catch, Next as CatchNext, Phase as CatchPhase};
 use radio_platform::dual_watch::{DualWatch, Listening as Watching, Side, Stop, Stops};
+use radio_platform::memory_link::IMAGE_REGION_BYTES;
 use radio_platform::operator_display::{
-    render_catch_screen, render_info_screen, render_operating_screen, render_selector_list,
-    CatchView, MemoryState, OperatingView, SelectorRow, SlotChannel, SlotPlace, SlotView,
-    TxRefusal, FRAME_BYTES, LIST_ROWS,
+    render_boot_screen, render_catch_screen, render_info_screen, render_operating_screen,
+    render_selector_list, CatchView, MemoryState, MemoryUse, OperatingView, SelectorRow,
+    SlotChannel, SlotPlace, SlotView, TxRefusal, FRAME_BYTES, LIST_ROWS,
 };
 use radio_platform::operator_shell::{
     Context, Intent, Mode, Screen, Setting, Shell, Slot, SlotId, Source, HOLD_MILLISECONDS,
@@ -37,6 +38,7 @@ use radio_platform::ptt::PttFilter;
 use radio_platform::squelch::SquelchCalibration;
 use radio_platform::transmit::{self, Delay, TxCalibration, TxSetup, TxTarget};
 use radio_platform::tx_control::{self, Action, Controller as TxController, State as TxPhase};
+use radio_storage::radio_image::Index;
 use radio_tx_policy::{TxDenied, TxPolicy, TxRequest, TxState};
 
 use crate::configuration::Programmed;
@@ -45,9 +47,9 @@ use crate::keys::{Debouncer, Edge};
 use crate::operator_state::{OperatorState, OtherSlot};
 use crate::serial::read_image;
 use crate::state::{
-    boot_times, bus_available, mark_boot, now_ms, peripheral_clock_khz, reset_cause,
-    serial_counters, Publication, TaskCell, BATTERY_CALIBRATION, BOOT_FIRST_FRAME_MS, INDEX,
-    OPERATOR_PLACE, PROGRAMMED, SERIAL_ACTIVITY, SQUELCH_CALIBRATION, TX_CALIBRATION, TX_POLICY,
+    boot_times, bus_available, mark_boot, now_ms, Publication, TaskCell, BATTERY_CALIBRATION,
+    BOOT_FIRST_FRAME_MS, INDEX, OPERATOR_PLACE, PROGRAMMED, SERIAL_ACTIVITY, SQUELCH_CALIBRATION,
+    TX_CALIBRATION, TX_POLICY,
 };
 
 /// Interval between receive samples while audio is routed.
@@ -1057,18 +1059,7 @@ pub async fn run<D, K, B, F, W, S, V, M>(
     // leaves it at boot, until a broadcast channel is selected.
     broadcast.power_down();
     let mut frame = [0_u8; FRAME_BYTES];
-    render_info_screen(
-        &mut frame,
-        target.identity,
-        0,
-        0,
-        false,
-        MemoryState::Unknown,
-        serial_counters(),
-        peripheral_clock_khz(),
-        reset_cause(),
-        boot_times(),
-    );
+    render_boot_screen(&mut frame, target.identity);
     if !display.initialise().await || !display.frame(&frame).await {
         return;
     }
@@ -1869,7 +1860,6 @@ pub async fn run<D, K, B, F, W, S, V, M>(
                 &tx_policy_now,
                 &receiver,
                 battery.percent(),
-                generation,
                 retained,
                 memory_state,
                 target.identity,
@@ -2063,7 +2053,6 @@ fn render<B: RegisterBus, S: Speaker, C: BroadcastChip, M: Memory>(
     tx_policy: &TxPolicy,
     receiver: &Receiver<B, S, C>,
     battery_percent: Option<u8>,
-    generation: u32,
     retained: bool,
     memory_state: MemoryState,
     identity: &[u8],
@@ -2278,13 +2267,13 @@ fn render<B: RegisterBus, S: Speaker, C: BroadcastChip, M: Memory>(
         Screen::Info => render_info_screen(
             frame,
             identity,
-            generation,
             visible,
             retained,
             memory_state,
-            serial_counters(),
-            peripheral_clock_khz(),
-            reset_cause(),
+            MemoryUse {
+                bytes: INDEX.with(Index::image_bytes),
+                capacity: IMAGE_REGION_BYTES,
+            },
             boot_times(),
         ),
         Screen::Catch => {

@@ -473,6 +473,8 @@ pub struct Index {
     names: [u16; MAX_BANKS as usize],
     len: u16,
     populated: u16,
+    /// Bytes the image occupies, header included.
+    bytes: u16,
 }
 
 impl Default for Index {
@@ -730,6 +732,7 @@ impl Index {
             }; MAX_BLOCKS],
             block_count: 0,
             names: [ABSENT; MAX_BANKS as usize],
+            bytes: 0,
             len: 0,
             populated: 0,
         }
@@ -777,7 +780,16 @@ impl Index {
         if !stream.finish()? != expected {
             return Err(StorageError::ImageIntegrity);
         }
-        decoded
+        let mut index = decoded?;
+        // Saturates only for an image no memory region could hold.
+        index.bytes = u16::try_from(HEADER_LEN + payload_len).unwrap_or(u16::MAX);
+        Ok(index)
+    }
+
+    /// Returns the bytes the image occupies, header included; zero for none.
+    #[must_use]
+    pub const fn image_bytes(&self) -> u16 {
+        self.bytes
     }
 
     /// Decodes and checks every object in a payload of `payload_len` bytes.
@@ -1496,6 +1508,11 @@ mod tests {
         .expect("a sound image indexes");
         assert_eq!(bytes, payload_len);
         assert_eq!(calls, payload_len.div_ceil(super::STREAM_WINDOW_BYTES));
+        assert_eq!(
+            usize::from(index(&image).expect("indexes").image_bytes()),
+            image.len()
+        );
+        assert_eq!(Index::empty().image_bytes(), 0);
 
         let mut damaged = image.clone();
         damaged[HEADER_LEN] ^= 0xFF;
