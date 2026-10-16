@@ -138,7 +138,10 @@ layout was not checked on screen. Gate: `cargo fmt --all --check` clean,
 `cargo clippy --workspace --all-targets -- -D warnings` clean, `cargo test
 --workspace` 881 passed 0 failed 3 ignored. Next (step 4, hardware): write
 a `BCN` bank to the K5 and hear GB3VHF (144.430) or GB3UHF as a tone; then
-a `FLD` bank.
+a `FLD` bank. Bank headers lost their Up and Down buttons
+(operator request); the drag handle reorders. Gate: fmt clean, workspace
+clippy `-D warnings` clean, `cargo test --workspace` 881 passed 0 failed 3
+ignored.
 
 **`MARINE-070` is active alongside** (2026-10-16, operator request,
 `ADR-109`): step 1 done. The Banks tab has a Marine row: Sync asks Overpass

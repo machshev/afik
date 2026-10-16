@@ -2562,10 +2562,7 @@ impl StudioApp {
             .map(|(row, bank)| bank_row_columns(row, bank))
             .collect();
         let widths = column_widths(ui, &headers);
-        let buttons_width = button_width(ui, "Delete")
-            + button_width(ui, "Down")
-            + button_width(ui, "Up")
-            + button_width(ui, DRAG_HANDLE);
+        let buttons_width = button_width(ui, "Delete") + button_width(ui, DRAG_HANDLE);
         ScrollArea::vertical().show(ui, |ui| {
             // Each bank row's top and bottom, for where a dragged one lands.
             let mut spans = Vec::with_capacity(headers.len());
@@ -2622,8 +2619,6 @@ impl StudioApp {
             keep_open_state(&context, &ids, row, change);
         }
         match action {
-            Some((row, BankAction::MoveUp)) => self.project.move_bank(row, true),
-            Some((row, BankAction::MoveDown)) => self.project.move_bank(row, false),
             Some((row, BankAction::MoveTo(slot))) => self.project.move_bank_to(row, slot),
             Some((row, BankAction::Remove)) => {
                 self.project.banks.remove(row);
@@ -3002,10 +2997,6 @@ fn drop_slot(spans: &[(f32, f32)], pointer_y: f32) -> usize {
 /// What one bank asked the editor to do.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum BankAction {
-    /// Move the bank one place earlier.
-    MoveUp,
-    /// Move the bank one place later.
-    MoveDown,
     /// Move the bank to just before the bank now at this row, or last at the
     /// bank count: where it was dragged to.
     MoveTo(usize),
@@ -3075,8 +3066,6 @@ fn keep_open_state(context: &egui::Context, ids: &[egui::Id], row: usize, change
 /// Moves the open flags of bank rows the way `action` on `row` moves the rows.
 fn reorder_open(open: &mut [bool], row: usize, action: BankAction) {
     match action {
-        BankAction::MoveUp if row > 0 && row < open.len() => open.swap(row, row - 1),
-        BankAction::MoveDown if row + 1 < open.len() => open.swap(row, row + 1),
         BankAction::MoveTo(slot) => move_to(open, row, slot),
         BankAction::Remove if row < open.len() => {
             open[row..].rotate_left(1);
@@ -3187,8 +3176,8 @@ fn channel_row_editor(
     action
 }
 
-/// Draws a bank header's buttons at its right edge, so a collapsed bank can
-/// be moved or deleted.
+/// Draws a bank header's button at its right edge, so a collapsed bank can
+/// be deleted; its handle moves it.
 fn bank_header_buttons(ui: &mut egui::Ui) -> Option<BankAction> {
     let mut action = None;
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -3198,20 +3187,6 @@ fn bank_header_buttons(ui: &mut egui::Ui) -> Option<BankAction> {
             .clicked()
         {
             action = Some(BankAction::Remove);
-        }
-        if ui
-            .button("Down")
-            .on_hover_text("Move this bank one place later")
-            .clicked()
-        {
-            action = Some(BankAction::MoveDown);
-        }
-        if ui
-            .button("Up")
-            .on_hover_text("Move this bank one place earlier")
-            .clicked()
-        {
-            action = Some(BankAction::MoveUp);
         }
     });
     action
@@ -4194,30 +4169,18 @@ mod tests {
     }
 
     #[test]
-    fn a_collapsed_bank_moves_with_the_buttons_on_its_header() {
+    fn a_bank_header_has_no_up_or_down_buttons() {
         let context = eframe::egui::Context::default();
         let mut app = app_in(&scratch("reorder"), &Options::default());
         for name in ["A", "B", "C"] {
             app.add_bank(BankKind::Named);
             app.project.banks.last_mut().unwrap().name = name.to_owned();
         }
-        let names = |app: &StudioApp| -> Vec<String> {
-            app.project.banks.iter().map(|b| b.name.clone()).collect()
-        };
         frame(&context, &mut app, Vec::new());
         let output = frame(&context, &mut app, Vec::new());
-        let downs = text_centres(&output, "Down");
-        let ups = text_centres(&output, "Up");
-        assert_eq!((downs.len(), ups.len()), (3, 3), "one pair per header");
-
-        click(&context, &mut app, downs[0]);
-        assert_eq!(names(&app), ["B", "A", "C"]);
-        click(&context, &mut app, ups[2]);
-        assert_eq!(names(&app), ["B", "C", "A"]);
-        // Up on the first bank and Down on the last change nothing.
-        click(&context, &mut app, ups[0]);
-        click(&context, &mut app, downs[2]);
-        assert_eq!(names(&app), ["B", "C", "A"]);
+        assert_eq!(text_centres(&output, "Delete").len(), 3);
+        assert!(text_centres(&output, "Down").is_empty());
+        assert!(text_centres(&output, "Up").is_empty());
     }
 
     #[test]
@@ -4426,14 +4389,12 @@ mod tests {
     fn banks_keep_their_open_state_when_rows_move_or_go() {
         use super::{reorder_open, BankAction};
         let mut open = vec![true, false, false, true];
-        reorder_open(&mut open, 1, BankAction::MoveUp);
+        reorder_open(&mut open, 1, BankAction::MoveTo(0));
         assert_eq!(open, [false, true, false, true]);
-        reorder_open(&mut open, 2, BankAction::MoveDown);
+        reorder_open(&mut open, 2, BankAction::MoveTo(4));
         assert_eq!(open, [false, true, true, false]);
         reorder_open(&mut open, 0, BankAction::Remove);
         assert_eq!(open, [true, true, false, false]);
-        reorder_open(&mut open, 0, BankAction::MoveUp);
-        reorder_open(&mut open, 3, BankAction::MoveDown);
         reorder_open(&mut open, 0, BankAction::AddChannel);
         assert_eq!(open, [true, true, false, false]);
         reorder_open(&mut open, 0, BankAction::MoveTo(4));

@@ -1066,20 +1066,6 @@ impl ProjectModel {
         move_to(&mut self.banks, from, slot);
     }
 
-    /// Moves bank `row` one place earlier (`up`) or later in the radio's order.
-    pub fn move_bank(&mut self, row: usize, up: bool) {
-        let other = if up {
-            row.checked_sub(1)
-        } else {
-            Some(row + 1)
-        };
-        if let Some(other) = other.filter(|other| *other < self.banks.len()) {
-            if row < self.banks.len() {
-                self.banks.swap(row, other);
-            }
-        }
-    }
-
     /// Appends one channel to bank `bank`, taking the tuning of its last channel.
     pub fn add_channel(&mut self, bank: usize) {
         let Some(bank) = self.banks.get_mut(bank) else {
@@ -1671,10 +1657,7 @@ mod tests {
     fn banks_move_and_channels_duplicate_within_their_bank() {
         let mut model = project();
         pmr_plan(&mut model);
-        model.move_bank(1, true);
-        assert_eq!(model.banks[0].name, "PMR446");
-        model.move_bank(0, true);
-        model.move_bank(1, false);
+        model.move_bank_to(1, 0);
         assert_eq!(model.banks[0].name, "PMR446");
 
         // Dragged: before the bank at a slot, or last at the count.
