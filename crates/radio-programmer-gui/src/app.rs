@@ -88,6 +88,34 @@ enum Tab {
     Flash,
 }
 
+/// Which bank generator the Banks tab shows below the shared locator.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum Generator {
+    #[default]
+    Repeaters,
+    Stations,
+    Airports,
+    Marine,
+}
+
+impl Generator {
+    const ALL: [Self; 4] = [
+        Self::Repeaters,
+        Self::Stations,
+        Self::Airports,
+        Self::Marine,
+    ];
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Repeaters => "UK repeaters",
+            Self::Stations => "UK FM stations",
+            Self::Airports => "Airports",
+            Self::Marine => "Marine",
+        }
+    }
+}
+
 /// Which group of radio settings the Radio tab shows.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum RadioSection {
@@ -114,6 +142,8 @@ impl RadioSection {
 /// The complete native editor.
 pub struct StudioApp {
     tab: Tab,
+    /// The bank generator tab chosen on the Banks tab.
+    generator: Generator,
     radio_section: RadioSection,
     project: ProjectModel,
     /// The project as last loaded or saved, to tell whether it has changed.
@@ -856,6 +886,7 @@ impl StudioApp {
     pub fn with_projects(options: &Options, projects: ProjectStore) -> Self {
         let mut app = Self {
             tab: Tab::default(),
+            generator: Generator::default(),
             radio_section: RadioSection::default(),
             project: ProjectModel::new(),
             saved: ProjectModel::new(),
@@ -1538,6 +1569,22 @@ impl StudioApp {
             }
         });
         self.locator_bar(ui);
+        ui.horizontal(|ui| {
+            for generator in Generator::ALL {
+                ui.selectable_value(&mut self.generator, generator, generator.label());
+            }
+        });
+        match self.generator {
+            Generator::Repeaters => self.repeater_bar(ui),
+            Generator::Stations => self.station_bar(ui),
+            Generator::Airports => self.airport_bar(ui),
+            Generator::Marine => self.marine_bar(ui),
+        }
+        ui.separator();
+    }
+
+    /// The row that adds the UK repeaters near the shared locator.
+    fn repeater_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             ui.label("UK repeaters within");
             ComboBox::from_id_salt("repeater-radius")
@@ -1585,10 +1632,6 @@ impl StudioApp {
             }
             ui.label(self.repeater_source());
         });
-        self.station_bar(ui);
-        self.airport_bar(ui);
-        self.marine_bar(ui);
-        ui.separator();
     }
 
     /// The row holding the locator the repeaters, stations and airports share.
@@ -3010,7 +3053,7 @@ mod tests {
         bank_row_columns, channel_row_label, column_gap, memory_percent, scan_resume_label,
         tx_power_label, tx_timeout_label, StudioApp, Tab, MIN_COLUMN_GAP,
     };
-    use super::{RadioSection, TxClass, TxRangeDraft, MAX_TX_RANGES};
+    use super::{Generator, RadioSection, TxClass, TxRangeDraft, MAX_TX_RANGES};
     use crate::{model::BankKind, projects::ProjectStore, DeviceSelector, Options};
     use radio_domain::ScanResume;
     use std::path::PathBuf;
@@ -3261,6 +3304,43 @@ mod tests {
         assert_eq!(text_left_edges(&banks, "Default set").len(), 1);
         let radio = radio_frame(&context, &mut app);
         assert!(text_left_edges(&radio, "Default set").is_empty());
+    }
+
+    #[test]
+    fn the_banks_tab_shows_one_generator_at_a_time() {
+        let context = eframe::egui::Context::default();
+        let mut app = app_in(&scratch("generators"), &Options::default());
+        let rows = [
+            (Generator::Repeaters, "UK repeaters within"),
+            (Generator::Stations, "UK FM stations, strongest"),
+            (Generator::Airports, "Airports within"),
+            (Generator::Marine, "Marine within"),
+        ];
+        for generator in Generator::ALL {
+            app.generator = generator;
+            let output = frame(&context, &mut app, Vec::new());
+            // The shared locator and every tab are always there.
+            assert_eq!(text_left_edges(&output, "Your locator").len(), 1);
+            for other in Generator::ALL {
+                let tabs = output
+                    .shapes
+                    .iter()
+                    .filter(|clipped| {
+                        matches!(&clipped.shape, eframe::egui::Shape::Text(text)
+                            if text.galley.text() == other.label())
+                    })
+                    .count();
+                assert_eq!(tabs, 1, "{generator:?} offers {other:?}");
+            }
+            for (owner, row) in rows {
+                let shown = text_left_edges(&output, row).len();
+                assert_eq!(
+                    shown,
+                    usize::from(owner == generator),
+                    "{generator:?} {row}"
+                );
+            }
+        }
     }
 
     #[test]
