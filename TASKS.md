@@ -3237,7 +3237,8 @@
      receive-only USB bank 700 Hz below each carrier. Done (`efb10e4`).
   2. Gliding and small airfields: the UK sporting core, then the small
      fields in the airports' `OurAirports` list (OpenStreetMap holds a
-     frequency for only about 22 UK aerodromes; `ADR-112`). Done.
-  3. Repeaters outside the UK from an open worldwide list.
+     frequency for only about 22 UK aerodromes; `ADR-112`). Done
+     (`a2b2cbf`).
+  3. Repeaters anywhere from hearham's worldwide list (`ADR-113`). Done.
   4. Write a beacon bank to the K5 and hear GB3VHF or another beacon as a
      tone.

@@ -1920,3 +1920,17 @@ meaning.
   ports and seaplane bases in range, nearest first, each carrier once and
   none already in the core; a nearer large airport sharing a carrier does
   not hide a field. AM, receive only (`ADR-107`).
+
+## ADR-113 — Repeaters outside the UK come from hearham
+
+- **Date:** 2026-10-16
+- **Status:** accepted, operator request (`GEN-072`).
+- hearham.com's JSON list (`/api/repeaters/v1`, about 23 000 systems, 9.5 MB,
+  "free to use in your application") is the open worldwide source;
+  RepeaterBook needs an application token. Synced on request and cached raw
+  in `$XDG_CACHE_HOME/afik/hearham`, as `ADR-106` does.
+- Taken: operational, mode FM or a mix with FM (`YSF/FM`), output and output
+  plus offset both receivable; `encode` is the access tone. 13 963 of the
+  live list pass. hearham gives no bandwidth, so every channel is 25 kHz.
+- The bank is `WRPT <locator>`, so it never replaces the ETCC's `RPT` bank;
+  the UK repeaters tab stays the better source in the UK.

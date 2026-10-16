@@ -211,7 +211,12 @@ fn text<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
 
 /// A frequency in hertz which the radio can receive.
 fn receivable(value: &Value, key: &str) -> Option<u32> {
-    let hz = value.get(key).and_then(Value::as_u64)?;
+    receivable_hz(value.get(key).and_then(Value::as_i64)?)
+}
+
+/// `hz` if the radio can receive it.
+pub(crate) fn receivable_hz(hz: i64) -> Option<u32> {
+    let hz = u64::try_from(hz).ok()?;
     RECEIVE_BANDS
         .iter()
         .any(|&(low, high)| (low..=high).contains(&hz))
@@ -222,7 +227,7 @@ fn receivable(value: &Value, key: &str) -> Option<u32> {
 /// A CTCSS tone in hertz as tenths, or none where the ETCC records zero.
 // Checked against the CTCSS range first, so the cast is exact.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-fn ctcss(hz: f64) -> Option<u16> {
+pub(crate) fn ctcss(hz: f64) -> Option<u16> {
     let tenths = (hz * 10.0).round();
     (f64::from(MIN_CTCSS_TENTHS_HZ)..=f64::from(MAX_CTCSS_TENTHS_HZ))
         .contains(&tenths)
@@ -498,7 +503,7 @@ pub fn beacon_bank(locator: &str, near: &[(&Repeater, f64)]) -> BankDraft {
 /// An FM bank named `prefix` and the locator: each channel receives the
 /// output and transmits on the input with the access tone, and keeps its own
 /// bandwidth.
-fn fm_bank(prefix: &str, locator: &str, near: &[(&Repeater, f64)]) -> BankDraft {
+pub(crate) fn fm_bank(prefix: &str, locator: &str, near: &[(&Repeater, f64)]) -> BankDraft {
     let name = bank_name(prefix, locator);
     let channels = near
         .iter()

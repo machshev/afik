@@ -130,8 +130,15 @@ gliding, microlight, balloon, parachuting), then the small fields
 `OurAirports` lists in range, from the airports' cache (`ADR-112`;
 OpenStreetMap tags only about 22 UK aerodromes). Gate: fmt clean, `cargo
 clippy -p radio-programmer-gui --all-targets -- -D warnings` clean, `cargo
-test -p radio-programmer-gui --lib` 160 passed 0 failed 2 ignored. Next
-(step 3): repeaters outside the UK.
+test -p radio-programmer-gui --lib` 160 passed 0 failed 2 ignored. Step 3: a
+World repeaters tab syncs hearham's worldwide list (13 963 FM repeaters
+live; JN18EU gives Paris repeaters in 50 km) and adds `WRPT <locator>`,
+25 kHz with access tones (`ADR-113`). The tab row now holds eight tabs; the
+layout was not checked on screen. Gate: `cargo fmt --all --check` clean,
+`cargo clippy --workspace --all-targets -- -D warnings` clean, `cargo test
+--workspace` 881 passed 0 failed 3 ignored. Next (step 4, hardware): write
+a `BCN` bank to the K5 and hear GB3VHF (144.430) or GB3UHF as a tone; then
+a `FLD` bank.
 
 **`MARINE-070` is active alongside** (2026-10-16, operator request,
 `ADR-109`): step 1 done. The Banks tab has a Marine row: Sync asks Overpass
