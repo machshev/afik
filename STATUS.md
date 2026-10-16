@@ -111,9 +111,11 @@ involved (`EVID-K5-036`), and only candidates wait it out now. Gate: `cargo
 fmt --all --check` clean, `cargo clippy --workspace --all-targets -- -D
 warnings` clean, `cargo test --workspace` 856 passed 0 failed,
 `tool/build-k5.sh --release` (flash end `0x0000ee4c`, 436 bytes under the
-`0xf000` limit) and `tool/build-k1.sh --release` pass. `7.0.40` is the image
-to flash. Next (step 3, hardware): flash the K5, time a scan of the
-59-channel bank, and key a PMR446 channel to check it still stops there.
+`0xf000` limit) and `tool/build-k1.sh --release` pass. `7.0.40` (`eb693c5`)
+flashed to the K5 (`tool/verify-k5-image.sh` passes, bootloader `2.00.06`
+confirmed by `identify` first, CRC-32 `e0d9ccc2`, 240/240 pages
+acknowledged, not read back). Next (step 3): time a scan of the 59-channel
+bank, and key a PMR446 channel to check it still stops there.
 
 **`MARINE-070` is active alongside** (2026-10-16, operator request,
 `ADR-109`): step 1 done. The Banks tab has a Marine row: Sync asks Overpass
