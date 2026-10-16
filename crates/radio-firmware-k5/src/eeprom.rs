@@ -1,6 +1,6 @@
 //! Guarded access to the K5 V1's 8 KiB configuration EEPROM.
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use radio_dp32g030::gpio::{self, Port};
 use radio_dp32g030::portcon;
@@ -193,9 +193,29 @@ impl K5Bus {
     }
 }
 
+/// Whether the transaction under way is the BK1080's, which keeps the
+/// `7.0.40` wait.
+///
+/// The BK1080 shares this bus. At the calibrated microsecond its readings
+/// went wrong and FM took about a minute to unmute (`7.0.49`); it worked at
+/// this wait, and once a station plays it is barely read. Every transaction
+/// starts with a claim, which sets this for the device making it.
+static CONSERVATIVE: AtomicBool = AtomicBool::new(false);
+/// Spin passes per edge at the `7.0.40` wait.
+const CONSERVATIVE_SPINS_PER_EDGE: u32 = 48;
+
+impl K5Bus {
+    /// Claims the bus for a BK1080 transaction, at the `7.0.40` wait.
+    pub fn claim_conservative(&mut self) {
+        *self = Self::initialise();
+        CONSERVATIVE.store(true, Ordering::Relaxed);
+    }
+}
+
 impl Bus for K5Bus {
     fn claim(&mut self) {
         *self = Self::initialise();
+        CONSERVATIVE.store(false, Ordering::Relaxed);
     }
     fn start(&mut self) {
         high(11);
@@ -289,7 +309,11 @@ fn high(pin: u8) {
     gpio::set_output(Port::A, pin);
 }
 fn delay() {
-    spin(SPINS_PER_EDGE.load(Ordering::Relaxed));
+    spin(if CONSERVATIVE.load(Ordering::Relaxed) {
+        CONSERVATIVE_SPINS_PER_EDGE
+    } else {
+        SPINS_PER_EDGE.load(Ordering::Relaxed)
+    });
 }
 
 /// Runs `passes` spin-loop passes; what [`calibrate`] times.
