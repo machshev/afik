@@ -98,6 +98,63 @@ enum Generator {
     Marine,
 }
 
+/// Draws one generator tab: rounded on top, outlined, and filled like the
+/// panel below when chosen, faint otherwise.
+fn generator_tab(
+    ui: &mut egui::Ui,
+    generator: Generator,
+    chosen: Generator,
+    panel_fill: egui::Color32,
+) -> egui::Response {
+    let selected = generator == chosen;
+    let text = egui::WidgetText::from(generator.label()).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Extend),
+        f32::INFINITY,
+        egui::TextStyle::Button,
+    );
+    let padding = egui::vec2(10.0, 5.0);
+    let (rect, response) =
+        ui.allocate_exact_size(text.size() + 2.0 * padding, egui::Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::SelectableLabel,
+            ui.is_enabled(),
+            selected,
+            generator.label(),
+        )
+    });
+    if ui.is_rect_visible(rect) {
+        let visuals = ui.visuals();
+        let fill = if selected {
+            panel_fill
+        } else if response.hovered() {
+            visuals.widgets.hovered.weak_bg_fill
+        } else {
+            visuals.faint_bg_color
+        };
+        let stroke = if response.has_focus() {
+            visuals.selection.stroke
+        } else {
+            visuals.widgets.noninteractive.bg_stroke
+        };
+        let rounding = egui::Rounding {
+            nw: 4.0,
+            ne: 4.0,
+            sw: 0.0,
+            se: 0.0,
+        };
+        ui.painter().rect(rect, rounding, fill, stroke);
+        let colour = if selected {
+            visuals.strong_text_color()
+        } else {
+            visuals.text_color()
+        };
+        ui.painter().galley(rect.min + padding, text, colour);
+    }
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 /// The title of the panel holding the bank generators.
 const GENERATORS_TITLE: &str = "Banks near your locator";
 
@@ -1572,26 +1629,67 @@ impl StudioApp {
             }
         });
         // One bordered panel holds the locator and the generators that use
-        // it; the chosen generator's row sits in a second panel right under
-        // its tabs, so the tabs read as belonging to it.
+        // it; the chosen generator's row sits in a second panel joined to
+        // its tab, so the tabs read as belonging to it.
         egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.strong(GENERATORS_TITLE);
             self.locator_bar(ui);
-            ui.horizontal(|ui| {
-                for generator in Generator::ALL {
-                    ui.selectable_value(&mut self.generator, generator, generator.label());
-                }
-            });
-            egui::Frame::group(ui.style()).show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                match self.generator {
-                    Generator::Repeaters => self.repeater_bar(ui),
-                    Generator::Stations => self.station_bar(ui),
-                    Generator::Airports => self.airport_bar(ui),
-                    Generator::Marine => self.marine_bar(ui),
-                }
-            });
+            ui.add_space(4.0);
+            let fill = ui.visuals().extreme_bg_color;
+            let stroke = ui.visuals().widgets.noninteractive.bg_stroke;
+            let selected_tab = ui
+                .scope(|ui| {
+                    // The tabs touch the panel and nearly each other.
+                    ui.spacing_mut().item_spacing = egui::vec2(2.0, 0.0);
+                    let tabs = ui.horizontal(|ui| {
+                        let mut selected = None;
+                        for generator in Generator::ALL {
+                            let tab = generator_tab(ui, generator, self.generator, fill);
+                            if tab.clicked() {
+                                self.generator = generator;
+                            }
+                            if generator == self.generator {
+                                selected = Some(tab.rect);
+                            }
+                        }
+                        selected
+                    });
+                    let panel = egui::Frame::none()
+                        .fill(fill)
+                        .stroke(stroke)
+                        .rounding(egui::Rounding {
+                            nw: 0.0,
+                            ne: 4.0,
+                            sw: 4.0,
+                            se: 4.0,
+                        })
+                        .inner_margin(6.0)
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing = egui::vec2(8.0, 4.0);
+                            ui.set_width(ui.available_width());
+                            match self.generator {
+                                Generator::Repeaters => self.repeater_bar(ui),
+                                Generator::Stations => self.station_bar(ui),
+                                Generator::Airports => self.airport_bar(ui),
+                                Generator::Marine => self.marine_bar(ui),
+                            }
+                        });
+                    tabs.inner.map(|tab| (tab, panel.response.rect.top()))
+                })
+                .inner;
+            // Open the panel's top edge under the chosen tab, so the two
+            // read as one shape.
+            if let Some((tab, top)) = selected_tab {
+                let inset = stroke.width.max(1.0);
+                ui.painter().line_segment(
+                    [
+                        egui::pos2(tab.left() + inset, top),
+                        egui::pos2(tab.right() - inset, top),
+                    ],
+                    egui::Stroke::new(inset + 1.0, fill),
+                );
+            }
         });
         ui.separator();
     }
@@ -3355,6 +3453,28 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn clicking_a_generator_tab_chooses_it() {
+        let context = eframe::egui::Context::default();
+        let mut app = app_in(&scratch("generator-click"), &Options::default());
+        let output = frame(&context, &mut app, Vec::new());
+        let at = output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                eframe::egui::Shape::Text(text) if text.galley.text() == "Marine" => {
+                    Some(text.pos + eframe::egui::vec2(3.0, 3.0))
+                }
+                _ => None,
+            })
+            .expect("the Marine tab is drawn");
+        assert_eq!(app.generator, Generator::Repeaters);
+        click(&context, &mut app, at);
+        assert_eq!(app.generator, Generator::Marine);
+        let output = frame(&context, &mut app, Vec::new());
+        assert_eq!(text_left_edges(&output, "Marine within").len(), 1);
     }
 
     #[test]
