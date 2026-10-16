@@ -28,7 +28,7 @@ use radio_flasher::{
     afik_image_version, crc32, detect_bootloader, flash_afik_application, force_bootloader_family,
     identify_radio, k1, k1::K1RecoveryImage, ApplicationImage, BootloaderFamily, EepromBackup,
     FirmwareVersion, FlashPrerequisites, FlashPurpose, ForcedFamily, RadioPresence, VersionCheck,
-    DEFAULT_NEGOTIATION_VERSION, FLASH_PAGE_COUNT,
+    FLASH_PAGE_COUNT,
 };
 use radio_programmer_serial::LinuxSerialTransport;
 
@@ -614,8 +614,7 @@ fn flash_afik(
     let family = family.map_err(|error| FlashRequestError::new(error.to_string()))?;
     match afik_image_for(Radio::of(&family), family.info().version(), &raw)? {
         AfikImage::K5V1(image) => {
-            let version = FirmwareVersion::new(DEFAULT_NEGOTIATION_VERSION)
-                .map_err(|error| FlashRequestError::new(error.to_string()))?;
+            let version = FirmwareVersion::for_bootloader(family.info().version());
             let report = flash_afik_application(
                 serial,
                 &image,

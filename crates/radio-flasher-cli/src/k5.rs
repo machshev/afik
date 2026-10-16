@@ -24,7 +24,7 @@ use radio_programmer_serial::LinuxSerialTransport;
 use crate::prompt::Confirm;
 use crate::{
     confirm_write, fresh_transaction_id, open_serial, parse_crc32, read_bounded, set_once,
-    CliError, DetectedFlash, DEFAULT_NEGOTIATION_VERSION, K5_BAUD,
+    CliError, DetectedFlash, K5_BAUD,
 };
 
 /// The opt-in recovery-gated AFIK flash, selected by `--recovery`.
@@ -452,7 +452,11 @@ pub(crate) fn flash_afik_detected<C: Confirm, W: Write>(
     stdout: &mut W,
 ) -> Result<(), CliError> {
     let image = ApplicationImage::from_raw(flash.image_raw).map_err(CliError::operation)?;
-    let version = FirmwareVersion::new(version.unwrap_or(DEFAULT_NEGOTIATION_VERSION))
+    let version = version
+        .map_or_else(
+            || Ok(FirmwareVersion::for_bootloader(flash.bootloader.version())),
+            FirmwareVersion::new,
+        )
         .map_err(CliError::operation)?;
     let summary = format!(
         "About to write an AFIK application to a K5 V1:\n\

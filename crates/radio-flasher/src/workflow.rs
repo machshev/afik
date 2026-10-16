@@ -356,6 +356,29 @@ impl FirmwareVersion {
         })
     }
 
+    /// Returns the negotiation string for a detected bootloader.
+    ///
+    /// The bootloader refuses a page write unless the `0x0530` version suits
+    /// it. A `2.*` bootloader takes [`DEFAULT_NEGOTIATION_VERSION`], as proven
+    /// on AFIK's own units. Any other, such as the `4.00.01` of `EVID-K5-012`,
+    /// is sent [`WILDCARD_NEGOTIATION_VERSION`]: K5TOOL documents the leading
+    /// `*` as bypassing the check, and egzumer's `fw-pack.py`, which the
+    /// armel firmware on that unit uses, packs every version with it.
+    pub fn for_bootloader(bootloader: &str) -> Self {
+        let version = if bootloader.starts_with("2.") {
+            DEFAULT_NEGOTIATION_VERSION
+        } else {
+            WILDCARD_NEGOTIATION_VERSION
+        };
+        let raw = version.as_bytes();
+        let mut bytes = [0_u8; 16];
+        bytes[..raw.len()].copy_from_slice(raw);
+        Self {
+            bytes,
+            len: raw.len(),
+        }
+    }
+
     /// Accepts the bounded printable identity returned by normal-mode hello.
     /// This is deliberately separate from the bootloader's version-2 grammar.
     pub fn normal(version: &str) -> Result<Self, FlashError> {
@@ -1201,6 +1224,9 @@ where
 
 /// Bootloader negotiation version sent by the default K5 AFIK flash.
 pub const DEFAULT_NEGOTIATION_VERSION: &str = "2.01.23";
+
+/// Bootloader negotiation version for any K5 bootloader other than `2.*`.
+pub const WILDCARD_NEGOTIATION_VERSION: &str = "*.01.23";
 
 /// Identity every AFIK K5 application image carries in its version string.
 const AFIK_K5_IDENTITY: &[u8] = b"AFIK-K5-";
@@ -2150,11 +2176,23 @@ mod tests {
     }
 
     #[test]
+    fn the_negotiation_version_suits_the_bootloader() {
+        assert_eq!(
+            FirmwareVersion::for_bootloader("2.00.06").as_str(),
+            "2.01.23"
+        );
+        assert_eq!(
+            FirmwareVersion::for_bootloader("4.00.01").as_str(),
+            "*.01.23"
+        );
+    }
+
+    #[test]
     fn a_4_00_01_bootloader_takes_the_k5_v1_page_write() {
         let mut raw = valid_raw(0xA5);
         raw.extend_from_slice(b"AFIK-K5-2.3T");
         let image = ApplicationImage::from_raw(&raw).unwrap();
-        let version = FirmwareVersion::new("2.01.23").unwrap();
+        let version = FirmwareVersion::for_bootloader("4.00.01");
         let mut responses = beacon_with_version(*b"4.00.01\0");
         responses.extend(beacon_with_version(*b"4.00.01\0"));
         for page in 0..FLASH_PAGE_COUNT {
@@ -2171,6 +2209,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(report.pages_acknowledged, 240);
+        let requests = decode_requests(&transport.writes);
+        assert_eq!(&requests[0][4..11], b"*.01.23");
     }
 
     #[test]

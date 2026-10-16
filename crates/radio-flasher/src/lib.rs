@@ -31,5 +31,5 @@ pub use workflow::{
     FirmwareVersion, FlashError, FlashPrerequisites, FlashPurpose, FlashReport, ForcedFamily,
     ImageWriteReport, KeypadMatrixReport, NormalFirmwareInfo, RadioPresence, RfReport,
     VersionCheck, DEFAULT_NEGOTIATION_VERSION, K5_RECOVERY_SOURCE_BYTES,
-    QUALIFIED_TARGET_CONFIRMATION, RECOVERY_REHEARSED_CONFIRMATION,
+    QUALIFIED_TARGET_CONFIRMATION, RECOVERY_REHEARSED_CONFIRMATION, WILDCARD_NEGOTIATION_VERSION,
 };

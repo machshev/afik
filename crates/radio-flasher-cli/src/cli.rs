@@ -65,8 +65,9 @@ Before writing, it shows the device, bootloader, image and CRC-32 for\n\
 confirmation; --yes skips that prompt, and without a terminal the write is\n\
 refused rather than assumed. It cannot reach either bootloader or EEPROM, so\n\
 an application which does not boot is recovered by flashing again. --version\n\
-sets the K5 negotiation version (default 2.01.23). Passing --recovery selects\n\
-the K5 recovery-gated form, which requires every listed option. flash-recovery\n\
+sets the K5 negotiation version (default 2.01.23 for a 2.* bootloader, else\n\
+*.01.23). Passing --recovery selects the K5 recovery-gated form, which\n\
+requires every listed option. flash-recovery\n\
 and restore-eeprom put a unit at risk and still require their backups and\n\
 exact phrases. Writes report page acknowledgements, not read-back. inspect\n\
 prints a K5 image's vectors and CRC-32 without a radio.\n\

@@ -191,7 +191,8 @@ Without an image argument it writes the packaged image for the detected radio:
 `target/thumbv6m-none-eabi/release/afik-k5-v1.raw` for a K5 and
 `radio-firmware-k1.raw` beside it for a K1. Pass a path to write a different
 file. `--device` defaults to `auto`. `--yes` skips the prompt, and `--version`
-overrides the K5 `2.01.23` negotiation value. Adding `--recovery` selects the
+overrides the K5 negotiation value: `2.01.23` for a `2.*` bootloader, the
+wildcard `*.01.23` for any other. Adding `--recovery` selects the
 recovery-gated form below, which still requires every one of its options.
 
 ## AFIK image attempt (recovery-gated, opt-in)
