@@ -11,7 +11,7 @@ pub const CAPACITY: usize = 8 * 1024;
 pub const WRITE_BLOCK_BYTES: usize = 8;
 // The pinned firmware waits 8 ms. Polling remains bounded but permits at least
 // that interval at the sourced one-microsecond bit timing, where one poll (a
-// start, the address byte and a stop) takes some 13 edges.
+// start, the address byte and a stop) takes some 36 waits.
 const READY_POLLS: usize = 2_048;
 /// Spin-loop passes in one bus edge wait.
 ///
@@ -218,8 +218,14 @@ impl Bus for K5Bus {
         high(11);
         delay();
     }
+    // Every edge is followed by a wait, as the reference firmware's `i2c.c`
+    // does, so the clock is low for two waits and high for at least one. With
+    // a wait only before each rising edge, the clock was low for one wait,
+    // under the EEPROM's 1.3 µs minimum once a wait was a true microsecond,
+    // and writes failed their read-back.
     fn write(&mut self, mut byte: u8) -> bool {
         low(10);
+        delay();
         for _ in 0..8 {
             if byte & 0x80 == 0 {
                 low(11);
@@ -230,6 +236,7 @@ impl Bus for K5Bus {
             high(10);
             delay();
             low(10);
+            delay();
             byte <<= 1;
         }
         gpio::set_input(Port::A, 11);
@@ -238,6 +245,7 @@ impl Bus for K5Bus {
         delay();
         let acknowledged = !gpio::read_pin(Port::A, 11);
         low(10);
+        delay();
         high(11);
         gpio::set_output(Port::A, 11);
         acknowledged
@@ -250,9 +258,11 @@ impl Bus for K5Bus {
             delay();
             high(10);
             delay();
+            delay();
             value = (value << 1) | u8::from(gpio::read_pin(Port::A, 11));
         }
         low(10);
+        delay();
         if final_byte {
             high(11);
         } else {
@@ -263,6 +273,7 @@ impl Bus for K5Bus {
         high(10);
         delay();
         low(10);
+        delay();
         high(11);
         value
     }

@@ -211,7 +211,14 @@ line's direction turning around explicitly. Gate: fmt clean, workspace
 clippy `-D warnings` clean, `cargo test --workspace` 870 passed 0 failed,
 K5 (flash end `0x0000edec`) and K1 release images build. `7.0.46`
 (`4679874`) flashed to the K5 (bootloader `2.00.06` by `identify` first,
-CRC-32 `fbcb61d7`, 240/240 pages acknowledged, not read back). Next: read the timings, and check a channel change
+CRC-32 `fbcb61d7`, 240/240 pages acknowledged, not read back).
+Hardware: the studio could not write the radio ("serial response timed
+out", every attempt; programming last worked on `7.0.40`). The bus waited
+only before each rising clock edge, so the clock was low for one wait,
+about 1.2 µs once a wait was a measured microsecond, under the EEPROM's
+1.3 µs minimum. Every edge is now followed by a wait, as the reference
+`i2c.c` does. Same gate, 870 passed 0 failed, K5 (flash end
+`0x0000ee1c`) and K1 release images build. `7.0.47`. Next: read the timings, and check a channel change
 survives a power cycle (EEPROM writes use the new timing).
 
 **`DUPLEX-069` is active alongside** (2026-10-16, operator request,
