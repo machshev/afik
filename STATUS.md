@@ -124,8 +124,11 @@ nearest place. Against the live data (2 789 places) JO01HP gives 80
 Burnham and 65 Coastwatch in 30 km, IO70LI Fowey 12 and Mevagissey 14,
 JO02BF and IO91WM nothing local (`RISK-048`). Gate: `cargo fmt --all
 --check` clean, `cargo clippy --workspace --all-targets -- -D warnings`
-clean, `cargo test --workspace` 848 passed 0 failed. Next: write a coastal
-bank to the K5 and listen.
+clean, `cargo test --workspace` 848 passed 0 failed. Studio (operator
+request): the generators sit on tabs under the shared locator, UK
+repeaters, UK FM stations, Airports and Marine, one shown at a time. Gate:
+fmt clean, workspace clippy `-D warnings` clean, `cargo test --workspace`
+857 passed 0 failed. Next: write a coastal bank to the K5 and listen.
 
 **`DUPLEX-069` is active alongside** (2026-10-16, operator request,
 `ADR-108`): a duplex memory channel the programmed TX ranges refuse is
