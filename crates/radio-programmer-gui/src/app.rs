@@ -98,6 +98,9 @@ enum Generator {
     Marine,
 }
 
+/// The title of the panel holding the bank generators.
+const GENERATORS_TITLE: &str = "Banks near your locator";
+
 impl Generator {
     const ALL: [Self; 4] = [
         Self::Repeaters,
@@ -1568,18 +1571,28 @@ impl StudioApp {
                 }
             }
         });
-        self.locator_bar(ui);
-        ui.horizontal(|ui| {
-            for generator in Generator::ALL {
-                ui.selectable_value(&mut self.generator, generator, generator.label());
-            }
+        // One bordered panel holds the locator and the generators that use
+        // it; the chosen generator's row sits in a second panel right under
+        // its tabs, so the tabs read as belonging to it.
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.strong(GENERATORS_TITLE);
+            self.locator_bar(ui);
+            ui.horizontal(|ui| {
+                for generator in Generator::ALL {
+                    ui.selectable_value(&mut self.generator, generator, generator.label());
+                }
+            });
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                match self.generator {
+                    Generator::Repeaters => self.repeater_bar(ui),
+                    Generator::Stations => self.station_bar(ui),
+                    Generator::Airports => self.airport_bar(ui),
+                    Generator::Marine => self.marine_bar(ui),
+                }
+            });
         });
-        match self.generator {
-            Generator::Repeaters => self.repeater_bar(ui),
-            Generator::Stations => self.station_bar(ui),
-            Generator::Airports => self.airport_bar(ui),
-            Generator::Marine => self.marine_bar(ui),
-        }
         ui.separator();
     }
 
@@ -3053,7 +3066,7 @@ mod tests {
         bank_row_columns, channel_row_label, column_gap, memory_percent, scan_resume_label,
         tx_power_label, tx_timeout_label, StudioApp, Tab, MIN_COLUMN_GAP,
     };
-    use super::{Generator, RadioSection, TxClass, TxRangeDraft, MAX_TX_RANGES};
+    use super::{Generator, RadioSection, TxClass, TxRangeDraft, GENERATORS_TITLE, MAX_TX_RANGES};
     use crate::{model::BankKind, projects::ProjectStore, DeviceSelector, Options};
     use radio_domain::ScanResume;
     use std::path::PathBuf;
@@ -3319,7 +3332,8 @@ mod tests {
         for generator in Generator::ALL {
             app.generator = generator;
             let output = frame(&context, &mut app, Vec::new());
-            // The shared locator and every tab are always there.
+            // The panel, its shared locator and every tab are always there.
+            assert_eq!(text_left_edges(&output, GENERATORS_TITLE).len(), 1);
             assert_eq!(text_left_edges(&output, "Your locator").len(), 1);
             for other in Generator::ALL {
                 let tabs = output
