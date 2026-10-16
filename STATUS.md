@@ -177,8 +177,10 @@ now shows when boot reached each stage, `S` serial task start, `L`
 configuration loaded, `F` first frame, in ms since reset; its digit
 helpers are merged to fit (K5 flash end `0x0000effc` of `0xf000`). Gate:
 fmt clean, workspace clippy `-D warnings` clean, `cargo test --workspace`
-869 passed 0 failed, K5 and K1 release images build. `7.0.43`, not
-flashed. Next: read the timings after a cold boot.
+869 passed 0 failed, K5 and K1 release images build. `7.0.43`
+(`eb1ecb6`) flashed to the K5 (bootloader `2.00.06` by `identify` first,
+CRC-32 `9ab03177`, 240/240 pages acknowledged, not read back). Next: read
+the timings after a cold boot.
 
 **`DUPLEX-069` is active alongside** (2026-10-16, operator request,
 `ADR-108`): a duplex memory channel the programmed TX ranges refuse is
