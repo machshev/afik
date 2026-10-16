@@ -200,7 +200,8 @@ workspace clippy `-D warnings` clean, `cargo test --workspace` 868 passed
 0 failed, K5 (flash end `0x0000ee30`) and K1 release images build.
 `7.0.45` (`cdf0b22`) flashed to the K5 (bootloader `2.00.06` by
 `identify` first, CRC-32 `37d3205b`, 240/240 pages acknowledged, not read
-back). Next: read the boot timings and check the two screens.
+back). Cold boot: `S0318 L0796 F0205`; the load is about 480 ms where
+it was about 930 ms, and channels show about 0.8 s after reset.
 
 **`DUPLEX-069` is active alongside** (2026-10-16, operator request,
 `ADR-108`): a duplex memory channel the programmed TX ranges refuse is
