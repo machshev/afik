@@ -1,5 +1,7 @@
 //! Guarded access to the K5 V1's 8 KiB configuration EEPROM.
 
+use core::sync::atomic::{AtomicU32, Ordering};
+
 use radio_dp32g030::gpio::{self, Port};
 use radio_dp32g030::portcon;
 
@@ -15,16 +17,43 @@ const READY_POLLS: usize = 2_048;
 ///
 /// The reference firmware waits one microsecond per edge (`i2c.c`,
 /// `SYSTICK_DelayUs(1)`) on this bus, for the EEPROM and the BK1080 alike.
-/// A pass is at least [`CYCLES_PER_SPIN`] cycles at 48 MHz, so this is no
-/// shorter than that. It was 48 passes, some 7 µs per edge, which made loading
-/// a configuration at boot take seconds.
-const SPINS_PER_EDGE: u32 = 8;
+/// How many passes make a microsecond depends on the flash wait states the
+/// part runs with, so [`calibrate`] measures it at boot. Until then this
+/// assumes a pass takes the fewest cycles it can, [`CYCLES_PER_SPIN`] at
+/// 48 MHz, which can only make the wait longer than a microsecond.
+static SPINS_PER_EDGE: AtomicU32 = AtomicU32::new(UNCALIBRATED_SPINS_PER_EDGE);
 /// Fewest cycles one spin-loop pass takes: compare, branch, `yield`, subtract
 /// and the taken branch back.
 const CYCLES_PER_SPIN: u32 = 6;
-/// Cycles in one microsecond at the 48 MHz system clock.
-const CYCLES_PER_MICROSECOND: u32 = 48;
-const _: () = assert!(SPINS_PER_EDGE * CYCLES_PER_SPIN >= CYCLES_PER_MICROSECOND);
+/// Spin passes per edge before calibration.
+const UNCALIBRATED_SPINS_PER_EDGE: u32 = 48_u32.div_ceil(CYCLES_PER_SPIN);
+/// Spin passes [`calibrate`] times.
+pub const CALIBRATION_SPINS: u32 = 64;
+
+/// Adopts an edge wait of one microsecond at `clock_hz`, given the cycles
+/// [`CALIBRATION_SPINS`] passes of [`spin`] were measured to take.
+pub fn calibrate(clock_hz: u32, cycles: u32) {
+    if let Some(spins) = spins_per_edge(clock_hz, cycles) {
+        SPINS_PER_EDGE.store(spins, Ordering::Relaxed);
+    }
+}
+
+/// Spin passes that take at least a microsecond, from a measurement of
+/// [`CALIBRATION_SPINS`] passes; `None` for a measurement that cannot be one.
+///
+/// The measurement includes the call around the passes, which makes a pass
+/// look slightly dearer than it is, so one pass is added back.
+pub const fn spins_per_edge(clock_hz: u32, cycles: u32) -> Option<u32> {
+    if cycles < CALIBRATION_SPINS {
+        return None;
+    }
+    let cycles_per_microsecond = clock_hz.div_ceil(1_000_000);
+    let spins = (cycles_per_microsecond * CALIBRATION_SPINS).div_ceil(cycles) + 1;
+    if spins > UNCALIBRATED_SPINS_PER_EDGE * 8 {
+        return None;
+    }
+    Some(spins)
+}
 const WRITE_ADDRESS: u8 = 0xA0;
 const READ_ADDRESS: u8 = 0xA1;
 
@@ -159,6 +188,7 @@ impl K5Bus {
             portcon::enable_input(Port::A, pin);
             portcon::disable_open_drain(Port::A, pin);
             high(pin);
+            gpio::set_output(Port::A, pin);
         }
         Self
     }
@@ -209,6 +239,7 @@ impl Bus for K5Bus {
         let acknowledged = !gpio::read_pin(Port::A, 11);
         low(10);
         high(11);
+        gpio::set_output(Port::A, 11);
         acknowledged
     }
     fn read(&mut self, final_byte: bool) -> u8 {
@@ -222,12 +253,12 @@ impl Bus for K5Bus {
             value = (value << 1) | u8::from(gpio::read_pin(Port::A, 11));
         }
         low(10);
-        gpio::set_output(Port::A, 11);
         if final_byte {
             high(11);
         } else {
             low(11);
         }
+        gpio::set_output(Port::A, 11);
         delay();
         high(10);
         delay();
@@ -237,16 +268,23 @@ impl Bus for K5Bus {
     }
 }
 
+// Both lines are outputs from `initialise` on, and the data line turns
+// around explicitly where a read or an acknowledgement needs it, so an edge
+// only writes the level.
 fn low(pin: u8) {
     gpio::write_pin(Port::A, pin, false);
-    gpio::set_output(Port::A, pin);
 }
 fn high(pin: u8) {
     gpio::write_pin(Port::A, pin, true);
-    gpio::set_output(Port::A, pin);
 }
 fn delay() {
-    for _ in 0..SPINS_PER_EDGE {
+    spin(SPINS_PER_EDGE.load(Ordering::Relaxed));
+}
+
+/// Runs `passes` spin-loop passes; what [`calibrate`] times.
+#[inline(never)]
+pub fn spin(passes: u32) {
+    for _ in 0..passes {
         core::hint::spin_loop();
     }
 }
@@ -282,6 +320,19 @@ mod tests {
                 .unwrap_or_else(|| u8::try_from(self.reads.len()).unwrap())
         }
     }
+    #[test]
+    fn the_edge_wait_is_a_measured_microsecond() {
+        use super::{spins_per_edge, CALIBRATION_SPINS};
+        // Six cycles a pass, no wait states: 48 cycles is eight passes, and
+        // one is added back for the call the measurement includes.
+        assert_eq!(spins_per_edge(48_000_000, CALIBRATION_SPINS * 6), Some(9));
+        // Wait states tripling a pass's cost leave a third as many passes.
+        assert_eq!(spins_per_edge(48_000_000, CALIBRATION_SPINS * 18), Some(4));
+        // A measurement no spin loop could produce keeps the safe default.
+        assert_eq!(spins_per_edge(48_000_000, 0), None);
+        assert_eq!(spins_per_edge(48_000_000, CALIBRATION_SPINS - 1), None);
+    }
+
     #[test]
     fn exact_random_read_sequence_and_final_nack() {
         let mut bus = Fake::default();

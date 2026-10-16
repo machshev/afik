@@ -202,6 +202,16 @@ workspace clippy `-D warnings` clean, `cargo test --workspace` 868 passed
 `identify` first, CRC-32 `37d3205b`, 240/240 pages acknowledged, not read
 back). Cold boot: `S0318 L0796 F0205`; the load is about 480 ms where
 it was about 930 ms, and channels show about 0.8 s after reset.
+Further (operator request): the serial task no longer yields mid-load,
+since the boot screen now hides the wait; the EEPROM edge wait is
+calibrated at boot from `SysTick` cycles (`time_driver::cycles_taken`,
+`eeprom::spins_per_edge`) to a measured microsecond, where 8 passes ran
+long under flash wait states; and an edge writes only the level, the data
+line's direction turning around explicitly. Gate: fmt clean, workspace
+clippy `-D warnings` clean, `cargo test --workspace` 870 passed 0 failed,
+K5 (flash end `0x0000edec`) and K1 release images build. `7.0.46`, not
+flashed. Next: flash, read the timings, and check a channel change
+survives a power cycle (EEPROM writes use the new timing).
 
 **`DUPLEX-069` is active alongside** (2026-10-16, operator request,
 `ADR-108`): a duplex memory channel the programmed TX ranges refuse is

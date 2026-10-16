@@ -7,7 +7,6 @@
 //! finished writing, and records where the operator left the radio.
 
 use embassy_futures::select::{select3, Either3};
-use embassy_futures::yield_now;
 use embassy_time::Timer;
 use radio_platform::memory_link::{
     encode_hello_response, encode_read_response, encode_write_response, host_may_write, Decoder,
@@ -78,9 +77,6 @@ pub async fn run<L: SerialLink, M: Memory>(
     TX_CALIBRATION.signal(memory.with_mut(|cell| cell.as_mut().and_then(M::read_tx_calibration)));
     SQUELCH_CALIBRATION
         .signal(memory.with_mut(|cell| cell.as_mut().and_then(M::read_squelch_calibration)));
-    // Let the interface show the battery before the image is loaded, which
-    // reads the whole configuration.
-    yield_now().await;
 
     // The place is read beside the configuration it refers to and published
     // with it, so the interface never restores a channel into a channel list it

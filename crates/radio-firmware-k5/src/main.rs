@@ -160,6 +160,11 @@ fn main() -> ! {
 
     let clock = clock::configure();
     time_driver::start(clock.hertz()).expect("SysTick counts a millisecond of the K5 clock");
+    // The bus's edge wait is a microsecond as this part actually runs.
+    eeprom::calibrate(
+        clock.hertz(),
+        time_driver::cycles_taken(|| eeprom::spin(eeprom::CALIBRATION_SPINS)),
+    );
 
     portcon::select_pa7_uart1_tx();
     portcon::select_pa8_uart1_rx();

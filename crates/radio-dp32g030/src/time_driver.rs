@@ -11,7 +11,7 @@
 //! [`start`] once, after the clock is configured and before anything awaits.
 
 #[cfg(feature = "time-driver")]
-pub use driver::{on_systick, start};
+pub use driver::{cycles_taken, on_systick, start};
 
 #[cfg(feature = "time-driver")]
 mod driver {
@@ -22,7 +22,7 @@ mod driver {
     use embassy_time_driver::Driver;
     use embassy_time_queue_utils::Queue;
 
-    use super::{period, ticks, ClockError};
+    use super::{elapsed_cycles, period, ticks, ClockError};
     use crate::mmio::Register;
 
     const SYSTICK_BASE: u32 = 0xE000_E010;
@@ -91,6 +91,17 @@ mod driver {
         Ok(())
     }
 
+    /// Processor cycles `work` takes, counted by `SysTick` with its exception
+    /// held off, so `work` must take less than a millisecond.
+    pub fn cycles_taken(work: impl FnOnce()) -> u32 {
+        critical_section::with(|_| {
+            let before = CURRENT.read();
+            work();
+            let after = CURRENT.read();
+            elapsed_cycles(before, after, RELOAD.read())
+        })
+    }
+
     /// The `SysTick` exception body: counts the period and wakes expired timers.
     pub fn on_systick() {
         let driver = registration::driver();
@@ -118,6 +129,16 @@ pub const fn period(clock_hz: u32) -> Result<u32, ClockError> {
         return Err(ClockError);
     }
     Ok(cycles - 1)
+}
+
+/// Cycles between two readings of the down-counting `SysTick` current value,
+/// across at most one reload from `reload` to zero.
+pub const fn elapsed_cycles(before: u32, after: u32, reload: u32) -> u32 {
+    if after <= before {
+        before - after
+    } else {
+        before + reload + 1 - after
+    }
 }
 
 /// Milliseconds since start: the counted periods, plus a reload the
@@ -153,6 +174,15 @@ mod tests {
         assert_eq!(period(1_999), Err(ClockError));
         // Every u32 clock fits the 24-bit reload, so none is too fast.
         assert_eq!(period(u32::MAX), Ok(4_294_966));
+    }
+
+    #[test]
+    fn cycles_count_down_and_across_one_reload() {
+        assert_eq!(super::elapsed_cycles(40_000, 39_000, 47_999), 1_000);
+        // 499 cycles down to zero, one to reload, and 500 more down from the
+        // top.
+        assert_eq!(super::elapsed_cycles(499, 47_499, 47_999), 1_000);
+        assert_eq!(super::elapsed_cycles(7, 7, 47_999), 0);
     }
 
     #[test]
