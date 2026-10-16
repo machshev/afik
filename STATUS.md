@@ -161,8 +161,16 @@ Gate: fmt clean, workspace clippy `-D warnings` clean, `cargo test
 --workspace` 868 passed 0 failed, `tool/build-k5.sh --release` (flash
 end `0x0000eebc`) and `tool/build-k1.sh --release` pass. `7.0.41` (`a61b51d`) flashed to the K5 (`tool/verify-k5-image.sh`
 passes, bootloader `2.00.06` by `identify` first, CRC-32 `c44f1e01`,
-240/240 pages acknowledged, not read back). Next: check the battery shows
-on the first screen.
+240/240 pages acknowledged, not read back). Hardware: the VFO and `--%`
+still showed for about 5 s, then the channels and battery together. The
+serial task loads the image (349 reads, 7.7 KB for the operator's 322
+channels) without yielding, and the EEPROM edge wait was 48 spin passes,
+some 7 µs where the reference waits 1 µs (`i2c.c`). The wait is now 8
+passes (at least 1 µs at 48 MHz, checked at compile time), the write-ready
+poll bound rises to 2048 to keep its 8 ms, and the serial task yields after
+publishing the calibrations. Same gate, 868 passed 0 failed, K5 (flash end
+`0x0000eed4`) and K1 release images build. `7.0.42`, not flashed. Next:
+flash and check boot shows channels and battery at once.
 
 **`DUPLEX-069` is active alongside** (2026-10-16, operator request,
 `ADR-108`): a duplex memory channel the programmed TX ranges refuse is

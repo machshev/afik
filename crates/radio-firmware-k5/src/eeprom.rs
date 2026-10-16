@@ -8,8 +8,23 @@ pub const CAPACITY: usize = 8 * 1024;
 /// Only write size evidenced by the pinned V1 firmware.
 pub const WRITE_BLOCK_BYTES: usize = 8;
 // The pinned firmware waits 8 ms. Polling remains bounded but permits at least
-// that interval at the sourced one-microsecond bit timing.
-const READY_POLLS: usize = 512;
+// that interval at the sourced one-microsecond bit timing, where one poll (a
+// start, the address byte and a stop) takes some 13 edges.
+const READY_POLLS: usize = 2_048;
+/// Spin-loop passes in one bus edge wait.
+///
+/// The reference firmware waits one microsecond per edge (`i2c.c`,
+/// `SYSTICK_DelayUs(1)`) on this bus, for the EEPROM and the BK1080 alike.
+/// A pass is at least [`CYCLES_PER_SPIN`] cycles at 48 MHz, so this is no
+/// shorter than that. It was 48 passes, some 7 µs per edge, which made loading
+/// a configuration at boot take seconds.
+const SPINS_PER_EDGE: u32 = 8;
+/// Fewest cycles one spin-loop pass takes: compare, branch, `yield`, subtract
+/// and the taken branch back.
+const CYCLES_PER_SPIN: u32 = 6;
+/// Cycles in one microsecond at the 48 MHz system clock.
+const CYCLES_PER_MICROSECOND: u32 = 48;
+const _: () = assert!(SPINS_PER_EDGE * CYCLES_PER_SPIN >= CYCLES_PER_MICROSECOND);
 const WRITE_ADDRESS: u8 = 0xA0;
 const READ_ADDRESS: u8 = 0xA1;
 
@@ -231,7 +246,7 @@ fn high(pin: u8) {
     gpio::set_output(Port::A, pin);
 }
 fn delay() {
-    for _ in 0..48 {
+    for _ in 0..SPINS_PER_EDGE {
         core::hint::spin_loop();
     }
 }
