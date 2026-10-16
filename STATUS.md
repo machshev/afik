@@ -237,8 +237,10 @@ so the EEPROM ended each read after one byte and every write failed its
 read-back. Edges again set the direction with the level, and the
 acknowledgement makes the line an output first; calibration is back on.
 Same gate, 870 passed 0 failed, K5 (flash end `0x0000ee9c`) and K1
-release images build. `7.0.49`. Next: flash, back up the EEPROM to
-confirm reads, then write the project from the studio, read the timings, and check a channel change
+release images build. `7.0.49` (`9fe9242`) flashed to the K5
+(bootloader `2.00.06` by `identify` first, CRC-32 `1cd3c0a7`, 240/240
+pages acknowledged, not read back). Next: back up the EEPROM to confirm
+reads, then write the project from the studio, read the timings, and check a channel change
 survives a power cycle (EEPROM writes use the new timing).
 
 **`DUPLEX-069` is active alongside** (2026-10-16, operator request,
