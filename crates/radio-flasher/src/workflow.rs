@@ -518,6 +518,29 @@ impl BootloaderInfo {
     }
 }
 
+/// Whether a write checks the version string a bootloader beacon reports.
+///
+/// `Known` is the default: only the versions evidence covers are written to.
+/// `Any` is the operator's escape hatch for a radio whose bootloader speaks the
+/// page-write protocol under a version no evidence covers yet. The beacon
+/// command, layout, and every acknowledgement are still checked exactly.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VersionCheck {
+    /// Accept only the bootloader versions a workflow is written for.
+    Known,
+    /// Accept any printable version on the page-write beacon.
+    Any,
+}
+
+/// The radio family an operator forces a page-write beacon to be treated as.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ForcedFamily {
+    /// UV-K5 V1/K6 page write, 240 pages of 256 bytes.
+    K5V1,
+    /// UV-K1 page write.
+    K1,
+}
+
 /// Protocol family classified from a validated bootloader beacon.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BootloaderFamily {
@@ -963,7 +986,14 @@ pub fn probe_clock_control<T: Read + Write>(transport: &mut T) -> Result<u32, Fl
 
 /// Waits for one exact, printable version-2 bootloader beacon.
 pub fn probe_bootloader_v2<T: Read>(transport: &mut T) -> Result<BootloaderInfo, FlashError> {
-    parse_bootloader_beacon(&receive_packet(transport)?)
+    probe_bootloader(transport, VersionCheck::Known)
+}
+
+fn probe_bootloader<T: Read>(
+    transport: &mut T,
+    check: VersionCheck,
+) -> Result<BootloaderInfo, FlashError> {
+    parse_bootloader_beacon(&receive_packet(transport)?, check)
 }
 
 /// Protocol shape announced by a beacon command, per `EVID-K5-015`.
@@ -1122,6 +1152,29 @@ pub fn detect_bootloader<T: Read>(transport: &mut T) -> Result<BootloaderFamily,
     parse_bootloader_family(&packet)
 }
 
+/// Reads one page-write beacon and takes it as the family the operator chose,
+/// whatever version it reports.
+///
+/// The escape hatch for [`detect_bootloader`]: the marker, the `0x0518`
+/// command and the beacon layout are still required, so an AES (`0x057A`)
+/// bootloader or a malformed frame is still refused.
+pub fn force_bootloader_family<T: Read>(
+    transport: &mut T,
+    family: ForcedFamily,
+) -> Result<BootloaderFamily, FlashError> {
+    let beacon = observe_bootloader(transport)?;
+    if beacon.protocol() != BeaconProtocol::PageWrite {
+        return Err(FlashError::UnsupportedBootloader(beacon.command()));
+    }
+    let info = BootloaderInfo {
+        version: beacon.version,
+    };
+    Ok(match family {
+        ForcedFamily::K5V1 => BootloaderFamily::K5V1(info),
+        ForcedFamily::K1 => BootloaderFamily::K1(info),
+    })
+}
+
 /// Writes all 240 application pages after validating every prerequisite.
 ///
 /// The callback runs after each exact acknowledgement. Missing or ambiguous
@@ -1141,6 +1194,7 @@ where
         prerequisites.image,
         prerequisites.version,
         prerequisites.transaction_id,
+        VersionCheck::Known,
         page_acknowledged,
     )
 }
@@ -1163,6 +1217,7 @@ pub fn flash_afik_application<T, F>(
     image: &ApplicationImage,
     version: &FirmwareVersion,
     transaction_id: u32,
+    check: VersionCheck,
     page_acknowledged: F,
 ) -> Result<FlashReport, FlashError>
 where
@@ -1179,7 +1234,14 @@ where
     {
         return Err(FlashError::NotAfikImage);
     }
-    write_application(transport, image, version, transaction_id, page_acknowledged)
+    write_application(
+        transport,
+        image,
+        version,
+        transaction_id,
+        check,
+        page_acknowledged,
+    )
 }
 
 fn write_application<T, F>(
@@ -1187,17 +1249,18 @@ fn write_application<T, F>(
     image: &ApplicationImage,
     version: &FirmwareVersion,
     transaction_id: u32,
+    check: VersionCheck,
     mut page_acknowledged: F,
 ) -> Result<FlashReport, FlashError>
 where
     T: Read + Write,
     F: FnMut(u16),
 {
-    let bootloader = probe_bootloader_v2(transport)?;
+    let bootloader = probe_bootloader(transport, check)?;
 
     let version_request = version_request(version);
     send_packet(transport, &version_request)?;
-    let confirmed_bootloader = probe_bootloader_v2(transport)?;
+    let confirmed_bootloader = probe_bootloader(transport, check)?;
     if confirmed_bootloader != bootloader {
         return Err(FlashError::UnexpectedPacket {
             expected: "stable bootloader version negotiation",
@@ -1214,7 +1277,7 @@ where
             &image.bytes()[start..start + FLASH_PAGE_BYTES],
         );
         send_packet(transport, &request)?;
-        receive_page_acknowledgement(transport, transaction_id, page_number)?;
+        receive_page_acknowledgement(transport, transaction_id, page_number, check)?;
         page_acknowledged(page_number);
     }
 
@@ -1636,7 +1699,10 @@ fn parse_eeprom_write_response(packet: &Packet, expected_offset: u16) -> Result<
     Ok(())
 }
 
-fn parse_bootloader_beacon(packet: &Packet) -> Result<BootloaderInfo, FlashError> {
+fn parse_bootloader_beacon(
+    packet: &Packet,
+    check: VersionCheck,
+) -> Result<BootloaderInfo, FlashError> {
     let payload = packet.as_slice();
     let command = packet_command(payload);
     if command == Some(COMMAND_V5_BEACON) {
@@ -1647,8 +1713,8 @@ fn parse_bootloader_beacon(packet: &Packet) -> Result<BootloaderInfo, FlashError
     }
     require_packet(payload, COMMAND_V2_BEACON, 32, 36, "bootloader-v2 beacon")?;
     let version = parse_text(&payload[20..36], "bootloader-v2 version")?;
-    if !is_k5_v1_bootloader(&version) {
-        return Err(FlashError::InvalidText("bootloader-v2 version"));
+    if check == VersionCheck::Known && !is_k5_v1_bootloader(&version) {
+        return Err(FlashError::UnsupportedBootloaderVersion(version));
     }
     Ok(BootloaderInfo { version })
 }
@@ -1707,11 +1773,12 @@ fn receive_page_acknowledgement<T: Read>(
     transport: &mut T,
     transaction_id: u32,
     expected_page: u16,
+    check: VersionCheck,
 ) -> Result<(), FlashError> {
     for _ in 0..=MAX_BEACONS_BEFORE_ACK {
         let packet = receive_packet(transport)?;
         if expected_page == 0 && packet_command(packet.as_slice()) == Some(COMMAND_V2_BEACON) {
-            parse_bootloader_beacon(&packet)?;
+            parse_bootloader_beacon(&packet, check)?;
             continue;
         }
         return parse_page_acknowledgement(&packet, transaction_id, expected_page);
@@ -1799,12 +1866,13 @@ mod tests {
 
     use super::{
         afik_image_version, apply_eeprom_restore, backup_eeprom, detect_bootloader,
-        flash_afik_application, flash_application, identify_radio, observe_bootloader,
-        prepare_eeprom_restore, probe_bootloader_v2, probe_clock_control, probe_clock_registers,
-        probe_clock_snapshot, probe_keypad_matrix, probe_normal_firmware, require_eeprom_restore,
-        require_eeprom_service, serves_eeprom_reads, BeaconProtocol, BootloaderFamily,
-        EepromRestorePrerequisites, FirmwareVersion, FlashError, FlashPrerequisites, FlashPurpose,
-        NormalFirmwareInfo, RadioPresence, EEPROM_BLOCK_BYTES, QUALIFIED_TARGET_CONFIRMATION,
+        flash_afik_application, flash_application, force_bootloader_family, identify_radio,
+        observe_bootloader, prepare_eeprom_restore, probe_bootloader_v2, probe_clock_control,
+        probe_clock_registers, probe_clock_snapshot, probe_keypad_matrix, probe_normal_firmware,
+        require_eeprom_restore, require_eeprom_service, serves_eeprom_reads, BeaconProtocol,
+        BootloaderFamily, EepromRestorePrerequisites, FirmwareVersion, FlashError,
+        FlashPrerequisites, FlashPurpose, ForcedFamily, NormalFirmwareInfo, RadioPresence,
+        VersionCheck, EEPROM_BLOCK_BYTES, QUALIFIED_TARGET_CONFIRMATION,
         RECOVERY_REHEARSED_CONFIRMATION,
     };
 
@@ -2022,6 +2090,66 @@ mod tests {
     }
 
     #[test]
+    fn a_forced_family_takes_any_page_write_version_and_still_refuses_aes() {
+        let mut k5 = ScriptedTransport::new(beacon_with_version(*b"9.00.01\0"), 1);
+        assert!(matches!(
+            force_bootloader_family(&mut k5, ForcedFamily::K5V1).unwrap(),
+            BootloaderFamily::K5V1(ref info) if info.version() == "9.00.01"
+        ));
+        let mut k1 = ScriptedTransport::new(beacon_with_version(*b"9.00.01\0"), 1);
+        assert!(matches!(
+            force_bootloader_family(&mut k1, ForcedFamily::K1).unwrap(),
+            BootloaderFamily::K1(_)
+        ));
+
+        let mut payload = vec![0_u8; 36];
+        payload[0..4].copy_from_slice(&[0x7A, 0x05, 0x20, 0x00]);
+        payload[20..27].copy_from_slice(b"5.00.01");
+        let mut aes = ScriptedTransport::new(encode_response_with_trailer(&payload, 0x6ED1), 1);
+        assert!(matches!(
+            force_bootloader_family(&mut aes, ForcedFamily::K5V1),
+            Err(FlashError::UnsupportedBootloader(0x057A))
+        ));
+    }
+
+    #[test]
+    fn a_forced_k5_write_takes_an_unknown_version_the_default_refuses() {
+        let mut raw = valid_raw(0xA5);
+        raw.extend_from_slice(b"AFIK-K5-2.3T");
+        let image = ApplicationImage::from_raw(&raw).unwrap();
+        let version = FirmwareVersion::new("2.01.23").unwrap();
+        let mut responses = beacon_with_version(*b"9.00.01\0");
+        responses.extend(beacon_with_version(*b"9.00.01\0"));
+        for page in 0..FLASH_PAGE_COUNT {
+            responses.extend(acknowledgement(u16::try_from(page).unwrap(), 0));
+        }
+        let mut transport = ScriptedTransport::new(responses.clone(), 1);
+        let report = flash_afik_application(
+            &mut transport,
+            &image,
+            &version,
+            TEST_TRANSACTION_ID,
+            VersionCheck::Any,
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(report.pages_acknowledged, 240);
+
+        let mut transport = ScriptedTransport::new(responses, 1);
+        let error = flash_afik_application(
+            &mut transport,
+            &image,
+            &version,
+            TEST_TRANSACTION_ID,
+            VersionCheck::Known,
+            |_| {},
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "unsupported bootloader version: 9.00.01");
+        assert!(transport.writes.is_empty());
+    }
+
+    #[test]
     fn a_4_00_01_bootloader_takes_the_k5_v1_page_write() {
         let mut raw = valid_raw(0xA5);
         raw.extend_from_slice(b"AFIK-K5-2.3T");
@@ -2038,6 +2166,7 @@ mod tests {
             &image,
             &version,
             TEST_TRANSACTION_ID,
+            VersionCheck::Known,
             |_| {},
         )
         .unwrap();
@@ -2061,6 +2190,7 @@ mod tests {
             &image,
             &version,
             TEST_TRANSACTION_ID,
+            VersionCheck::Known,
             |_| {},
         )
         .unwrap();
@@ -2075,12 +2205,20 @@ mod tests {
                 &other,
                 &version,
                 TEST_TRANSACTION_ID,
+                VersionCheck::Known,
                 |_| {}
             ),
             Err(FlashError::NotAfikImage)
         ));
         assert!(matches!(
-            flash_afik_application(&mut transport, &image, &version, 0, |_| {}),
+            flash_afik_application(
+                &mut transport,
+                &image,
+                &version,
+                0,
+                VersionCheck::Known,
+                |_| {}
+            ),
             Err(FlashError::InvalidTransactionId)
         ));
         assert!(transport.writes.is_empty());

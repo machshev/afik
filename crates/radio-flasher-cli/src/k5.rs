@@ -15,7 +15,8 @@ use radio_flasher::k5::{control as k5_control, ControlRequest, ControlResponse, 
 use radio_flasher::{
     apply_eeprom_restore, flash_afik_application, flash_application, prepare_eeprom_restore,
     sha256, ApplicationImage, EepromBackup, EepromRestorePrerequisites, FirmwareVersion,
-    FlashPrerequisites, FlashPurpose, APPLICATION_BYTES, EEPROM_BYTES, K5_RECOVERY_SOURCE_BYTES,
+    FlashPrerequisites, FlashPurpose, VersionCheck, APPLICATION_BYTES, EEPROM_BYTES,
+    K5_RECOVERY_SOURCE_BYTES,
 };
 
 use radio_programmer_serial::LinuxSerialTransport;
@@ -474,13 +475,20 @@ pub(crate) fn flash_afik_detected<C: Confirm, W: Write>(
     writeln!(stdout, "image_crc32={:08x}", image.crc32()).map_err(CliError::operation)?;
     writeln!(stdout, "transaction_id={:08x}", flash.transaction_id).map_err(CliError::operation)?;
     stdout.flush().map_err(CliError::operation)?;
-    let report = flash_afik_application(serial, &image, &version, flash.transaction_id, |page| {
-        let complete = page + 1;
-        if complete % 16 == 0 || complete == 240 {
-            let _ = writeln!(stdout, "acknowledged_pages={complete}/240");
-            let _ = stdout.flush();
-        }
-    })
+    let report = flash_afik_application(
+        serial,
+        &image,
+        &version,
+        flash.transaction_id,
+        VersionCheck::Known,
+        |page| {
+            let complete = page + 1;
+            if complete % 16 == 0 || complete == 240 {
+                let _ = writeln!(stdout, "acknowledged_pages={complete}/240");
+                let _ = stdout.flush();
+            }
+        },
+    )
     .map_err(CliError::operation)?;
     writeln!(stdout, "bootloader={}", report.bootloader.version()).map_err(CliError::operation)?;
     writeln!(stdout, "pages_acknowledged={}", report.pages_acknowledged)

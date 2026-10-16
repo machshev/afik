@@ -25,9 +25,10 @@ use std::{
 };
 
 use radio_flasher::{
-    afik_image_version, crc32, detect_bootloader, flash_afik_application, identify_radio, k1,
-    k1::K1RecoveryImage, ApplicationImage, BootloaderFamily, EepromBackup, FirmwareVersion,
-    FlashPrerequisites, FlashPurpose, RadioPresence, DEFAULT_NEGOTIATION_VERSION, FLASH_PAGE_COUNT,
+    afik_image_version, crc32, detect_bootloader, flash_afik_application, force_bootloader_family,
+    identify_radio, k1, k1::K1RecoveryImage, ApplicationImage, BootloaderFamily, EepromBackup,
+    FirmwareVersion, FlashPrerequisites, FlashPurpose, ForcedFamily, RadioPresence, VersionCheck,
+    DEFAULT_NEGOTIATION_VERSION, FLASH_PAGE_COUNT,
 };
 use radio_programmer_serial::LinuxSerialTransport;
 
@@ -124,6 +125,9 @@ pub struct FlashRequest {
     pub image_crc32: u32,
     /// Negotiated K5 firmware version string.
     pub firmware_version: String,
+    /// The family the operator forces the AFIK write to, accepting any
+    /// bootloader version on a page-write beacon; `None` detects it.
+    pub forced_family: Option<RadioFamily>,
 }
 
 /// One progress or completion message from the worker thread.
@@ -164,7 +168,7 @@ impl FlashRequestError {
 /// family here; the K1 has its own bootloader, image layout, and storage.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum RadioFamily {
-    /// UV-K5 V1 and UV-K6: `2.*` bootloader.
+    /// UV-K5 V1 and UV-K6: `2.*` or `4.*` bootloader.
     K5,
     /// UV-K1: `7.03.*` bootloader.
     K1,
@@ -205,6 +209,14 @@ impl RadioFamily {
         match self {
             Self::K5 => "tool/build-k5.sh --release",
             Self::K1 => "tool/build-k1.sh --release",
+        }
+    }
+
+    /// Returns the library's name for this family when forcing it.
+    pub const fn forced(self) -> ForcedFamily {
+        match self {
+            Self::K5 => ForcedFamily::K5V1,
+            Self::K1 => ForcedFamily::K1,
         }
     }
 
@@ -590,18 +602,31 @@ fn flash_afik(
 ) -> Result<String, FlashRequestError> {
     let raw = read_bounded(&request.firmware, MAX_FIRMWARE_BYTES, "firmware image")?;
     // Classification is read-only and consumes the first beacon, which
-    // both write paths require of their caller.
-    let family =
-        detect_bootloader(serial).map_err(|error| FlashRequestError::new(error.to_string()))?;
+    // both write paths require of their caller. A forced family still needs a
+    // page-write beacon, and then writes whatever version it reports.
+    let (family, check) = match request.forced_family {
+        None => (detect_bootloader(serial), VersionCheck::Known),
+        Some(forced) => (
+            force_bootloader_family(serial, forced.forced()),
+            VersionCheck::Any,
+        ),
+    };
+    let family = family.map_err(|error| FlashRequestError::new(error.to_string()))?;
     match afik_image_for(Radio::of(&family), family.info().version(), &raw)? {
         AfikImage::K5V1(image) => {
             let version = FirmwareVersion::new(DEFAULT_NEGOTIATION_VERSION)
                 .map_err(|error| FlashRequestError::new(error.to_string()))?;
-            let report =
-                flash_afik_application(serial, &image, &version, request.transaction_id, |page| {
+            let report = flash_afik_application(
+                serial,
+                &image,
+                &version,
+                request.transaction_id,
+                check,
+                |page| {
                     step(sender, page, K5_PAGES);
-                })
-                .map_err(|error| FlashRequestError::new(error.to_string()))?;
+                },
+            )
+            .map_err(|error| FlashRequestError::new(error.to_string()))?;
             Ok(format!(
                 "wrote {} K5 V1 application pages with CRC-32 {:08x} under transaction \
                  {:08x}; acknowledged, not read back",
@@ -616,6 +641,7 @@ fn flash_afik(
                 None,
                 family.info().version(),
                 request.transaction_id,
+                check,
                 |page| step(sender, page, total),
             )
             .map_err(|error| FlashRequestError::new(error.to_string()))?;

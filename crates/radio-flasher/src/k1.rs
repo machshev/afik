@@ -2,7 +2,9 @@
 
 use std::{fmt, io::Read, io::Write};
 
-use crate::{codec::receive_packet_without_response_crc, send_packet, FlashError, Packet};
+use crate::{
+    codec::receive_packet_without_response_crc, send_packet, FlashError, Packet, VersionCheck,
+};
 
 /// Exact operator phrase for the validated K1 recovery protocol.
 pub const K1_RECOVERY_TARGET_CONFIRMATION: &str = "UV-K1-F4HWN-7.03.01";
@@ -238,6 +240,7 @@ where
         image,
         bootloader_version,
         transaction_id,
+        VersionCheck::Known,
         page_acknowledged,
     )
 }
@@ -268,12 +271,16 @@ where
 /// device. Three additional beacons are required for the version handshakes.
 /// Missing, malformed, mismatched, and rejected pages stop immediately; this
 /// function never retries a page.
+///
+/// `check` is [`VersionCheck::Known`] unless the operator forced the family,
+/// in which case any printable version on the K1 beacon is written to.
 pub fn flash_application<T, F>(
     transport: &mut T,
     image: &K1RecoveryImage,
     recovery_image: Option<&K1RecoveryImage>,
     bootloader_version: &str,
     transaction_id: u32,
+    check: VersionCheck,
     page_acknowledged: F,
 ) -> Result<K1FlashReport, K1FlashError>
 where
@@ -283,7 +290,7 @@ where
     if recovery_image.is_some_and(|recovery| image == recovery) {
         return Err(K1FlashError::ApplicationMatchesRecovery);
     }
-    if !is_supported_bootloader_version(bootloader_version) {
+    if check == VersionCheck::Known && !is_supported_bootloader_version(bootloader_version) {
         return Err(K1FlashError::UnsupportedBootloader(
             bootloader_version.to_owned(),
         ));
@@ -297,6 +304,7 @@ where
         image,
         bootloader_version,
         transaction_id,
+        check,
         page_acknowledged,
     )
 }
@@ -306,6 +314,7 @@ fn flash_image<T, F>(
     image: &K1RecoveryImage,
     bootloader_version: &str,
     transaction_id: u32,
+    check: VersionCheck,
     mut page_acknowledged: F,
 ) -> Result<K1FlashReport, K1FlashError>
 where
@@ -314,7 +323,7 @@ where
 {
     for _ in 0..3 {
         let beacon = receive_packet_without_response_crc(transport)?;
-        let actual_version = parse_k1_beacon(&beacon)?;
+        let actual_version = parse_k1_beacon(&beacon, check)?;
         if actual_version != bootloader_version {
             return Err(K1FlashError::UnsupportedBootloader(actual_version));
         }
@@ -327,7 +336,7 @@ where
             transport,
             &page_request(image, transaction_id, page, page_count),
         )?;
-        receive_page_ack(transport, transaction_id, page)?;
+        receive_page_ack(transport, transaction_id, page, check)?;
         page_acknowledged(page);
     }
 
@@ -346,7 +355,7 @@ pub fn is_supported_bootloader_version(version: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || byte == b'.')
 }
 
-fn parse_k1_beacon(packet: &Packet) -> Result<String, K1FlashError> {
+fn parse_k1_beacon(packet: &Packet, check: VersionCheck) -> Result<String, K1FlashError> {
     let payload = packet.as_slice();
     if payload.len() != 36 || u16::from_le_bytes([payload[0], payload[1]]) != K1_BEACON {
         return Err(K1FlashError::UnexpectedPacket {
@@ -359,7 +368,7 @@ fn parse_k1_beacon(packet: &Packet) -> Result<String, K1FlashError> {
         .position(|byte| *byte == 0)
         .map_or(16, |index| index);
     let version = String::from_utf8_lossy(&payload[20..20 + end]).into_owned();
-    if !is_supported_bootloader_version(&version) {
+    if check == VersionCheck::Known && !is_supported_bootloader_version(&version) {
         return Err(K1FlashError::UnsupportedBootloader(version));
     }
     Ok(version)
@@ -390,11 +399,12 @@ fn receive_page_ack<T: Read>(
     transport: &mut T,
     transaction: u32,
     expected_page: u16,
+    check: VersionCheck,
 ) -> Result<(), K1FlashError> {
     loop {
         let packet = receive_packet_without_response_crc(transport)?;
         if packet_command(packet.as_slice()) == K1_BEACON {
-            parse_k1_beacon(&packet)?;
+            parse_k1_beacon(&packet, check)?;
             continue;
         }
         let payload = packet.as_slice();
@@ -471,10 +481,14 @@ mod tests {
     }
 
     fn beacon() -> Vec<u8> {
+        beacon_with_version(*b"7.03.01")
+    }
+
+    fn beacon_with_version(version: [u8; 7]) -> Vec<u8> {
         let mut payload = vec![0_u8; 36];
         payload[0..2].copy_from_slice(&0x0518_u16.to_le_bytes());
         payload[2..4].copy_from_slice(&32_u16.to_le_bytes());
-        payload[20..27].copy_from_slice(b"7.03.01");
+        payload[20..27].copy_from_slice(&version);
         encode_response_with_trailer(&payload, 0x6ED1)
     }
 
@@ -583,7 +597,15 @@ mod tests {
             input: Cursor::new(Vec::new()),
             output: Vec::new(),
         };
-        let result = flash_application(&mut transport, &image, Some(&image), "7.03.01", 1, |_| {});
+        let result = flash_application(
+            &mut transport,
+            &image,
+            Some(&image),
+            "7.03.01",
+            1,
+            crate::VersionCheck::Known,
+            |_| {},
+        );
         assert!(matches!(
             result,
             Err(K1FlashError::ApplicationMatchesRecovery)
@@ -600,11 +622,27 @@ mod tests {
             output: Vec::new(),
         };
 
-        let result = flash_application(&mut transport, &image, None, "7.03.01", 0, |_| {});
+        let result = flash_application(
+            &mut transport,
+            &image,
+            None,
+            "7.03.01",
+            0,
+            crate::VersionCheck::Known,
+            |_| {},
+        );
         assert!(matches!(result, Err(K1FlashError::InvalidTransactionId)));
         assert!(transport.output.is_empty());
 
-        let result = flash_application(&mut transport, &image, None, "2.00.06", 1, |_| {});
+        let result = flash_application(
+            &mut transport,
+            &image,
+            None,
+            "2.00.06",
+            1,
+            crate::VersionCheck::Known,
+            |_| {},
+        );
         assert!(matches!(
             result,
             Err(K1FlashError::UnsupportedBootloader(_))
@@ -613,5 +651,51 @@ mod tests {
             transport.output.is_empty(),
             "a K5 bootloader version reaches no page write"
         );
+    }
+
+    /// A forced write takes any version on the K1 beacon; the default refuses it.
+    #[test]
+    fn a_forced_application_flash_accepts_an_unknown_bootloader_version() {
+        let transaction = 7;
+        let image = K1RecoveryImage::from_raw(&raw_image(256)).unwrap();
+        let mut input = Vec::new();
+        for _ in 0..3 {
+            input.extend(beacon_with_version(*b"7.05.02"));
+        }
+        input.extend(ack(transaction, 0, 0));
+        let mut transport = ScriptedTransport {
+            input: Cursor::new(input.clone()),
+            output: Vec::new(),
+        };
+        let report = flash_application(
+            &mut transport,
+            &image,
+            None,
+            "7.05.02",
+            transaction,
+            crate::VersionCheck::Any,
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(report.pages_acknowledged, 1);
+
+        let mut transport = ScriptedTransport {
+            input: Cursor::new(input),
+            output: Vec::new(),
+        };
+        let result = flash_application(
+            &mut transport,
+            &image,
+            None,
+            "7.05.02",
+            transaction,
+            crate::VersionCheck::Known,
+            |_| {},
+        );
+        assert!(matches!(
+            result,
+            Err(K1FlashError::UnsupportedBootloader(_))
+        ));
+        assert!(transport.output.is_empty());
     }
 }

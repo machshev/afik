@@ -125,6 +125,8 @@ pub struct FlashTab {
     identify: Option<(IdentifyJob, PathBuf)>,
     last_identify: Option<Instant>,
     family_override: Option<RadioFamily>,
+    /// Flash as the chosen family whatever bootloader version answers.
+    force: bool,
     image_override: Option<PathBuf>,
     /// Where EEPROM backups are kept, one directory per family.
     eeprom_root: Option<PathBuf>,
@@ -149,6 +151,7 @@ impl Default for FlashTab {
             identify: None,
             last_identify: None,
             family_override: None,
+            force: false,
             image_override: None,
             eeprom_root: paths::eeprom_dir(),
             skipped_backup: HashSet::new(),
@@ -199,6 +202,7 @@ impl FlashTab {
         }
         if !self.device.as_os_str().is_empty()
             && !self.ready_to_flash()
+            && self.forcing().is_none()
             && due(self.last_identify, now)
         {
             self.start_identify(now);
@@ -301,6 +305,12 @@ impl FlashTab {
             .or_else(|| self.finding().and_then(Finding::family))
     }
 
+    /// Returns the family a forced flash writes as: only one the operator
+    /// chose, never a detected one.
+    pub fn forcing(&self) -> Option<RadioFamily> {
+        self.family_override.filter(|_| self.force)
+    }
+
     /// Returns the image to write: the operator's, else the family's packaged one.
     pub fn image(&self) -> Option<PathBuf> {
         self.image_override.clone().or_else(|| {
@@ -347,7 +357,9 @@ impl FlashTab {
 
     /// Reports whether the write may start now.
     pub fn can_flash(&self) -> bool {
-        !self.busy() && self.ready_to_flash() && self.image().is_some_and(|image| image.is_file())
+        !self.busy()
+            && (self.ready_to_flash() || self.forcing().is_some())
+            && self.image().is_some_and(|image| image.is_file())
     }
 
     /// Takes an EEPROM backup now, or as soon as the port is free.
@@ -400,19 +412,27 @@ impl FlashTab {
                 return;
             }
         };
-        let request = FlashRequest {
-            device: self.device.clone(),
-            firmware: image.clone(),
-            transaction_id,
-            ..FlashRequest::default()
+        let request = self.flash_request(image.clone(), transaction_id);
+        let what = match request.forced_family {
+            Some(family) => format!("force flashing {} as {}", image.display(), family.label()),
+            None => format!("flashing {}", image.display()),
         };
-        let what = format!("flashing {}", image.display());
         self.start(
             FlashOperation::AfikApplication,
             request,
             JobKind::Flash,
             what,
         );
+    }
+
+    fn flash_request(&self, firmware: PathBuf, transaction_id: u32) -> FlashRequest {
+        FlashRequest {
+            device: self.device.clone(),
+            firmware,
+            transaction_id,
+            forced_family: self.forcing(),
+            ..FlashRequest::default()
+        }
     }
 
     fn start_advanced(&mut self) {
@@ -632,6 +652,13 @@ impl FlashTab {
                         );
                     }
                 });
+            if let Some(family) = self.family_override {
+                ui.checkbox(&mut self.force, "Force").on_hover_text(format!(
+                    "Flash as a {} whatever bootloader version the radio reports. \
+                         It must still be in flashing mode; automatic checks pause.",
+                    family.label()
+                ));
+            }
         });
     }
 
@@ -842,9 +869,14 @@ impl FlashTab {
     fn flash_section(&mut self, ui: &mut egui::Ui) {
         ui.heading("4. Flash");
         let without_backup = self.backup_state() == BackupState::Missing;
+        let verb = if self.forcing().is_some() {
+            "Force flash"
+        } else {
+            "Flash"
+        };
         let label = match (self.family(), self.image()) {
             (Some(family), Some(image)) => format!(
-                "Flash {} to the {}{}",
+                "{verb} {} to the {}{}",
                 image
                     .file_name()
                     .map_or_else(String::new, |name| name.to_string_lossy().into_owned()),
@@ -855,7 +887,7 @@ impl FlashTab {
                     ""
                 }
             ),
-            _ => "Flash".to_owned(),
+            _ => verb.to_owned(),
         };
         ui.label(
             "Writes the AFIK application only, never the bootloader or EEPROM. An image \
@@ -1046,6 +1078,39 @@ mod tests {
         tab.select_device(PathBuf::from("/dev/ttyOTHER"), true);
         assert!(tab.finding().is_none());
         assert!(!tab.can_flash());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_chosen_family_can_be_forced_onto_an_unrecognised_radio() {
+        let (mut tab, root) = tab("force");
+        std::fs::create_dir_all(&root).unwrap();
+        let image = root.join("image.raw");
+        std::fs::write(&image, [0_u8; 4]).unwrap();
+        tab.image_override = Some(image.clone());
+        tab.record_finding(Finding::Nothing(
+            "unsupported bootloader version: 9.00.01".into(),
+        ));
+        assert!(!tab.can_flash());
+
+        // Force alone does nothing: only a family the operator chose is forced.
+        tab.force = true;
+        assert_eq!(tab.forcing(), None);
+        assert!(!tab.can_flash());
+
+        tab.family_override = Some(RadioFamily::K5);
+        assert_eq!(tab.forcing(), Some(RadioFamily::K5));
+        assert!(tab.can_flash());
+        let request = tab.flash_request(image.clone(), 1);
+        assert_eq!(request.forced_family, Some(RadioFamily::K5));
+
+        // Automatic checks pause so they do not take the port.
+        tab.tick(Instant::now());
+        assert!(!tab.busy());
+
+        tab.force = false;
+        assert!(!tab.can_flash());
+        assert_eq!(tab.flash_request(image, 1).forced_family, None);
         std::fs::remove_dir_all(&root).unwrap();
     }
 

@@ -10,7 +10,7 @@ use radio_flasher::{
     backup_eeprom, crc32, detect_bootloader, flash_application, observe_bootloader,
     probe_clock_control, probe_clock_register, probe_clock_snapshot, probe_keypad_matrix,
     probe_normal_firmware, probe_rf, set_rf_audio, ApplicationImage, BootloaderFamily,
-    EepromBackup, FlashPrerequisites, FlashPurpose, APPLICATION_BYTES,
+    EepromBackup, FlashPrerequisites, FlashPurpose, VersionCheck, APPLICATION_BYTES,
 };
 use radio_programmer_serial::{discover_usb_serial_devices, LinuxSerialTransport};
 
@@ -759,6 +759,7 @@ fn flash_afik_k1<W: Write, C: Confirm>(
         None,
         flash.bootloader.version(),
         flash.transaction_id,
+        VersionCheck::Known,
         |page| {
             let complete = page + 1;
             if complete % 16 == 0 || complete == image.page_count() {

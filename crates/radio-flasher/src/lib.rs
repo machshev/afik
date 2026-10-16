@@ -22,13 +22,14 @@ pub use image::{
 };
 pub use workflow::{
     afik_image_version, apply_eeprom_restore, backup_eeprom, detect_bootloader,
-    flash_afik_application, flash_application, identify_radio, observe_bootloader,
-    prepare_eeprom_restore, probe_bootloader_v2, probe_clock_control, probe_clock_register,
-    probe_clock_registers, probe_clock_snapshot, probe_keypad_matrix, probe_normal_firmware,
-    probe_rf, read_afik_image, serves_eeprom_reads, set_rf_audio, write_afik_image,
-    BeaconObservation, BeaconProtocol, BootloaderFamily, BootloaderInfo, ClockSnapshotReport,
-    EepromRestorePlan, EepromRestorePrerequisites, EepromRestoreReport, FirmwareVersion,
-    FlashError, FlashPrerequisites, FlashPurpose, FlashReport, ImageWriteReport,
-    KeypadMatrixReport, NormalFirmwareInfo, RadioPresence, RfReport, DEFAULT_NEGOTIATION_VERSION,
-    K5_RECOVERY_SOURCE_BYTES, QUALIFIED_TARGET_CONFIRMATION, RECOVERY_REHEARSED_CONFIRMATION,
+    flash_afik_application, flash_application, force_bootloader_family, identify_radio,
+    observe_bootloader, prepare_eeprom_restore, probe_bootloader_v2, probe_clock_control,
+    probe_clock_register, probe_clock_registers, probe_clock_snapshot, probe_keypad_matrix,
+    probe_normal_firmware, probe_rf, read_afik_image, serves_eeprom_reads, set_rf_audio,
+    write_afik_image, BeaconObservation, BeaconProtocol, BootloaderFamily, BootloaderInfo,
+    ClockSnapshotReport, EepromRestorePlan, EepromRestorePrerequisites, EepromRestoreReport,
+    FirmwareVersion, FlashError, FlashPrerequisites, FlashPurpose, FlashReport, ForcedFamily,
+    ImageWriteReport, KeypadMatrixReport, NormalFirmwareInfo, RadioPresence, RfReport,
+    VersionCheck, DEFAULT_NEGOTIATION_VERSION, K5_RECOVERY_SOURCE_BYTES,
+    QUALIFIED_TARGET_CONFIRMATION, RECOVERY_REHEARSED_CONFIRMATION,
 };
