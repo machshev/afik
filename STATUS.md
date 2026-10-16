@@ -136,8 +136,14 @@ locator", the chosen generator's row in an inner panel under its tabs
 chosen one joined to the panel (same gate, 858 passed). The studio has
 its own theme (`ADR-110`): Inter, roomier spacing, Adwaita-like light and
 dark palettes following the system. Gate: fmt clean, workspace clippy `-D
-warnings` clean, `cargo test --workspace` 861 passed 0 failed. Next:
-write a coastal bank to the K5 and listen.
+warnings` clean, `cargo test --workspace` 861 passed 0 failed. Flasher
+(operator request, 2026-10-16): a new K5 beaconing `4.00.01` on `0x0518`
+was refused; `afik-flasher identify` read it. The K5 V1 path now takes
+`2.*` and `4.*` (`EVID-K5-012`, `EVID-K5-017`), and a refused version is
+named in the error. Gate: fmt clean, workspace clippy `-D warnings` clean,
+`cargo test --workspace` 862 passed 0 failed. Next: flash 7.0.40 to the
+`4.00.01` unit from the studio and confirm it boots; then write a coastal
+bank to the K5 and listen.
 
 **`DUPLEX-069` is active alongside** (2026-10-16, operator request,
 `ADR-108`): a duplex memory channel the programmed TX ranges refuse is
