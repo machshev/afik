@@ -40,7 +40,7 @@ impl TwoWire for K5Broadcast {
         self.0.read(final_byte)
     }
     fn claim(&mut self) {
-        self.0.claim_conservative();
+        self.0.claim();
     }
     fn set_enabled(&mut self, enabled: bool) {
         gpio::write_pin(Port::B, ENABLE_PIN, !enabled);

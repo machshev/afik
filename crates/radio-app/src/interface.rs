@@ -480,6 +480,18 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
         }
     }
 
+    /// Plays the tuned broadcast station at once, as the reference's
+    /// `FM_PlayAndUpdate` does. Only a scan waits for the station test, to
+    /// decide where to stop: waiting for a reading to pass it left a tuned
+    /// station silent for up to a minute (`7.0.49`).
+    fn play_broadcast(&mut self) {
+        if self.on_broadcast && self.audio_routed {
+            self.squelch_open = true;
+            self.broadcast_heard = true;
+            self.speaker.set_enabled(true);
+        }
+    }
+
     /// Whether the run loop should sample the receiver at all.
     ///
     /// A broadcast station once heard plays on unread unless a scan or dual
@@ -1768,6 +1780,9 @@ pub async fn run<D, K, B, F, W, S, V, M>(
             }
         } else if let Some(setup) = pending_tune.filter(|_| bus_available() && catching.is_none()) {
             receiver.tune(setup, setup.squelch);
+            if !context.scanning {
+                receiver.play_broadcast();
+            }
             // The dwell counts from when this channel is tuned and drawn,
             // not from when the scan chose it.
             restart_dwell = dwelling;
@@ -3331,6 +3346,52 @@ mod tests {
         );
         assert!(!receiver.faulted);
         assert_eq!(chip.get(GPIO_OUT) & (UHF_LNA | VHF_LNA), VHF_LNA);
+    }
+
+    #[test]
+    fn a_station_tuned_to_listen_plays_at_once() {
+        use super::Receiver;
+        use radio_channel_control::ChannelReceiveSetup;
+        use radio_domain::{Bandwidth, Frequency, FrequencyStep, Modulation, SquelchLevel, Tone};
+
+        let setup = |hz, modulation| ChannelReceiveSetup {
+            frequency: Frequency::from_hz(hz).unwrap(),
+            modulation,
+            bandwidth: Bandwidth::Wide,
+            tone: Tone::None,
+            squelch: SquelchLevel::CONSERVATIVE,
+            step: FrequencyStep::from_hz(100_000).unwrap(),
+        };
+        let mut receiver = Receiver::new(
+            radio_bk4819::Bk4819::new(Registers([0; 128])),
+            Chip::default(),
+            Amplifier::default(),
+        );
+        // A station which would fail the station test still plays.
+        receiver.tune(
+            setup(97_600_000, Modulation::Broadcast),
+            SquelchLevel::CONSERVATIVE,
+        );
+        receiver.play_broadcast();
+        assert!(receiver.speaker.on && receiver.squelch_open);
+        assert!(
+            !receiver.wants_sample(false),
+            "a playing station is left unread"
+        );
+        // Another station plays as soon as it is tuned, too.
+        receiver.tune(
+            setup(97_700_000, Modulation::Broadcast),
+            SquelchLevel::CONSERVATIVE,
+        );
+        receiver.play_broadcast();
+        assert!(receiver.speaker.on);
+        // An ordinary channel keeps its squelch.
+        receiver.tune(
+            setup(145_500_000, Modulation::Fm),
+            SquelchLevel::CONSERVATIVE,
+        );
+        receiver.play_broadcast();
+        assert!(!receiver.speaker.on);
     }
 
     #[test]

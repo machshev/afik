@@ -249,7 +249,15 @@ while the EEPROM keeps the calibrated one. Same gate, 870 passed 0
 failed, K5 (flash end `0x0000eebc`) and K1 release images build.
 `7.0.50` (`276deb7`) flashed to the K5 (bootloader `2.00.06` by
 `identify` first, CRC-32 `dfba28a4`, 240/240 pages acknowledged, not read
-back). Next: check FM unmutes at once, and that a channel
+back). FM still took up to a minute after every station change, not
+just the first. Armel's `FM_PlayAndUpdate` plays as soon as it tunes and
+runs the station test (`FM_CheckFrequencyLock`) only to scan; AFIK kept
+every tuned station silent until a reading passed that test. A station
+tuned to listen now plays at once (`Receiver::play_broadcast`); a scan
+still stops on the test. The BK1080 wait is reverted to the shared
+calibrated one, as Armel runs both at 1 µs. Same gate, 871 passed 0
+failed, K5 (flash end `0x0000eec4`) and K1 release images build.
+`7.0.51`. Next: flash, check FM plays at once on every station, and that a channel
 change survives a power cycle.
 
 **`DUPLEX-069` is active alongside** (2026-10-16, operator request,
