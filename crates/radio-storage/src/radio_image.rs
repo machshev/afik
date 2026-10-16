@@ -481,6 +481,68 @@ impl Default for Index {
     }
 }
 
+/// Bytes a [`Stream`] reads from memory at once.
+const STREAM_WINDOW_BYTES: usize = 64;
+
+/// A payload read in order, one window at a time, and checksummed as it
+/// arrives.
+///
+/// Decoding reads the payload front to back in small pieces. Serving those
+/// from a window, and checksumming each window as it is fetched, reads the
+/// payload from memory once and in few transfers, where checking it and then
+/// decoding it read it twice, the second time in hundreds of small reads.
+struct Stream<'a, R> {
+    read: &'a mut R,
+    len: usize,
+    crc: u32,
+    window: [u8; STREAM_WINDOW_BYTES],
+    /// Payload offset of the window's first byte.
+    start: usize,
+    /// Payload offset just past the last byte fetched.
+    end: usize,
+}
+
+impl<R: FnMut(usize, &mut [u8]) -> bool> Stream<'_, R> {
+    /// Fetches the next window, checksumming it.
+    fn advance(&mut self) -> bool {
+        let len = STREAM_WINDOW_BYTES.min(self.len - self.end);
+        if len == 0 || !(self.read)(self.end, &mut self.window[..len]) {
+            return false;
+        }
+        self.crc = crc32_update(self.crc, &self.window[..len]);
+        self.start = self.end;
+        self.end += len;
+        true
+    }
+
+    /// Fills `buffer` from `offset`, which must lie inside the payload.
+    fn read(&mut self, offset: usize, buffer: &mut [u8]) -> bool {
+        if offset < self.start {
+            // Behind the window: read directly. The checksum already has it.
+            return offset + buffer.len() <= self.len && (self.read)(offset, buffer);
+        }
+        for (position, byte) in (offset..).zip(buffer.iter_mut()) {
+            while position >= self.end {
+                if !self.advance() {
+                    return false;
+                }
+            }
+            *byte = self.window[position - self.start];
+        }
+        true
+    }
+
+    /// Fetches whatever decoding did not reach and returns the checksum.
+    fn finish(&mut self) -> Result<u32, StorageError> {
+        while self.end < self.len {
+            if !self.advance() {
+                return Err(StorageError::MalformedImage);
+            }
+        }
+        Ok(self.crc)
+    }
+}
+
 /// Reads exactly `N` bytes at a payload offset.
 fn read_array<const N: usize>(
     read: &mut impl FnMut(usize, &mut [u8]) -> bool,
@@ -697,21 +759,33 @@ impl Index {
             return Err(StorageError::ImageTooLarge);
         }
         let expected = u32::from_le_bytes([header[12], header[13], header[14], header[15]]);
-        let mut crc = crc32_update(u32::MAX, &header[..12]);
-        let mut chunk = [0_u8; 64];
-        let mut at = 0;
-        while at < payload_len {
-            let len = chunk.len().min(payload_len - at);
-            if !read(at, &mut chunk[..len]) {
-                return Err(StorageError::MalformedImage);
-            }
-            crc = crc32_update(crc, &chunk[..len]);
-            at += len;
-        }
-        if !crc != expected {
+        let mut stream = Stream {
+            read: &mut read,
+            len: payload_len,
+            crc: crc32_update(u32::MAX, &header[..12]),
+            window: [0; STREAM_WINDOW_BYTES],
+            start: 0,
+            end: 0,
+        };
+        let decoded = Self::decode(
+            &mut |offset, buffer| stream.read(offset, buffer),
+            block_count,
+            payload_len,
+        );
+        // Nothing decoded is used unless the whole payload checks, and a
+        // damaged image reports the damage whichever part of it failed.
+        if !stream.finish()? != expected {
             return Err(StorageError::ImageIntegrity);
         }
+        decoded
+    }
 
+    /// Decodes and checks every object in a payload of `payload_len` bytes.
+    fn decode(
+        mut read: &mut impl FnMut(usize, &mut [u8]) -> bool,
+        block_count: usize,
+        payload_len: usize,
+    ) -> Result<Self, StorageError> {
         let mut index = Self::empty();
         let config = read_array::<RADIO_CONFIG_ENCODED_LEN>(&mut read, 0)?;
         index.configured = true;
@@ -1401,6 +1475,31 @@ mod tests {
         );
         assert!(Index::empty().is_empty());
         assert_eq!(NO_BANK, 0xFF);
+    }
+
+    /// Booting reads the image over a slow bus, so it is read once, in
+    /// window-sized pieces, and a damaged image still reports the damage
+    /// rather than whatever part of it failed to decode first.
+    #[test]
+    fn building_reads_the_payload_once_in_windows() {
+        let image = compiled(&pmr(), &[plan()]);
+        let payload_len = image.len() - HEADER_LEN;
+        let mut header = [0_u8; HEADER_LEN];
+        header.copy_from_slice(&image[..HEADER_LEN]);
+        let (mut calls, mut bytes) = (0, 0);
+        let mut inner = reader(&image);
+        Index::build(&header, |offset, buffer: &mut [u8]| {
+            calls += 1;
+            bytes += buffer.len();
+            inner(offset, buffer)
+        })
+        .expect("a sound image indexes");
+        assert_eq!(bytes, payload_len);
+        assert_eq!(calls, payload_len.div_ceil(super::STREAM_WINDOW_BYTES));
+
+        let mut damaged = image.clone();
+        damaged[HEADER_LEN] ^= 0xFF;
+        assert_eq!(index(&damaged), Err(StorageError::ImageIntegrity));
     }
 
     #[test]

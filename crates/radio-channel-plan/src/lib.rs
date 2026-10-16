@@ -608,7 +608,7 @@ impl GeneratedBank {
             .first_number
             .checked_add(index)
             .ok_or(PlanError::NumberingOverflow)?;
-        let designator = self.designator.as_str().as_bytes();
+        let designator = self.designator.as_bytes();
         let digits = decimal_digits(number);
         let mut field = [0_u8; MAX_CHANNEL_NAME_LEN];
         let mut len = designator.len();
@@ -645,7 +645,7 @@ impl GeneratedBank {
 /// from the number. `PMR446` gives `PMR 1`, which reads as a channel rather
 /// than as a truncated name run into a digit.
 fn derived_designator(name: BankName) -> Result<Designator, PlanError> {
-    let bytes = name.as_str().as_bytes();
+    let bytes = name.as_bytes();
     let mut len = bytes.len().min(MAX_DESIGNATOR_LEN - 1);
     while len > 0 && bytes[len - 1] == b' ' {
         len -= 1;

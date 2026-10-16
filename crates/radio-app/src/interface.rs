@@ -102,6 +102,20 @@ const SCAN_LOOP_MILLISECONDS: u64 = 1;
 /// Shortest interval between redraws caused by a changed meter reading.
 const METER_REDRAW_MILLISECONDS: u64 = 300;
 
+/// Longest the boot screen waits for the stored configuration.
+///
+/// The screen stays up until the configuration is in, so the operator does not
+/// see the VFO flash past on the way to their channels. A memory which never
+/// answers must not hold the radio behind it for long.
+const BOOT_SCREEN_MAX_MILLISECONDS: u64 = 3_000;
+
+/// Reports whether the boot screen still stands in for the operating one:
+/// until the serial task has published the stored configuration (generation
+/// one onwards), and no later than `until`.
+fn boot_screen_held(generation: u32, now: Instant, until: Instant) -> bool {
+    generation == 0 && now < until
+}
+
 /// Seconds between battery conversions.
 ///
 /// A pack discharges over hours, so this is about how quickly the operator
@@ -1142,6 +1156,7 @@ pub async fn run<D, K, B, F, W, S, V, M>(
     let mut settled = false;
     let mut next_meter_redraw = Instant::now();
     let mut next_battery_sample = Instant::now();
+    let boot_screen_until = Instant::now() + Duration::from_millis(BOOT_SCREEN_MAX_MILLISECONDS);
     let mut redraw = true;
     // The place already written down, and the one waiting to settle into it.
     let mut saved_place = place;
@@ -1844,7 +1859,7 @@ pub async fn run<D, K, B, F, W, S, V, M>(
             }
         }
 
-        if redraw {
+        if redraw && !boot_screen_held(generation, Instant::now(), boot_screen_until) {
             render(
                 &mut frame,
                 &shell,
@@ -2380,7 +2395,10 @@ fn bank_name<M: Memory>(bank: BankId, memory: &'static TaskCell<Option<M>>) -> O
 
 #[cfg(test)]
 mod tests {
-    use super::{adopt_publication, chosen_power, stage_squelch, vfo_source, Listening, Selected};
+    use super::{
+        adopt_publication, boot_screen_held, chosen_power, stage_squelch, vfo_source, Listening,
+        Selected,
+    };
     use crate::configuration::Programmed;
     use crate::operator_state::OperatorState;
     use radio_domain::BankId;
@@ -2457,6 +2475,19 @@ mod tests {
             squelch: SquelchLevel::new(3).unwrap(),
             step: FrequencyStep::from_hz(12_500).unwrap(),
         }
+    }
+
+    #[test]
+    fn the_boot_screen_waits_for_the_stored_configuration_but_not_for_ever() {
+        use embassy_time::Instant;
+        let until = Instant::from_millis(3_000);
+        // Only the empty publication the serial task makes before reading
+        // memory has arrived.
+        assert!(boot_screen_held(0, Instant::from_millis(1_200), until));
+        // The stored configuration, or the news that there is none, is in.
+        assert!(!boot_screen_held(1, Instant::from_millis(1_200), until));
+        // A memory which never answers does not keep the radio behind it.
+        assert!(!boot_screen_held(0, until, until));
     }
 
     #[test]
