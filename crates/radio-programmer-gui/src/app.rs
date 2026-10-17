@@ -2194,6 +2194,7 @@ impl StudioApp {
                     {
                         self.sync_satellites();
                     }
+                    ui.end_row();
                     ui.label(self.satellite_source());
                 }
             }
@@ -2320,6 +2321,7 @@ impl StudioApp {
             {
                 self.sync_repeaters();
             }
+            ui.end_row();
             ui.label(self.repeater_source());
         });
     }
@@ -2365,6 +2367,7 @@ impl StudioApp {
             {
                 self.sync_world();
             }
+            ui.end_row();
             ui.label(self.world_source());
         });
     }
@@ -2426,6 +2429,7 @@ impl StudioApp {
             {
                 self.sync_repeaters();
             }
+            ui.end_row();
             ui.label(self.etcc_source(kind));
         });
         let bands = match kind {
@@ -2512,6 +2516,7 @@ impl StudioApp {
             {
                 self.sync_stations();
             }
+            ui.end_row();
             ui.label(self.station_source());
         });
     }
@@ -2563,6 +2568,7 @@ impl StudioApp {
             {
                 self.sync_airports();
             }
+            ui.end_row();
             ui.label(self.airport_source());
         });
         ui.horizontal_wrapped(|ui| {
@@ -2654,6 +2660,7 @@ impl StudioApp {
             {
                 self.sync_airports();
             }
+            ui.end_row();
             ui.label(self.airfield_source());
         });
     }
@@ -2706,6 +2713,7 @@ impl StudioApp {
             {
                 self.sync_marine();
             }
+            ui.end_row();
             ui.label(self.marine_source());
         });
     }
