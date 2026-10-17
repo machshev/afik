@@ -173,6 +173,20 @@ fn generator_tab(
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
+/// The state file the map's shown generators and all-locations choice are
+/// kept in.
+const MAP_VIEW_FILE: &str = "map-view";
+
+/// Where the map's view is kept, and every filter as last written, so each
+/// change is kept for the next start and nothing is written while none
+/// changes.
+#[derive(Default)]
+struct RememberedFilters {
+    map_view_file: Option<PathBuf>,
+    /// The filters as last written; none until first looked at.
+    last: Option<String>,
+}
+
 /// The title of the panel holding the bank generators.
 const GENERATORS_TITLE: &str = "Banks near your locator";
 /// The saved-locator dropdown's entry showing every saved locator on the map.
@@ -189,6 +203,20 @@ impl Generator {
         Self::Airfields,
         Self::Marine,
     ];
+
+    /// The word the map-view file keeps it as.
+    const fn key(self) -> &'static str {
+        match self {
+            Self::Repeaters => "repeaters",
+            Self::World => "world",
+            Self::Gateways => "gateways",
+            Self::Beacons => "beacons",
+            Self::Stations => "stations",
+            Self::Airports => "airports",
+            Self::Airfields => "airfields",
+            Self::Marine => "marine",
+        }
+    }
 
     const fn label(self) -> &'static str {
         match self {
@@ -418,6 +446,8 @@ pub struct StudioApp {
     /// Whether the map shows what the generators would add at every saved
     /// locator at once, rather than at the operator's alone.
     map_all_locations: bool,
+    /// Where the map's view is kept, and the filters as last written.
+    remembered: RememberedFilters,
     /// Whether a generator's add takes its banks even past the radio's
     /// memory, as "Add all shown" does so the operator can trim after.
     overfill: bool,
@@ -504,7 +534,93 @@ impl StudioApp {
         if let Some(file) = &app.airfield_area_file {
             app.airfield_area = AirfieldArea::load_or(file, &area_within(radii.airfields));
         }
+        app.remembered.map_view_file = crate::paths::state_dir().map(|dir| dir.join(MAP_VIEW_FILE));
+        if let Some(file) = app.remembered.map_view_file.clone() {
+            app.load_map_view(&file);
+        }
+        app.remembered.last = Some(app.filter_state());
         app
+    }
+
+    /// Reads which generators the map shows and whether every location is
+    /// shown; with no file, every generator at the one locator.
+    fn load_map_view(&mut self, file: &Path) {
+        let Ok(text) = fs::read_to_string(file) else {
+            return;
+        };
+        let words: Vec<&str> = text.split_whitespace().collect();
+        for (generator, shown) in Generator::ALL.into_iter().zip(&mut self.map_shown) {
+            *shown = words.contains(&generator.key());
+        }
+        self.map_all_locations = words.contains(&"all-locations");
+    }
+
+    /// Every filter the generators and the map take, as one string.
+    fn filter_state(&self) -> String {
+        format!(
+            "{:?}",
+            (
+                (&self.repeater_area, &self.repeater_bands, &self.world_area),
+                (&self.world_bands, &self.gateway_area, &self.gateway_bands),
+                (&self.beacon_area, &self.beacon_bands, &self.station_area),
+                (
+                    &self.airport_area,
+                    &self.airport_options,
+                    &self.airfield_area
+                ),
+                (&self.marine_area, self.map_shown, self.map_all_locations),
+            )
+        )
+    }
+
+    /// Writes every filter and the map's view once one has changed, so the
+    /// next start opens as this one was left, Add pressed or not.
+    fn remember_filters(&mut self) {
+        let state = self.filter_state();
+        // The first look only notes how the filters start.
+        let last = self.remembered.last.replace(state.clone());
+        if last.is_none_or(|last| last == state) {
+            return;
+        }
+        let save = |file: &Option<PathBuf>, write: &dyn Fn(&Path) -> Result<(), String>| {
+            file.as_deref().map(write)
+        };
+        let mut view: Vec<&str> = Generator::ALL
+            .into_iter()
+            .zip(self.map_shown)
+            .filter(|(_, shown)| *shown)
+            .map(|(generator, _)| generator.key())
+            .collect();
+        if self.map_all_locations {
+            view.push("all-locations");
+        }
+        let view = view.join(" ") + "\n";
+        let saved = [
+            save(&self.repeater_area_file, &|f| self.repeater_area.save(f)),
+            save(&self.repeater_bands_file, &|f| self.repeater_bands.save(f)),
+            save(&self.world_area_file, &|f| self.world_area.save(f)),
+            save(&self.world_bands_file, &|f| self.world_bands.save(f)),
+            save(&self.gateway_area_file, &|f| self.gateway_area.save(f)),
+            save(&self.gateway_bands_file, &|f| self.gateway_bands.save(f)),
+            save(&self.beacon_area_file, &|f| self.beacon_area.save(f)),
+            save(&self.beacon_bands_file, &|f| self.beacon_bands.save(f)),
+            save(&self.station_area_file, &|f| self.station_area.save(f)),
+            save(&self.airport_area_file, &|f| self.airport_area.save(f)),
+            save(&self.airport_options_file, &|f| {
+                self.airport_options.save(f)
+            }),
+            save(&self.airfield_area_file, &|f| self.airfield_area.save(f)),
+            save(&self.marine_area_file, &|f| self.marine_area.save(f)),
+            save(&self.remembered.map_view_file, &|f| {
+                f.parent()
+                    .map_or(Ok(()), fs::create_dir_all)
+                    .and_then(|()| fs::write(f, &view))
+                    .map_err(|error| format!("{}: {error}", f.display()))
+            }),
+        ];
+        for error in saved.into_iter().flatten().filter_map(Result::err) {
+            log::warn!("could not remember the filters: {error}");
+        }
     }
 
     /// Reads the marine channel list from `cache`, which a sync then writes.
@@ -1890,6 +2006,7 @@ impl StudioApp {
             map_all_locations: false,
             overfill: false,
             map_layers: None,
+            remembered: RememberedFilters::default(),
             tiles: Tiles::none(),
         };
         if let Some(baud) = options.baud {
@@ -2637,6 +2754,7 @@ impl eframe::App for StudioApp {
         self.poll_airport_sync();
         self.poll_marine_sync();
         self.poll_world_sync();
+        self.remember_filters();
         self.log_status();
         if self.job.is_some()
             || self.satellite_sync.is_some()
@@ -6360,6 +6478,34 @@ mod tests {
         app.add_world();
         assert_eq!(app.project.banks.len(), banks + 1, "replaced, not added");
         assert_eq!(app.project.banks.last().unwrap().channels.len(), 1);
+    }
+
+    #[test]
+    fn the_filters_and_map_view_are_kept_as_they_change() {
+        let dir = scratch("filters");
+        let mut app = simulated("filters");
+        app.remembered.map_view_file = Some(dir.join("map-view"));
+        app.airport_options_file = Some(dir.join("airport-options"));
+        app.remember_filters();
+        assert!(
+            !dir.join("map-view").exists(),
+            "nothing written while nothing changes"
+        );
+
+        app.map_shown = [false; Generator::ALL.len()];
+        app.map_shown[Generator::Airports as usize] = true;
+        app.map_all_locations = true;
+        app.airport_options.per_airport = true;
+        app.remember_filters();
+        let view = std::fs::read_to_string(dir.join("map-view")).unwrap();
+        assert_eq!(view, "airports all-locations\n");
+        assert!(crate::airports::AirportOptions::load(&dir.join("airport-options")).per_airport);
+
+        let mut next = simulated("filters-next");
+        next.load_map_view(&dir.join("map-view"));
+        assert_eq!(next.map_shown, app.map_shown);
+        assert!(next.map_all_locations);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
