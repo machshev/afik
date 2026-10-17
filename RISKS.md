@@ -1228,6 +1228,10 @@ lowered to the highest level within it (operator request), by nominal figures.
   every receive setup, which no earlier AFIK image did, and the K5 now
   hears GB3EL's kerchunk and tail (`EVID-RX-067-001`). Still open: tone
   deviation, tone squelch and DCS on air.
+- 2026-10-17, K1 `7.0.58`: a caught PMR446 tone keys another radio's tone
+  squelch, so TX CTCSS works on the K1. Tone squelch opened only briefly:
+  `REG_02` bits 6/7 were read the opposite way to the reference. `7.0.59`
+  follows the reference; unobserved.
 
 ## RISK-047 — Airport frequencies are volunteer data
 
