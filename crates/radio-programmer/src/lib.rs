@@ -103,6 +103,10 @@ pub use radio_storage::radio_image::CompileError as RadioImageError;
 /// Bytes a radio holds for its configuration image (`ADR-100`).
 pub const RADIO_IMAGE_BYTES: usize = IMAGE_REGION_BYTES as usize;
 
+/// The longest image [`RadioProject::radio_image_len`] measures; one this
+/// long is far past any radio's region.
+const MEASURED_IMAGE_BYTES: usize = 0x1_0000;
+
 /// Rich host-side project input prior to device compilation.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RadioProject {
@@ -206,7 +210,19 @@ impl RadioProject {
     /// Each channel must be in at most one bank: in this format a channel is
     /// stored in its bank. Channels in no bank are kept in a bankless block.
     pub fn compile_radio_image(&self) -> Result<Vec<u8>, RadioImageError> {
-        let mut image = vec![0_u8; usize::from(IMAGE_REGION_BYTES)];
+        self.compile_radio_image_within(usize::from(IMAGE_REGION_BYTES))
+    }
+
+    /// Returns how long the radio image would be with room for any length,
+    /// so a project too big for the radio says by how much.
+    pub fn radio_image_len(&self) -> Result<usize, RadioImageError> {
+        self.compile_radio_image_within(MEASURED_IMAGE_BYTES)
+            .map(|image| image.len())
+    }
+
+    /// Compiles the radio image into at most `bytes`.
+    fn compile_radio_image_within(&self, bytes: usize) -> Result<Vec<u8>, RadioImageError> {
+        let mut image = vec![0_u8; bytes];
         let len = radio_image::compile(
             self.config.unwrap_or_else(RadioConfig::conservative),
             &self.tx_ranges,
@@ -1292,6 +1308,42 @@ mod tests {
             bank: Some(BankId::new(bank)),
         })
         .unwrap()
+    }
+
+    #[test]
+    fn a_project_too_big_for_the_radio_says_how_big_it_is() {
+        let mut project = RadioProject::new();
+        project.add_bank(named_bank(0));
+        project.add_channel(channel(0, 0));
+        let fits = project.compile_radio_image().expect("radio image");
+        assert_eq!(project.radio_image_len(), Ok(fits.len()));
+
+        // Channels unlike each other, so none share their encoding.
+        for id in 1..1_000 {
+            project.add_channel(
+                ChannelRecord::new(radio_channel_plan::ChannelDefinition {
+                    id: radio_domain::ChannelId::new(id),
+                    name: radio_channel_plan::ChannelName::new(&format!("CH{id}")).unwrap(),
+                    receive: Frequency::from_hz(430_000_000 + u32::from(id) * 12_500).unwrap(),
+                    transmit: Frequency::from_hz(440_000_000 + u32::from(id) * 25_000).unwrap(),
+                    rx_tone: radio_domain::Tone::Ctcss(670 + id % 500),
+                    tx_tone: radio_domain::Tone::Ctcss(700 + id % 500),
+                    modulation: radio_domain::Modulation::Fm,
+                    bandwidth: radio_domain::Bandwidth::Wide,
+                    power: radio_domain::PowerLevel::Mid,
+                    step: FrequencyStep::from_hz(12_500).unwrap(),
+                    flags: radio_channel_plan::ChannelFlags::default(),
+                    bank: Some(BankId::new(0)),
+                })
+                .unwrap(),
+            );
+        }
+        assert!(matches!(
+            project.compile_radio_image(),
+            Err(super::RadioImageError::TooLarge)
+        ));
+        let len = project.radio_image_len().expect("measured");
+        assert!(len > super::RADIO_IMAGE_BYTES, "{len}");
     }
 
     #[test]

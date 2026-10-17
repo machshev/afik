@@ -419,7 +419,8 @@ pub struct StorageSummary {
     pub expanded_channels: usize,
     /// Stored plans which expand into channels.
     pub plans: usize,
-    /// Bytes of the radio image, when the whole project compiles into one.
+    /// Bytes of the radio image, when the whole project compiles into one,
+    /// counted past the radio's memory when it does not fit.
     pub image_bytes: Option<usize>,
 }
 
@@ -430,7 +431,8 @@ impl StorageSummary {
     }
 
     /// Returns the radio memory the image takes in tenths of a percent,
-    /// rounded up so a nearly full radio never reads as having room.
+    /// rounded up so a nearly full radio never reads as having room; past
+    /// 1000 when it does not fit.
     pub const fn used_per_mille(&self) -> Option<usize> {
         match self.image_bytes {
             Some(bytes) => Some((bytes * 1_000).div_ceil(RADIO_IMAGE_BYTES)),
@@ -1347,7 +1349,7 @@ impl ProjectModel {
                 Err(_) => {}
             }
         }
-        summary.image_bytes = self.to_radio_image().ok().map(|image| image.len());
+        summary.image_bytes = self.radio_image_len();
         summary
     }
 
@@ -1524,6 +1526,12 @@ impl ProjectModel {
                 failure.to_string(),
             )]
         })
+    }
+
+    /// How long the radio image is, even past the radio's memory, when the
+    /// project validates and compiles.
+    pub fn radio_image_len(&self) -> Option<usize> {
+        self.validate().ok()?.radio_image_len().ok()
     }
 
     /// Validates and encodes the project file, the canonical format 4 image.

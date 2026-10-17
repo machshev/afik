@@ -1128,10 +1128,10 @@ impl StudioApp {
             ..ProjectModel::new()
         };
         let bank_bytes = match (
-            bank_only.to_radio_image(),
-            ProjectModel::new().to_radio_image(),
+            bank_only.radio_image_len(),
+            ProjectModel::new().radio_image_len(),
         ) {
-            (Ok(with), Ok(without)) => Some(with.len().saturating_sub(without.len())),
+            (Some(with), Some(without)) => Some(with.saturating_sub(without)),
             _ => None,
         };
         (project, bank_bytes)
@@ -2280,7 +2280,7 @@ fn band_row(
 /// What a previewed bank costs, and the project's use after adding it.
 fn cost(preview: &AreaPreview) -> String {
     let bank = preview.bank_bytes.map_or_else(
-        || ", bank too big for the radio".to_owned(),
+        || ", bank does not compile".to_owned(),
         |bytes| {
             format!(
                 ", bank {}",
@@ -2288,16 +2288,17 @@ fn cost(preview: &AreaPreview) -> String {
             )
         },
     );
-    let total = match preview.project.to_radio_image() {
-        Ok(image) => format!(
-            ", project {} after adding",
-            memory_percent((image.len() * 1_000).div_ceil(RADIO_IMAGE_BYTES))
+    let total = match preview.project.radio_image_len() {
+        Some(bytes) if bytes > RADIO_IMAGE_BYTES => format!(
+            ", project {} after adding, too big for the radio",
+            memory_percent((bytes * 1_000).div_ceil(RADIO_IMAGE_BYTES))
         ),
-        Err(_) if too_big(&preview.project) => {
-            ", project too big for the radio after adding".to_owned()
-        }
+        Some(bytes) => format!(
+            ", project {} after adding",
+            memory_percent((bytes * 1_000).div_ceil(RADIO_IMAGE_BYTES))
+        ),
         // Another bank does not validate; the usage bar already says so.
-        Err(_) => String::new(),
+        None => String::new(),
     };
     format!("{bank}{total}")
 }
@@ -4799,17 +4800,31 @@ fn usage_bar(ui: &mut egui::Ui, summary: &StorageSummary) {
         ui.separator();
         match (summary.image_bytes, summary.used_per_mille()) {
             (Some(bytes), Some(per_mille)) => {
-                ui.add(
-                    egui::ProgressBar::new(
-                        f32::from(u16::try_from(per_mille).unwrap_or(1_000).min(1_000)) / 1_000.0,
-                    )
-                    .desired_width(120.0)
-                    .text(memory_percent(per_mille)),
-                );
-                ui.label(format!(
-                    "{bytes} of {RADIO_IMAGE_BYTES} bytes, {} free",
-                    RADIO_IMAGE_BYTES.saturating_sub(bytes)
-                ));
+                let over = bytes > RADIO_IMAGE_BYTES;
+                let mut bar = egui::ProgressBar::new(
+                    f32::from(u16::try_from(per_mille).unwrap_or(1_000).min(1_000)) / 1_000.0,
+                )
+                .desired_width(120.0)
+                .text(memory_percent(per_mille));
+                if over {
+                    bar = bar.fill(WARNING_COLOUR);
+                }
+                ui.add(bar);
+                if over {
+                    ui.colored_label(
+                        WARNING_COLOUR,
+                        format!(
+                            "{bytes} of {RADIO_IMAGE_BYTES} bytes, {} over: remove banks or \
+                             channels before Write",
+                            bytes - RADIO_IMAGE_BYTES
+                        ),
+                    );
+                } else {
+                    ui.label(format!(
+                        "{bytes} of {RADIO_IMAGE_BYTES} bytes, {} free",
+                        RADIO_IMAGE_BYTES - bytes
+                    ));
+                }
             }
             _ => {
                 ui.colored_label(
@@ -5866,6 +5881,7 @@ mod tests {
         assert_eq!(memory_percent(0), "0.0%");
         assert_eq!(memory_percent(125), "12.5%");
         assert_eq!(memory_percent(1_000), "100.0%");
+        assert_eq!(memory_percent(1_124), "112.4%");
     }
 
     #[test]
@@ -6711,10 +6727,14 @@ mod tests {
         "COPY".clone_into(&mut copy.name);
         app.project.banks.push(copy);
         let source = app.repeater_source();
-        assert!(
-            source.contains(", bank 95.0%, project too big for the radio after adding."),
-            "{source}"
+        let after = app.repeater_preview().unwrap().project.storage_summary();
+        let over = after.used_per_mille().unwrap();
+        assert!(over > 1_900, "both copies counted past 100%: {over}");
+        let said = format!(
+            ", project {} after adding, too big for the radio.",
+            memory_percent(over)
         );
+        assert!(source.contains(&said), "{source}");
         let before = app.project.banks.len();
         app.add_repeaters();
         assert_eq!(app.project.banks.len(), before, "refused, not added");
