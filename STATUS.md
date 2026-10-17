@@ -198,6 +198,23 @@ clean, `cargo test --workspace --no-fail-fast` 913 passed 0 failed 3
 ignored. Next: flash `7.0.55`, write a project with groups and a start place,
 and check the radio starts there, then the group context and scans.
 
+Studio map and generator work (2026-10-17, operator requests, `GROUP-075`):
+airports with their own bank are filled on the map; All locations in the
+locator dropdown shows every saved locator and Add all shown adds at each,
+dropping and rewriting every generated bank first, and adding past the
+radio's memory (the usage bar reads over 100%, measured by
+`RadioProject::radio_image_len`). Bank per airport sits on the Show row, five
+airports by default within two thirds of tower range. FM stations, the marine
+core and the airfield core are one shared bank each (`FM STATIONS`,
+`SEA CORE`, `FLD CORE`); on M8LWA the cores alone take the image from 7 281 to
+6 516 bytes. Location groups take the saved locator's description. A bank
+records the generator that made it and its locator as project object kind 8
+(`ADR-117`), inferred once for older projects. Filters and the map's view are
+kept as they change (`map-view` state file). Gate: `cargo fmt --all --check`
+clean, `cargo clippy --workspace --all-targets -- -D warnings` clean, `cargo
+test --workspace` 944 passed 0 failed 3 ignored. Next: open M8LWA in the
+studio, Add all shown on All locations, Save, and write it to the K1.
+
 **`FLASH-074` done** (2026-10-17, operator request, `RISK-049`): the K5
 image had 16 bytes of flash left. `interface::run` was 22.6 KB because the
 build inlined helpers at every caller; `#[inline(never)]` on 21 of them
