@@ -410,6 +410,9 @@ pub struct StudioApp {
     /// Whether the map shows what the generators would add at every saved
     /// locator at once, rather than at the operator's alone.
     map_all_locations: bool,
+    /// Whether a generator's add takes its banks even past the radio's
+    /// memory, as "Add all shown" does so the operator can trim after.
+    overfill: bool,
     /// The layers last drawn and the settings they were built from, so the
     /// previews behind them are rebuilt only when a setting changes.
     map_layers: Option<(String, Vec<Layer>)>,
@@ -620,7 +623,7 @@ impl StudioApp {
                 format!("A radio holds {MAX_BANKS} banks and the project already has them.");
             return;
         }
-        if too_big(&preview.project) {
+        if !self.overfill && too_big(&preview.project) {
             self.refuse(&format!(
                 "{} marine channels would not fit the radio; take fewer.",
                 marine::CORE_CHANNELS + preview.taken
@@ -716,7 +719,7 @@ impl StudioApp {
                 format!("A radio holds {MAX_BANKS} banks and the project already has them.");
             return;
         }
-        if too_big(&preview.project) {
+        if !self.overfill && too_big(&preview.project) {
             self.refuse(&format!(
                 "{} airfield frequencies would not fit the radio; take fewer.",
                 airfields::CORE_CHANNELS + preview.taken
@@ -896,7 +899,7 @@ impl StudioApp {
             );
             return;
         }
-        if too_big(&preview.project) {
+        if !self.overfill && too_big(&preview.project) {
             self.refuse(&format!(
                 "{} airport frequencies would not fit the radio; take fewer.",
                 preview.taken
@@ -1040,7 +1043,7 @@ impl StudioApp {
                 format!("A radio holds {MAX_BANKS} banks and the project already has them.");
             return;
         }
-        if too_big(&preview.project) {
+        if !self.overfill && too_big(&preview.project) {
             self.refuse(&format!(
                 "{} stations would not fit the radio; take fewer.",
                 preview.taken
@@ -1265,7 +1268,7 @@ impl StudioApp {
                 format!("A radio holds {MAX_BANKS} banks and the project already has them.");
             return;
         }
-        if too_big(&preview.project) {
+        if !self.overfill && too_big(&preview.project) {
             self.refuse(&format!(
                 "{} repeaters would not fit the radio; take fewer.",
                 preview.taken
@@ -1413,7 +1416,7 @@ impl StudioApp {
                 format!("A radio holds {MAX_BANKS} banks and the project already has them.");
             return;
         }
-        if too_big(&preview.project) {
+        if !self.overfill && too_big(&preview.project) {
             self.refuse(&format!(
                 "{} repeaters would not fit the radio; take fewer.",
                 preview.taken
@@ -1533,7 +1536,7 @@ impl StudioApp {
                 format!("A radio holds {MAX_BANKS} banks and the project already has them.");
             return;
         }
-        if too_big(&preview.project) {
+        if !self.overfill && too_big(&preview.project) {
             self.refuse(&format!(
                 "{} {noun} would not fit the radio; take fewer.",
                 preview.taken
@@ -1716,6 +1719,7 @@ impl StudioApp {
             map_locator: String::new(),
             map_shown: [true; Generator::ALL.len()],
             map_all_locations: false,
+            overfill: false,
             map_layers: None,
             tiles: Tiles::none(),
         };
@@ -2991,15 +2995,17 @@ impl StudioApp {
                 let cored = matches!(generator, Generator::Airfields | Generator::Marine);
                 if preview.taken == 0 && !cored {
                     skipped.push(format!("{} (none in range)", at(generator.label())));
-                } else if preview.project.banks.len() > usize::from(MAX_BANKS)
-                    || too_big(&preview.project)
-                {
+                } else if preview.project.banks.len() > usize::from(MAX_BANKS) {
                     skipped.push(format!(
-                        "{} (would not fit the radio)",
+                        "{} (more than {MAX_BANKS} banks)",
                         at(generator.label())
                     ));
                 } else {
+                    // Added past the radio's memory too; the usage bar shows
+                    // by how much, and the operator drops what to after.
+                    self.overfill = true;
                     self.add_generator(generator);
+                    self.overfill = false;
                     added.push(at(generator.label()));
                 }
             }
@@ -3019,6 +3025,18 @@ impl StudioApp {
         } else {
             format!("{added}. Skipped {}.", skipped.join("; "))
         };
+        if let Some(per_mille) = self
+            .project
+            .storage_summary()
+            .used_per_mille()
+            .filter(|per_mille| *per_mille > 1_000)
+        {
+            self.status = format!(
+                "{} The project is now {} of the radio's memory; remove banks before Write.",
+                self.status,
+                memory_percent(per_mille)
+            );
+        }
         log::info!("{}", self.status);
     }
 
@@ -6273,6 +6291,60 @@ mod tests {
         app.choose_locator("IO83WL");
         assert!(!app.map_all_locations);
         assert_eq!(shown(&mut app), (vec!["GB3MAN".to_owned()], 1));
+    }
+
+    #[test]
+    fn add_all_shown_adds_past_the_radios_memory() {
+        use crate::repeaters::{Repeater, RepeaterList};
+
+        // Full-length names and frequencies too far apart to store short.
+        let mut app = simulated("add-all-over");
+        app.repeaters = Some(RepeaterList {
+            repeaters: (0..500_u32)
+                .map(|n| Repeater {
+                    callsign: format!("GB3R{n:08}"),
+                    town: String::new(),
+                    output_hz: 29_000_000 + n * 1_250_000,
+                    input_hz: 29_100_000 + n * 1_250_000,
+                    ctcss_tenths_hz: None,
+                    wide: false,
+                    latitude: 51.52,
+                    longitude: -0.12,
+                })
+                .collect(),
+            gateways: Vec::new(),
+            beacons: Vec::new(),
+            synced: std::time::SystemTime::now(),
+        });
+        app.repeater_bands = crate::repeaters::BandFilter::ALL;
+        "IO91WM".clone_into(&mut app.repeater_area.locator);
+        app.repeater_area.max_channels = crate::repeaters::MAX_CHANNELS_LIMIT;
+        // A copy already in the project leaves no room for the bank.
+        let mut copy = app.repeater_preview().unwrap().project.banks.pop().unwrap();
+        "COPY".clone_into(&mut copy.name);
+        app.project.banks.push(copy);
+        app.map_shown = [false; Generator::ALL.len()];
+        app.map_shown[0] = true;
+
+        app.add_all_shown();
+        assert!(
+            app.project.banks.iter().any(|b| b.name == "RPT IO91WM"),
+            "added anyway"
+        );
+        let used = app.project.storage_summary().used_per_mille().unwrap();
+        assert!(used > 1_000, "{used}");
+        assert_eq!(
+            app.status,
+            format!(
+                "Added or updated UK repeaters. The project is now {} of the radio's \
+                 memory; remove banks before Write.",
+                memory_percent(used)
+            )
+        );
+        // A generator's own Add still refuses.
+        app.repeater_area.max_channels -= 1;
+        app.add_repeaters();
+        assert!(app.status.contains("would not fit"), "{}", app.status);
     }
 
     #[test]
