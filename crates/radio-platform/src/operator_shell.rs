@@ -774,6 +774,9 @@ impl Shell {
     }
 
     /// Makes the other slot the selected one.
+    // `#[inline(never)]` here and on the functions below keeps one copy of a
+    // function the K5 build otherwise inlines at every caller (`RISK-049`).
+    #[inline(never)]
     fn swap_slots(&mut self) {
         let selected = self.slot();
         self.mode = self.other.mode;
@@ -796,6 +799,7 @@ impl Shell {
 
     /// Returns the VFO tuning step in hertz.
     #[must_use]
+    #[inline(never)]
     pub fn vfo_step_hz(&self) -> u32 {
         VFO_STEPS_HZ
             .get(self.step_index)
@@ -1359,10 +1363,12 @@ impl Shell {
     }
 
     /// Discards a rejected or unavailable squelch choice.
+    #[inline(never)]
     pub fn reject_squelch(&mut self) {
         self.squelch_cursor = self.squelch.get();
     }
 
+    #[inline(never)]
     fn cancel(&mut self) -> Intent {
         if self.entry.take().is_some() {
             return Intent::Redraw;

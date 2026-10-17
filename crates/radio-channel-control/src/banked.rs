@@ -908,6 +908,9 @@ impl<C: ChannelSource> BankedReceiveController<C> {
     }
 
     /// Applies one logical timer expiry; stale tokens change nothing.
+    // `#[inline(never)]` keeps one copy of a function the K5 build otherwise
+    // inlines at every caller (`RISK-049`).
+    #[inline(never)]
     pub fn timer_elapsed(&mut self, token: TimerToken) -> Result<ReceiveUpdate, ReceiveError> {
         if self.active_timer != Some(token) {
             return Ok(ReceiveUpdate {

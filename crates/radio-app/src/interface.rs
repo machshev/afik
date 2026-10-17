@@ -243,6 +243,9 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
 
     /// Executes one TX controller effect; receive restore re-tunes the last
     /// setup through the ordinary receive path.
+    // `#[inline(never)]` here and on the functions below keeps one copy of a
+    // function the K5 build otherwise inlines at every caller (`RISK-049`).
+    #[inline(never)]
     fn transmit_effect(
         &mut self,
         effect: &tx_control::Effect<'_>,
@@ -302,6 +305,7 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
         self.gate_audio();
     }
 
+    #[inline(never)]
     fn set_speaker(&mut self, enabled: bool) {
         self.speaker.set_enabled(enabled);
     }
@@ -504,6 +508,7 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
 
     /// Samples metrics from the tuned receiver.
     #[allow(clippy::single_match_else)]
+    #[inline(never)]
     fn observe(&mut self) -> Option<ReceiveObservation> {
         if self.on_broadcast {
             let signal = self.broadcast.signal()?;
@@ -551,6 +556,7 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
     /// word carries its own check, and a CTCSS tone must read the same three
     /// times running, as the reference's tone scan requires
     /// (`SCAN_CSS_STATE_SCANNING`).
+    #[inline(never)]
     fn hear_tone(&mut self) {
         let tone = match self.radio.detected_tone() {
             Ok(Some(tone)) => tone,
@@ -584,6 +590,7 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
     /// BK4819 receiving (woken from a broadcast slot or battery save) and the
     /// reference's frequency scan started. The run loop stops sampling while
     /// it runs, and the next tune ends it.
+    #[inline(never)]
     fn start_catch(&mut self) {
         self.set_speaker(false);
         self.audio_routed = false;
@@ -626,6 +633,7 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
 
     /// Reads the chip for one catch poll and does what the catch decides.
     /// Returns whether anything shown changed.
+    #[inline(never)]
     fn poll_catch(&mut self, catch: &mut Catch) -> bool {
         if self.faulted {
             return false;
@@ -693,6 +701,7 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
     }
 
     /// Sleeps the chip for battery save, silencing the speaker first.
+    #[inline(never)]
     fn sleep(&mut self) {
         if self.faulted || !self.started || self.asleep || self.on_broadcast {
             return;
@@ -838,6 +847,7 @@ fn apply(
 /// Stages a radio-wide squelch change as a retune of the selected channel,
 /// unless another change is already pending; the retune itself is the
 /// acknowledgement.
+#[inline(never)]
 fn stage_squelch(
     level: SquelchLevel,
     current: Option<ChannelReceiveSetup>,
@@ -1919,6 +1929,7 @@ fn chosen_power(shell: &Shell, channel: Option<ChannelRecord>) -> u8 {
 /// than written into the host's image. Republishing the configuration with it
 /// rebuilds the controller exactly as a new configuration would, so every later
 /// tune uses it.
+#[inline(never)]
 fn adopt_squelch(
     programmed: &Programmed,
     generation: u32,
@@ -1972,6 +1983,7 @@ fn listens_both<M: Memory>(
 /// What tunes one side of a slot's channel: the slot's own setup, or on the
 /// transmit side the same with the transmit frequency, and the transmit tone
 /// that the stations there send.
+#[inline(never)]
 fn side_setup<M: Memory>(
     controller: &BankedReceiveController<Listening<M>>,
     side: Side,
@@ -1993,6 +2005,7 @@ fn side_setup<M: Memory>(
 /// What PTT transmits with: a memory channel's transmit frequency, bandwidth
 /// and TX tone, so a repeater channel keys its input; simplex on a frequency
 /// tuned away from the channel.
+#[inline(never)]
 fn tx_setup<M: Memory>(
     controller: &BankedReceiveController<Listening<M>>,
     vfo_tone: Tone,
@@ -2021,6 +2034,7 @@ fn tx_setup<M: Memory>(
 /// tone it sends. A frequency or bandwidth no programmed range permits is
 /// denied by policy.
 #[allow(clippy::too_many_arguments)]
+#[inline(never)]
 fn tx_request<B: RegisterBus, S: Speaker, C: BroadcastChip>(
     receiver: &Receiver<B, S, C>,
     setup: Option<TxSetup>,
@@ -2059,6 +2073,7 @@ fn tx_request<B: RegisterBus, S: Speaker, C: BroadcastChip>(
     clippy::too_many_lines,
     clippy::needless_range_loop
 )]
+#[inline(never)]
 fn render<B: RegisterBus, S: Speaker, C: BroadcastChip, M: Memory>(
     frame: &mut [u8; FRAME_BYTES],
     shell: &Shell,
@@ -2388,6 +2403,7 @@ fn slot_channel<'a, B: RegisterBus, S: Speaker, C: BroadcastChip, M: Memory>(
     })
 }
 
+#[inline(never)]
 fn bank_name<M: Memory>(bank: BankId, memory: &'static TaskCell<Option<M>>) -> Option<BankName> {
     memory.with_mut(|cell| {
         let memory = cell.as_mut()?;

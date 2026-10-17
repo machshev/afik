@@ -131,6 +131,18 @@ confirmed by `identify` first, CRC-32 `e0d9ccc2`, 240/240 pages
 acknowledged, not read back). Next (step 3): time a scan of the 59-channel
 bank, and key a PMR446 channel to check it still stops there.
 
+**`FLASH-074` done** (2026-10-17, operator request, `RISK-049`): the K5
+image had 16 bytes of flash left. `interface::run` was 22.6 KB because the
+build inlined helpers at every caller; `#[inline(never)]` on 21 of them
+(`render` 640 bytes, `bank_name` 168, image `tx_policy`/`check_body`, shell
+and timer helpers), each kept only where a 64 KiB scratch link showed the
+image shrink alone and together, recovers 1 240 bytes: K5 flash ends at
+`0xeb18` (1 256 free), K1 at 73 668 bytes (was 74 660). The scan's `probe`
+and the source's `len` stay inline. Gate: `cargo fmt --all --check` clean,
+`cargo clippy --workspace --all-targets -- -D warnings` clean, `cargo test
+--workspace --no-fail-fast` 898 passed 0 failed 3 ignored, K5 and K1
+release builds pass. Not flashed: no behaviour changes.
+
 **`BANKS-073` is active alongside** (2026-10-17, operator request,
 `ADR-115`): step 1 done. Radio image format 7: every channel is in a bank,
 each bank is one block (list or plan) in its bank-table entry, and the

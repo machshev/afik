@@ -1248,9 +1248,11 @@ lowered to the highest level within it (operator request), by nominal figures.
 - Experiment: compare the bank for a familiar coastal locator against the
   harbour's published channels and listen to each.
 
-## RISK-049 — The K5 image has 16 bytes of flash left
+## RISK-049 — The K5 image has little flash left
 
-- **State:** open (2026-10-17, `BANKS-073`).
+- **State:** eased (2026-10-17, `FLASH-074`): 1 256 bytes free after
+  `#[inline(never)]` on 21 helpers the build inlined at every caller
+  (`render` alone 640 bytes); was 16 bytes after `BANKS-073`.
 - 254 banks cost about 200 bytes of K5 flash after trimming (plain loops in
   `BankSet`, the index rebuilt in its static rather than on the stack, where
   a kilobyte frame forced literal-pool stack offsets). The image ends at

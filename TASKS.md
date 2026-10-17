@@ -3281,3 +3281,12 @@
      fixed bank arrays, plan channel identifiers no longer pack the bank, and
      the studio's bank limit follows.
   4. Flash the K5 and check that more than 16 banks load, list and step.
+
+## FLASH-074 — Recover K5 flash
+
+- **Status:** done (2026-10-17), operator request ("Why is the image now so
+  big?", then "Yes please do that"; `RISK-049`).
+- **Objective:** room in the K5 image for the next firmware feature.
+- **Steps:** keep one copy of the helpers the K5 build inlined at every
+  caller (`#[inline(never)]`), each kept only where a link against a 64 KiB
+  map showed the image shrink, alone and together. Done.

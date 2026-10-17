@@ -924,6 +924,9 @@ impl Index {
 
     /// Validates the body of bank `id` and every channel in it, and returns
     /// how many channels it holds.
+    // `#[inline(never)]` here and on the functions below keeps one copy of a
+    // function the K5 build otherwise inlines at every caller (`RISK-049`).
+    #[inline(never)]
     fn check_body(
         read: &mut impl FnMut(usize, &mut [u8]) -> bool,
         id: u8,
@@ -1009,6 +1012,7 @@ impl Index {
     ///
     /// They were validated when the index was built; a range that no longer
     /// reads back (the memory changed underneath) leaves nothing permitted.
+    #[inline(never)]
     pub fn tx_policy(&self, mut read: impl FnMut(usize, &mut [u8]) -> bool) -> TxPolicy {
         let mut ranges = [None; MAX_TX_RANGES];
         let count = usize::from(self.tx_range_count).min(MAX_TX_RANGES);

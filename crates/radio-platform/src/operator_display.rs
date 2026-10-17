@@ -1251,6 +1251,9 @@ fn entry_label(entry: u32, vfo: bool) -> [u8; 8] {
     label
 }
 
+// `#[inline(never)]` keeps one copy of a function the K5 build otherwise
+// inlines at every caller (`RISK-049`).
+#[inline(never)]
 fn write_two_digits(destination: &mut [u8], value: u16) {
     if destination.len() < 2 {
         return;
