@@ -23,5 +23,6 @@ pub mod s_meter;
 pub mod serial;
 pub mod serial_control;
 pub mod squelch;
+pub mod tone_hold;
 pub mod transmit;
 pub mod tx_control;

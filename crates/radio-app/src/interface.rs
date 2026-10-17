@@ -38,6 +38,7 @@ use radio_platform::operator_shell::{
 use radio_platform::power_save::{self, PowerSave};
 use radio_platform::ptt::PttFilter;
 use radio_platform::squelch::SquelchCalibration;
+use radio_platform::tone_hold::ToneHold;
 use radio_platform::transmit::{self, Delay, TxCalibration, TxSetup, TxTarget};
 use radio_platform::tx_control::{self, Action, Controller as TxController, State as TxPhase};
 use radio_storage::radio_image::Index;
@@ -215,6 +216,8 @@ struct Receiver<B: RegisterBus, S: Speaker, C: BroadcastChip> {
     /// A scan probed the tuned channel's carrier without setting it up in
     /// full (`ADR-110`); the next full tune ends it.
     probed: bool,
+    /// Holds a matched receive tone for a second after the chip loses it.
+    tone_hold: ToneHold,
 }
 
 impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
@@ -240,6 +243,7 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
             catching: false,
             squelch_calibration: None,
             probed: false,
+            tone_hold: ToneHold::new(),
         }
     }
 
@@ -333,6 +337,7 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
         self.end_catch();
         // A tone heard on the previous channel says nothing about this one.
         self.forget_tone();
+        self.tone_hold.reset();
         if matches!(setup.modulation, Modulation::Broadcast) {
             self.tune_broadcast(setup, radio_wide);
             return;
@@ -508,10 +513,10 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
         !(self.on_broadcast && self.broadcast_heard) || scanning_or_watching
     }
 
-    /// Samples metrics from the tuned receiver.
+    /// Samples metrics from the tuned receiver at `now_ms`.
     #[allow(clippy::single_match_else)]
     #[inline(never)]
-    fn observe(&mut self) -> Option<ReceiveObservation> {
+    fn observe(&mut self, now_ms: u64) -> Option<ReceiveObservation> {
         if self.on_broadcast {
             let signal = self.broadcast.signal()?;
             // The BK1080 reports RSSI in dBuV; the meter takes the BK4819's
@@ -534,8 +539,16 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
             Ok(metrics) => {
                 self.rssi_raw = u16::try_from(metrics.rssi_dbm_x2 + 320).unwrap_or(0);
                 // A receive tone keeps the squelch, and the meter, shut until
-                // it is found.
-                self.squelch_open = metrics.should_unmute();
+                // it is found, and open for a second after it goes while the
+                // carrier stays; a closed carrier squelch shuts it at once.
+                if !metrics.squelch_open {
+                    self.tone_hold.reset();
+                }
+                let tone_matched = self.tone_hold.observe(
+                    metrics.tone.map(|status| status == ToneStatus::Matched),
+                    now_ms,
+                );
+                self.squelch_open = metrics.squelch_open && tone_matched.unwrap_or(true);
                 if self.tone_scan && tone == Tone::None && metrics.squelch_open {
                     self.hear_tone();
                 } else {
@@ -544,7 +557,7 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
                 self.gate_audio();
                 Some(ReceiveObservation {
                     squelch_open: metrics.squelch_open,
-                    tone_matched: metrics.tone.map(|status| status == ToneStatus::Matched),
+                    tone_matched,
                 })
             }
             Err(_) => {
@@ -1839,7 +1852,7 @@ pub async fn run<D, K, B, F, W, S, V, M>(
                 Watching::Selected => activation.as_mut(),
                 Watching::Other => other_activation.as_mut(),
             };
-            if let (Some(observation), Some((controller, _))) = (receiver.observe(), tuned) {
+            if let (Some(observation), Some((controller, _))) = (receiver.observe(Instant::now().as_millis()), tuned) {
                 // Dual watch holds on a busy slot, judged on settled readings
                 // only, as a scan is.
                 watched_busy = settled && observation.squelch_open;
@@ -3261,7 +3274,7 @@ mod tests {
         chip.set(CDCSS_HIGH, 0x8000);
         chip.set(CTCSS_SCAN, 1828);
         for _ in 0..4 {
-            assert!(receiver.observe().unwrap().squelch_open);
+            assert!(receiver.observe(0).unwrap().squelch_open);
         }
         assert_eq!(receiver.heard_tone, None);
 
@@ -3274,21 +3287,21 @@ mod tests {
 
         // A carrier with 88.5 Hz on it: shown on the third agreeing reading.
         for _ in 0..2 {
-            assert!(receiver.observe().unwrap().squelch_open);
+            assert!(receiver.observe(0).unwrap().squelch_open);
             assert_eq!(receiver.heard_tone, None);
         }
-        receiver.observe().unwrap();
+        receiver.observe(0).unwrap();
         assert_eq!(receiver.heard_tone, Some(Tone::Ctcss(885)));
         // The squelch closing forgets it.
         chip.set(SQUELCH_STATUS, 0);
-        receiver.observe().unwrap();
+        receiver.observe(0).unwrap();
         assert_eq!(receiver.heard_tone, None);
 
         // A DCS word is shown at once.
         chip.set(SQUELCH_STATUS, 0x0002);
         chip.set(CDCSS_HIGH, 0x0763);
         chip.set(CDCSS_LOW, 0x0813);
-        receiver.observe().unwrap();
+        receiver.observe(0).unwrap();
         assert_eq!(
             receiver.heard_tone,
             Some(Tone::Dcs {
@@ -3302,7 +3315,7 @@ mod tests {
         receiver.tune(setup(Tone::Ctcss(885)), SquelchLevel::CONSERVATIVE);
         assert_eq!(receiver.heard_tone, None);
         chip.set(SQUELCH_STATUS, 0x0002);
-        let observation = receiver.observe().unwrap();
+        let observation = receiver.observe(0).unwrap();
         assert!(observation.squelch_open);
         assert_eq!(observation.tone_matched, Some(false));
         assert!(!receiver.squelch_open && !receiver.speaker.on);
@@ -3398,11 +3411,11 @@ mod tests {
         assert_eq!(receiver.broadcast.tuned, Some(97_700_000));
 
         // Between stations the squelch stays shut; a station opens it.
-        let reading = receiver.observe().unwrap();
+        let reading = receiver.observe(0).unwrap();
         assert!(!reading.squelch_open && !receiver.speaker.on);
         assert!(receiver.wants_sample(false), "still looking for a station");
         receiver.broadcast.station = true;
-        assert!(receiver.observe().unwrap().squelch_open);
+        assert!(receiver.observe(0).unwrap().squelch_open);
         assert!(receiver.speaker.on);
         // A playing station is left unread unless a scan or dual watch needs
         // the readings.
@@ -3411,10 +3424,10 @@ mod tests {
         // A reading short of the station test still tells a scan, but the
         // programme plays on rather than chopping.
         receiver.broadcast.station = false;
-        assert!(!receiver.observe().unwrap().squelch_open);
+        assert!(!receiver.observe(0).unwrap().squelch_open);
         assert!(receiver.speaker.on, "a heard station keeps playing");
         receiver.broadcast.station = true;
-        receiver.observe().unwrap();
+        receiver.observe(0).unwrap();
         // Battery save leaves a playing programme alone.
         receiver.sleep();
         assert!(!receiver.asleep && receiver.speaker.on);
@@ -3549,7 +3562,7 @@ mod tests {
             },
             SquelchLevel::OPEN,
         );
-        assert!(receiver.observe().unwrap().squelch_open);
+        assert!(receiver.observe(0).unwrap().squelch_open);
         assert!(receiver.speaker.on);
     }
 
