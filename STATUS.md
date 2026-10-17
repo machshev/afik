@@ -1006,8 +1006,9 @@ slots show the power PTT sends, lowered to the range at the transmit
 frequency (`sent_power`, shared with the TX path), so PMR446 reads `L4`.
 Gate: `cargo fmt --all` clean, workspace clippy `-D warnings` clean, `cargo
 test --workspace` 949 passed 0 failed, `tool/build-k5.sh --release` and
-`tool/build-k1.sh --release` pass. `7.0.58` built, not flashed. Next: flash
-the K1, repeat the catch, check `T` and `R` show the tone, the VFO hears the
+`tool/build-k1.sh --release` pass. `7.0.58` (`6de2bad`) flashed to the K1
+(`identify` first: bootloader `7.03.01`; 299/299 pages acknowledged, not
+read back). Next: repeat the catch, check `T` and `R` show the tone, the VFO hears the
 other radio and the other radio hears speech. If speech is still missing,
 key the same frequency from a memory channel to tell the VFO from K1 TX
 audio.
