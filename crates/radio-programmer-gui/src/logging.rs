@@ -8,6 +8,10 @@
 //! `AFIK_LOG` sets the level: `off`, `error`, `warn`, `info` (the default),
 //! `debug`, or `trace`. Other crates, such as the windowing stack, log only
 //! their warnings and errors unless the level is `debug` or finer.
+//!
+//! `-v` on the command line does the same without the environment: `-v` adds
+//! AFIK's own debug lines, `-vv` its trace lines and other crates' debug
+//! lines, `-vvv` everything. Whichever of the two asks for more wins.
 
 use std::{
     fs::{self, File, OpenOptions},
@@ -24,8 +28,58 @@ use crate::paths;
 const LOG_FILE: &str = "studio.log";
 /// Size past which the log is moved aside to `studio.log.1` at start-up.
 const MAX_LOG_BYTES: u64 = 1024 * 1024;
-/// Target prefixes of the editor's own records: the library and the binary.
-const OWN_TARGETS: [&str; 2] = ["radio_programmer_gui", "afik_studio"];
+/// Target prefixes of AFIK's own records: the editor, its binary, and the
+/// `radio-*` crates it uses.
+const OWN_TARGETS: [&str; 2] = ["radio_", "afik_studio"];
+
+/// How much is logged: AFIK's own records, and every other crate's.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Levels {
+    /// The limit for AFIK's own records.
+    pub own: LevelFilter,
+    /// The limit for other crates, such as the windowing stack.
+    pub others: LevelFilter,
+}
+
+impl Levels {
+    /// The levels an `AFIK_LOG` value and `verbose` `-v` flags ask for; each
+    /// takes the louder of the two.
+    pub fn new(afik_log: Option<&str>, verbose: u8) -> Self {
+        let level = parse_level(afik_log);
+        let from_env = Self {
+            own: level,
+            others: if level >= LevelFilter::Debug {
+                level
+            } else {
+                level.min(LevelFilter::Warn)
+            },
+        };
+        let from_flags = match verbose {
+            0 => from_env,
+            1 => Self {
+                own: LevelFilter::Debug,
+                others: LevelFilter::Warn,
+            },
+            2 => Self {
+                own: LevelFilter::Trace,
+                others: LevelFilter::Debug,
+            },
+            _ => Self {
+                own: LevelFilter::Trace,
+                others: LevelFilter::Trace,
+            },
+        };
+        Self {
+            own: from_env.own.max(from_flags.own),
+            others: from_env.others.max(from_flags.others),
+        }
+    }
+
+    /// The finer of the two limits, which the `log` crate filters at first.
+    fn max(self) -> LevelFilter {
+        self.own.max(self.others)
+    }
+}
 
 /// Parses an `AFIK_LOG` value; anything unrecognised keeps the default.
 pub fn parse_level(value: Option<&str>) -> LevelFilter {
@@ -46,13 +100,12 @@ pub fn parse_level(value: Option<&str>) -> LevelFilter {
 ///
 /// Other crates are held to warnings at the default level: the windowing
 /// stack's informational chatter would bury the editor's own lines.
-pub fn admits(level: LevelFilter, record_level: log::Level, target: &str) -> bool {
-    let limit =
-        if OWN_TARGETS.iter().any(|own| target.starts_with(own)) || level >= LevelFilter::Debug {
-            level
-        } else {
-            level.min(LevelFilter::Warn)
-        };
+pub fn admits(levels: Levels, record_level: log::Level, target: &str) -> bool {
+    let limit = if OWN_TARGETS.iter().any(|own| target.starts_with(own)) {
+        levels.own
+    } else {
+        levels.others
+    };
     record_level <= limit
 }
 
@@ -65,13 +118,13 @@ pub fn format_line(unix_seconds: u64, level: log::Level, target: &str, message: 
 }
 
 struct StudioLogger {
-    level: LevelFilter,
+    levels: Levels,
     file: Option<Mutex<File>>,
 }
 
 impl Log for StudioLogger {
     fn enabled(&self, metadata: &Metadata<'_>) -> bool {
-        admits(self.level, metadata.level(), metadata.target())
+        admits(self.levels, metadata.level(), metadata.target())
     }
 
     fn log(&self, record: &Record<'_>) {
@@ -114,12 +167,13 @@ fn open_log_file(directory: &Path) -> std::io::Result<(File, PathBuf)> {
     Ok((file, path))
 }
 
-/// Installs the logger and returns the log file in use, if one could be opened.
+/// Installs the logger, at the level `AFIK_LOG` and `verbose` `-v` flags ask
+/// for, and returns the log file in use, if one could be opened.
 ///
 /// Logging never stops the editor: without a usable state directory it logs to
 /// stderr alone and says so.
-pub fn init() -> Option<PathBuf> {
-    let level = parse_level(std::env::var("AFIK_LOG").ok().as_deref());
+pub fn init(verbose: u8) -> Option<PathBuf> {
+    let levels = Levels::new(std::env::var("AFIK_LOG").ok().as_deref(), verbose);
     let opened = paths::state_dir().map(|directory| open_log_file(&directory));
     let (file, path, problem) = match opened {
         Some(Ok((file, path))) => (Some(Mutex::new(file)), Some(path), None),
@@ -134,9 +188,9 @@ pub fn init() -> Option<PathBuf> {
             Some("no XDG state directory or HOME is set".to_owned()),
         ),
     };
-    let logger = StudioLogger { level, file };
+    let logger = StudioLogger { levels, file };
     if log::set_boxed_logger(Box::new(logger)).is_ok() {
-        log::set_max_level(level);
+        log::set_max_level(levels.max());
     }
     if let Some(problem) = problem {
         log::warn!("logging to stderr only: {problem}");
@@ -146,7 +200,7 @@ pub fn init() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{admits, format_line, open_log_file, parse_level, LOG_FILE, MAX_LOG_BYTES};
+    use super::{admits, format_line, open_log_file, parse_level, Levels, LOG_FILE, MAX_LOG_BYTES};
     use log::{Level, LevelFilter};
 
     #[test]
@@ -160,14 +214,41 @@ mod tests {
 
     #[test]
     fn other_crates_log_only_warnings_until_debug() {
+        let env = |value| Levels::new(Some(value), 0);
         let own = "radio_programmer_gui::app";
-        assert!(admits(LevelFilter::Info, Level::Info, own));
-        assert!(!admits(LevelFilter::Info, Level::Debug, own));
-        assert!(!admits(LevelFilter::Info, Level::Info, "winit::platform"));
-        assert!(admits(LevelFilter::Info, Level::Warn, "winit::platform"));
-        assert!(admits(LevelFilter::Debug, Level::Debug, "winit::platform"));
-        assert!(!admits(LevelFilter::Off, Level::Error, own));
-        assert!(admits(LevelFilter::Info, Level::Info, "afik_studio"));
+        assert!(admits(env("info"), Level::Info, own));
+        assert!(!admits(env("info"), Level::Debug, own));
+        assert!(!admits(env("info"), Level::Info, "winit::platform"));
+        assert!(admits(env("info"), Level::Warn, "winit::platform"));
+        assert!(admits(env("debug"), Level::Debug, "winit::platform"));
+        assert!(!admits(env("off"), Level::Error, own));
+        assert!(admits(env("info"), Level::Info, "afik_studio"));
+        assert!(admits(
+            env("debug"),
+            Level::Debug,
+            "radio_programmer::session"
+        ));
+    }
+
+    #[test]
+    fn each_v_adds_detail_without_the_environment() {
+        let flags = |verbose| Levels::new(None, verbose);
+        let (own, other) = ("radio_programmer_gui::repeaters", "winit::platform");
+        assert_eq!(flags(0), Levels::new(Some("info"), 0));
+        assert!(admits(flags(1), Level::Debug, own));
+        assert!(!admits(flags(1), Level::Trace, own));
+        assert!(
+            !admits(flags(1), Level::Info, other),
+            "-v keeps the window quiet"
+        );
+        assert!(admits(flags(2), Level::Trace, own));
+        assert!(admits(flags(2), Level::Debug, other));
+        assert!(!admits(flags(2), Level::Trace, other));
+        assert!(admits(flags(3), Level::Trace, other));
+        assert!(admits(flags(9), Level::Trace, other));
+        // The louder of the environment and the flags wins.
+        assert!(admits(Levels::new(Some("trace"), 1), Level::Trace, other));
+        assert!(admits(Levels::new(Some("off"), 1), Level::Debug, own));
     }
 
     #[test]

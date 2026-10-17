@@ -26,31 +26,35 @@ pub mod theme;
 pub mod world;
 
 /// Command-line help for the native editor binary.
-pub const HELP: &str = "AFIK Studio: native channel, configuration, and flashing editor\n\
-\n\
-Usage:\n\
-  afik-studio [--sim | --device PATH|auto] [--baud BAUD] [--project FILE]\n\
-  afik-studio --help\n\
-\n\
-Options:\n\
-  --sim              Connect the deterministic simulator at start-up.\n\
-  --device PATH      Serial device used for the configuration protocol.\n\
-  --device auto      Detect one USB serial device and connect it.\n\
-  --baud BAUD        Serial baud rate; defaults to 38400.\n\
-  --project FILE     Open this project file instead of the last project.\n\
-  --help             Print this message.\n\
-\n\
-Supported BAUD: 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200\n\
-\n\
-Projects are kept in $XDG_DATA_HOME/afik/projects and chosen by name;\n\
-the last one opened is opened again.\n\
-\n\
-Connecting at start-up is optional: the Device tab detects USB serial\n\
-devices, offers a single candidate as the selection, leaves an ambiguous\n\
-choice to the operator, and always accepts a manually entered path.\n\
-The Flash tab detects the radio and its family, suggests an EEPROM\n\
-backup if none is kept for that family, picks the packaged image, and\n\
-flashes the AFIK application; every choice can be overridden.\n";
+pub const HELP: &str = "AFIK Studio: native channel, configuration, and flashing editor
+
+Usage:
+  afik-studio [-v...] [--sim | --device PATH|auto] [--baud BAUD] [--project FILE]
+  afik-studio --help
+
+Options:
+  --sim              Connect the deterministic simulator at start-up.
+  --device PATH      Serial device used for the configuration protocol.
+  --device auto      Detect one USB serial device and connect it.
+  --baud BAUD        Serial baud rate; defaults to 38400.
+  --project FILE     Open this project file instead of the last project.
+  -v, --verbose      Log more: -v AFIK's debug lines, -vv its trace lines and
+                     other crates' debug lines, -vvv everything. AFIK_LOG
+                     still works; whichever asks for more wins.
+  --help             Print this message.
+
+Supported BAUD: 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200
+
+Projects are kept in $XDG_DATA_HOME/afik/projects and chosen by name;
+the last one opened is opened again.
+
+Connecting at start-up is optional: the Device tab detects USB serial
+devices, offers a single candidate as the selection, leaves an ambiguous
+choice to the operator, and always accepts a manually entered path.
+The Flash tab detects the radio and its family, suggests an EEPROM
+backup if none is kept for that family, picks the packaged image, and
+flashes the AFIK application; every choice can be overridden.
+";
 
 /// Which serial device the command line asked for.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -74,6 +78,8 @@ pub struct Options {
     pub project: Option<std::path::PathBuf>,
     /// Print help and exit.
     pub help: bool,
+    /// How many `-v` were given: each logs more.
+    pub verbose: u8,
 }
 
 /// Parses command-line arguments, rejecting unknown or incomplete input.
@@ -84,6 +90,15 @@ pub fn parse_options(arguments: &[String]) -> Result<Options, String> {
         match arguments[index].as_str() {
             "--help" | "-h" => options.help = true,
             "--sim" => options.simulator = true,
+            "--verbose" => options.verbose = options.verbose.saturating_add(1),
+            flags
+                if flags.len() > 1
+                    && flags.starts_with('-')
+                    && flags[1..].bytes().all(|b| b == b'v') =>
+            {
+                let count = u8::try_from(flags.len() - 1).unwrap_or(u8::MAX);
+                options.verbose = options.verbose.saturating_add(count);
+            }
             "--device" => {
                 index += 1;
                 let value = arguments.get(index).ok_or("--device requires a path")?;
@@ -159,6 +174,20 @@ mod tests {
         assert!(parse_options(&arguments(&["--baud"])).is_err());
         assert!(parse_options(&arguments(&["--baud", "123"])).is_err());
         assert!(parse_options(&arguments(&["--nope"])).is_err());
+        assert_eq!(parse_options(&arguments(&["-v"])).unwrap().verbose, 1);
+        assert_eq!(
+            parse_options(&arguments(&["-vv", "--sim"]))
+                .unwrap()
+                .verbose,
+            2
+        );
+        assert_eq!(
+            parse_options(&arguments(&["-v", "--verbose", "-v"]))
+                .unwrap()
+                .verbose,
+            3
+        );
+        assert!(parse_options(&arguments(&["-vx"])).is_err());
         assert_eq!(
             parse_options(&arguments(&["--project", "plan.afik"]))
                 .unwrap()

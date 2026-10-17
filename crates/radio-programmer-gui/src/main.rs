@@ -20,7 +20,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let log_file = logging::init();
+    let log_file = logging::init(options.verbose);
     log::info!(
         "AFIK Studio {} starting; log file {}",
         env!("CARGO_PKG_VERSION"),

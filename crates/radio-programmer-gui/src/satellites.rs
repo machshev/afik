@@ -309,6 +309,8 @@ impl SatelliteCache {
 
 /// Fetches one URL over HTTPS.
 fn fetch(url: &str) -> Result<String, String> {
+    log::debug!("fetching {url}");
+    let started = std::time::Instant::now();
     let agent = ureq::AgentBuilder::new()
         .timeout(TIMEOUT)
         .user_agent(concat!("afik-studio/", env!("CARGO_PKG_VERSION")))
@@ -323,6 +325,11 @@ fn fetch(url: &str) -> Result<String, String> {
         .take(MAX_RESPONSE_BYTES)
         .read_to_string(&mut body)
         .map_err(|error| format!("{url}: {error}"))?;
+    log::debug!(
+        "fetched {} bytes from {url} in {} ms",
+        body.len(),
+        started.elapsed().as_millis()
+    );
     Ok(body)
 }
 

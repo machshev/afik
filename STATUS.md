@@ -198,7 +198,13 @@ a Bands row (10 m to 23 cm checkboxes, 2 m and 70 cm by default, remembered
 in `gateway-bands`) and drops gateways on unticked bands. The beacons tab has the same row,
 every band ticked by default, remembered in `beacon-bands` (gate: `cargo
 fmt --all --check` clean, workspace clippy `-D warnings` clean, `cargo test
---workspace` 895 passed 0 failed 3 ignored). Gate: `cargo fmt`
+--workspace` 895 passed 0 failed 3 ignored). The studio takes `-v`/`--verbose`
+(operator request): `-v` logs AFIK's debug lines, `-vv` its trace and other
+crates' debug, `-vvv` everything, without `AFIK_LOG` (which still works;
+the louder wins). Debug lines added: each HTTP fetch (URL, bytes, ms) and
+each new status line. Gate: `cargo fmt --all --check` clean, workspace
+clippy `-D warnings` clean, `cargo test --workspace` 897 passed 0 failed 3
+ignored. Gate: `cargo fmt`
 clean, `cargo clippy -p radio-programmer-gui --all-targets -- -D warnings`
 clean, `cargo test -p radio-programmer-gui` 168 passed 0 failed 3 ignored. Gate: fmt clean, workspace
 clippy `-D warnings` clean, `cargo test --workspace` 881 passed 0 failed 3

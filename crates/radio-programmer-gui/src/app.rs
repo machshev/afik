@@ -260,6 +260,9 @@ pub struct StudioApp {
     projects: ProjectStore,
     new_project: String,
     status: String,
+    /// The status line as last logged at debug level, so `-v` shows each
+    /// one once.
+    logged_status: String,
     errors: Vec<ModelError>,
     session: Option<DeviceSession>,
     chooser: DeviceChooser,
@@ -1467,6 +1470,7 @@ impl StudioApp {
             projects,
             new_project: String::new(),
             status: "Ready.".to_owned(),
+            logged_status: String::new(),
             errors: Vec::new(),
             session: None,
             chooser: DeviceChooser::new(),
@@ -2029,6 +2033,18 @@ fn read_project_file(path: &Path) -> Result<(ProjectModel, bool), String> {
         .map_err(|error| error.to_string())
 }
 
+impl StudioApp {
+    /// Logs the status line at debug level when it has changed, so `-v`
+    /// records what every action reported, including the ones that succeed
+    /// quietly.
+    fn log_status(&mut self) {
+        if self.status != self.logged_status {
+            log::debug!("status: {}", self.status);
+            self.logged_status.clone_from(&self.status);
+        }
+    }
+}
+
 impl eframe::App for StudioApp {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
         // A write or read runs on a worker; the window keeps drawing and
@@ -2040,6 +2056,7 @@ impl eframe::App for StudioApp {
         self.poll_airport_sync();
         self.poll_marine_sync();
         self.poll_world_sync();
+        self.log_status();
         if self.job.is_some()
             || self.satellite_sync.is_some()
             || self.repeater_sync.is_some()
@@ -4496,6 +4513,22 @@ mod tests {
                 .map(|(_, level, text)| (level, text))
                 .collect()
         }
+    }
+
+    #[test]
+    fn each_new_status_line_is_logged_once_at_debug() {
+        use log::Level;
+        capture::install();
+        let mut app = simulated("status-log");
+        let _earlier = capture::take();
+        "Added 3 gateways.".clone_into(&mut app.status);
+        app.log_status();
+        app.log_status();
+        let logged = capture::take();
+        assert_eq!(
+            logged,
+            [(Level::Debug, "status: Added 3 gateways.".to_owned())]
+        );
     }
 
     #[test]

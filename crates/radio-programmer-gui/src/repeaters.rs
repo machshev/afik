@@ -878,6 +878,8 @@ pub(crate) fn fetch(url: &str) -> Result<String, String> {
 
 /// Fetches one URL as [`fetch`] does, allowing `timeout` for a slow server.
 pub(crate) fn fetch_within(url: &str, timeout: Duration) -> Result<String, String> {
+    log::debug!("fetching {url}");
+    let started = std::time::Instant::now();
     let agent = ureq::AgentBuilder::new()
         .timeout(timeout)
         .user_agent(concat!("afik-studio/", env!("CARGO_PKG_VERSION")))
@@ -896,6 +898,11 @@ pub(crate) fn fetch_within(url: &str, timeout: Duration) -> Result<String, Strin
     if body.len() as u64 > MAX_RESPONSE_BYTES {
         return Err(format!("{url}: over {MAX_RESPONSE_BYTES} bytes"));
     }
+    log::debug!(
+        "fetched {} bytes from {url} in {} ms",
+        body.len(),
+        started.elapsed().as_millis()
+    );
     Ok(String::from_utf8_lossy(&body).into_owned())
 }
 
