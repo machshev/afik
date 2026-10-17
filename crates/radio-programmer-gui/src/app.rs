@@ -2356,16 +2356,7 @@ impl eframe::App for StudioApp {
             }
         }
 
-        egui::TopBottomPanel::top("tabs").show(context, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.selectable_value(&mut self.tab, Tab::Projects, "Projects");
-                ui.selectable_value(&mut self.tab, Tab::Banks, "Banks");
-                ui.selectable_value(&mut self.tab, Tab::Map, "Map");
-                ui.selectable_value(&mut self.tab, Tab::Radio, "Radio");
-                ui.selectable_value(&mut self.tab, Tab::Device, "Device");
-                ui.selectable_value(&mut self.tab, Tab::Flash, "Flash");
-            });
-        });
+        egui::TopBottomPanel::top("tabs").show(context, |ui| self.tab_bar(ui));
 
         egui::TopBottomPanel::bottom("status").show(context, |ui| {
             usage_bar(ui, &self.project.storage_summary());
@@ -2390,44 +2381,42 @@ impl eframe::App for StudioApp {
 }
 
 impl StudioApp {
-    /// The open project's name, Save and Revert, atop the tabs that edit it;
-    /// choosing and managing projects is on the Projects tab.
-    fn project_bar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Project:");
-            ui.label(RichText::new(&self.projects.current().name).strong())
-                .on_hover_text(self.projects.current().path.display().to_string());
-            self.save_buttons(ui);
+    /// The main tabs, with the open project's name, Save and Revert at the
+    /// right, so they are at hand on every tab; choosing and managing
+    /// projects is on the Projects tab.
+    fn tab_bar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.tab, Tab::Projects, "Projects");
+            ui.selectable_value(&mut self.tab, Tab::Banks, "Banks");
+            ui.selectable_value(&mut self.tab, Tab::Map, "Map");
+            ui.selectable_value(&mut self.tab, Tab::Radio, "Radio");
+            ui.selectable_value(&mut self.tab, Tab::Device, "Device");
+            ui.selectable_value(&mut self.tab, Tab::Flash, "Flash");
+            // Laid out from the right edge, so in reverse.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let dirty = self.is_dirty();
+                if ui
+                    .add_enabled(dirty, egui::Button::new("Revert"))
+                    .on_hover_text("Discard the changes since the project was last saved")
+                    .clicked()
+                {
+                    self.load_project();
+                }
+                if ui.button("Save").clicked() {
+                    self.save_project();
+                }
+                ui.label(RichText::new(&self.projects.current().name).strong())
+                    .on_hover_text(self.projects.current().path.display().to_string());
+                ui.label("Project:");
+                if dirty {
+                    ui.colored_label(WARNING_COLOUR, "unsaved changes");
+                }
+            });
         });
-        ui.separator();
-    }
-
-    /// Save, Revert, and whether there is anything to save.
-    fn save_buttons(&mut self, ui: &mut egui::Ui) {
-        if ui.button("Save").clicked() {
-            self.save_project();
-        }
-        let dirty = self.is_dirty();
-        if ui
-            .add_enabled(dirty, egui::Button::new("Revert"))
-            .on_hover_text("Discard the changes since the project was last saved")
-            .clicked()
-        {
-            self.load_project();
-        }
-        if dirty {
-            ui.colored_label(WARNING_COLOUR, "unsaved changes");
-        }
     }
 
     /// The Projects tab: every project to open, and New, Rename and Delete.
     fn projects_tab(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Open:");
-            ui.label(RichText::new(&self.projects.current().name).strong());
-            self.save_buttons(ui);
-        });
-        ui.separator();
         ui.horizontal_wrapped(|ui| {
             ui.add(
                 TextEdit::singleline(&mut self.new_project)
@@ -3686,7 +3675,6 @@ impl StudioApp {
     }
 
     fn banks_tab(&mut self, ui: &mut egui::Ui) {
-        self.project_bar(ui);
         self.default_set_bar(ui);
         ui.horizontal_wrapped(|ui| {
             if ui.button("Add channel bank").clicked() {
@@ -3784,7 +3772,6 @@ impl StudioApp {
     }
 
     fn radio_tab(&mut self, ui: &mut egui::Ui) {
-        self.project_bar(ui);
         ui.horizontal_wrapped(|ui| {
             for section in RadioSection::ALL {
                 ui.selectable_value(&mut self.radio_section, section, section.label());
@@ -5061,16 +5048,22 @@ mod tests {
             text_centres(&banks, "New project").is_empty(),
             "not on Banks"
         );
-        assert_eq!(
-            text_centres(&banks, "Club").len(),
-            1,
-            "the open project's name"
+        assert!(
+            text_centres(&banks, "Revert").is_empty(),
+            "moved to the tab bar"
         );
-        assert_eq!(
-            text_centres(&banks, "Revert").len(),
-            1,
-            "Save and Revert stay"
+        // The tab bar carries the project at its right, on every tab.
+        let bar = draw(&mut app, StudioApp::tab_bar);
+        let flash = text_centres(&bar, "Flash")[0];
+        let name = text_centres(&bar, "Club")[0];
+        let revert = text_centres(&bar, "Revert")[0];
+        assert!((name.y - flash.y).abs() < 1.0, "in line with the tabs");
+        assert!(
+            name.x > flash.x && revert.x > name.x,
+            "{flash:?} {name:?} {revert:?}"
         );
+        assert!(revert.x > 1_000.0, "at the right edge: {revert:?}");
+        assert_eq!(text_centres(&bar, "Save").len(), 1);
         let projects = draw(&mut app, StudioApp::projects_tab);
         assert_eq!(text_centres(&projects, "New project").len(), 1);
         assert_eq!(text_centres(&projects, "default").len(), 1, "listed");

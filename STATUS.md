@@ -324,6 +324,9 @@ fmt and clippy `-D warnings` clean, `cargo test -p radio-programmer-gui` 197
 passed 0 failed 3 ignored). Group marine files
 marine VHF banks under MARINE, and generated marine banks go there too
 (gate: studio fmt and clippy `-D warnings` clean, `cargo test -p
+radio-programmer-gui` 198 passed 0 failed 3 ignored). The project's name,
+Save and Revert moved to the right of the main tab bar, on every tab (gate:
+studio fmt and clippy `-D warnings` clean, `cargo test -p
 radio-programmer-gui` 198 passed 0 failed 3 ignored). The studio takes `-v`/`--verbose`
 (operator request): `-v` logs AFIK's debug lines, `-vv` its trace and other
 crates' debug, `-vvv` everything, without `AFIK_LOG` (which still works;
