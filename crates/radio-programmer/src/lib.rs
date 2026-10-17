@@ -4,7 +4,7 @@
 
 use core::fmt;
 use radio_channel_plan::{ChannelBank, ChannelRecord, GeneratedBank, PlanEncoding};
-use radio_domain::{BankId, RadioConfig};
+use radio_domain::{BankId, ChannelId, RadioConfig};
 use radio_platform::memory_link::IMAGE_REGION_BYTES;
 pub use radio_protocol::DeviceCapabilities;
 use radio_protocol::{
@@ -192,7 +192,7 @@ impl RadioProject {
     }
 
     /// Reads back an image [`Self::compile_radio_image`] produced, as a radio
-    /// would: checksum and every block first, then each bank, plan and stored
+    /// would: checksum and every bank first, then each bank, plan and stored
     /// channel. Stored channels are numbered by their position on the radio.
     pub fn from_radio_image(image: &[u8]) -> Result<Self, StorageError> {
         let mut header = [0_u8; radio_image::HEADER_LEN];
@@ -223,14 +223,16 @@ impl RadioProject {
             }
             if let Some(plan) = index.plan(read, bank) {
                 project.add_generated_bank(plan);
+                continue;
             }
-        }
-        for position in (0..index.len()).filter(|position| !index.is_generated(*position)) {
-            project.add_channel(
-                index
-                    .channel_at(read, position)
-                    .ok_or(StorageError::MalformedObject)?,
-            );
+            let numbers = (0..).map_while(|position| index.index_of(bank, position));
+            for number in numbers {
+                let channel = index
+                    .channel_at(read, number)
+                    .and_then(|channel| channel.with_id(ChannelId::new(number + 1)).ok())
+                    .ok_or(StorageError::MalformedObject)?;
+                project.add_channel(channel);
+            }
         }
         Ok(project)
     }
@@ -1238,10 +1240,11 @@ mod tests {
     #[test]
     fn a_project_compiles_into_the_image_a_radio_runs() {
         let mut project = RadioProject::new();
+        // A bank is a list or a plan, never both.
         project.add_generated_bank(bank(1));
-        project.add_channel(channel(2, 1));
-        project.add_channel(channel(1, 1));
-        project.add_bank(named_bank(1));
+        project.add_channel(channel(2, 0));
+        project.add_channel(channel(1, 0));
+        project.add_bank(named_bank(0));
         let image = project.compile_radio_image().expect("radio image");
         let mut header = [0_u8; radio_storage::radio_image::HEADER_LEN];
         let (head, payload) = image.split_at(header.len());
@@ -1263,8 +1266,8 @@ mod tests {
     fn a_radio_image_reads_back_into_the_project_it_came_from() {
         let mut project = RadioProject::new();
         project.add_generated_bank(bank(1));
-        project.add_channel(channel(2, 1));
-        project.add_bank(named_bank(1));
+        project.add_channel(channel(2, 0));
+        project.add_bank(named_bank(0));
         let image = project.compile_radio_image().expect("radio image");
         let read = RadioProject::from_radio_image(&image).expect("reads back");
         assert_eq!(read.banks(), project.banks());

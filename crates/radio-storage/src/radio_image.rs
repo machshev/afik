@@ -1,29 +1,28 @@
-//! The image a radio runs: storage format 6, grouped into bank blocks.
+//! The image a radio runs: storage format 7, one block per bank.
 //!
 //! The host compiles a project into this image and writes it into the radio's
-//! memory (`ADR-100`); the radio reads it in place. Every channel lives in one
-//! block, and every block belongs to one bank (or to none), so a bank filter
-//! is a range and the radio's RAM index is one entry per block.
+//! memory (`ADR-100`); the radio reads it in place. Every channel lives in a
+//! bank, and each bank is exactly one block carried in its bank-table entry
+//! (`ADR-115`), so the radio's RAM index is one small entry per bank and a
+//! bank filter is a range of channel numbers.
 //!
-//! A *list* block holds explicit channels. The values all of its channels
-//! share are stored once in the block header; a `fields` bitfield names the
+//! A *list* bank holds explicit channels. The values all of its channels
+//! share are stored once in the list header; a `fields` bitfield names the
 //! values each record carries instead, so a PMR or simplex list stores little
-//! more than a short frequency and a name per channel. Records in a block all
-//! have the same size, so any channel is read directly by index.
+//! more than a short frequency and a name per channel. Records in a list all
+//! have the same size, so any channel is read directly by its position.
 //!
-//! A *linear* block is a generated plan: a base, a spacing and a count, with
+//! A *linear* bank is a generated plan: a base, a spacing and a count, with
 //! no records at all.
 //!
 //! ```text
-//! header  : magic "AFIK", image version 2, format 6, block count u16,
+//! header  : magic "AFIK", image version 2, format 7, bank count u16,
 //!           payload length u32, CRC-32 (as format 4)
 //! payload : radio configuration (16 bytes, as its format 4 object)
 //!           TX range count u8, then each range's 14 bytes (`ADR-101`)
-//!           bank count u8, then per bank: id u8, flags u8, name length u8,
-//!           name bytes
-//!           blocks, each: kind u8 (1 list, 2 linear), bank u8 (0xFF none),
-//!           body length u16, body
-//! linear  : the format 4 generated-bank object bytes
+//!           banks in ascending id, each: id u8, flags u8, kind u8 (1 list,
+//!           2 linear), body length u16, name length u8, name bytes, body
+//! linear  : the generated-bank object bytes, its id the bank's
 //! list    : fields u16, name width u8, count u16, base Hz u32, raster Hz u32,
 //!           TX offset i32, step Hz u32, RX tone 3, TX tone 3, mode u8,
 //!           flags u8, reserved u8 (was squelch); then `count` records
@@ -33,7 +32,7 @@
 //!
 //! A frequency is a `u16` count of rasters above the base when
 //! [`SHORT_FREQUENCY`] is set, and a `u32` in hertz otherwise. Without
-//! [`TRANSMIT`], TX is RX plus the block's TX offset. The mode byte is
+//! [`TRANSMIT`], TX is RX plus the list's TX offset. The mode byte is
 //! modulation | bandwidth << 2 | power << 3.
 
 use radio_channel_plan::{
@@ -55,19 +54,17 @@ use super::{
     TX_RANGE_ENCODED_LEN,
 };
 
-/// Image container version for format 6.
+/// Image container version for format 7.
 pub const IMAGE_VERSION: u8 = 2;
 /// Object format version this module reads and writes.
-pub const FORMAT_VERSION: u8 = 6;
+pub const FORMAT_VERSION: u8 = 7;
 /// Bytes in the image header.
 pub const HEADER_LEN: usize = 16;
-/// Most blocks one image may hold, which bounds the radio's RAM index.
-pub const MAX_BLOCKS: usize = 48;
-/// The bank of a block whose channels are in no bank.
+/// The bank byte meaning no bank; no bank may have this identifier.
 pub const NO_BANK: u8 = 0xFF;
 
-// Every bank, and the bankless channels, can hold a list and a plan.
-const _: () = assert!(MAX_BLOCKS > MAX_BANKS as usize * 2);
+// Every bank identifier fits the entry's byte and is not `NO_BANK`.
+const _: () = assert!(MAX_BANKS < NO_BANK as u16 + 1);
 
 /// Records carry a `u16` count of rasters above the base, not hertz.
 pub const SHORT_FREQUENCY: u16 = 1 << 0;
@@ -92,9 +89,9 @@ const KNOWN_FIELDS: u16 = (1 << 8) - 1;
 
 const KIND_LIST: u8 = 1;
 const KIND_LINEAR: u8 = 2;
-const BLOCK_HEADER_LEN: usize = 4;
 const LIST_HEADER_LEN: usize = 30;
-const BANK_ENTRY_HEADER_LEN: usize = 3;
+/// A bank entry before its name: id, flags, kind, body length, name length.
+const BANK_ENTRY_HEADER_LEN: usize = 6;
 /// Largest list record: every field present at full width.
 const MAX_RECORD_LEN: usize = MAX_CHANNEL_NAME_LEN + 4 + 4 + 3 + 3 + 1 + 1 + 1 + 4;
 /// Payload offset meaning "none". The radio configuration sits at offset 0,
@@ -124,8 +121,10 @@ const UNSET_CONFIG: RadioConfig = RadioConfig {
 pub enum CompileError {
     /// Two generated plans claim one bank.
     DuplicatePlan(BankId),
-    /// More blocks than a radio indexes.
-    TooManyBlocks,
+    /// A bank holds both explicit channels and a generated plan.
+    MixedBank(BankId),
+    /// A channel is in no bank.
+    UnbankedChannel(ChannelId),
     /// The image does not fit the output.
     TooLarge,
     /// A TX range is malformed, or there are too many.
@@ -140,10 +139,14 @@ impl core::fmt::Display for CompileError {
             Self::DuplicatePlan(bank) => {
                 write!(formatter, "bank {} holds two generated plans", bank.get())
             }
-            Self::TooManyBlocks => write!(
+            Self::MixedBank(bank) => write!(
                 formatter,
-                "the image needs more than the {MAX_BLOCKS} blocks a radio indexes"
+                "bank {} holds both channels and a generated plan",
+                bank.get()
             ),
+            Self::UnbankedChannel(channel) => {
+                write!(formatter, "channel {} is in no bank", channel.get())
+            }
             Self::TooLarge => formatter.write_str("the image does not fit the radio's memory"),
             Self::TxRange(error) => write!(formatter, "{error}"),
             Self::Storage(error) => write!(formatter, "{error}"),
@@ -193,7 +196,7 @@ impl Writer<'_> {
     }
 }
 
-/// The single bank a channel is stored in, or [`NO_BANK`].
+/// The bank a channel is stored in, or [`NO_BANK`].
 fn bank_of(channel: &ChannelRecord) -> u8 {
     channel
         .bank()
@@ -311,19 +314,21 @@ fn record_len(fields: u16, name_width: u8) -> usize {
     len
 }
 
+/// Bytes the list body of `members` occupies.
+fn list_len<'a>(members: impl Iterator<Item = &'a ChannelRecord> + Clone) -> Option<usize> {
+    let layout = ListLayout::choose(members.clone())?;
+    Some(LIST_HEADER_LEN + members.count() * record_len(layout.fields, layout.name_width))
+}
+
+/// Writes the list body of `members`, which must not be empty.
 fn write_list<'a>(
     writer: &mut Writer<'_>,
-    bank: u8,
     members: impl Iterator<Item = &'a ChannelRecord> + Clone,
-) -> Result<bool, CompileError> {
+) -> Result<(), CompileError> {
     let Some(layout) = ListLayout::choose(members.clone()) else {
-        return Ok(false);
+        return Ok(());
     };
     let count = members.clone().count();
-    let body = LIST_HEADER_LEN + count * record_len(layout.fields, layout.name_width);
-    writer.u8(KIND_LIST)?;
-    writer.u8(bank)?;
-    writer.u16(u16::try_from(body).map_err(|_| CompileError::TooLarge)?)?;
     let template = layout.template;
     writer.u16(layout.fields)?;
     writer.u8(layout.name_width)?;
@@ -369,14 +374,14 @@ fn write_list<'a>(
             writer.u32(channel.step().as_hz())?;
         }
     }
-    Ok(true)
+    Ok(())
 }
 
 /// Compiles a validated project into a radio image and returns its length.
 ///
-/// Blocks are written bank by bank: a bank's explicit channels, in the order
-/// given, then its generated plan; channels in no bank come last. The radio
-/// numbers channels in this order.
+/// Banks are written in identifier order, each with its explicit channels in
+/// the order given or its generated plan; a bank with neither is left out.
+/// The radio numbers channels in this order.
 pub fn compile(
     config: RadioConfig,
     tx_ranges: &[TxRange],
@@ -390,6 +395,9 @@ pub fn compile(
             return Err(CompileError::DuplicatePlan(plan.id()));
         }
     }
+    if let Some(channel) = channels.iter().find(|channel| bank_of(channel) == NO_BANK) {
+        return Err(CompileError::UnbankedChannel(channel.id()));
+    }
     let mut writer = Writer {
         output,
         at: HEADER_LEN,
@@ -400,66 +408,80 @@ pub fn compile(
     for range in tx_ranges {
         writer.bytes(&encode_tx_range_body(*range))?;
     }
-    writer.u8(u8::try_from(banks.len()).map_err(|_| CompileError::TooLarge)?)?;
-    for bank in banks {
-        let name = bank.name();
-        writer.u8(u8::try_from(bank.id().get()).map_err(|_| CompileError::TooLarge)?)?;
-        writer.u8(bank.flags().bits())?;
-        writer.u8(name.len())?;
-        writer.bytes(&name.field()[..usize::from(name.len())])?;
-    }
-    let mut blocks = 0_usize;
-    let bank_ids = (0..u8::try_from(MAX_BANKS).unwrap_or(0)).chain(core::iter::once(NO_BANK));
-    for bank in bank_ids {
+    let mut bank_count = 0_u16;
+    for bank in 0..u8::try_from(MAX_BANKS).unwrap_or(0) {
         let members = channels
             .iter()
             .filter(move |channel| bank_of(channel) == bank);
-        if write_list(&mut writer, bank, members)? {
-            blocks += 1;
-        }
-        if let Some(plan) = plans
+        let plan = plans
             .iter()
-            .find(|plan| u8::try_from(plan.id().get()).ok() == Some(bank))
-        {
-            let object = encode_generated_bank(*plan)?;
-            writer.u8(KIND_LINEAR)?;
-            writer.u8(bank)?;
-            writer.u16(u16::try_from(object.len()).map_err(|_| CompileError::TooLarge)?)?;
-            writer.bytes(object.data())?;
-            blocks += 1;
+            .find(|plan| u8::try_from(plan.id().get()).ok() == Some(bank));
+        let (kind, body_len, plan) = match (list_len(members.clone()), plan) {
+            (Some(_), Some(plan)) => return Err(CompileError::MixedBank(plan.id())),
+            (Some(len), None) => (KIND_LIST, len, None),
+            (None, Some(plan)) => {
+                let object = encode_generated_bank(*plan)?;
+                (KIND_LINEAR, object.len(), Some(object))
+            }
+            (None, None) => continue,
+        };
+        let named = banks
+            .iter()
+            .find(|named| u8::try_from(named.id().get()).ok() == Some(bank));
+        let name = named.map(|named| named.name());
+        writer.u8(bank)?;
+        writer.u8(named.map_or(0, |named| named.flags().bits()))?;
+        writer.u8(kind)?;
+        writer.u16(u16::try_from(body_len).map_err(|_| CompileError::TooLarge)?)?;
+        let name_len = name.map_or(0, BankName::len);
+        writer.u8(name_len)?;
+        if let Some(name) = name {
+            writer.bytes(&name.field()[..usize::from(name_len)])?;
         }
-    }
-    if blocks > MAX_BLOCKS {
-        return Err(CompileError::TooManyBlocks);
+        match plan {
+            Some(object) => writer.bytes(object.data())?,
+            None => write_list(&mut writer, members)?,
+        }
+        bank_count += 1;
     }
     let len = writer.at;
     let output = writer.output;
     output[..4].copy_from_slice(&CONFIGURATION_IMAGE_MAGIC);
     output[4] = IMAGE_VERSION;
     output[5] = FORMAT_VERSION;
-    output[6..8].copy_from_slice(&u16::try_from(blocks).unwrap_or(0).to_le_bytes());
+    output[6..8].copy_from_slice(&bank_count.to_le_bytes());
     output[8..12].copy_from_slice(&u32::try_from(len - HEADER_LEN).unwrap_or(0).to_le_bytes());
     let crc = configuration_image_crc(&output[..12], &output[HEADER_LEN..len]);
     output[12..16].copy_from_slice(&crc.to_le_bytes());
     Ok(len)
 }
 
-/// One block as the radio indexes it.
+/// One bank as the radio indexes it.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct Block {
-    kind: u8,
-    bank: u8,
-    /// Channels in the block.
-    count: u16,
-    /// Index of the block's first channel.
+struct BankSlot {
+    /// Payload offset of the bank's entry; [`ABSENT`] for a bank the image
+    /// does not hold.
+    entry: u16,
+    /// Number of the bank's first channel on the radio.
     first: u16,
-    /// Payload offset of the block's body.
-    body: u16,
-    /// Bytes per record in a list block; body bytes in a linear one.
-    stride: u16,
+    /// Channels in the bank.
+    count: u16,
 }
 
-/// What a radio keeps in RAM about the image it runs: a few bytes per block.
+/// A bank's entry as read from the image.
+#[derive(Clone, Copy, Debug)]
+struct BankEntry {
+    flags: u8,
+    kind: u8,
+    body_len: usize,
+    name_len: u8,
+    /// Payload offset of the name.
+    name: usize,
+    /// Payload offset of the body.
+    body: usize,
+}
+
+/// What a radio keeps in RAM about the image it runs: one entry per bank.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Index {
     config: RadioConfig,
@@ -468,9 +490,7 @@ pub struct Index {
     /// Payload offset of the first TX range and how many there are.
     tx_ranges: u16,
     tx_range_count: u8,
-    blocks: [Block; MAX_BLOCKS],
-    block_count: usize,
-    names: [u16; MAX_BANKS as usize],
+    banks: [BankSlot; MAX_BANKS as usize],
     len: u16,
     populated: u16,
     /// Bytes the image occupies, header included.
@@ -722,16 +742,11 @@ impl Index {
             configured: false,
             tx_ranges: 0,
             tx_range_count: 0,
-            blocks: [Block {
-                kind: 0,
-                bank: 0,
-                count: 0,
+            banks: [BankSlot {
+                entry: ABSENT,
                 first: 0,
-                body: 0,
-                stride: 0,
-            }; MAX_BLOCKS],
-            block_count: 0,
-            names: [ABSENT; MAX_BANKS as usize],
+                count: 0,
+            }; MAX_BANKS as usize],
             bytes: 0,
             len: 0,
             populated: 0,
@@ -741,7 +756,7 @@ impl Index {
     /// Validates an image held outside RAM and indexes it.
     ///
     /// `read` fills a buffer from a payload offset. The checksum is checked
-    /// first, then every block and every channel is decoded once, so a radio
+    /// first, then every bank and every channel is decoded once, so a radio
     /// never runs on an image any part of which is malformed.
     pub fn build(
         header: &[u8; HEADER_LEN],
@@ -753,12 +768,12 @@ impl Index {
         if header[4] != IMAGE_VERSION || header[5] != FORMAT_VERSION {
             return Err(StorageError::UnsupportedImageVersion);
         }
-        let block_count = usize::from(u16::from_le_bytes([header[6], header[7]]));
+        let bank_count = usize::from(u16::from_le_bytes([header[6], header[7]]));
         let payload_len = usize::try_from(u32::from_le_bytes([
             header[8], header[9], header[10], header[11],
         ]))
         .map_err(|_| StorageError::ImageTooLarge)?;
-        if block_count > MAX_BLOCKS || payload_len > usize::from(u16::MAX) {
+        if bank_count > usize::from(MAX_BANKS) || payload_len > usize::from(u16::MAX) {
             return Err(StorageError::ImageTooLarge);
         }
         let expected = u32::from_le_bytes([header[12], header[13], header[14], header[15]]);
@@ -772,7 +787,7 @@ impl Index {
         };
         let decoded = Self::decode(
             &mut |offset, buffer| stream.read(offset, buffer),
-            block_count,
+            bank_count,
             payload_len,
         );
         // Nothing decoded is used unless the whole payload checks, and a
@@ -795,7 +810,7 @@ impl Index {
     /// Decodes and checks every object in a payload of `payload_len` bytes.
     fn decode(
         mut read: &mut impl FnMut(usize, &mut [u8]) -> bool,
-        block_count: usize,
+        bank_count: usize,
         payload_len: usize,
     ) -> Result<Self, StorageError> {
         let mut index = Self::empty();
@@ -822,107 +837,117 @@ impl Index {
             decode_tx_range_body(&read_array(&mut read, at)?)?;
             at += TX_RANGE_ENCODED_LEN;
         }
-        let [bank_count] = read_array::<1>(&mut read, at)?;
-        at += 1;
+        let mut first = 0_u32;
+        let mut previous: Option<u8> = None;
         for _ in 0..bank_count {
-            let entry = read_array::<BANK_ENTRY_HEADER_LEN>(&mut read, at)?;
-            let bank = Self::read_bank(&mut read, at, entry)?;
-            let slot = &mut index.names[usize::from(bank.id().get())];
-            if *slot != ABSENT {
+            let (id, entry) = Self::read_entry(&mut read, at)?;
+            // Ascending, so each bank appears once and channels number in
+            // bank order.
+            if previous.is_some_and(|previous| previous >= id) {
                 return Err(StorageError::NonCanonicalImage);
             }
-            *slot = u16::try_from(at).map_err(|_| StorageError::ImageTooLarge)?;
-            at += BANK_ENTRY_HEADER_LEN + usize::from(entry[2]);
-        }
-        let mut first = 0_u32;
-        for slot in 0..block_count {
-            let (block, body_end) = Self::read_block(&mut read, at, first)?;
-            index.blocks[slot] = block;
-            let (count, bank) = (block.count, block.bank);
-            at = body_end;
+            previous = Some(id);
+            Self::read_bank(&mut read, id, &entry)?;
+            let count = Self::check_body(&mut read, id, &entry)?;
+            index.banks[usize::from(id)] = BankSlot {
+                entry: u16::try_from(at).map_err(|_| StorageError::ImageTooLarge)?,
+                first: u16::try_from(first).map_err(|_| StorageError::ImageTooLarge)?,
+                count,
+            };
             first += u32::from(count);
             if first > u32::from(u16::MAX) {
                 return Err(StorageError::ImageTooLarge);
             }
-            if bank != NO_BANK && count > 0 {
-                index.populated |= 1 << bank;
+            if count > 0 {
+                index.populated |= 1 << id;
             }
+            at = entry.body + entry.body_len;
         }
         if at != payload_len {
             return Err(StorageError::MalformedImage);
         }
-        index.block_count = block_count;
         index.len = u16::try_from(first).unwrap_or(u16::MAX);
         Ok(index)
     }
 
-    /// Reads and validates the block at `at`, whose first channel is number
-    /// `first`, and returns it with the offset just past it.
-    fn read_block(
+    /// Reads the bank entry at `at`: its identifier, and where its name and
+    /// body lie.
+    fn read_entry(
         read: &mut impl FnMut(usize, &mut [u8]) -> bool,
         at: usize,
-        first: u32,
-    ) -> Result<(Block, usize), StorageError> {
-        let [kind, bank, low, high] = read_array::<BLOCK_HEADER_LEN>(read, at)?;
-        let body_len = usize::from(u16::from_le_bytes([low, high]));
-        let body = at + BLOCK_HEADER_LEN;
-        if bank != NO_BANK && u16::from(bank) >= MAX_BANKS {
+    ) -> Result<(u8, BankEntry), StorageError> {
+        let [id, flags, kind, low, high, name_len] = read_array::<BANK_ENTRY_HEADER_LEN>(read, at)?;
+        if u16::from(id) >= MAX_BANKS || usize::from(name_len) > MAX_BANK_NAME_LEN {
             return Err(StorageError::MalformedObject);
         }
-        let (count, stride) = match kind {
+        let name = at + BANK_ENTRY_HEADER_LEN;
+        Ok((
+            id,
+            BankEntry {
+                flags,
+                kind,
+                body_len: usize::from(u16::from_le_bytes([low, high])),
+                name_len,
+                name,
+                body: name + usize::from(name_len),
+            },
+        ))
+    }
+
+    /// Validates the body of bank `id` and every channel in it, and returns
+    /// how many channels it holds.
+    fn check_body(
+        read: &mut impl FnMut(usize, &mut [u8]) -> bool,
+        id: u8,
+        entry: &BankEntry,
+    ) -> Result<u16, StorageError> {
+        match entry.kind {
             KIND_LINEAR => {
-                let plan = Self::read_plan(read, body, body_len, bank)?;
-                (plan.channel_count(), body_len)
+                Ok(Self::read_plan(read, entry.body, entry.body_len, id)?.channel_count())
             }
             KIND_LIST => {
-                let list = ListHeader::decode(&read_array(read, body)?)?;
+                let list = ListHeader::decode(&read_array(read, entry.body)?)?;
                 let stride = record_len(list.fields, list.name_width);
-                if LIST_HEADER_LEN + usize::from(list.count) * stride != body_len {
+                if list.count == 0
+                    || LIST_HEADER_LEN + usize::from(list.count) * stride != entry.body_len
+                {
                     return Err(StorageError::MalformedObject);
                 }
-                for record in 0..list.count {
+                for position in 0..list.count {
                     let mut bytes = [0_u8; MAX_RECORD_LEN];
-                    let offset = body + LIST_HEADER_LEN + usize::from(record) * stride;
+                    let offset = entry.body + LIST_HEADER_LEN + usize::from(position) * stride;
                     if !read(offset, &mut bytes[..stride]) {
                         return Err(StorageError::MalformedImage);
                     }
-                    let id = u16::try_from(first + u32::from(record) + 1)
-                        .map_err(|_| StorageError::ImageTooLarge)?;
-                    list.channel(&bytes[..stride], id, bank)?;
+                    list.channel(&bytes[..stride], position + 1, id)?;
                 }
-                (list.count, stride)
+                Ok(list.count)
             }
-            _ => return Err(StorageError::UnsupportedObject),
-        };
-        let block = Block {
-            kind,
-            bank,
-            count,
-            first: u16::try_from(first).map_err(|_| StorageError::ImageTooLarge)?,
-            body: u16::try_from(body).map_err(|_| StorageError::ImageTooLarge)?,
-            stride: u16::try_from(stride).map_err(|_| StorageError::ImageTooLarge)?,
-        };
-        Ok((block, body + body_len))
+            _ => Err(StorageError::UnsupportedObject),
+        }
     }
 
+    /// The named bank an entry describes, or `None` for an unnamed one.
     fn read_bank(
         read: &mut impl FnMut(usize, &mut [u8]) -> bool,
-        at: usize,
-        entry: [u8; BANK_ENTRY_HEADER_LEN],
-    ) -> Result<ChannelBank, StorageError> {
-        let len = usize::from(entry[2]);
-        if len > MAX_BANK_NAME_LEN {
-            return Err(StorageError::MalformedObject);
+        id: u8,
+        entry: &BankEntry,
+    ) -> Result<Option<ChannelBank>, StorageError> {
+        let flags = BankFlags::from_bits(entry.flags).map_err(malformed)?;
+        if entry.name_len == 0 {
+            return Ok(None);
         }
+        let len = usize::from(entry.name_len);
         let mut name = [0_u8; MAX_BANK_NAME_LEN];
-        if !read(at + BANK_ENTRY_HEADER_LEN, &mut name[..len]) {
+        if !read(entry.name, &mut name[..len]) {
             return Err(StorageError::MalformedImage);
         }
         ChannelBank::new(
-            BankId::new(u16::from(entry[0])),
-            BankName::from_field(name, entry[2]).map_err(malformed)?,
-            BankFlags::from_bits(entry[1]).map_err(malformed)?,
+            BankId::new(u16::from(id)),
+            BankName::from_field(name, entry.name_len).map_err(malformed)?,
+            flags,
         )
+        .map(Some)
         .map_err(malformed)
     }
 
@@ -997,82 +1022,93 @@ impl Index {
         self.populated
     }
 
-    fn block_of(&self, index: u16) -> Option<(&Block, u16)> {
-        self.blocks[..self.block_count]
-            .iter()
-            .find(|block| index >= block.first && index - block.first < block.count)
-            .map(|block| (block, index - block.first))
+    /// The bank holding channel number `index`, and its slot.
+    fn slot_of(&self, index: u16) -> Option<(u8, &BankSlot)> {
+        (0_u8..).zip(&self.banks).find(|(_, slot)| {
+            slot.entry != ABSENT && index >= slot.first && index - slot.first < slot.count
+        })
     }
 
-    /// Whether the channel at `index` is stored in `bank`, from RAM alone.
+    /// The bank and position within it of channel number `index`.
+    #[must_use]
+    pub fn place_of(&self, index: u16) -> Option<(BankId, u16)> {
+        self.slot_of(index)
+            .map(|(id, slot)| (BankId::new(u16::from(id)), index - slot.first))
+    }
+
+    /// The channel number of position `position` in `bank`, if it has one.
+    #[must_use]
+    pub fn index_of(&self, bank: BankId, position: u16) -> Option<u16> {
+        let slot = self.banks.get(usize::from(bank.get()))?;
+        (slot.entry != ABSENT && position < slot.count).then(|| slot.first + position)
+    }
+
+    /// Whether channel number `index` is stored in `bank`, from RAM alone.
     #[must_use]
     pub fn member_at(&self, index: u16, bank: BankId) -> bool {
-        self.block_of(index)
-            .is_some_and(|(block, _)| u16::from(block.bank) == bank.get())
+        self.banks.get(usize::from(bank.get())).is_some_and(|slot| {
+            slot.entry != ABSENT && index >= slot.first && index - slot.first < slot.count
+        })
     }
 
-    /// Reads and decodes the channel at `index`.
+    /// Reads the entry of `bank`, if the image holds it.
+    fn entry_of(
+        &self,
+        read: &mut impl FnMut(usize, &mut [u8]) -> bool,
+        bank: BankId,
+    ) -> Option<(u8, BankEntry)> {
+        let slot = self.banks.get(usize::from(bank.get()))?;
+        if slot.entry == ABSENT {
+            return None;
+        }
+        Self::read_entry(read, usize::from(slot.entry)).ok()
+    }
+
+    /// Reads and decodes channel number `index`.
+    ///
+    /// A list channel's identifier is its position in its bank plus one; a
+    /// plan's channels carry the plan's own identifiers.
     pub fn channel_at(
         &self,
         mut read: impl FnMut(usize, &mut [u8]) -> bool,
         index: u16,
     ) -> Option<ChannelRecord> {
-        let (block, inner) = self.block_of(index)?;
-        let body = usize::from(block.body);
-        if block.kind == KIND_LINEAR {
-            return Self::read_plan(&mut read, body, usize::from(block.stride), block.bank)
+        let (bank, position) = self.place_of(index)?;
+        let (id, entry) = self.entry_of(&mut read, bank)?;
+        if entry.kind == KIND_LINEAR {
+            return Self::read_plan(&mut read, entry.body, entry.body_len, id)
                 .ok()?
-                .channel_record(inner)
+                .channel_record(position)
                 .ok();
         }
-        let list = ListHeader::decode(&read_array(&mut read, body).ok()?).ok()?;
-        let stride = usize::from(block.stride);
+        let list = ListHeader::decode(&read_array(&mut read, entry.body).ok()?).ok()?;
+        let stride = record_len(list.fields, list.name_width);
         let mut record = [0_u8; MAX_RECORD_LEN];
-        let offset = body + LIST_HEADER_LEN + usize::from(inner) * stride;
+        let offset = entry.body + LIST_HEADER_LEN + usize::from(position) * stride;
         read(offset, &mut record[..stride]).then_some(())?;
-        list.channel(&record[..stride], index + 1, block.bank).ok()
+        list.channel(&record[..stride], position + 1, id).ok()
     }
 
-    /// Whether the channel at `index` is expanded from a generated plan
-    /// rather than stored as a record.
-    #[must_use]
-    pub fn is_generated(&self, index: u16) -> bool {
-        self.block_of(index)
-            .is_some_and(|(block, _)| block.kind == KIND_LINEAR)
-    }
-
-    /// The named bank `bank`, as the image's bank table stores it.
+    /// The named bank `bank`, as its entry stores it.
     pub fn bank(
         &self,
         mut read: impl FnMut(usize, &mut [u8]) -> bool,
         bank: BankId,
     ) -> Option<ChannelBank> {
-        let at = usize::from(
-            *self
-                .names
-                .get(usize::from(bank.get()))
-                .filter(|at| **at != ABSENT)?,
-        );
-        let entry = read_array::<BANK_ENTRY_HEADER_LEN>(&mut read, at).ok()?;
-        Self::read_bank(&mut read, at, entry).ok()
+        let (id, entry) = self.entry_of(&mut read, bank)?;
+        Self::read_bank(&mut read, id, &entry).ok().flatten()
     }
 
-    /// The generated plan stored in `bank`, if it has one.
+    /// The generated plan stored in `bank`, if it is one.
     pub fn plan(
         &self,
         mut read: impl FnMut(usize, &mut [u8]) -> bool,
         bank: BankId,
     ) -> Option<GeneratedBank> {
-        let block = self.blocks[..self.block_count]
-            .iter()
-            .find(|block| block.kind == KIND_LINEAR && u16::from(block.bank) == bank.get())?;
-        Self::read_plan(
-            &mut read,
-            usize::from(block.body),
-            usize::from(block.stride),
-            block.bank,
-        )
-        .ok()
+        let (id, entry) = self.entry_of(&mut read, bank)?;
+        (entry.kind == KIND_LINEAR)
+            .then(|| Self::read_plan(&mut read, entry.body, entry.body_len, id).ok())
+            .flatten()
     }
 
     /// The name to show for `bank`: its own name, else its plan's.
@@ -1332,20 +1368,20 @@ mod tests {
 
     #[test]
     fn every_channel_comes_back_bank_by_bank() {
-        let unbanked = record(channel(200, "AIR", 118_100_000, 118_100_000, None));
+        let air = record(channel(200, "AIR", 118_100_000, 118_100_000, Some(3)));
         let mut channels = repeaters();
-        channels.push(unbanked);
+        channels.push(air);
         channels.extend(pmr());
         let image = compiled(&channels, &[plan()]);
         let index = index(&image).expect("index");
 
-        // Bank 0's list, bank 1's list, bank 2's plan, then the unbanked list.
+        // Bank 0's list, bank 1's list, bank 2's plan, then bank 3's list.
         assert_eq!(index.len(), 16 + 2 + 40 + 1);
         let expected: Vec<ChannelRecord> = pmr()
             .into_iter()
             .chain(repeaters())
             .chain((0..40).map(|n| plan().channel_record(n).unwrap()))
-            .chain([unbanked])
+            .chain([air])
             .collect();
         for (position, want) in expected.iter().enumerate() {
             let position = u16::try_from(position).unwrap();
@@ -1356,7 +1392,20 @@ mod tests {
                 assert_eq!(index.member_at(position, bank), want.is_member_of(bank));
             }
         }
-        assert_eq!(index.populated(), 0b111);
+        assert_eq!(index.populated(), 0b1111);
+        // A channel is named by its bank and its position there.
+        assert_eq!(index.place_of(0), Some((BankId::new(0), 0)));
+        assert_eq!(index.place_of(17), Some((BankId::new(1), 1)));
+        assert_eq!(index.place_of(58), Some((BankId::new(3), 0)));
+        assert_eq!(index.place_of(59), None);
+        assert_eq!(index.index_of(BankId::new(2), 39), Some(57));
+        assert_eq!(index.index_of(BankId::new(2), 40), None);
+        assert_eq!(index.index_of(BankId::new(4), 0), None);
+        // A list channel's identifier is its position in its bank plus one.
+        assert_eq!(
+            index.channel_at(reader(&image), 17).unwrap().id(),
+            ChannelId::new(2)
+        );
         assert_eq!(
             index
                 .bank_name(reader(&image), BankId::new(0))
@@ -1409,18 +1458,70 @@ mod tests {
         assert_eq!(index.bank(reader(&image), BankId::new(2)), None);
         assert_eq!(index.plan(reader(&image), BankId::new(2)), Some(plan()));
         assert_eq!(index.plan(reader(&image), BankId::new(0)), None);
-        assert!(!index.is_generated(15));
-        assert!(index.is_generated(16));
-        assert!(!index.is_generated(16 + 40));
+        assert_eq!(index.plan(reader(&image), BankId::new(1)), None);
+    }
+
+    #[test]
+    fn every_channel_must_be_in_a_bank_and_a_bank_one_kind() {
+        let mut image = std::vec![0_u8; 8192];
+        let unbanked = record(channel(9, "AIR", 118_100_000, 118_100_000, None));
+        assert_eq!(
+            compile(
+                RadioConfig::conservative(),
+                &[],
+                &banks(),
+                &[unbanked],
+                &[],
+                &mut image
+            ),
+            Err(CompileError::UnbankedChannel(ChannelId::new(9)))
+        );
+        let in_plan_bank = record(channel(9, "AIR", 118_100_000, 118_100_000, Some(2)));
+        assert_eq!(
+            compile(
+                RadioConfig::conservative(),
+                &[],
+                &banks(),
+                &[in_plan_bank],
+                &[plan()],
+                &mut image
+            ),
+            Err(CompileError::MixedBank(BankId::new(2)))
+        );
+        // A named bank with nothing in it is left out.
+        let image = compiled(&[], &[plan()]);
+        let index = index(&image).expect("index");
+        assert_eq!(index.bank(reader(&image), BankId::new(0)), None);
+        assert_eq!(index.populated(), 0b100);
+    }
+
+    #[test]
+    fn banks_out_of_order_are_refused() {
+        // Two banks of one channel each, then their entries swapped.
+        let channels = vec_of([
+            channel(1, "A", 145_500_000, 145_500_000, Some(0)),
+            channel(2, "B", 145_500_000, 145_500_000, Some(1)),
+        ]);
+        let mut image = compiled(&channels, &[]);
+        let first = HEADER_LEN + RADIO_CONFIG_ENCODED_LEN + 1;
+        // Bank 0's entry is named PMR446: 6 + 6 + 30 + 1 + 2 bytes; bank 1's
+        // is unnamed: 6 + 30 + 1 + 2.
+        let (zero, one) = (6 + 6 + 30 + 3, 6 + 30 + 3);
+        assert_eq!(image.len(), first + zero + one);
+        let mut swapped = image[first + zero..].to_vec();
+        swapped.extend_from_slice(&image[first..first + zero]);
+        image[first..].copy_from_slice(&swapped);
+        reseal(&mut image);
+        assert_eq!(index(&image), Err(StorageError::NonCanonicalImage));
     }
 
     #[test]
     fn a_pmr_list_costs_its_names_and_short_frequencies() {
         let image = compiled(&pmr(), &[]);
-        // Header 16, config 16, no TX ranges 1, one named bank 3 + 6, block
-        // header 4, list header 30, then 16 records of a 5-byte name and a
-        // 2-byte frequency.
-        assert_eq!(image.len(), 16 + 16 + 1 + 1 + 3 + 6 + 4 + 30 + 16 * (5 + 2));
+        // Header 16, config 16, no TX ranges 1, the bank's entry 6 and name
+        // 6, list header 30, then 16 records of a 5-byte name and a 2-byte
+        // frequency.
+        assert_eq!(image.len(), 16 + 16 + 1 + 6 + 6 + 30 + 16 * (5 + 2));
     }
 
     #[test]
@@ -1429,13 +1530,14 @@ mod tests {
         // the PMR list that way: the level is the last field of each record,
         // so one byte follows each 7-byte record.
         let image = compiled(&pmr(), &[]);
-        let block = 16 + 16 + 1 + 1 + 3 + 6;
-        let records = block + 4 + 30;
+        let entry = 16 + 16 + 1;
+        let list = entry + 6 + 6;
+        let records = list + 30;
         let mut old = image[..records].to_vec();
-        let fields = u16::from_le_bytes([old[block + 4], old[block + 5]]) | super::SQUELCH;
-        old[block + 4..block + 6].copy_from_slice(&fields.to_le_bytes());
-        let body = u16::from_le_bytes([old[block + 2], old[block + 3]]) + 16;
-        old[block + 2..block + 4].copy_from_slice(&body.to_le_bytes());
+        let fields = u16::from_le_bytes([old[list], old[list + 1]]) | super::SQUELCH;
+        old[list..list + 2].copy_from_slice(&fields.to_le_bytes());
+        let body = u16::from_le_bytes([old[entry + 3], old[entry + 4]]) + 16;
+        old[entry + 3..entry + 5].copy_from_slice(&body.to_le_bytes());
         let payload = u32::from_le_bytes([old[8], old[9], old[10], old[11]]) + 16;
         old[8..12].copy_from_slice(&payload.to_le_bytes());
         for record in image[records..].chunks(7) {
@@ -1525,7 +1627,10 @@ mod tests {
         // still read as an unprogrammed radio.
         let empty = Index::empty();
         assert_eq!(empty.config, super::UNSET_CONFIG);
-        assert!(empty.names.iter().all(|name| *name == 0));
+        assert!(empty
+            .banks
+            .iter()
+            .all(|bank| *bank == super::BankSlot::default()));
         assert_eq!(empty.config(), radio_domain::RadioConfig::conservative());
         assert_ne!(
             super::UNSET_CONFIG,

@@ -868,6 +868,16 @@ impl ChannelRecord {
         self.id
     }
 
+    /// Returns this channel under another identifier, which may not be one
+    /// reserved for expanded channels.
+    pub const fn with_id(mut self, id: ChannelId) -> Result<Self, PlanError> {
+        if is_generated_channel_id(id) {
+            return Err(PlanError::ReservedChannelId);
+        }
+        self.id = id;
+        Ok(self)
+    }
+
     /// Returns the channel name.
     pub const fn name(self) -> ChannelName {
         self.name

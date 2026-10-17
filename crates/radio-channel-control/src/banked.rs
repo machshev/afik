@@ -41,6 +41,25 @@ pub trait ChannelSource {
         self.get(index)
             .is_some_and(|channel| channel.is_member_of(bank))
     }
+
+    /// Returns the bank of the channel at one index and its position there.
+    ///
+    /// This is how a selection is remembered: rewriting other banks moves a
+    /// channel's index but not its place. The default counts the bank's
+    /// channels before it; a source which keeps where each bank starts should
+    /// answer directly.
+    fn place_of(&self, index: u16) -> Option<(BankId, u16)> {
+        let bank = self.get(index)?.bank()?;
+        let before = (0..index).filter(|at| self.member_at(*at, bank)).count();
+        Some((bank, u16::try_from(before).ok()?))
+    }
+
+    /// Returns the index of one position in one bank, if the bank has it.
+    fn index_of(&self, bank: BankId, position: u16) -> Option<u16> {
+        (0..self.len())
+            .filter(|index| self.member_at(*index, bank))
+            .nth(usize::from(position))
+    }
 }
 
 /// A fixed-capacity channel store ordered by stable channel identifier.
@@ -465,28 +484,23 @@ impl<C: ChannelSource> BankedReceiveController<C> {
     /// move them off the channel they were listening to as a side effect of
     /// changing something else.
     ///
-    /// `keep` is the index they were on and the identifier that index named. It
-    /// is honoured only if that index still exists, still passes the bank
-    /// filter, and still carries that identifier — a configuration may have
-    /// been rewritten under it, and an index which now names a different
-    /// channel is not where the operator was. Anything else falls back to the
-    /// first eligible channel, which is what a fresh activation would have
-    /// given them.
+    /// `keep` is the bank they were on and their position in it, which
+    /// survives other banks being rewritten (`ADR-115`). It is honoured only
+    /// if that bank still has that position and it passes the bank filter.
+    /// Anything else falls back to the first eligible channel, which is what a
+    /// fresh activation would have given them.
     pub fn activate_at(
         source: C,
         config: RadioConfig,
         bank: Option<BankId>,
-        keep: Option<(u16, ChannelId)>,
+        keep: Option<(BankId, u16)>,
     ) -> Result<(Self, ReceiveUpdate), ReceiveError> {
         let config = config.validate().map_err(ReceiveError::InvalidConfig)?;
-        let kept = keep.filter(|(index, id)| {
-            bank.is_none_or(|bank| source.member_at(*index, bank))
-                && source
-                    .get(*index)
-                    .is_some_and(|channel| channel.id() == *id)
-        });
+        let kept = keep
+            .and_then(|(kept, position)| source.index_of(kept, position))
+            .filter(|index| bank.is_none_or(|bank| source.member_at(*index, bank)));
         let index = match kept {
-            Some((index, _)) => index,
+            Some(index) => index,
             None => first_member(&source, bank).ok_or(ReceiveError::NoEligibleChannel)?,
         };
         let channel = source.get(index).ok_or(ReceiveError::NoEligibleChannel)?;
@@ -538,6 +552,11 @@ impl<C: ChannelSource> BankedReceiveController<C> {
     /// Returns the currently selected memory channel.
     pub const fn channel(&self) -> ChannelRecord {
         self.channel
+    }
+
+    /// Returns the selected memory channel's bank and its position there.
+    pub fn place(&self) -> Option<(BankId, u16)> {
+        self.source.place_of(self.index)
     }
 
     /// Returns the global radio configuration in use.
@@ -1639,7 +1658,7 @@ mod tests {
 
         // The operator is on the third channel, which is what a rebuild has to
         // give back rather than the first one.
-        let kept = Some((2, ChannelId::new(3)));
+        let kept = Some((BankId::new(0), 2));
         let (controller, update) =
             BankedReceiveController::activate_at(memory, config, None, kept).unwrap();
         assert_eq!(controller.index(), 2);
@@ -1656,26 +1675,15 @@ mod tests {
         let (fresh, _) = BankedReceiveController::activate_at(memory, config, None, None).unwrap();
         assert_eq!(fresh.index(), 0);
 
-        // An index which now names a different channel is not where the
-        // operator was, so a configuration rewritten underneath them falls back
-        // rather than landing on a channel nobody chose.
-        let (moved, _) = BankedReceiveController::activate_at(
-            memory,
-            config,
-            None,
-            Some((2, ChannelId::new(9))),
-        )
-        .unwrap();
+        // A bank the configuration no longer has is not where the operator
+        // was, and neither is a position past the end of a bank which shrank.
+        let (moved, _) =
+            BankedReceiveController::activate_at(memory, config, None, Some((BankId::new(5), 0)))
+                .unwrap();
         assert_eq!(moved.index(), 0);
-
-        // Neither is an index past the end of a configuration which shrank.
-        let (gone, _) = BankedReceiveController::activate_at(
-            memory,
-            config,
-            None,
-            Some((99, ChannelId::new(3))),
-        )
-        .unwrap();
+        let (gone, _) =
+            BankedReceiveController::activate_at(memory, config, None, Some((BankId::new(0), 99)))
+                .unwrap();
         assert_eq!(gone.index(), 0);
 
         // A kept channel outside the active bank filter is not eligible, so the
@@ -1687,10 +1695,27 @@ mod tests {
             banked,
             config,
             Some(BankId::new(1)),
-            Some((0, ChannelId::new(1))),
+            Some((BankId::new(0), 0)),
         )
         .unwrap();
         assert_eq!(filtered.channel().id(), ChannelId::new(2));
+
+        // A place survives a bank inserted before it: the channel moves to a
+        // later index but keeps its bank and position.
+        let mut grown = ChannelMemory::<8>::new();
+        grown.insert(channel(2, 145_100_000, Some(0), 0)).unwrap();
+        grown.insert(channel(3, 145_200_000, Some(1), 0)).unwrap();
+        grown.insert(channel(4, 145_300_000, Some(1), 0)).unwrap();
+        let (before, _) =
+            BankedReceiveController::activate_at(grown, config, None, Some((BankId::new(1), 1)))
+                .unwrap();
+        assert_eq!(before.place(), Some((BankId::new(1), 1)));
+        assert_eq!(before.index(), 2);
+        grown.insert(channel(1, 145_000_000, Some(0), 0)).unwrap();
+        let (after, _) =
+            BankedReceiveController::activate_at(grown, config, None, before.place()).unwrap();
+        assert_eq!(after.index(), 3);
+        assert_eq!(after.channel().id(), ChannelId::new(4));
     }
 
     /// A source which counts every record it is asked to build.

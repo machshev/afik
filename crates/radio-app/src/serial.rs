@@ -296,7 +296,7 @@ mod tests {
             power: PowerLevel::Low1,
             step: FrequencyStep::from_hz(12_500).expect("step"),
             flags: ChannelFlags::default(),
-            bank: None,
+            bank: Some(radio_domain::BankId::new(0)),
         })
         .expect("channel")
     }

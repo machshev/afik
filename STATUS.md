@@ -131,6 +131,21 @@ confirmed by `identify` first, CRC-32 `e0d9ccc2`, 240/240 pages
 acknowledged, not read back). Next (step 3): time a scan of the 59-channel
 bank, and key a PMR446 channel to check it still stops there.
 
+**`BANKS-073` is active alongside** (2026-10-17, operator request,
+`ADR-115`): step 1 done. Radio image format 7: every channel is in a bank,
+each bank is one block (list or plan) in its bank-table entry, and the
+compiler refuses a channel in no bank or a bank holding both. The radio's RAM
+index is a bank table (entry offset, first channel, count): `INDEX` is 128
+bytes, was 548. The controller restores a selection by bank and position
+(`ChannelSource::place_of`/`index_of`), and the place record (version 4)
+keeps them; an older record restores everything but its channel. Gate:
+`cargo fmt --all --check` clean, `cargo clippy --workspace --all-targets --
+-D warnings` clean, `cargo test --workspace --no-fail-fast` 887 passed 1
+failed 3 ignored (the failure is `44f4165`'s CB class making class 7 valid in
+a storage test), K5 release builds (flash end `0xef40`, 192 bytes under the
+limit) and K1 release builds. Next (step 2): project object format 5 with a
+bank number, and the one-way converter.
+
 **`GEN-072` is active alongside** (2026-10-16, operator request,
 `ADR-111`): step 1 done. The Banks tab has UK gateways and UK beacons tabs,
 both built from the ETCC list the repeaters sync: gateways an FM simplex

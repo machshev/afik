@@ -1,9 +1,9 @@
 //! The programmed configuration this radio runs.
 //!
-//! The host compiles a project into a bank-grouped image (storage format 5,
+//! The host compiles a project into a bank-grouped image (storage format 7,
 //! `radio-storage::radio_image`) and writes it into the radio's memory
 //! (`ADR-100`). The radio validates it there and keeps only its
-//! [`ImageIndex`] — a few bytes per bank block — in RAM; a channel is read
+//! [`ImageIndex`] — six bytes per bank — in RAM; a channel is read
 //! from memory when it is shown or tuned. [`Programmed`] is the small summary
 //! the tasks pass around.
 //!

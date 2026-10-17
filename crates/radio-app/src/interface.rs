@@ -44,7 +44,7 @@ use radio_tx_policy::{TxDenied, TxPolicy, TxRequest, TxState};
 use crate::configuration::Programmed;
 use crate::drivers::{BatterySense, Broadcast, Display, Keypad, Memory, Speaker, Target};
 use crate::keys::{Debouncer, Edge};
-use crate::operator_state::{OperatorState, OtherSlot};
+use crate::operator_state::{ChannelPlace, OperatorState, OtherSlot};
 use crate::serial::read_image;
 use crate::state::{
     boot_times, bus_available, mark_boot, now_ms, Publication, TaskCell, BATTERY_CALIBRATION,
@@ -769,37 +769,44 @@ impl<M: Memory> ChannelSource for Listening<M> {
             Self::Memory(..) => INDEX.with(|image| image.member_at(index, bank)),
         }
     }
-}
 
-/// The memory channel the operator last selected.
-///
-/// The index is how selection addresses it and the identifier is how a restore
-/// checks the index still names the same channel, so both are kept.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct Selected {
-    index: u16,
-    channel_id: u16,
-}
-
-impl Selected {
-    /// Returns the memory selection one retained place names, if it named one.
-    fn from_place(place: OperatorState) -> Option<Self> {
-        place.memory_mode.then_some(Self {
-            index: place.index,
-            channel_id: place.channel_id,
-        })
+    fn place_of(&self, index: u16) -> Option<(BankId, u16)> {
+        match self {
+            Self::Vfo(_) => None,
+            Self::Memory(..) => INDEX.with(|image| image.place_of(index)),
+        }
     }
 
-    /// Returns the memory selection of the slot not selected, if it had one.
-    fn from_other(place: OperatorState) -> Option<Self> {
-        place
-            .other
-            .filter(|other| other.memory_mode)
-            .map(|other| Self {
-                index: other.index,
-                channel_id: other.channel_id,
-            })
+    fn index_of(&self, bank: BankId, position: u16) -> Option<u16> {
+        match self {
+            Self::Vfo(_) => None,
+            Self::Memory(..) => INDEX.with(|image| image.index_of(bank, position)),
+        }
     }
+}
+
+/// The memory channel the operator last selected, by bank and position, so
+/// a host rewriting other banks does not move it (`ADR-115`).
+type Selected = ChannelPlace;
+
+/// Returns the memory selection one retained place names, if it named one.
+fn selected_of(place: OperatorState) -> Option<Selected> {
+    place.channel.filter(|_| place.memory_mode)
+}
+
+/// Returns the memory selection of the slot not selected, if it had one.
+fn other_selected_of(place: OperatorState) -> Option<Selected> {
+    place
+        .other
+        .filter(|other| other.memory_mode)
+        .and_then(|other| other.channel)
+}
+
+/// Where a controller's memory channel is, in the form a place keeps.
+fn selected_in<M: Memory>(controller: &BankedReceiveController<Listening<M>>) -> Option<Selected> {
+    controller
+        .place()
+        .map(|(bank, position)| ChannelPlace { bank, position })
 }
 
 /// Applies one controller update: the tuning it asks for, and the timer it arms.
@@ -932,8 +939,8 @@ fn adopt_publication(
     adopt_settings(shell, programmed);
     if place.is_some() {
         adopt_place(shell, programmed, place);
-        *selected = place.and_then(Selected::from_place);
-        *other_selected = place.and_then(Selected::from_other);
+        *selected = place.and_then(selected_of);
+        *other_selected = place.and_then(other_selected_of);
     } else if was_empty && !programmed.is_empty() {
         shell.select_memory();
         *selected = None;
@@ -995,7 +1002,7 @@ fn activate_slot<M: Memory>(
             (Listening::Memory(*programmed, memory), slot.bank_filter)
         }
     };
-    let keep = keep.map(|kept| (kept.index, ChannelId::new(kept.channel_id)));
+    let keep = keep.map(|kept| (kept.bank, kept.position));
     let (controller, update) =
         BankedReceiveController::activate_at(memory, programmed.config(), bank, keep).ok()?;
     Some((
@@ -1596,28 +1603,19 @@ pub async fn run<D, K, B, F, W, S, V, M>(
         // the top of the list.
         if let Some((controller, _)) = activation.as_ref() {
             if matches!(shell.mode(), Mode::Memory) {
-                selected = Some(Selected {
-                    index: controller.index(),
-                    channel_id: controller.channel().id().get(),
-                });
+                selected = selected_in(controller);
             }
         }
         let other_slot = shell.other_slot();
         if let Some((controller, _)) = other_activation.as_ref() {
             if matches!(other_slot.mode, Mode::Memory) {
-                other_selected = Some(Selected {
-                    index: controller.index(),
-                    channel_id: controller.channel().id().get(),
-                });
+                other_selected = selected_in(controller);
             }
         }
-        let kept = selected.unwrap_or_default();
-        let other_kept = other_selected.unwrap_or_default();
         let place = OperatorState {
             memory_mode: matches!(shell.mode(), Mode::Memory),
             bank: shell.bank_filter(),
-            index: kept.index,
-            channel_id: kept.channel_id,
+            channel: selected,
             vfo_hz: shell.vfo_hz(),
             step_index: u8::try_from(shell.step_index()).unwrap_or(0),
             squelch: Some(shell.squelch()),
@@ -1625,8 +1623,7 @@ pub async fn run<D, K, B, F, W, S, V, M>(
             other: Some(OtherSlot {
                 memory_mode: matches!(other_slot.mode, Mode::Memory),
                 bank: other_slot.bank_filter,
-                index: other_kept.index,
-                channel_id: other_kept.channel_id,
+                channel: other_selected,
                 vfo_hz: other_slot.vfo_hz,
                 step_index: u8::try_from(other_slot.step_index).unwrap_or(0),
             }),
@@ -2404,7 +2401,7 @@ mod tests {
         Selected,
     };
     use crate::configuration::Programmed;
-    use crate::operator_state::OperatorState;
+    use crate::operator_state::{ChannelPlace, OperatorState};
     use radio_domain::BankId;
     use radio_domain::PowerLevel;
     use radio_platform::operator_shell::{Mode, Shell};
@@ -2433,8 +2430,10 @@ mod tests {
         OperatorState {
             memory_mode,
             bank: Some(BankId::new(1)),
-            index: 3,
-            channel_id: 9,
+            channel: Some(ChannelPlace {
+                bank: BankId::new(1),
+                position: 3,
+            }),
             vfo_hz: VFO_HZ,
             step_index: 2,
             squelch: None,
@@ -2535,8 +2534,8 @@ mod tests {
         assert_eq!(
             selected,
             Some(Selected {
-                index: 3,
-                channel_id: 9
+                bank: BankId::new(1),
+                position: 3,
             })
         );
     }
@@ -2550,8 +2549,10 @@ mod tests {
             other: Some(OtherSlot {
                 memory_mode: true,
                 bank: Some(BankId::new(1)),
-                index: 2,
-                channel_id: 7,
+                channel: Some(ChannelPlace {
+                    bank: BankId::new(0),
+                    position: 2,
+                }),
                 vfo_hz: 433_500_000,
                 step_index: 0,
             }),
@@ -2580,8 +2581,8 @@ mod tests {
         assert_eq!(
             other_selected,
             Some(Selected {
-                index: 2,
-                channel_id: 7
+                bank: BankId::new(0),
+                position: 2,
             })
         );
     }
@@ -2641,7 +2642,7 @@ mod tests {
             &mut None,
         );
         assert_eq!(shell.bank_filter(), Some(BankId::new(1)));
-        assert_eq!(selected.map(|kept| kept.index), Some(3));
+        assert_eq!(selected.map(|kept| kept.position), Some(3));
     }
     #[test]
     fn programmed_dual_watch_applies_and_the_handset_switch_survives_a_restart() {

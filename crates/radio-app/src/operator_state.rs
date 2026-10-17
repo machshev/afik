@@ -31,16 +31,22 @@ const LEGACY_BYTES: usize = 16;
 /// Record version this image writes.
 ///
 /// An erased byte is `0xFF`, so a version which is never `0xFF` is also how an
-/// unwritten slot is told from a written one. Version 3 is two slots wide and
-/// adds the selected slot and dual watch; version 2 added the handset squelch.
-/// Versions 1 and 2 are still read, as slot A with dual watch off.
-const RECORD_VERSION: u8 = 3;
+/// unwritten slot is told from a written one. Version 4 names each slot's
+/// channel by bank and position (`ADR-115`) where version 3 held a radio-wide
+/// index; version 3 is two slots wide and adds the selected slot and dual
+/// watch; version 2 added the handset squelch. Versions 1 to 3 are still read,
+/// without their channel, and versions 1 and 2 as slot A with dual watch off.
+const RECORD_VERSION: u8 = 4;
+/// The two-slot version that named a channel by its radio-wide index.
+const RECORD_VERSION_BY_INDEX: u8 = 3;
 /// The sixteen-byte version with the squelch.
 const RECORD_VERSION_WITH_SQUELCH: u8 = 2;
 /// The version before the squelch was kept here.
 const RECORD_VERSION_WITHOUT_SQUELCH: u8 = 1;
 /// The squelch byte of a record which holds none.
 const NO_SQUELCH: u8 = 0xFF;
+/// The bank field of a slot which names no channel.
+const NO_CHANNEL: u16 = 0xFFFF;
 
 /// The operator was listening to programmed channels rather than the VFO.
 const MEMORY_MODE: u8 = 0b0000_0001;
@@ -65,6 +71,38 @@ const TX_DISABLED_CLASS_7: u8 = 0b0001_0000;
 /// The [`ClassSet`] bit of class 7.
 const CLASS_7_BIT: u8 = 1 << 7;
 
+/// A memory channel, named by its bank and its position there.
+///
+/// A host may reprogram the radio between one power cycle and the next; other
+/// banks changing then moves nothing, and a bank which lost the position
+/// starts its slot from the top of the list.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ChannelPlace {
+    /// The bank holding the channel.
+    pub bank: BankId,
+    /// Zero-based position in that bank.
+    pub position: u16,
+}
+
+impl ChannelPlace {
+    /// Writes the place, or its absence, into four bytes.
+    fn encode(place: Option<Self>, bytes: &mut [u8]) {
+        let (position, bank) =
+            place.map_or((0, NO_CHANNEL), |place| (place.position, place.bank.get()));
+        bytes[..2].copy_from_slice(&position.to_le_bytes());
+        bytes[2..4].copy_from_slice(&bank.to_le_bytes());
+    }
+
+    /// Reads what [`Self::encode`] wrote.
+    fn decode(bytes: &[u8]) -> Option<Self> {
+        let bank = u16::from_le_bytes([bytes[2], bytes[3]]);
+        (bank != NO_CHANNEL).then(|| Self {
+            bank: BankId::new(bank),
+            position: u16::from_le_bytes([bytes[0], bytes[1]]),
+        })
+    }
+}
+
 /// Where the slot not selected was left.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OtherSlot {
@@ -72,11 +110,8 @@ pub struct OtherSlot {
     pub memory_mode: bool,
     /// The bank filtering its channels, if one was.
     pub bank: Option<BankId>,
-    /// Zero-based selection index of its channel.
-    pub index: u16,
-    /// Identifier of the channel that index named, checked as
-    /// [`OperatorState::channel_id`] is.
-    pub channel_id: u16,
+    /// Its memory channel, if it had one.
+    pub channel: Option<ChannelPlace>,
     /// Its VFO frequency in hertz.
     pub vfo_hz: u32,
     /// Index into the selectable tuning steps.
@@ -90,15 +125,9 @@ pub struct OperatorState {
     pub memory_mode: bool,
     /// The bank filtering the channel view, if one was in force.
     pub bank: Option<BankId>,
-    /// Zero-based selection index of the active channel.
-    pub index: u16,
-    /// Identifier of the channel that index named when this was written.
-    ///
-    /// A host may reprogram the radio between one power cycle and the next, and
-    /// then the index alone would restore a channel the operator never chose.
-    /// Restoring checks the identifier still matches and starts from the top of
-    /// the list when it does not.
-    pub channel_id: u16,
+    /// The memory channel selected, if one was; kept while the VFO is in use
+    /// so leaving it returns there.
+    pub channel: Option<ChannelPlace>,
     /// The VFO frequency in hertz.
     pub vfo_hz: u32,
     /// Index into the selectable tuning steps.
@@ -138,8 +167,7 @@ impl OperatorState {
         }
         flags |= (self.tx_disabled.bits() << 1) & TX_DISABLED_BITS;
         bytes[1] = flags;
-        bytes[4..6].copy_from_slice(&self.index.to_le_bytes());
-        bytes[6..8].copy_from_slice(&self.channel_id.to_le_bytes());
+        ChannelPlace::encode(self.channel, &mut bytes[4..8]);
         bytes[8..12].copy_from_slice(&self.vfo_hz.to_le_bytes());
         bytes[12] = self.step_index;
         bytes[13] = self.squelch.map_or(NO_SQUELCH, SquelchLevel::get);
@@ -152,8 +180,7 @@ impl OperatorState {
                 flags |= OTHER_BANK_FILTERED;
                 bytes[15..17].copy_from_slice(&bank.get().to_le_bytes());
             }
-            bytes[17..19].copy_from_slice(&other.index.to_le_bytes());
-            bytes[19..21].copy_from_slice(&other.channel_id.to_le_bytes());
+            ChannelPlace::encode(other.channel, &mut bytes[17..21]);
             bytes[21..25].copy_from_slice(&other.vfo_hz.to_le_bytes());
             bytes[25] = other.step_index;
         } else {
@@ -185,7 +212,7 @@ impl OperatorState {
     #[must_use]
     pub fn decode(bytes: &[u8; OPERATOR_STATE_BYTES]) -> Option<Self> {
         let covered = match bytes[0] {
-            RECORD_VERSION => OPERATOR_STATE_BYTES,
+            RECORD_VERSION | RECORD_VERSION_BY_INDEX => OPERATOR_STATE_BYTES,
             RECORD_VERSION_WITH_SQUELCH | RECORD_VERSION_WITHOUT_SQUELCH => LEGACY_BYTES,
             _ => return None,
         };
@@ -194,12 +221,14 @@ impl OperatorState {
             return None;
         }
         let flags = bytes[1];
+        // An older record's channel was a radio-wide index into an image this
+        // one no longer reads, so the slot starts from the top of its list.
+        let by_place = bytes[0] == RECORD_VERSION;
         let mut state = Self {
             memory_mode: flags & MEMORY_MODE != 0,
             bank: (flags & BANK_FILTERED != 0)
                 .then(|| BankId::new(u16::from_le_bytes([bytes[2], bytes[3]]))),
-            index: u16::from_le_bytes([bytes[4], bytes[5]]),
-            channel_id: u16::from_le_bytes([bytes[6], bytes[7]]),
+            channel: ChannelPlace::decode(&bytes[4..8]).filter(|_| by_place),
             vfo_hz: u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]),
             step_index: bytes[12],
             squelch: if bytes[0] == RECORD_VERSION_WITHOUT_SQUELCH {
@@ -212,7 +241,7 @@ impl OperatorState {
             b_selected: false,
             dual_watch: false,
         };
-        if bytes[0] == RECORD_VERSION {
+        if bytes[0] == RECORD_VERSION || bytes[0] == RECORD_VERSION_BY_INDEX {
             let flags = bytes[14];
             state.b_selected = flags & B_SELECTED != 0;
             state.dual_watch = flags & DUAL_WATCH != 0;
@@ -223,8 +252,7 @@ impl OperatorState {
                 memory_mode: flags & OTHER_MEMORY_MODE != 0,
                 bank: (flags & OTHER_BANK_FILTERED != 0)
                     .then(|| BankId::new(u16::from_le_bytes([bytes[15], bytes[16]]))),
-                index: u16::from_le_bytes([bytes[17], bytes[18]]),
-                channel_id: u16::from_le_bytes([bytes[19], bytes[20]]),
+                channel: ChannelPlace::decode(&bytes[17..21]).filter(|_| by_place),
                 vfo_hz: u32::from_le_bytes([bytes[21], bytes[22], bytes[23], bytes[24]]),
                 step_index: bytes[25],
             });
@@ -263,7 +291,10 @@ fn crc16(bytes: &[u8]) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use super::{crc16, is_erased, OperatorState, OtherSlot, LEGACY_BYTES, OPERATOR_STATE_BYTES};
+    use super::{
+        crc16, is_erased, ChannelPlace, OperatorState, OtherSlot, LEGACY_BYTES,
+        OPERATOR_STATE_BYTES,
+    };
     use radio_domain::{BankId, SquelchLevel, TxClass};
     use radio_tx_policy::ClassSet;
 
@@ -271,8 +302,10 @@ mod tests {
         OperatorState {
             memory_mode: true,
             bank: Some(BankId::new(3)),
-            index: 41,
-            channel_id: 0x8103,
+            channel: Some(ChannelPlace {
+                bank: BankId::new(3),
+                position: 41,
+            }),
             vfo_hz: 433_500_000,
             step_index: 2,
             squelch: Some(SquelchLevel::new(4).expect("level")),
@@ -280,8 +313,10 @@ mod tests {
             other: Some(OtherSlot {
                 memory_mode: true,
                 bank: Some(BankId::new(7)),
-                index: 5,
-                channel_id: 0x8207,
+                channel: Some(ChannelPlace {
+                    bank: BankId::new(200),
+                    position: 5,
+                }),
                 vfo_hz: 145_500_000,
                 step_index: 1,
             }),
@@ -345,15 +380,16 @@ mod tests {
                 ..state()
             },
             OperatorState {
-                index: 0,
-                channel_id: 0,
+                channel: None,
                 vfo_hz: 1_000_000,
                 step_index: 0,
                 ..state()
             },
             OperatorState {
-                index: u16::MAX,
-                channel_id: u16::MAX,
+                channel: Some(ChannelPlace {
+                    bank: BankId::new(253),
+                    position: u16::MAX,
+                }),
                 vfo_hz: u32::MAX,
                 step_index: u8::MAX,
                 ..state()
@@ -368,8 +404,7 @@ mod tests {
                 other: Some(OtherSlot {
                     memory_mode: false,
                     bank: None,
-                    index: 0,
-                    channel_id: 0,
+                    channel: None,
                     vfo_hz: 433_500_000,
                     step_index: 0,
                 }),
@@ -426,8 +461,24 @@ mod tests {
     #[test]
     fn a_foreign_version_is_refused() {
         let mut encoded = state().encode();
-        encoded[0] = 4;
+        encoded[0] = 5;
         assert_eq!(OperatorState::decode(&encoded), None);
+    }
+
+    /// A radio upgraded from an image that named channels by a radio-wide
+    /// index keeps everything but the channels.
+    #[test]
+    fn a_version_three_record_is_read_without_its_channels() {
+        let mut encoded = state().encode();
+        encoded[0] = 3;
+        let checksum = crc16(&encoded[..OPERATOR_STATE_BYTES - 2]);
+        encoded[OPERATOR_STATE_BYTES - 2..].copy_from_slice(&checksum.to_le_bytes());
+        let mut expected = state();
+        expected.channel = None;
+        if let Some(other) = expected.other.as_mut() {
+            other.channel = None;
+        }
+        assert_eq!(OperatorState::decode(&encoded), Some(expected));
     }
 
     /// A radio upgraded from an image without the squelch keeps its place.
@@ -436,6 +487,7 @@ mod tests {
         assert_eq!(
             OperatorState::decode(&legacy(state(), 1)),
             Some(OperatorState {
+                channel: None,
                 squelch: None,
                 other: None,
                 b_selected: false,
@@ -452,6 +504,7 @@ mod tests {
         assert_eq!(
             OperatorState::decode(&legacy(state(), 2)),
             Some(OperatorState {
+                channel: None,
                 other: None,
                 b_selected: false,
                 dual_watch: false,
