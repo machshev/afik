@@ -136,9 +136,49 @@ pub struct Slot {
     pub vfo_hz: u32,
     /// Index into [`VFO_STEPS_HZ`].
     pub step_index: usize,
-    /// The VFO's tone, received and transmitted: none, or one the F 4 catch
-    /// heard.
-    pub vfo_tone: Tone,
+    /// The VFO's tones and power.
+    pub vfo: VfoSettings,
+}
+
+/// What a VFO receives and transmits with, beside its frequency and step:
+/// set from the settings menu or by the F 4 catch, and kept in the radio's
+/// place record for each slot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VfoSettings {
+    /// The tone that opens its squelch, or none for any carrier.
+    pub rx_tone: Tone,
+    /// The tone it transmits.
+    pub tx_tone: Tone,
+    /// Its TX power level, or `None` for the programmed default.
+    pub power: Option<u8>,
+}
+
+impl VfoSettings {
+    /// No tones, at the programmed default power.
+    pub const DEFAULT: Self = Self {
+        rx_tone: Tone::None,
+        tx_tone: Tone::None,
+        power: None,
+    };
+
+    /// The settings with a power level no target offers dropped, as a record
+    /// from another image may hold one.
+    #[must_use]
+    pub const fn checked(self) -> Self {
+        Self {
+            power: match self.power {
+                Some(level) if level < TX_POWER_LEVELS => Some(level),
+                _ => None,
+            },
+            ..self
+        }
+    }
+}
+
+impl Default for VfoSettings {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
 }
 
 impl Slot {
@@ -148,7 +188,7 @@ impl Slot {
         bank_filter: None,
         vfo_hz: VFO_DEFAULT_HZ,
         step_index: 1,
-        vfo_tone: Tone::None,
+        vfo: VfoSettings::DEFAULT,
     };
 
     /// Returns the VFO tuning step in hertz.
@@ -428,7 +468,7 @@ pub struct Shell {
     group_banks: BankSet,
     source_cursor: usize,
     vfo_hz: u32,
-    vfo_tone: Tone,
+    vfo: VfoSettings,
     step_index: usize,
     step_cursor: usize,
     settings_cursor: usize,
@@ -484,7 +524,7 @@ impl Shell {
             group_banks: BankSet::EMPTY,
             source_cursor: 0,
             vfo_hz: VFO_DEFAULT_HZ,
-            vfo_tone: Tone::None,
+            vfo: VfoSettings::DEFAULT,
             step_index: 1,
             step_cursor: 1,
             settings_cursor: 0,
@@ -728,7 +768,7 @@ impl Shell {
             bank_filter: self.bank_filter,
             vfo_hz: self.vfo_hz,
             step_index: self.step_index,
-            vfo_tone: self.vfo_tone,
+            vfo: self.vfo,
         }
     }
 
@@ -749,10 +789,10 @@ impl Shell {
         self.dual_watch = on;
     }
 
-    /// Returns the tone the selected slot's VFO receives and transmits with.
+    /// Returns the selected slot's VFO tones and power.
     #[must_use]
-    pub const fn vfo_tone(&self) -> Tone {
-        self.vfo_tone
+    pub const fn vfo(&self) -> VfoSettings {
+        self.vfo
     }
 
     /// Puts a caught frequency in the selected slot's VFO, with the caught
@@ -769,7 +809,9 @@ impl Shell {
         }
         self.mode = Mode::Vfo;
         self.vfo_hz = hertz;
-        self.vfo_tone = tone.unwrap_or(Tone::None);
+        let tone = tone.unwrap_or(Tone::None);
+        self.vfo.rx_tone = tone;
+        self.vfo.tx_tone = tone;
         self.entry = None;
         self.screen = Screen::Operating;
         true
@@ -796,7 +838,7 @@ impl Shell {
         self.mode = self.other.mode;
         self.bank_filter = self.other.bank_filter;
         self.vfo_hz = self.other.vfo_hz;
-        self.vfo_tone = self.other.vfo_tone;
+        self.vfo = self.other.vfo;
         self.step_index = self.other.step_index;
         self.step_cursor = self.step_index;
         self.other = selected;
@@ -988,17 +1030,19 @@ impl Shell {
         if other.step_index < VFO_STEPS_HZ.len() {
             self.other.step_index = other.step_index;
         }
+        self.other.vfo = other.vfo.checked();
         if !self.capabilities.vfo && self.other.mode == Mode::Vfo {
             self.other.mode = Mode::Memory;
         }
     }
 
-    /// Restores the VFO frequency and tuning step the operator last used.
+    /// Restores the VFO frequency, tuning step, tones and power the operator
+    /// last used.
     ///
     /// Both are checked rather than trusted: this comes from external memory,
     /// and a record from another image or a damaged one must leave the radio on
     /// its defaults instead of on a frequency it cannot represent.
-    pub fn restore_vfo(&mut self, vfo_hz: u32, step_index: usize) {
+    pub fn restore_vfo(&mut self, vfo_hz: u32, step_index: usize, vfo: VfoSettings) {
         if (VFO_MINIMUM_HZ..=VFO_MAXIMUM_HZ).contains(&vfo_hz) {
             self.vfo_hz = vfo_hz;
         }
@@ -1006,6 +1050,7 @@ impl Shell {
             self.step_index = step_index;
             self.step_cursor = step_index;
         }
+        self.vfo = vfo.checked();
     }
 
     /// Replaces the selectable banks after a configuration is programmed.
@@ -2544,7 +2589,8 @@ mod tests {
         assert!(shell.catch_to_vfo(438_437_500, Some(Tone::Ctcss(1567))));
         assert_eq!(shell.mode(), Mode::Vfo);
         assert_eq!(shell.vfo_hz(), 438_437_500);
-        assert_eq!(shell.vfo_tone(), Tone::Ctcss(1567));
+        assert_eq!(shell.vfo().rx_tone, Tone::Ctcss(1567));
+        assert_eq!(shell.vfo().tx_tone, Tone::Ctcss(1567));
         assert_eq!(shell.screen(), Screen::Operating);
         // Only from the catch.
         assert!(!shell.catch_to_vfo(145_500_000, None));
@@ -2556,15 +2602,15 @@ mod tests {
             shell.press(Key::Digit(2), 21, context(2, 0)),
             Intent::SwapSlot
         );
-        assert_eq!(shell.vfo_tone(), Tone::None);
-        assert_eq!(shell.other_slot().vfo_tone, Tone::Ctcss(1567));
+        assert_eq!(shell.vfo().tx_tone, Tone::None);
+        assert_eq!(shell.other_slot().vfo.tx_tone, Tone::Ctcss(1567));
         // An untoned catch clears it.
         shell.press(Key::Function, 22, context(2, 0));
         shell.press(Key::Digit(2), 23, context(2, 0));
         shell.press(Key::Function, 24, context(2, 0));
         shell.press(Key::Digit(4), 25, context(2, 0));
         assert!(shell.catch_to_vfo(145_500_000, None));
-        assert_eq!(shell.vfo_tone(), Tone::None);
+        assert_eq!(shell.vfo(), super::VfoSettings::DEFAULT);
     }
 
     #[test]

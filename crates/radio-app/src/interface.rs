@@ -913,7 +913,7 @@ fn adopt_settings(shell: &mut Shell, programmed: &Programmed) {
 /// to the top of their channel list, or dragged out of the VFO.
 fn adopt_place(shell: &mut Shell, programmed: &Programmed, place: Option<OperatorState>) {
     if let Some(place) = place {
-        shell.restore_vfo(place.vfo_hz, usize::from(place.step_index));
+        shell.restore_vfo(place.vfo_hz, usize::from(place.step_index), place.vfo);
         shell.set_tx_disabled(place.tx_disabled);
         shell.set_dual_watch(place.dual_watch);
         if let Some(other) = place.other {
@@ -931,7 +931,7 @@ fn adopt_place(shell: &mut Shell, programmed: &Programmed, place: Option<Operato
                     bank_filter: other.bank,
                     vfo_hz: other.vfo_hz,
                     step_index: usize::from(other.step_index),
-                    vfo_tone: Tone::None,
+                    vfo: other.vfo,
                 },
             );
         }
@@ -1044,7 +1044,8 @@ fn activate_slot<M: Memory>(
 /// The VFO is expressed as an ordinary simplex channel record so it reuses
 /// the whole programmed receive path unchanged; the programmed TX ranges
 /// decide whether it may transmit, as for any channel. It receives and
-/// transmits the slot's VFO tone.
+/// transmits the slot's VFO tones, at its VFO power or else `tx_power`, the
+/// programmed default.
 fn vfo_source<M>(slot: Slot, tx_power: u8) -> Option<Listening<M>> {
     let receive = Frequency::from_hz(slot.vfo_hz).ok()?;
     let step = FrequencyStep::from_hz(slot.vfo_step_hz()).ok()?;
@@ -1053,12 +1054,11 @@ fn vfo_source<M>(slot: Slot, tx_power: u8) -> Option<Listening<M>> {
         name: ChannelName::new("VFO").ok()?,
         receive,
         transmit: receive,
-        rx_tone: slot.vfo_tone,
-        tx_tone: slot.vfo_tone,
+        rx_tone: slot.vfo.rx_tone,
+        tx_tone: slot.vfo.tx_tone,
         modulation: Modulation::Fm,
         bandwidth: Bandwidth::Narrow,
-        // The VFO has no programmed power of its own, so it takes the default.
-        power: PowerLevel::try_from(tx_power).unwrap_or(PowerLevel::Low1),
+        power: PowerLevel::try_from(slot.vfo.power.unwrap_or(tx_power)).unwrap_or(PowerLevel::Low1),
         step,
         flags: ChannelFlags::default(),
         bank: None,
@@ -1307,7 +1307,7 @@ pub async fn run<D, K, B, F, W, S, V, M>(
                     .ok()
                     .map(TxSetup::simplex)
             },
-            |(controller, _)| Some(tx_setup(controller, shell.vfo_tone())),
+            |(controller, _)| Some(tx_setup(controller)),
         );
         if tx_setup != tx_tuned {
             tx_tuned = tx_setup;
@@ -1650,6 +1650,7 @@ pub async fn run<D, K, B, F, W, S, V, M>(
             channel: selected,
             vfo_hz: shell.vfo_hz(),
             step_index: u8::try_from(shell.step_index()).unwrap_or(0),
+            vfo: shell.vfo(),
             squelch: Some(shell.squelch()),
             tx_disabled: shell.tx_disabled(),
             other: Some(OtherSlot {
@@ -1658,6 +1659,7 @@ pub async fn run<D, K, B, F, W, S, V, M>(
                 channel: other_selected,
                 vfo_hz: other_slot.vfo_hz,
                 step_index: u8::try_from(other_slot.step_index).unwrap_or(0),
+                vfo: other_slot.vfo,
             }),
             b_selected: shell.active_slot() == SlotId::B,
             dual_watch: shell.dual_watch(),
@@ -1852,7 +1854,9 @@ pub async fn run<D, K, B, F, W, S, V, M>(
                 Watching::Selected => activation.as_mut(),
                 Watching::Other => other_activation.as_mut(),
             };
-            if let (Some(observation), Some((controller, _))) = (receiver.observe(Instant::now().as_millis()), tuned) {
+            if let (Some(observation), Some((controller, _))) =
+                (receiver.observe(Instant::now().as_millis()), tuned)
+            {
                 // Dual watch holds on a busy slot, judged on settled readings
                 // only, as a scan is.
                 watched_busy = settled && observation.squelch_open;
@@ -2037,13 +2041,11 @@ fn side_setup<M: Memory>(
 }
 
 /// What PTT transmits with: a memory channel's transmit frequency, bandwidth
-/// and TX tone, so a repeater channel keys its input; simplex on a frequency
-/// tuned away from the channel.
+/// and TX tone, so a repeater channel keys its input; simplex and untoned on
+/// a frequency tuned away from the channel. The handset's VFO is a channel
+/// of its own ([`vfo_source`]), so it sends its own tone.
 #[inline(never)]
-fn tx_setup<M: Memory>(
-    controller: &BankedReceiveController<Listening<M>>,
-    vfo_tone: Tone,
-) -> TxSetup {
+fn tx_setup<M: Memory>(controller: &BankedReceiveController<Listening<M>>) -> TxSetup {
     let setup = controller.setup();
     match controller.selection() {
         ChannelSelection::Memory { .. } => {
@@ -2058,7 +2060,6 @@ fn tx_setup<M: Memory>(
         ChannelSelection::Vfo => TxSetup {
             bandwidth: setup.bandwidth,
             modulation: setup.modulation,
-            tone: vfo_tone,
             ..TxSetup::simplex(setup.frequency)
         },
     }
@@ -2411,10 +2412,7 @@ fn slot_channel<'a, B: RegisterBus, S: Speaker, C: BroadcastChip, M: Memory>(
             || controller.setup().frequency,
             |_| channel.active().transmit,
         );
-    let tx_tone = match slot.mode {
-        Mode::Vfo => slot.vfo_tone,
-        Mode::Memory => channel.tx_tone(),
-    };
+    let tx_tone = channel.tx_tone();
     Some(SlotChannel {
         name: name.map_or(&[][..], |name| name.as_bytes()),
         frequency_hz: heard.as_hz(),
@@ -2492,8 +2490,8 @@ mod tests {
     use crate::configuration::Programmed;
     use crate::operator_state::{ChannelPlace, OperatorState};
     use radio_domain::BankId;
-    use radio_domain::PowerLevel;
-    use radio_platform::operator_shell::{Mode, Shell};
+    use radio_domain::{PowerLevel, Tone};
+    use radio_platform::operator_shell::{Mode, Shell, VfoSettings};
     use radio_platform::receive_app::Key;
 
     const VFO_HZ: u32 = 145_500_000;
@@ -2526,6 +2524,7 @@ mod tests {
             }),
             vfo_hz: VFO_HZ,
             step_index: 2,
+            vfo: VfoSettings::DEFAULT,
             squelch: None,
             tx_disabled: radio_tx_policy::ClassSet::NONE,
             other: None,
@@ -2645,9 +2644,19 @@ mod tests {
                 }),
                 vfo_hz: 433_500_000,
                 step_index: 0,
+                vfo: VfoSettings {
+                    rx_tone: Tone::None,
+                    tx_tone: Tone::Ctcss(1000),
+                    power: Some(1),
+                },
             }),
             b_selected: true,
             dual_watch: true,
+            vfo: VfoSettings {
+                rx_tone: Tone::Ctcss(885),
+                tx_tone: Tone::Ctcss(885),
+                power: None,
+            },
             ..place(false)
         };
         let mut shell = Shell::new();
@@ -2668,6 +2677,9 @@ mod tests {
         assert!(matches!(a.mode, Mode::Memory));
         assert_eq!(a.bank_filter, Some(BankId::new(1)));
         assert_eq!(a.vfo_hz, 433_500_000);
+        // Each slot's VFO keeps its tones and power across the power cycle.
+        assert_eq!(shell.vfo(), two_slots.vfo);
+        assert_eq!(Some(a.vfo), two_slots.other.map(|other| other.vfo));
         assert_eq!(
             other_selected,
             Some(Selected {
@@ -2851,20 +2863,34 @@ mod tests {
     }
 
     #[test]
-    fn a_caught_tone_is_the_vfos_receive_and_transmit_tone() {
-        use radio_domain::Tone;
+    fn the_vfo_takes_its_slots_tones_and_power() {
         use radio_platform::operator_shell::Slot;
 
         let slot = Slot {
             vfo_hz: 446_068_750,
-            vfo_tone: Tone::Ctcss(885),
+            vfo: VfoSettings {
+                rx_tone: Tone::Ctcss(885),
+                tx_tone: Tone::Ctcss(1567),
+                power: Some(4),
+            },
             ..Slot::VFO
         };
         let Some(Listening::Vfo(vfo)) = vfo_source::<()>(slot, 0) else {
             panic!("a VFO source");
         };
         assert_eq!(vfo.rx_tone(), Tone::Ctcss(885));
-        assert_eq!(vfo.tx_tone(), Tone::Ctcss(885));
+        assert_eq!(vfo.tx_tone(), Tone::Ctcss(1567));
+        assert_eq!(vfo.power(), PowerLevel::Mid);
+        // Without a power of its own it takes the programmed default.
+        let slot = Slot {
+            vfo: VfoSettings::DEFAULT,
+            ..slot
+        };
+        let Some(Listening::Vfo(vfo)) = vfo_source::<()>(slot, 2) else {
+            panic!("a VFO source");
+        };
+        assert_eq!(vfo.power(), PowerLevel::Low3);
+        assert_eq!(vfo.rx_tone(), Tone::None);
     }
 
     #[test]
@@ -2923,7 +2949,7 @@ mod tests {
                 None,
             )
             .unwrap();
-            tx_setup(&controller, Tone::None)
+            tx_setup(&controller)
         };
         let normal = setup(repeater(ChannelFlags::default()));
         assert_eq!(normal.channel.receive, hz(439_400_000));
@@ -2937,8 +2963,8 @@ mod tests {
         ));
         assert_eq!(reversed.channel.transmit, hz(439_400_000));
 
-        // In VFO mode the VFO's own tone goes out, simplex: the channel's
-        // split and tone are not the VFO's.
+        // Tuned away from the channel: simplex and untoned, as the channel's
+        // split and tone are not that frequency's.
         let (mut controller, _) = BankedReceiveController::activate(
             Listening::<NoMemory>::Vfo(repeater(ChannelFlags::default())),
             RadioConfig::conservative(),
@@ -2946,10 +2972,9 @@ mod tests {
         )
         .unwrap();
         controller.enter_vfo().unwrap();
-        let vfo = tx_setup(&controller, Tone::Ctcss(1567));
-        assert_eq!(vfo.tone, Tone::Ctcss(1567));
-        assert_eq!(vfo.channel.receive, vfo.channel.transmit);
-        assert_eq!(tx_setup(&controller, Tone::None).tone, Tone::None);
+        let tuned = tx_setup(&controller);
+        assert_eq!(tuned.tone, Tone::None);
+        assert_eq!(tuned.channel.receive, tuned.channel.transmit);
     }
 
     #[test]
