@@ -31,9 +31,9 @@ use crate::{
     map::{self, Layer, MapView, Pin, Site},
     marine::{self, MarineArea, MarineCache, MarineList},
     model::{
-        move_to, BankDraft, BankKind, ChannelDraft, ModelError, ProjectModel, StartDraft,
-        StorageSummary, ToneDraft, ToneKind, TxRangeDraft, MARINE_GROUP, MAX_PROJECT_IMAGE_BYTES,
-        RADIO_IMAGE_BYTES,
+        move_to, trailing_locator, BankDraft, BankKind, ChannelDraft, ModelError, ProjectModel,
+        StartDraft, StorageSummary, ToneDraft, ToneKind, TxRangeDraft, MARINE_GROUP,
+        MAX_PROJECT_IMAGE_BYTES, RADIO_IMAGE_BYTES,
     },
     presets::{satellite_bank, PRESETS, SATELLITE_PRESET, TX_RANGE_PRESETS},
     projects::ProjectStore,
@@ -986,7 +986,64 @@ impl StudioApp {
         let mut near = stations::strongest(taken, locator, self.receiver)?;
         let in_range = near.len();
         near.truncate(usize::from(self.station_area.max_channels));
-        let (project, bank_bytes) = self.with_bank(stations::station_bank(locator, &near));
+        // One bank holds the stations of every location it is filed under,
+        // and of each one-location bank an older studio made, rebuilt here
+        // with each frequency once, this locator's first.
+        let shared = |bank: &BankDraft| {
+            bank.name == stations::STATION_BANK || stations::is_located_station_bank(bank)
+        };
+        let mut locators = vec![locator.trim().to_ascii_uppercase()];
+        for bank in self.project.banks.iter().filter(|bank| shared(bank)) {
+            let filed = bank
+                .groups
+                .iter()
+                .filter_map(|group| self.project.groups.get(*group))
+                .map(|group| group.locator.clone());
+            for other in filed.chain(trailing_locator(&bank.name)) {
+                if !other.is_empty() && !locators.contains(&other) {
+                    locators.push(other);
+                }
+            }
+        }
+        let mut held = near.clone();
+        for other in &locators[1..] {
+            let taken = list.stations.iter().filter(|s| self.station_area.takes(s));
+            let Ok(mut there) = stations::strongest(taken, other, self.receiver) else {
+                continue;
+            };
+            there.truncate(usize::from(self.station_area.max_channels));
+            for station in there {
+                if held
+                    .iter()
+                    .all(|kept| kept.0.frequency_hz != station.0.frequency_hz)
+                {
+                    held.push(station);
+                }
+            }
+        }
+        let (mut project, bank_bytes) = self.with_bank(stations::station_bank(&held));
+        // The shared bank takes the place of each one-location bank, and is
+        // filed where each was.
+        let filed: Vec<usize> = project
+            .banks
+            .iter()
+            .filter(|old| stations::is_located_station_bank(old))
+            .flat_map(|old| old.groups.iter().copied())
+            .collect();
+        project
+            .banks
+            .retain(|old| !stations::is_located_station_bank(old));
+        if let Some(bank) = project
+            .banks
+            .iter_mut()
+            .find(|bank| bank.name == stations::STATION_BANK)
+        {
+            for group in filed {
+                if !bank.groups.contains(&group) {
+                    bank.groups.push(group);
+                }
+            }
+        }
         Ok(AreaPreview {
             in_range,
             taken: near.len(),
@@ -1052,9 +1109,11 @@ impl StudioApp {
         }
         self.take_generated(preview.project, false);
         self.status = format!(
-            "Added the {} strongest FM stations at {locator}, in frequency order (furthest \
-             transmitter {:.0} km).",
-            preview.taken, preview.furthest_km
+            "Added the {} strongest FM stations at {locator} to {}, in frequency order \
+             (furthest transmitter {:.0} km).",
+            preview.taken,
+            stations::STATION_BANK,
+            preview.furthest_km
         );
         if let Some(file) = &self.station_area_file {
             if let Err(error) = area.save(file) {
@@ -3363,8 +3422,8 @@ impl StudioApp {
                 .button("Add")
                 .on_hover_text(
                     "Adds the stations with the strongest estimated signal here (transmitter \
-                     power over distance squared) as one broadcast bank in frequency order, \
-                     one channel per station, replacing one for the same locator",
+                     power over distance squared) to the one FM STATIONS bank every location \
+                     shares, in frequency order with each frequency once",
                 )
                 .clicked()
             {
@@ -6837,6 +6896,64 @@ mod tests {
     }
 
     #[test]
+    fn every_locations_stations_share_one_bank_each_frequency_once() {
+        use crate::stations::{Station, StationKind, StationList};
+
+        let station = |name: &str, mhz: u32, latitude: f64| Station {
+            name: name.to_owned(),
+            station: name.to_owned(),
+            site: String::new(),
+            frequency_hz: mhz * 100_000,
+            erp_watts: 125_000.0,
+            height_m: None,
+            latitude,
+            longitude: -0.12,
+            kind: StationKind::Local,
+        };
+        let fm = |app: &StudioApp| -> Vec<String> {
+            let shared: Vec<_> = app
+                .project
+                .banks
+                .iter()
+                .filter(|b| b.name == "FM STATIONS")
+                .collect();
+            assert_eq!(shared.len(), 1);
+            shared[0].channels.iter().map(|c| c.name.clone()).collect()
+        };
+        // SOUTH is strongest at IO91WM, NORTH at IO94WA, both on 97.7 MHz.
+        let mut app = simulated("stations-shared");
+        app.stations = Some(StationList {
+            stations: vec![station("SOUTH", 977, 51.9), station("NORTH", 977, 54.0)],
+            synced: std::time::SystemTime::now(),
+        });
+        "IO91WM".clone_into(&mut app.repeater_area.locator);
+        app.station_area.kinds = [true; 6];
+        app.station_area.max_channels = 1;
+        app.add_stations();
+        assert_eq!(fm(&app), ["SOUTH"]);
+
+        // A one-location bank an older studio made is folded in, and the
+        // shared bank is filed where it was.
+        let mut old = app.project.banks.last().unwrap().clone();
+        "FM IO94WA".clone_into(&mut old.name);
+        old.groups.clear();
+        app.project.banks.push(old);
+        assert!(app.project.file_bank("FM IO94WA", "NORTH", "IO94WA", false));
+        app.add_stations();
+        assert!(app.project.banks.iter().all(|b| b.name != "FM IO94WA"));
+        let north = app.project.location("IO94WA").unwrap();
+        let home = app.project.location("IO91WM").unwrap();
+        let bank = app.project.banks.iter().find(|b| b.name == "FM STATIONS");
+        assert!(bank.is_some_and(|b| b.groups.contains(&north) && b.groups.contains(&home)));
+        assert_eq!(fm(&app), ["SOUTH"], "this locator's station keeps 97.7");
+
+        // On their own frequencies, each location's strongest is held.
+        app.stations.as_mut().unwrap().stations[1].frequency_hz = 100_900_000;
+        app.add_stations();
+        assert_eq!(fm(&app), ["SOUTH", "NORTH"]);
+    }
+
+    #[test]
     fn stations_near_the_locator_are_added_strongest_first_once_synced() {
         use crate::stations::{Station, StationArea, StationKind, StationList};
         use radio_domain::Modulation;
@@ -6887,7 +7004,7 @@ mod tests {
         app.station_area.max_channels = 1;
         app.add_stations();
         let bank = app.project.banks.last().unwrap();
-        assert_eq!(bank.name, "FM IO91WM");
+        assert_eq!(bank.name, "FM STATIONS");
         let names: Vec<_> = bank.channels.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, ["CLASSIC"]);
 

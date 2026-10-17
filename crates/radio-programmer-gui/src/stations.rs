@@ -15,11 +15,11 @@ use std::{
     time::SystemTime,
 };
 
-use radio_channel_plan::{SharedSettings, MAX_BANK_NAME_LEN, MAX_CHANNEL_NAME_LEN};
+use radio_channel_plan::{SharedSettings, MAX_CHANNEL_NAME_LEN};
 use radio_domain::{Bandwidth, Modulation, PowerLevel, BROADCAST_FIRST_HZ, BROADCAST_LAST_HZ};
 
 use crate::{
-    model::{format_mhz, BankDraft, BankKind, ChannelDraft},
+    model::{format_mhz, trailing_locator, BankDraft, BankKind, ChannelDraft},
     paths,
     receiver::Receiver,
     repeaters::{distance_km, fetch, locator_centre, sanitise},
@@ -335,11 +335,14 @@ pub fn strongest<'a>(
     Ok(near)
 }
 
+/// The one bank every location's FM stations share, so a station heard at
+/// several is kept once.
+pub const STATION_BANK: &str = "FM STATIONS";
+
 /// Builds the bank for the stations `strongest` chose, in frequency order, each
 /// played by the broadcast receiver and never transmitted (`ADR-105`).
-pub fn station_bank(locator: &str, near: &[(&Station, f64)]) -> BankDraft {
-    let mut name = format!("FM {}", locator.trim().to_ascii_uppercase());
-    name.truncate(MAX_BANK_NAME_LEN);
+pub fn station_bank(near: &[(&Station, f64)]) -> BankDraft {
+    let name = STATION_BANK.to_owned();
     let mut chosen: Vec<&Station> = near.iter().map(|(station, _)| *station).collect();
     chosen.sort_by_key(|station| station.frequency_hz);
     let channels = chosen
@@ -371,6 +374,15 @@ pub fn station_bank(locator: &str, near: &[(&Station, f64)]) -> BankDraft {
         channels,
         ..BankDraft::default()
     }
+}
+
+/// Whether `bank` is a station bank an older studio made for one location,
+/// such as `FM IO91WM`, which the shared [`STATION_BANK`] replaces.
+pub fn is_located_station_bank(bank: &BankDraft) -> bool {
+    bank.name.starts_with("FM ")
+        && trailing_locator(&bank.name).is_some()
+        && bank.modulation == Modulation::Broadcast
+        && bank.kind == BankKind::Named
 }
 
 /// The transmitters a sync read, and when the cache was written.
@@ -741,8 +753,8 @@ Classic,A,AN000001,90.7,CLASSIC,1,1,51,0\n";
         let stations = parse(VHF).unwrap();
         let mut near = strongest(&stations, "io91wm", Receiver::Handheld).unwrap();
         near.truncate(3);
-        let bank = station_bank("io91wm", &near);
-        assert_eq!(bank.name, "FM IO91WM");
+        let bank = station_bank(&near);
+        assert_eq!(bank.name, "FM STATIONS");
         let channels: Vec<_> = bank
             .channels
             .iter()
