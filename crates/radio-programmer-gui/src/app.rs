@@ -25,6 +25,7 @@ use crate::{
     airports::{self, AirportArea, AirportCache, AirportList, AirportOptions, Service},
     device::{DeviceChoice, DeviceChooser},
     flash_tab::FlashTab,
+    locators::{SavedLocator, SavedLocators},
     marine::{self, MarineArea, MarineCache, MarineList},
     model::{
         move_to, BankDraft, BankKind, ChannelDraft, ModelError, ProjectModel, StorageSummary,
@@ -353,6 +354,11 @@ pub struct StudioApp {
     /// The same for worldwide repeaters.
     world_bands: BandFilter,
     world_bands_file: Option<PathBuf>,
+    /// The locators the operator keeps, their state file, and the
+    /// description being typed for the current one.
+    saved_locators: SavedLocators,
+    saved_locators_file: Option<PathBuf>,
+    locator_description: String,
 }
 
 impl StudioApp {
@@ -365,6 +371,11 @@ impl StudioApp {
         if let Some(file) = &app.repeater_area_file {
             app.repeater_area = RepeaterArea::load(file);
         }
+        app.saved_locators_file = SavedLocators::file();
+        if let Some(file) = &app.saved_locators_file {
+            app.saved_locators = SavedLocators::load(file);
+        }
+        app.locator_description = app.saved_description();
         app.use_station_cache(StationCache::open());
         app.station_area_file = StationArea::file();
         if let Some(file) = &app.station_area_file {
@@ -1554,6 +1565,9 @@ impl StudioApp {
             world_area_file: None,
             world_bands: BandFilter::ALL,
             world_bands_file: None,
+            saved_locators: SavedLocators::default(),
+            saved_locators_file: None,
+            locator_description: String::new(),
         };
         if let Some(baud) = options.baud {
             app.chooser.baud = baud;
@@ -2500,9 +2514,101 @@ impl StudioApp {
                 )
                 .changed();
             if edited {
+                if self
+                    .saved_locators
+                    .find(&self.repeater_area.locator)
+                    .is_some()
+                {
+                    self.locator_description = self.saved_description();
+                }
                 self.remember_locator();
             }
+            let current = self.saved_locators.find(&self.repeater_area.locator);
+            let mut chosen = None;
+            ComboBox::from_id_salt("saved-locators")
+                .selected_text(current.map_or_else(|| "Saved...".to_owned(), SavedLocator::label))
+                .show_ui(ui, |ui| {
+                    for saved in &self.saved_locators.list {
+                        let selected = current.is_some_and(|c| c.locator == saved.locator);
+                        if ui.selectable_label(selected, saved.label()).clicked() {
+                            chosen = Some(saved.locator.clone());
+                        }
+                    }
+                })
+                .response
+                .on_hover_text("Chooses a saved locator");
+            if let Some(locator) = chosen {
+                self.choose_locator(&locator);
+            }
+            ui.add(
+                egui::TextEdit::singleline(&mut self.locator_description)
+                    .hint_text("Description, e.g. Home")
+                    .desired_width(140.0),
+            );
+            if ui
+                .button("Save")
+                .on_hover_text("Keeps this locator and its description in the dropdown")
+                .clicked()
+            {
+                self.save_locator();
+            }
+            // Always enabled: a disabled button cuts the Tab order short in
+            // egui 0.29, and Forget explains itself when nothing is saved.
+            if ui
+                .button("Forget")
+                .on_hover_text("Removes this locator from the dropdown")
+                .clicked()
+            {
+                self.forget_locator();
+            }
         });
+    }
+
+    /// The description kept for the current locator, else none.
+    fn saved_description(&self) -> String {
+        self.saved_locators
+            .find(&self.repeater_area.locator)
+            .map(|saved| saved.description.clone())
+            .unwrap_or_default()
+    }
+
+    /// Makes a kept locator the current one.
+    fn choose_locator(&mut self, locator: &str) {
+        locator.clone_into(&mut self.repeater_area.locator);
+        self.locator_description = self.saved_description();
+        self.remember_locator();
+    }
+
+    /// Keeps the current locator and its description in the dropdown.
+    fn save_locator(&mut self) {
+        let (locator, description) = (&self.repeater_area.locator, &self.locator_description);
+        if let Err(error) = self.saved_locators.put(locator, description) {
+            self.refuse(&format!("Cannot save the locator: {error}."));
+            return;
+        }
+        let saved = self.saved_locators.find(locator).map(SavedLocator::label);
+        self.status = format!("Saved {}.", saved.unwrap_or_default());
+        self.write_saved_locators();
+    }
+
+    /// Forgets the current locator from the dropdown; the field keeps it.
+    fn forget_locator(&mut self) {
+        let locator = self.repeater_area.locator.trim().to_ascii_uppercase();
+        if self.saved_locators.remove(&locator) {
+            self.status = format!("Forgot {locator}.");
+            self.write_saved_locators();
+        } else {
+            self.status = format!("{locator} is not saved.");
+        }
+    }
+
+    /// Writes the kept locators for the next start.
+    fn write_saved_locators(&self) {
+        if let Some(file) = &self.saved_locators_file {
+            if let Err(error) = self.saved_locators.save(file) {
+                log::warn!("could not remember the saved locators: {error}");
+            }
+        }
     }
 
     /// Keeps a locator edit for the next start once it reads as one, so the
@@ -4918,6 +5024,49 @@ mod tests {
         assert!(app.project.validate().is_ok());
         app.add_airfields();
         assert_eq!(app.project.banks.len(), banks + 1, "replaced, not added");
+    }
+
+    #[test]
+    fn locators_are_saved_with_a_description_and_chosen_again() {
+        use crate::locators::{SavedLocator, SavedLocators};
+
+        let mut app = simulated("saved-locators");
+        let dir = std::env::temp_dir().join(format!("afik-saved-locators-{}", std::process::id()));
+        let file = dir.join("locators");
+        app.saved_locators_file = Some(file.clone());
+        assert!(
+            app.saved_locators.list.is_empty(),
+            "tests never read the real file"
+        );
+
+        "nonsense".clone_into(&mut app.repeater_area.locator);
+        app.save_locator();
+        assert!(app.status.starts_with("Cannot save"), "{}", app.status);
+        "io91wm".clone_into(&mut app.repeater_area.locator);
+        "Home".clone_into(&mut app.locator_description);
+        app.save_locator();
+        assert_eq!(app.status, "Saved Home (IO91WM).");
+        "JN18EU".clone_into(&mut app.repeater_area.locator);
+        "Paris".clone_into(&mut app.locator_description);
+        app.save_locator();
+
+        app.choose_locator("IO91WM");
+        assert_eq!(app.repeater_area.locator, "IO91WM");
+        assert_eq!(app.locator_description, "Home");
+        assert_eq!(SavedLocators::load(&file), app.saved_locators, "written");
+
+        app.forget_locator();
+        assert_eq!(app.status, "Forgot IO91WM.");
+        app.forget_locator();
+        assert_eq!(app.status, "IO91WM is not saved.");
+        assert_eq!(app.repeater_area.locator, "IO91WM", "the field keeps it");
+        let labels: Vec<_> = SavedLocators::load(&file)
+            .list
+            .iter()
+            .map(SavedLocator::label)
+            .collect();
+        assert_eq!(labels, ["Paris (JN18EU)"]);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

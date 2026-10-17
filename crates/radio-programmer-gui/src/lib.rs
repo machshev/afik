@@ -12,6 +12,7 @@ pub mod app;
 pub mod device;
 pub mod flash;
 pub mod flash_tab;
+pub mod locators;
 pub mod logging;
 pub mod marine;
 pub mod model;

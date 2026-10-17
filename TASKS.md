@@ -3263,6 +3263,9 @@
   7. Repeater band filters (operator request): the UK and world repeater
      tabs have the same Bands row, every band by default, kept in
      `repeater-bands` and `world-bands`. Done.
+  8. Saved locators (operator request): the locator row keeps several
+     locators, each with an optional description such as Home, chosen from
+     a dropdown, with Save and Forget; kept in `locators`. Done.
 
 ## BANKS-073 — Up to 254 banks, addressed by bank and position
 
