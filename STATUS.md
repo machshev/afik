@@ -1157,6 +1157,16 @@ fmt --all --check` clean, `cargo clippy -p radio-programmer-gui --all-targets
 failed. Firmware unchanged. Next: listen for GB3VHF from a handheld and
 adjust the handheld radius to what is heard.
 
+Cores need local channels (operator request, 2026-10-17): once marine or
+airfields is synced, a location with no local channel in range is not given
+SEA CORE or FLD CORE; adding there takes the core from that location, and the
+core goes once no location keeps it. Unsynced, the core alone is still added.
+Add all shown does the same. Gate: `cargo fmt --all --check` clean, workspace
+clippy `-D warnings` clean, `cargo test --workspace --no-fail-fast` 978 passed
+0 failed (one earlier run failed the flash tab backup test once; it passed on
+five reruns). Firmware unchanged. Next: add marine at HOME and check the
+core leaves it.
+
 Side key 1 (operator request): on the operating screen it switches tone
 squelch on the selected slot; on requires the channel's RX tone or, without
 one, its TX tone (repeater output, caught VFO tone), off opens on any

@@ -691,7 +691,8 @@ impl StudioApp {
 
     /// Builds the marine bank the area would add, and the project it would
     /// make, as [`Self::repeater_preview`] does. Without a sync the bank
-    /// holds the core channels alone.
+    /// holds the core channels alone; synced with none in range, the
+    /// location needs no core.
     fn marine_preview(&self) -> Result<AreaPreview, String> {
         let locator = &self.repeater_area.locator;
         let mut near = if let Some(list) = &self.marine {
@@ -707,6 +708,7 @@ impl StudioApp {
             marine::core_bank(),
             marine::marine_bank(locator, &near),
             marine::is_core,
+            self.marine.is_some(),
         );
         Ok(AreaPreview {
             in_range,
@@ -739,6 +741,12 @@ impl StudioApp {
         let Ok(preview) = self.marine_preview() else {
             return synced;
         };
+        if self.marine.is_some() && preview.taken == 0 {
+            return format!(
+                "No local channels within {} km, so no core. {synced}",
+                self.marine_area.radius_km
+            );
+        }
         let taking = format!(
             "{} core and nearest {} of {} local channels, furthest {:.0} km",
             marine::CORE_CHANNELS,
@@ -761,6 +769,16 @@ impl StudioApp {
         };
         let locator = self.repeater_area.locator.trim().to_ascii_uppercase();
         let area = self.marine_area.clone();
+        if self.marine.is_some() && preview.taken == 0 {
+            // The project no longer files the core here.
+            self.project = preview.project;
+            self.status = format!(
+                "No marine channels within {} km of {locator}, so {} is not filed there.",
+                area.radius_km,
+                marine::CORE_BANK
+            );
+            return;
+        }
         if preview.project.banks.len() > usize::from(MAX_BANKS) {
             self.status =
                 format!("A radio holds {MAX_BANKS} banks and the project already has them.");
@@ -794,7 +812,8 @@ impl StudioApp {
 
     /// Builds the airfield bank the area would add, and the project it would
     /// make, as [`Self::repeater_preview`] does. Without the airports' list
-    /// the bank holds the sporting core alone.
+    /// the bank holds the sporting core alone; synced with none in range,
+    /// the location needs no core.
     fn airfield_preview(&self) -> Result<AreaPreview, String> {
         let locator = &self.repeater_area.locator;
         let mut near = if let Some(list) = &self.airports {
@@ -810,6 +829,7 @@ impl StudioApp {
             airfields::core_bank(),
             airfields::airfield_bank(locator, &near),
             airfields::is_core,
+            self.airports.is_some(),
         );
         Ok(AreaPreview {
             in_range,
@@ -888,6 +908,12 @@ impl StudioApp {
         let Ok(preview) = self.airfield_preview() else {
             return synced;
         };
+        if self.airports.is_some() && preview.taken == 0 {
+            return format!(
+                "No local frequencies within {} km, so no sporting set. {synced}",
+                self.airfield_area.radius_km
+            );
+        }
         let taking = format!(
             "{} sporting and nearest {} of {} local frequencies, furthest {:.0} km",
             airfields::CORE_CHANNELS,
@@ -910,6 +936,17 @@ impl StudioApp {
         };
         let locator = self.repeater_area.locator.trim().to_ascii_uppercase();
         let area = self.airfield_area.clone();
+        if self.airports.is_some() && preview.taken == 0 {
+            // The project no longer files the core here.
+            self.project = preview.project;
+            self.status = format!(
+                "No airfield frequencies within {} km of {locator}, so {} is not filed \
+                 there.",
+                area.radius_km,
+                airfields::CORE_BANK
+            );
+            return;
+        }
         if preview.project.banks.len() > usize::from(MAX_BANKS) {
             self.status =
                 format!("A radio holds {MAX_BANKS} banks and the project already has them.");
@@ -1402,19 +1439,26 @@ impl StudioApp {
     /// shares, and this location's `local` bank of the rest, left out when
     /// it holds nothing; and the bytes they add. Each location's bank from
     /// `source` loses the core channels an older studio put in it, a bank
-    /// left empty is dropped and the core filed where it was.
+    /// left empty is dropped and the core filed where it was. When
+    /// `synced` and this location has no local channels it needs no core:
+    /// the core is taken from it, and dropped once no location has it.
     fn with_core(
         &self,
         source: BankSource,
         mut core: BankDraft,
         local: BankDraft,
         is_core: fn(&ChannelDraft) -> bool,
+        synced: bool,
     ) -> (ProjectModel, Option<usize>) {
         core.origin = Some(Origin::new(source, ""));
         let core_name = core.name.clone();
         let local_name = local.name.clone();
         let empty = local.channels.is_empty();
-        let mut banks = vec![core];
+        let bare = empty && synced;
+        let mut banks = Vec::new();
+        if !bare {
+            banks.push(core);
+        }
         if !empty {
             banks.push(local);
         }
@@ -1440,11 +1484,20 @@ impl StudioApp {
         project
             .banks
             .retain(|bank| !(located(bank) && bank.channels.is_empty()));
+        let here = project.location(&self.repeater_area.locator);
         if let Some(core) = project.banks.iter_mut().find(|bank| bank.name == core_name) {
             for group in filed {
                 if !core.groups.contains(&group) {
                     core.groups.push(group);
                 }
+            }
+            if bare {
+                core.groups.retain(|group| Some(*group) != here);
+            }
+        }
+        if let Some(row) = project.banks.iter().position(|bank| bank.name == core_name) {
+            if bare && locations_of(&project, &project.banks[row]).is_empty() {
+                project.banks.remove(row);
             }
         }
         (project, bank_bytes)
@@ -3645,9 +3698,18 @@ impl StudioApp {
                         continue;
                     }
                 };
-                // Airfields and marine always have their core channels.
-                let cored = matches!(generator, Generator::Airfields | Generator::Marine);
+                // Unsynced, airfields and marine still have their core;
+                // synced with none in range, the add takes the core from
+                // here.
+                let cored = match generator {
+                    Generator::Airfields => self.airports.is_none(),
+                    Generator::Marine => self.marine.is_none(),
+                    _ => false,
+                };
                 if preview.taken == 0 && !cored {
+                    if matches!(generator, Generator::Airfields | Generator::Marine) {
+                        self.add_generator(generator);
+                    }
                     skipped.push(format!("{} (none in range)", at(generator.label())));
                 } else if preview.project.banks.len() > usize::from(MAX_BANKS) {
                     skipped.push(format!(
@@ -7211,18 +7273,17 @@ mod tests {
         assert_eq!(names, ["80 BURNHAM"], "16 is in the shared core");
         assert!(app.project.validate().is_ok());
 
-        // Another location files the same core bank, held once.
+        // A location with nothing in range needs no core.
         "JO02PP".clone_into(&mut app.repeater_area.locator);
+        assert!(app
+            .marine_source()
+            .starts_with("No local channels within 20 km, so no core"));
         app.add_marine();
-        let cores: Vec<_> = app
-            .project
-            .banks
-            .iter()
-            .filter(|b| b.name == "SEA CORE")
-            .collect();
-        assert_eq!(cores.len(), 1);
-        let norwich = app.project.location("JO02PP").unwrap();
-        assert!(cores[0].groups.contains(&home) && cores[0].groups.contains(&norwich));
+        assert_eq!(
+            app.status,
+            "No marine channels within 20 km of JO02PP, so SEA CORE is not filed there."
+        );
+        assert!(app.project.location("JO02PP").is_none(), "nothing filed");
         assert!(
             app.project.banks.iter().all(|b| b.name != "SEA JO02PP"),
             "nothing local near Norwich"
@@ -7231,6 +7292,16 @@ mod tests {
             app.project.banks.iter().any(|b| b.name == "SEA JO01HP"),
             "another location's bank stays"
         );
+
+        // Once no location has places in range, the core goes too.
+        app.marine_area.radius_km = 1;
+        "JO01HP".clone_into(&mut app.repeater_area.locator);
+        app.add_marine();
+        assert!(app
+            .project
+            .banks
+            .iter()
+            .all(|b| !b.name.starts_with("SEA ")));
 
         app.repeater_area.locator = "nonsense".to_owned();
         app.add_marine();
@@ -7478,6 +7549,23 @@ mod tests {
             .find(|b| b.name == "FLD JO01PX")
             .unwrap();
         assert!(!fld.groups.contains(&here), "stays filed where it was");
+
+        // Synced with no small field in range, a location needs no sporting
+        // set: the core leaves it, and goes once no location keeps it.
+        app.airports = Some(crate::airports::AirportList {
+            frequencies: Vec::new(),
+            synced: std::time::SystemTime::now(),
+        });
+        assert!(app
+            .airfield_source()
+            .starts_with("No local frequencies within"));
+        app.add_airfields();
+        assert!(app.status.ends_with("so FLD CORE is not filed there."));
+        let core = app.project.banks.iter().find(|b| b.name == "FLD CORE");
+        assert!(!core.unwrap().groups.contains(&here), "Norwich keeps it");
+        "JO02PP".clone_into(&mut app.repeater_area.locator);
+        app.add_airfields();
+        assert!(app.project.banks.iter().all(|b| b.name != "FLD CORE"));
     }
 
     #[test]
