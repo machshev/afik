@@ -32,8 +32,9 @@ spectrum/tv-transmitter-guidance/tech-parameters/txparamsvhf.csv";
 const CACHE_DIR: &str = "ofcom";
 const TRANSMITTERS_FILE: &str = "txparamsvhf.csv";
 const AREA_FILE: &str = "station-area";
-/// The word in the area file that leaves out the BBC.
-const NO_BBC: &str = "no-bbc";
+/// The word in the area file that keeps the BBC; without it, as in a file
+/// from before the filter, the BBC is left out.
+const KEEP_BBC: &str = "bbc";
 /// How many stations a bank takes before the operator chooses.
 pub const DEFAULT_MAX_CHANNELS: u16 = 30;
 /// The most the operator can ask for; a whole region rarely has more.
@@ -64,7 +65,8 @@ pub struct Station {
     pub latitude: f64,
     /// Site longitude in degrees east.
     pub longitude: f64,
-    /// Whether the BBC holds the licence, which the operator may leave out.
+    /// Whether the BBC holds the licence or `BBC` is in the station's or
+    /// channel's name, which the operator may leave out.
     pub bbc: bool,
 }
 
@@ -128,7 +130,7 @@ pub fn parse(csv: &str) -> Result<Vec<Station>, String> {
     let vertical_at = column("In-Use ERP/VP")?;
     let latitude_at = column("Lat")?;
     let longitude_at = column("Long")?;
-    // Only the BBC filter reads it; a list without it keeps every station.
+    // Only the BBC filter reads it; a list without it still matches names.
     // The BBC's licence numbers run `BBC000001` upwards.
     let licence_at = column("Licence").ok();
     // Heights only sharpen the ranking; a list without them still reads.
@@ -158,6 +160,14 @@ pub fn parse(csv: &str) -> Result<Vec<Station>, String> {
             let rds = rds.split_whitespace().collect::<Vec<_>>().join(" ");
             let name = sanitise(&rds, MAX_CHANNEL_NAME_LEN)
                 .or_else(|| sanitise(&station, MAX_CHANNEL_NAME_LEN))?;
+            // Broad on purpose: the operator asked for anything named BBC.
+            let bbc = licence_at
+                .map_or("", |at| field(at))
+                .trim()
+                .to_ascii_uppercase()
+                .starts_with("BBC")
+                || station.to_ascii_uppercase().contains("BBC")
+                || name.to_ascii_uppercase().contains("BBC");
             Some(Station {
                 name,
                 station,
@@ -169,8 +179,7 @@ pub fn parse(csv: &str) -> Result<Vec<Station>, String> {
                     .and_then(|(site, aerial)| Some(number(field(site))? + number(field(aerial))?)),
                 latitude: number(field(latitude_at))?,
                 longitude: number(field(longitude_at))?,
-                bbc: licence_at
-                    .is_some_and(|at| field(at).trim().to_ascii_uppercase().starts_with("BBC")),
+                bbc,
             })
         })
         .collect();
@@ -362,7 +371,7 @@ impl StationCache {
 pub struct StationArea {
     /// How many stations, strongest first, the bank takes.
     pub max_channels: u16,
-    /// Leaves out every station the BBC is licensed for.
+    /// Leaves out every station [`Station::bbc`] marks; on by default.
     pub no_bbc: bool,
 }
 
@@ -370,7 +379,7 @@ impl Default for StationArea {
     fn default() -> Self {
         Self {
             max_channels: DEFAULT_MAX_CHANNELS,
-            no_bbc: false,
+            no_bbc: true,
         }
     }
 }
@@ -382,7 +391,7 @@ impl StationArea {
     }
 
     /// Reads `MAX_CHANNELS`, the last number, so a file from when a radius
-    /// came first still reads, and `no-bbc` anywhere; anything missing or
+    /// came first still reads, and keeps the BBC only for a `bbc` word; anything missing or
     /// unreadable gives the default.
     pub fn load(file: &Path) -> Self {
         let text = fs::read_to_string(file).unwrap_or_default();
@@ -392,7 +401,7 @@ impl StationArea {
             .next_back()
             .filter(|value| (1..=MAX_CHANNELS_LIMIT).contains(value))
             .unwrap_or(DEFAULT_MAX_CHANNELS);
-        let no_bbc = text.split_whitespace().any(|word| word == NO_BBC);
+        let no_bbc = !text.split_whitespace().any(|word| word == KEEP_BBC);
         Self {
             max_channels,
             no_bbc,
@@ -404,8 +413,8 @@ impl StationArea {
         file.parent()
             .map_or(Ok(()), fs::create_dir_all)
             .and_then(|()| {
-                let no_bbc = if self.no_bbc { NO_BBC } else { "" };
-                fs::write(file, format!("{no_bbc}\n{}\n", self.max_channels))
+                let keep_bbc = if self.no_bbc { "" } else { KEEP_BBC };
+                fs::write(file, format!("{keep_bbc}\n{}\n", self.max_channels))
             })
             .map_err(|error| format!("{}: {error}", file.display()))
     }
@@ -512,6 +521,29 @@ Site Ht,In-Use Aerial Ht,In-UseERP/HP,In-Use ERP/VP,Lat,Long,\r
         );
         assert!(parse("Station\n").is_err(), "no usable columns");
         assert!(parse(VHF.lines().next().unwrap()).is_err(), "no rows");
+    }
+
+    #[test]
+    fn bbc_is_the_licence_or_anywhere_in_a_name() {
+        let csv = "Station,Site,Licence,Frequency,RDS PS,In-UseERP/HP,In-Use ERP/VP,Lat,Long\n\
+Plain,A,AL000001,90.0,PLAIN,1,1,51,0\n\
+Licensed,A,BBC000002,90.1,LICENSED,1,1,51,0\n\
+Not the BBC,A,CR000003,90.2,NOT,1,1,51,0\n\
+Quiet,A,CR000004,90.3,_bbcfan_,1,1,51,0\n";
+        let bbc: Vec<_> = parse(csv)
+            .unwrap()
+            .iter()
+            .map(|s| (s.station.clone(), s.bbc))
+            .collect();
+        assert_eq!(
+            bbc,
+            [
+                ("Licensed".to_owned(), true),
+                ("Not the BBC".to_owned(), true),
+                ("Plain".to_owned(), false),
+                ("Quiet".to_owned(), true),
+            ]
+        );
     }
 
     #[test]
@@ -624,9 +656,11 @@ Site Ht,In-Use Aerial Ht,In-UseERP/HP,In-Use ERP/VP,Lat,Long,\r
         };
         area.save(&file).unwrap();
         assert_eq!(StationArea::load(&file), area);
-        // A file from when the radius came first keeps its count.
+        // A file from when the radius came first keeps its count, and one
+        // from before the filter leaves the BBC out.
         std::fs::write(&file, "50 30\n").unwrap();
         assert_eq!(StationArea::load(&file).max_channels, 30);
+        assert!(StationArea::load(&file).no_bbc);
         std::fs::write(&file, "0 9999\n").unwrap();
         assert_eq!(StationArea::load(&file), StationArea::default());
         let _ = std::fs::remove_dir_all(dir);

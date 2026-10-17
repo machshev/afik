@@ -199,7 +199,8 @@ in `gateway-bands`) and drops gateways on unticked bands. The beacons tab has th
 every band ticked by default, remembered in `beacon-bands` (gate: `cargo
 fmt --all --check` clean, workspace clippy `-D warnings` clean, `cargo test
 --workspace` 895 passed 0 failed 3 ignored). The UK FM stations row has a
-No BBC checkbox (BBC by the `BBC` prefix of Ofcom's licence numbers, left out before ranking,
+No BBC checkbox, ticked by default (BBC by the `BBC` prefix of Ofcom's licence numbers
+or `BBC` anywhere in a station or RDS name, left out before ranking,
 remembered in `station-area`; gate: fmt clean, `cargo clippy -p
 radio-programmer-gui --all-targets -- -D warnings` clean, `cargo test -p
 radio-programmer-gui` 172 passed 0 failed 3 ignored). The studio takes `-v`/`--verbose`

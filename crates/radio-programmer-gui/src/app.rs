@@ -2486,7 +2486,9 @@ impl StudioApp {
             )
             .on_hover_text("How many stations the bank takes, strongest signal first");
             ui.checkbox(&mut self.station_area.no_bbc, "No BBC")
-                .on_hover_text("Leaves out the stations the BBC is licensed for");
+                .on_hover_text(
+                    "Leaves out the stations the BBC is licensed for, and any with BBC in the name",
+                );
             if ui
                 .button("Add")
                 .on_hover_text(
@@ -5114,6 +5116,7 @@ mod tests {
             synced: std::time::SystemTime::now(),
         });
         app.repeater_area.locator = "io91wm".to_owned();
+        assert!(app.station_area.no_bbc, "the BBC is left out by default");
         app.station_area = StationArea {
             max_channels: 30,
             no_bbc: false,

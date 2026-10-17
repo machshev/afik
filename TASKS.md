@@ -3254,7 +3254,8 @@
      row, every band by default (most beacons are on 10 m, 6 m, 4 m and
      23 cm), kept in `beacon-bands`. Done.
   6. FM BBC filter (operator request): a No BBC checkbox on the UK FM
-     stations row leaves out stations Ofcom lists under the BBC licence,
+     stations row, ticked by default, leaves out stations with a `BBC...`
+     licence number or `BBC` anywhere in the station or RDS name,
      before ranking so a station sharing a BBC frequency can take it; kept
      in `station-area`. Done.
 
