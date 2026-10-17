@@ -1379,7 +1379,7 @@ impl StudioApp {
         for bank in &generated {
             self.file_here(bank, airband);
         }
-        share_identical(&mut self.project);
+        share_overlapping(&mut self.project);
     }
 
     /// Files the bank named `bank` under the location of the locator, under
@@ -2812,22 +2812,36 @@ fn unshare(project: &mut ProjectModel, source: BankSource, locator: &str) {
     }
 }
 
-/// Makes the generated banks of different locations which hold the same
-/// channels one bank, filed under every one of them and named for them,
-/// such as `RPT HOME+WORK`; returns how many banks went.
-fn share_identical(project: &mut ProjectModel) -> usize {
-    // The same channels in any order: each location puts its most
-    // hearable first.
-    let content = |bank: &BankDraft| {
-        let mut channels = bank.channels.clone();
-        channels.sort_by(|a, b| (&a.receive_mhz, &a.name).cmp(&(&b.receive_mhz, &b.name)));
-        BankDraft {
-            name: String::new(),
-            groups: Vec::new(),
-            origin: None,
-            channels,
-            ..bank.clone()
-        }
+/// How much of two locations' banks must be common, as a percentage of
+/// every channel either holds, for them to share one bank holding both.
+const SHARE_OVERLAP_PERCENT: usize = 75;
+
+/// Whether `first` and `second`, alike but for their channels, hold enough
+/// of the same channels to share one bank: [`SHARE_OVERLAP_PERCENT`] of all
+/// either holds, in any order, since each location puts its most hearable
+/// first.
+fn overlap_enough(first: &BankDraft, second: &BankDraft) -> bool {
+    let common = first
+        .channels
+        .iter()
+        .filter(|channel| second.channels.contains(channel))
+        .count();
+    let either = first.channels.len() + second.channels.len() - common;
+    common * 100 >= SHARE_OVERLAP_PERCENT * either
+}
+
+/// Makes the generated banks of different locations which hold mostly the
+/// same channels one bank of all of them, filed under every one of the
+/// locations and named for them, such as `RPT HOME+WORK`; each location
+/// then also holds the few the other hears. Returns how many banks went.
+fn share_overlapping(project: &mut ProjectModel) -> usize {
+    // Alike in everything but their channels and where they are filed.
+    let settings = |bank: &BankDraft| BankDraft {
+        name: String::new(),
+        groups: Vec::new(),
+        origin: None,
+        channels: Vec::new(),
+        ..bank.clone()
     };
     // A location's own bank, named for its locator, or one already
     // shared; an airport's own bank is named for the airport instead.
@@ -2845,14 +2859,20 @@ fn share_identical(project: &mut ProjectModel) -> usize {
         let mut other = row + 1;
         while other < project.banks.len() {
             let (first, second) = (&project.banks[row], &project.banks[other]);
-            let same = shareable(first)
+            let share = shareable(first)
                 && shareable(second)
                 && first.origin.as_ref().map(|o| o.source)
                     == second.origin.as_ref().map(|o| o.source)
-                && content(first) == content(second);
-            if same {
+                && settings(first) == settings(second)
+                && overlap_enough(first, second);
+            if share {
                 let second = project.banks.remove(other);
                 let first = &mut project.banks[row];
+                for channel in second.channels {
+                    if !first.channels.contains(&channel) {
+                        first.channels.push(channel);
+                    }
+                }
                 for group in second.groups {
                     if !first.groups.contains(&group) {
                         first.groups.push(group);
@@ -2860,6 +2880,8 @@ fn share_identical(project: &mut ProjectModel) -> usize {
                 }
                 merged = true;
                 gone += 1;
+                // What it now holds may share with a bank passed over.
+                other = row + 1;
             } else {
                 other += 1;
             }
@@ -8396,7 +8418,7 @@ mod tests {
         assert_eq!(bank.unwrap().origin.as_ref().unwrap().locator, "");
 
         // Work now hears one Home does not: each has its own bank again.
-        app.repeaters = synced(vec![near.clone(), far.clone(), south]);
+        app.repeaters = synced(vec![near.clone(), far.clone(), south.clone()]);
         add_at(&mut app, "IO91WL");
         assert_eq!(
             rpt(&app),
@@ -8409,12 +8431,56 @@ mod tests {
         assert_eq!(rpt(&app).len(), 2, "still different");
 
         // The same again, they share again.
-        app.repeaters = synced(vec![near, far]);
+        app.repeaters = synced(vec![near.clone(), far.clone()]);
         add_at(&mut app, "IO91WL");
         assert_eq!(rpt(&app), shared());
         // Adding at one of them again keeps the one bank.
         add_at(&mut app, "IO91WM");
         assert_eq!(rpt(&app), shared());
+
+        // Four in common and one Work alone hears: mostly the same, so they
+        // share one bank of all five.
+        let mut more = vec![near.clone(), far.clone(), south.clone()];
+        for (n, latitude) in [(1, 51.50), (2, 51.51)] {
+            let mut also = repeater(&format!("GB3ALSO{n}"), latitude, Coverage::Standard);
+            also.output_hz = 145_575_000 + n * 12_500;
+            more.push(also);
+        }
+        app.repeaters = synced(more);
+        add_at(&mut app, "IO91WM");
+        add_at(&mut app, "IO91WL");
+        assert_eq!(rpt(&app), shared());
+        let bank = app.project.banks.iter().find(|b| b.name == "RPT HOME+WORK");
+        assert_eq!(bank.unwrap().channels.len(), 5);
+    }
+
+    #[test]
+    fn banks_share_when_three_quarters_of_their_channels_are_common() {
+        use super::overlap_enough;
+        use crate::model::{BankDraft, ChannelDraft};
+
+        let bank = |names: &[&str]| BankDraft {
+            channels: names
+                .iter()
+                .map(|name| ChannelDraft {
+                    name: (*name).to_owned(),
+                    ..ChannelDraft::default()
+                })
+                .collect(),
+            ..BankDraft::default()
+        };
+        // Order does not matter.
+        assert!(overlap_enough(&bank(&["A", "B"]), &bank(&["B", "A"])));
+        // Three of four is enough, two of three is not.
+        assert!(overlap_enough(
+            &bank(&["A", "B", "C"]),
+            &bank(&["A", "B", "C", "D"])
+        ));
+        assert!(!overlap_enough(&bank(&["A", "B"]), &bank(&["A", "B", "C"])));
+        assert!(!overlap_enough(
+            &bank(&["A", "B", "C"]),
+            &bank(&["A", "B", "D"])
+        ));
     }
 
     #[test]

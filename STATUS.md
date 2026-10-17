@@ -271,6 +271,13 @@ On M8LWA at 50 km HOME and WORK still differ by GB3OV, so nothing shares
 yet. Gate: `cargo fmt --all --check` clean, `cargo clippy --workspace
 --all-targets -- -D warnings` clean, `cargo test --workspace` 970 passed 0
 failed 3 ignored.
+Banks now share when three quarters of all their channels are common
+(`SHARE_OVERLAP_PERCENT`), the shared bank holding every channel either
+held. On M8LWA HOME and WORK's repeaters are 5 of 6 common, so they share
+`RPT HOME+WORK` of 6; their airband banks are 22% common and stay apart.
+Gate: `cargo fmt --all --check` clean, `cargo clippy --workspace
+--all-targets -- -D warnings` clean, `cargo test --workspace` 971 passed 0
+failed 3 ignored.
 
 **`FLASH-074` done** (2026-10-17, operator request, `RISK-049`): the K5
 image had 16 bytes of flash left. `interface::run` was 22.6 KB because the
