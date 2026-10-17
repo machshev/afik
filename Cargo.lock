@@ -2574,6 +2574,7 @@ name = "radio-programmer-gui"
 version = "7.0.55"
 dependencies = [
  "eframe",
+ "image",
  "log",
  "radio-channel-plan",
  "radio-domain",

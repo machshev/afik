@@ -26,6 +26,7 @@ use crate::{
     device::{DeviceChoice, DeviceChooser},
     flash_tab::FlashTab,
     locators::{SavedLocator, SavedLocators},
+    map::{self, Layer, MapView, Pin, Site},
     marine::{self, MarineArea, MarineCache, MarineList},
     model::{
         move_to, BankDraft, BankKind, ChannelDraft, ModelError, ProjectModel, StartDraft,
@@ -40,6 +41,7 @@ use crate::{
     satellites::{SatelliteCache, SatelliteList, SyncJob},
     session::{DeviceJob, DeviceOutcome, DeviceSession, JobKind},
     stations::{self, StationArea, StationCache, StationKind, StationList},
+    tiles::Tiles,
     world::{self, WorldArea, WorldCache, WorldList},
     DeviceSelector, Options,
 };
@@ -89,6 +91,7 @@ Off while dual watch runs.";
 enum Tab {
     #[default]
     Banks,
+    Map,
     Radio,
     Device,
     Flash,
@@ -191,6 +194,20 @@ impl Generator {
             Self::Airports => "Airports",
             Self::Airfields => "Airfields",
             Self::Marine => "Marine",
+        }
+    }
+
+    /// The colour its sites and radius are drawn in on the map.
+    const fn color(self) -> egui::Color32 {
+        match self {
+            Self::Repeaters => egui::Color32::from_rgb(0xE0, 0x6C, 0x00),
+            Self::World => egui::Color32::from_rgb(0xB0, 0x30, 0xB0),
+            Self::Gateways => egui::Color32::from_rgb(0x00, 0x90, 0x90),
+            Self::Beacons => egui::Color32::from_rgb(0xC0, 0x9C, 0x00),
+            Self::Stations => egui::Color32::from_rgb(0x20, 0x60, 0xD0),
+            Self::Airports => egui::Color32::from_rgb(0x30, 0x30, 0x30),
+            Self::Airfields => egui::Color32::from_rgb(0x2E, 0x9E, 0x40),
+            Self::Marine => egui::Color32::from_rgb(0x00, 0x50, 0x80),
         }
     }
 }
@@ -360,6 +377,15 @@ pub struct StudioApp {
     saved_locators: SavedLocators,
     saved_locators_file: Option<PathBuf>,
     locator_description: String,
+    /// Where the Map tab looks, the locator it last centred on, and the
+    /// generators it shows, by their place in [`Generator::ALL`].
+    map_view: MapView,
+    map_locator: String,
+    map_shown: [bool; Generator::ALL.len()],
+    /// The layers last drawn, the locator they were for, and when, so the
+    /// previews behind them are not rebuilt every frame.
+    map_layers: Option<(Instant, String, [bool; Generator::ALL.len()], Vec<Layer>)>,
+    tiles: Tiles,
 }
 
 impl StudioApp {
@@ -367,6 +393,7 @@ impl StudioApp {
     pub fn new(options: &Options) -> Self {
         let mut app = Self::with_projects(options, ProjectStore::open());
         app.use_satellite_cache(SatelliteCache::open());
+        app.tiles = Tiles::open();
         app.use_repeater_cache(RepeaterCache::open());
         app.repeater_area_file = RepeaterArea::file();
         if let Some(file) = &app.repeater_area_file {
@@ -502,6 +529,10 @@ impl StudioApp {
             in_range,
             taken: near.len(),
             furthest_km: near.iter().map(|local| local.km).fold(0.0, f64::max),
+            sites: near
+                .iter()
+                .map(|local| site(&local.channel.designator, local.position))
+                .collect(),
             bank_bytes,
             project,
         })
@@ -594,6 +625,10 @@ impl StudioApp {
             in_range,
             taken: near.len(),
             furthest_km: near.last().map_or(0.0, |(_, km)| *km),
+            sites: near
+                .iter()
+                .map(|(f, _)| site(&f.name, (f.latitude, f.longitude)))
+                .collect(),
             bank_bytes,
             project,
         })
@@ -746,6 +781,17 @@ impl StudioApp {
                 in_range: plan.hearable,
                 taken: plan.channels(),
                 furthest_km,
+                sites: plan
+                    .area
+                    .iter()
+                    .map(|(f, _)| *f)
+                    .chain(
+                        plan.airports
+                            .iter()
+                            .flat_map(|group| group.frequencies.iter().copied()),
+                    )
+                    .map(|f| site(&f.name, (f.latitude, f.longitude)))
+                    .collect(),
                 bank_bytes,
                 project,
             },
@@ -900,6 +946,10 @@ impl StudioApp {
             in_range,
             taken: near.len(),
             furthest_km: near.iter().map(|(_, km)| *km).fold(0.0, f64::max),
+            sites: near
+                .iter()
+                .map(|(s, _)| site(&s.name, (s.latitude, s.longitude)))
+                .collect(),
             bank_bytes,
             project,
         })
@@ -1105,6 +1155,7 @@ impl StudioApp {
             in_range,
             taken: near.len(),
             furthest_km: near.last().map_or(0.0, |(_, km)| *km),
+            sites: repeater_sites(&near),
             bank_bytes,
             project,
         })
@@ -1253,6 +1304,7 @@ impl StudioApp {
             in_range,
             taken: near.len(),
             furthest_km: near.last().map_or(0.0, |(_, km)| *km),
+            sites: repeater_sites(&near),
             bank_bytes,
             project,
         })
@@ -1369,6 +1421,7 @@ impl StudioApp {
             in_range,
             taken: near.len(),
             furthest_km: near.last().map_or(0.0, |(_, km)| *km),
+            sites: repeater_sites(&near),
             bank_bytes,
             project,
         })
@@ -1602,6 +1655,11 @@ impl StudioApp {
             saved_locators: SavedLocators::default(),
             saved_locators_file: None,
             locator_description: String::new(),
+            map_view: MapView::default(),
+            map_locator: String::new(),
+            map_shown: [true; Generator::ALL.len()],
+            map_layers: None,
+            tiles: Tiles::none(),
         };
         if let Some(baud) = options.baud {
             app.chooser.baud = baud;
@@ -2043,10 +2101,28 @@ struct AreaPreview {
     /// How many of them, nearest or strongest first, the bank takes.
     taken: usize,
     furthest_km: f64,
+    /// Where what the bank takes is, for the map.
+    sites: Vec<Site>,
     /// Bytes the bank adds to a radio image, when it compiles.
     bank_bytes: Option<usize>,
     /// The project with the bank added or replaced.
     project: ProjectModel,
+}
+
+/// One site for the map.
+fn site(name: &str, (latitude, longitude): (f64, f64)) -> Site {
+    Site {
+        name: name.to_owned(),
+        latitude,
+        longitude,
+    }
+}
+
+/// The map sites of repeaters, gateways or beacons.
+fn repeater_sites(near: &[(&Repeater, f64)]) -> Vec<Site> {
+    near.iter()
+        .map(|(r, _)| site(&r.callsign, (r.latitude, r.longitude)))
+        .collect()
 }
 
 /// The beacon radius and count before the operator chooses: wider than the
@@ -2161,6 +2237,10 @@ impl eframe::App for StudioApp {
         {
             context.request_repaint_after(std::time::Duration::from_millis(50));
         }
+        // Tiles load only while the map is shown.
+        if self.tab == Tab::Map && self.tiles.poll(context) {
+            context.request_repaint_after(std::time::Duration::from_millis(100));
+        }
         // The Flash tab's automatic flow only runs while it is shown, so a
         // radio is never probed from a tab the operator is not looking at.
         if self.tab == Tab::Flash {
@@ -2175,6 +2255,7 @@ impl eframe::App for StudioApp {
         egui::TopBottomPanel::top("tabs").show(context, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.selectable_value(&mut self.tab, Tab::Banks, "Banks");
+                ui.selectable_value(&mut self.tab, Tab::Map, "Map");
                 ui.selectable_value(&mut self.tab, Tab::Radio, "Radio");
                 ui.selectable_value(&mut self.tab, Tab::Device, "Device");
                 ui.selectable_value(&mut self.tab, Tab::Flash, "Flash");
@@ -2194,6 +2275,7 @@ impl eframe::App for StudioApp {
 
         egui::CentralPanel::default().show(context, |ui| match self.tab {
             Tab::Banks => self.banks_tab(ui),
+            Tab::Map => self.map_tab(ui),
             Tab::Radio => self.radio_tab(ui),
             Tab::Device => self.device_tab(ui),
             Tab::Flash => self.flash.ui(ui),
@@ -2530,6 +2612,132 @@ impl StudioApp {
             EtccKind::Beacons => &mut self.beacon_bands,
         };
         band_row(ui, bands, kind.noun());
+    }
+
+    /// The sites `generator` would add at the locator, and the radius it
+    /// takes them from; none when it cannot preview, such as before a sync.
+    fn generator_sites(&self, generator: Generator) -> Option<(Vec<Site>, Option<u16>)> {
+        let (preview, radius_km) = match generator {
+            Generator::Repeaters => (self.repeater_preview(), Some(self.repeater_area.radius_km)),
+            Generator::World => (self.world_preview(), Some(self.world_area.radius_km)),
+            Generator::Gateways => (
+                self.etcc_preview(EtccKind::Gateways),
+                Some(self.gateway_area.radius_km),
+            ),
+            Generator::Beacons => (
+                self.etcc_preview(EtccKind::Beacons),
+                Some(self.beacon_area.radius_km),
+            ),
+            Generator::Stations => (self.station_preview(), None),
+            Generator::Airports => (
+                self.airport_preview().map(|(preview, _)| preview),
+                Some(self.airport_area.radius_km),
+            ),
+            Generator::Airfields => (self.airfield_preview(), Some(self.airfield_area.radius_km)),
+            Generator::Marine => (self.marine_preview(), Some(self.marine_area.radius_km)),
+        };
+        preview.ok().map(|preview| (preview.sites, radius_km))
+    }
+
+    /// The map's layers for the generators shown, rebuilt at most once a
+    /// second unless the locator or the choice of generators changes.
+    fn map_layers(&mut self) -> Vec<Layer> {
+        let locator = &self.repeater_area.locator;
+        if let Some((built, for_locator, shown, layers)) = &self.map_layers {
+            if built.elapsed() < std::time::Duration::from_secs(1)
+                && for_locator == locator
+                && *shown == self.map_shown
+            {
+                return layers.clone();
+            }
+        }
+        let layers: Vec<Layer> = Generator::ALL
+            .into_iter()
+            .zip(self.map_shown)
+            .filter(|(_, shown)| *shown)
+            .filter_map(|(generator, _)| {
+                let (sites, radius_km) = self.generator_sites(generator)?;
+                Some(Layer {
+                    label: generator.label(),
+                    color: generator.color(),
+                    sites,
+                    radius_km: radius_km.map(f64::from),
+                })
+            })
+            .collect();
+        self.map_layers = Some((
+            Instant::now(),
+            locator.clone(),
+            self.map_shown,
+            layers.clone(),
+        ));
+        layers
+    }
+
+    /// Makes the locator holding a point clicked on the map the current one.
+    fn pick_on_map(&mut self, (latitude, longitude): (f64, f64)) {
+        let locator = map::locator_at(latitude, longitude);
+        // The map stays where it is rather than jumping to the new locator.
+        locator.clone_into(&mut self.map_locator);
+        self.choose_locator(&locator);
+        self.status = format!("Chose {locator} on the map.");
+    }
+
+    /// The Map tab: the locator row, which generators to show, and the map.
+    fn map_tab(&mut self, ui: &mut egui::Ui) {
+        self.locator_bar(ui);
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Show");
+            for (generator, shown) in Generator::ALL.into_iter().zip(&mut self.map_shown) {
+                let label = RichText::new(generator.label()).color(generator.color());
+                ui.checkbox(shown, label)
+                    .on_hover_text("Shows what this generator would add, and its radius");
+            }
+            if ui.button("\u{2212}").on_hover_text("Zooms out").clicked() {
+                map::zoom_by(&mut self.map_view, -1);
+            }
+            if ui.button("+").on_hover_text("Zooms in").clicked() {
+                map::zoom_by(&mut self.map_view, 1);
+            }
+            if ui
+                .button("Centre")
+                .on_hover_text("Centres the map on your locator")
+                .clicked()
+            {
+                self.map_locator.clear();
+            }
+        });
+        let home = repeaters::locator_centre(&self.repeater_area.locator).ok();
+        // A locator typed or chosen from the dropdown brings the map to it.
+        if self.map_locator != self.repeater_area.locator {
+            if let Some(home) = home {
+                self.map_view.centre = home;
+                self.map_view.zoom = self.map_view.zoom.max(8);
+            }
+            self.map_locator.clone_from(&self.repeater_area.locator);
+        }
+        let pins: Vec<Pin> = self
+            .saved_locators
+            .list
+            .iter()
+            .filter_map(|saved| {
+                Some(Pin {
+                    label: saved.label(),
+                    position: repeaters::locator_centre(&saved.locator).ok()?,
+                })
+            })
+            .collect();
+        let layers = self.map_layers();
+        if let Some(clicked) = map::show(
+            ui,
+            &mut self.map_view,
+            &mut self.tiles,
+            home,
+            &pins,
+            &layers,
+        ) {
+            self.pick_on_map(clicked);
+        }
     }
 
     /// The row holding the locator the repeaters, stations and airports share.
@@ -5216,6 +5424,70 @@ mod tests {
         assert!(app.project.validate().is_ok());
         app.add_airfields();
         assert_eq!(app.project.banks.len(), banks + 1, "replaced, not added");
+    }
+
+    #[test]
+    fn the_map_shows_each_generators_sites_and_picks_a_locator() {
+        use crate::repeaters::{Repeater, RepeaterList};
+        use eframe::egui::{CentralPanel, Context, Pos2, RawInput, Rect, Vec2};
+
+        let mut app = simulated("map");
+        app.repeaters = Some(RepeaterList {
+            repeaters: vec![Repeater {
+                callsign: "GB3NEAR".to_owned(),
+                town: String::new(),
+                output_hz: 145_625_000,
+                input_hz: 145_025_000,
+                ctcss_tenths_hz: None,
+                wide: false,
+                latitude: 51.52,
+                longitude: -0.12,
+            }],
+            gateways: Vec::new(),
+            beacons: Vec::new(),
+            synced: std::time::SystemTime::now(),
+        });
+        "IO91WM".clone_into(&mut app.repeater_area.locator);
+        let layers = app.map_layers();
+        let repeaters = layers.iter().find(|l| l.label == "UK repeaters").unwrap();
+        assert_eq!(repeaters.sites.len(), 1);
+        assert_eq!(repeaters.sites[0].name, "GB3NEAR");
+        assert_eq!(
+            repeaters.radius_km,
+            Some(f64::from(app.repeater_area.radius_km))
+        );
+        assert!(
+            layers.iter().all(|l| l.label != "World repeaters"),
+            "no layer without a sync"
+        );
+        app.map_shown = [false; Generator::ALL.len()];
+        assert!(
+            app.map_layers().is_empty(),
+            "hidden generators are left out"
+        );
+
+        // Drawn in a frame: the map centres on the locator, then a pick moves
+        // the locator but not the map.
+        app.tab = Tab::Map;
+        let context = Context::default();
+        let input = || RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1100.0, 800.0))),
+            ..RawInput::default()
+        };
+        let _ = context.run(input(), |context| {
+            CentralPanel::default().show(context, |ui| app.map_tab(ui));
+        });
+        assert_eq!(app.map_locator, "IO91WM");
+        let centre = app.map_view.centre;
+        app.saved_locators.put("JN18EU", "Paris").unwrap();
+        app.pick_on_map((48.86, 2.35));
+        assert_eq!(app.repeater_area.locator, "JN18EU");
+        assert_eq!(app.locator_description, "Paris");
+        assert_eq!(app.status, "Chose JN18EU on the map.");
+        let _ = context.run(input(), |context| {
+            CentralPanel::default().show(context, |ui| app.map_tab(ui));
+        });
+        assert_eq!(app.map_view.centre, centre, "the map stays put");
     }
 
     #[test]

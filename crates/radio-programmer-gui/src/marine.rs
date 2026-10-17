@@ -275,6 +275,8 @@ pub struct LocalChannel {
     pub place: String,
     /// How far away that place is, in kilometres.
     pub km: f64,
+    /// That place's latitude and longitude, in degrees.
+    pub position: (f64, f64),
 }
 
 /// The channels the places within `radius_km` of `locator` list, nearest
@@ -301,6 +303,7 @@ pub fn nearby(
                     channel: channel.clone(),
                     place: place.name.clone(),
                     km,
+                    position: (place.latitude, place.longitude),
                 });
             }
         }

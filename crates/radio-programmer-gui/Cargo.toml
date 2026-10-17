@@ -18,6 +18,8 @@ eframe = { version = "0.29", default-features = false, features = [
     "wayland",
     "x11",
 ] }
+# Decodes OpenStreetMap tiles for the Map tab.
+image = { version = "0.25", default-features = false, features = ["png"] }
 log = "0.4"
 radio-channel-plan = { path = "../radio-channel-plan" }
 radio-domain = { path = "../radio-domain" }

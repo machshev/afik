@@ -269,7 +269,12 @@ repeater tabs have a Bands row too, every band by default, remembered in
 clean, `cargo test -p radio-programmer-gui` 174 passed 0 failed 3 ignored). The locator
 row keeps saved locators with optional descriptions, chosen by dropdown and
 remembered in `locators` (gate: studio fmt and clippy `-D warnings` clean,
-`cargo test -p radio-programmer-gui` 176 passed 0 failed 3 ignored). The studio takes `-v`/`--verbose`
+`cargo test -p radio-programmer-gui` 176 passed 0 failed 3 ignored). A Map tab
+draws cached OpenStreetMap tiles (fetched while shown, by operator choice),
+picks the locator by click, pins saved locators, and plots each generator's
+sites and radius (gate: studio fmt and clippy `-D warnings` clean, `cargo
+test -p radio-programmer-gui` 184 passed 0 failed 3 ignored; one real tile
+fetched with the studio's agent and decoded). The studio takes `-v`/`--verbose`
 (operator request): `-v` logs AFIK's debug lines, `-vv` its trace and other
 crates' debug, `-vvv` everything, without `AFIK_LOG` (which still works;
 the louder wins). Debug lines added: each HTTP fetch (URL, bytes, ms) and

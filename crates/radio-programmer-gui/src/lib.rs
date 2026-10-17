@@ -14,6 +14,7 @@ pub mod flash;
 pub mod flash_tab;
 pub mod locators;
 pub mod logging;
+pub mod map;
 pub mod marine;
 pub mod model;
 pub mod paths;
@@ -24,6 +25,7 @@ pub mod satellites;
 pub mod session;
 pub mod stations;
 pub mod theme;
+pub mod tiles;
 pub mod world;
 
 /// Command-line help for the native editor binary.

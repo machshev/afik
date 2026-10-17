@@ -3266,6 +3266,12 @@
   8. Saved locators (operator request): the locator row keeps several
      locators, each with an optional description such as Home, chosen from
      a dropdown, with Save and Forget; kept in `locators`. Done.
+  9. Map tab (operator request): OpenStreetMap tiles, fetched while the
+     map is shown and cached in `$XDG_CACHE_HOME/afik/tiles` (operator
+     chose tiles over an offline outline; two connections, named agent,
+     refetch after 30 days). A click picks the locator; saved locators are
+     pinned; each generator's sites and radius are drawn, with a Show box
+     per generator. Done.
 
 ## BANKS-073 — Up to 254 banks, addressed by bank and position
 
