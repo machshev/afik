@@ -172,7 +172,9 @@ to `radio-platform`). Firmware: a write that touched the place publishes it,
 so the radio goes there at once; the K1 now keeps a host-written place and
 stores it on commit (its view refused place writes). `7.0.55` (`e60ef2a`)
 flashed to the K1 (`identify` first: bootloader `7.03.01`; image CRC-32
-`a9d3add2`, 299 pages acknowledged, not read back); K5 flash end `0xe810`. Gate: `cargo fmt --all
+`a9d3add2`, 299 pages acknowledged, not read back); K5 flash end `0xe810`. Hardware
+(K1, operator): groups switch and a scan stays in the group. Operator
+request: a separate group list (Menu on a GROUPS row, Exit back). Gate: `cargo fmt --all
 --check` clean, `cargo clippy --workspace --all-targets -- -D warnings`
 clean, `cargo test --workspace --no-fail-fast` 913 passed 0 failed 3
 ignored. Next: flash `7.0.55`, write a project with groups and a start place,
