@@ -32,7 +32,9 @@ use crate::{
     },
     presets::{satellite_bank, PRESETS, SATELLITE_PRESET, TX_RANGE_PRESETS},
     projects::ProjectStore,
-    repeaters::{self, Repeater, RepeaterArea, RepeaterCache, RepeaterList},
+    repeaters::{
+        self, AmateurBand, BandFilter, Repeater, RepeaterArea, RepeaterCache, RepeaterList,
+    },
     satellites::{SatelliteCache, SatelliteList, SyncJob},
     session::{DeviceJob, DeviceOutcome, DeviceSession, JobKind},
     stations::{self, StationArea, StationCache, StationList},
@@ -319,6 +321,9 @@ pub struct StudioApp {
     /// locator, and the state file they are remembered in.
     gateway_area: AirportArea,
     gateway_area_file: Option<PathBuf>,
+    /// The amateur bands gateways are taken from, and their state file.
+    gateway_bands: BandFilter,
+    gateway_bands_file: Option<PathBuf>,
     /// The same for beacons.
     beacon_area: AirportArea,
     beacon_area_file: Option<PathBuf>,
@@ -369,6 +374,10 @@ impl StudioApp {
         app.gateway_area_file = repeaters::gateway_area_file();
         if let Some(file) = &app.gateway_area_file {
             app.gateway_area = AirportArea::load(file);
+        }
+        app.gateway_bands_file = repeaters::gateway_bands_file();
+        if let Some(file) = &app.gateway_bands_file {
+            app.gateway_bands = BandFilter::load(file);
         }
         app.beacon_area_file = repeaters::beacon_area_file();
         if let Some(file) = &app.beacon_area_file {
@@ -1258,6 +1267,9 @@ impl StudioApp {
         let locator = &self.repeater_area.locator;
         let area = self.etcc_area(kind);
         let mut near = repeaters::nearby(kind.systems(list), locator, area.radius_km)?;
+        if kind == EtccKind::Gateways {
+            near.retain(|(gateway, _)| self.gateway_bands.takes(gateway.output_hz));
+        }
         let in_range = near.len();
         near.truncate(usize::from(area.max_channels));
         let (project, bank_bytes) = self.with_bank(kind.bank(locator, &near));
@@ -1350,6 +1362,11 @@ impl StudioApp {
         if let Some(file) = file {
             if let Err(error) = area.save(file) {
                 log::warn!("could not remember the {noun} area: {error}");
+            }
+        }
+        if let (EtccKind::Gateways, Some(file)) = (kind, &self.gateway_bands_file) {
+            if let Err(error) = self.gateway_bands.save(file) {
+                log::warn!("could not remember the gateway bands: {error}");
             }
         }
     }
@@ -1468,6 +1485,8 @@ impl StudioApp {
             marine_area_file: None,
             gateway_area: AirportArea::default(),
             gateway_area_file: None,
+            gateway_bands: BandFilter::default(),
+            gateway_bands_file: None,
             beacon_area: beacon_area_default(),
             beacon_area_file: None,
             airfield_area: AirfieldArea::default(),
@@ -2361,6 +2380,15 @@ impl StudioApp {
             }
             ui.label(self.etcc_source(kind));
         });
+        if kind == EtccKind::Gateways {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Bands");
+                for band in AmateurBand::ALL {
+                    ui.checkbox(&mut self.gateway_bands.bands[band.index()], band.label())
+                        .on_hover_text(format!("Takes the gateways on {}", band.label()));
+                }
+            });
+        }
     }
 
     /// The row holding the locator the repeaters, stations and airports share.
@@ -4774,7 +4802,7 @@ mod tests {
 
     #[test]
     fn gateways_and_beacons_come_from_the_repeater_list() {
-        use crate::repeaters::{Repeater, RepeaterList};
+        use crate::repeaters::{AmateurBand, Repeater, RepeaterList};
 
         let system = |callsign: &str, hz: u32, latitude: f64| Repeater {
             callsign: callsign.to_owned(),
@@ -4799,7 +4827,10 @@ mod tests {
 
         app.repeaters = Some(RepeaterList {
             repeaters: Vec::new(),
-            gateways: vec![system("MB7NEAR", 145_337_500, 51.52)],
+            gateways: vec![
+                system("MB7NEAR", 145_337_500, 51.52),
+                system("MB7SIX", 51_810_000, 51.53),
+            ],
             beacons: vec![
                 system("GB3VHF", 144_430_000, 51.3),
                 // About 280 km north: inside the beacons' wider default.
@@ -4827,8 +4858,26 @@ mod tests {
         assert_eq!(app.project.banks.len(), banks + 2);
         let bank = app.project.banks.last().unwrap();
         assert_eq!(bank.name, "GW IO91WM");
+        assert_eq!(bank.channels.len(), 1, "6 m is off by default");
         assert_eq!(bank.channels[0].transmit_mhz, "145.337500");
         assert!(app.project.validate().is_ok());
+
+        app.gateway_bands.bands[AmateurBand::SixMetres.index()] = true;
+        app.add_etcc(EtccKind::Gateways);
+        assert_eq!(app.project.banks.len(), banks + 2, "replaced, not added");
+        let names: Vec<_> = app
+            .project
+            .banks
+            .last()
+            .unwrap()
+            .channels
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(names, ["MB7NEAR", "MB7SIX"]);
+        app.gateway_bands.bands = [false; AmateurBand::ALL.len()];
+        app.add_etcc(EtccKind::Gateways);
+        assert_eq!(app.status, "No gateways within 10 km of IO91WM.");
 
         app.beacon_area.radius_km = 10;
         app.add_etcc(EtccKind::Beacons);

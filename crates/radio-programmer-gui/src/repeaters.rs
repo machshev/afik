@@ -33,6 +33,7 @@ const CACHE_DIR: &str = "etcc";
 const SYSTEMS_FILE: &str = "systems.json";
 const AREA_FILE: &str = "repeater-area";
 const GATEWAY_AREA_FILE: &str = "gateway-area";
+const GATEWAY_BANDS_FILE: &str = "gateway-bands";
 const BEACON_AREA_FILE: &str = "beacon-area";
 /// The radius beacons are taken within before the operator chooses one, in
 /// kilometres: a beacon is put up to be heard far beyond a repeater's reach.
@@ -703,6 +704,144 @@ impl RepeaterArea {
     }
 }
 
+/// An amateur band an ETCC system is on, which the gateway filter takes or
+/// drops.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AmateurBand {
+    /// 10 m, 28-29.7 MHz.
+    TenMetres,
+    /// 6 m, 50-54 MHz.
+    SixMetres,
+    /// 4 m, 70-71 MHz.
+    FourMetres,
+    /// 2 m, 144-148 MHz.
+    TwoMetres,
+    /// 70 cm, 420-450 MHz.
+    SeventyCentimetres,
+    /// 23 cm, 1240-1325 MHz.
+    TwentyThreeCentimetres,
+}
+
+impl AmateurBand {
+    /// Every band, lowest first, as the studio shows them.
+    pub const ALL: [Self; 6] = [
+        Self::TenMetres,
+        Self::SixMetres,
+        Self::FourMetres,
+        Self::TwoMetres,
+        Self::SeventyCentimetres,
+        Self::TwentyThreeCentimetres,
+    ];
+
+    /// The band holding `hz`, if any.
+    pub fn of(hz: u32) -> Option<Self> {
+        Self::ALL.into_iter().find(|band| {
+            let (low, high) = band.span_hz();
+            (low..=high).contains(&hz)
+        })
+    }
+
+    /// The band's edges in hertz, wide enough for every ITU region.
+    const fn span_hz(self) -> (u32, u32) {
+        match self {
+            Self::TenMetres => (28_000_000, 29_700_000),
+            Self::SixMetres => (50_000_000, 54_000_000),
+            Self::FourMetres => (70_000_000, 71_000_000),
+            Self::TwoMetres => (144_000_000, 148_000_000),
+            Self::SeventyCentimetres => (420_000_000, 450_000_000),
+            Self::TwentyThreeCentimetres => (1_240_000_000, 1_325_000_000),
+        }
+    }
+
+    /// The label the studio shows.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::TenMetres => "10 m",
+            Self::SixMetres => "6 m",
+            Self::FourMetres => "4 m",
+            Self::TwoMetres => "2 m",
+            Self::SeventyCentimetres => "70 cm",
+            Self::TwentyThreeCentimetres => "23 cm",
+        }
+    }
+
+    /// The word the state file keeps it as.
+    const fn key(self) -> &'static str {
+        match self {
+            Self::TenMetres => "10m",
+            Self::SixMetres => "6m",
+            Self::FourMetres => "4m",
+            Self::TwoMetres => "2m",
+            Self::SeventyCentimetres => "70cm",
+            Self::TwentyThreeCentimetres => "23cm",
+        }
+    }
+
+    /// Its position in [`Self::ALL`].
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// Which amateur bands a bank takes systems from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BandFilter {
+    /// Whether each [`AmateurBand`] is taken, by [`AmateurBand::index`].
+    pub bands: [bool; AmateurBand::ALL.len()],
+}
+
+impl Default for BandFilter {
+    /// 2 m and 70 cm, where most gateways are and the radio hears best.
+    fn default() -> Self {
+        let mut bands = [false; AmateurBand::ALL.len()];
+        bands[AmateurBand::TwoMetres.index()] = true;
+        bands[AmateurBand::SeventyCentimetres.index()] = true;
+        Self { bands }
+    }
+}
+
+impl BandFilter {
+    /// Whether a system on `hz` is taken; one outside every band is kept,
+    /// since no box could drop it.
+    pub fn takes(&self, hz: u32) -> bool {
+        AmateurBand::of(hz).is_none_or(|band| self.bands[band.index()])
+    }
+
+    /// Reads the bands taken by name; with no file, the default.
+    pub fn load(file: &Path) -> Self {
+        let Ok(text) = fs::read_to_string(file) else {
+            return Self::default();
+        };
+        let mut filter = Self {
+            bands: [false; AmateurBand::ALL.len()],
+        };
+        for word in text.split_whitespace() {
+            if let Some(band) = AmateurBand::ALL.iter().find(|band| band.key() == word) {
+                filter.bands[band.index()] = true;
+            }
+        }
+        filter
+    }
+
+    /// Writes the bands taken for the next start.
+    pub fn save(&self, file: &Path) -> Result<(), String> {
+        let words: Vec<_> = AmateurBand::ALL
+            .iter()
+            .filter(|band| self.bands[band.index()])
+            .map(|band| band.key())
+            .collect();
+        file.parent()
+            .map_or(Ok(()), fs::create_dir_all)
+            .and_then(|()| fs::write(file, words.join(" ") + "\n"))
+            .map_err(|error| format!("{}: {error}", file.display()))
+    }
+}
+
+/// The state file the gateway bands are kept in.
+pub fn gateway_bands_file() -> Option<PathBuf> {
+    paths::state_dir().map(|dir| dir.join(GATEWAY_BANDS_FILE))
+}
+
 /// The state file the gateway radius and count are kept in; they read and
 /// write as the airports' do.
 pub fn gateway_area_file() -> Option<PathBuf> {
@@ -777,10 +916,35 @@ mod tests {
 
     use super::{
         beacon_bank, distance_km, gateway_bank, grid_reference_centre, locator_centre, nearby,
-        parse, parse_systems, repeater_bank, RepeaterArea, RepeaterCache, MAX_RADIUS_KM,
-        SYSTEMS_URL,
+        parse, parse_systems, repeater_bank, AmateurBand, BandFilter, RepeaterArea, RepeaterCache,
+        MAX_RADIUS_KM, SYSTEMS_URL,
     };
     use crate::model::ToneDraft;
+
+    #[test]
+    fn gateway_bands_default_to_two_metres_and_seventy_centimetres() {
+        assert_eq!(AmateurBand::of(51_810_000), Some(AmateurBand::SixMetres));
+        assert_eq!(
+            AmateurBand::of(1_297_000_000),
+            Some(AmateurBand::TwentyThreeCentimetres)
+        );
+        assert_eq!(AmateurBand::of(100_000_000), None);
+        let filter = BandFilter::default();
+        assert!(filter.takes(145_337_500) && filter.takes(433_100_000));
+        assert!(!filter.takes(28_500_000) && !filter.takes(70_400_000));
+        assert!(filter.takes(100_000_000), "outside every band is kept");
+
+        let dir = std::env::temp_dir().join(format!("afik-bands-{}", std::process::id()));
+        let file = dir.join("gateway-bands");
+        assert_eq!(BandFilter::load(&file), filter, "no file: the default");
+        let mut chosen = BandFilter::default();
+        chosen.bands[AmateurBand::FourMetres.index()] = true;
+        chosen.bands[AmateurBand::SeventyCentimetres.index()] = false;
+        chosen.save(&file).unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "4m 2m\n");
+        assert_eq!(BandFilter::load(&file), chosen);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     /// Systems in the shape the ETCC returns, trimmed to the fields used.
     const SYSTEMS: &str = r#"{"data": [
