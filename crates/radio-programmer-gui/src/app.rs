@@ -43,7 +43,8 @@ use crate::{
     projects::ProjectStore,
     receiver::Receiver,
     repeaters::{
-        self, AmateurBand, BandFilter, Repeater, RepeaterArea, RepeaterCache, RepeaterList,
+        self, AmateurBand, BandFilter, Coverage, Repeater, RepeaterArea, RepeaterCache,
+        RepeaterList, RepeaterReach,
     },
     satellites::{SatelliteCache, SatelliteList, SyncJob},
     session::{DeviceJob, DeviceOutcome, DeviceSession, JobKind},
@@ -187,6 +188,8 @@ const MAP_VIEW_FILE: &str = "map-view";
 #[derive(Default)]
 struct RememberedFilters {
     map_view_file: Option<PathBuf>,
+    /// Where the repeaters' reach is kept.
+    repeater_reach_file: Option<PathBuf>,
     /// The filters as last written; none until first looked at.
     last: Option<String>,
 }
@@ -373,6 +376,8 @@ pub struct StudioApp {
     /// default, and their state file.
     repeater_bands: BandFilter,
     repeater_bands_file: Option<PathBuf>,
+    /// How far off a standard and a local repeater are heard.
+    repeater_reach: RepeaterReach,
     /// Where Ofcom's FM transmitter list is cached, and what was last read.
     station_cache: StationCache,
     stations: Option<StationList>,
@@ -509,6 +514,10 @@ impl StudioApp {
         if let Some(file) = &app.gateway_area_file {
             app.gateway_area = AirportArea::load_or(file, &area_within(radii.gateways));
         }
+        app.remembered.repeater_reach_file = RepeaterReach::file();
+        if let Some(file) = &app.remembered.repeater_reach_file {
+            app.repeater_reach = RepeaterReach::load(file);
+        }
         app.repeater_bands_file = repeaters::repeater_bands_file();
         if let Some(file) = &app.repeater_bands_file {
             app.repeater_bands = BandFilter::load(file);
@@ -565,6 +574,7 @@ impl StudioApp {
             "{:?}",
             (
                 (&self.repeater_area, &self.repeater_bands, &self.world_area),
+                &self.repeater_reach,
                 (&self.world_bands, &self.gateway_area, &self.gateway_bands),
                 (&self.beacon_area, &self.beacon_bands, &self.station_area),
                 (
@@ -603,6 +613,9 @@ impl StudioApp {
         let saved = [
             save(&self.repeater_area_file, &|f| self.repeater_area.save(f)),
             save(&self.repeater_bands_file, &|f| self.repeater_bands.save(f)),
+            save(&self.remembered.repeater_reach_file, &|f| {
+                self.repeater_reach.save(f)
+            }),
             save(&self.world_area_file, &|f| self.world_area.save(f)),
             save(&self.world_bands_file, &|f| self.world_bands.save(f)),
             save(&self.gateway_area_file, &|f| self.gateway_area.save(f)),
@@ -1548,7 +1561,13 @@ impl StudioApp {
             .as_ref()
             .ok_or("sync the repeater list from the ETCC first")?;
         let area = &self.repeater_area;
-        let mut near = repeaters::nearby(&list.repeaters, &area.locator, area.radius_km)?;
+        let mut near = repeaters::hearable(
+            &list.repeaters,
+            &area.locator,
+            area.radius_km,
+            &self.repeater_reach,
+            self.receiver,
+        )?;
         near.retain(|(repeater, _)| self.repeater_bands.takes(repeater.output_hz));
         let in_range = near.len();
         near.truncate(usize::from(area.max_channels));
@@ -1559,7 +1578,7 @@ impl StudioApp {
         Ok(AreaPreview {
             in_range,
             taken: near.len(),
-            furthest_km: near.last().map_or(0.0, |(_, km)| *km),
+            furthest_km: near.iter().map(|(_, km)| *km).fold(0.0, f64::max),
             sites: repeater_sites(&near),
             bank_bytes,
             project,
@@ -1585,11 +1604,11 @@ impl StudioApp {
         let radius = self.repeater_area.radius_km;
         let taking = if preview.taken < preview.in_range {
             format!(
-                "{} within {radius} km, nearest {} taken",
+                "{} heard within {radius} km, most hearable {} taken",
                 preview.in_range, preview.taken
             )
         } else {
-            format!("{} within {radius} km", preview.in_range)
+            format!("{} heard within {radius} km", preview.in_range)
         };
         format!("{taking}{}. {synced}", cost(&preview))
     }
@@ -1639,6 +1658,11 @@ impl StudioApp {
         if let Some(file) = &self.repeater_bands_file {
             if let Err(error) = self.repeater_bands.save(file) {
                 log::warn!("could not remember the repeater bands: {error}");
+            }
+        }
+        if let Some(file) = &self.remembered.repeater_reach_file {
+            if let Err(error) = self.repeater_reach.save(file) {
+                log::warn!("could not remember the repeater reach: {error}");
             }
         }
     }
@@ -2027,6 +2051,7 @@ impl StudioApp {
             repeater_area_file: None,
             repeater_bands: BandFilter::default(),
             repeater_bands_file: None,
+            repeater_reach: RepeaterReach::default(),
             station_cache: StationCache::none(),
             stations: None,
             station_sync: None,
@@ -2082,23 +2107,29 @@ impl StudioApp {
             app.projects.adopt(path);
         }
         app.load_project();
+        app.connect_at_start(options);
+        app
+    }
+
+    /// Connects the simulator or the device `options` name, or otherwise
+    /// only detects what is plugged in.
+    fn connect_at_start(&mut self, options: &Options) {
         if options.simulator {
-            app.connect_simulator();
-            return app;
+            self.connect_simulator();
+            return;
         }
         // Detection runs at start-up so the Device tab already knows what is
         // plugged in, but only an explicit request connects without a click.
-        let detection = app.chooser.detect();
+        let detection = self.chooser.detect();
         match &options.device {
-            Some(DeviceSelector::Auto) => app.connect_serial(),
+            Some(DeviceSelector::Auto) => self.connect_serial(),
             Some(DeviceSelector::Explicit(path)) => {
-                app.chooser.choice = DeviceChoice::Manual;
-                app.chooser.manual_path = path.display().to_string();
-                app.connect_serial();
+                self.chooser.choice = DeviceChoice::Manual;
+                self.chooser.manual_path = path.display().to_string();
+                self.connect_serial();
             }
-            None => app.status = detection,
+            None => self.status = detection,
         }
-        app
     }
 
     /// Shows a failure on the status line and logs it with what was being done.
@@ -2727,7 +2758,14 @@ fn merge_sites(sites: &mut Vec<Site>, more: Vec<Site>) {
 /// The map sites of repeaters, gateways or beacons.
 fn repeater_sites(near: &[(&Repeater, f64)]) -> Vec<Site> {
     near.iter()
-        .map(|(r, _)| site(&r.callsign, (r.latitude, r.longitude)))
+        .map(|(r, _)| Site {
+            size: match r.coverage {
+                Coverage::WideArea => SiteSize::Large,
+                Coverage::Standard => SiteSize::Medium,
+                Coverage::Local => SiteSize::Small,
+            },
+            ..site(&r.callsign, (r.latitude, r.longitude))
+        })
         .collect()
 }
 
@@ -3163,15 +3201,15 @@ impl StudioApp {
                 egui::DragValue::new(&mut self.repeater_area.max_channels)
                     .range(1..=repeaters::MAX_CHANNELS_LIMIT),
             )
-            .on_hover_text("How many repeaters the bank takes, nearest first");
+            .on_hover_text("How many repeaters the bank takes, most hearable first");
             // Always enabled: a disabled button here cuts the Tab order
             // short in egui 0.29, and Add explains itself when unsynced.
             if ui
                 .button("Add")
                 .on_hover_text(
-                    "Adds the nearest FM repeaters in range as one bank, replacing one for \
-                     the same locator; each receives the output and transmits on the input \
-                     with its CTCSS tone",
+                    "Adds the FM repeaters heard here as one bank, most hearable first, \
+                     replacing one for the same locator; each receives the output and \
+                     transmits on the input with its CTCSS tone",
                 )
                 .clicked()
             {
@@ -3198,6 +3236,52 @@ impl StudioApp {
             band_counts(&list.repeaters, &area.locator, area.radius_km)
         });
         band_row(ui, &mut self.repeater_bands, "repeaters", counts);
+        self.repeater_reach_controls(ui);
+    }
+
+    /// How far off a standard and a local repeater are heard; a wide-area
+    /// one across the radius.
+    fn repeater_reach_controls(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Heard to");
+            for (coverage, km) in Coverage::CHOSEN
+                .into_iter()
+                .zip(&mut self.repeater_reach.reach_km)
+            {
+                ui.label(coverage.label());
+                let reach = self.receiver.reach_km(*km);
+                ui.add(
+                    egui::DragValue::new(km)
+                        .range(1..=repeaters::MAX_RADIUS_KM)
+                        .suffix(" km"),
+                )
+                .on_hover_text(format!(
+                    "How far off a handheld hears {}; a {} hears it to about {reach} km. \
+                     Drawn faintly about each locator on the map",
+                    coverage.help(),
+                    self.receiver.label().to_lowercase()
+                ));
+            }
+            if ui
+                .button("Defaults")
+                .on_hover_text("Puts each repeater's reach back to its estimate")
+                .clicked()
+            {
+                self.repeater_reach = RepeaterReach::default();
+            }
+            ui.label(format!(
+                "Wide-area: the radius, {} km",
+                self.repeater_area.radius_km
+            ))
+            .on_hover_text(format!(
+                "A full-power repeater with its aerial at least {} m up is heard across the \
+                 radius; one under 10 dBW or with its aerial under {} m is local. The ETCC \
+                 does not list the site's own height, so a hilltop with a short mast reads \
+                 as standard",
+                repeaters::WIDE_AREA_HEIGHT_M,
+                repeaters::LOCAL_HEIGHT_M
+            ));
+        });
     }
 
     /// The row that adds the repeaters anywhere near the shared locator.
@@ -3356,10 +3440,13 @@ impl StudioApp {
     /// The faint ranges drawn about each centre of `generator`'s layer: how
     /// far off each size of airport's approach is heard, when taken.
     fn generator_rings(&self, generator: Generator) -> Vec<(f64, String)> {
-        if generator != Generator::Airports || !self.airport_options.takes(Service::Approach) {
-            return Vec::new();
+        match generator {
+            Generator::Airports if self.airport_options.takes(Service::Approach) => {
+                approach_rings(&self.airport_options, self.receiver)
+            }
+            Generator::Repeaters => repeater_rings(&self.repeater_reach, self.receiver),
+            _ => Vec::new(),
         }
-        approach_rings(&self.airport_options, self.receiver)
     }
 
     /// Everything the map's layers are built from: the locator, every
@@ -3370,6 +3457,7 @@ impl StudioApp {
             "{:?}",
             (
                 (&self.repeater_area, &self.repeater_bands, &self.world_area),
+                &self.repeater_reach,
                 (&self.world_bands, &self.gateway_area, &self.gateway_bands),
                 (&self.beacon_area, &self.beacon_bands, &self.station_area),
                 (
@@ -5652,6 +5740,20 @@ fn approach_rings(options: &AirportOptions, receiver: Receiver) -> Vec<(f64, Str
         .collect()
 }
 
+/// How far off `receiver` hears a standard and a local repeater, labelled,
+/// for the map's faint rings; a wide-area one's is the radius, drawn
+/// already.
+fn repeater_rings(reach: &RepeaterReach, receiver: Receiver) -> Vec<(f64, String)> {
+    Coverage::CHOSEN
+        .into_iter()
+        .zip(reach.reach_km)
+        .map(|(coverage, km)| {
+            let km = receiver.reach_km(km);
+            (f64::from(km), format!("{} RPT {km} km", coverage.label()))
+        })
+        .collect()
+}
+
 /// The hover text of an airport service: what it is and how far off
 /// `receiver` hears it, approach by the size of the airport.
 fn heard_to(
@@ -6918,6 +7020,7 @@ mod tests {
             wide: true,
             latitude,
             longitude: 2.35,
+            coverage: crate::repeaters::Coverage::Standard,
         };
         let mut app = simulated("world");
         assert!(app.world.is_none(), "tests never read the real cache");
@@ -7239,6 +7342,39 @@ mod tests {
     }
 
     #[test]
+    fn a_repeaters_mark_and_rings_follow_its_coverage() {
+        use super::{repeater_rings, repeater_sites};
+        use crate::{
+            map::SiteSize,
+            receiver::Receiver,
+            repeaters::{Coverage, Repeater, RepeaterReach},
+        };
+
+        let at = |coverage| Repeater {
+            callsign: "GB3PI".to_owned(),
+            town: String::new(),
+            output_hz: 145_750_000,
+            input_hz: 145_150_000,
+            ctcss_tenths_hz: None,
+            wide: false,
+            latitude: 52.0,
+            longitude: 0.0,
+            coverage,
+        };
+        let repeaters = [Coverage::WideArea, Coverage::Standard, Coverage::Local].map(at);
+        let near: Vec<_> = repeaters.iter().map(|r| (r, 1.0)).collect();
+        let sizes: Vec<_> = repeater_sites(&near).iter().map(|s| s.size).collect();
+        assert_eq!(sizes, [SiteSize::Large, SiteSize::Medium, SiteSize::Small]);
+        assert_eq!(
+            repeater_rings(&RepeaterReach::default(), Receiver::Mobile),
+            [
+                (45.0, "Standard RPT 45 km".to_owned()),
+                (22.0, "Local RPT 22 km".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
     fn an_airports_mark_is_sized_by_the_airport() {
         use super::airport_site;
         use crate::{
@@ -7357,6 +7493,7 @@ mod tests {
             wide: false,
             latitude: 51.52,
             longitude: -0.12,
+            coverage: crate::repeaters::Coverage::Standard,
         };
         let mut app = simulated("add-all");
         app.repeaters = Some(RepeaterList {
@@ -7450,6 +7587,7 @@ mod tests {
             wide: false,
             latitude,
             longitude,
+            coverage: crate::repeaters::Coverage::Standard,
         };
         let mut app = simulated("all-locations");
         app.repeaters = Some(RepeaterList {
@@ -7548,6 +7686,7 @@ mod tests {
                     wide: false,
                     latitude: 51.52,
                     longitude: -0.12,
+                    coverage: crate::repeaters::Coverage::Standard,
                 })
                 .collect(),
             gateways: Vec::new(),
@@ -7671,6 +7810,7 @@ mod tests {
                 wide: false,
                 latitude: 51.52,
                 longitude: -0.12,
+                coverage: crate::repeaters::Coverage::Standard,
             }],
             gateways: Vec::new(),
             beacons: Vec::new(),
@@ -7793,6 +7933,7 @@ mod tests {
             wide: false,
             latitude: 51.52,
             longitude: -0.12,
+            coverage: crate::repeaters::Coverage::Standard,
         };
         let names = |app: &StudioApp, bank: &str| -> Vec<String> {
             let bank = app.project.banks.iter().find(|b| b.name == bank).unwrap();
@@ -7847,6 +7988,7 @@ mod tests {
             wide: false,
             latitude,
             longitude: -0.12,
+            coverage: crate::repeaters::Coverage::Standard,
         };
         let mut app = simulated("etcc-kinds");
         assert_eq!(app.etcc_source(EtccKind::Beacons), "Not synced.");
@@ -7939,8 +8081,8 @@ mod tests {
     }
 
     #[test]
-    fn repeaters_near_a_locator_are_added_nearest_first_once_synced() {
-        use crate::repeaters::{Repeater, RepeaterArea, RepeaterList};
+    fn repeaters_heard_at_a_locator_are_added_most_hearable_first_once_synced() {
+        use crate::repeaters::{Coverage, Repeater, RepeaterArea, RepeaterList};
 
         let repeater = |callsign: &str, latitude: f64, longitude: f64| Repeater {
             callsign: callsign.to_owned(),
@@ -7951,6 +8093,7 @@ mod tests {
             wide: false,
             latitude,
             longitude,
+            coverage: crate::repeaters::Coverage::Standard,
         };
         let mut app = simulated("repeaters");
         assert!(app.repeaters.is_none(), "tests never read the real cache");
@@ -7959,10 +8102,18 @@ mod tests {
         app.add_repeaters();
         assert_eq!(app.project.banks.len(), banks, "nothing without a sync");
 
+        let sized = |callsign: &str, latitude: f64, coverage| Repeater {
+            coverage,
+            ..repeater(callsign, latitude, -0.12)
+        };
+        // A wide-area repeater 42 km off is heard across the 50 km radius, a
+        // local one only within 15 km.
         app.repeaters = Some(RepeaterList {
             repeaters: vec![
-                repeater("GB3FAR", 51.9, -0.1),
+                sized("GB3FAR", 51.9, Coverage::WideArea),
                 repeater("GB3NEAR", 51.52, -0.12),
+                sized("GB3TOWN", 51.62, Coverage::Local),
+                sized("GB3QUIET", 51.75, Coverage::Local),
                 repeater("GB3OUT", 53.0, -0.1),
             ],
             gateways: Vec::new(),
@@ -7975,14 +8126,17 @@ mod tests {
             max_channels: 40,
         };
         let source = app.repeater_source();
-        assert!(source.starts_with("2 within 50 km, bank "), "{source}");
+        assert!(
+            source.starts_with("3 heard within 50 km, bank "),
+            "{source}"
+        );
         assert!(source.contains("% after adding."), "{source}");
 
-        // The limit takes the nearest only.
+        // The limit takes the most hearable only.
         app.repeater_area.max_channels = 1;
         let source = app.repeater_source();
         assert!(
-            source.starts_with("2 within 50 km, nearest 1 taken, bank "),
+            source.starts_with("3 heard within 50 km, most hearable 1 taken, bank "),
             "{source}"
         );
         app.add_repeaters();
@@ -7992,8 +8146,12 @@ mod tests {
         let bank = app.project.banks.last().unwrap();
         assert_eq!(bank.name, "RPT IO91WM");
         let names: Vec<_> = bank.channels.iter().map(|c| c.name.as_str()).collect();
-        assert_eq!(names, ["GB3NEAR", "GB3FAR"]);
+        assert_eq!(names, ["GB3NEAR", "GB3TOWN", "GB3FAR"]);
         assert!(app.project.validate().is_ok());
+        // A better aerial hears the quiet one too.
+        app.receiver = super::Receiver::Base;
+        assert!(app.repeater_source().starts_with("4 heard"));
+        app.receiver = super::Receiver::Handheld;
         // Filed under a location for the locator (`ADR-116`).
         let home = app.project.location("IO91WM").expect("a location");
         assert_eq!(bank.groups, [home]);
@@ -8012,6 +8170,36 @@ mod tests {
         app.repeater_area.locator = "nonsense".to_owned();
         app.add_repeaters();
         assert_eq!(app.project.banks.len(), banks + 1);
+    }
+
+    #[test]
+    fn more_repeaters_than_a_radio_holds_say_so_in_their_cost() {
+        use crate::repeaters::{Repeater, RepeaterArea, RepeaterList};
+
+        let repeater = |callsign: &str, latitude: f64, longitude: f64| Repeater {
+            callsign: callsign.to_owned(),
+            town: String::new(),
+            output_hz: 145_625_000,
+            input_hz: 145_025_000,
+            ctcss_tenths_hz: Some(825),
+            wide: false,
+            latitude,
+            longitude,
+            coverage: crate::repeaters::Coverage::Standard,
+        };
+        let mut app = simulated("repeaters-cost");
+        app.repeaters = Some(RepeaterList {
+            repeaters: vec![repeater("GB3NEAR", 51.52, -0.12)],
+            gateways: Vec::new(),
+            beacons: Vec::new(),
+            synced: std::time::SystemTime::now(),
+        });
+        app.repeater_area = RepeaterArea {
+            locator: "IO91WM".to_owned(),
+            radius_km: 50,
+            max_channels: 40,
+        };
+        app.add_repeaters();
 
         // More repeaters than a radio holds: the cost says so.
         // Full-length names and frequencies too far apart to store short.

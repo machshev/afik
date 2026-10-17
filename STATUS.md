@@ -248,6 +248,16 @@ whatever the receiver, so only medium and small keep a range of their own
 ignored) and the map rings those two. Gate: `cargo fmt --all --check`
 clean, `cargo clippy --workspace --all-targets -- -D warnings` clean,
 `cargo test --workspace` 964 passed 0 failed 3 ignored.
+Repeaters are judged the same way from the ETCC's ERP and aerial height:
+wide-area (14 dBW on 30 m or more) is heard across the repeater radius,
+local (under 10 dBW or under 10 m) and standard to a reach the operator
+sets (`repeater-reach`, default 15 and 30 km on a handheld). The bank takes
+the most hearable first; the map sizes each mark and rings the two reaches.
+The ETCC lists no site height, so a hilltop on a short mast reads as
+standard. On M8LWA at 50 km the four locations take 5, 6, 6 and 8
+repeaters (was 18, 19, 12 and 15 in range). Gate: `cargo fmt --all
+--check` clean, `cargo clippy --workspace --all-targets -- -D warnings`
+clean, `cargo test --workspace` 969 passed 0 failed 3 ignored.
 
 **`FLASH-074` done** (2026-10-17, operator request, `RISK-049`): the K5
 image had 16 bytes of flash left. `interface::run` was 22.6 KB because the

@@ -24,6 +24,7 @@ use serde_json::Value;
 use crate::{
     model::{format_mhz, BankDraft, BankKind, ChannelDraft, ToneDraft},
     paths,
+    receiver::Receiver,
 };
 
 /// Every repeater, gateway and beacon the ETCC has licensed.
@@ -37,6 +38,7 @@ const REPEATER_BANDS_FILE: &str = "repeater-bands";
 const GATEWAY_BANDS_FILE: &str = "gateway-bands";
 const BEACON_BANDS_FILE: &str = "beacon-bands";
 const BEACON_AREA_FILE: &str = "beacon-area";
+const REACH_FILE: &str = "repeater-reach";
 /// How many repeaters a bank takes before the operator chooses: about a
 /// tenth of the radio's image.
 pub const DEFAULT_MAX_CHANNELS: u16 = 40;
@@ -106,6 +108,151 @@ pub struct Repeater {
     pub latitude: f64,
     /// Longitude of its grid square's centre, in degrees east.
     pub longitude: f64,
+    /// How far it covers, from its power and aerial height.
+    pub coverage: Coverage,
+}
+
+/// How far a repeater covers, judged from the power and aerial height the
+/// ETCC lists; the site's own height is not listed, so a hilltop with a
+/// short mast reads as standard.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Coverage {
+    /// Full power, 14 dBW (25 W), on an aerial at least
+    /// [`WIDE_AREA_HEIGHT_M`] up: heard across a region.
+    WideArea,
+    /// Neither wide-area nor local, or not listed.
+    #[default]
+    Standard,
+    /// Under 10 dBW (10 W), or an aerial under [`LOCAL_HEIGHT_M`] up: a
+    /// town's repeater.
+    Local,
+}
+
+/// How high a wide-area repeater's aerial is at least, in metres above
+/// ground.
+pub const WIDE_AREA_HEIGHT_M: u16 = 30;
+/// How high a local repeater's aerial is at most, in metres above ground.
+pub const LOCAL_HEIGHT_M: u16 = 10;
+
+impl Coverage {
+    /// The sizes whose reach the operator chooses, widest first; a
+    /// wide-area repeater is heard across the repeater radius.
+    pub const CHOSEN: [Self; 2] = [Self::Standard, Self::Local];
+
+    /// The coverage of a repeater of `erp_dbw` on an aerial `height_m` above
+    /// ground; a height of 0 is not listed.
+    pub fn of(erp_dbw: Option<f64>, height_m: Option<u16>) -> Self {
+        let height_m = height_m.filter(|height| *height > 0);
+        let full_power = erp_dbw.is_some_and(|erp| erp >= 14.0);
+        if full_power && height_m.is_some_and(|height| height >= WIDE_AREA_HEIGHT_M) {
+            Self::WideArea
+        } else if erp_dbw.is_some_and(|erp| erp < 10.0)
+            || height_m.is_some_and(|height| height < LOCAL_HEIGHT_M)
+        {
+            Self::Local
+        } else {
+            Self::Standard
+        }
+    }
+
+    /// What the studio calls it.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::WideArea => "Wide-area",
+            Self::Standard => "Standard",
+            Self::Local => "Local",
+        }
+    }
+
+    /// What it covers, for the studio's hover text.
+    pub const fn help(self) -> &'static str {
+        match self {
+            Self::WideArea => "a full-power repeater on a high aerial",
+            Self::Standard => "a repeater neither wide-area nor local",
+            Self::Local => "a low-power repeater or one on a low aerial",
+        }
+    }
+
+    /// Its place in [`Self::CHOSEN`], none for a wide-area repeater.
+    pub const fn chosen(self) -> Option<usize> {
+        match self {
+            Self::WideArea => None,
+            Self::Standard => Some(0),
+            Self::Local => Some(1),
+        }
+    }
+}
+
+/// How far off a handheld hears each [`Coverage::CHOSEN`] repeater before
+/// the operator chooses, in kilometres: an estimate, not a measurement.
+pub const DEFAULT_REACH_KM: [u16; Coverage::CHOSEN.len()] = [30, 15];
+/// The words the reach file keeps each chosen coverage's reach under.
+const REACH_KEYS: [&str; Coverage::CHOSEN.len()] = ["standard", "local"];
+
+/// How far off a handheld hears a standard and a local repeater; a
+/// wide-area one is heard across the radius.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RepeaterReach {
+    /// In kilometres, by [`Coverage::chosen`].
+    pub reach_km: [u16; Coverage::CHOSEN.len()],
+}
+
+impl Default for RepeaterReach {
+    fn default() -> Self {
+        Self {
+            reach_km: DEFAULT_REACH_KM,
+        }
+    }
+}
+
+impl RepeaterReach {
+    /// How far off `receiver` hears a repeater of `coverage`, in
+    /// kilometres: as far as chosen for it, and a wide-area one across
+    /// `radius_km`, whatever the receiver.
+    pub const fn reach_km(&self, coverage: Coverage, receiver: Receiver, radius_km: u16) -> u16 {
+        match coverage.chosen() {
+            Some(at) => receiver.reach_km(self.reach_km[at]),
+            None => radius_km,
+        }
+    }
+
+    /// The state file the reach is kept in.
+    pub fn file() -> Option<PathBuf> {
+        paths::state_dir().map(|dir| dir.join(REACH_FILE))
+    }
+
+    /// Reads `standard=KM local=KM`; anything missing or unreadable gives
+    /// its default.
+    pub fn load(file: &Path) -> Self {
+        let mut reach = Self::default();
+        let text = fs::read_to_string(file).unwrap_or_default();
+        for word in text.split_whitespace() {
+            for (at, key) in REACH_KEYS.iter().enumerate() {
+                let km = word
+                    .strip_prefix(key)
+                    .and_then(|rest| rest.strip_prefix('='))
+                    .and_then(|km| km.parse().ok())
+                    .filter(|km| (1..=MAX_RADIUS_KM).contains(km));
+                if let Some(km) = km {
+                    reach.reach_km[at] = km;
+                }
+            }
+        }
+        reach
+    }
+
+    /// Writes the reach for the next start.
+    pub fn save(&self, file: &Path) -> Result<(), String> {
+        let words: Vec<String> = REACH_KEYS
+            .iter()
+            .zip(self.reach_km)
+            .map(|(key, km)| format!("{key}={km}"))
+            .collect();
+        file.parent()
+            .map_or(Ok(()), fs::create_dir_all)
+            .and_then(|()| fs::write(file, words.join(" ") + "\n"))
+            .map_err(|error| format!("{}: {error}", file.display()))
+    }
 }
 
 /// The systems a studio bank can be built from, each ordered by callsign.
@@ -203,6 +350,14 @@ fn located(system: &Value, has_input: bool) -> Option<Repeater> {
         wide: system.get("txbw").and_then(Value::as_f64) == Some(25.0),
         latitude,
         longitude,
+        coverage: Coverage::of(
+            system.get("dbwErp").and_then(Value::as_f64),
+            system
+                .get("extraDetails")
+                .and_then(|details| details.get("antennaHeight"))
+                .and_then(Value::as_u64)
+                .and_then(|height| u16::try_from(height).ok()),
+        ),
     })
 }
 
@@ -447,6 +602,28 @@ pub fn nearby<'a>(
     Ok(near)
 }
 
+/// Every repeater within `radius_km` of `locator` that `receiver` hears by
+/// its coverage, the most hearable (distance over reach) first, each with
+/// its distance in kilometres.
+pub fn hearable<'a>(
+    repeaters: &'a [Repeater],
+    locator: &str,
+    radius_km: u16,
+    reach: &RepeaterReach,
+    receiver: Receiver,
+) -> Result<Vec<(&'a Repeater, f64)>, String> {
+    let reach_km =
+        |repeater: &Repeater| f64::from(reach.reach_km(repeater.coverage, receiver, radius_km));
+    let mut heard = nearby(repeaters, locator, radius_km)?;
+    heard.retain(|(repeater, km)| *km <= reach_km(repeater));
+    heard.sort_by(|a, b| {
+        (a.1 / reach_km(a.0))
+            .total_cmp(&(b.1 / reach_km(b.0)))
+            .then(a.0.callsign.cmp(&b.0.callsign))
+    });
+    Ok(heard)
+}
+
 /// Builds the bank for the repeaters `nearby` chose, in their order: each
 /// channel receives the output and transmits on the input with the access
 /// tone, and keeps its own bandwidth.
@@ -643,7 +820,8 @@ pub struct RepeaterArea {
     pub locator: String,
     /// Distance within which repeaters are taken, in kilometres.
     pub radius_km: u16,
-    /// How many of them, nearest first, the bank takes.
+    /// How many of them the bank takes: nearest first, or for repeaters
+    /// the most hearable first.
     pub max_channels: u16,
 }
 
@@ -944,11 +1122,102 @@ mod tests {
     use radio_domain::{Modulation, Tone};
 
     use super::{
-        beacon_bank, distance_km, gateway_bank, grid_reference_centre, locator_centre, nearby,
-        parse, parse_systems, repeater_bank, AmateurBand, BandFilter, RepeaterArea, RepeaterCache,
-        MAX_RADIUS_KM, SYSTEMS_URL,
+        beacon_bank, distance_km, gateway_bank, grid_reference_centre, hearable, locator_centre,
+        nearby, parse, parse_systems, repeater_bank, AmateurBand, BandFilter, Coverage,
+        RepeaterArea, RepeaterCache, RepeaterReach, MAX_RADIUS_KM, SYSTEMS_URL,
     };
-    use crate::model::ToneDraft;
+    use crate::{model::ToneDraft, receiver::Receiver};
+
+    #[test]
+    fn power_and_aerial_height_say_how_far_a_repeater_covers() {
+        assert_eq!(Coverage::of(Some(14.0), Some(58)), Coverage::WideArea);
+        assert_eq!(Coverage::of(Some(14.0), Some(20)), Coverage::Standard);
+        assert_eq!(Coverage::of(Some(11.5), Some(50)), Coverage::Standard);
+        assert_eq!(Coverage::of(Some(7.0), Some(60)), Coverage::Local);
+        assert_eq!(Coverage::of(Some(14.0), Some(6)), Coverage::Local);
+        // A height of 0 is not listed, so says nothing.
+        assert_eq!(Coverage::of(Some(14.0), Some(0)), Coverage::Standard);
+        assert_eq!(Coverage::of(None, None), Coverage::Standard);
+
+        let json = r#"{"data": [
+            {"type": "AV", "status": "OPERATIONAL", "modeCodes": ["A"], "repeater": "GB3PI",
+             "town": "ROYSTON", "tx": 145750000, "rx": 145150000, "ctcss": 77,
+             "txbw": 12.5, "locator": "IO92XA", "dbwErp": 14,
+             "extraDetails": {"ngr": "TL3736", "antennaHeight": 58, "polarisation": "V"}},
+            {"type": "AV", "status": "OPERATIONAL", "modeCodes": ["A"], "repeater": "GB3DE-L",
+             "town": "IPSWICH", "tx": 433250000, "rx": 434850000, "ctcss": 110.9,
+             "txbw": 12.5, "locator": "JO02QF", "dbwErp": 7,
+             "extraDetails": {"ngr": "TM1844", "antennaHeight": 6, "polarisation": "V"}},
+            {"type": "AV", "status": "OPERATIONAL", "modeCodes": ["A"], "repeater": "GB3EL",
+             "town": "ELY", "tx": 433100000, "rx": 434700000, "ctcss": 77,
+             "txbw": 12.5, "locator": "JO02", "dbwErp": 11.8, "extraDetails": null}
+        ]}"#;
+        let coverage: Vec<_> = parse(json)
+            .unwrap()
+            .iter()
+            .map(|r| (r.callsign.clone(), r.coverage))
+            .collect();
+        assert_eq!(
+            coverage,
+            [
+                ("GB3DE-L".to_owned(), Coverage::Local),
+                ("GB3EL".to_owned(), Coverage::Standard),
+                ("GB3PI".to_owned(), Coverage::WideArea),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_repeater_is_taken_where_its_coverage_reaches_most_hearable_first() {
+        let list = parse(SYSTEMS).unwrap();
+        let at = |callsign: &str, coverage| super::Repeater {
+            coverage,
+            ..list
+                .iter()
+                .find(|r| r.callsign == callsign)
+                .unwrap()
+                .clone()
+        };
+        // From IO91WM: GB3WL is in the square, GB3EL about 12 km, GB3HW
+        // about 25 km and GB3BB in Brecon about 220 km off.
+        let repeaters = [
+            at("GB3WL", Coverage::Standard),
+            at("GB3EL", Coverage::Local),
+            at("GB3HW", Coverage::Local),
+            at("GB3BB", Coverage::WideArea),
+        ];
+        let reach = RepeaterReach::default();
+        let names = |receiver, radius_km| -> Vec<String> {
+            hearable(&repeaters, "IO91WM", radius_km, &reach, receiver)
+                .unwrap()
+                .iter()
+                .map(|(r, _)| r.callsign.clone())
+                .collect()
+        };
+        // The local one 25 km off is past a handheld's 15 km.
+        assert_eq!(names(Receiver::Handheld, 50), ["GB3WL", "GB3EL"]);
+        // The wide-area one is heard across the radius, most hearable by its
+        // share of it.
+        assert_eq!(names(Receiver::Handheld, 300), ["GB3WL", "GB3BB", "GB3EL"]);
+        assert_eq!(names(Receiver::Base, 50), ["GB3WL", "GB3EL", "GB3HW"]);
+    }
+
+    #[test]
+    fn the_reach_comes_back_as_saved_and_defaults_otherwise() {
+        let dir = std::env::temp_dir().join(format!("afik-reach-{}", std::process::id()));
+        let file = dir.join("repeater-reach");
+        assert_eq!(RepeaterReach::load(&file), RepeaterReach::default());
+        let chosen = RepeaterReach { reach_km: [40, 10] };
+        chosen.save(&file).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "standard=40 local=10\n"
+        );
+        assert_eq!(RepeaterReach::load(&file), chosen);
+        std::fs::write(&file, "standard=0 local=12\n").unwrap();
+        assert_eq!(RepeaterReach::load(&file).reach_km, [30, 12]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn gateway_bands_default_to_two_metres_and_seventy_centimetres() {

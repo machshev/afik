@@ -72,6 +72,7 @@ pub fn parse(json: &str) -> Result<Vec<Repeater>, String> {
                 wide: true,
                 latitude: system.get("latitude").and_then(Value::as_f64)?,
                 longitude: system.get("longitude").and_then(Value::as_f64)?,
+                coverage: crate::repeaters::Coverage::Standard,
             })
         })
         .collect();
