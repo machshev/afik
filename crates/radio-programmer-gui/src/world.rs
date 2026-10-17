@@ -31,6 +31,7 @@ pub const REPEATERS_URL: &str = "https://hearham.com/api/repeaters/v1";
 const CACHE_DIR: &str = "hearham";
 const CACHE_FILE: &str = "repeaters.json";
 const AREA_FILE: &str = "world-area";
+const BANDS_FILE: &str = "world-bands";
 /// Long enough for the whole list on a slow link.
 const SYNC_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -179,6 +180,11 @@ impl WorldCache {
 /// The state file the radius and count are kept in.
 pub fn area_file() -> Option<PathBuf> {
     paths::state_dir().map(|dir| dir.join(AREA_FILE))
+}
+
+/// The state file the bands are kept in, as for the UK repeaters.
+pub fn bands_file() -> Option<PathBuf> {
+    paths::state_dir().map(|dir| dir.join(BANDS_FILE))
 }
 
 /// The radius and how many repeaters to take, as for the airports.

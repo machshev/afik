@@ -216,7 +216,10 @@ Other, from the prefix of Ofcom's licence numbers; BBC also by `BBC` anywhere
 in a station or RDS name), all but BBC ticked by default, left out before ranking,
 remembered in `station-area`; gate: fmt clean, `cargo clippy -p
 radio-programmer-gui --all-targets -- -D warnings` clean, `cargo test -p
-radio-programmer-gui` 173 passed 0 failed 3 ignored). The studio takes `-v`/`--verbose`
+radio-programmer-gui` 173 passed 0 failed 3 ignored). The UK and world
+repeater tabs have a Bands row too, every band by default, remembered in
+`repeater-bands` and `world-bands` (gate: studio fmt and clippy `-D warnings`
+clean, `cargo test -p radio-programmer-gui` 174 passed 0 failed 3 ignored). The studio takes `-v`/`--verbose`
 (operator request): `-v` logs AFIK's debug lines, `-vv` its trace and other
 crates' debug, `-vvv` everything, without `AFIK_LOG` (which still works;
 the louder wins). Debug lines added: each HTTP fetch (URL, bytes, ms) and

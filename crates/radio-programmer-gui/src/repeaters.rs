@@ -33,6 +33,7 @@ const CACHE_DIR: &str = "etcc";
 const SYSTEMS_FILE: &str = "systems.json";
 const AREA_FILE: &str = "repeater-area";
 const GATEWAY_AREA_FILE: &str = "gateway-area";
+const REPEATER_BANDS_FILE: &str = "repeater-bands";
 const GATEWAY_BANDS_FILE: &str = "gateway-bands";
 const BEACON_BANDS_FILE: &str = "beacon-bands";
 const BEACON_AREA_FILE: &str = "beacon-area";
@@ -847,6 +848,11 @@ impl BandFilter {
             .and_then(|()| fs::write(file, words.join(" ") + "\n"))
             .map_err(|error| format!("{}: {error}", file.display()))
     }
+}
+
+/// The state file the repeater bands are kept in.
+pub fn repeater_bands_file() -> Option<PathBuf> {
+    paths::state_dir().map(|dir| dir.join(REPEATER_BANDS_FILE))
 }
 
 /// The state file the gateway bands are kept in.

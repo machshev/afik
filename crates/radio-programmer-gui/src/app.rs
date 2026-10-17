@@ -288,6 +288,10 @@ pub struct StudioApp {
     /// they are remembered in.
     repeater_area: RepeaterArea,
     repeater_area_file: Option<PathBuf>,
+    /// The amateur bands repeaters are taken from, every band by default,
+    /// and their state file.
+    repeater_bands: BandFilter,
+    repeater_bands_file: Option<PathBuf>,
     /// Where Ofcom's FM transmitter list is cached, and what was last read.
     station_cache: StationCache,
     stations: Option<StationList>,
@@ -346,6 +350,9 @@ pub struct StudioApp {
     /// repeaters' locator, and the state file they are remembered in.
     world_area: WorldArea,
     world_area_file: Option<PathBuf>,
+    /// The same for worldwide repeaters.
+    world_bands: BandFilter,
+    world_bands_file: Option<PathBuf>,
 }
 
 impl StudioApp {
@@ -380,6 +387,14 @@ impl StudioApp {
         app.gateway_area_file = repeaters::gateway_area_file();
         if let Some(file) = &app.gateway_area_file {
             app.gateway_area = AirportArea::load(file);
+        }
+        app.repeater_bands_file = repeaters::repeater_bands_file();
+        if let Some(file) = &app.repeater_bands_file {
+            app.repeater_bands = BandFilter::load_or(file, &BandFilter::ALL);
+        }
+        app.world_bands_file = world::bands_file();
+        if let Some(file) = &app.world_bands_file {
+            app.world_bands = BandFilter::load_or(file, &BandFilter::ALL);
         }
         app.gateway_bands_file = repeaters::gateway_bands_file();
         if let Some(file) = &app.gateway_bands_file {
@@ -1037,6 +1052,7 @@ impl StudioApp {
             .ok_or("sync the repeater list from the ETCC first")?;
         let area = &self.repeater_area;
         let mut near = repeaters::nearby(&list.repeaters, &area.locator, area.radius_km)?;
+        near.retain(|(repeater, _)| self.repeater_bands.takes(repeater.output_hz));
         let in_range = near.len();
         near.truncate(usize::from(area.max_channels));
         let (project, bank_bytes) = self.with_bank(repeaters::repeater_bank(&area.locator, &near));
@@ -1119,6 +1135,11 @@ impl StudioApp {
                 log::warn!("could not remember the repeater area: {error}");
             }
         }
+        if let Some(file) = &self.repeater_bands_file {
+            if let Err(error) = self.repeater_bands.save(file) {
+                log::warn!("could not remember the repeater bands: {error}");
+            }
+        }
     }
 
     /// Reads the worldwide repeater list from `cache`, which a sync then
@@ -1179,6 +1200,7 @@ impl StudioApp {
             .ok_or("sync the worldwide list from hearham first")?;
         let locator = &self.repeater_area.locator;
         let mut near = repeaters::nearby(&list.repeaters, locator, self.world_area.radius_km)?;
+        near.retain(|(repeater, _)| self.world_bands.takes(repeater.output_hz));
         let in_range = near.len();
         near.truncate(usize::from(self.world_area.max_channels));
         let (project, bank_bytes) = self.with_bank(world::world_bank(locator, &near));
@@ -1258,6 +1280,11 @@ impl StudioApp {
         if let Some(file) = &self.world_area_file {
             if let Err(error) = area.save(file) {
                 log::warn!("could not remember the worldwide repeater area: {error}");
+            }
+        }
+        if let Some(file) = &self.world_bands_file {
+            if let Err(error) = self.world_bands.save(file) {
+                log::warn!("could not remember the worldwide repeater bands: {error}");
             }
         }
     }
@@ -1491,6 +1518,8 @@ impl StudioApp {
             repeater_sync: None,
             repeater_area: RepeaterArea::default(),
             repeater_area_file: None,
+            repeater_bands: BandFilter::ALL,
+            repeater_bands_file: None,
             station_cache: StationCache::none(),
             stations: None,
             station_sync: None,
@@ -1523,6 +1552,8 @@ impl StudioApp {
             world_sync: None,
             world_area: WorldArea::default(),
             world_area_file: None,
+            world_bands: BandFilter::ALL,
+            world_bands_file: None,
         };
         if let Some(baud) = options.baud {
             app.chooser.baud = baud;
@@ -1979,6 +2010,18 @@ fn beacon_area_default() -> AirportArea {
     }
 }
 
+/// The row of amateur-band checkboxes under a generator, for `noun` such
+/// as `repeaters`.
+fn band_row(ui: &mut egui::Ui, bands: &mut BandFilter, noun: &str) {
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Bands");
+        for band in AmateurBand::ALL {
+            ui.checkbox(&mut bands.bands[band.index()], band.label())
+                .on_hover_text(format!("Takes the {noun} on {}", band.label()));
+        }
+    });
+}
+
 /// What a previewed bank costs, and the project's use after adding it.
 fn cost(preview: &AreaPreview) -> String {
     let bank = preview.bank_bytes.map_or_else(
@@ -2324,6 +2367,7 @@ impl StudioApp {
             ui.end_row();
             ui.label(self.repeater_source());
         });
+        band_row(ui, &mut self.repeater_bands, "repeaters");
     }
 
     /// The row that adds the repeaters anywhere near the shared locator.
@@ -2370,6 +2414,7 @@ impl StudioApp {
             ui.end_row();
             ui.label(self.world_source());
         });
+        band_row(ui, &mut self.world_bands, "repeaters");
     }
 
     /// The row that adds the UK gateways or beacons near the shared locator,
@@ -2436,13 +2481,7 @@ impl StudioApp {
             EtccKind::Gateways => &mut self.gateway_bands,
             EtccKind::Beacons => &mut self.beacon_bands,
         };
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Bands");
-            for band in AmateurBand::ALL {
-                ui.checkbox(&mut bands.bands[band.index()], band.label())
-                    .on_hover_text(format!("Takes the {} on {}", kind.noun(), band.label()));
-            }
-        });
+        band_row(ui, bands, kind.noun());
     }
 
     /// The row holding the locator the repeaters, stations and airports share.
@@ -4879,6 +4918,63 @@ mod tests {
         assert!(app.project.validate().is_ok());
         app.add_airfields();
         assert_eq!(app.project.banks.len(), banks + 1, "replaced, not added");
+    }
+
+    #[test]
+    fn uk_and_world_repeaters_are_taken_from_the_ticked_bands() {
+        use crate::{
+            repeaters::{AmateurBand, BandFilter, Repeater, RepeaterList},
+            world::WorldList,
+        };
+
+        let repeater = |callsign: &str, hz: u32| Repeater {
+            callsign: callsign.to_owned(),
+            town: String::new(),
+            output_hz: hz,
+            input_hz: hz - 600_000,
+            ctcss_tenths_hz: None,
+            wide: false,
+            latitude: 51.52,
+            longitude: -0.12,
+        };
+        let names = |app: &StudioApp, bank: &str| -> Vec<String> {
+            let bank = app.project.banks.iter().find(|b| b.name == bank).unwrap();
+            bank.channels.iter().map(|c| c.name.clone()).collect()
+        };
+        let both = vec![
+            repeater("GB3TWO", 145_625_000),
+            repeater("GB3UHF", 433_100_000),
+        ];
+        let mut app = simulated("repeater-bands");
+        "IO91WM".clone_into(&mut app.repeater_area.locator);
+        app.repeaters = Some(RepeaterList {
+            repeaters: both.clone(),
+            gateways: Vec::new(),
+            beacons: Vec::new(),
+            synced: std::time::SystemTime::now(),
+        });
+        app.world = Some(WorldList {
+            repeaters: both,
+            synced: std::time::SystemTime::now(),
+        });
+        assert_eq!(app.repeater_bands, BandFilter::ALL, "every band by default");
+        assert_eq!(app.world_bands, BandFilter::ALL, "every band by default");
+        app.add_repeaters();
+        assert_eq!(names(&app, "RPT IO91WM"), ["GB3TWO", "GB3UHF"]);
+        app.add_world();
+        assert_eq!(names(&app, "WRPT IO91WM"), ["GB3TWO", "GB3UHF"]);
+
+        app.repeater_bands.bands[AmateurBand::TwoMetres.index()] = false;
+        app.add_repeaters();
+        assert_eq!(names(&app, "RPT IO91WM"), ["GB3UHF"]);
+        app.world_bands.bands[AmateurBand::SeventyCentimetres.index()] = false;
+        app.add_world();
+        assert_eq!(
+            names(&app, "WRPT IO91WM"),
+            ["GB3TWO"],
+            "each keeps its own bands"
+        );
+        assert_eq!(names(&app, "RPT IO91WM"), ["GB3UHF"]);
     }
 
     #[test]

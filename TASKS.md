@@ -3260,6 +3260,9 @@
      genre column. Kinds are left out before ranking, so a station sharing
      a frequency with one left out can still take it; kept
      in `station-area`. Done.
+  7. Repeater band filters (operator request): the UK and world repeater
+     tabs have the same Bands row, every band by default, kept in
+     `repeater-bands` and `world-bands`. Done.
 
 ## BANKS-073 — Up to 254 banks, addressed by bank and position
 
