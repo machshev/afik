@@ -310,8 +310,8 @@ pub struct StudioApp {
     /// they are remembered in.
     repeater_area: RepeaterArea,
     repeater_area_file: Option<PathBuf>,
-    /// The amateur bands repeaters are taken from, every band by default,
-    /// and their state file.
+    /// The amateur bands repeaters are taken from, 2 m and 70 cm by
+    /// default, and their state file.
     repeater_bands: BandFilter,
     repeater_bands_file: Option<PathBuf>,
     /// Where Ofcom's FM transmitter list is cached, and what was last read.
@@ -353,7 +353,7 @@ pub struct StudioApp {
     /// The amateur bands gateways are taken from, and their state file.
     gateway_bands: BandFilter,
     gateway_bands_file: Option<PathBuf>,
-    /// The same for beacons, every band by default.
+    /// The same for beacons.
     beacon_bands: BandFilter,
     beacon_bands_file: Option<PathBuf>,
     /// The same for beacons.
@@ -432,11 +432,11 @@ impl StudioApp {
         }
         app.repeater_bands_file = repeaters::repeater_bands_file();
         if let Some(file) = &app.repeater_bands_file {
-            app.repeater_bands = BandFilter::load_or(file, &BandFilter::ALL);
+            app.repeater_bands = BandFilter::load(file);
         }
         app.world_bands_file = world::bands_file();
         if let Some(file) = &app.world_bands_file {
-            app.world_bands = BandFilter::load_or(file, &BandFilter::ALL);
+            app.world_bands = BandFilter::load(file);
         }
         app.gateway_bands_file = repeaters::gateway_bands_file();
         if let Some(file) = &app.gateway_bands_file {
@@ -444,7 +444,7 @@ impl StudioApp {
         }
         app.beacon_bands_file = repeaters::beacon_bands_file();
         if let Some(file) = &app.beacon_bands_file {
-            app.beacon_bands = BandFilter::load_or(file, &BandFilter::ALL);
+            app.beacon_bands = BandFilter::load(file);
         }
         app.beacon_area_file = repeaters::beacon_area_file();
         if let Some(file) = &app.beacon_area_file {
@@ -1620,7 +1620,7 @@ impl StudioApp {
             repeater_sync: None,
             repeater_area: RepeaterArea::default(),
             repeater_area_file: None,
-            repeater_bands: BandFilter::ALL,
+            repeater_bands: BandFilter::default(),
             repeater_bands_file: None,
             station_cache: StationCache::none(),
             stations: None,
@@ -1643,7 +1643,7 @@ impl StudioApp {
             gateway_area_file: None,
             gateway_bands: BandFilter::default(),
             gateway_bands_file: None,
-            beacon_bands: BandFilter::ALL,
+            beacon_bands: BandFilter::default(),
             beacon_bands_file: None,
             beacon_area: beacon_area_default(),
             beacon_area_file: None,
@@ -1654,7 +1654,7 @@ impl StudioApp {
             world_sync: None,
             world_area: WorldArea::default(),
             world_area_file: None,
-            world_bands: BandFilter::ALL,
+            world_bands: BandFilter::default(),
             world_bands_file: None,
             saved_locators: SavedLocators::default(),
             saved_locators_file: None,
@@ -5793,8 +5793,8 @@ mod tests {
             repeaters: both,
             synced: std::time::SystemTime::now(),
         });
-        assert_eq!(app.repeater_bands, BandFilter::ALL, "every band by default");
-        assert_eq!(app.world_bands, BandFilter::ALL, "every band by default");
+        assert_eq!(app.repeater_bands, BandFilter::default(), "2 m and 70 cm");
+        assert_eq!(app.world_bands, BandFilter::default(), "2 m and 70 cm");
         app.add_repeaters();
         assert_eq!(names(&app, "RPT IO91WM"), ["GB3TWO", "GB3UHF"]);
         app.add_world();
@@ -5865,7 +5865,7 @@ mod tests {
             .channels
             .iter()
             .all(|c| c.modulation == Modulation::Usb));
-        assert_eq!(app.beacon_bands, BandFilter::ALL, "beacons take every band");
+        assert_eq!(app.beacon_bands, BandFilter::default(), "2 m and 70 cm");
         app.beacon_bands.bands[AmateurBand::TwoMetres.index()] = false;
         app.add_etcc(EtccKind::Beacons);
         assert_eq!(app.project.banks.len(), banks + 1, "replaced, not added");
@@ -5996,6 +5996,8 @@ mod tests {
                 ..repeater(&format!("GB3R{n:08}"), 51.52, -0.12)
             })
             .collect();
+        // They spread past 2 m and 70 cm, so every band is taken.
+        app.repeater_bands = crate::repeaters::BandFilter::ALL;
         app.repeater_area.locator = "IO91WM".to_owned();
         app.repeater_area.max_channels = crate::repeaters::MAX_CHANNELS_LIMIT;
         let source = app.repeater_source();

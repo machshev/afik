@@ -293,7 +293,9 @@ moved to a Projects tab; Banks and Radio keep the name, Save and Revert
 radio-programmer-gui` 188 passed 0 failed 3 ignored). The generator box
 moved to the Map tab, whose layers now follow every filter change at once
 (gate: studio fmt and clippy `-D warnings` clean, `cargo test -p
-radio-programmer-gui` 188 passed 0 failed 3 ignored). The studio takes `-v`/`--verbose`
+radio-programmer-gui` 188 passed 0 failed 3 ignored). Every band filter
+now starts on 2 m and 70 cm (gate: studio fmt and clippy `-D warnings` clean,
+`cargo test -p radio-programmer-gui` 188 passed 0 failed 3 ignored). The studio takes `-v`/`--verbose`
 (operator request): `-v` logs AFIK's debug lines, `-vv` its trace and other
 crates' debug, `-vvv` everything, without `AFIK_LOG` (which still works;
 the louder wins). Debug lines added: each HTTP fetch (URL, bytes, ms) and

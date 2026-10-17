@@ -3283,6 +3283,9 @@
       locator" box moved from Banks to the top of the Map tab, and the map's
       layers rebuild whenever a setting behind them changes, so the map
       follows each filter as it is set. Done.
+  13. Band filter defaults (operator request): UK repeaters, world
+      repeaters and beacons start on 2 m and 70 cm, as the gateways do, to
+      match the radio's amateur bands; a saved choice is kept. Done.
 
 ## BANKS-073 — Up to 254 banks, addressed by bank and position
 

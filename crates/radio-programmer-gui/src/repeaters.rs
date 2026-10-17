@@ -793,7 +793,8 @@ pub struct BandFilter {
 }
 
 impl Default for BandFilter {
-    /// 2 m and 70 cm, where most gateways are and the radio hears best.
+    /// 2 m and 70 cm, the radio's amateur bands; every generator's band
+    /// filter starts here.
     fn default() -> Self {
         let mut bands = [false; AmateurBand::ALL.len()];
         bands[AmateurBand::TwoMetres.index()] = true;
@@ -803,7 +804,7 @@ impl Default for BandFilter {
 }
 
 impl BandFilter {
-    /// Every band, which beacons start from: most are on the quieter bands.
+    /// Every band.
     pub const ALL: Self = Self {
         bands: [true; AmateurBand::ALL.len()],
     };
