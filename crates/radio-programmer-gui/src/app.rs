@@ -5649,32 +5649,58 @@ fn plan_naming_editor(ui: &mut egui::Ui, bank: &mut BankDraft) {
         );
     ui.end_row();
 
+    // The checkbox, the channel and the name it gets share one cell, so
+    // ticking the box puts the choice beside it rather than a column away.
     ui.label("Calling channel");
-    let mut has_calling = bank.calling_index.is_some();
-    if ui
-        .checkbox(&mut has_calling, "")
-        .on_hover_text(
-            "Mark one channel as the band's calling channel. It is named \
-                     for its purpose as well as its number and the radio can reach \
-                     it directly.",
-        )
-        .changed()
-    {
-        bank.calling_index = has_calling.then_some(0);
-    }
-    if let Some(index) = bank.calling_index.as_mut() {
-        ui.horizontal(|ui| {
-            ui.add(egui::DragValue::new(index).range(0..=bank.channel_count.saturating_sub(1)));
+    ui.horizontal(|ui| {
+        let mut has_calling = bank.calling_index.is_some();
+        if ui
+            .checkbox(&mut has_calling, "Mark one")
+            .on_hover_text(
+                "Mark one channel as the band's calling channel. It is named \
+                 for its purpose as well as its number and the radio can reach \
+                 it directly.",
+            )
+            .changed()
+        {
+            bank.calling_index = has_calling.then_some(0);
+        }
+        if let Some(index) = bank.calling_index.as_mut() {
+            // The operator picks the number the channel carries, as a band
+            // plan names it, not its position in the plan.
+            let (first, last) = calling_numbers(bank.first_number, bank.channel_count);
+            let mut number = calling_number(bank.first_number, *index);
+            ui.label("channel");
+            if ui
+                .add(egui::DragValue::new(&mut number).range(first..=last))
+                .changed()
+            {
+                *index = calling_index_of(bank.first_number, number);
+            }
             ui.label(calling_label(
                 bank.designator.as_str(),
                 bank.first_number,
                 *index,
             ));
-        });
-    } else {
-        ui.label("none");
-    }
+        }
+    });
     ui.end_row();
+}
+
+/// Returns the first and last numbers a plan's channels carry.
+fn calling_numbers(first_number: u16, channel_count: u16) -> (u32, u32) {
+    let first = u32::from(first_number);
+    (first, first + u32::from(channel_count.max(1)) - 1)
+}
+
+/// Returns the number the channel at `index` carries.
+fn calling_number(first_number: u16, index: u16) -> u32 {
+    u32::from(first_number) + u32::from(index)
+}
+
+/// Returns the plan index of the channel carrying `number`.
+fn calling_index_of(first_number: u16, number: u32) -> u16 {
+    u16::try_from(number.saturating_sub(u32::from(first_number))).unwrap_or(u16::MAX)
 }
 
 /// Returns the name the marked calling channel will carry on the radio.
@@ -6181,6 +6207,23 @@ mod tests {
     use crate::{model::BankKind, projects::ProjectStore, DeviceSelector, Options};
     use radio_domain::{Modulation, ScanResume};
     use std::path::PathBuf;
+
+    /// The calling channel is picked by the number it carries, so PMR 8 is
+    /// eight, not the seventh index, and S20 is twenty on a plan from S8.
+    #[test]
+    fn the_calling_channel_is_picked_by_its_number() {
+        use super::{calling_index_of, calling_label, calling_number, calling_numbers};
+        assert_eq!(calling_numbers(1, 16), (1, 16));
+        assert_eq!(calling_numbers(8, 16), (8, 23));
+        assert_eq!(calling_index_of(1, 8), 7);
+        assert_eq!(
+            calling_label("PMR ", 1, calling_index_of(1, 8)),
+            "PMR 8 CALL"
+        );
+        assert_eq!(calling_index_of(8, 20), 12);
+        assert_eq!(calling_number(8, 12), 20);
+        assert_eq!(calling_label("S", 8, 12), "S20 CALL");
+    }
 
     /// The studio names each TX choice as the handset menu lists it.
     #[test]

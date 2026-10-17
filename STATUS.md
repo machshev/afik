@@ -1167,6 +1167,15 @@ clippy `-D warnings` clean, `cargo test --workspace --no-fail-fast` 978 passed
 five reruns). Firmware unchanged. Next: add marine at HOME and check the
 core leaves it.
 
+Calling channel editor (operator request, 2026-10-17): the plan editor's
+calling-channel checkbox had no label and its choice sat a column away, so a
+default set's PMR446 looked uneditable. It now reads "Mark one", with the
+channel picked by the number it carries (PMR 8, not index 7) and its name
+beside it. Tried in the studio under Xvfb: added UK and EU simplex, marked
+PMR446 channel 8, saw `PMR 8 CALL`. Gate: `cargo fmt --all --check` clean,
+workspace clippy `-D warnings` clean, `cargo test -p radio-programmer-gui`
+227 passed 0 failed. Firmware unchanged.
+
 Side key 1 (operator request): on the operating screen it switches tone
 squelch on the selected slot; on requires the channel's RX tone or, without
 one, its TX tone (repeater output, caught VFO tone), off opens on any
