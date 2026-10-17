@@ -5,6 +5,8 @@
 
 use core::fmt;
 
+pub mod tones;
+
 /// A domain value failed validation or checked arithmetic.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DomainError {
