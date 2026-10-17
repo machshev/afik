@@ -32,7 +32,7 @@ use crate::{
     marine::{self, MarineArea, MarineCache, MarineList},
     model::{
         move_to, BankDraft, BankKind, ChannelDraft, ModelError, ProjectModel, StartDraft,
-        StorageSummary, ToneDraft, ToneKind, TxRangeDraft, MAX_PROJECT_IMAGE_BYTES,
+        StorageSummary, ToneDraft, ToneKind, TxRangeDraft, MARINE_GROUP, MAX_PROJECT_IMAGE_BYTES,
         RADIO_IMAGE_BYTES,
     },
     presets::{satellite_bank, PRESETS, SATELLITE_PRESET, TX_RANGE_PRESETS},
@@ -1077,6 +1077,14 @@ impl StudioApp {
         let mut filed = true;
         for bank in &generated {
             filed &= self.project.file_bank(bank, &name, &locator, airband);
+            let marine = self
+                .project
+                .banks
+                .iter()
+                .any(|b| b.name == *bank && b.is_marine());
+            if marine {
+                filed &= self.project.file_in(bank, MARINE_GROUP);
+            }
         }
         if !filed {
             log::warn!("a radio holds {MAX_GROUPS} groups; some generated banks are not filed");
@@ -3556,46 +3564,63 @@ impl StudioApp {
                 if let Some(group) = remove {
                     self.project.remove_group(group);
                 }
-                ui.horizontal_wrapped(|ui| {
-                    if ui
-                        .button("Add group")
-                        .on_hover_text("A group the radio can narrow its list to")
-                        .clicked()
-                    {
-                        let number = self.project.groups.len() + 1;
-                        if self
-                            .project
-                            .ensure_group(&format!("GROUP {number}"), None)
-                            .is_none()
-                        {
-                            self.refuse(&format!("A radio holds {MAX_GROUPS} groups."));
-                        }
-                    }
-                    if ui
-                        .button("Group by locator")
-                        .on_hover_text(
-                            "Files every bank named for a locator, as the generators name \
-                             them (RPT JO02EH), under a location for that locator",
-                        )
-                        .clicked()
-                    {
-                        let filed = self.project.group_by_locator();
-                        self.status = format!("Filed {filed} banks under their locations.");
-                    }
-                    if ui
-                        .button("Group airband")
-                        .on_hover_text(
-                            "Files every bank whose channels are all AM in the VHF airband \
-                             under AIRBAND",
-                        )
-                        .clicked()
-                    {
-                        let filed = self.project.group_airband();
-                        self.status = format!("Filed {filed} airband banks under AIRBAND.");
-                    }
-                });
+                self.group_buttons(ui);
                 self.start_row(ui);
             });
+    }
+
+    /// Add group, and the buttons that file banks by locator, airband and
+    /// marine.
+    fn group_buttons(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .button("Add group")
+                .on_hover_text("A group the radio can narrow its list to")
+                .clicked()
+            {
+                let number = self.project.groups.len() + 1;
+                if self
+                    .project
+                    .ensure_group(&format!("GROUP {number}"), None)
+                    .is_none()
+                {
+                    self.refuse(&format!("A radio holds {MAX_GROUPS} groups."));
+                }
+            }
+            if ui
+                .button("Group by locator")
+                .on_hover_text(
+                    "Files every bank named for a locator, as the generators name \
+                     them (RPT JO02EH), under a location for that locator",
+                )
+                .clicked()
+            {
+                let filed = self.project.group_by_locator();
+                self.status = format!("Filed {filed} banks under their locations.");
+            }
+            if ui
+                .button("Group airband")
+                .on_hover_text(
+                    "Files every bank whose channels are all AM in the VHF airband \
+                     under AIRBAND",
+                )
+                .clicked()
+            {
+                let filed = self.project.group_airband();
+                self.status = format!("Filed {filed} airband banks under AIRBAND.");
+            }
+            if ui
+                .button("Group marine")
+                .on_hover_text(
+                    "Files every bank whose channels are all FM in the marine VHF \
+                     band under MARINE",
+                )
+                .clicked()
+            {
+                let filed = self.project.group_marine();
+                self.status = format!("Filed {filed} marine banks under MARINE.");
+            }
+        });
     }
 
     /// Where the radio starts: written as its place with the image, so it
@@ -6038,6 +6063,15 @@ mod tests {
         let names: Vec<_> = rpt.channels.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, ["GB3TWO", "GB3UHF"], "2 m and 70 cm by default");
         assert!(rpt.groups.contains(&home));
+        // The marine bank is filed under MARINE too.
+        let marine = app.project.group_named(super::MARINE_GROUP).unwrap();
+        let sea = app
+            .project
+            .banks
+            .iter()
+            .find(|b| b.name == "SEA IO91WM")
+            .unwrap();
+        assert!(sea.groups.contains(&home) && sea.groups.contains(&marine));
 
         // Again: the same banks are updated, not added twice.
         let banks = app.project.banks.len();

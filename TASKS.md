@@ -3306,6 +3306,10 @@
       generator shown and says why any was skipped. Generated banks were
       already filed under the location (`ADR-116`); its group now takes a
       new locator description, cut to 16 characters. Done.
+  18. Group marine (operator request): a Group marine button files every
+      bank whose channels are all FM in 156.000–162.025 MHz under MARINE,
+      as Group airband does for AIRBAND; the marine generator's banks are
+      filed there when added. Done.
 
 ## BANKS-073 — Up to 254 banks, addressed by bank and position
 

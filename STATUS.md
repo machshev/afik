@@ -321,7 +321,10 @@ ignored). Filters show live counts;
 Add all shown adds or updates every shown generator's bank, filed under
 the location, whose group follows the locator's description (gate: studio
 fmt and clippy `-D warnings` clean, `cargo test -p radio-programmer-gui` 197
-passed 0 failed 3 ignored). The studio takes `-v`/`--verbose`
+passed 0 failed 3 ignored). Group marine files
+marine VHF banks under MARINE, and generated marine banks go there too
+(gate: studio fmt and clippy `-D warnings` clean, `cargo test -p
+radio-programmer-gui` 198 passed 0 failed 3 ignored). The studio takes `-v`/`--verbose`
 (operator request): `-v` logs AFIK's debug lines, `-vv` its trace and other
 crates' debug, `-vvv` everything, without `AFIK_LOG` (which still works;
 the louder wins). Debug lines added: each HTTP fetch (URL, bytes, ms) and

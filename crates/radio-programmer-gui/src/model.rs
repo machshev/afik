@@ -546,6 +546,17 @@ impl BankDraft {
             })
     }
 
+    /// Whether every channel is FM in the marine VHF band, as the marine
+    /// generator's banks are.
+    pub fn is_marine(&self) -> bool {
+        self.kind == BankKind::Named
+            && !self.channels.is_empty()
+            && self.channels.iter().all(|channel| {
+                channel.modulation == Modulation::Fm
+                    && parse_mhz(&channel.receive_mhz).is_some_and(|hz| MARINE_HZ.contains(&hz))
+            })
+    }
+
     /// Builds a draft from a validated named bank.
     pub fn from_record(bank: ChannelBank) -> Self {
         let settings = bank.settings();
@@ -1006,6 +1017,13 @@ pub const AIRBAND_GROUP: &str = "AIRBAND";
 /// The 118–137 MHz VHF airband, in hertz.
 const AIRBAND_HZ: core::ops::RangeInclusive<u32> = 118_000_000..=137_000_000;
 
+/// The group the studio files marine banks under.
+pub const MARINE_GROUP: &str = "MARINE";
+
+/// The marine VHF band, ship and coast sides, 156.000–162.025 MHz, in
+/// hertz.
+const MARINE_HZ: core::ops::RangeInclusive<u32> = 156_000_000..=162_025_000;
+
 /// One editable programmed TX range (`ADR-101`): where this radio may
 /// transmit, as which class, and how loud.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1191,12 +1209,22 @@ impl ProjectModel {
             None => filed = false,
         }
         if airband {
-            match self.ensure_group(AIRBAND_GROUP, None) {
-                Some(group) => self.set_member(row, group, true),
-                None => filed = false,
-            }
+            filed &= self.file_in(bank, AIRBAND_GROUP);
         }
         filed
+    }
+
+    /// Files the bank named `bank` under the group `name`, added if the
+    /// project has none. Returns whether the group could be had.
+    pub fn file_in(&mut self, bank: &str, name: &str) -> bool {
+        let Some(row) = self.banks.iter().position(|draft| draft.name == bank) else {
+            return false;
+        };
+        let Some(group) = self.ensure_group(name, None) else {
+            return false;
+        };
+        self.set_member(row, group, true);
+        true
     }
 
     /// Files every bank whose name ends in a Maidenhead locator, as each
@@ -1221,17 +1249,29 @@ impl ProjectModel {
     /// Files every bank whose channels are all AM in the VHF airband under
     /// [`AIRBAND_GROUP`]. Returns how many banks were filed.
     pub fn group_airband(&mut self) -> usize {
-        let airband: Vec<usize> = (0..self.banks.len())
-            .filter(|row| self.banks[*row].is_airband())
+        self.group_where(AIRBAND_GROUP, BankDraft::is_airband)
+    }
+
+    /// Files every bank whose channels are all FM in the marine VHF band
+    /// under [`MARINE_GROUP`]. Returns how many banks were filed.
+    pub fn group_marine(&mut self) -> usize {
+        self.group_where(MARINE_GROUP, BankDraft::is_marine)
+    }
+
+    /// Files every bank `belongs` accepts under the group `name`, added if
+    /// the project has none. Returns how many banks were filed.
+    fn group_where(&mut self, name: &str, belongs: fn(&BankDraft) -> bool) -> usize {
+        let members: Vec<usize> = (0..self.banks.len())
+            .filter(|row| belongs(&self.banks[*row]))
             .collect();
-        if airband.is_empty() {
+        if members.is_empty() {
             return 0;
         }
-        let Some(group) = self.ensure_group(AIRBAND_GROUP, None) else {
+        let Some(group) = self.ensure_group(name, None) else {
             return 0;
         };
         let mut filed = 0;
-        for row in airband {
+        for row in members {
             if !self.banks[row].groups.contains(&group) {
                 self.set_member(row, group, true);
                 filed += 1;
@@ -1786,7 +1826,8 @@ pub(crate) fn move_to<T>(items: &mut [T], from: usize, slot: usize) {
 mod tests {
     use super::{
         format_mhz, parse_frequency, BankDraft, BankKind, ChannelDraft, ConfigDraft, ModelScope,
-        ProjectModel, StartDraft, ToneDraft, ToneKind, ValidatedBank, RADIO_IMAGE_BYTES,
+        ProjectModel, StartDraft, ToneDraft, ToneKind, ValidatedBank, MARINE_GROUP,
+        RADIO_IMAGE_BYTES,
     };
     use radio_channel_plan::{ChannelFlags, SharedSettings, MAX_BANKS};
     use radio_domain::{Bandwidth, BankId, Modulation, PowerLevel, ScanResume, Tone};
@@ -1955,6 +1996,30 @@ mod tests {
         channel.transmit_mhz = String::new();
         channel.modulation = Modulation::Am;
         row
+    }
+
+    #[test]
+    fn banks_are_grouped_as_marine() {
+        let mut model = project();
+        for (name, mhz) in [("SEA JO02EH", "156.800000"), ("COAST", "161.975000")] {
+            let row = am_bank(&mut model, name, mhz);
+            model.banks[row].channels[0].modulation = Modulation::Fm;
+        }
+        // Not marine: AM in the band, and FM outside it.
+        am_bank(&mut model, "AM SEA", "156.800000");
+        let row = am_bank(&mut model, "TWO METRES", "145.500000");
+        model.banks[row].channels[0].modulation = Modulation::Fm;
+
+        assert_eq!(model.group_marine(), 2);
+        assert_eq!(model.group_marine(), 0, "filing again changes nothing");
+        let marine = model.group_named(MARINE_GROUP).unwrap();
+        let members: Vec<_> = model
+            .banks
+            .iter()
+            .filter(|bank| bank.groups.contains(&marine))
+            .map(|bank| bank.name.as_str())
+            .collect();
+        assert_eq!(members, ["SEA JO02EH", "COAST"]);
     }
 
     #[test]
