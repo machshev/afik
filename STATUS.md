@@ -1121,6 +1121,19 @@ Hardware checks still to do on `7.0.59`/`7.0.60`: the toned VFO and a toned memo
 channel stay open through a transmission and stay shut for a carrier
 without the tone.
 
+Studio VFO settings (operator request, 2026-10-17): a project carries each
+slot's programmed VFO (`VfoStart`: frequency, step, RX/TX tone, power) as
+object kind 9, never in the radio image (`a99c3b5`); a write sends them in
+the place record with the start place via `OperatorState::programmed`,
+which also takes dual watch from the configuration instead of forcing it
+off (`394566a`); the Radio tab has a VFO section for slots A and B, and
+Transmit's power row is Default TX power (`8019373`). Every image setting
+was already on the Radio tab; the handset's TX class switches stay
+handset-only. Gate: `cargo fmt --all --check` clean, workspace clippy `-D
+warnings` clean, `cargo test --workspace` 978 passed 0 failed (+1 label
+test since). Firmware unchanged. The layout was not checked on screen.
+Next: program both VFOs from the studio, write the K1, check each slot.
+
 Side key 1 (operator request): on the operating screen it switches tone
 squelch on the selected slot; on requires the channel's RX tone or, without
 one, its TX tone (repeater output, caught VFO tone), off opens on any
