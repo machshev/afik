@@ -1047,6 +1047,12 @@ const AIRBAND_HZ: core::ops::RangeInclusive<u32> = 118_000_000..=137_000_000;
 /// The group the studio files marine banks under.
 pub const MARINE_GROUP: &str = "MARINE";
 
+/// The group whose banks belong to every group on the radio, such as
+/// PMR446, which is the same wherever the operator is. The project keeps
+/// its members as they are; [`ProjectModel::validate_for_radio`] spreads
+/// them.
+pub const COMMON_GROUP: &str = "COMMON";
+
 /// The marine VHF band, ship and coast sides, 156.000–162.025 MHz, in
 /// hertz.
 const MARINE_HZ: core::ops::RangeInclusive<u32> = 156_000_000..=162_025_000;
@@ -1503,7 +1509,13 @@ impl ProjectModel {
                 .iter()
                 .position(|bank| bank.name.trim() == start.bank.trim())
                 .ok_or_else(|| failed(format!("names no bank {:?}", start.bank)))?;
-            if group.is_some_and(|group| !self.banks[row].groups.contains(&group)) {
+            // A bank in COMMON is in every group on the radio.
+            let common = self.group_named(COMMON_GROUP);
+            let groups = &self.banks[row].groups;
+            let in_group = |group: usize| {
+                groups.contains(&group) || common.is_some_and(|common| groups.contains(&common))
+            };
+            if group.is_some_and(|group| !in_group(group)) {
                 return Err(failed(format!(
                     "bank {:?} is not in group {:?}",
                     start.bank, start.group
@@ -1564,21 +1576,38 @@ impl ProjectModel {
             .map_err(|failure| failed(&failure.to_string()))
     }
 
+    /// Validates the project as a radio gets it: each bank in the
+    /// [`COMMON_GROUP`] is also in every other group.
+    pub fn validate_for_radio(&self) -> Result<RadioProject, Vec<ModelError>> {
+        let Some(common) = self.group_named(COMMON_GROUP) else {
+            return self.validate();
+        };
+        let mut spread = self.clone();
+        for bank in &mut spread.banks {
+            if bank.groups.contains(&common) {
+                bank.groups = (0..self.groups.len()).collect();
+            }
+        }
+        spread.validate()
+    }
+
     /// Validates and compiles the image a radio runs (format 5).
     pub fn to_radio_image(&self) -> Result<Vec<u8>, Vec<ModelError>> {
-        self.validate()?.compile_radio_image().map_err(|failure| {
-            vec![error(
-                ModelScope::Project,
-                "radio image",
-                failure.to_string(),
-            )]
-        })
+        self.validate_for_radio()?
+            .compile_radio_image()
+            .map_err(|failure| {
+                vec![error(
+                    ModelScope::Project,
+                    "radio image",
+                    failure.to_string(),
+                )]
+            })
     }
 
     /// How long the radio image is, even past the radio's memory, when the
     /// project validates and compiles.
     pub fn radio_image_len(&self) -> Option<usize> {
-        self.validate().ok()?.radio_image_len().ok()
+        self.validate_for_radio().ok()?.radio_image_len().ok()
     }
 
     /// Validates and encodes the project file, the canonical format 4 image.
@@ -2155,6 +2184,49 @@ mod tests {
 
         model.banks[0].origin = Some(Origin::new(BankSource::Repeaters, "JO02EH12AB"));
         assert!(model.validate().is_err(), "a locator too long is refused");
+    }
+
+    #[test]
+    fn common_banks_reach_every_group_on_the_radio_but_stay_put_in_the_project() {
+        use super::COMMON_GROUP;
+
+        let mut model = project();
+        model.banks[0].name = "PMR446".to_owned();
+        am_bank(&mut model, "AIR JO02EH", "124.975000");
+        am_bank(&mut model, "AIR JO01PX", "125.900000");
+        assert!(model.file_bank("AIR JO02EH", "HOME", "JO02EH", true));
+        assert!(model.file_bank("AIR JO01PX", "FELIXSTOWE", "JO01PX", true));
+        assert!(model.file_in("PMR446", COMMON_GROUP));
+        let common = model.group_named(COMMON_GROUP).unwrap();
+        assert_eq!(model.banks[0].groups, [common]);
+
+        // On the radio PMR446 is in every group; the rest are as filed.
+        let radio = model.validate_for_radio().unwrap();
+        let pmr = BankId::new(0);
+        assert!(radio
+            .groups()
+            .iter()
+            .all(|group| group.banks().contains(pmr)));
+        let home = model.location("JO02EH").unwrap();
+        let holds = |bank: u16| radio.groups()[home].banks().contains(BankId::new(bank));
+        assert!(holds(1) && !holds(2));
+        let read = ProjectModel::from_image(&model.to_radio_image().unwrap()).unwrap();
+        assert!(read.banks[0].groups.contains(&home));
+
+        // The project file keeps PMR446 in COMMON alone, so taking it out
+        // there takes it out everywhere.
+        let file = ProjectModel::from_image(&model.to_image().unwrap()).unwrap();
+        assert_eq!(file.banks[0].groups, [common]);
+        let plain = model.validate().unwrap();
+        assert!(!plain.groups()[home].banks().contains(pmr));
+
+        // The radio may start on PMR446 within HOME.
+        model.start = Some(StartDraft {
+            group: "HOME".to_owned(),
+            bank: "PMR446".to_owned(),
+            channel: 1,
+        });
+        assert!(model.validate().is_ok() && model.validate_for_radio().is_ok());
     }
 
     #[test]

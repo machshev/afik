@@ -33,7 +33,7 @@ use crate::{
     model::{
         move_to, trailing_locator, BankDraft, BankKind, ChannelDraft, ModelError, Origin,
         ProjectModel, StartDraft, StorageSummary, ToneDraft, ToneKind, TxRangeDraft, AIRBAND_GROUP,
-        MARINE_GROUP, MAX_PROJECT_IMAGE_BYTES, RADIO_IMAGE_BYTES,
+        COMMON_GROUP, MARINE_GROUP, MAX_PROJECT_IMAGE_BYTES, RADIO_IMAGE_BYTES,
     },
     presets::{satellite_bank, PRESETS, SATELLITE_PRESET, TX_RANGE_PRESETS},
     projects::ProjectStore,
@@ -2145,7 +2145,7 @@ impl StudioApp {
         if self.refuse_while_busy() {
             return;
         }
-        let project = match self.project.validate() {
+        let project = match self.project.validate_for_radio() {
             Ok(project) => project,
             Err(errors) => {
                 self.refuse_invalid("writing", errors);
@@ -4157,6 +4157,23 @@ impl StudioApp {
                 let filed = self.project.group_marine();
                 self.status = format!("Filed {filed} marine banks under MARINE.");
             }
+            if ui
+                .button("Add common group")
+                .on_hover_text(
+                    "Adds COMMON: a bank in it, such as PMR446, is in every group on the \
+                     radio, wherever you are",
+                )
+                .clicked()
+            {
+                self.status = if self.project.ensure_group(COMMON_GROUP, None).is_some() {
+                    format!(
+                        "{COMMON_GROUP} is a group: tick a bank into it and the radio has it in \
+                         every group."
+                    )
+                } else {
+                    format!("A radio holds {MAX_GROUPS} groups.")
+                };
+            }
         });
     }
 
@@ -4777,10 +4794,12 @@ fn bank_sections(project: &ProjectModel, grouped: bool) -> Vec<(Option<String>, 
                 .clone()
                 .filter(|row| project.banks[*row].groups.contains(&group))
                 .collect();
-            let place = if draft.locator.is_empty() {
-                String::new()
-            } else {
+            let place = if !draft.locator.is_empty() {
                 format!(" \u{b7} {}", draft.locator)
+            } else if draft.name.eq_ignore_ascii_case(COMMON_GROUP) {
+                " \u{b7} in every group on the radio".to_owned()
+            } else {
+                String::new()
             };
             (
                 Some(format!("{}{place} \u{b7} {}", draft.name, count(&held))),
@@ -6058,7 +6077,7 @@ mod tests {
 
     #[test]
     fn by_group_the_banks_tab_lists_each_groups_banks_then_the_rest() {
-        use super::bank_sections;
+        use super::{bank_sections, COMMON_GROUP};
 
         let context = eframe::egui::Context::default();
         let mut app = app_in(&scratch("by-group"), &Options::default());
@@ -6069,6 +6088,7 @@ mod tests {
         assert!(app.project.file_bank("RPT JO02EH", "HOME", "JO02EH", false));
         assert!(app.project.file_bank("SEA CORE", "HOME", "JO02EH", false));
         assert!(app.project.file_in("SEA CORE", "MARINE"));
+        assert!(app.project.file_in("MINE", COMMON_GROUP));
         let rows = |sections: Vec<(Option<String>, Vec<usize>)>| -> Vec<_> {
             sections
                 .into_iter()
@@ -6084,7 +6104,10 @@ mod tests {
             [
                 ("HOME \u{b7} JO02EH \u{b7} 2 banks".to_owned(), vec![0, 1]),
                 ("MARINE \u{b7} 1 bank".to_owned(), vec![1]),
-                ("Not in a group \u{b7} 1 bank".to_owned(), vec![2]),
+                (
+                    "COMMON \u{b7} in every group on the radio \u{b7} 1 bank".to_owned(),
+                    vec![2]
+                ),
             ]
         );
 
