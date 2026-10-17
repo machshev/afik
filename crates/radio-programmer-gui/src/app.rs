@@ -32,7 +32,7 @@ use crate::{
     marine::{self, MarineArea, MarineCache, MarineList},
     model::{
         move_to, trailing_locator, BankDraft, BankKind, ChannelDraft, ModelError, ProjectModel,
-        StartDraft, StorageSummary, ToneDraft, ToneKind, TxRangeDraft, MARINE_GROUP,
+        StartDraft, StorageSummary, ToneDraft, ToneKind, TxRangeDraft, AIRBAND_GROUP, MARINE_GROUP,
         MAX_PROJECT_IMAGE_BYTES, RADIO_IMAGE_BYTES,
     },
     presets::{satellite_bank, PRESETS, SATELLITE_PRESET, TX_RANGE_PRESETS},
@@ -2366,6 +2366,43 @@ fn site(name: &str, (latitude, longitude): (f64, f64)) -> Site {
     }
 }
 
+/// Whether a generator made `bank` for a location: one named by its
+/// generator and locator (`RPT JO02EH`), a bank every location shares, or
+/// an airport's own receive-only airband bank filed under a location.
+fn made_for_a_location(project: &ProjectModel, bank: &BankDraft) -> bool {
+    const PREFIXES: [&str; 8] = ["RPT", "WRPT", "GW", "BCN", "AIR", "FLD", "SEA", "FM"];
+    if bank.kind != BankKind::Named {
+        return false;
+    }
+    if [
+        stations::STATION_BANK,
+        marine::CORE_BANK,
+        airfields::CORE_BANK,
+    ]
+    .contains(&bank.name.as_str())
+    {
+        return true;
+    }
+    let prefix = bank.name.split_whitespace().next().unwrap_or_default();
+    if trailing_locator(&bank.name).is_some() {
+        return PREFIXES.contains(&prefix);
+    }
+    let airband = project.group_named(AIRBAND_GROUP);
+    let located = bank.groups.iter().any(|group| {
+        project
+            .groups
+            .get(*group)
+            .is_some_and(|g| !g.locator.is_empty())
+    });
+    located
+        && airband.is_some_and(|airband| bank.groups.contains(&airband))
+        && !bank.channels.is_empty()
+        && bank
+            .channels
+            .iter()
+            .all(|channel| channel.modulation == Modulation::Am && channel.transmit_mhz.is_empty())
+}
+
 /// Adds `more` to `sites`, a site already there taken once and singled out
 /// when either is.
 fn merge_sites(sites: &mut Vec<Site>, more: Vec<Site>) {
@@ -3126,6 +3163,22 @@ impl StudioApp {
     fn add_all_shown(&mut self) {
         let mut added = Vec::new();
         let mut skipped = Vec::new();
+        // With every location shown, what the generators made before is
+        // dropped and rewritten, so a filter that now leaves a bank out
+        // takes it away.
+        let mut dropped = 0;
+        if self.map_all_locations {
+            let before = self.project.banks.len();
+            let project = &self.project;
+            let kept: Vec<BankDraft> = project
+                .banks
+                .iter()
+                .filter(|bank| !made_for_a_location(project, bank))
+                .cloned()
+                .collect();
+            self.project.banks = kept;
+            dropped = before - self.project.banks.len();
+        }
         let locators = self.map_locators();
         let own = self.repeater_area.locator.clone();
         for locator in &locators {
@@ -3173,10 +3226,14 @@ impl StudioApp {
         if locators.len() > 1 {
             self.remember_locator();
         }
-        let added = if added.is_empty() {
-            "Nothing added".to_owned()
-        } else {
-            format!("Added or updated {}", added.join(", "))
+        let added = match (added.is_empty(), dropped) {
+            (true, 0) => "Nothing added".to_owned(),
+            (true, _) => format!("Dropped {dropped} location banks and added nothing"),
+            (false, 0) => format!("Added or updated {}", added.join(", ")),
+            (false, _) => format!(
+                "Dropped {dropped} location banks and rewrote {}",
+                added.join(", ")
+            ),
         };
         self.status = if skipped.is_empty() {
             format!("{added}.")
@@ -6233,6 +6290,32 @@ mod tests {
     }
 
     #[test]
+    fn an_airports_own_bank_is_made_for_a_location_but_a_plain_airband_bank_is_not() {
+        use super::made_for_a_location;
+
+        let mut project = crate::model::ProjectModel::new();
+        let mut bank = crate::airports::am_bank(
+            "EGSC",
+            "",
+            vec![crate::airports::am_channel("TWR", 125_900_000)],
+        );
+        "EGSC CAMBRIDGE C".clone_into(&mut bank.name);
+        project.banks.push(bank);
+        assert!(project.file_in("EGSC CAMBRIDGE C", super::AIRBAND_GROUP));
+        assert!(
+            !made_for_a_location(&project, &project.banks[0]),
+            "not at a location"
+        );
+        assert!(project.file_bank("EGSC CAMBRIDGE C", "HOME", "JO02EH", true));
+        assert!(made_for_a_location(&project, &project.banks[0]));
+        project.banks[0].channels[0].transmit_mhz = "125.900000".to_owned();
+        assert!(
+            !made_for_a_location(&project, &project.banks[0]),
+            "it transmits"
+        );
+    }
+
+    #[test]
     fn a_location_group_takes_its_saved_description() {
         let mut app = simulated("location-names");
         "JO02EH".clone_into(&mut app.repeater_area.locator);
@@ -6543,6 +6626,31 @@ mod tests {
             assert!(bank.groups.contains(&group), "{location}");
         }
         assert_eq!(app.repeater_area.locator, "IO91WM", "the locator stays");
+
+        // Every location's banks are rewritten: one for a location no longer
+        // saved goes, and so do a generator's no longer shown; the
+        // operator's own banks and an own-airport bank's group stay.
+        let mut stale = app.project.banks[0].clone();
+        "RPT JO02EH".clone_into(&mut stale.name);
+        let mut own = app.project.banks[0].clone();
+        "MY RPT".clone_into(&mut own.name);
+        app.project.banks.extend([stale, own]);
+        app.add_all_shown();
+        assert!(app
+            .status
+            .starts_with("Dropped 3 location banks and rewrote "));
+        let names: Vec<_> = app.project.banks.iter().map(|b| b.name.as_str()).collect();
+        assert!(!names.contains(&"RPT JO02EH"), "{names:?}");
+        assert!(names.contains(&"MY RPT") && names.contains(&"RPT IO83WL"));
+        app.map_shown[0] = false;
+        app.add_all_shown();
+        assert!(app
+            .project
+            .banks
+            .iter()
+            .all(|b| !b.name.starts_with("RPT ")));
+        assert_eq!(app.status, "Dropped 2 location banks and added nothing.");
+        app.map_shown[0] = true;
 
         // Choosing one locator shows it alone again.
         app.choose_locator("IO83WL");
