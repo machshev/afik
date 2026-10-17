@@ -12,9 +12,10 @@
 use std::fmt;
 
 use radio_channel_plan::{
-    BankFlags, BankName, BankSettings, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
-    ChannelRecord, ChannelTemplate, Designator, GeneratedBank, PlanEncoding, SharedSettings,
-    GENERATED_CHANNEL_ID_BASE, MAX_BANKS, MAX_DESIGNATOR_LEN, MAX_GENERATED_CHANNELS,
+    BankFlags, BankGroup, BankName, BankSet, BankSettings, ChannelBank, ChannelDefinition,
+    ChannelFlags, ChannelName, ChannelRecord, ChannelTemplate, Designator, GeneratedBank, Locator,
+    PlanEncoding, SharedSettings, GENERATED_CHANNEL_ID_BASE, MAX_BANKS, MAX_DESIGNATOR_LEN,
+    MAX_GENERATED_CHANNELS, MAX_GROUPS,
 };
 use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, Offset, PowerLevel,
@@ -500,6 +501,9 @@ pub struct BankDraft {
     pub compander: bool,
     /// The channels a channel bank holds, in the radio's order.
     pub channels: Vec<ChannelDraft>,
+    /// The groups the bank is in, by their place in the project's list
+    /// (`ADR-116`); kept on the bank so it moves with it.
+    pub groups: Vec<usize>,
 }
 
 impl Default for BankDraft {
@@ -526,11 +530,22 @@ impl Default for BankDraft {
             busy_lockout: false,
             compander: false,
             channels: Vec::new(),
+            groups: Vec::new(),
         }
     }
 }
 
 impl BankDraft {
+    /// Whether the bank is airband: channels, all AM in the VHF airband.
+    pub fn is_airband(&self) -> bool {
+        self.kind == BankKind::Named
+            && !self.channels.is_empty()
+            && self.channels.iter().all(|channel| {
+                channel.modulation == Modulation::Am
+                    && parse_mhz(&channel.receive_mhz).is_some_and(|hz| AIRBAND_HZ.contains(&hz))
+            })
+    }
+
     /// Builds a draft from a validated named bank.
     pub fn from_record(bank: ChannelBank) -> Self {
         let settings = bank.settings();
@@ -956,7 +971,25 @@ pub struct ProjectModel {
     pub config: ConfigDraft,
     /// The programmed TX ranges, in order (`ADR-101`).
     pub tx_ranges: Vec<TxRangeDraft>,
+    /// The bank groups, in the radio's order (`ADR-116`); a group with a
+    /// locator is a location.
+    pub groups: Vec<GroupDraft>,
 }
+
+/// One editable bank group; its banks are those listing it.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct GroupDraft {
+    /// The name the radio shows, up to 16 characters.
+    pub name: String,
+    /// A Maidenhead locator when the group is a location, else empty.
+    pub locator: String,
+}
+
+/// The group the studio files airband banks under.
+pub const AIRBAND_GROUP: &str = "AIRBAND";
+
+/// The 118–137 MHz VHF airband, in hertz.
+const AIRBAND_HZ: core::ops::RangeInclusive<u32> = 118_000_000..=137_000_000;
 
 /// One editable programmed TX range (`ADR-101`): where this radio may
 /// transmit, as which class, and how loud.
@@ -1064,6 +1097,132 @@ impl ProjectModel {
     /// to the bank count moves it last.
     pub fn move_bank_to(&mut self, from: usize, slot: usize) {
         move_to(&mut self.banks, from, slot);
+    }
+
+    /// The group named `name`, ignoring case.
+    pub fn group_named(&self, name: &str) -> Option<usize> {
+        self.groups
+            .iter()
+            .position(|group| group.name.trim().eq_ignore_ascii_case(name.trim()))
+    }
+
+    /// The location at `locator`, ignoring case.
+    pub fn location(&self, locator: &str) -> Option<usize> {
+        self.groups.iter().position(|group| {
+            !group.locator.is_empty() && group.locator.eq_ignore_ascii_case(locator.trim())
+        })
+    }
+
+    /// The group named `name`, or the location at `locator` when one is
+    /// given, added if the project has none; `None` once the radio's limit of
+    /// groups is reached.
+    pub fn ensure_group(&mut self, name: &str, locator: Option<&str>) -> Option<usize> {
+        let found = match locator {
+            Some(locator) => self.location(locator),
+            None => self.group_named(name),
+        };
+        if found.is_some() {
+            return found;
+        }
+        if self.groups.len() >= usize::from(MAX_GROUPS) {
+            return None;
+        }
+        self.groups.push(GroupDraft {
+            name: name.trim().to_ascii_uppercase(),
+            locator: locator
+                .map_or_else(String::new, |locator| locator.trim().to_ascii_uppercase()),
+        });
+        Some(self.groups.len() - 1)
+    }
+
+    /// Puts bank `bank` in group `group`, or takes it out.
+    pub fn set_member(&mut self, bank: usize, group: usize, member: bool) {
+        let Some(bank) = self.banks.get_mut(bank) else {
+            return;
+        };
+        bank.groups.retain(|other| *other != group);
+        if member && group < self.groups.len() {
+            bank.groups.push(group);
+            bank.groups.sort_unstable();
+        }
+    }
+
+    /// Removes group `group`; every bank stays, outside it.
+    pub fn remove_group(&mut self, group: usize) {
+        if group >= self.groups.len() {
+            return;
+        }
+        self.groups.remove(group);
+        for bank in &mut self.banks {
+            bank.groups.retain(|other| *other != group);
+            for other in &mut bank.groups {
+                if *other > group {
+                    *other -= 1;
+                }
+            }
+        }
+    }
+
+    /// Files the bank named `bank` under the location at `locator`, added
+    /// as `location` if the project has none, and under [`AIRBAND_GROUP`]
+    /// when `airband`. Returns whether every group could be had.
+    pub fn file_bank(&mut self, bank: &str, location: &str, locator: &str, airband: bool) -> bool {
+        let Some(row) = self.banks.iter().position(|draft| draft.name == bank) else {
+            return false;
+        };
+        let mut filed = true;
+        match self.ensure_group(location, Some(locator)) {
+            Some(group) => self.set_member(row, group, true),
+            None => filed = false,
+        }
+        if airband {
+            match self.ensure_group(AIRBAND_GROUP, None) {
+                Some(group) => self.set_member(row, group, true),
+                None => filed = false,
+            }
+        }
+        filed
+    }
+
+    /// Files every bank whose name ends in a Maidenhead locator, as each
+    /// generator names its bank (`RPT JO02EH`), under that location.
+    /// Returns how many banks were filed.
+    pub fn group_by_locator(&mut self) -> usize {
+        let mut filed = 0;
+        for row in 0..self.banks.len() {
+            let Some(locator) = trailing_locator(&self.banks[row].name) else {
+                continue;
+            };
+            if let Some(group) = self.ensure_group(&locator, Some(&locator)) {
+                if !self.banks[row].groups.contains(&group) {
+                    self.set_member(row, group, true);
+                    filed += 1;
+                }
+            }
+        }
+        filed
+    }
+
+    /// Files every bank whose channels are all AM in the VHF airband under
+    /// [`AIRBAND_GROUP`]. Returns how many banks were filed.
+    pub fn group_airband(&mut self) -> usize {
+        let airband: Vec<usize> = (0..self.banks.len())
+            .filter(|row| self.banks[*row].is_airband())
+            .collect();
+        if airband.is_empty() {
+            return 0;
+        }
+        let Some(group) = self.ensure_group(AIRBAND_GROUP, None) else {
+            return 0;
+        };
+        let mut filed = 0;
+        for row in airband {
+            if !self.banks[row].groups.contains(&group) {
+                self.set_member(row, group, true);
+                filed += 1;
+            }
+        }
+        filed
     }
 
     /// Appends one channel to bank `bank`, taking the tuning of its last channel.
@@ -1193,11 +1352,54 @@ impl ProjectModel {
             }
         }
 
+        if self.groups.len() > usize::from(MAX_GROUPS) {
+            errors.push(error(
+                ModelScope::Project,
+                "groups",
+                format!("a radio holds at most {MAX_GROUPS}"),
+            ));
+        }
+        for (row, group) in self.groups.iter().enumerate() {
+            match self.validate_group(row, group) {
+                Ok(group) => project.add_group(group),
+                Err(failure) => errors.push(failure),
+            }
+        }
+
         if errors.is_empty() {
             Ok(project)
         } else {
             Err(errors)
         }
+    }
+
+    /// Validates group `row`: its name, its locator, and the banks listing
+    /// it, by their identifiers.
+    fn validate_group(&self, row: usize, group: &GroupDraft) -> Result<BankGroup, ModelError> {
+        let failed = |message: &str| {
+            error(
+                ModelScope::Project,
+                "groups",
+                format!("group {} {message}", row + 1),
+            )
+        };
+        let name = BankName::new(group.name.trim())
+            .map_err(|_| failed("needs a name of 1 to 16 printable characters"))?;
+        let locator = if group.locator.trim().is_empty() {
+            None
+        } else {
+            let text = group.locator.trim().to_ascii_uppercase();
+            crate::repeaters::locator_centre(&text).map_err(|failure| failed(&failure))?;
+            Some(Locator::new(&text).map_err(|_| failed("has a locator that is too long"))?)
+        };
+        let banks = (0..self.banks.len())
+            .filter(|bank| self.banks[*bank].groups.contains(&row))
+            .filter_map(|bank| u16::try_from(bank).ok())
+            .fold(BankSet::EMPTY, |set, bank| set.with(BankId::new(bank)));
+        let id = u8::try_from(row).map_err(|_| failed("is past the radio's limit"))?;
+        BankGroup::new(id, name, banks)
+            .map(|group| group.with_locator(locator))
+            .map_err(|failure| failed(&failure.to_string()))
     }
 
     /// Validates and compiles the image a radio runs (format 5).
@@ -1313,6 +1515,22 @@ impl ProjectModel {
                 .iter()
                 .map(|range| TxRangeDraft::from_range(*range))
                 .collect(),
+            groups: project
+                .groups()
+                .iter()
+                .map(|group| GroupDraft {
+                    name: group.name().as_str().to_owned(),
+                    locator: group
+                        .locator()
+                        .map_or_else(String::new, |locator| locator.as_str().to_owned()),
+                })
+                .collect(),
+        };
+        // A group names banks by identifier; each row below remembers its.
+        let in_groups = |id: u16| -> Vec<usize> {
+            (0..project.groups().len())
+                .filter(|row| project.groups()[*row].banks().contains(BankId::new(id)))
+                .collect()
         };
         for id in 0..MAX_BANKS {
             let named = project.banks().iter().find(|bank| bank.id().get() == id);
@@ -1335,10 +1553,13 @@ impl ProjectModel {
                     |bank| BankDraft::from_record(*bank),
                 );
                 draft.channels = channels;
+                draft.groups = in_groups(id);
                 model.banks.push(draft);
             }
             if let Some(plan) = plan {
-                model.banks.push(BankDraft::from_generated(*plan));
+                let mut draft = BankDraft::from_generated(*plan);
+                draft.groups = in_groups(id);
+                model.banks.push(draft);
             }
         }
         let unbanked = channels_in(None);
@@ -1351,6 +1572,16 @@ impl ProjectModel {
         }
         model
     }
+}
+
+/// The Maidenhead locator a bank name ends in, as a generator names its
+/// bank (`RPT JO02EH`), upper-cased.
+pub fn trailing_locator(name: &str) -> Option<String> {
+    let word = name.split_whitespace().last()?.to_ascii_uppercase();
+    (name.split_whitespace().count() > 1
+        && matches!(word.len(), 4 | 6 | 8)
+        && crate::repeaters::locator_centre(&word).is_ok())
+    .then_some(word)
 }
 
 /// Parses a megahertz string into exact integer hertz.
@@ -1586,6 +1817,83 @@ mod tests {
         let checksum = crc32(&covered);
         bytes[12..16].copy_from_slice(&checksum.to_le_bytes());
         bytes
+    }
+
+    /// A named AM bank `name` of one channel at `mhz`.
+    fn am_bank(model: &mut ProjectModel, name: &str, mhz: &str) -> usize {
+        model.add_bank();
+        let row = model.banks.len() - 1;
+        model.banks[row].name = name.to_owned();
+        model.add_channel(row);
+        let channel = &mut model.banks[row].channels[0];
+        channel.receive_mhz = mhz.to_owned();
+        // AM only receives (`ADR-107`).
+        channel.transmit_mhz = String::new();
+        channel.modulation = Modulation::Am;
+        row
+    }
+
+    #[test]
+    fn banks_are_grouped_by_their_locator_and_as_airband() {
+        let mut model = project();
+        model.banks[0].name = "RPT JO02EH".to_owned();
+        am_bank(&mut model, "AIR JO02EH", "124.975000");
+        am_bank(&mut model, "AIR IO91WM", "118.500000");
+        am_bank(&mut model, "EGSC CAMBRIDGE", "122.200000");
+        // Not airband: AM outside it, and FM inside it.
+        am_bank(&mut model, "CB AM", "27.405000");
+
+        assert_eq!(model.group_by_locator(), 3);
+        assert_eq!(model.group_by_locator(), 0, "filing again changes nothing");
+        assert_eq!(model.group_airband(), 3);
+        let names: Vec<_> = model
+            .groups
+            .iter()
+            .map(|group| (group.name.as_str(), group.locator.as_str()))
+            .collect();
+        assert_eq!(
+            names,
+            [("JO02EH", "JO02EH"), ("IO91WM", "IO91WM"), ("AIRBAND", "")]
+        );
+        assert_eq!(model.banks[1].groups, [0, 2], "AIR JO02EH is in both");
+        assert!(model.banks[4].groups.is_empty());
+
+        // The groups survive the project file, and reach the radio.
+        let file = model.to_image().unwrap();
+        assert_eq!(ProjectModel::from_image(&file).unwrap(), model);
+        let image = model.to_radio_image().unwrap();
+        let read = RadioProject::from_radio_image(&image).unwrap();
+        assert_eq!(read.groups().len(), 3);
+        assert_eq!(read.groups()[2].banks().len(), 3);
+        assert_eq!(read.groups()[0].locator(), None, "the radio never gets it");
+    }
+
+    #[test]
+    fn membership_moves_with_its_bank_and_a_removed_group_renumbers() {
+        let mut model = project();
+        am_bank(&mut model, "AIR JO02EH", "124.975000");
+        model.ensure_group("HOME", Some("jo02eh")).unwrap();
+        assert_eq!(model.groups[0].locator, "JO02EH");
+        assert!(model.file_bank("AIR JO02EH", "ELSEWHERE", "JO02EH", true));
+        assert_eq!(model.groups[0].name, "HOME", "the location keeps its name");
+        assert_eq!(model.banks[1].groups, [0, 1]);
+        assert_eq!(model.location("jo02eh"), Some(0));
+        assert_eq!(model.group_named("airband"), Some(1));
+
+        model.move_bank_to(1, 0);
+        assert_eq!(model.banks[0].groups, [0, 1], "it moved with the bank");
+        model.remove_group(0);
+        assert_eq!(model.banks[0].groups, [0], "AIRBAND is now the first");
+        assert_eq!(model.groups.len(), 1);
+        model.set_member(0, 0, false);
+        assert!(model.banks[0].groups.is_empty());
+
+        // A location with nothing in it yet is kept in the project file.
+        model.ensure_group("TRIP", Some("IO91WM")).unwrap();
+        let file = model.to_image().unwrap();
+        assert_eq!(ProjectModel::from_image(&file).unwrap().groups.len(), 2);
+        model.groups[1].locator = "ZZ99".to_owned();
+        assert!(model.validate().is_err(), "not a locator");
     }
 
     #[test]

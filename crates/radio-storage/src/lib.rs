@@ -1891,8 +1891,8 @@ mod tests {
             super::decode_bank_group(&super::encode_bank_group(plain).unwrap()),
             Ok(plain)
         );
-        // No banks, a bit past the last bank, or a locator byte without a
-        // length is refused.
+        // A bit past the last bank, or a locator byte without a length, is
+        // refused.
         for (at, value) in [(27 + 31, 0x40), (19, b'J')] {
             let mut data = object.data().to_vec();
             if at == 19 {
@@ -1906,13 +1906,11 @@ mod tests {
                 "byte {at}"
             );
         }
+        // A location with no banks yet is kept.
         let mut empty = object.data().to_vec();
         empty[27..59].fill(0);
-        let bad = StorageObject::new(object.key(), &empty).unwrap();
-        assert_eq!(
-            super::decode_bank_group(&bad),
-            Err(StorageError::MalformedObject)
-        );
+        let kept = StorageObject::new(object.key(), &empty).unwrap();
+        assert!(super::decode_bank_group(&kept).unwrap().banks().is_empty());
     }
 
     #[test]

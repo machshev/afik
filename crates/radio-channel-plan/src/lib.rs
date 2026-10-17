@@ -172,8 +172,7 @@ pub enum PlanError {
     InvalidTone,
     /// A bank identifier was outside the addressable membership range.
     BankOutOfRange,
-    /// A group identifier was at or past [`MAX_GROUPS`], or a group held no
-    /// bank.
+    /// A group identifier was at or past [`MAX_GROUPS`].
     GroupOutOfRange,
     /// A reserved flag bit was set.
     ReservedFlag,
@@ -203,9 +202,7 @@ impl fmt::Display for PlanError {
             Self::FrequencyOverflow => formatter.write_str("generated frequency overflow"),
             Self::InvalidTone => formatter.write_str("invalid CTCSS frequency or DCS code"),
             Self::BankOutOfRange => formatter.write_str("bank identifier is outside range"),
-            Self::GroupOutOfRange => {
-                formatter.write_str("group identifier is outside range, or the group is empty")
-            }
+            Self::GroupOutOfRange => formatter.write_str("group identifier is outside range"),
             Self::ReservedFlag => formatter.write_str("reserved flag bit is set"),
             Self::TooManyChannels => formatter.write_str("generated plan holds too many channels"),
             Self::ReservedChannelId => {
@@ -325,9 +322,11 @@ pub struct BankGroup {
 }
 
 impl BankGroup {
-    /// A group of at least one bank, its identifier below [`MAX_GROUPS`].
+    /// A group, its identifier below [`MAX_GROUPS`]. A project may hold an
+    /// empty one, such as a location nothing has been generated for yet; the
+    /// radio image leaves it out.
     pub fn new(id: u8, name: BankName, banks: BankSet) -> Result<Self, PlanError> {
-        if id >= MAX_GROUPS || banks.is_empty() {
+        if id >= MAX_GROUPS {
             return Err(PlanError::GroupOutOfRange);
         }
         Ok(Self {
@@ -1697,10 +1696,7 @@ mod tests {
             BankGroup::new(MAX_GROUPS, name, banks),
             Err(PlanError::GroupOutOfRange)
         );
-        assert_eq!(
-            BankGroup::new(0, name, BankSet::EMPTY),
-            Err(PlanError::GroupOutOfRange)
-        );
+        assert!(BankGroup::new(0, name, BankSet::EMPTY).is_ok());
         assert_eq!(BankSet::from_bytes(banks.to_bytes()), Ok(banks));
         let mut past = [0_u8; 32];
         past[31] = 0x80;

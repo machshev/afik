@@ -104,7 +104,13 @@ floating point.
   numbered by the radio from their position. A generated plan stores a base
   frequency, spacing, channel count, naming, transmit class and the
   per-channel template its channels share, and expands, in place, into the
-  channels the radio will build from it.
+  channels the radio will build from it. **Groups and locations** (`ADR-116`)
+  lists up to 32 bank groups, each a name, a locator when it is a location,
+  and its banks (a bank may be in several); the radio narrows its source list
+  to one. A generator files the banks it adds under the location for the
+  current locator, named by the saved locator's description, else the
+  locator, and airport and airfield banks under AIRBAND too. Group by locator
+  and Group airband file existing banks the same way.
 - **Radio:** squelch, VFO TX power, TX timeout (the three handset settings),
   backlight, scan resume mode and timings, dual watch,
   battery save, and the global behaviour flags.

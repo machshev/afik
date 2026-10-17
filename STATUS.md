@@ -142,7 +142,20 @@ list with full checks it cost about 600 bytes of K5 flash, now 196 (flash end
 --all-targets -- -D warnings` clean, `cargo test --workspace --no-fail-fast`
 902 passed 1 failed 3 ignored (the failure is the other session's
 uncommitted repeater band work in `app.rs`, which passes on its own rerun),
-K5 and K1 release builds pass. Next (step 2): the radio's group context.
+K5 and K1 release builds pass. Step 3, ahead of step 2: the studio keeps
+groups in the project (`ProjectModel::groups`, membership on each bank so it
+moves with it); the Banks tab has Groups and locations (name, locator, a Banks
+menu of checkboxes, Remove, Add group, Group by locator, Group airband). Each
+generator files the banks it adds or changes under the location for the
+current locator, named by the saved locator's description (`172fe18`), else
+the locator; airports and airfields also under AIRBAND; a regenerated bank
+keeps its groups. A project may hold an empty group (a location with nothing
+generated yet); the radio image leaves it out. Gate: fmt clean, `cargo clippy
+-p radio-programmer-gui -p radio-channel-plan -p radio-storage --all-targets
+-- -D warnings` clean, `cargo test -p radio-programmer-gui -p
+radio-channel-plan -p radio-storage -p radio-programmer` 260 passed 0 failed
+3 ignored. Next (step 2): the radio's group context, which overflows K5 flash
+by 432 bytes as first written.
 
 **`FLASH-074` done** (2026-10-17, operator request, `RISK-049`): the K5
 image had 16 bytes of flash left. `interface::run` was 22.6 KB because the

@@ -9,7 +9,7 @@ use std::{
 use eframe::egui::{
     self, collapsing_header::CollapsingState, ComboBox, Grid, RichText, ScrollArea, TextEdit,
 };
-use radio_channel_plan::{SharedSettings, MAX_BANKS, MAX_GENERATED_CHANNELS};
+use radio_channel_plan::{SharedSettings, MAX_BANKS, MAX_GENERATED_CHANNELS, MAX_GROUPS};
 use radio_domain::{
     Bandwidth, Modulation, PowerLevel, ScanResume, TxClass, BACKLIGHT_ALWAYS_ON,
     MAX_BATTERY_SAVE_RATIO, MAX_SQUELCH_LEVEL, TX_POWER_LEVELS, TX_TIMEOUT_CHOICES,
@@ -558,7 +558,7 @@ impl StudioApp {
             ));
             return;
         }
-        self.project = preview.project;
+        self.take_generated(preview.project, false);
         self.status = format!(
             "Added {} core and {} local marine channels near {locator} (furthest {:.0} km). \
              Local channels are OpenStreetMap data (ODbL), mapped by volunteers; check \
@@ -650,7 +650,7 @@ impl StudioApp {
             ));
             return;
         }
-        self.project = preview.project;
+        self.take_generated(preview.project, true);
         self.status = format!(
             "Added {} sporting and {} local airfield frequencies near {locator} (furthest \
              {:.0} km), receive only. The sporting set is CAP 1606's, which the CAA has \
@@ -814,7 +814,7 @@ impl StudioApp {
             ));
             return;
         }
-        self.project = preview.project;
+        self.take_generated(preview.project, true);
         self.status = format!(
             "Added {} airport frequencies near {locator} in {banks} bank{}, most hearable \
              first (furthest airport {:.0} km). Hearing ranges are estimates by service; \
@@ -954,7 +954,7 @@ impl StudioApp {
             ));
             return;
         }
-        self.project = preview.project;
+        self.take_generated(preview.project, false);
         self.status = format!(
             "Added the {} strongest FM stations at {locator}, in frequency order (furthest \
              transmitter {:.0} km).",
@@ -964,6 +964,34 @@ impl StudioApp {
             if let Err(error) = area.save(file) {
                 log::warn!("could not remember the station area: {error}");
             }
+        }
+    }
+
+    /// Takes a project a generator built, filing each bank it added or
+    /// changed under the location of the current locator (`ADR-116`): named
+    /// by the saved locator's description, else the locator itself. Airband
+    /// banks go under AIRBAND too.
+    fn take_generated(&mut self, project: ProjectModel, airband: bool) {
+        let generated: Vec<String> = project
+            .banks
+            .iter()
+            .filter(|bank| !self.project.banks.contains(bank))
+            .map(|bank| bank.name.clone())
+            .collect();
+        self.project = project;
+        let locator = self.repeater_area.locator.trim().to_ascii_uppercase();
+        let name = self
+            .saved_locators
+            .find(&locator)
+            .map(|saved| saved.description.trim().to_ascii_uppercase())
+            .filter(|description| !description.is_empty())
+            .unwrap_or_else(|| locator.clone());
+        let mut filed = true;
+        for bank in &generated {
+            filed &= self.project.file_bank(bank, &name, &locator, airband);
+        }
+        if !filed {
+            log::warn!("a radio holds {MAX_GROUPS} groups; some generated banks are not filed");
         }
     }
 
@@ -979,7 +1007,12 @@ impl StudioApp {
         let mut project = self.project.clone();
         for bank in &banks {
             if let Some(existing) = project.banks.iter().position(|b| b.name == bank.name) {
-                project.banks[existing] = bank.clone();
+                // A regenerated bank stays in the groups it was in.
+                let groups = core::mem::take(&mut project.banks[existing].groups);
+                project.banks[existing] = BankDraft {
+                    groups,
+                    ..bank.clone()
+                };
             } else {
                 project.banks.push(bank.clone());
             }
@@ -1133,7 +1166,7 @@ impl StudioApp {
             ));
             return;
         }
-        self.project = preview.project;
+        self.take_generated(preview.project, false);
         let (count, furthest) = (preview.taken, preview.furthest_km);
         self.status = format!(
             "Added {count} repeaters within {} km of {}, nearest first (furthest {furthest:.0} \
@@ -1280,7 +1313,7 @@ impl StudioApp {
             ));
             return;
         }
-        self.project = preview.project;
+        self.take_generated(preview.project, false);
         let (count, furthest) = (preview.taken, preview.furthest_km);
         self.status = format!(
             "Added {count} repeaters within {} km of {locator}, nearest first (furthest \
@@ -1399,7 +1432,7 @@ impl StudioApp {
             ));
             return;
         }
-        self.project = preview.project;
+        self.take_generated(preview.project, false);
         let (count, furthest) = (preview.taken, preview.furthest_km);
         let use_note = match kind {
             EtccKind::Gateways => "Confirm each against the ETCC list before use.",
@@ -2866,6 +2899,100 @@ impl StudioApp {
         });
     }
 
+    /// The project's bank groups (`ADR-116`): each a name, a locator when it
+    /// is a location, and its banks; the radio narrows its list to one.
+    fn groups_bar(&mut self, ui: &mut egui::Ui) {
+        let title = format!("Groups and locations ({})", self.project.groups.len());
+        egui::CollapsingHeader::new(title)
+            .id_salt("groups")
+            .show(ui, |ui| {
+                let mut remove = None;
+                let mut membership = None;
+                for (row, group) in self.project.groups.iter_mut().enumerate() {
+                    ui.push_id(("group", row), |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.add(
+                                TextEdit::singleline(&mut group.name)
+                                    .char_limit(16)
+                                    .desired_width(130.0),
+                            )
+                            .on_hover_text("The name the radio shows, up to 16 characters");
+                            ui.label("Locator");
+                            ui.add(
+                                TextEdit::singleline(&mut group.locator)
+                                    .char_limit(8)
+                                    .hint_text("none")
+                                    .desired_width(70.0),
+                            )
+                            .on_hover_text(
+                                "A locator makes the group a location: the generators file the \
+                                 banks they make there under it. It stays in the project and is \
+                                 never sent to the radio",
+                            );
+                            let members: Vec<usize> = (0..self.project.banks.len())
+                                .filter(|bank| self.project.banks[*bank].groups.contains(&row))
+                                .collect();
+                            ui.menu_button(format!("Banks ({})", members.len()), |ui| {
+                                for (bank, draft) in self.project.banks.iter().enumerate() {
+                                    let mut member = members.contains(&bank);
+                                    if ui.checkbox(&mut member, &draft.name).changed() {
+                                        membership = Some((bank, row, member));
+                                    }
+                                }
+                            });
+                            if ui.button("Remove").clicked() {
+                                remove = Some(row);
+                            }
+                        });
+                    });
+                }
+                if let Some((bank, group, member)) = membership {
+                    self.project.set_member(bank, group, member);
+                }
+                if let Some(group) = remove {
+                    self.project.remove_group(group);
+                }
+                ui.horizontal_wrapped(|ui| {
+                    if ui
+                        .button("Add group")
+                        .on_hover_text("A group the radio can narrow its list to")
+                        .clicked()
+                    {
+                        let number = self.project.groups.len() + 1;
+                        if self
+                            .project
+                            .ensure_group(&format!("GROUP {number}"), None)
+                            .is_none()
+                        {
+                            self.refuse(&format!("A radio holds {MAX_GROUPS} groups."));
+                        }
+                    }
+                    if ui
+                        .button("Group by locator")
+                        .on_hover_text(
+                            "Files every bank named for a locator, as the generators name \
+                             them (RPT JO02EH), under a location for that locator",
+                        )
+                        .clicked()
+                    {
+                        let filed = self.project.group_by_locator();
+                        self.status = format!("Filed {filed} banks under their locations.");
+                    }
+                    if ui
+                        .button("Group airband")
+                        .on_hover_text(
+                            "Files every bank whose channels are all AM in the VHF airband \
+                             under AIRBAND",
+                        )
+                        .clicked()
+                    {
+                        let filed = self.project.group_airband();
+                        self.status = format!("Filed {filed} airband banks under AIRBAND.");
+                    }
+                });
+            });
+    }
+
     fn banks_tab(&mut self, ui: &mut egui::Ui) {
         self.project_bar(ui);
         self.default_set_bar(ui);
@@ -2877,6 +3004,7 @@ impl StudioApp {
                 self.add_bank(BankKind::Generated);
             }
         });
+        self.groups_bar(ui);
         ui.separator();
 
         let mut action = None;
@@ -5281,12 +5409,20 @@ mod tests {
         let names: Vec<_> = bank.channels.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, ["GB3NEAR", "GB3FAR"]);
         assert!(app.project.validate().is_ok());
+        // Filed under a location for the locator (`ADR-116`).
+        let home = app.project.location("IO91WM").expect("a location");
+        assert_eq!(bank.groups, [home]);
 
         // Adding again replaces the bank rather than adding a second.
         app.repeater_area.radius_km = 10;
         app.add_repeaters();
         assert_eq!(app.project.banks.len(), banks + 1);
         assert_eq!(app.project.banks.last().unwrap().channels.len(), 1);
+        assert_eq!(
+            app.project.banks.last().unwrap().groups,
+            [home],
+            "a regenerated bank stays filed"
+        );
 
         app.repeater_area.locator = "nonsense".to_owned();
         app.add_repeaters();
@@ -5305,7 +5441,8 @@ mod tests {
         app.repeater_area.max_channels = crate::repeaters::MAX_CHANNELS_LIMIT;
         let source = app.repeater_source();
         assert!(
-            source.contains(", bank 95.0%, project 95.4% after"),
+            // The IO91WM location the first add made costs its 0.5%.
+            source.contains(", bank 95.0%, project 95.9% after"),
             "{source}"
         );
         // With a second copy already in the project, the two do not fit.
