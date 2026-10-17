@@ -278,6 +278,11 @@ held. On M8LWA HOME and WORK's repeaters are 5 of 6 common, so they share
 Gate: `cargo fmt --all --check` clean, `cargo clippy --workspace
 --all-targets -- -D warnings` clean, `cargo test --workspace` 971 passed 0
 failed 3 ignored.
+Sharing now also runs when a project is opened (reported, kept on save)
+and before every Save and Write, not only after an add. The saved M8LWA
+(4 247 bytes) has nothing to share as it stands. Gate: `cargo fmt --all
+--check` clean, `cargo clippy --workspace --all-targets -- -D warnings`
+clean, `cargo test --workspace` 972 passed 0 failed 3 ignored.
 
 **`FLASH-074` done** (2026-10-17, operator request, `RISK-049`): the K5
 image had 16 bytes of flash left. `interface::run` was 22.6 KB because the

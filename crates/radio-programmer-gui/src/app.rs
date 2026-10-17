@@ -2244,6 +2244,7 @@ impl StudioApp {
         if self.refuse_while_busy() {
             return;
         }
+        let shared = share_overlapping(&mut self.project);
         let project = match self.project.validate_for_radio() {
             Ok(project) => project,
             Err(errors) => {
@@ -2260,6 +2261,9 @@ impl StudioApp {
         match session.start_write(project) {
             Ok(job) => {
                 log::info!("writing the project to {device}");
+                if shared > 0 {
+                    log::info!("shared {shared} location banks before writing");
+                }
                 self.status = format!("Writing the project to {device}…");
                 self.job = Some(job);
             }
@@ -2365,6 +2369,7 @@ impl StudioApp {
 
     fn save_project(&mut self) {
         let entry = self.projects.current().clone();
+        let shared = share_overlapping(&mut self.project);
         let image = match self.project.to_image() {
             Ok(image) => image,
             Err(errors) => {
@@ -2382,7 +2387,7 @@ impl StudioApp {
                 log::info!("saved project {} to {}", entry.name, entry.path.display());
                 self.errors.clear();
                 self.saved = self.project.clone();
-                self.status = format!("Saved {}.", entry.name);
+                self.status = format!("Saved {}.{}", entry.name, shared_note(shared));
             }
             Err(error) => self.fail(
                 "saving the project",
@@ -2445,6 +2450,10 @@ impl StudioApp {
                 self.status,
                 if renamed == 1 { "" } else { "s" }
             );
+        }
+        let shared = share_overlapping(&mut self.project);
+        if shared > 0 {
+            self.status = format!("{}{} Save to keep it.", self.status, shared_note(shared));
         }
     }
 
@@ -2905,6 +2914,16 @@ fn share_overlapping(project: &mut ProjectModel) -> usize {
         row += 1;
     }
     gone
+}
+
+/// Says how many banks sharing took away, for a status line; nothing when
+/// none.
+fn shared_note(gone: usize) -> String {
+    match gone {
+        0 => String::new(),
+        1 => " Shared 1 bank between locations hearing mostly the same.".to_owned(),
+        _ => format!(" Shared {gone} banks between locations hearing mostly the same."),
+    }
 }
 
 /// Adds `more` to `sites`, a site already there taken once and singled out
@@ -6386,6 +6405,66 @@ mod tests {
         let app = app_in(&dir, &options);
         assert_eq!(app.projects.current().name, "default");
         assert_eq!(app.project.banks.len(), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn opening_a_project_shares_the_banks_locations_have_in_common() {
+        use super::{BankSource, Origin, ProjectModel};
+        use crate::repeaters::{repeater_bank, Coverage, Repeater};
+
+        let dir = scratch("share-on-open");
+        let mut app = app_in(&dir, &Options::default());
+        let repeater = |callsign: &str, output_hz: u32| Repeater {
+            callsign: callsign.to_owned(),
+            town: String::new(),
+            output_hz,
+            input_hz: output_hz - 600_000,
+            ctcss_tenths_hz: Some(825),
+            wide: false,
+            latitude: 51.5,
+            longitude: -0.1,
+            coverage: Coverage::Standard,
+        };
+        let [a, b, c, d] = [
+            repeater("GB3AA", 145_600_000),
+            repeater("GB3BB", 145_625_000),
+            repeater("GB3CC", 145_650_000),
+            repeater("GB3DD", 145_675_000),
+        ];
+        // Home hears three, Work those and one more: three of four common.
+        let mut project = ProjectModel::new();
+        for (locator, name, heard) in [
+            ("IO91WM", "HOME", vec![&a, &b, &c]),
+            ("IO91WL", "WORK", vec![&c, &b, &a, &d]),
+        ] {
+            let near: Vec<_> = heard.into_iter().map(|r| (r, 1.0)).collect();
+            let mut bank = repeater_bank(locator, &near);
+            bank.origin = Some(Origin::new(BankSource::Repeaters, locator));
+            let group = project.ensure_group(name, Some(locator)).unwrap();
+            bank.groups.push(group);
+            project.banks.push(bank);
+        }
+        let path = app.projects.current().path.clone();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, project.to_image().unwrap()).unwrap();
+
+        app.load_project();
+        let names: Vec<_> = app.project.banks.iter().map(|b| b.name.as_str()).collect();
+        assert_eq!(names, ["RPT HOME+WORK"]);
+        assert_eq!(app.project.banks[0].channels.len(), 4);
+        assert!(app.status.contains("Shared 1 bank"), "{}", app.status);
+        assert!(app.is_dirty(), "saving keeps it");
+        app.save_project();
+        assert!(!app.is_dirty());
+        assert_eq!(app.status, "Saved default.");
+
+        // Saving shares too, whatever made the banks.
+        app.project = project;
+        app.save_project();
+        assert_eq!(app.project.banks.len(), 1);
+        assert!(app.status.contains("Shared 1 bank"), "{}", app.status);
+        assert!(!app.is_dirty());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
