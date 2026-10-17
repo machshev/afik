@@ -2499,12 +2499,20 @@ impl StudioApp {
                 banks = vec![satellite_bank(&list.channels)];
             }
         }
+        // A default set is the same wherever the operator is, so its banks
+        // go in COMMON, which puts them in every group on the radio.
+        let names: Vec<String> = banks.iter().map(|bank| bank.name.clone()).collect();
         let new: Vec<_> = banks
             .into_iter()
             .filter(|bank| !self.project.banks.iter().any(|b| b.name == bank.name))
             .collect();
         if new.is_empty() {
-            self.status = format!("{} is already in the project.", preset.name());
+            let filed = self.file_common(&names);
+            self.status = format!(
+                "{} is already in the project{}.",
+                preset.name(),
+                if filed { ", in COMMON" } else { "" }
+            );
             return;
         }
         if self.project.banks.len() + new.len() > usize::from(MAX_BANKS) {
@@ -2518,11 +2526,30 @@ impl StudioApp {
         }
         let added = new.len();
         self.project.banks.extend(new);
+        let filed = self.file_common(&names);
         self.status = format!(
-            "Added {}: {added} banks after the existing ones. \
+            "Added {}: {added} banks after the existing ones{}. \
              Confirm every frequency against your own band plan before use.",
-            preset.name()
+            preset.name(),
+            if filed {
+                ", in COMMON so every group has them"
+            } else {
+                ""
+            }
         );
+    }
+
+    /// Files each bank named in `names` under [`COMMON_GROUP`]; false when
+    /// the radio's groups are all taken.
+    fn file_common(&mut self, names: &[String]) -> bool {
+        let mut filed = true;
+        for name in names {
+            filed &= self.project.file_in(name, COMMON_GROUP);
+        }
+        if !filed {
+            log::warn!("a radio holds {MAX_GROUPS} groups; a default set is not in COMMON");
+        }
+        filed
     }
 }
 
@@ -7804,6 +7831,20 @@ mod tests {
         // Adding the same set again duplicates nothing.
         app.add_preset();
         assert_eq!(app.project.banks.len(), after.len());
+
+        // A default set is in COMMON, so every group on the radio has it;
+        // one added before COMMON was is filed there when added again.
+        let common = app.project.group_named(super::COMMON_GROUP).unwrap();
+        assert!(app.project.banks.iter().all(|b| b.groups == [common]));
+        assert!(app
+            .status
+            .ends_with("is already in the project, in COMMON."));
+        for bank in &mut app.project.banks {
+            bank.groups.clear();
+        }
+        app.add_preset();
+        let marine = app.project.banks.iter().filter(|b| b.groups == [common]);
+        assert_eq!(marine.count(), 2);
     }
 
     #[test]
