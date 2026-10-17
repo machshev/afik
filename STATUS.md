@@ -179,8 +179,9 @@ the source list ends in one GROUPS > row; Menu opens the group list (ALL
 BANKS, each group, on the one in force; it shares the source cursor), Menu
 there narrows and returns to the operating screen, Exit goes back to the
 source list, star closes either. Inside a group the source list is titled
-with the group's name. `7.0.56` built (K5 flash end `0xe9d8`, K1 76 868
-bytes), not yet flashed. Gate: `cargo fmt --all --check` clean, `cargo
+with the group's name. `7.0.56` (`c82e9ca`, built at `5bf3250`) flashed to
+the K1 (bootloader `7.03.01`; image CRC-32 `60808535`, 301 pages
+acknowledged, not read back); K5 flash end `0xe9d8`. Gate: `cargo fmt --all --check` clean, `cargo
 clippy --workspace --all-targets -- -D warnings` clean, `cargo test
 --workspace --no-fail-fast` 922 passed 0 failed 3 ignored. Gate: `cargo fmt --all
 --check` clean, `cargo clippy --workspace --all-targets -- -D warnings`
