@@ -1169,6 +1169,7 @@ impl StudioApp {
     /// the airband group when `airband`, and under the marine group when it
     /// holds marine channels.
     fn file_here(&mut self, bank: &str, airband: bool) {
+        self.name_locations();
         let locator = self.repeater_area.locator.trim().to_ascii_uppercase();
         let name = self.location_name(&locator);
         let mut filed = self.project.file_bank(bank, &name, &locator, airband);
@@ -2167,6 +2168,33 @@ impl StudioApp {
         self.project = loaded.clone();
         self.saved = loaded;
         self.errors.clear();
+        let renamed = self.name_locations();
+        if renamed > 0 {
+            self.status = format!(
+                "{} Named {renamed} location group{} after the saved locator; save to keep it.",
+                self.status,
+                if renamed == 1 { "" } else { "s" }
+            );
+        }
+    }
+
+    /// Names each location group still called by its bare locator after the
+    /// description saved for that locator, as the locator dropdown shows it;
+    /// a name the operator gave it is kept. Returns how many were renamed.
+    fn name_locations(&mut self) -> usize {
+        let mut renamed = 0;
+        for row in 0..self.project.groups.len() {
+            let locator = self.project.groups[row].locator.clone();
+            if locator.is_empty() || !self.project.groups[row].name.eq_ignore_ascii_case(&locator) {
+                continue;
+            }
+            let name = self.location_name(&locator);
+            if self.project.groups[row].name != name {
+                self.project.groups[row].name = name;
+                renamed += 1;
+            }
+        }
+        renamed
     }
 
     /// Opens another project, unless this one has changes it would lose.
@@ -6202,6 +6230,27 @@ mod tests {
         app.add_world();
         assert_eq!(app.project.banks.len(), banks + 1, "replaced, not added");
         assert_eq!(app.project.banks.last().unwrap().channels.len(), 1);
+    }
+
+    #[test]
+    fn a_location_group_takes_its_saved_description() {
+        let mut app = simulated("location-names");
+        "JO02EH".clone_into(&mut app.repeater_area.locator);
+        app.add_marine();
+        let home = app.project.location("JO02EH").unwrap();
+        assert_eq!(app.project.groups[home].name, "JO02EH", "nothing saved yet");
+
+        // Saved as Home without a rename of the group, as an older studio
+        // or another project left it: the next add names it.
+        app.saved_locators.put("JO02EH", "Home").unwrap();
+        app.saved_locators.put("JO02BE", "Work").unwrap();
+        app.add_marine();
+        assert_eq!(app.project.groups[home].name, "HOME");
+
+        // A name the operator chose is kept.
+        "COTTAGE".clone_into(&mut app.project.groups[home].name);
+        assert_eq!(app.name_locations(), 0);
+        assert_eq!(app.project.groups[home].name, "COTTAGE");
     }
 
     #[test]
