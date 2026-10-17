@@ -1147,6 +1147,16 @@ warnings` clean, `cargo test --workspace` 978 passed 0 failed (+1 label
 test since). Firmware unchanged. The layout was not checked on screen.
 Next: program both VFOs from the studio, write the K1, check each slot.
 
+Beacon radii (operator request, 2026-10-17): the receiver presets now take
+beacons within 60 km for a handheld, 100 km mobile, 200 km base (were 150,
+200, 300). The ETCC lists four 2 m/70 cm beacons, all horizontal; a rough
+P.1546 budget for GB3VHF (22 dBW) to a vertical whip at 150 km is at or below
+the noise, and 70 cm is worse. An estimate, not a measurement. Gate: `cargo
+fmt --all --check` clean, `cargo clippy -p radio-programmer-gui --all-targets
+-- -D warnings` clean, `cargo test -p radio-programmer-gui` 226 passed 0
+failed. Firmware unchanged. Next: listen for GB3VHF from a handheld and
+adjust the handheld radius to what is heard.
+
 Side key 1 (operator request): on the operating screen it switches tone
 squelch on the selected slot; on requires the channel's RX tone or, without
 one, its TX tone (repeater output, caught VFO tone), off opens on any

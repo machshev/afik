@@ -7495,7 +7495,7 @@ mod tests {
         app.choose_receiver(Receiver::Base);
         assert_eq!(app.repeater_area.radius_km, 100);
         assert_eq!(app.gateway_area.radius_km, 50);
-        assert_eq!(app.beacon_area.radius_km, 300);
+        assert_eq!(app.beacon_area.radius_km, 200);
         assert_eq!(app.airport_area.radius_km, 300);
         assert_eq!(app.airfield_area.radius_km, 100);
         assert_eq!(app.marine_area.radius_km, 10);
@@ -7505,7 +7505,7 @@ mod tests {
             app.status
         );
         assert_eq!(Receiver::load(&dir.join("receiver")), Receiver::Base);
-        assert_eq!(AirportArea::load(&dir.join("beacon-area")).radius_km, 300);
+        assert_eq!(AirportArea::load(&dir.join("beacon-area")).radius_km, 200);
         assert_eq!(AirportArea::load(&dir.join("marine-area")).radius_km, 10);
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -8254,19 +8254,19 @@ mod tests {
             ],
             beacons: vec![
                 system("GB3VHF", 144_430_000, 51.3),
-                // About 140 km north: inside the beacons' wider default.
-                system("GB3FAR", 432_490_000, 52.78),
+                // About 50 km north: inside the beacons' wider default.
+                system("GB3FAR", 432_490_000, 51.95),
             ],
             synced: std::time::SystemTime::now(),
         });
         "IO91WM".clone_into(&mut app.repeater_area.locator);
-        assert_eq!(app.beacon_area.radius_km, 150);
+        assert_eq!(app.beacon_area.radius_km, 60);
         assert_eq!(app.gateway_area.radius_km, 20);
         assert_eq!(app.airport_area.radius_km, 150);
         assert_eq!(app.airfield_area.radius_km, 50);
         assert_eq!(app.marine_area.radius_km, 10);
         let source = app.etcc_source(EtccKind::Beacons);
-        assert!(source.starts_with("2 within 150 km, bank "), "{source}");
+        assert!(source.starts_with("2 within 60 km, bank "), "{source}");
         assert!(source.ends_with("2 beacons from the ETCC, synced just now."));
         app.add_etcc(EtccKind::Beacons);
         let bank = app.project.banks.last().unwrap();

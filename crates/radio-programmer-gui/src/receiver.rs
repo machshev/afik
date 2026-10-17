@@ -23,7 +23,9 @@ pub struct Radii {
     pub repeaters: u16,
     /// Gateways: low-power simplex nodes.
     pub gateways: u16,
-    /// Beacons, heard on SSB or CW.
+    /// Beacons, heard on SSB or CW. The UK 2 m and 70 cm beacons are
+    /// horizontal, so a vertical whip hears them far less far than their
+    /// power suggests.
     pub beacons: u16,
     /// Airports: approach, aircraft at height.
     pub airports: u16,
@@ -110,7 +112,7 @@ impl Receiver {
             Self::Handheld => Radii {
                 repeaters: 50,
                 gateways: 20,
-                beacons: 150,
+                beacons: 60,
                 airports: 150,
                 airfields: 50,
                 marine: MARINE_KM,
@@ -118,7 +120,7 @@ impl Receiver {
             Self::Mobile => Radii {
                 repeaters: 75,
                 gateways: 30,
-                beacons: 200,
+                beacons: 100,
                 airports: 200,
                 airfields: 75,
                 marine: MARINE_KM,
@@ -126,7 +128,7 @@ impl Receiver {
             Self::Base => Radii {
                 repeaters: 100,
                 gateways: 50,
-                beacons: 300,
+                beacons: 200,
                 airports: 300,
                 airfields: 100,
                 marine: MARINE_KM,
