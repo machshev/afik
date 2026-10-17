@@ -1232,6 +1232,9 @@ lowered to the highest level within it (operator request), by nominal figures.
   squelch, so TX CTCSS works on the K1. Tone squelch opened only briefly:
   `REG_02` bits 6/7 were read the opposite way to the reference. `7.0.59`
   follows the reference; unobserved.
+- 2026-10-17, `7.0.61`: the TONE HEARD experiment (untoned tone scan and
+  the heard tone on the meter) is removed to make room on the K5, at the
+  operator's choice. The F 4 catch still runs the reference's tone scan.
 
 ## RISK-047 — Airport frequencies are volunteer data
 
@@ -1264,5 +1267,8 @@ lowered to the highest level within it (operator request), by nominal figures.
   `BankSet`, the index rebuilt in its static rather than on the stack, where
   a kilobyte frame forced literal-pool stack offsets). The image ends at
   `0xeff0` of `0xf000`, so the next firmware feature must recover space first.
+- 2026-10-17, `7.0.61`: kept VFO settings and their menus cost about 2.5 KB;
+  removing TONE HEARD, comparing places as encoded records and sharing the
+  power lists' drawing brought the image end to `0xef40` (192 bytes free).
 - Experiment: rank functions by size (`llvm-nm -S --size-sort`) and shrink or
   drop the largest unused paths before adding firmware code.

@@ -1064,7 +1064,17 @@ on the workspace less `radio-programmer-gui` (another session's uncommitted
 airports work breaks it), `cargo test -p radio-platform -p radio-app` 175
 and 34 passed 0 failed, `-p radio-domain` and `-p radio-bk4819` pass.
 `7.0.60` flashed to the K1 (bootloader `7.03.01`, 306 pages acknowledged,
-not read back). Next: settings rows VFO RX TONE, VFO TX TONE and VFO POWER.
+not read back). Settings rows (`f9ae2e0`): VFO RX (every target), VFO TX
+and VFO PWR (transmitting targets) show their values and open a tone list
+(OFF, 50 CTCSS, 104 DCS in each polarity) or DEFAULT and the six levels; a
+change rebuilds the VFO when it is the source. The TX POWER override still
+wins. The K5 was 280 bytes over; at the operator's choice TONE HEARD is
+removed (`RISK-046`), with encoded place comparison and a shared power list
+drawing path (`RISK-049`). Gate: `cargo fmt --all --check` clean, workspace
+clippy `-D warnings` clean, `cargo test --workspace` 964 passed 0 failed,
+`tool/build-k5.sh --release` (flash end `0xef40`) and `tool/build-k1.sh
+--release` pass. `7.0.61` built, not flashed. Next: flash the K1; set each
+VFO's tones and power from SETTINGS, power-cycle, check both slots keep them.
 Hardware checks still to do on `7.0.59`/`7.0.60`: the toned VFO and a toned memory
 channel stay open through a transmission and stay shut for a carrier
 without the tone.
