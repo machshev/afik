@@ -1934,3 +1934,20 @@ meaning.
   live list pass. hearham gives no bandwidth, so every channel is 25 kHz.
 - The bank is `WRPT <locator>`, so it never replaces the ETCC's `RPT` bank;
   the UK repeaters tab stays the better source in the UK.
+
+## ADR-114 — Airport frequencies are chosen by how far their service is heard
+
+- **Date:** 2026-10-17
+- **Status:** accepted, operator request (`AIRPORT-068`).
+- Each listed use is read as a service by its words (`A/G` as `AG`, the
+  widest range winning): approach/radar 150 km, ATIS 60 km, other 50 km,
+  tower/AFIS/A-G 30 km, ground/delivery/ops 10 km. The ranges are estimates
+  of where a ground-level handheld hears the aircraft side, not measured.
+- The area bank keeps a frequency inside both the radius and its service's
+  range, ordered by distance over range, a shared carrier kept for the most
+  hearable. Services are chosen by checkbox; ATIS is off by default because
+  it holds a scan.
+- Optionally the nearest N airports each get a bank `<ident> <name>` of all
+  their tower, ground and ATIS within the radius, whatever the range; the
+  area bank keeps the rest. Choices persist in
+  `$XDG_STATE_HOME/afik/airport-options`.

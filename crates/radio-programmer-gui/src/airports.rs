@@ -5,7 +5,15 @@
 //! Sync; otherwise it reads the raw CSVs cached in
 //! `$XDG_CACHE_HOME/afik/ourairports`. The locator is the repeaters' own; the
 //! radius and how many channels to take are kept in
-//! `$XDG_STATE_HOME/afik/airport-area`.
+//! `$XDG_STATE_HOME/afik/airport-area`, and which services to take and
+//! whether each airport gets its own bank in `airport-options`.
+//!
+//! What a listener hears is mostly the aircraft, so how far a frequency
+//! carries depends on its service: an aircraft working approach or radar is
+//! high and heard from far off, one in the circuit on tower is low, and one
+//! taxiing on ground is heard only nearby. Each [`Service`] has a rough
+//! hearing range, and the bank keeps the frequencies inside theirs, the most
+//! hearable (distance over range) first.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -16,7 +24,7 @@ use std::{
     time::SystemTime,
 };
 
-use radio_channel_plan::{SharedSettings, MAX_BANK_NAME_LEN, MAX_CHANNEL_NAME_LEN};
+use radio_channel_plan::{SharedSettings, MAX_BANKS, MAX_BANK_NAME_LEN, MAX_CHANNEL_NAME_LEN};
 use radio_domain::{Bandwidth, Modulation, PowerLevel};
 
 use crate::{
@@ -66,6 +74,153 @@ pub struct AirportFrequency {
     /// Whether it is a small field: an airstrip, gliding site, heliport,
     /// balloon port or seaplane base rather than a medium or large airport.
     pub small: bool,
+    /// The use as listed, such as `TWR`, cut to a channel name.
+    pub kind: String,
+    /// What the frequency is for, read from its use.
+    pub service: Service,
+}
+
+/// What an airport frequency is for, which decides how far off it is heard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Service {
+    /// Approach, departure, radar, director and area control: aircraft at
+    /// height, heard from far off.
+    Approach,
+    /// Tower, AFIS, air/ground, CTAF and UNICOM: aircraft in the circuit.
+    Tower,
+    /// Ground, delivery, apron and operations: aircraft and vehicles on the
+    /// ground, heard only nearby.
+    Ground,
+    /// ATIS and other recorded broadcasts: a ground transmitter that never
+    /// stops, which holds a scan.
+    Broadcast,
+    /// Anything the use does not say.
+    Other,
+}
+
+impl Service {
+    /// Every service, in the order the studio shows them.
+    pub const ALL: [Self; 5] = [
+        Self::Approach,
+        Self::Tower,
+        Self::Ground,
+        Self::Broadcast,
+        Self::Other,
+    ];
+
+    /// The listed uses (split into words, `A/G` read as `AG`) of each
+    /// service; a use naming several takes the one heard furthest.
+    const WORDS: [(Self, &'static [&'static str]); 4] = [
+        (
+            Self::Approach,
+            &[
+                "APP", "APPR", "APPROACH", "DEP", "ARR", "RDR", "RAD", "RADAR", "DIR", "DIRECTOR",
+                "CNTR", "CTR", "CENTRE", "CENTER", "ACC", "ARTC", "CONTROL", "LARS", "ZONE", "TCA",
+                "TMA", "CTRL", "ARSA", "STAR", "ACP", "GCA", "PAR", "FIS", "FIA",
+            ],
+        ),
+        (
+            Self::Broadcast,
+            &["ATIS", "DATIS", "AWOS", "ASOS", "AWIS", "AWIB", "VOLMET"],
+        ),
+        (
+            Self::Tower,
+            &[
+                "TWR",
+                "TOWER",
+                "AFIS",
+                "AG",
+                "AD",
+                "AA",
+                "CTAF",
+                "UNIC",
+                "UNICOM",
+                "RDO",
+                "RADIO",
+                "ATF",
+                "MF",
+                "MULTICOM",
+                "FSS",
+                "RCO",
+                "INFO",
+                "INFORMATION",
+                "SAFETY",
+                "SAFETYCOM",
+            ],
+        ),
+        (
+            Self::Ground,
+            &[
+                "GND", "GNDC", "GROUND", "GRN", "GMC", "SMC", "DLV", "START", "DEL", "DELIVERY",
+                "CLD", "CLNC", "RMP", "RAMP", "APRON", "OPS", "PTD", "FIRE",
+            ],
+        ),
+    ];
+
+    /// The service a listed use, such as `TWR` or `RAD/APP`, names.
+    pub fn of(kind: &str) -> Self {
+        let kind = kind
+            .to_ascii_uppercase()
+            .replace("A/G", "AG")
+            .replace("A/D", "AD")
+            .replace("A/A", "AA");
+        let words: Vec<&str> = kind
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|word| !word.is_empty())
+            .collect();
+        Self::WORDS
+            .iter()
+            .filter(|(_, listed)| words.iter().any(|word| listed.contains(word)))
+            .map(|(service, _)| *service)
+            .max_by_key(|service| service.range_km())
+            .unwrap_or(Self::Other)
+    }
+
+    /// Roughly how far off a handheld at ground level hears it, in
+    /// kilometres: an estimate from the height of what transmits, not a
+    /// measurement.
+    pub const fn range_km(self) -> u16 {
+        match self {
+            Self::Approach => 150,
+            Self::Broadcast => 60,
+            Self::Other => 50,
+            Self::Tower => 30,
+            Self::Ground => 10,
+        }
+    }
+
+    /// What the studio calls it.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Approach => "Approach/radar",
+            Self::Tower => "Tower",
+            Self::Ground => "Ground",
+            Self::Broadcast => "ATIS",
+            Self::Other => "Other",
+        }
+    }
+
+    /// The word the options file keeps it as.
+    const fn key(self) -> &'static str {
+        match self {
+            Self::Approach => "approach",
+            Self::Tower => "tower",
+            Self::Ground => "ground",
+            Self::Broadcast => "atis",
+            Self::Other => "other",
+        }
+    }
+
+    /// Whether it belongs to one airport, so goes in that airport's bank
+    /// when each has its own.
+    pub const fn is_local(self) -> bool {
+        matches!(self, Self::Tower | Self::Ground | Self::Broadcast)
+    }
+
+    /// Its place in [`Self::ALL`].
+    pub const fn index(self) -> usize {
+        self as usize
+    }
 }
 
 /// `OurAirports` types of a small field.
@@ -176,6 +331,8 @@ pub fn parse(airports_csv: &str, frequencies_csv: &str) -> Result<Vec<AirportFre
             let (ident, airport, latitude, longitude, small) = airports.get(&id)?;
             Some(AirportFrequency {
                 name: sanitise(&format!("{ident} {kind}"), MAX_CHANNEL_NAME_LEN)?,
+                service: Service::of(&kind),
+                kind: sanitise(&kind, MAX_CHANNEL_NAME_LEN).unwrap_or_default(),
                 ident: ident.clone(),
                 airport: airport.clone(),
                 frequency_hz,
@@ -196,20 +353,11 @@ pub fn parse(airports_csv: &str, frequencies_csv: &str) -> Result<Vec<AirportFre
     Ok(frequencies)
 }
 
-/// Every frequency of the airports within `radius_km` of `locator`, nearest
-/// airport first and each airport's in frequency order, with its distance in
-/// kilometres. A frequency several airports share, such as a common
-/// traffic frequency, is kept once, for the nearest.
-pub fn nearby<'a>(
-    frequencies: &'a [AirportFrequency],
-    locator: &str,
-    radius_km: u16,
-) -> Result<Vec<(&'a AirportFrequency, f64)>, String> {
-    nearby_matching(frequencies, locator, radius_km, |_| true, HashSet::new())
-}
-
-/// The frequencies `keep` accepts, chosen and ordered as [`nearby`] does,
-/// leaving out every carrier already in `taken`.
+/// The frequencies `keep` accepts of the airports within `radius_km` of
+/// `locator`, nearest airport first and each airport's in frequency order,
+/// with its distance in kilometres. A frequency several airports share,
+/// such as a common traffic frequency, is kept once, for the nearest, and
+/// every carrier already in `taken` is left out.
 pub(crate) fn nearby_matching<'a>(
     frequencies: &'a [AirportFrequency],
     locator: &str,
@@ -236,14 +384,171 @@ pub(crate) fn nearby_matching<'a>(
     Ok(near)
 }
 
-/// Builds the receive-only AM bank for the frequencies `nearby` chose, in
-/// its order.
-pub fn airport_bank(locator: &str, near: &[(&AirportFrequency, f64)]) -> BankDraft {
-    let channels = near
+/// One airport given its own bank, with its frequencies.
+#[derive(Clone, Debug)]
+pub struct AirportGroup<'a> {
+    /// Its ident, usually its ICAO code.
+    pub ident: &'a str,
+    /// Its name.
+    pub airport: &'a str,
+    /// How far it is, in kilometres.
+    pub km: f64,
+    /// Its local frequencies: tower, then ground, then ATIS, each in
+    /// frequency order.
+    pub frequencies: Vec<&'a AirportFrequency>,
+}
+
+/// What the airport banks take.
+#[derive(Clone, Debug)]
+pub struct AirportPlan<'a> {
+    /// The area bank's frequencies, most hearable first, with their
+    /// distance in kilometres.
+    pub area: Vec<(&'a AirportFrequency, f64)>,
+    /// How many hearable frequencies there were before the area bank's
+    /// limit.
+    pub hearable: usize,
+    /// The airports given their own bank, nearest first.
+    pub airports: Vec<AirportGroup<'a>>,
+}
+
+impl AirportPlan<'_> {
+    /// How many channels the banks hold.
+    pub fn channels(&self) -> usize {
+        self.area.len()
+            + self
+                .airports
+                .iter()
+                .map(|group| group.frequencies.len())
+                .sum::<usize>()
+    }
+}
+
+/// Chooses the frequencies of the services `options` takes at the airports
+/// within the area's radius of `locator`.
+///
+/// When each airport gets its own bank, the nearest `options.airports`
+/// airports with a local (tower, ground or ATIS) frequency each take all of
+/// theirs, however far, since that bank is for when the operator is there.
+/// Every other frequency inside its service's hearing range goes to the area
+/// bank, most hearable first (distance over range, so approach 60 km off
+/// comes before a tower 20 km off), a carrier several airports share kept
+/// for the most hearable, up to `area.max_channels`.
+pub fn plan<'a>(
+    frequencies: &'a [AirportFrequency],
+    locator: &str,
+    area: &AirportArea,
+    options: &AirportOptions,
+) -> Result<AirportPlan<'a>, String> {
+    let home = locator_centre(locator)?;
+    let in_radius: Vec<_> = frequencies
         .iter()
-        .map(|(frequency, _)| am_channel(&frequency.name, frequency.frequency_hz))
+        .filter(|frequency| options.takes(frequency.service))
+        .map(|frequency| {
+            let km = distance_km(home, (frequency.latitude, frequency.longitude));
+            (frequency, km)
+        })
+        .filter(|(_, km)| *km <= f64::from(area.radius_km))
         .collect();
-    am_bank("AIR", locator, channels)
+
+    let mut airports: Vec<AirportGroup<'a>> = Vec::new();
+    if options.per_airport {
+        let mut local: Vec<_> = in_radius
+            .iter()
+            .filter(|(frequency, _)| frequency.service.is_local())
+            .collect();
+        local.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.ident.cmp(&b.0.ident)));
+        for (frequency, km) in local {
+            if let Some(group) = airports.iter_mut().find(|g| g.ident == frequency.ident) {
+                group.frequencies.push(frequency);
+            } else if airports.len() < usize::from(options.airports) {
+                airports.push(AirportGroup {
+                    ident: &frequency.ident,
+                    airport: &frequency.airport,
+                    km: *km,
+                    frequencies: vec![frequency],
+                });
+            }
+        }
+        for group in &mut airports {
+            group.frequencies.sort_by_key(|frequency| {
+                (
+                    [Service::Tower, Service::Ground, Service::Broadcast]
+                        .iter()
+                        .position(|service| *service == frequency.service),
+                    frequency.frequency_hz,
+                )
+            });
+            let mut seen = HashSet::new();
+            group
+                .frequencies
+                .retain(|frequency| seen.insert(frequency.frequency_hz));
+        }
+    }
+
+    let own_bank = |frequency: &AirportFrequency| {
+        frequency.service.is_local() && airports.iter().any(|g| g.ident == frequency.ident)
+    };
+    let hearability =
+        |(frequency, km): &(&AirportFrequency, f64)| km / f64::from(frequency.service.range_km());
+    let mut near: Vec<_> = in_radius
+        .iter()
+        .filter(|(frequency, km)| {
+            *km <= f64::from(frequency.service.range_km()) && !own_bank(frequency)
+        })
+        .copied()
+        .collect();
+    near.sort_by(|a, b| {
+        hearability(a)
+            .total_cmp(&hearability(b))
+            .then(a.0.ident.cmp(&b.0.ident))
+            .then(a.0.frequency_hz.cmp(&b.0.frequency_hz))
+    });
+    let mut taken = HashSet::new();
+    near.retain(|(frequency, _)| taken.insert(frequency.frequency_hz));
+    let hearable = near.len();
+    near.truncate(usize::from(area.max_channels));
+    Ok(AirportPlan {
+        area: near,
+        hearable,
+        airports,
+    })
+}
+
+/// Builds the receive-only AM banks `plan` chose: the area bank `AIR
+/// <locator>` when it holds anything, then one per airport named by its
+/// ident and name, its channels by use alone.
+pub fn airport_banks(locator: &str, plan: &AirportPlan) -> Vec<BankDraft> {
+    let mut banks = Vec::new();
+    if !plan.area.is_empty() {
+        let channels = plan
+            .area
+            .iter()
+            .map(|(frequency, _)| am_channel(&frequency.name, frequency.frequency_hz))
+            .collect();
+        banks.push(am_bank("AIR", locator, channels));
+    }
+    for group in &plan.airports {
+        let channels = group
+            .frequencies
+            .iter()
+            .map(|frequency| {
+                let name = if frequency.kind.is_empty() {
+                    &frequency.name
+                } else {
+                    &frequency.kind
+                };
+                am_channel(name, frequency.frequency_hz)
+            })
+            .collect();
+        let mut bank = am_bank(group.ident, "", channels);
+        bank.name = sanitise(
+            &format!("{} {}", group.ident, group.airport),
+            MAX_BANK_NAME_LEN,
+        )
+        .unwrap_or(bank.name);
+        banks.push(bank);
+    }
+    banks
 }
 
 /// One receive-only airband channel.
@@ -434,6 +739,94 @@ impl AirportArea {
     }
 }
 
+/// Which services the airport banks take, and whether each airport near
+/// enough gets a bank of its own.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AirportOptions {
+    /// Whether each [`Service`] is taken, by [`Service::index`].
+    pub services: [bool; Service::ALL.len()],
+    /// Whether the nearest airports each get a bank of their local
+    /// frequencies.
+    pub per_airport: bool,
+    /// How many airports get a bank of their own.
+    pub airports: u16,
+}
+
+/// How many airports get a bank of their own before the operator chooses.
+pub const DEFAULT_AIRPORT_BANKS: u16 = 3;
+const OPTIONS_FILE: &str = "airport-options";
+
+impl Default for AirportOptions {
+    /// Every service but ATIS, which holds a scan; one area bank.
+    fn default() -> Self {
+        let mut services = [true; Service::ALL.len()];
+        services[Service::Broadcast.index()] = false;
+        Self {
+            services,
+            per_airport: false,
+            airports: DEFAULT_AIRPORT_BANKS,
+        }
+    }
+}
+
+impl AirportOptions {
+    /// Whether `service` is taken.
+    pub const fn takes(&self, service: Service) -> bool {
+        self.services[service.index()]
+    }
+
+    /// The state file the options are kept in.
+    pub fn file() -> Option<PathBuf> {
+        paths::state_dir().map(|dir| dir.join(OPTIONS_FILE))
+    }
+
+    /// Reads the services taken by name, `per-airport` and `airports=N`;
+    /// with no file, the defaults.
+    pub fn load(file: &Path) -> Self {
+        let Ok(text) = fs::read_to_string(file) else {
+            return Self::default();
+        };
+        let mut options = Self {
+            services: [false; Service::ALL.len()],
+            per_airport: false,
+            airports: DEFAULT_AIRPORT_BANKS,
+        };
+        for word in text.split_whitespace() {
+            if let Some(service) = Service::ALL.iter().find(|s| s.key() == word) {
+                options.services[service.index()] = true;
+            } else if word == "per-airport" {
+                options.per_airport = true;
+            } else if let Some(count) = word.strip_prefix("airports=") {
+                if let Some(count) = count
+                    .parse()
+                    .ok()
+                    .filter(|count| (1..=MAX_BANKS).contains(count))
+                {
+                    options.airports = count;
+                }
+            }
+        }
+        options
+    }
+
+    /// Writes the options for the next start.
+    pub fn save(&self, file: &Path) -> Result<(), String> {
+        let mut words: Vec<String> = Service::ALL
+            .iter()
+            .filter(|service| self.takes(**service))
+            .map(|service| service.key().to_owned())
+            .collect();
+        if self.per_airport {
+            words.push("per-airport".to_owned());
+        }
+        words.push(format!("airports={}", self.airports));
+        file.parent()
+            .map_or(Ok(()), fs::create_dir_all)
+            .and_then(|()| fs::write(file, words.join(" ") + "\n"))
+            .map_err(|error| format!("{}: {error}", file.display()))
+    }
+}
+
 /// A sync running on a worker thread, so the window keeps drawing.
 pub struct SyncJob {
     outcome: mpsc::Receiver<Result<AirportList, String>>,
@@ -465,8 +858,8 @@ impl SyncJob {
 #[cfg(test)]
 mod tests {
     use super::{
-        airport_bank, carrier_hz, nearby, parse, AirportArea, AirportCache, AIRPORTS_URL,
-        FREQUENCIES_URL,
+        airport_banks, carrier_hz, parse, plan, AirportArea, AirportCache, AirportFrequency,
+        AirportOptions, Service, AIRPORTS_URL, FREQUENCIES_URL,
     };
     use crate::model::ProjectModel;
     use radio_domain::Modulation;
@@ -551,48 +944,177 @@ mod tests {
         );
     }
 
-    #[test]
-    fn nearby_takes_the_nearest_airport_for_each_frequency_in_range() {
-        let list = parse(AIRPORTS, FREQUENCIES).unwrap();
-        // JO02BF is the square holding Cambridge; Manchester is about 230 km.
-        let near = nearby(&list, "JO02BF", 50).unwrap();
-        let chosen: Vec<_> = near.iter().map(|(f, _)| f.name.as_str()).collect();
-        // The strip's 122.2 is Cambridge Tower's, which is nearer.
-        assert_eq!(
-            chosen,
-            [
-                "EGSC TWR",
-                "EGSC RDR",
-                "EGSC ATIS",
-                "EGYY UNIC",
-                "EGYY SAFETYC"
-            ]
-        );
-        assert!(near.windows(2).all(|pair| pair[0].1 <= pair[1].1));
-        let far = nearby(&list, "JO02BF", 300).unwrap();
-        assert_eq!(far.len(), 7);
-        assert!(nearby(&list, "nonsense", 50).is_err());
+    /// The centre of IO91WM.
+    const HOME: (f64, f64) = (51.520_833, -0.125);
+
+    /// A frequency `km` due north of IO91WM's centre.
+    fn heard(ident: &str, kind: &str, hz: u32, km: f64) -> AirportFrequency {
+        AirportFrequency {
+            name: format!("{ident} {kind}"),
+            ident: ident.to_owned(),
+            airport: format!("{ident} Field"),
+            frequency_hz: hz,
+            latitude: HOME.0 + km / 111.2,
+            longitude: HOME.1,
+            small: false,
+            kind: kind.to_owned(),
+            service: Service::of(kind),
+        }
+    }
+
+    fn area(radius_km: u16, max_channels: u16) -> AirportArea {
+        AirportArea {
+            radius_km,
+            max_channels,
+        }
     }
 
     #[test]
-    fn the_bank_receives_am_and_never_transmits() {
+    fn a_listed_use_names_its_service() {
+        assert_eq!(Service::of("TWR"), Service::Tower);
+        assert_eq!(Service::of("A/G"), Service::Tower);
+        assert_eq!(Service::of("A/G / AFIS"), Service::Tower);
+        assert_eq!(Service::of("Brimpton Radio"), Service::Tower);
+        assert_eq!(Service::of("GND"), Service::Ground);
+        assert_eq!(Service::of("CLD"), Service::Ground);
+        assert_eq!(Service::of("ATIS"), Service::Broadcast);
+        assert_eq!(Service::of("RAD/APP"), Service::Approach);
+        assert_eq!(Service::of("RDR"), Service::Approach);
+        // A use naming several takes the one heard furthest.
+        assert_eq!(Service::of("TWR/APP/DEP"), Service::Approach);
+        assert_eq!(Service::of("Safety Comm"), Service::Tower);
+        assert_eq!(Service::of("MISC"), Service::Other);
+        assert_eq!(Service::of(""), Service::Other);
+        assert!(Service::Approach.range_km() > Service::Tower.range_km());
+        assert!(Service::Tower.range_km() > Service::Ground.range_km());
+    }
+
+    #[test]
+    fn the_area_bank_keeps_what_is_hearable_most_hearable_first() {
+        let list = [
+            heard("EGLL", "APP", 119_725_000, 20.0),
+            heard("EGLL", "TWR", 118_500_000, 20.0),
+            heard("EGLL", "GND", 121_900_000, 20.0),
+            heard("EGLL", "ATIS", 128_075_000, 20.0),
+            heard("EGLC", "GND", 121_825_000, 5.0),
+            heard("EGKK", "APP", 126_825_000, 90.0),
+            heard("EGKK", "TWR", 124_225_000, 90.0),
+        ];
+        let names = |options: &AirportOptions, area: &AirportArea| -> Vec<String> {
+            plan(&list, "IO91WM", area, options)
+                .unwrap()
+                .area
+                .iter()
+                .map(|(f, _)| f.name.clone())
+                .collect()
+        };
+        // Ground 20 km off and tower 90 km off are out of hearing; ATIS is
+        // left out unless asked for.
+        let options = AirportOptions::default();
+        assert_eq!(
+            names(&options, &area(300, 40)),
+            ["EGLL APP", "EGLC GND", "EGKK APP", "EGLL TWR"]
+        );
+        let chosen = plan(&list, "IO91WM", &area(300, 2), &options).unwrap();
+        assert_eq!(chosen.area.len(), 2);
+        assert_eq!(chosen.hearable, 4);
+        // The radius still bounds everything.
+        assert_eq!(
+            names(&options, &area(50, 40)),
+            ["EGLL APP", "EGLC GND", "EGLL TWR"]
+        );
+        let mut atis = options.clone();
+        atis.services[Service::Broadcast.index()] = true;
+        atis.services[Service::Approach.index()] = false;
+        assert_eq!(
+            names(&atis, &area(300, 40)),
+            ["EGLL ATIS", "EGLC GND", "EGLL TWR"]
+        );
+    }
+
+    #[test]
+    fn each_airport_can_have_a_bank_of_its_local_frequencies() {
+        let list = [
+            heard("EGLL", "APP", 119_725_000, 20.0),
+            heard("EGLL", "TWR", 118_500_000, 20.0),
+            heard("EGLL", "GND", 121_900_000, 20.0),
+            heard("EGLL", "ATIS", 128_075_000, 20.0),
+            heard("EGLC", "GND", 121_825_000, 5.0),
+            heard("EGKK", "APP", 126_825_000, 90.0),
+            heard("EGKK", "TWR", 124_225_000, 90.0),
+        ];
+        let options = AirportOptions {
+            per_airport: true,
+            airports: 2,
+            ..AirportOptions::default()
+        };
+        let chosen = plan(&list, "IO91WM", &area(300, 40), &options).unwrap();
+        let area_names: Vec<_> = chosen.area.iter().map(|(f, _)| f.name.as_str()).collect();
+        assert_eq!(area_names, ["EGLL APP", "EGKK APP"]);
+        let idents: Vec<_> = chosen.airports.iter().map(|g| g.ident).collect();
+        assert_eq!(idents, ["EGLC", "EGLL"]);
+        // Ground too far to hear from home still goes in its airport's bank.
+        let heathrow: Vec<_> = chosen.airports[1]
+            .frequencies
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect();
+        assert_eq!(heathrow, ["EGLL TWR", "EGLL GND"]);
+        assert_eq!(chosen.channels(), 5);
+
+        let banks = airport_banks("io91wm", &chosen);
+        let summary: Vec<_> = banks
+            .iter()
+            .map(|b| {
+                (
+                    b.name.as_str(),
+                    b.channels
+                        .iter()
+                        .map(|c| c.name.as_str())
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                ("AIR IO91WM", vec!["EGLL APP", "EGKK APP"]),
+                ("EGLC EGLC FIELD", vec!["GND"]),
+                ("EGLL EGLL FIELD", vec!["TWR", "GND"]),
+            ]
+        );
+        let project = ProjectModel {
+            banks,
+            ..ProjectModel::new()
+        };
+        project.to_radio_image().expect("valid airband banks");
+
+        // With approach left out nothing is left for the area bank.
+        let mut local = options;
+        local.services[Service::Approach.index()] = false;
+        let chosen = plan(&list, "IO91WM", &area(300, 40), &local).unwrap();
+        assert!(chosen.area.is_empty());
+        assert_eq!(airport_banks("IO91WM", &chosen).len(), 2);
+    }
+
+    #[test]
+    fn the_listed_fixture_plans_one_receive_only_bank() {
         let list = parse(AIRPORTS, FREQUENCIES).unwrap();
-        let near = nearby(&list, "jo02bf", 300).unwrap();
-        let bank = airport_bank("jo02bf", &near);
-        assert_eq!(bank.name, "AIR JO02BF");
-        assert_eq!(bank.channels.len(), 7);
-        assert_eq!(bank.channels[0].receive_mhz, "122.200000");
-        assert!(bank
+        let options = AirportOptions::default();
+        // JO02BF is the square holding Cambridge; Manchester is about 200
+        // km, too far to hear its ground, and ATIS is left out.
+        let chosen = plan(&list, "jo02bf", &area(300, 40), &options).unwrap();
+        let names: Vec<_> = chosen.area.iter().map(|(f, _)| f.name.as_str()).collect();
+        // The strip's 122.2 is Cambridge Tower's, which is more hearable.
+        assert_eq!(names, ["EGSC RDR", "EGSC TWR", "EGYY UNIC", "EGYY SAFETYC"]);
+        let banks = airport_banks("jo02bf", &chosen);
+        assert_eq!(banks.len(), 1);
+        assert_eq!(banks[0].name, "AIR JO02BF");
+        assert!(banks[0]
             .channels
             .iter()
             .all(|c| c.modulation == Modulation::Am && c.transmit_mhz.is_empty()));
-        assert!(bank.channels.iter().any(|c| c.receive_mhz == "121.933330"));
-        // The radio accepts it.
-        let project = ProjectModel {
-            banks: vec![bank],
-            ..ProjectModel::new()
-        };
-        project.to_radio_image().expect("a valid airband bank");
+        assert!(plan(&list, "nonsense", &area(50, 40), &options).is_err());
     }
 
     #[test]
@@ -629,6 +1151,29 @@ mod tests {
         assert_eq!(AirportArea::load(&file), area);
         std::fs::write(&file, "0 9999\n").unwrap();
         assert_eq!(AirportArea::load(&file), AirportArea::default());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_options_come_back_as_saved_and_default_without_atis() {
+        let dir = scratch("options");
+        let file = dir.join("airport-options");
+        let defaults = AirportOptions::load(&file);
+        assert_eq!(defaults, AirportOptions::default());
+        assert!(!defaults.takes(Service::Broadcast));
+        assert!(defaults.takes(Service::Tower));
+        let options = AirportOptions {
+            services: [false, true, true, true, false],
+            per_airport: true,
+            airports: 5,
+        };
+        options.save(&file).unwrap();
+        assert_eq!(AirportOptions::load(&file), options);
+        // Nothing taken stays nothing taken; a bad count is the default.
+        std::fs::write(&file, "airports=99\n").unwrap();
+        let none = AirportOptions::load(&file);
+        assert!(Service::ALL.iter().all(|s| !none.takes(*s)));
+        assert_eq!(none.airports, super::DEFAULT_AIRPORT_BANKS);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

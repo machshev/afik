@@ -333,9 +333,17 @@ channel rows start collapsed. Gate: `cargo fmt --all --check` clean,
 --workspace` 833 passed 0 failed. Studio (operator request): banks are
 reordered by dragging a grip on their header (`ProjectModel::move_bank_to`);
 Up and Down stay for the keyboard. Gate: fmt clean, workspace clippy `-D
-warnings` clean, `cargo test --workspace` 835 passed 0 failed. Next: write a
-bank for the operator's locator to the K5 and listen to the local tower or
-ATIS.
+warnings` clean, `cargo test --workspace` 835 passed 0 failed. Step 4 (2026-10-17, `ADR-114`): each
+frequency's use is read as a service with a rough hearing range (approach
+150 km, ATIS 60, tower 30, ground 10); the area bank keeps what is hearable,
+distance over range first. Checkboxes choose the services (ATIS off by
+default) and "Bank per airport" gives the nearest N airports a bank of their
+own tower, ground and ATIS. JO02EH at 100 km: 27 hearable, approach out to
+98 km, tower only to 30 km, ground only Mildenhall's. The new row was not
+checked on screen. Gate: `cargo fmt --all --check` clean, `cargo clippy
+--workspace --all-targets -- -D warnings` clean, `cargo test --workspace`
+884 passed 0 failed 3 ignored. Next: write the banks for the operator's
+locator to the K5 and listen to approach and the local tower.
 
 **`BCFM-066` is active alongside** (2026-10-15, operator request,
 `ADR-105`): FM broadcast on K5 and K1 through their BK1080, stations

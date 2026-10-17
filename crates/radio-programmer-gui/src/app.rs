@@ -22,7 +22,7 @@ use radio_programmer_serial::SUPPORTED_BAUDS;
 
 use crate::{
     airfields::{self, AirfieldArea},
-    airports::{self, AirportArea, AirportCache, AirportList},
+    airports::{self, AirportArea, AirportCache, AirportList, AirportOptions, Service},
     device::{DeviceChoice, DeviceChooser},
     flash_tab::FlashTab,
     marine::{self, MarineArea, MarineCache, MarineList},
@@ -301,6 +301,10 @@ pub struct StudioApp {
     /// repeaters' locator, and the state file they are remembered in.
     airport_area: AirportArea,
     airport_area_file: Option<PathBuf>,
+    /// Which services the airport banks take, and whether each airport gets
+    /// its own.
+    airport_options: AirportOptions,
+    airport_options_file: Option<PathBuf>,
     /// Where the `OpenStreetMap` marine channels are cached, and what was
     /// last read.
     marine_cache: MarineCache,
@@ -352,6 +356,10 @@ impl StudioApp {
         app.airport_area_file = AirportArea::file();
         if let Some(file) = &app.airport_area_file {
             app.airport_area = AirportArea::load(file);
+        }
+        app.airport_options_file = AirportOptions::file();
+        if let Some(file) = &app.airport_options_file {
+            app.airport_options = AirportOptions::load(file);
         }
         app.use_marine_cache(MarineCache::open());
         app.marine_area_file = marine::area_file();
@@ -662,25 +670,41 @@ impl StudioApp {
         }
     }
 
-    /// Builds the airport bank the area would add, and the project it would
-    /// make, as [`Self::repeater_preview`] does.
-    fn airport_preview(&self) -> Result<AreaPreview, String> {
+    /// Builds the airport banks the area and options would add, and the
+    /// project they would make, as [`Self::repeater_preview`] does:
+    /// `in_range` counts the hearable frequencies for the area bank, `taken`
+    /// every channel added.
+    fn airport_preview(&self) -> Result<(AreaPreview, usize), String> {
         let list = self
             .airports
             .as_ref()
             .ok_or("sync the airport list from OurAirports first")?;
         let locator = &self.repeater_area.locator;
-        let mut near = airports::nearby(&list.frequencies, locator, self.airport_area.radius_km)?;
-        let in_range = near.len();
-        near.truncate(usize::from(self.airport_area.max_channels));
-        let (project, bank_bytes) = self.with_bank(airports::airport_bank(locator, &near));
-        Ok(AreaPreview {
-            in_range,
-            taken: near.len(),
-            furthest_km: near.iter().map(|(_, km)| *km).fold(0.0, f64::max),
-            bank_bytes,
-            project,
-        })
+        let plan = airports::plan(
+            &list.frequencies,
+            locator,
+            &self.airport_area,
+            &self.airport_options,
+        )?;
+        let banks = airports::airport_banks(locator, &plan);
+        let bank_count = banks.len();
+        let (project, bank_bytes) = self.with_banks(banks);
+        let furthest_km = plan
+            .area
+            .iter()
+            .map(|(_, km)| *km)
+            .chain(plan.airports.iter().map(|group| group.km))
+            .fold(0.0, f64::max);
+        Ok((
+            AreaPreview {
+                in_range: plan.hearable,
+                taken: plan.channels(),
+                furthest_km,
+                bank_bytes,
+                project,
+            },
+            bank_count,
+        ))
     }
 
     /// Describes the airport list, what the area would add, and its cost.
@@ -696,19 +720,24 @@ impl StudioApp {
             list.frequencies.len(),
             age(list.synced)
         );
-        let Ok(preview) = self.airport_preview() else {
+        let Ok((preview, banks)) = self.airport_preview() else {
             return synced;
         };
         let taking = format!(
-            "Nearest {} of {} frequencies, furthest airport {:.0} km",
-            preview.taken, preview.in_range, preview.furthest_km
+            "{} channels in {banks} bank{} ({} hearable for the area bank), furthest \
+             airport {:.0} km",
+            preview.taken,
+            if banks == 1 { "" } else { "s" },
+            preview.in_range,
+            preview.furthest_km
         );
         format!("{taking}{}. {synced}", cost(&preview))
     }
 
-    /// Adds a bank of the frequencies of the airports near the locator.
+    /// Adds the banks of the hearable frequencies of the airports near the
+    /// locator.
     fn add_airports(&mut self) {
-        let preview = match self.airport_preview() {
+        let (preview, banks) = match self.airport_preview() {
             Ok(preview) => preview,
             Err(error) => {
                 self.refuse(&format!("Cannot add airports: {error}."));
@@ -719,14 +748,18 @@ impl StudioApp {
         let area = self.airport_area.clone();
         if preview.taken == 0 {
             self.status = format!(
-                "No airport frequencies within {} km of {locator}.",
+                "No hearable airport frequencies of the chosen services within {} km of \
+                 {locator}.",
                 area.radius_km
             );
             return;
         }
         if preview.project.banks.len() > usize::from(MAX_BANKS) {
-            self.status =
-                format!("A radio holds {MAX_BANKS} banks and the project already has them.");
+            self.status = format!(
+                "A radio holds {MAX_BANKS} banks and these would make {}; take fewer \
+                 airport banks.",
+                preview.project.banks.len()
+            );
             return;
         }
         if too_big(&preview.project) {
@@ -738,13 +771,21 @@ impl StudioApp {
         }
         self.project = preview.project;
         self.status = format!(
-            "Added {} airport frequencies near {locator}, nearest airport first (furthest \
-             {:.0} km). OurAirports is maintained by volunteers; check before relying on it.",
-            preview.taken, preview.furthest_km
+            "Added {} airport frequencies near {locator} in {banks} bank{}, most hearable \
+             first (furthest airport {:.0} km). Hearing ranges are estimates by service; \
+             OurAirports is maintained by volunteers, check before relying on it.",
+            preview.taken,
+            if banks == 1 { "" } else { "s" },
+            preview.furthest_km
         );
         if let Some(file) = &self.airport_area_file {
             if let Err(error) = area.save(file) {
                 log::warn!("could not remember the airport area: {error}");
+            }
+        }
+        if let Some(file) = &self.airport_options_file {
+            if let Err(error) = self.airport_options.save(file) {
+                log::warn!("could not remember the airport options: {error}");
             }
         }
     }
@@ -881,15 +922,23 @@ impl StudioApp {
     /// The project with `bank` replacing one of the same name, else after
     /// the rest, and the bytes the bank alone adds to a radio image.
     fn with_bank(&self, bank: BankDraft) -> (ProjectModel, Option<usize>) {
+        self.with_banks(vec![bank])
+    }
+
+    /// The project with each bank added or replaced as [`Self::with_bank`]
+    /// does, and the bytes they add together.
+    fn with_banks(&self, banks: Vec<BankDraft>) -> (ProjectModel, Option<usize>) {
         let mut project = self.project.clone();
-        if let Some(existing) = project.banks.iter().position(|b| b.name == bank.name) {
-            project.banks[existing] = bank.clone();
-        } else {
-            project.banks.push(bank.clone());
+        for bank in &banks {
+            if let Some(existing) = project.banks.iter().position(|b| b.name == bank.name) {
+                project.banks[existing] = bank.clone();
+            } else {
+                project.banks.push(bank.clone());
+            }
         }
-        // What the bank alone costs: its image less an empty project's.
+        // What the banks alone cost: their image less an empty project's.
         let bank_only = ProjectModel {
-            banks: vec![bank],
+            banks,
             ..ProjectModel::new()
         };
         let bank_bytes = match (
@@ -1410,6 +1459,8 @@ impl StudioApp {
             airport_sync: None,
             airport_area: AirportArea::default(),
             airport_area_file: None,
+            airport_options: AirportOptions::default(),
+            airport_options_file: None,
             marine_cache: MarineCache::none(),
             marine: None,
             marine_sync: None,
@@ -2403,13 +2454,14 @@ impl StudioApp {
                 egui::DragValue::new(&mut self.airport_area.max_channels)
                     .range(1..=airports::MAX_CHANNELS_LIMIT),
             )
-            .on_hover_text("How many frequencies the bank takes, nearest airport first");
+            .on_hover_text("How many frequencies the area bank takes, most hearable first");
             if ui
                 .button("Add")
                 .on_hover_text(
-                    "Adds the airband frequencies (tower, ground, approach, ATIS...) of the \
-                     airports in range as one receive-only AM bank, nearest airport first, \
-                     replacing one for the same locator",
+                    "Adds the airband frequencies of the chosen services at the airports in \
+                     range that can be heard here as one receive-only AM bank, most hearable \
+                     first, replacing one for the same locator; with a bank per airport, the \
+                     nearest airports' tower, ground and ATIS go in banks of their own",
                 )
                 .clicked()
             {
@@ -2430,6 +2482,45 @@ impl StudioApp {
                 self.sync_airports();
             }
             ui.label(self.airport_source());
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Take");
+            for service in Service::ALL {
+                let help = match service {
+                    Service::Approach => {
+                        "Approach, departure, radar and area control: aircraft at height"
+                    }
+                    Service::Tower => "Tower, AFIS, air/ground, CTAF and UNICOM: the circuit",
+                    Service::Ground => "Ground, delivery, apron and operations: taxiing",
+                    Service::Broadcast => {
+                        "ATIS and other recorded broadcasts, which never stop and so hold a \
+                         scan"
+                    }
+                    Service::Other => "Anything else OurAirports lists",
+                };
+                ui.checkbox(
+                    &mut self.airport_options.services[service.index()],
+                    service.label(),
+                )
+                .on_hover_text(format!(
+                    "{help}; heard to about {} km here",
+                    service.range_km()
+                ));
+            }
+            ui.separator();
+            ui.checkbox(&mut self.airport_options.per_airport, "Bank per airport")
+                .on_hover_text(
+                    "Gives each of the nearest airports a bank of its own tower, ground and \
+                     ATIS, however far they carry, for when you are there; the area bank \
+                     keeps the rest",
+                );
+            ui.add_enabled(
+                self.airport_options.per_airport,
+                egui::DragValue::new(&mut self.airport_options.airports)
+                    .range(1..=MAX_BANKS)
+                    .suffix(" airports"),
+            )
+            .on_hover_text("How many airports, nearest first, get a bank of their own");
         });
     }
 

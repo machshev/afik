@@ -96,6 +96,8 @@ mod tests {
             latitude,
             longitude: 0.0,
             small,
+            kind: String::new(),
+            service: crate::airports::Service::Other,
         }
     }
 

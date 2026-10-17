@@ -3168,6 +3168,11 @@
      rows start collapsed (operator request). Done (`bd2c1e5`).
   3. Write a bank for the operator's locator to the K5 and hear the local
      tower or ATIS.
+  4. Operator request ("I'd like to optimise the bank for hearability",
+     a checkbox per type, "a bank per airport for things like twr and
+     gnd"): services with hearing ranges, most hearable first, service
+     checkboxes (ATIS off by default) and optional per-airport banks
+     (`ADR-114`). Done.
 
 ## DUPLEX-069 — Duplex channels heard on both sides
 
