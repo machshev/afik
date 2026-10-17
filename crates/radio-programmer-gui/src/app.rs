@@ -5777,6 +5777,38 @@ mod tests {
     }
 
     #[test]
+    fn the_map_tooltip_keeps_each_line_whole_as_the_pointer_moves() {
+        use eframe::egui::{Event, Pos2, Shape};
+        let context = eframe::egui::Context::default();
+        context.style_mut(|style| style.interaction.tooltip_delay = 0.0);
+        let mut app = app_in(&scratch("map-tooltip"), &Options::default());
+        app.tab = Tab::Map;
+        "IO91WM".clone_into(&mut app.repeater_area.locator);
+        // Moving along the map changes the text a little each time; egui
+        // keeps the tooltip's last size, which then squeezed it narrower.
+        let mut rows = Vec::new();
+        for x in [1_050.0, 500.0, 800.0, 1_050.0] {
+            for _ in 0..3 {
+                let at = Pos2::new(x, 600.0);
+                let output = frame(&context, &mut app, vec![Event::PointerMoved(at)]);
+                rows.extend(
+                    output
+                        .shapes
+                        .iter()
+                        .filter_map(|clipped| match &clipped.shape {
+                            Shape::Text(text) if text.galley.text().contains("click to choose") => {
+                                Some(text.galley.rows.len())
+                            }
+                            _ => None,
+                        }),
+                );
+            }
+        }
+        assert!(!rows.is_empty(), "the tooltip is shown");
+        assert!(rows.iter().all(|rows| *rows == 1), "{rows:?}");
+    }
+
+    #[test]
     fn every_map_icon_is_in_the_fonts() {
         use eframe::egui::{Context, FontId, RawInput};
         let context = Context::default();

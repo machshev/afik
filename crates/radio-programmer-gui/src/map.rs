@@ -313,9 +313,11 @@ pub fn show(
             "{} ({latitude:.3}, {longitude:.3}); click to choose",
             locator_at(latitude, longitude)
         ));
+        // Each line is kept whole: egui sizes a pointer tooltip from the
+        // space it had last frame, which wraps short lines towards the right.
         response.clone().on_hover_ui_at_pointer(|ui| {
             for name in &names {
-                ui.label(name);
+                ui.add(egui::Label::new(name).extend());
             }
         });
     }
