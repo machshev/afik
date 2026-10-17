@@ -10,7 +10,7 @@ use eframe::egui::{
     self, collapsing_header::CollapsingState, ComboBox, Grid, RichText, ScrollArea, TextEdit,
 };
 use radio_channel_plan::{
-    SharedSettings, MAX_BANKS, MAX_BANK_NAME_LEN, MAX_GENERATED_CHANNELS, MAX_GROUPS,
+    BankSource, SharedSettings, MAX_BANKS, MAX_BANK_NAME_LEN, MAX_GENERATED_CHANNELS, MAX_GROUPS,
 };
 use radio_domain::{
     Bandwidth, Modulation, PowerLevel, ScanResume, TxClass, BACKLIGHT_ALWAYS_ON,
@@ -31,9 +31,9 @@ use crate::{
     map::{self, Layer, MapView, Pin, Site},
     marine::{self, MarineArea, MarineCache, MarineList},
     model::{
-        move_to, trailing_locator, BankDraft, BankKind, ChannelDraft, ModelError, ProjectModel,
-        StartDraft, StorageSummary, ToneDraft, ToneKind, TxRangeDraft, AIRBAND_GROUP, MARINE_GROUP,
-        MAX_PROJECT_IMAGE_BYTES, RADIO_IMAGE_BYTES,
+        move_to, trailing_locator, BankDraft, BankKind, ChannelDraft, ModelError, Origin,
+        ProjectModel, StartDraft, StorageSummary, ToneDraft, ToneKind, TxRangeDraft, AIRBAND_GROUP,
+        MARINE_GROUP, MAX_PROJECT_IMAGE_BYTES, RADIO_IMAGE_BYTES,
     },
     presets::{satellite_bank, PRESETS, SATELLITE_PRESET, TX_RANGE_PRESETS},
     projects::ProjectStore,
@@ -241,6 +241,14 @@ enum EtccKind {
 }
 
 impl EtccKind {
+    /// The generator its bank is recorded as made by.
+    const fn source(self) -> BankSource {
+        match self {
+            Self::Gateways => BankSource::Gateways,
+            Self::Beacons => BankSource::Beacons,
+        }
+    }
+
     /// What the bank holds, as the status line names them.
     const fn noun(self) -> &'static str {
         match self {
@@ -565,9 +573,9 @@ impl StudioApp {
         let in_range = near.len();
         near.truncate(usize::from(self.marine_area.max_channels));
         let (project, bank_bytes) = self.with_core(
+            BankSource::Marine,
             marine::core_bank(),
             marine::marine_bank(locator, &near),
-            "SEA ",
             marine::is_core,
         );
         Ok(AreaPreview {
@@ -668,9 +676,9 @@ impl StudioApp {
         let in_range = near.len();
         near.truncate(usize::from(self.airfield_area.max_channels));
         let (project, bank_bytes) = self.with_core(
+            BankSource::Airfields,
             airfields::core_bank(),
             airfields::airfield_bank(locator, &near),
-            "FLD ",
             airfields::is_core,
         );
         Ok(AreaPreview {
@@ -824,7 +832,7 @@ impl StudioApp {
         )?;
         let banks = airports::airport_banks(locator, &plan);
         let bank_count = banks.len();
-        let (project, bank_bytes) = self.with_banks(banks);
+        let (project, bank_bytes) = self.with_banks(BankSource::Airports, banks);
         let furthest_km = plan
             .area
             .iter()
@@ -1003,17 +1011,23 @@ impl StudioApp {
         // One bank holds the stations of every location it is filed under,
         // and of each one-location bank an older studio made, rebuilt here
         // with each frequency once, this locator's first.
-        let shared = |bank: &BankDraft| {
-            bank.name == stations::STATION_BANK || stations::is_located_station_bank(bank)
+        let stations_bank = |bank: &BankDraft| {
+            bank.origin
+                .as_ref()
+                .is_some_and(|origin| origin.source == BankSource::Stations)
+        };
+        let located = |bank: &BankDraft| {
+            stations_bank(bank) && bank.origin.as_ref().is_some_and(|o| !o.locator.is_empty())
         };
         let mut locators = vec![locator.trim().to_ascii_uppercase()];
-        for bank in self.project.banks.iter().filter(|bank| shared(bank)) {
+        for bank in self.project.banks.iter().filter(|bank| stations_bank(bank)) {
             let filed = bank
                 .groups
                 .iter()
                 .filter_map(|group| self.project.groups.get(*group))
                 .map(|group| group.locator.clone());
-            for other in filed.chain(trailing_locator(&bank.name)) {
+            let made_for = bank.origin.iter().map(|origin| origin.locator.clone());
+            for other in filed.chain(made_for) {
                 if !other.is_empty() && !locators.contains(&other) {
                     locators.push(other);
                 }
@@ -1035,18 +1049,18 @@ impl StudioApp {
                 }
             }
         }
-        let (mut project, bank_bytes) = self.with_bank(stations::station_bank(&held));
+        let mut bank = stations::station_bank(&held);
+        bank.origin = Some(Origin::new(BankSource::Stations, ""));
+        let (mut project, bank_bytes) = self.with_bank(BankSource::Stations, bank);
         // The shared bank takes the place of each one-location bank, and is
         // filed where each was.
         let filed: Vec<usize> = project
             .banks
             .iter()
-            .filter(|old| stations::is_located_station_bank(old))
+            .filter(|old| located(old))
             .flat_map(|old| old.groups.iter().copied())
             .collect();
-        project
-            .banks
-            .retain(|old| !stations::is_located_station_bank(old));
+        project.banks.retain(|old| !located(old));
         if let Some(bank) = project
             .banks
             .iter_mut()
@@ -1156,7 +1170,11 @@ impl StudioApp {
             .banks
             .iter()
             .filter(|bank| !self.project.banks.contains(bank))
-            .filter(|bank| trailing_locator(&bank.name).is_none_or(|own| own == locator))
+            .filter(|bank| {
+                bank.origin
+                    .as_ref()
+                    .is_none_or(|origin| origin.locator.is_empty() || origin.locator == locator)
+            })
             .map(|bank| bank.name.clone())
             .collect();
         self.project = project;
@@ -1186,18 +1204,19 @@ impl StudioApp {
         }
     }
 
-    /// The project with a generator's `core` bank, which every location
+    /// The project with `source`'s `core` bank, which every location
     /// shares, and this location's `local` bank of the rest, left out when
-    /// it holds nothing; and the bytes they add. Each location's bank named
-    /// with `prefix` loses the core channels an older studio put in it, a
-    /// bank left empty is dropped and the core filed where it was.
+    /// it holds nothing; and the bytes they add. Each location's bank from
+    /// `source` loses the core channels an older studio put in it, a bank
+    /// left empty is dropped and the core filed where it was.
     fn with_core(
         &self,
-        core: BankDraft,
+        source: BankSource,
+        mut core: BankDraft,
         local: BankDraft,
-        prefix: &str,
         is_core: fn(&ChannelDraft) -> bool,
     ) -> (ProjectModel, Option<usize>) {
+        core.origin = Some(Origin::new(source, ""));
         let core_name = core.name.clone();
         let local_name = local.name.clone();
         let empty = local.channels.is_empty();
@@ -1205,10 +1224,15 @@ impl StudioApp {
         if !empty {
             banks.push(local);
         }
-        let (mut project, bank_bytes) = self.with_banks(banks);
+        let (mut project, bank_bytes) = self.with_banks(source, banks);
+        let located = |bank: &BankDraft| {
+            bank.origin
+                .as_ref()
+                .is_some_and(|origin| origin.source == source && !origin.locator.is_empty())
+        };
         let mut filed = Vec::new();
         for bank in &mut project.banks {
-            if !bank.name.starts_with(prefix) || trailing_locator(&bank.name).is_none() {
+            if !located(bank) {
                 continue;
             }
             bank.channels.retain(|channel| !is_core(channel));
@@ -1219,11 +1243,9 @@ impl StudioApp {
                 filed.extend(bank.groups.iter().copied());
             }
         }
-        project.banks.retain(|bank| {
-            !(bank.name.starts_with(prefix)
-                && trailing_locator(&bank.name).is_some()
-                && bank.channels.is_empty())
-        });
+        project
+            .banks
+            .retain(|bank| !(located(bank) && bank.channels.is_empty()));
         if let Some(core) = project.banks.iter_mut().find(|bank| bank.name == core_name) {
             for group in filed {
                 if !core.groups.contains(&group) {
@@ -1234,15 +1256,25 @@ impl StudioApp {
         (project, bank_bytes)
     }
 
-    /// The project with `bank` replacing one of the same name, else after
-    /// the rest, and the bytes the bank alone adds to a radio image.
-    fn with_bank(&self, bank: BankDraft) -> (ProjectModel, Option<usize>) {
-        self.with_banks(vec![bank])
+    /// The project with `bank`, made by `source`, replacing one of the same
+    /// name, else after the rest, and the bytes the bank alone adds to a
+    /// radio image.
+    fn with_bank(&self, source: BankSource, bank: BankDraft) -> (ProjectModel, Option<usize>) {
+        self.with_banks(source, vec![bank])
     }
 
     /// The project with each bank added or replaced as [`Self::with_bank`]
-    /// does, and the bytes they add together.
-    fn with_banks(&self, banks: Vec<BankDraft>) -> (ProjectModel, Option<usize>) {
+    /// does, and the bytes they add together. A bank with no origin yet is
+    /// recorded as made by `source` for the locator (`ADR-117`).
+    fn with_banks(
+        &self,
+        source: BankSource,
+        mut banks: Vec<BankDraft>,
+    ) -> (ProjectModel, Option<usize>) {
+        for bank in &mut banks {
+            bank.origin
+                .get_or_insert_with(|| Origin::new(source, &self.repeater_area.locator));
+        }
         let mut project = self.project.clone();
         for bank in &banks {
             if let Some(existing) = project.banks.iter().position(|b| b.name == bank.name) {
@@ -1338,7 +1370,10 @@ impl StudioApp {
         near.retain(|(repeater, _)| self.repeater_bands.takes(repeater.output_hz));
         let in_range = near.len();
         near.truncate(usize::from(area.max_channels));
-        let (project, bank_bytes) = self.with_bank(repeaters::repeater_bank(&area.locator, &near));
+        let (project, bank_bytes) = self.with_bank(
+            BankSource::Repeaters,
+            repeaters::repeater_bank(&area.locator, &near),
+        );
         Ok(AreaPreview {
             in_range,
             taken: near.len(),
@@ -1487,7 +1522,10 @@ impl StudioApp {
         near.retain(|(repeater, _)| self.world_bands.takes(repeater.output_hz));
         let in_range = near.len();
         near.truncate(usize::from(self.world_area.max_channels));
-        let (project, bank_bytes) = self.with_bank(world::world_bank(locator, &near));
+        let (project, bank_bytes) = self.with_bank(
+            BankSource::WorldRepeaters,
+            world::world_bank(locator, &near),
+        );
         Ok(AreaPreview {
             in_range,
             taken: near.len(),
@@ -1604,7 +1642,7 @@ impl StudioApp {
         near.retain(|(system, _)| bands.takes(system.output_hz));
         let in_range = near.len();
         near.truncate(usize::from(area.max_channels));
-        let (project, bank_bytes) = self.with_bank(kind.bank(locator, &near));
+        let (project, bank_bytes) = self.with_bank(kind.source(), kind.bank(locator, &near));
         Ok(AreaPreview {
             in_range,
             taken: near.len(),
@@ -2168,6 +2206,14 @@ impl StudioApp {
         self.project = loaded.clone();
         self.saved = loaded;
         self.errors.clear();
+        let recorded = self.record_origins();
+        if recorded > 0 {
+            self.status = format!(
+                "{} Recorded which generator made {recorded} bank{}; save to keep it.",
+                self.status,
+                if recorded == 1 { "" } else { "s" }
+            );
+        }
         let renamed = self.name_locations();
         if renamed > 0 {
             self.status = format!(
@@ -2176,6 +2222,27 @@ impl StudioApp {
                 if renamed == 1 { "" } else { "s" }
             );
         }
+    }
+
+    /// Gives each bank of a project saved before origins were kept the
+    /// origin its name shows (`ADR-117`); a project with any origin is left
+    /// as it is. Returns how many banks were given one.
+    fn record_origins(&mut self) -> usize {
+        if self.project.banks.iter().any(|bank| bank.origin.is_some()) {
+            return 0;
+        }
+        let origins: Vec<_> = self
+            .project
+            .banks
+            .iter()
+            .map(|bank| infer_origin(&self.project, bank))
+            .collect();
+        let mut recorded = 0;
+        for (bank, origin) in self.project.banks.iter_mut().zip(origins) {
+            recorded += usize::from(origin.is_some());
+            bank.origin = origin;
+        }
+        recorded
     }
 
     /// Names each location group still called by its bare locator after the
@@ -2366,41 +2433,54 @@ fn site(name: &str, (latitude, longitude): (f64, f64)) -> Site {
     }
 }
 
-/// Whether a generator made `bank` for a location: one named by its
-/// generator and locator (`RPT JO02EH`), a bank every location shares, or
-/// an airport's own receive-only airband bank filed under a location.
-fn made_for_a_location(project: &ProjectModel, bank: &BankDraft) -> bool {
-    const PREFIXES: [&str; 8] = ["RPT", "WRPT", "GW", "BCN", "AIR", "FLD", "SEA", "FM"];
+/// Where an older studio's generator made `bank`, read from its name as it
+/// named them (`RPT JO02EH`), the banks every location shares, and an
+/// airport's own receive-only airband bank filed under a location; none for
+/// the operator's own. A project saved before origins were kept (`ADR-117`)
+/// is given them once from this.
+fn infer_origin(project: &ProjectModel, bank: &BankDraft) -> Option<Origin> {
+    const PREFIXES: [(&str, BankSource); 8] = [
+        ("RPT", BankSource::Repeaters),
+        ("WRPT", BankSource::WorldRepeaters),
+        ("GW", BankSource::Gateways),
+        ("BCN", BankSource::Beacons),
+        ("AIR", BankSource::Airports),
+        ("FLD", BankSource::Airfields),
+        ("SEA", BankSource::Marine),
+        ("FM", BankSource::Stations),
+    ];
     if bank.kind != BankKind::Named {
-        return false;
+        return None;
     }
-    if [
-        stations::STATION_BANK,
-        marine::CORE_BANK,
-        airfields::CORE_BANK,
-    ]
-    .contains(&bank.name.as_str())
-    {
-        return true;
+    let shared = [
+        (stations::STATION_BANK, BankSource::Stations),
+        (marine::CORE_BANK, BankSource::Marine),
+        (airfields::CORE_BANK, BankSource::Airfields),
+    ];
+    if let Some((_, source)) = shared.iter().find(|(name, _)| bank.name == *name) {
+        return Some(Origin::new(*source, ""));
     }
-    let prefix = bank.name.split_whitespace().next().unwrap_or_default();
-    if trailing_locator(&bank.name).is_some() {
-        return PREFIXES.contains(&prefix);
+    if let Some(locator) = trailing_locator(&bank.name) {
+        let prefix = bank.name.split_whitespace().next().unwrap_or_default();
+        return PREFIXES
+            .iter()
+            .find(|(known, _)| *known == prefix)
+            .map(|(_, source)| Origin::new(*source, &locator));
     }
-    let airband = project.group_named(AIRBAND_GROUP);
-    let located = bank.groups.iter().any(|group| {
+    let airband = project.group_named(AIRBAND_GROUP)?;
+    let location = bank.groups.iter().find_map(|group| {
         project
             .groups
             .get(*group)
-            .is_some_and(|g| !g.locator.is_empty())
-    });
-    located
-        && airband.is_some_and(|airband| bank.groups.contains(&airband))
-        && !bank.channels.is_empty()
+            .filter(|group| !group.locator.is_empty())
+    })?;
+    let receive_only_am = !bank.channels.is_empty()
         && bank
             .channels
             .iter()
-            .all(|channel| channel.modulation == Modulation::Am && channel.transmit_mhz.is_empty())
+            .all(|channel| channel.modulation == Modulation::Am && channel.transmit_mhz.is_empty());
+    (bank.groups.contains(&airband) && receive_only_am)
+        .then(|| Origin::new(BankSource::Airports, &location.locator))
 }
 
 /// Adds `more` to `sites`, a site already there taken once and singled out
@@ -3169,14 +3249,7 @@ impl StudioApp {
         let mut dropped = 0;
         if self.map_all_locations {
             let before = self.project.banks.len();
-            let project = &self.project;
-            let kept: Vec<BankDraft> = project
-                .banks
-                .iter()
-                .filter(|bank| !made_for_a_location(project, bank))
-                .cloned()
-                .collect();
-            self.project.banks = kept;
+            self.project.banks.retain(|bank| bank.origin.is_none());
             dropped = before - self.project.banks.len();
         }
         let locators = self.map_locators();
@@ -6290,29 +6363,49 @@ mod tests {
     }
 
     #[test]
-    fn an_airports_own_bank_is_made_for_a_location_but_a_plain_airband_bank_is_not() {
-        use super::made_for_a_location;
+    fn an_older_projects_generated_banks_are_given_their_origin_once() {
+        use super::infer_origin;
+        use crate::model::Origin;
+        use radio_channel_plan::BankSource;
 
-        let mut project = crate::model::ProjectModel::new();
-        let mut bank = crate::airports::am_bank(
+        let mut app = simulated("origins");
+        let mut airport = crate::airports::am_bank(
             "EGSC",
             "",
             vec![crate::airports::am_channel("TWR", 125_900_000)],
         );
-        "EGSC CAMBRIDGE C".clone_into(&mut bank.name);
-        project.banks.push(bank);
-        assert!(project.file_in("EGSC CAMBRIDGE C", super::AIRBAND_GROUP));
-        assert!(
-            !made_for_a_location(&project, &project.banks[0]),
-            "not at a location"
-        );
+        "EGSC CAMBRIDGE C".clone_into(&mut airport.name);
+        let mut own = airport.clone();
+        "MY AIRBAND".clone_into(&mut own.name);
+        let mut rpt = airport.clone();
+        "RPT JO02EH".clone_into(&mut rpt.name);
+        let mut core = airport.clone();
+        "SEA CORE".clone_into(&mut core.name);
+        app.project.banks = vec![airport, own, rpt, core];
+        let project = &mut app.project;
+        assert!(project.file_in("MY AIRBAND", super::AIRBAND_GROUP));
         assert!(project.file_bank("EGSC CAMBRIDGE C", "HOME", "JO02EH", true));
-        assert!(made_for_a_location(&project, &project.banks[0]));
-        project.banks[0].channels[0].transmit_mhz = "125.900000".to_owned();
-        assert!(
-            !made_for_a_location(&project, &project.banks[0]),
-            "it transmits"
+        assert_eq!(
+            infer_origin(&app.project, &app.project.banks[1]),
+            None,
+            "an airband bank at no location is the operator's"
         );
+
+        assert_eq!(app.record_origins(), 3);
+        let origins: Vec<_> = app.project.banks.iter().map(|b| b.origin.clone()).collect();
+        assert_eq!(
+            origins,
+            [
+                Some(Origin::new(BankSource::Airports, "JO02EH")),
+                None,
+                Some(Origin::new(BankSource::Repeaters, "JO02EH")),
+                Some(Origin::new(BankSource::Marine, "")),
+            ]
+        );
+        // Once a project keeps origins, names are not read again.
+        "RPT IO91WM".clone_into(&mut app.project.banks[1].name);
+        assert_eq!(app.record_origins(), 0);
+        assert_eq!(app.project.banks[1].origin, None);
     }
 
     #[test]
@@ -6339,6 +6432,8 @@ mod tests {
     #[test]
     fn airfields_start_with_the_sporting_core_unsynced() {
         use crate::airfields::CORE_CHANNELS;
+        use crate::model::Origin;
+        use radio_channel_plan::BankSource;
 
         let mut app = simulated("airfields");
         assert!(app.airports.is_none(), "tests never read the real cache");
@@ -6371,8 +6466,10 @@ mod tests {
         // the core; left with nothing it goes, the core filed in its place.
         let mut old = crate::airfields::core_bank();
         "FLD JO02PP".clone_into(&mut old.name);
+        old.origin = Some(Origin::new(BankSource::Airfields, "JO02PP"));
         let mut kept = crate::airfields::core_bank();
         "FLD JO01PX".clone_into(&mut kept.name);
+        kept.origin = Some(Origin::new(BankSource::Airfields, "JO01PX"));
         kept.channels
             .push(crate::airports::am_channel("GB-0177", 123_200_000));
         app.project.banks.extend([old, kept]);
@@ -6632,8 +6729,13 @@ mod tests {
         // operator's own banks and an own-airport bank's group stay.
         let mut stale = app.project.banks[0].clone();
         "RPT JO02EH".clone_into(&mut stale.name);
+        stale.origin = Some(crate::model::Origin::new(
+            radio_channel_plan::BankSource::Repeaters,
+            "JO02EH",
+        ));
         let mut own = app.project.banks[0].clone();
         "MY RPT".clone_into(&mut own.name);
+        own.origin = None;
         app.project.banks.extend([stale, own]);
         app.add_all_shown();
         assert!(app
@@ -7235,6 +7337,10 @@ mod tests {
         // shared bank is filed where it was.
         let mut old = app.project.banks.last().unwrap().clone();
         "FM IO94WA".clone_into(&mut old.name);
+        old.origin = Some(crate::model::Origin::new(
+            radio_channel_plan::BankSource::Stations,
+            "IO94WA",
+        ));
         old.groups.clear();
         app.project.banks.push(old);
         assert!(app.project.file_bank("FM IO94WA", "NORTH", "IO94WA", false));

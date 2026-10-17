@@ -19,7 +19,7 @@ use radio_channel_plan::{SharedSettings, MAX_CHANNEL_NAME_LEN};
 use radio_domain::{Bandwidth, Modulation, PowerLevel, BROADCAST_FIRST_HZ, BROADCAST_LAST_HZ};
 
 use crate::{
-    model::{format_mhz, trailing_locator, BankDraft, BankKind, ChannelDraft},
+    model::{format_mhz, BankDraft, BankKind, ChannelDraft},
     paths,
     receiver::Receiver,
     repeaters::{distance_km, fetch, locator_centre, sanitise},
@@ -374,15 +374,6 @@ pub fn station_bank(near: &[(&Station, f64)]) -> BankDraft {
         channels,
         ..BankDraft::default()
     }
-}
-
-/// Whether `bank` is a station bank an older studio made for one location,
-/// such as `FM IO91WM`, which the shared [`STATION_BANK`] replaces.
-pub fn is_located_station_bank(bank: &BankDraft) -> bool {
-    bank.name.starts_with("FM ")
-        && trailing_locator(&bank.name).is_some()
-        && bank.modulation == Modulation::Broadcast
-        && bank.kind == BankKind::Named
 }
 
 /// The transmitters a sync read, and when the cache was written.
