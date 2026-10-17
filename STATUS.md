@@ -235,6 +235,13 @@ Each size's approach range is the operator's to set on the airport row
 Gate: `cargo fmt --all --check` clean, `cargo clippy --workspace
 --all-targets -- -D warnings` clean, `cargo test --workspace` 960 passed 0
 failed 3 ignored.
+Large airports' approach and radar go in one shared `AIR INTL` bank, filed
+under every location that hears them and holding each carrier once,
+instead of in each location's `AIR` bank (as `FM STATIONS` is shared). On
+M8LWA at 100 km the four locations' 12 large-airport approach channels
+become one bank of 7 carriers. Gate: `cargo fmt --all --check` clean,
+`cargo clippy --workspace --all-targets -- -D warnings` clean, `cargo test
+--workspace` 963 passed 0 failed 3 ignored.
 
 **`FLASH-074` done** (2026-10-17, operator request, `RISK-049`): the K5
 image had 16 bytes of flash left. `interface::run` was 22.6 KB because the

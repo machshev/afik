@@ -815,6 +815,52 @@ impl StudioApp {
         })
     }
 
+    /// What the shared [`airports::MAJOR_BANK`] holds: the large airports'
+    /// approach `plan` hears here, then that of every other location the
+    /// bank is filed under, each carrier once.
+    fn major_frequencies<'a>(
+        &self,
+        frequencies: &'a [AirportFrequency],
+        plan: &airports::AirportPlan<'a>,
+    ) -> Vec<(&'a AirportFrequency, f64)> {
+        let mut held = plan.major.clone();
+        let here = self.repeater_area.locator.trim().to_ascii_uppercase();
+        let Some(bank) = self
+            .project
+            .banks
+            .iter()
+            .find(|bank| bank.name == airports::MAJOR_BANK)
+        else {
+            return held;
+        };
+        let elsewhere = bank
+            .groups
+            .iter()
+            .filter_map(|group| self.project.groups.get(*group))
+            .map(|group| group.locator.clone())
+            .filter(|locator| !locator.is_empty() && *locator != here);
+        for locator in elsewhere {
+            let Ok(there) = airports::plan(
+                frequencies,
+                &locator,
+                &self.airport_area,
+                &self.airport_options,
+                self.receiver,
+            ) else {
+                continue;
+            };
+            for frequency in there.major {
+                if held
+                    .iter()
+                    .all(|kept| kept.0.frequency_hz != frequency.0.frequency_hz)
+                {
+                    held.push(frequency);
+                }
+            }
+        }
+        held
+    }
+
     /// Describes the airfield list, what the area would add, and its cost.
     fn airfield_source(&self) -> String {
         if self.airport_sync.is_some() {
@@ -951,7 +997,14 @@ impl StudioApp {
             &self.airport_options,
             self.receiver,
         )?;
-        let banks = airports::airport_banks(locator, &plan);
+        let major = self.major_frequencies(&list.frequencies, &plan);
+        let mut banks = Vec::new();
+        if !major.is_empty() {
+            let mut bank = airports::major_bank(&major);
+            bank.origin = Some(Origin::new(BankSource::Airports, ""));
+            banks.push(bank);
+        }
+        banks.extend(airports::airport_banks(locator, &plan));
         let bank_count = banks.len();
         let (project, bank_bytes) = self.with_banks(BankSource::Airports, banks);
         let furthest_km = plan
@@ -970,6 +1023,7 @@ impl StudioApp {
                     .iter()
                     .map(|(f, _)| *f)
                     .map(|f| airport_site(f, false))
+                    .chain(plan.major.iter().map(|(f, _)| airport_site(f, false)))
                     .chain(
                         plan.airports
                             .iter()
@@ -1047,6 +1101,16 @@ impl StudioApp {
             return;
         }
         self.take_generated(preview.project, true);
+        // The large airports' bank is shared, so it may be unchanged; it is
+        // filed here too.
+        if self
+            .project
+            .banks
+            .iter()
+            .any(|bank| bank.name == airports::MAJOR_BANK)
+        {
+            self.file_here(airports::MAJOR_BANK, true);
+        }
         self.status = format!(
             "Added {} airport frequencies near {locator} in {banks} bank{}, most hearable \
              first (furthest airport {:.0} km). Hearing ranges are estimates by service; \
@@ -2603,6 +2667,7 @@ fn infer_origin(project: &ProjectModel, bank: &BankDraft) -> Option<Origin> {
         (stations::STATION_BANK, BankSource::Stations),
         (marine::CORE_BANK, BankSource::Marine),
         (airfields::CORE_BANK, BankSource::Airfields),
+        (airports::MAJOR_BANK, BankSource::Airports),
     ];
     if let Some((_, source)) = shared.iter().find(|(name, _)| bank.name == *name) {
         return Some(Origin::new(*source, ""));
@@ -7096,6 +7161,57 @@ mod tests {
         }
         assert!(!rows.is_empty(), "the tooltip is shown");
         assert!(rows.iter().all(|rows| *rows == 1), "{rows:?}");
+    }
+
+    #[test]
+    fn every_location_shares_one_bank_of_the_large_airports_approach() {
+        use crate::airports::{AirportFrequency, AirportList, AirportSize, Service, MAJOR_BANK};
+
+        let at = |name: &str, size, frequency_hz: u32, km: f64| AirportFrequency {
+            name: name.to_owned(),
+            ident: name.split(' ').next().unwrap().to_owned(),
+            airport: "Field".to_owned(),
+            frequency_hz,
+            latitude: 51.520_833 + km / 111.2,
+            longitude: -0.125,
+            size,
+            kind: "APP".to_owned(),
+            service: Service::Approach,
+        };
+        let mut app = simulated("major-airports");
+        app.airports = Some(AirportList {
+            frequencies: vec![
+                at("EGLL APP", AirportSize::Large, 119_725_000, 60.0),
+                at("EGKK APP", AirportSize::Large, 126_825_000, -90.0),
+                at("EGWU APP", AirportSize::Medium, 126_450_000, 5.0),
+            ],
+            synced: std::time::SystemTime::now(),
+        });
+        app.airport_area.radius_km = 300;
+        for locator in ["IO91WM", "IO92WM"] {
+            locator.clone_into(&mut app.repeater_area.locator);
+            app.add_airports();
+        }
+        let bank = |name: &str| app.project.banks.iter().find(|b| b.name == name).unwrap();
+        let names = |name: &str| -> Vec<String> {
+            bank(name).channels.iter().map(|c| c.name.clone()).collect()
+        };
+        // Gatwick is 90 km south of IO91WM but past a handheld's 150 km from
+        // IO92WM; the shared bank keeps both locations' airports, once each.
+        assert_eq!(names(MAJOR_BANK), ["EGLL APP", "EGKK APP"]);
+        assert_eq!(names("AIR IO91WM"), ["EGWU APP"]);
+        assert!(app.project.banks.iter().all(|b| b.name != "AIR IO92WM"));
+        let filed = &bank(MAJOR_BANK).groups;
+        for locator in ["IO91WM", "IO92WM"] {
+            let location = app.project.location(locator).unwrap();
+            assert!(filed.contains(&location), "{locator}");
+        }
+        let airband = app.project.group_named(super::AIRBAND_GROUP).unwrap();
+        assert!(filed.contains(&airband));
+        assert_eq!(
+            super::infer_origin(&app.project, bank(MAJOR_BANK)),
+            Some(super::Origin::new(super::BankSource::Airports, ""))
+        );
     }
 
     #[test]

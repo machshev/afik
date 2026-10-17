@@ -496,12 +496,27 @@ pub struct AirportPlan<'a> {
     pub hearable: usize,
     /// The airports given their own bank, nearest first.
     pub airports: Vec<AirportGroup<'a>>,
+    /// The large airports' approach and radar heard here, most hearable
+    /// first, for the one [`MAJOR_BANK`] every location shares.
+    pub major: Vec<(&'a AirportFrequency, f64)>,
+}
+
+/// The one bank of the large airports' approach and radar, which every
+/// location shares since it is heard from far off.
+pub const MAJOR_BANK: &str = "AIR INTL";
+
+impl AirportFrequency {
+    /// Whether it goes in [`MAJOR_BANK`]: a large airport's approach.
+    pub fn is_major(&self) -> bool {
+        self.size == AirportSize::Large && self.service == Service::Approach
+    }
 }
 
 impl AirportPlan<'_> {
     /// How many channels the banks hold.
     pub fn channels(&self) -> usize {
         self.area.len()
+            + self.major.len()
             + self
                 .airports
                 .iter()
@@ -528,7 +543,8 @@ pub const fn own_bank_km(receiver: Receiver) -> u16 {
 /// goes to the area
 /// bank, most hearable first (distance over range, so approach 60 km off
 /// comes before a tower 20 km off), a carrier several airports share kept
-/// for the most hearable, up to `area.max_channels`.
+/// for the most hearable, up to `area.max_channels`. A large airport's
+/// approach goes to [`AirportPlan::major`] instead, without a limit.
 pub fn plan<'a>(
     frequencies: &'a [AirportFrequency],
     locator: &str,
@@ -607,12 +623,16 @@ pub fn plan<'a>(
     });
     let mut taken = HashSet::new();
     near.retain(|(frequency, _)| taken.insert(frequency.frequency_hz));
+    let (major, mut near): (Vec<_>, Vec<_>) = near
+        .into_iter()
+        .partition(|(frequency, _)| frequency.is_major());
     let hearable = near.len();
     near.truncate(usize::from(area.max_channels));
     Ok(AirportPlan {
         area: near,
         hearable,
         airports,
+        major,
     })
 }
 
@@ -651,6 +671,18 @@ pub fn airport_banks(locator: &str, plan: &AirportPlan) -> Vec<BankDraft> {
         banks.push(bank);
     }
     banks
+}
+
+/// Builds the receive-only AM bank of the large airports' approach in
+/// `major`, in its order, which every location shares.
+pub fn major_bank(major: &[(&AirportFrequency, f64)]) -> BankDraft {
+    let channels = major
+        .iter()
+        .map(|(frequency, _)| am_channel(&frequency.name, frequency.frequency_hz))
+        .collect();
+    let mut bank = am_bank("", "", channels);
+    MAJOR_BANK.clone_into(&mut bank.name);
+    bank
 }
 
 /// One receive-only airband channel.
@@ -1103,10 +1135,18 @@ mod tests {
             frequency_hz: hz,
             latitude: HOME.0 + km / 111.2,
             longitude: HOME.1,
-            size: AirportSize::Large,
+            size: AirportSize::Medium,
             kind: kind.to_owned(),
             service: Service::of(kind),
         }
+    }
+
+    /// The default options with a medium airport's approach heard as far
+    /// as a large one's, so [`heard`]'s stay in the area bank.
+    fn wide() -> AirportOptions {
+        let mut options = AirportOptions::default();
+        options.approach_km[AirportSize::Medium.index()] = Service::Approach.range_km();
+        options
     }
 
     fn area(radius_km: u16, max_channels: u16) -> AirportArea {
@@ -1157,7 +1197,7 @@ mod tests {
         };
         // Ground 20 km off and tower 90 km off are out of hearing; ATIS is
         // left out unless asked for.
-        let options = AirportOptions::default();
+        let options = wide();
         assert_eq!(
             names(&options, &area(300, 40)),
             ["EGLL APP", "EGLC GND", "EGKK APP", "EGLL TWR"]
@@ -1193,7 +1233,7 @@ mod tests {
         let options = AirportOptions {
             per_airport: true,
             airports: 2,
-            ..AirportOptions::default()
+            ..wide()
         };
         let chosen = plan(
             &list,
@@ -1255,7 +1295,7 @@ mod tests {
         let many = AirportOptions {
             per_airport: true,
             airports: 5,
-            ..AirportOptions::default()
+            ..wide()
         };
         let chosen = plan(&list, "IO91WM", &area(10, 40), &many, Receiver::Handheld).unwrap();
         let idents: Vec<_> = chosen.airports.iter().map(|g| g.ident).collect();
@@ -1304,49 +1344,37 @@ mod tests {
             sized("EGSO", AirportSize::Small, 25),
             sized("GB-0001", AirportSize::Small, 35),
         ];
-        let names = |receiver| -> Vec<String> {
-            plan(
-                &list,
-                "IO91WM",
-                &area(300, 40),
-                &AirportOptions::default(),
-                receiver,
-            )
-            .unwrap()
-            .area
-            .iter()
-            .map(|(f, _)| f.ident.clone())
-            .collect()
+        let names = |options: &AirportOptions, receiver| -> (Vec<String>, Vec<String>) {
+            let chosen = plan(&list, "IO91WM", &area(300, 40), options, receiver).unwrap();
+            let idents = |taken: &[(&AirportFrequency, f64)]| {
+                taken.iter().map(|(f, _)| f.ident.clone()).collect()
+            };
+            (idents(&chosen.area), idents(&chosen.major))
         };
-        assert_eq!(names(Receiver::Handheld), ["EGSO", "EGSC", "EGSS"]);
+        let options = AirportOptions::default();
+        // The large airport's approach goes to the shared bank.
+        assert_eq!(
+            names(&options, Receiver::Handheld),
+            (vec!["EGSO".into(), "EGSC".into()], vec!["EGSS".into()])
+        );
         // A better aerial hears every size further.
         assert_eq!(
-            names(Receiver::Base),
-            ["EGSO", "EGSC", "EGSS", "GB-0001", "EGSH"]
+            names(&options, Receiver::Base).0,
+            ["EGSO", "EGSC", "GB-0001", "EGSH"]
         );
         // The tower is heard as far whatever the size.
         let tower = AirportFrequency {
             size: AirportSize::Small,
             ..heard("EGSO", "TWR", 118_000_000, 20.0)
         };
-        let options = AirportOptions::default();
         assert_eq!(options.range_km(&tower), Service::Tower.range_km());
         // The operator can hear a medium airport further.
         let mut further = AirportOptions::default();
         further.approach_km[AirportSize::Medium.index()] = 70;
-        let names: Vec<_> = plan(
-            &list,
-            "IO91WM",
-            &area(300, 40),
-            &further,
-            Receiver::Handheld,
-        )
-        .unwrap()
-        .area
-        .iter()
-        .map(|(f, _)| f.ident.clone())
-        .collect();
-        assert_eq!(names, ["EGSC", "EGSO", "EGSH", "EGSS"]);
+        assert_eq!(
+            names(&further, Receiver::Handheld).0,
+            ["EGSC", "EGSO", "EGSH"]
+        );
         assert_eq!(AirportSize::of("large_airport"), AirportSize::Large);
         assert_eq!(AirportSize::of("medium_airport"), AirportSize::Medium);
         assert_eq!(AirportSize::of("heliport"), AirportSize::Small);
