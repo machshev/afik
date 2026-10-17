@@ -38,8 +38,9 @@ const SYNC_TIMEOUT: Duration = Duration::from_secs(120);
 /// Picks the analogue FM repeaters out of hearham's list.
 ///
 /// A repeater is taken when it is operational, its mode is FM or a mix with
-/// FM (such as `YSF/FM`), and the radio can receive both its output and its
-/// input, the output plus the listed offset. Its `encode` tone, the one a
+/// FM (such as `YSF/FM`), it has an offset, and the radio can receive both
+/// its output and its input, the output plus the offset. hearham lists
+/// gateways, APRS digipeaters and iGates as FM too; they are simplex. Its `encode` tone, the one a
 /// user sends, is the access tone. hearham gives no bandwidth, so every
 /// channel is 25 kHz, as most repeaters outside Europe are.
 pub fn parse(json: &str) -> Result<Vec<Repeater>, String> {
@@ -59,7 +60,12 @@ pub fn parse(json: &str) -> Result<Vec<Repeater>, String> {
         })
         .filter_map(|system| {
             let output = system.get("frequency").and_then(Value::as_i64)?;
-            let offset = system.get("offset").and_then(Value::as_i64).unwrap_or(0);
+            // A system with no offset is simplex: a gateway, an APRS
+            // digipeater or iGate, or a beacon, not a repeater.
+            let offset = system
+                .get("offset")
+                .and_then(Value::as_i64)
+                .filter(|&offset| offset != 0)?;
             let text = |key: &str| system.get(key).and_then(Value::as_str);
             Some(Repeater {
                 callsign: sanitise(text("callsign")?, MAX_CHANNEL_NAME_LEN)?,
@@ -248,7 +254,12 @@ mod tests {
          "operational": 1},
         {"callsign": "", "latitude": 42.36, "longitude": -71.06, "city": "Boston",
          "mode": "FM", "encode": "0", "frequency": 146940000, "offset": -600000,
-         "operational": 1}
+         "operational": 1},
+        {"callsign": "MB7UJM", "latitude": 52.3125, "longitude": 0.375,
+         "city": "Fordham  (UK)", "mode": "FM", "encode": "0", "frequency": 144800000,
+         "offset": 0, "operational": 1},
+        {"callsign": "MB7IPH", "latitude": 51.17, "longitude": 0.67, "city": "Headcorn (UK)",
+         "mode": "FM", "encode": "0", "frequency": 145237500, "operational": 1}
     ]"#;
 
     #[test]
@@ -265,8 +276,8 @@ mod tests {
                 )
             })
             .collect();
-        // Digital only, not operational, an input the radio cannot hear and
-        // no callsign are left out.
+        // Digital only, not operational, an input the radio cannot hear, no
+        // callsign and simplex (an APRS iGate, a gateway) are left out.
         assert_eq!(
             summary,
             [

@@ -1929,9 +1929,11 @@ meaning.
   "free to use in your application") is the open worldwide source;
   RepeaterBook needs an application token. Synced on request and cached raw
   in `$XDG_CACHE_HOME/afik/hearham`, as `ADR-106` does.
-- Taken: operational, mode FM or a mix with FM (`YSF/FM`), output and output
-  plus offset both receivable; `encode` is the access tone. 13 963 of the
-  live list pass. hearham gives no bandwidth, so every channel is 25 kHz.
+- Taken: operational, mode FM or a mix with FM (`YSF/FM`), a non-zero
+  offset, output and output plus offset both receivable; `encode` is the
+  access tone. hearham lists simplex gateways, APRS digipeaters and iGates
+  (such as MB7UJM on 144.800) as FM, so an entry with no offset is not a
+  repeater. About 11 950 of the live list pass. hearham gives no bandwidth, so every channel is 25 kHz.
 - The bank is `WRPT <locator>`, so it never replaces the ETCC's `RPT` bank;
   the UK repeaters tab stays the better source in the UK.
 
