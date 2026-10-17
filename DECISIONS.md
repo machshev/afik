@@ -1951,3 +1951,21 @@ meaning.
   their tower, ground and ATIS within the radius, whatever the range; the
   area bank keeps the rest. Choices persist in
   `$XDG_STATE_HOME/afik/airport-options`.
+
+## ADR-115 — Banks are the unit of the radio image, up to 254
+
+- **Date:** 2026-10-17
+- **Status:** accepted, operator request (`BANKS-073`).
+- 16 banks was ours, not the hardware's: a `u16` membership mask, a plan
+  channel identifier packing the bank into 4 bits, and RAM tables sized by
+  it. The image region (7 424 bytes) is the real bound: about 105–180 banks
+  of one channel.
+- Image format 7: every channel is in a bank and each bank is exactly one
+  block, a list or a plan, carried in its bank-table entry; the compiler
+  refuses a channel in no bank and a bank holding both. The radio keeps one
+  RAM entry per bank (entry offset and first channel number, 4 bytes)
+  instead of a summary per block, so a bank filter is a range.
+- A radio channel is named by bank and position within it; the place record
+  keeps that, so rewriting other banks does not move the operator.
+- `MAX_BANKS` is 254 (`0xFF` is "no bank"). Project files store the bank as a
+  number (object format 5); format 4 files are upgraded one way on load.

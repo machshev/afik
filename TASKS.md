@@ -3247,3 +3247,26 @@
   3. Repeaters anywhere from hearham's worldwide list (`ADR-113`). Done.
   4. Write a beacon bank to the K5 and hear GB3VHF or another beacon as a
      tone.
+
+## BANKS-073 — Up to 254 banks, addressed by bank and position
+
+- **Status:** active (2026-10-17), operator request ("Is the 16 banks a
+  firmware limitation? Can we remove it?", "254 sounds like a reasonable
+  limit", "Explicit channels should also be stored in banks, the ID is the
+  offset from the bank header", then "yes, go ahead... also please have a
+  oneway project file convertor"; `ADR-115`).
+- **Objective:** a radio holds up to 254 banks, limited in practice only by
+  its image memory, with RAM holding one small entry per bank.
+- **Steps (commit after each):**
+  1. Radio image format 7: every channel is in a bank, each bank is one
+     block (a list or a plan) in its bank-table entry, and the radio's RAM
+     index is a bank table (entry offset, first channel) instead of block
+     summaries. Radio channels are numbered within their bank; the place
+     record (version 4) keeps bank and position.
+  2. Project files: object format 5 stores a channel's bank as a number, not
+     a 16-bit mask; a one-way converter upgrades format 4 objects when a
+     project loads, and saving writes format 5 only.
+  3. `MAX_BANKS` 254: a bank set replaces the 16-bit populated mask and the
+     fixed bank arrays, plan channel identifiers no longer pack the bank, and
+     the studio's bank limit follows.
+  4. Flash the K5 and check that more than 16 banks load, list and step.
