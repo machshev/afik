@@ -39,6 +39,10 @@ impl<P> K5RegisterBus<P> {
 
 impl<P: ThreeWire> RegisterBus for K5RegisterBus<P> {
     type Error = Infallible;
+    // One copy of each transaction rather than one per register access: 2.3 KB
+    // of K5 flash (`RISK-049`), against a call that is nothing beside the 24
+    // microseconds of edges a transaction takes.
+    #[inline(never)]
     fn write(&mut self, address: RegisterAddress, value: u16) -> Result<(), Self::Error> {
         begin(&mut self.pins);
         shift_out(&mut self.pins, u32::from(address.get()), 8);
@@ -46,6 +50,7 @@ impl<P: ThreeWire> RegisterBus for K5RegisterBus<P> {
         end(&mut self.pins);
         Ok(())
     }
+    #[inline(never)]
     fn read(&mut self, address: RegisterAddress) -> Result<u16, Self::Error> {
         begin(&mut self.pins);
         shift_out(&mut self.pins, u32::from(address.get() | 0x80), 8);

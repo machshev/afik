@@ -3297,7 +3297,9 @@
 - **Objective:** room in the K5 image for the next firmware feature.
 - **Steps:** keep one copy of the helpers the K5 build inlined at every
   caller (`#[inline(never)]`), each kept only where a link against a 64 KiB
-  map showed the image shrink, alone and together. Done.
+  map showed the image shrink, alone and together. Done. A later sweep of
+  every firmware file (for `GROUP-075`) kept the BK4819 register bus
+  transactions and `TxPolicy::restricted` out of line: 2.5 KB more. Done.
 
 ## GROUP-075 — Bank groups and locations
 

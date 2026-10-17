@@ -1252,7 +1252,10 @@ lowered to the highest level within it (operator request), by nominal figures.
 
 - **State:** eased (2026-10-17, `FLASH-074`): 1 256 bytes free after
   `#[inline(never)]` on 21 helpers the build inlined at every caller
-  (`render` alone 640 bytes); was 16 bytes after `BANKS-073`.
+  (`render` alone 640 bytes); was 16 bytes after `BANKS-073`. A sweep of
+  every firmware file then found the BK4819 register bus transactions
+  inlined at each access: out of line they save 2.3 KB, and `restricted`
+  200 bytes more (`GROUP-075`).
 - 254 banks cost about 200 bytes of K5 flash after trimming (plain loops in
   `BankSet`, the index rebuilt in its static rather than on the stack, where
   a kilobyte frame forced literal-pool stack offsets). The image ends at

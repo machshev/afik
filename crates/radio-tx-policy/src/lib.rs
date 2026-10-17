@@ -179,6 +179,8 @@ impl TxPolicy {
     /// This is the handset's class switch: it can drop ranges but never add
     /// one, so the result is never more permissive than `self`.
     #[must_use]
+    // One copy rather than one per caller: 200 bytes of K5 flash (`RISK-049`).
+    #[inline(never)]
     pub fn restricted(&self, enabled: ClassSet) -> Self {
         let mut policy = *self;
         for slot in &mut policy.ranges {
