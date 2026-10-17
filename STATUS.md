@@ -1013,6 +1013,17 @@ other radio and the other radio hears speech. If speech is still missing,
 key the same frequency from a memory channel to tell the VFO from K1 TX
 audio.
 
+Hardware (K1, `7.0.58`, operator): VFO TX and the caught tones work; RX on
+the toned VFO opened for a moment and shut. Cause: AFIK read `REG_02` by the
+reference's names (bit 7 CTCSS "found", bit 6 "lost"), but the reference
+starts listening on bit 6 and ends on bit 7 (`app.c:196`, `app.c:299-305`),
+DCS likewise on bits 8/9 with a positive code. Fixed (`3a9f90e`). Gate:
+`cargo fmt --all` clean, workspace clippy `-D warnings` clean, `cargo test
+--workspace` 952 passed 0 failed, K5 and K1 release images build. `7.0.59`
+built, not flashed. Next: flash the K1; the toned VFO and a toned memory
+channel stay open through a transmission and stay shut for a carrier
+without the tone.
+
 Side key 1 (operator request): on the operating screen it switches tone
 squelch on the selected slot; on requires the channel's RX tone or, without
 one, its TX tone (repeater output, caught VFO tone), off opens on any
