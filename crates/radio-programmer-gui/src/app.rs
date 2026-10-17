@@ -3608,7 +3608,8 @@ impl StudioApp {
     }
 
     /// Adds or updates the bank of every generator shown on the map, and
-    /// says which did and why the rest did not.
+    /// says which did and why the rest did not, or how many across every
+    /// location.
     fn add_all_shown(&mut self) {
         let mut added = Vec::new();
         let mut skipped = Vec::new();
@@ -3668,19 +3669,32 @@ impl StudioApp {
         if locators.len() > 1 {
             self.remember_locator();
         }
+        // Across every location the names run long, so the status counts
+        // them and the log keeps each one.
+        let summary = locators.len() > 1;
+        if summary {
+            if !added.is_empty() {
+                log::info!("added or updated {}", added.join(", "));
+            }
+            if !skipped.is_empty() {
+                log::info!("skipped {}", skipped.join("; "));
+            }
+        }
+        let what = if summary {
+            format!("{} generators at {} locations", added.len(), locators.len())
+        } else {
+            added.join(", ")
+        };
         let added = match (added.is_empty(), dropped) {
             (true, 0) => "Nothing added".to_owned(),
             (true, _) => format!("Dropped {dropped} location banks and added nothing"),
-            (false, 0) => format!("Added or updated {}", added.join(", ")),
-            (false, _) => format!(
-                "Dropped {dropped} location banks and rewrote {}",
-                added.join(", ")
-            ),
+            (false, 0) => format!("Added or updated {what}"),
+            (false, _) => format!("Dropped {dropped} location banks and rewrote {what}"),
         };
-        self.status = if skipped.is_empty() {
-            format!("{added}.")
-        } else {
-            format!("{added}. Skipped {}.", skipped.join("; "))
+        self.status = match (skipped.len(), summary) {
+            (0, _) => format!("{added}."),
+            (count, true) => format!("{added}; skipped {count}."),
+            (_, false) => format!("{added}. Skipped {}.", skipped.join("; ")),
         };
         if let Some(per_mille) = self
             .project
@@ -7868,10 +7882,7 @@ mod tests {
         app.saved_locators.remove("IO70LI");
 
         app.add_all_shown();
-        assert_eq!(
-            app.status,
-            "Added or updated Repeaters at IO91WM, Repeaters at IO83WL."
-        );
+        assert_eq!(app.status, "Added or updated 2 generators at 2 locations.");
         for (bank, location) in [("RPT IO91WM", "IO91WM"), ("RPT IO83WL", "IO83WL")] {
             let bank = app.project.banks.iter().find(|b| b.name == bank).unwrap();
             let group = app.project.location(location).unwrap();
@@ -7895,7 +7906,7 @@ mod tests {
         app.add_all_shown();
         assert!(app
             .status
-            .starts_with("Dropped 3 location banks and rewrote "));
+            .starts_with("Dropped 3 location banks and rewrote 2 generators at 2 locations"));
         let names: Vec<_> = app.project.banks.iter().map(|b| b.name.as_str()).collect();
         assert!(!names.contains(&"RPT JO02EH"), "{names:?}");
         assert!(names.contains(&"MY RPT") && names.contains(&"RPT IO83WL"));
