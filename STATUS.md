@@ -258,6 +258,10 @@ standard. On M8LWA at 50 km the four locations take 5, 6, 6 and 8
 repeaters (was 18, 19, 12 and 15 in range). Gate: `cargo fmt --all
 --check` clean, `cargo clippy --workspace --all-targets -- -D warnings`
 clean, `cargo test --workspace` 969 passed 0 failed 3 ignored.
+Every generator's radius now steps 5 km to 50 km, 10 km to 100 km, then
+coarser (26 radii, 5 to 1 500 km). Gate: `cargo fmt --all --check` clean,
+`cargo clippy --workspace --all-targets -- -D warnings` clean, `cargo test
+--workspace` 969 passed 0 failed 3 ignored.
 
 **`FLASH-074` done** (2026-10-17, operator request, `RISK-049`): the K5
 image had 16 bytes of flash left. `interface::run` was 22.6 KB because the

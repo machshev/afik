@@ -49,20 +49,34 @@ pub const MAX_CHANNELS_LIMIT: u16 = 500;
 /// The radius repeaters are taken within before the operator chooses one,
 /// in kilometres: about how far a hilltop repeater reaches a handheld.
 pub const DEFAULT_RADIUS_KM: u16 = 50;
-/// The radii the studio offers, in kilometres: from a handheld's reach of
-/// a hilltop repeater up to the whole UK. The bank still takes only the
-/// nearest [`RepeaterArea::max_channels`].
-pub const RADII_KM: [u16; 12] = [
+/// The radii the studio offers, in kilometres: every 5 km to 50, every
+/// 10 km (and 75, a mobile's default) to 100, then coarser up to the whole
+/// UK. The bank still takes only [`RepeaterArea::max_channels`].
+pub const RADII_KM: [u16; 26] = [
+    5,
     10,
+    15,
     20,
+    25,
     30,
+    35,
+    40,
+    45,
     50,
+    60,
+    70,
     75,
+    80,
+    90,
     100,
+    125,
     150,
     200,
+    250,
     300,
+    400,
     500,
+    750,
     1_000,
     MAX_RADIUS_KM,
 ];
@@ -1581,6 +1595,13 @@ mod tests {
         };
         area.save(&file).unwrap();
         assert_eq!(RepeaterArea::load(&file), area);
+        // The radii rise, 5 km apart up to 50 km.
+        let radii = super::RADII_KM;
+        assert!(radii.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(radii
+            .windows(2)
+            .filter(|pair| pair[1] <= 50)
+            .all(|pair| pair[1] - pair[0] == 5));
         // Every radius offered, up to the whole UK, comes back as saved.
         for radius_km in super::RADII_KM {
             let area = RepeaterArea {
