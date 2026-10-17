@@ -164,9 +164,12 @@ round-trips in the studio. K5 flash ends at `0xeff0`, 16 bytes free
 (`RISK-049`); static RAM 6 972 bytes. Gate: `cargo fmt --all --check` clean,
 `cargo clippy --workspace --all-targets -- -D warnings` clean, `cargo test
 --workspace --no-fail-fast` 895 passed 0 failed 3 ignored, K5 and K1 release
-builds pass. Next (step 4, hardware): bump the version, write the operator's
-project (converted) plus a test bank beyond 16 to the K5, check the banks list
-and step, and that the place survives a power cycle.
+builds pass. Step 4: `7.0.53` (`ceef56d`) flashed to the `4.00.01` unit
+(the operator chose it over the `2.00.06` K5; `identify` first, CRC-32
+`c50c6785`, 240/240 pages acknowledged, not read back; flash end `0xeff0`).
+Next: power-cycle it, write the converted project with more than 16 banks
+from the studio, and check the source list, stepping in a bank past 16, and
+that the place survives a power cycle.
 
 **`GEN-072` is active alongside** (2026-10-16, operator request,
 `ADR-111`): step 1 done. The Banks tab has UK gateways and UK beacons tabs,
