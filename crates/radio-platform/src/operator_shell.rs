@@ -19,7 +19,7 @@
 //! No intent can transmit. The set deliberately contains selection, bank
 //! filtering, VFO tuning, and monitoring only.
 
-use radio_domain::{BankId, SquelchLevel, Tone, TxClass, MAX_SQUELCH_LEVEL};
+use radio_domain::{tones, BankId, SquelchLevel, Tone, TxClass, MAX_SQUELCH_LEVEL};
 use radio_tx_policy::ClassSet;
 
 use crate::receive_app::Key;
@@ -86,8 +86,10 @@ enum Cursor {
     Settings,
     /// The squelch-level list.
     Squelch,
-    /// The TX power-level list.
+    /// The TX power-level list, or the VFO's.
     TxPower,
+    /// The VFO tone list.
+    Tone,
     /// The TX timeout list.
     TxTimeout,
     /// The programmed TX class list.
@@ -235,6 +237,10 @@ pub enum Screen {
     TxTimeoutList,
     /// The programmed TX classes, each switched on or off on the handset.
     TxClassList,
+    /// The tones the selected slot's VFO can receive or transmit with.
+    ToneList,
+    /// The selected slot's VFO power: the programmed default, or a level.
+    VfoPowerList,
     /// Image identity and storage state.
     Info,
     /// The frequency and tone catch (F then 4, `FC`).
@@ -261,10 +267,46 @@ pub enum Setting {
     DualWatch,
     /// The selected slot's VFO tuning step.
     VfoStep,
-    /// Whether channels without a receive tone show the tone heard, which
-    /// runs the reference's tone scan during ordinary receive; an operator
-    /// experiment, off at start-up (`RISK-046`).
-    ToneHeard,
+    /// The tone that opens the selected slot's VFO squelch.
+    VfoRxTone,
+    /// The tone the selected slot's VFO transmits, where the target can.
+    VfoTxTone,
+    /// The selected slot's VFO power, where the target can transmit.
+    VfoPower,
+}
+
+/// Which of the VFO's tones the tone list sets.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ToneTarget {
+    /// The tone that opens its squelch.
+    Receive,
+    /// The tone it transmits.
+    Transmit,
+}
+
+/// Rows of the tone list: none, each CTCSS tone, each DCS code in normal
+/// polarity, then each in inverted.
+pub const TONE_ROWS: usize = tones::TONE_POSITIONS as usize + tones::DCS_COUNT as usize;
+
+/// The tone on row `row` of the tone list.
+#[must_use]
+pub fn tone_at_row(row: usize) -> Option<Tone> {
+    let positions = usize::from(tones::TONE_POSITIONS);
+    let (position, inverted) = match row.checked_sub(positions) {
+        None => (row, false),
+        Some(past) => (past + positions - usize::from(tones::DCS_COUNT), true),
+    };
+    tones::standard_tone(u8::try_from(position).ok()?, inverted)
+}
+
+/// The tone-list row of `tone`; row 0, none, for one the list does not hold.
+#[must_use]
+pub fn tone_row(tone: Tone) -> usize {
+    match tones::standard_position(tone) {
+        Some((position, true)) => usize::from(position) + usize::from(tones::DCS_COUNT),
+        Some((position, false)) => usize::from(position),
+        None => 0,
+    }
 }
 
 /// Every settings row, in the order the menu lists them.
@@ -278,29 +320,32 @@ pub enum Setting {
 /// milliseconds instead of a menu's worth of rows.
 ///
 /// Dual watch qualifies because whether a second channel is worth hearing
-/// depends on what the operator is doing at the time. Tone heard is an
-/// experiment the operator switches while comparing receive against Armel.
+/// depends on what the operator is doing at the time.
 ///
 /// The VFO step moved here from side key 1, which now switches tone squelch.
+/// The VFO's tones and power sit beside it: a catch sets the tones, and the
+/// menu is where to set or clear them by hand.
 pub const SETTINGS: [Setting; 4] = [
     Setting::Squelch,
     Setting::DualWatch,
     Setting::VfoStep,
-    Setting::ToneHeard,
+    Setting::VfoRxTone,
 ];
 
 /// Settings rows on a target that can transmit. TX power qualifies for the
 /// same reason squelch does: the right level depends on where the operator is.
 /// The TX timeout does too: a net with long overs needs a longer one. The TX
 /// classes switch lets the owner narrow what a borrowed radio may transmit.
-pub const SETTINGS_WITH_TX: [Setting; 7] = [
+pub const SETTINGS_WITH_TX: [Setting; 9] = [
     Setting::Squelch,
     Setting::TxPower,
     Setting::TxTimeout,
     Setting::TxClasses,
     Setting::DualWatch,
     Setting::VfoStep,
-    Setting::ToneHeard,
+    Setting::VfoRxTone,
+    Setting::VfoTxTone,
+    Setting::VfoPower,
 ];
 
 /// Every TX class, in the order the class list shows them.
@@ -486,6 +531,9 @@ pub struct Shell {
     /// Classes the operator switched off on the handset.
     tx_disabled: ClassSet,
     tx_class_cursor: u8,
+    /// Which VFO tone the tone list sets, and its cursor row.
+    tone_target: ToneTarget,
+    tone_cursor: usize,
     /// Whether a star press is still waiting to become a hold or a release.
     star_pending: bool,
     /// Whether F was pressed and the next key takes its F meaning.
@@ -496,8 +544,6 @@ pub struct Shell {
     other: Slot,
     /// Whether the radio listens to the other slot between signals.
     dual_watch: bool,
-    /// Whether untoned channels show the tone heard; never stored.
-    tone_heard: bool,
     capabilities: Capabilities,
 }
 
@@ -538,12 +584,13 @@ impl Shell {
             tx_programmed: ClassSet::NONE,
             tx_disabled: ClassSet::NONE,
             tx_class_cursor: 0,
+            tone_target: ToneTarget::Receive,
+            tone_cursor: 0,
             star_pending: false,
             function: false,
             active: SlotId::A,
             other: Slot::VFO,
             dual_watch: false,
-            tone_heard: false,
             capabilities: Capabilities::K1,
         }
     }
@@ -571,6 +618,8 @@ impl Shell {
                     | Screen::TxPowerList
                     | Screen::TxTimeoutList
                     | Screen::TxClassList
+                    | Screen::ToneList
+                    | Screen::VfoPowerList
             )
         {
             self.screen = Screen::Operating;
@@ -578,7 +627,10 @@ impl Shell {
         if !capabilities.tx_power
             && matches!(
                 self.screen,
-                Screen::TxPowerList | Screen::TxTimeoutList | Screen::TxClassList
+                Screen::TxPowerList
+                    | Screen::TxTimeoutList
+                    | Screen::TxClassList
+                    | Screen::VfoPowerList
             )
         {
             self.screen = Screen::Operating;
@@ -736,6 +788,18 @@ impl Shell {
         self.tx_class_cursor
     }
 
+    /// Returns which VFO tone the tone list sets.
+    #[must_use]
+    pub const fn tone_target(&self) -> ToneTarget {
+        self.tone_target
+    }
+
+    /// Returns the tone-list cursor row.
+    #[must_use]
+    pub const fn tone_cursor(&self) -> usize {
+        self.tone_cursor
+    }
+
     /// Returns the settings-menu cursor row.
     #[must_use]
     pub const fn settings_cursor(&self) -> usize {
@@ -815,12 +879,6 @@ impl Shell {
         self.entry = None;
         self.screen = Screen::Operating;
         true
-    }
-
-    /// Reports whether untoned channels show the tone heard.
-    #[must_use]
-    pub const fn tone_heard(&self) -> bool {
-        self.tone_heard
     }
 
     /// Reports whether F was pressed and waits for the key it modifies.
@@ -1289,9 +1347,10 @@ impl Shell {
             Screen::SquelchList => {
                 self.step_row(direction, usize::from(SQUELCH_LEVELS), Cursor::Squelch)
             }
-            Screen::TxPowerList => {
+            Screen::TxPowerList | Screen::VfoPowerList => {
                 self.step_row(direction, usize::from(TX_POWER_ROWS), Cursor::TxPower)
             }
+            Screen::ToneList => self.step_row(direction, TONE_ROWS, Cursor::Tone),
             Screen::TxTimeoutList => self.step_row(
                 direction,
                 usize::from(TX_TIMEOUT_CHOICES),
@@ -1319,6 +1378,7 @@ impl Shell {
             Cursor::Settings => &mut self.settings_cursor,
             Cursor::Squelch => &mut squelch_cursor,
             Cursor::TxPower => &mut tx_power_cursor,
+            Cursor::Tone => &mut self.tone_cursor,
             Cursor::TxTimeout => &mut tx_timeout_cursor,
             Cursor::TxClass => &mut tx_class_cursor,
         };
@@ -1379,46 +1439,7 @@ impl Shell {
                 self.step_index = self.step_cursor;
                 Intent::Redraw
             }
-            Screen::Settings => {
-                match self.settings().get(self.settings_cursor) {
-                    Some(Setting::Squelch) => {
-                        self.screen = Screen::SquelchList;
-                        self.squelch_cursor = self.squelch.get();
-                    }
-                    Some(Setting::TxPower) => {
-                        self.screen = Screen::TxPowerList;
-                        self.tx_power_cursor = self.tx_override.map_or(0, |level| level + 1);
-                    }
-                    Some(Setting::TxTimeout) => {
-                        self.screen = Screen::TxTimeoutList;
-                        self.tx_timeout_cursor = self.tx_timeout;
-                    }
-                    Some(Setting::TxClasses) => {
-                        self.screen = Screen::TxClassList;
-                        self.tx_class_cursor = 0;
-                    }
-                    // Menu switches it and shows the operating screen, where
-                    // both slots are.
-                    Some(Setting::DualWatch) => {
-                        self.dual_watch = !self.dual_watch;
-                        self.screen = Screen::Operating;
-                    }
-                    // As dual watch: the operating screen is where the
-                    // heard tone shows.
-                    Some(Setting::VfoStep) => {
-                        self.screen = Screen::StepList;
-                        self.step_cursor = self.step_index;
-                    }
-                    Some(Setting::ToneHeard) => {
-                        self.tone_heard = !self.tone_heard;
-                        self.screen = Screen::Operating;
-                    }
-                    // A menu row with nothing behind it cannot open a screen the
-                    // operator would then be stuck on.
-                    None => self.screen = Screen::Operating,
-                }
-                Intent::Redraw
-            }
+            Screen::Settings => self.open_setting(),
             Screen::SquelchList => {
                 // Back to the operating screen rather than the menu: the point
                 // of changing squelch is to hear what it did.
@@ -1440,6 +1461,27 @@ impl Shell {
                     self.tx_override = self.tx_power_cursor.checked_sub(1);
                 }
                 Intent::Redraw
+            }
+            // The VFO's tones and power are part of its channel, so a change
+            // rebuilds it when it is the source in use.
+            Screen::ToneList => {
+                self.screen = Screen::Operating;
+                let Some(tone) = tone_at_row(self.tone_cursor) else {
+                    return Intent::Redraw;
+                };
+                match self.tone_target {
+                    ToneTarget::Receive => self.vfo.rx_tone = tone,
+                    ToneTarget::Transmit => self.vfo.tx_tone = tone,
+                }
+                self.vfo_changed()
+            }
+            Screen::VfoPowerList => {
+                self.screen = Screen::Operating;
+                if self.tx_power_cursor >= TX_POWER_ROWS {
+                    return Intent::Redraw;
+                }
+                self.vfo.power = self.tx_power_cursor.checked_sub(1);
+                self.vfo_changed()
             }
             Screen::TxTimeoutList => {
                 self.screen = Screen::Operating;
@@ -1467,6 +1509,67 @@ impl Shell {
             }
             // The target knows what was caught; it calls `catch_to_vfo`.
             Screen::Catch => Intent::UseCatch,
+        }
+    }
+
+    /// Opens, or for a switch flips, the setting under the menu cursor.
+    fn open_setting(&mut self) -> Intent {
+        match self.settings().get(self.settings_cursor) {
+            Some(Setting::Squelch) => {
+                self.screen = Screen::SquelchList;
+                self.squelch_cursor = self.squelch.get();
+            }
+            Some(Setting::TxPower) => {
+                self.screen = Screen::TxPowerList;
+                self.tx_power_cursor = self.tx_override.map_or(0, |level| level + 1);
+            }
+            Some(Setting::TxTimeout) => {
+                self.screen = Screen::TxTimeoutList;
+                self.tx_timeout_cursor = self.tx_timeout;
+            }
+            Some(Setting::TxClasses) => {
+                self.screen = Screen::TxClassList;
+                self.tx_class_cursor = 0;
+            }
+            // Menu switches it and shows the operating screen, where
+            // both slots are.
+            Some(Setting::DualWatch) => {
+                self.dual_watch = !self.dual_watch;
+                self.screen = Screen::Operating;
+            }
+            Some(Setting::VfoStep) => {
+                self.screen = Screen::StepList;
+                self.step_cursor = self.step_index;
+            }
+            Some(Setting::VfoRxTone) => self.open_tone_list(ToneTarget::Receive),
+            Some(Setting::VfoTxTone) => self.open_tone_list(ToneTarget::Transmit),
+            Some(Setting::VfoPower) => {
+                self.screen = Screen::VfoPowerList;
+                self.tx_power_cursor = self.vfo.power.map_or(0, |level| level + 1);
+            }
+            // A menu row with nothing behind it cannot open a screen the
+            // operator would then be stuck on.
+            None => self.screen = Screen::Operating,
+        }
+        Intent::Redraw
+    }
+
+    /// Opens the tone list on the VFO tone `target` names.
+    fn open_tone_list(&mut self, target: ToneTarget) {
+        self.screen = Screen::ToneList;
+        self.tone_target = target;
+        self.tone_cursor = tone_row(match target {
+            ToneTarget::Receive => self.vfo.rx_tone,
+            ToneTarget::Transmit => self.vfo.tx_tone,
+        });
+    }
+
+    /// What a change to the VFO's tones or power asks of the target: a
+    /// rebuild while the VFO is the source, else only a redraw.
+    const fn vfo_changed(&self) -> Intent {
+        match self.mode {
+            Mode::Vfo => Intent::TuneVfo,
+            Mode::Memory => Intent::Redraw,
         }
     }
 
@@ -1507,6 +1610,8 @@ impl Shell {
                 | Screen::TxTimeoutList
                 | Screen::TxClassList
                 | Screen::StepList
+                | Screen::ToneList
+                | Screen::VfoPowerList
         ) {
             Screen::Settings
         } else {
@@ -1524,8 +1629,9 @@ impl Shell {
                 self.squelch_cursor = u8::try_from(digit).unwrap_or(0);
                 return self.confirm(context);
             }
-            // Power levels are numbered from one on screen; 0 is CHANNEL.
-            Screen::TxPowerList => {
+            // Power levels are numbered from one on screen; 0 is CHANNEL, or
+            // the VFO's DEFAULT.
+            Screen::TxPowerList | Screen::VfoPowerList => {
                 let Some(row) = u8::try_from(digit).ok().filter(|row| *row < TX_POWER_ROWS) else {
                     return Intent::Idle;
                 };
@@ -1544,7 +1650,9 @@ impl Shell {
                 self.tx_timeout_cursor = choice;
                 return self.confirm(context);
             }
-            Screen::Settings | Screen::TxClassList | Screen::Catch => return Intent::Idle,
+            Screen::Settings | Screen::TxClassList | Screen::ToneList | Screen::Catch => {
+                return Intent::Idle
+            }
             _ => {}
         }
         let mut entry = self.entry.unwrap_or(Entry {
@@ -1630,6 +1738,8 @@ impl Shell {
                 | Screen::TxPowerList
                 | Screen::TxTimeoutList
                 | Screen::TxClassList
+                | Screen::ToneList
+                | Screen::VfoPowerList
         ) {
             self.screen = Screen::Operating;
             return Intent::Redraw;
@@ -2216,6 +2326,120 @@ mod tests {
         assert_eq!(shell.tx_level(4), 4);
     }
 
+    #[test]
+    fn every_tone_list_row_is_one_tone_and_back() {
+        use super::{tone_at_row, tone_row, TONE_ROWS};
+        use radio_domain::Tone;
+
+        assert_eq!(tone_at_row(0), Some(Tone::None));
+        assert_eq!(tone_at_row(1), Some(Tone::Ctcss(670)));
+        assert_eq!(
+            tone_at_row(51),
+            Some(Tone::Dcs {
+                code: 23,
+                inverted: false
+            })
+        );
+        assert_eq!(
+            tone_at_row(155),
+            Some(Tone::Dcs {
+                code: 23,
+                inverted: true
+            })
+        );
+        assert_eq!(tone_at_row(TONE_ROWS), None);
+        for row in 0..TONE_ROWS {
+            assert_eq!(tone_row(tone_at_row(row).unwrap()), row);
+        }
+        assert_eq!(tone_row(Tone::Ctcss(1001)), 0, "unlisted reads as none");
+    }
+
+    #[test]
+    fn the_menu_sets_the_vfos_tones_and_power() {
+        use super::{Setting, ToneTarget};
+        use radio_domain::Tone;
+
+        let row = |setting| {
+            SETTINGS_WITH_TX
+                .iter()
+                .position(|each| *each == setting)
+                .unwrap()
+        };
+        let open = |shell: &mut Shell, setting, time| {
+            shell.press(Key::Menu, time, context(0, 0));
+            for step in 0..row(setting) {
+                shell.press(
+                    Key::Down,
+                    time + 1 + u32::try_from(step).unwrap(),
+                    context(0, 0),
+                );
+            }
+            shell.press(Key::Menu, time + 20, context(0, 0))
+        };
+        let mut shell = Shell::new();
+        shell.set_capabilities(Capabilities::K5);
+        assert!(matches!(shell.mode(), Mode::Vfo));
+
+        // RX tone: the list opens on none; one down is 67.0 Hz.
+        assert_eq!(open(&mut shell, Setting::VfoRxTone, 0), Intent::Redraw);
+        assert_eq!(shell.screen(), Screen::ToneList);
+        assert_eq!(shell.tone_target(), ToneTarget::Receive);
+        assert_eq!(shell.tone_cursor(), 0);
+        shell.press(Key::Down, 30, context(0, 0));
+        assert_eq!(shell.press(Key::Menu, 31, context(0, 0)), Intent::TuneVfo);
+        assert_eq!(shell.screen(), Screen::Operating);
+        assert_eq!(shell.vfo().rx_tone, Tone::Ctcss(670));
+        assert_eq!(shell.vfo().tx_tone, Tone::None, "only the RX tone");
+
+        // TX tone: up from none wraps to the last inverted DCS code.
+        open(&mut shell, Setting::VfoTxTone, 40);
+        assert_eq!(shell.tone_target(), ToneTarget::Transmit);
+        shell.press(Key::Up, 70, context(0, 0));
+        shell.press(Key::Menu, 71, context(0, 0));
+        assert_eq!(
+            shell.vfo().tx_tone,
+            Tone::Dcs {
+                code: 754,
+                inverted: true
+            }
+        );
+        // The list reopens on the tone in use; Exit returns to the menu.
+        open(&mut shell, Setting::VfoTxTone, 80);
+        assert_eq!(shell.tone_cursor(), super::TONE_ROWS - 1);
+        assert_eq!(shell.press(Key::Digit(5), 110, context(0, 0)), Intent::Idle);
+        shell.press(Key::Exit, 111, context(0, 0));
+        assert_eq!(shell.screen(), Screen::Settings);
+        shell.press(Key::Exit, 112, context(0, 0));
+
+        // Power: DEFAULT is row 0 and digits pick a level from one.
+        assert_eq!(open(&mut shell, Setting::VfoPower, 120), Intent::Redraw);
+        assert_eq!(shell.screen(), Screen::VfoPowerList);
+        assert_eq!(shell.tx_power_cursor(), 0, "opens on DEFAULT");
+        assert_eq!(
+            shell.press(Key::Digit(4), 150, context(0, 0)),
+            Intent::TuneVfo
+        );
+        assert_eq!(shell.vfo().power, Some(3));
+        assert_eq!(shell.tx_override(), None, "not the handset override");
+        open(&mut shell, Setting::VfoPower, 160);
+        assert_eq!(shell.tx_power_cursor(), 4);
+        shell.press(Key::Digit(0), 190, context(0, 0));
+        assert_eq!(shell.vfo().power, None);
+
+        // The settings belong to the selected slot's VFO.
+        shell.press(Key::Function, 200, context(0, 0));
+        shell.press(Key::Digit(2), 201, context(0, 0));
+        assert_eq!(shell.vfo(), super::VfoSettings::DEFAULT);
+        assert_eq!(shell.other_slot().vfo.rx_tone, Tone::Ctcss(670));
+
+        // On channels the change waits in the VFO: nothing to rebuild.
+        shell.select_memory();
+        open(&mut shell, Setting::VfoRxTone, 210);
+        shell.press(Key::Down, 240, context(0, 0));
+        assert_eq!(shell.press(Key::Menu, 241, context(0, 0)), Intent::Redraw);
+        assert_eq!(shell.vfo().rx_tone, Tone::Ctcss(670));
+    }
+
     /// The studio's TX power and timeout are what the menu then shows.
     #[test]
     fn a_programmed_tx_power_and_timeout_replace_what_the_menu_shows() {
@@ -2621,35 +2845,6 @@ mod tests {
         assert_eq!(shell.press(Key::Exit, 12, context(2, 0)), Intent::StopCatch);
         assert_eq!(shell.screen(), Screen::Operating);
         assert_eq!(shell.mode(), Mode::Memory);
-    }
-
-    #[test]
-    fn the_settings_menu_switches_tone_heard_off_at_start_up() {
-        for settings in [&SETTINGS[..], &SETTINGS_WITH_TX[..]] {
-            assert_eq!(settings.last(), Some(&Setting::ToneHeard));
-        }
-        let mut shell = memory_shell(&[]);
-        assert!(!shell.tone_heard());
-        let row = SETTINGS_WITH_TX
-            .iter()
-            .position(|setting| *setting == Setting::ToneHeard)
-            .expect("tone heard row");
-        for (time, expected) in [(0, true), (100, false)] {
-            shell.press(Key::Menu, time, context(4, 0));
-            for at in 0..row {
-                shell.press(
-                    Key::Down,
-                    time + 1 + u32::try_from(at).unwrap(),
-                    context(4, 0),
-                );
-            }
-            assert_eq!(
-                shell.press(Key::Menu, time + 20, context(4, 0)),
-                Intent::Redraw
-            );
-            assert_eq!(shell.tone_heard(), expected);
-            assert_eq!(shell.screen(), Screen::Operating);
-        }
     }
 
     #[test]

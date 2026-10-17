@@ -278,8 +278,6 @@ pub struct SlotChannel<'a> {
     pub tx_tone: Tone,
     /// CTCSS or DCS the receiver requires before it opens.
     pub rx_tone: Tone,
-    /// A tone heard on the open squelch of a channel without a receive tone.
-    pub heard_tone: Option<Tone>,
 }
 
 /// Where one slot's channel sits.
@@ -478,17 +476,45 @@ impl SelectorRow {
         )
     }
 
-    /// Builds the settings-menu row for the heard-tone experiment.
+    /// Builds the settings-menu row for one of the VFO's tones, such as
+    /// `VFO RX  88.5`, `VFO TX D023N` or `VFO RX   OFF`.
     #[must_use]
-    pub fn tone_heard_setting(on: bool) -> Self {
-        Self::with_label(
-            if on {
-                b"TONE HEARD ON"
-            } else {
-                b"TONE HEARD OFF"
-            },
-            false,
-        )
+    pub fn vfo_tone_setting(transmit: bool, tone: Tone) -> Self {
+        let mut label = *b"VFO RX   OFF";
+        if transmit {
+            label[4] = b'T';
+        }
+        if tone.is_some() {
+            label[7..].copy_from_slice(&tone_label(tone));
+        }
+        Self::with_label(&label, false)
+    }
+
+    /// Builds the settings-menu row for the VFO's power: its level, or `DEF`
+    /// while it takes the programmed default.
+    #[must_use]
+    pub fn vfo_power_setting(level: Option<u8>) -> Self {
+        let mut label = *b"VFO PWR   DEF";
+        if let Some(level) = level {
+            label[8..].copy_from_slice(&milliwatts_label(level));
+        }
+        Self::with_label(&label, false)
+    }
+
+    /// Builds the VFO power row for the programmed default, numbered zero.
+    #[must_use]
+    pub fn vfo_power_default(active: bool) -> Self {
+        Self::with_label(b"0  DEFAULT", active)
+    }
+
+    /// Builds one tone-list row: `OFF`, or the tone as the slot shows it.
+    #[must_use]
+    pub fn tone_choice(tone: Tone, active: bool) -> Self {
+        if tone.is_some() {
+            Self::with_label(&tone_label(tone), active)
+        } else {
+            Self::with_label(b"OFF", active)
+        }
     }
 
     /// Builds one TX class row with its switch, such as `AMATEUR    OFF`;
@@ -674,12 +700,8 @@ fn draw_slot(frame: &mut [u8; FRAME_BYTES], y: usize, slot: &SlotView<'_>) {
     };
     draw_text(frame, WIDTH - 2 * 6, y + 9, &power);
     if let Some(rssi_raw) = channel.meter {
-        // The receive tone, or one heard on a channel without one, is what
-        // opened this squelch.
-        let tone = match channel.rx_tone {
-            Tone::None => channel.heard_tone,
-            tone => Some(tone),
-        };
+        // The receive tone, if any, is what opened this squelch.
+        let tone = Some(channel.rx_tone).filter(|tone| tone.is_some());
         draw_meter(frame, y + 18, rssi_raw, channel.frequency_hz, tone);
     } else {
         for (x, marker, tone) in [
@@ -1659,7 +1681,6 @@ mod operating_screen_tests {
         meter: None,
         tx_tone: Tone::None,
         rx_tone: Tone::None,
-        heard_tone: None,
     };
 
     fn view() -> OperatingView<'static> {
@@ -1821,6 +1842,17 @@ mod operating_screen_tests {
             fixed.extend_from_slice(SelectorRow::tx_timeout_choice(choice, false).label());
         }
         fixed.extend_from_slice(SelectorRow::tx_classes_setting(1, 2).label());
+        fixed.extend_from_slice(b"RX TONE");
+        fixed.extend_from_slice(b"TX TONE");
+        fixed.extend_from_slice(b"VFO POWER");
+        fixed.extend_from_slice(SelectorRow::vfo_power_setting(None).label());
+        fixed.extend_from_slice(SelectorRow::vfo_power_setting(Some(5)).label());
+        fixed.extend_from_slice(SelectorRow::vfo_power_default(false).label());
+        for row in 0..crate::operator_shell::TONE_ROWS {
+            let tone = crate::operator_shell::tone_at_row(row).unwrap();
+            fixed.extend_from_slice(SelectorRow::tone_choice(tone, false).label());
+            fixed.extend_from_slice(SelectorRow::vfo_tone_setting(row % 2 == 0, tone).label());
+        }
         for class in crate::operator_shell::TX_CLASSES {
             fixed.extend_from_slice(SelectorRow::tx_class(class, true).label());
             fixed.extend_from_slice(SelectorRow::tx_class(class, false).label());
@@ -2071,41 +2103,60 @@ mod operating_screen_tests {
             ..repeater
         });
         assert!(shows(&toned, SLOT_TEXT_X + 42, b"R 77.0"));
-        // No tone anywhere: an empty row, as before.
-        assert_eq!(
-            render(CHANNEL),
-            render(SlotChannel {
-                heard_tone: None,
-                ..CHANNEL
-            })
-        );
 
-        // Open on a channel without a receive tone: the heard tone, not dBm.
-        let heard = render(SlotChannel {
-            meter: Some(140),
-            heard_tone: Some(Tone::Ctcss(1_230)),
-            ..repeater
-        });
-        assert!(shows(&heard, WIDTH - 5 * 6, b"123.0"));
-        assert!(shows(&heard, SLOT_TEXT_X + 15 * 3 + 2, b"S6"));
-        assert!(!shows(&heard, SLOT_TEXT_X, b"T"));
-        // The receive tone wins over anything heard.
+        // Open on a toned channel: the receive tone, not dBm, and no tone row.
         let filtered = render(SlotChannel {
             meter: Some(140),
             rx_tone: Tone::Dcs {
                 code: 23,
                 inverted: false,
             },
-            heard_tone: Some(Tone::Ctcss(1_230)),
             ..repeater
         });
         assert!(shows(&filtered, WIDTH - 5 * 6, b"D023N"));
-        // Nothing heard: the dBm reading stays.
+        assert!(shows(&filtered, SLOT_TEXT_X + 15 * 3 + 2, b"S6"));
+        assert!(!shows(&filtered, SLOT_TEXT_X, b"T"));
+        // Untoned: the dBm reading stays.
         let plain = render(SlotChannel {
             meter: Some(140),
             ..CHANNEL
         });
         assert!(shows(&plain, WIDTH - 4 * 6, b"-110"));
+    }
+
+    #[test]
+    fn vfo_settings_rows_show_their_values() {
+        use super::SelectorRow;
+        let label =
+            |row: SelectorRow| std::string::String::from_utf8(row.label().to_vec()).unwrap();
+        assert_eq!(
+            label(SelectorRow::vfo_tone_setting(false, Tone::None)),
+            "VFO RX   OFF"
+        );
+        assert_eq!(
+            label(SelectorRow::vfo_tone_setting(false, Tone::Ctcss(885))),
+            "VFO RX  88.5"
+        );
+        assert_eq!(
+            label(SelectorRow::vfo_tone_setting(
+                true,
+                Tone::Dcs {
+                    code: 23,
+                    inverted: false
+                }
+            )),
+            "VFO TX D023N"
+        );
+        assert_eq!(label(SelectorRow::vfo_power_setting(None)), "VFO PWR   DEF");
+        assert_eq!(
+            label(SelectorRow::vfo_power_setting(Some(3))),
+            "VFO PWR 500MW"
+        );
+        assert_eq!(label(SelectorRow::tone_choice(Tone::None, false)), "OFF");
+        assert_eq!(
+            label(SelectorRow::tone_choice(Tone::Ctcss(1567), true)),
+            "156.7"
+        );
     }
 
     #[test]

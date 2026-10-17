@@ -881,14 +881,6 @@ impl<B: RegisterBus> Bk4819<B> {
         })
     }
 
-    /// Chooses how the next receive setup treats a channel without a receive
-    /// tone: the reference's tail detection (`false`, the default) or the tone
-    /// scan, so [`Self::detected_tone`] reads what it hears during ordinary
-    /// receive, as `7.0.28`–`7.0.30` did. An operator experiment (`RISK-046`).
-    pub fn set_untoned_tone_scan(&mut self, scan: bool) {
-        self.scan_untoned = scan;
-    }
-
     /// Starts, or restarts after a reading, the reference's tone scan on the
     /// tuned frequency, as `BK4819_SetScanFrequency` does: its `REG_51`, then
     /// receive turned on again (`BK4819_RX_TurnOn`). The next receive
@@ -1083,7 +1075,6 @@ impl<B: RegisterBus> Bk4819<B> {
         match tone {
             // `RADIO_SetupRegisters`' `CODE_TYPE_OFF`: `BK4819_SetCTCSSFrequency`
             // then `BK4819_SetTailDetection`, whose `REG_07` replaces the first.
-            Tone::None if self.scan_untoned => self.write(REG_SUB_AUDIO_CONTROL, SUB_AUDIO_SCAN),
             Tone::None => {
                 self.write(REG_SUB_AUDIO_CONTROL, self.profile.sub_audio_ctcss)?;
                 self.write(
@@ -1939,42 +1930,6 @@ mod tests {
                 ]
             );
         }
-    }
-
-    #[test]
-    fn the_untoned_tone_scan_experiment_restores_the_old_receive_word() {
-        let mut radio = Bk4819::new(FakeBus::new(None));
-        radio.recover_to_standby().unwrap();
-        radio.set_untoned_tone_scan(true);
-        radio
-            .configure_receive(&setup(Modulation::Fm, Tone::None, 430_837_500))
-            .unwrap();
-        assert!(radio
-            .bus()
-            .operations
-            .contains(&Operation::Write(REG_SUB_AUDIO_CONTROL, 0x0300)));
-        assert!(!radio
-            .bus()
-            .operations
-            .contains(&Operation::Write(REG_SUB_AUDIO_FREQUENCY, 0x21CE)));
-        // A receive tone is unaffected, and switching back restores the
-        // reference's words.
-        radio.bus_mut().operations.clear();
-        radio
-            .configure_receive(&setup(Modulation::Fm, Tone::Ctcss(1567), 430_837_500))
-            .unwrap();
-        assert!(radio
-            .bus()
-            .operations
-            .contains(&Operation::Write(REG_SUB_AUDIO_CONTROL, 0x904A)));
-        radio.set_untoned_tone_scan(false);
-        radio
-            .configure_receive(&setup(Modulation::Fm, Tone::None, 430_837_500))
-            .unwrap();
-        assert!(radio
-            .bus()
-            .operations
-            .contains(&Operation::Write(REG_SUB_AUDIO_FREQUENCY, 0x21CE)));
     }
 
     #[test]

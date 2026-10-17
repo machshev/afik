@@ -66,13 +66,20 @@ const DCS_STANDARD: [u8; 64] = {
     bits
 };
 
+/// The standard CTCSS tone at `index` in tenths of a hertz, ascending.
+#[must_use]
+pub fn ctcss_tone(index: u8) -> Option<u16> {
+    let rises = CTCSS_STEPS.get(..usize::from(index))?;
+    let mut tone = FIRST_CTCSS;
+    for rise in rises {
+        tone += u16::from(*rise);
+    }
+    Some(tone)
+}
+
 /// Every standard CTCSS tone in tenths of a hertz, ascending.
 pub fn ctcss_tones() -> impl Iterator<Item = u16> {
-    let mut tone = FIRST_CTCSS;
-    core::iter::once(FIRST_CTCSS).chain(CTCSS_STEPS.iter().map(move |step| {
-        tone += u16::from(*step);
-        tone
-    }))
+    (0..CTCSS_COUNT).filter_map(ctcss_tone)
 }
 
 /// Whether `bits`, a code's nine bits, is one of the standard DCS codes.
@@ -83,9 +90,18 @@ pub fn is_standard_dcs(bits: u16) -> bool {
         .is_some_and(|byte| byte & (1 << (bits % 8)) != 0)
 }
 
-/// Every standard DCS code's nine bits, ascending.
-fn dcs_bits() -> impl Iterator<Item = u16> {
-    (0..512).filter(|bits| is_standard_dcs(*bits))
+/// The nine bits of the standard DCS code at `index`, ascending.
+fn dcs_bits(index: u8) -> Option<u16> {
+    let mut left = index;
+    for bits in 0..512 {
+        if is_standard_dcs(bits) {
+            if left == 0 {
+                return Some(bits);
+            }
+            left -= 1;
+        }
+    }
+    None
 }
 
 /// A DCS code's octal digits held as a decimal integer, from its nine bits.
@@ -101,8 +117,8 @@ pub fn standard_tone(position: u8, inverted: bool) -> Option<Tone> {
         return Some(Tone::None);
     };
     match index.checked_sub(CTCSS_COUNT) {
-        None => ctcss_tones().nth(usize::from(index)).map(Tone::Ctcss),
-        Some(code) => dcs_bits().nth(usize::from(code)).map(|bits| Tone::Dcs {
+        None => ctcss_tone(index).map(Tone::Ctcss),
+        Some(code) => dcs_bits(code).map(|bits| Tone::Dcs {
             code: dcs_code(bits),
             inverted,
         }),
@@ -110,32 +126,42 @@ pub fn standard_tone(position: u8, inverted: bool) -> Option<Tone> {
 }
 
 /// The position [`standard_tone`] gives `tone`, and its DCS polarity;
-/// `None` for a tone the reference does not list.
+/// `None` for a tone the reference does not list. Quick enough to run on
+/// every pass of the run loop: at most 50 tones or 512 codes are looked at.
 #[must_use]
 pub fn standard_position(tone: Tone) -> Option<(u8, bool)> {
     let (index, inverted) = match tone {
         Tone::None => return Some((0, false)),
-        Tone::Ctcss(tenths) => (ctcss_tones().position(|each| each == tenths)?, false),
-        Tone::Dcs { code, inverted } => (
-            dcs_bits().position(|bits| dcs_code(bits) == code)? + usize::from(CTCSS_COUNT),
-            inverted,
+        Tone::Ctcss(tenths) => (
+            (0..CTCSS_COUNT).find(|index| ctcss_tone(*index) == Some(tenths))?,
+            false,
         ),
+        Tone::Dcs { code, inverted } => {
+            let bits = (code / 100) << 6 | (code / 10 % 10) << 3 | (code % 10);
+            if code > 777 || dcs_code(bits) != code || !is_standard_dcs(bits) {
+                return None;
+            }
+            let below = (0..bits).filter(|each| is_standard_dcs(*each)).count();
+            (CTCSS_COUNT + u8::try_from(below).ok()?, inverted)
+        }
     };
-    Some((u8::try_from(index + 1).ok()?, inverted))
+    Some((index + 1, inverted))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        ctcss_tones, dcs_bits, is_standard_dcs, standard_position, standard_tone, CTCSS_TONES,
-        DCS_CODES, TONE_POSITIONS,
+        ctcss_tone, ctcss_tones, dcs_bits, is_standard_dcs, standard_position, standard_tone,
+        CTCSS_TONES, DCS_CODES, TONE_POSITIONS,
     };
     use crate::Tone;
 
     #[test]
     fn the_packed_lists_hold_exactly_the_reference_lists() {
         assert!(ctcss_tones().eq(CTCSS_TONES));
-        assert!(dcs_bits().eq(DCS_CODES));
+        assert!((0..104).map(|index| dcs_bits(index).unwrap()).eq(DCS_CODES));
+        assert_eq!(dcs_bits(104), None);
+        assert_eq!(ctcss_tone(50), None);
         assert!(!is_standard_dcs(512));
     }
 

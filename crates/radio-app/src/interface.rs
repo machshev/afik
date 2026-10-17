@@ -32,8 +32,8 @@ use radio_platform::operator_display::{
     SlotChannel, SlotPlace, SlotView, TxRefusal, FRAME_BYTES, LIST_ROWS,
 };
 use radio_platform::operator_shell::{
-    Context, Intent, Mode, Screen, Setting, Shell, Slot, SlotId, Source, HOLD_MILLISECONDS,
-    SQUELCH_LEVELS, TX_POWER_ROWS, TX_TIMEOUT_CHOICES, VFO_STEPS_HZ,
+    tone_at_row, Context, Intent, Mode, Screen, Setting, Shell, Slot, SlotId, Source, ToneTarget,
+    HOLD_MILLISECONDS, SQUELCH_LEVELS, TONE_ROWS, TX_POWER_ROWS, TX_TIMEOUT_CHOICES, VFO_STEPS_HZ,
 };
 use radio_platform::power_save::{self, PowerSave};
 use radio_platform::ptt::PttFilter;
@@ -47,7 +47,7 @@ use radio_tx_policy::{TxDenied, TxPolicy, TxRequest, TxState};
 use crate::configuration::Programmed;
 use crate::drivers::{BatterySense, Broadcast, Display, Keypad, Memory, Speaker, Target};
 use crate::keys::{Debouncer, Edge};
-use crate::operator_state::{ChannelPlace, OperatorState, OtherSlot};
+use crate::operator_state::{ChannelPlace, OperatorState, OtherSlot, OPERATOR_STATE_BYTES};
 use crate::serial::read_image;
 use crate::state::{
     boot_times, bus_available, mark_boot, now_ms, Publication, TaskCell, BATTERY_CALIBRATION,
@@ -202,13 +202,6 @@ struct Receiver<B: RegisterBus, S: Speaker, C: BroadcastChip> {
     asleep: bool,
     /// The last tuned setup and radio-wide squelch, restored after TX.
     last_tune: Option<(ChannelReceiveSetup, SquelchLevel)>,
-    /// A tone heard on the open squelch of a channel without a receive tone.
-    heard_tone: Option<Tone>,
-    /// The last tone read and how many readings after it agreed.
-    tone_reading: Option<(Tone, u8)>,
-    /// Whether untoned channels run the tone scan to show the tone heard,
-    /// the operator's TONE HEARD experiment.
-    tone_scan: bool,
     /// Whether a frequency or tone catch has the chip; the next tune ends it.
     catching: bool,
     /// The unit's squelch tables, once the serial task has read them.
@@ -237,9 +230,6 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
             squelch_open: false,
             asleep: false,
             last_tune: None,
-            heard_tone: None,
-            tone_reading: None,
-            tone_scan: false,
             catching: false,
             squelch_calibration: None,
             probed: false,
@@ -335,8 +325,7 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
     /// monitoring, and monitoring outranks both.
     fn tune(&mut self, setup: ChannelReceiveSetup, radio_wide: SquelchLevel) {
         self.end_catch();
-        // A tone heard on the previous channel says nothing about this one.
-        self.forget_tone();
+        // A tone matched on the previous channel says nothing about this one.
         self.tone_hold.reset();
         if matches!(setup.modulation, Modulation::Broadcast) {
             self.tune_broadcast(setup, radio_wide);
@@ -430,7 +419,6 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
         self.probed = true;
         self.last_tune = Some((setup, setup.squelch));
         self.frequency_hz = setup.frequency.as_hz();
-        self.forget_tone();
         if gate.is_near(rssi, open) {
             recheck();
             let Ok(again) = self.radio.probe_again() else {
@@ -549,11 +537,6 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
                     now_ms,
                 );
                 self.squelch_open = metrics.squelch_open && tone_matched.unwrap_or(true);
-                if self.tone_scan && tone == Tone::None && metrics.squelch_open {
-                    self.hear_tone();
-                } else {
-                    self.forget_tone();
-                }
                 self.gate_audio();
                 Some(ReceiveObservation {
                     squelch_open: metrics.squelch_open,
@@ -564,30 +547,6 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
                 self.faulted = true;
                 None
             }
-        }
-    }
-
-    /// Reads the tone the chip hears and shows it once it is certain: a DCS
-    /// word carries its own check, and a CTCSS tone must read the same three
-    /// times running, as the reference's tone scan requires
-    /// (`SCAN_CSS_STATE_SCANNING`).
-    #[inline(never)]
-    fn hear_tone(&mut self) {
-        let tone = match self.radio.detected_tone() {
-            Ok(Some(tone)) => tone,
-            Ok(None) => return,
-            Err(_) => {
-                self.faulted = true;
-                return;
-            }
-        };
-        let agreed = match self.tone_reading {
-            Some((last, agreed)) if last == tone => agreed.saturating_add(1),
-            _ => 0,
-        };
-        self.tone_reading = Some((tone, agreed));
-        if matches!(tone, Tone::Dcs { .. }) || agreed >= 2 {
-            self.heard_tone = Some(tone);
         }
     }
 
@@ -610,7 +569,6 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
         self.set_speaker(false);
         self.audio_routed = false;
         self.squelch_open = false;
-        self.forget_tone();
         if self.on_broadcast {
             self.broadcast.power_down();
             self.on_broadcast = false;
@@ -700,19 +658,6 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
         {
             self.faulted = true;
         }
-    }
-
-    /// Switches the TONE HEARD experiment; it takes effect at the next tune.
-    fn set_tone_scan(&mut self, on: bool) {
-        self.tone_scan = on;
-        self.radio.set_untoned_tone_scan(on);
-        self.forget_tone();
-    }
-
-    /// Clears the heard tone when the squelch closes or the channel changes.
-    fn forget_tone(&mut self) {
-        self.heard_tone = None;
-        self.tone_reading = None;
     }
 
     /// Sleeps the chip for battery save, silencing the speaker first.
@@ -1197,8 +1142,10 @@ pub async fn run<D, K, B, F, W, S, V, M>(
     let boot_screen_until = Instant::now() + Duration::from_millis(BOOT_SCREEN_MAX_MILLISECONDS);
     let mut redraw = true;
     // The place already written down, and the one waiting to settle into it.
-    let mut saved_place = place;
-    let mut settling: Option<(OperatorState, Instant)> = None;
+    // Places are compared as their encoded records: a derived comparison of
+    // the whole state cost about 300 bytes of K5 flash.
+    let mut saved_place = place.map(|place| place.encode());
+    let mut settling: Option<([u8; OPERATOR_STATE_BYTES], Instant)> = None;
     let mut backlight = Backlight::new(programmed.config().backlight_seconds, now_ms());
     if let Some(on) = backlight.poll(now_ms()) {
         display.set_backlight(on);
@@ -1273,7 +1220,7 @@ pub async fn run<D, K, B, F, W, S, V, M>(
                 display.set_backlight(on);
             }
             if publication.place.is_some() {
-                saved_place = publication.place;
+                saved_place = publication.place.map(|place| place.encode());
                 settling = None;
             }
             activation = activate(&programmed, &shell, selected, memory);
@@ -1563,17 +1510,6 @@ pub async fn run<D, K, B, F, W, S, V, M>(
             }
         }
 
-        // The TONE HEARD experiment changes how an untoned channel is set up,
-        // so switching it retunes the selected slot.
-        if shell.tone_heard() != receiver.tone_scan {
-            receiver.set_tone_scan(shell.tone_heard());
-            if pending.is_none() {
-                pending = activation
-                    .as_ref()
-                    .map(|(controller, _)| controller.setup());
-            }
-        }
-
         // Dual watch. Every action the operator takes is on the selected slot,
         // so any intent beyond a redraw brings the receiver back to it. While
         // dual watch runs, the receiver moves between the slots whenever the
@@ -1664,24 +1600,25 @@ pub async fn run<D, K, B, F, W, S, V, M>(
             b_selected: shell.active_slot() == SlotId::B,
             dual_watch: shell.dual_watch(),
         };
+        let encoded = place.encode();
         if context.scanning {
             // A scan moves the selection several times a second and none of
             // those is a place the operator chose. Where it stops is.
             settling = None;
-        } else if saved_place == Some(place) {
+        } else if saved_place == Some(encoded) {
             settling = None;
         } else {
             match settling {
-                Some((candidate, deadline)) if candidate == place => {
+                Some((candidate, deadline)) if candidate == encoded => {
                     if Instant::now() >= deadline {
                         OPERATOR_PLACE.signal(place);
-                        saved_place = Some(place);
+                        saved_place = Some(encoded);
                         settling = None;
                     }
                 }
                 _ => {
                     settling = Some((
-                        place,
+                        encoded,
                         Instant::now() + Duration::from_millis(PLACE_SETTLE_MILLISECONDS),
                     ));
                 }
@@ -2250,29 +2187,52 @@ fn render<B: RegisterBus, S: Speaker, C: BroadcastChip, M: Memory>(
                     }
                     Setting::DualWatch => SelectorRow::dual_watch_setting(shell.dual_watch()),
                     Setting::VfoStep => SelectorRow::vfo_step_setting(shell.vfo_step_hz()),
-                    Setting::ToneHeard => SelectorRow::tone_heard_setting(shell.tone_heard()),
+                    Setting::VfoRxTone => SelectorRow::vfo_tone_setting(false, shell.vfo().rx_tone),
+                    Setting::VfoTxTone => SelectorRow::vfo_tone_setting(true, shell.vfo().tx_tone),
+                    Setting::VfoPower => SelectorRow::vfo_power_setting(shell.vfo().power),
                 };
                 count += 1;
             }
             render_selector_list(frame, b"SETTINGS", &rows[..count], cursor - first);
         }
-        Screen::TxPowerList => {
-            // CHANNEL and six levels in five rows: page by whole screens, as
-            // the squelch list does.
+        Screen::TxPowerList | Screen::VfoPowerList => {
+            // CHANNEL, or the VFO's DEFAULT, and six levels in five rows: page
+            // by whole screens, as the squelch list does.
+            let vfo = shell.screen() == Screen::VfoPowerList;
+            let (title, chosen) = if vfo {
+                (&b"VFO POWER"[..], shell.vfo().power)
+            } else {
+                (&b"TX POWER"[..], shell.tx_override())
+            };
             let mut rows = [SelectorRow::default(); LIST_ROWS];
             let cursor = usize::from(shell.tx_power_cursor());
             let first = cursor / LIST_ROWS * LIST_ROWS;
             let mut count = 0;
             for (list_row, row) in (0..TX_POWER_ROWS).skip(first).zip(rows.iter_mut()) {
                 *row = match list_row.checked_sub(1) {
-                    None => SelectorRow::tx_power_channel(shell.tx_override().is_none()),
-                    Some(level) => {
-                        SelectorRow::tx_power_level(level, shell.tx_override() == Some(level))
-                    }
+                    None if vfo => SelectorRow::vfo_power_default(chosen.is_none()),
+                    None => SelectorRow::tx_power_channel(chosen.is_none()),
+                    Some(level) => SelectorRow::tx_power_level(level, chosen == Some(level)),
                 };
                 count += 1;
             }
-            render_selector_list(frame, b"TX POWER", &rows[..count], cursor - first);
+            render_selector_list(frame, title, &rows[..count], cursor - first);
+        }
+        Screen::ToneList => {
+            let mut rows = [SelectorRow::default(); LIST_ROWS];
+            let cursor = shell.tone_cursor();
+            let first = cursor / LIST_ROWS * LIST_ROWS;
+            let (title, current) = match shell.tone_target() {
+                ToneTarget::Receive => (&b"RX TONE"[..], shell.vfo().rx_tone),
+                ToneTarget::Transmit => (&b"TX TONE"[..], shell.vfo().tx_tone),
+            };
+            let mut count = 0;
+            for (list_row, row) in (first..TONE_ROWS).zip(rows.iter_mut()) {
+                let tone = tone_at_row(list_row).unwrap_or(Tone::None);
+                *row = SelectorRow::tone_choice(tone, tone == current);
+                count += 1;
+            }
+            render_selector_list(frame, title, &rows[..count], cursor - first);
         }
         Screen::TxTimeoutList => {
             let mut rows = [SelectorRow::default(); LIST_ROWS];
@@ -2439,9 +2399,6 @@ fn slot_channel<'a, B: RegisterBus, S: Speaker, C: BroadcastChip, M: Memory>(
             .map(|receiver| receiver.rssi_raw),
         tx_tone,
         rx_tone: switched_rx_tone(controller.setup().tone, tx_tone, rx_switch),
-        heard_tone: receiver
-            .filter(|receiver| receiver.squelch_open)
-            .and_then(|receiver| receiver.heard_tone),
     })
 }
 
@@ -3268,15 +3225,12 @@ mod tests {
     }
 
     #[test]
-    fn an_open_squelch_shows_the_tone_heard_and_a_receive_tone_holds_it_shut() {
+    fn a_receive_tone_holds_the_squelch_shut_on_a_carrier_alone() {
         use super::Receiver;
         use radio_channel_control::ChannelReceiveSetup;
         use radio_domain::{Bandwidth, Frequency, FrequencyStep, Modulation, SquelchLevel, Tone};
 
         const SQUELCH_STATUS: usize = 0x0C;
-        const CTCSS_SCAN: usize = 0x68;
-        const CDCSS_HIGH: usize = 0x69;
-        const CDCSS_LOW: usize = 0x6A;
         let setup = |tone| ChannelReceiveSetup {
             frequency: Frequency::from_hz(145_500_000).unwrap(),
             modulation: Modulation::Fm,
@@ -3294,57 +3248,20 @@ mod tests {
         receiver.tune(setup(Tone::None), SquelchLevel::CONSERVATIVE);
         assert!(receiver.started && !receiver.faulted);
 
-        // With TONE HEARD off nothing is read, whatever the chip reports.
-        chip.set(SQUELCH_STATUS, 0x0002);
-        chip.set(CDCSS_HIGH, 0x8000);
-        chip.set(CTCSS_SCAN, 1828);
-        for _ in 0..4 {
-            assert!(receiver.observe(0).unwrap().squelch_open);
-        }
-        assert_eq!(receiver.heard_tone, None);
-
-        // Switched off, the reference's untoned words; switched on, the next
-        // tune scans for a tone.
+        // Untoned: the reference's words, and a carrier opens the squelch.
         assert_eq!(chip.get(0x51), 0x904A);
-        receiver.set_tone_scan(true);
-        receiver.tune(setup(Tone::None), SquelchLevel::CONSERVATIVE);
-        assert_eq!(chip.get(0x51), 0x0300);
-
-        // A carrier with 88.5 Hz on it: shown on the third agreeing reading.
-        for _ in 0..2 {
-            assert!(receiver.observe(0).unwrap().squelch_open);
-            assert_eq!(receiver.heard_tone, None);
-        }
-        receiver.observe(0).unwrap();
-        assert_eq!(receiver.heard_tone, Some(Tone::Ctcss(885)));
-        // The squelch closing forgets it.
-        chip.set(SQUELCH_STATUS, 0);
-        receiver.observe(0).unwrap();
-        assert_eq!(receiver.heard_tone, None);
-
-        // A DCS word is shown at once.
         chip.set(SQUELCH_STATUS, 0x0002);
-        chip.set(CDCSS_HIGH, 0x0763);
-        chip.set(CDCSS_LOW, 0x0813);
-        receiver.observe(0).unwrap();
-        assert_eq!(
-            receiver.heard_tone,
-            Some(Tone::Dcs {
-                code: 23,
-                inverted: false
-            })
-        );
+        let observation = receiver.observe(0).unwrap();
+        assert_eq!(observation.tone_matched, None);
+        assert!(receiver.squelch_open && receiver.speaker.on);
 
-        // Retuning forgets it too; with a receive tone the carrier alone
-        // neither opens the squelch nor draws the meter.
+        // With a receive tone the carrier alone neither opens the squelch
+        // nor draws the meter.
         receiver.tune(setup(Tone::Ctcss(885)), SquelchLevel::CONSERVATIVE);
-        assert_eq!(receiver.heard_tone, None);
-        chip.set(SQUELCH_STATUS, 0x0002);
         let observation = receiver.observe(0).unwrap();
         assert!(observation.squelch_open);
         assert_eq!(observation.tone_matched, Some(false));
         assert!(!receiver.squelch_open && !receiver.speaker.on);
-        assert_eq!(receiver.heard_tone, None);
     }
 
     #[derive(Default)]
