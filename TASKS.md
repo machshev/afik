@@ -3276,6 +3276,9 @@
       project and its file to the typed name; Delete project asks inline,
       then deletes the file and opens the next project, or a new default.
       Done.
+  11. Projects tab (operator request): a first tab lists every project to
+      open, with Save, Revert, New, Rename and Delete; Banks and Radio keep
+      only the open project's name, Save and Revert. Done.
 
 ## BANKS-073 — Up to 254 banks, addressed by bank and position
 

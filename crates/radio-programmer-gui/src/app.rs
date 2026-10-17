@@ -89,6 +89,7 @@ Off while dual watch runs.";
 /// Which editor tab is visible.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum Tab {
+    Projects,
     #[default]
     Banks,
     Map,
@@ -2284,6 +2285,7 @@ impl eframe::App for StudioApp {
 
         egui::TopBottomPanel::top("tabs").show(context, |ui| {
             ui.horizontal_wrapped(|ui| {
+                ui.selectable_value(&mut self.tab, Tab::Projects, "Projects");
                 ui.selectable_value(&mut self.tab, Tab::Banks, "Banks");
                 ui.selectable_value(&mut self.tab, Tab::Map, "Map");
                 ui.selectable_value(&mut self.tab, Tab::Radio, "Radio");
@@ -2304,6 +2306,7 @@ impl eframe::App for StudioApp {
         });
 
         egui::CentralPanel::default().show(context, |ui| match self.tab {
+            Tab::Projects => self.projects_tab(ui),
             Tab::Banks => self.banks_tab(ui),
             Tab::Map => self.map_tab(ui),
             Tab::Radio => self.radio_tab(ui),
@@ -2314,43 +2317,49 @@ impl eframe::App for StudioApp {
 }
 
 impl StudioApp {
+    /// The open project's name, Save and Revert, atop the tabs that edit it;
+    /// choosing and managing projects is on the Projects tab.
     fn project_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             ui.label("Project:");
-            let mut chosen = self.projects.current_index();
-            ComboBox::from_id_salt("project")
-                .selected_text(self.projects.current().name.clone())
-                .width(200.0)
-                .show_ui(ui, |ui| {
-                    for (index, entry) in self.projects.entries().iter().enumerate() {
-                        ui.selectable_value(&mut chosen, index, &entry.name)
-                            .on_hover_text(entry.path.display().to_string());
-                    }
-                })
-                .response
+            ui.label(RichText::new(&self.projects.current().name).strong())
                 .on_hover_text(self.projects.current().path.display().to_string());
-            if chosen != self.projects.current_index() {
-                self.open_project(chosen);
-            }
-            if ui.button("Save").clicked() {
-                self.save_project();
-            }
-            let dirty = self.is_dirty();
-            if ui
-                .add_enabled(dirty, egui::Button::new("Revert"))
-                .on_hover_text("Discard the changes since the project was last saved")
-                .clicked()
-            {
-                self.load_project();
-            }
-            if dirty {
-                ui.colored_label(WARNING_COLOUR, "unsaved changes");
-            }
-            ui.separator();
+            self.save_buttons(ui);
+        });
+        ui.separator();
+    }
+
+    /// Save, Revert, and whether there is anything to save.
+    fn save_buttons(&mut self, ui: &mut egui::Ui) {
+        if ui.button("Save").clicked() {
+            self.save_project();
+        }
+        let dirty = self.is_dirty();
+        if ui
+            .add_enabled(dirty, egui::Button::new("Revert"))
+            .on_hover_text("Discard the changes since the project was last saved")
+            .clicked()
+        {
+            self.load_project();
+        }
+        if dirty {
+            ui.colored_label(WARNING_COLOUR, "unsaved changes");
+        }
+    }
+
+    /// The Projects tab: every project to open, and New, Rename and Delete.
+    fn projects_tab(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Open:");
+            ui.label(RichText::new(&self.projects.current().name).strong());
+            self.save_buttons(ui);
+        });
+        ui.separator();
+        ui.horizontal_wrapped(|ui| {
             ui.add(
                 TextEdit::singleline(&mut self.new_project)
                     .hint_text("project name")
-                    .desired_width(160.0),
+                    .desired_width(200.0),
             )
             .on_hover_text("The name for New project or Rename");
             if ui
@@ -2391,6 +2400,25 @@ impl StudioApp {
             }
         });
         ui.separator();
+        let mut chosen = None;
+        ScrollArea::vertical().show(ui, |ui| {
+            for (index, entry) in self.projects.entries().iter().enumerate() {
+                let open = index == self.projects.current_index();
+                ui.horizontal(|ui| {
+                    if ui
+                        .selectable_label(open, RichText::new(&entry.name).strong())
+                        .on_hover_text("Opens this project")
+                        .clicked()
+                    {
+                        chosen = Some(index);
+                    }
+                    ui.weak(entry.path.display().to_string());
+                });
+            }
+        });
+        if let Some(index) = chosen {
+            self.open_project(index);
+        }
     }
 
     /// Default sets add banks, so they are offered only on the Banks tab.
@@ -4683,6 +4711,45 @@ mod tests {
     }
 
     #[test]
+    fn projects_are_managed_on_their_own_tab() {
+        use eframe::egui::{CentralPanel, Context, Pos2, RawInput, Rect, Vec2};
+
+        let mut app = app_in(&scratch("projects-tab"), &Options::default());
+        app.save_project();
+        app.new_project = "Club".to_owned();
+        app.create_project();
+        let context = Context::default();
+        let draw = |app: &mut StudioApp, tab: fn(&mut StudioApp, &mut eframe::egui::Ui)| {
+            let input = RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1100.0, 800.0))),
+                ..RawInput::default()
+            };
+            context.run(input, |context| {
+                CentralPanel::default().show(context, |ui| tab(app, ui));
+            })
+        };
+        let banks = draw(&mut app, StudioApp::banks_tab);
+        assert!(
+            text_centres(&banks, "New project").is_empty(),
+            "not on Banks"
+        );
+        assert_eq!(
+            text_centres(&banks, "Club").len(),
+            1,
+            "the open project's name"
+        );
+        assert_eq!(
+            text_centres(&banks, "Revert").len(),
+            1,
+            "Save and Revert stay"
+        );
+        let projects = draw(&mut app, StudioApp::projects_tab);
+        assert_eq!(text_centres(&projects, "New project").len(), 1);
+        assert_eq!(text_centres(&projects, "default").len(), 1, "listed");
+        assert_eq!(text_centres(&projects, "Delete project").len(), 1);
+    }
+
+    #[test]
     fn projects_are_renamed_and_deleted() {
         let dir = scratch("rename-delete");
         let projects = dir.join("projects");
@@ -4705,7 +4772,7 @@ mod tests {
         // Delete asks first; the project goes only on Yes.
         let context = eframe::egui::Context::default();
         let _ = context.run(eframe::egui::RawInput::default(), |context| {
-            eframe::egui::CentralPanel::default().show(context, |ui| app.project_bar(ui));
+            eframe::egui::CentralPanel::default().show(context, |ui| app.projects_tab(ui));
         });
         assert!(!app.confirm_delete);
         app.confirm_delete = true;

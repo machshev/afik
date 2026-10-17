@@ -277,7 +277,10 @@ test -p radio-programmer-gui` 184 passed 0 failed 3 ignored; one real tile
 fetched with the studio's agent and decoded). Projects can be
 renamed (with their file) and deleted after an inline confirmation (gate:
 studio fmt and clippy `-D warnings` clean, `cargo test -p
-radio-programmer-gui` 187 passed 0 failed 3 ignored). The studio takes `-v`/`--verbose`
+radio-programmer-gui` 187 passed 0 failed 3 ignored). Project management
+moved to a Projects tab; Banks and Radio keep the name, Save and Revert
+(gate: studio fmt and clippy `-D warnings` clean, `cargo test -p
+radio-programmer-gui` 188 passed 0 failed 3 ignored). The studio takes `-v`/`--verbose`
 (operator request): `-v` logs AFIK's debug lines, `-vv` its trace and other
 crates' debug, `-vvv` everything, without `AFIK_LOG` (which still works;
 the louder wins). Debug lines added: each HTTP fetch (URL, bytes, ms) and
