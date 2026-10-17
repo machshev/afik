@@ -3484,22 +3484,37 @@ impl StudioApp {
                 ));
             }
             ui.separator();
-            ui.checkbox(&mut self.airport_options.per_airport, "Bank per airport")
-                .on_hover_text(
-                    "Gives each of the nearest airports within the radius a bank of its own \
-                     tower, ground and ATIS, even those too weak to hear from here, for when \
-                     you are there; the area bank keeps the rest",
-                );
-            ui.add_enabled(
-                self.airport_options.per_airport,
-                egui::DragValue::new(&mut self.airport_options.airports)
-                    .range(1..=MAX_BANKS)
-                    .suffix(" airports"),
-            )
-            .on_hover_text(
-                "How many airports within the radius, nearest first, get a bank of their own",
-            );
+            self.per_airport_controls(ui);
         });
+    }
+
+    /// Whether each airport gets a bank of its own, how many, and how far
+    /// off.
+    fn per_airport_controls(&mut self, ui: &mut egui::Ui) {
+        ui.checkbox(&mut self.airport_options.per_airport, "Bank per airport")
+            .on_hover_text(
+                "Gives each of the nearest airports you might travel to a bank of its own \
+                 tower, ground and ATIS, even those too weak to hear from here, for when \
+                 you are there; the area bank keeps the rest",
+            );
+        ui.add_enabled(
+            self.airport_options.per_airport,
+            egui::DragValue::new(&mut self.airport_options.airports)
+                .range(1..=MAX_BANKS)
+                .suffix(" airports"),
+        )
+        .on_hover_text("How many airports, nearest first, get a bank of their own");
+        ui.add_enabled(
+            self.airport_options.per_airport,
+            egui::DragValue::new(&mut self.airport_options.travel_km)
+                .range(1..=airports::MAX_TRAVEL_KM)
+                .prefix("within ")
+                .suffix(" km"),
+        )
+        .on_hover_text(
+            "How far you would travel to an airport for it to get a bank of its own, \
+             whatever the radius it is heard within",
+        );
     }
 
     /// The row that adds the gliding and small-airfield frequencies near the
