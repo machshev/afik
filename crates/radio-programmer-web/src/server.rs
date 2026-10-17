@@ -560,6 +560,7 @@ fn state_json(state: &GuiState) -> String {
             ObjectKind::TxRange => "tx-range",
             ObjectKind::BankGroup => "bank-group",
             ObjectKind::StartPlace => "start-place",
+            ObjectKind::BankOrigin => "bank-origin",
         };
         write!(
             &mut json,

@@ -1045,6 +1045,7 @@ const fn object_kind_name(kind: ObjectKind) -> &'static str {
         ObjectKind::TxRange => "tx-range",
         ObjectKind::BankGroup => "bank-group",
         ObjectKind::StartPlace => "start-place",
+        ObjectKind::BankOrigin => "bank-origin",
     }
 }
 

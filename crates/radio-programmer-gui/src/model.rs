@@ -12,10 +12,10 @@
 use std::fmt;
 
 use radio_channel_plan::{
-    BankFlags, BankGroup, BankName, BankSet, BankSettings, ChannelBank, ChannelDefinition,
-    ChannelFlags, ChannelName, ChannelRecord, ChannelTemplate, Designator, GeneratedBank, Locator,
-    PlanEncoding, SharedSettings, StartPlace, GENERATED_CHANNEL_ID_BASE, MAX_BANKS,
-    MAX_DESIGNATOR_LEN, MAX_GENERATED_CHANNELS, MAX_GROUPS,
+    BankFlags, BankGroup, BankName, BankOrigin, BankSet, BankSettings, BankSource, ChannelBank,
+    ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord, ChannelTemplate, Designator,
+    GeneratedBank, Locator, PlanEncoding, SharedSettings, StartPlace, GENERATED_CHANNEL_ID_BASE,
+    MAX_BANKS, MAX_DESIGNATOR_LEN, MAX_GENERATED_CHANNELS, MAX_GROUPS,
 };
 use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, Offset, PowerLevel,
@@ -506,6 +506,30 @@ pub struct BankDraft {
     /// The groups the bank is in, by their place in the project's list
     /// (`ADR-116`); kept on the bank so it moves with it.
     pub groups: Vec<usize>,
+    /// The generator that made the bank and for where (`ADR-117`); none for
+    /// the operator's own. Kept in the project, never sent to a radio.
+    pub origin: Option<Origin>,
+}
+
+/// Which generator made a bank, and the locator it made it for; empty for a
+/// bank every location shares.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Origin {
+    /// The generator.
+    pub source: BankSource,
+    /// The location's Maidenhead locator, upper case, or empty.
+    pub locator: String,
+}
+
+impl Origin {
+    /// Made by `source` for `locator`, or for every location when it is
+    /// empty.
+    pub fn new(source: BankSource, locator: &str) -> Self {
+        Self {
+            source,
+            locator: locator.trim().to_ascii_uppercase(),
+        }
+    }
 }
 
 impl Default for BankDraft {
@@ -533,6 +557,7 @@ impl Default for BankDraft {
             compander: false,
             channels: Vec::new(),
             groups: Vec::new(),
+            origin: None,
         }
     }
 }
@@ -1428,6 +1453,28 @@ impl ProjectModel {
                 Err(failure) => errors.push(failure),
             }
         }
+        for (row, bank) in self.banks.iter().enumerate() {
+            let Some(origin) = &bank.origin else {
+                continue;
+            };
+            let failed = |reason: &str| error(ModelScope::Bank(row), "origin", reason);
+            let locator = if origin.locator.is_empty() {
+                Ok(None)
+            } else {
+                Locator::new(&origin.locator)
+                    .map(Some)
+                    .map_err(|_| failed("has a locator that is too long"))
+            };
+            let made = locator.and_then(|locator| {
+                let id = u16::try_from(row).map_err(|_| failed("is past the radio's limit"))?;
+                BankOrigin::new(BankId::new(id), origin.source, locator)
+                    .map_err(|_| failed("is past the radio's limit"))
+            });
+            match made {
+                Ok(origin) => project.add_origin(origin),
+                Err(failure) => errors.push(failure),
+            }
+        }
 
         if errors.is_empty() {
             Ok(project)
@@ -1611,6 +1658,10 @@ impl ProjectModel {
                         radio_storage::decode_start_place(&object).map_err(invalid)?,
                     ));
                 }
+                ObjectKind::BankOrigin => {
+                    project
+                        .add_origin(radio_storage::decode_bank_origin(&object).map_err(invalid)?);
+                }
             }
         }
         Ok(Self::from_project(&project))
@@ -1660,6 +1711,18 @@ impl ProjectModel {
                 .filter(|row| project.groups()[*row].banks().contains(BankId::new(id)))
                 .collect()
         };
+        let origin_of = |id: u16| {
+            project
+                .origins()
+                .iter()
+                .find(|origin| origin.bank().get() == id)
+                .map(|origin| Origin {
+                    source: origin.source(),
+                    locator: origin
+                        .locator()
+                        .map_or_else(String::new, |locator| locator.as_str().to_owned()),
+                })
+        };
         for id in 0..MAX_BANKS {
             let named = project.banks().iter().find(|bank| bank.id().get() == id);
             let plan = project
@@ -1682,11 +1745,13 @@ impl ProjectModel {
                 );
                 draft.channels = channels;
                 draft.groups = in_groups(id);
+                draft.origin = origin_of(id);
                 model.banks.push(draft);
             }
             if let Some(plan) = plan {
                 let mut draft = BankDraft::from_generated(*plan);
                 draft.groups = in_groups(id);
+                draft.origin = origin_of(id);
                 model.banks.push(draft);
             }
         }
@@ -2063,6 +2128,33 @@ mod tests {
         assert_eq!(read.groups().len(), 3);
         assert_eq!(read.groups()[2].banks().len(), 3);
         assert_eq!(read.groups()[0].locator(), None, "the radio never gets it");
+    }
+
+    #[test]
+    fn a_banks_origin_survives_the_project_file_but_not_the_radio() {
+        use super::Origin;
+        use radio_channel_plan::BankSource;
+
+        let mut model = project();
+        model.banks[0].name = "RPT JO02EH".to_owned();
+        am_bank(&mut model, "SEA CORE", "124.975000");
+        let image = model.to_radio_image().unwrap();
+        model.banks[0].origin = Some(Origin::new(BankSource::Repeaters, "jo02eh"));
+        model.banks[1].origin = Some(Origin::new(BankSource::Marine, ""));
+        let file = model.to_image().unwrap();
+        let read = ProjectModel::from_image(&file).unwrap();
+        assert_eq!(read, model);
+        assert_eq!(read.banks[0].origin.as_ref().unwrap().locator, "JO02EH");
+        assert_eq!(
+            model.to_radio_image().unwrap(),
+            image,
+            "never sent to a radio"
+        );
+        let from_radio = ProjectModel::from_image(&image).unwrap();
+        assert!(from_radio.banks.iter().all(|bank| bank.origin.is_none()));
+
+        model.banks[0].origin = Some(Origin::new(BankSource::Repeaters, "JO02EH12AB"));
+        assert!(model.validate().is_err(), "a locator too long is refused");
     }
 
     #[test]

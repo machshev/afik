@@ -1993,3 +1993,15 @@ meaning.
   start, until the operator moves; the K5 view is its EEPROM, and the K1 now
   keeps a host-written record and stores it on commit. Stored in the project
   as object kind 7 (group, bank, channel by bank and position).
+
+## ADR-117 — A bank records which generator made it, in the project only
+
+- **Date:** 2026-10-17
+- **Status:** accepted, operator request.
+- A bank a generator made carries its origin: the generator (a stable code,
+  `BankSource`) and the locator it was made for, or none for a bank every
+  location shares (FM stations, the marine and airfield cores). It is project
+  object kind 8, keyed by the bank, and is never compiled into a radio image.
+- The studio rewrites, cleans up and shares generated banks by origin rather
+  than by name. A project saved before this records no origins; the studio
+  infers them once from the generator names when it opens one.

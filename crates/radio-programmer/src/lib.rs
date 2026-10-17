@@ -4,7 +4,7 @@
 
 use core::fmt;
 use radio_channel_plan::{
-    BankGroup, ChannelBank, ChannelRecord, GeneratedBank, PlanEncoding, StartPlace,
+    BankGroup, BankOrigin, ChannelBank, ChannelRecord, GeneratedBank, PlanEncoding, StartPlace,
 };
 use radio_domain::{BankId, ChannelId, RadioConfig};
 use radio_platform::memory_link::IMAGE_REGION_BYTES;
@@ -17,12 +17,12 @@ use radio_protocol::{
 };
 use radio_storage::radio_image;
 use radio_storage::{
-    configuration_image_len, decode_bank_group, decode_channel, decode_channel_bank,
-    decode_configuration_image, decode_generated_bank, decode_radio_config, decode_start_place,
-    decode_tx_range, encode_bank_group, encode_channel, encode_channel_bank,
-    encode_configuration_image, encode_generated_bank, encode_radio_config, encode_start_place,
-    encode_tx_range, ObjectKey, ObjectKind, StorageError, StorageObject, StorageUsage,
-    MAX_OBJECT_DATA, OBJECT_ENTRY_HEADER_LEN, STORAGE_FORMAT_VERSION,
+    configuration_image_len, decode_bank_group, decode_bank_origin, decode_channel,
+    decode_channel_bank, decode_configuration_image, decode_generated_bank, decode_radio_config,
+    decode_start_place, decode_tx_range, encode_bank_group, encode_bank_origin, encode_channel,
+    encode_channel_bank, encode_configuration_image, encode_generated_bank, encode_radio_config,
+    encode_start_place, encode_tx_range, ObjectKey, ObjectKind, StorageError, StorageObject,
+    StorageUsage, MAX_OBJECT_DATA, OBJECT_ENTRY_HEADER_LEN, STORAGE_FORMAT_VERSION,
 };
 use radio_tx_policy::{RangeError, TxPolicy, TxRange};
 
@@ -117,6 +117,7 @@ pub struct RadioProject {
     tx_ranges: Vec<TxRange>,
     groups: Vec<BankGroup>,
     start: Option<StartPlace>,
+    origins: Vec<BankOrigin>,
 }
 
 impl RadioProject {
@@ -130,7 +131,19 @@ impl RadioProject {
             tx_ranges: Vec::new(),
             groups: Vec::new(),
             start: None,
+            origins: Vec::new(),
         }
+    }
+
+    /// Records which generator made a bank (`ADR-117`); the project file
+    /// keeps it, a radio image never holds it.
+    pub fn add_origin(&mut self, origin: BankOrigin) {
+        self.origins.push(origin);
+    }
+
+    /// Returns where each generated bank came from.
+    pub fn origins(&self) -> &[BankOrigin] {
+        &self.origins
     }
 
     /// Sets where the radio starts, which a write sends as its place record
@@ -448,7 +461,8 @@ impl ConfigurationCompiler {
             + usize::from(project.config.is_some())
             + project.tx_ranges.len()
             + project.groups.len()
-            + usize::from(project.start.is_some());
+            + usize::from(project.start.is_some())
+            + project.origins.len();
         let mut objects = Vec::with_capacity(object_count);
         for bank in &project.generated_banks {
             objects.push(encode_generated_bank(*bank)?);
@@ -472,6 +486,9 @@ impl ConfigurationCompiler {
         }
         if let Some(start) = project.start {
             objects.push(encode_start_place(start)?);
+        }
+        for origin in &project.origins {
+            objects.push(encode_bank_origin(*origin)?);
         }
         objects.sort_unstable_by_key(|object| object.key());
         if let Some(duplicate) = objects
@@ -573,6 +590,9 @@ impl ConfigurationCompiler {
                 }
                 ObjectKind::StartPlace => {
                     decode_start_place(object)?;
+                }
+                ObjectKind::BankOrigin => {
+                    decode_bank_origin(object)?;
                 }
             }
             report.object_count = report
@@ -721,6 +741,9 @@ impl ConfigurationSnapshot {
                 }
                 ObjectKind::StartPlace => {
                     decode_start_place(object)?;
+                }
+                ObjectKind::BankOrigin => {
+                    decode_bank_origin(object)?;
                 }
             }
             storage_bytes = storage_bytes
@@ -1463,6 +1486,39 @@ mod tests {
         let image = project.compile_radio_image().expect("radio image");
         let read = RadioProject::from_radio_image(&image).expect("reads back");
         assert_eq!(read.groups(), &[home.with_locator(None)]);
+    }
+
+    #[test]
+    fn a_banks_origin_survives_the_project_file_and_never_reaches_the_radio() {
+        use radio_channel_plan::{BankOrigin, BankSource, Locator};
+        let mut project = RadioProject::new();
+        project.add_channel(channel(2, 0));
+        project.add_bank(named_bank(0));
+        let image = project.compile_radio_image().expect("radio image");
+        let origin = BankOrigin::new(
+            BankId::new(0),
+            BankSource::Repeaters,
+            Some(Locator::new("JO02EH").unwrap()),
+        )
+        .unwrap();
+        project.add_origin(origin);
+        assert_eq!(project.origins(), &[origin]);
+
+        let compiled = ConfigurationCompiler::new(capabilities_for(8))
+            .compile(&project)
+            .unwrap();
+        let kept: Vec<_> = compiled
+            .objects()
+            .iter()
+            .filter(|object| object.key().kind == ObjectKind::BankOrigin)
+            .map(|object| radio_storage::decode_bank_origin(object).unwrap())
+            .collect();
+        assert_eq!(kept, [origin]);
+        assert_eq!(
+            project.compile_radio_image().expect("radio image"),
+            image,
+            "the radio image is the same with or without it"
+        );
     }
 
     #[test]

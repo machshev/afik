@@ -191,6 +191,8 @@ pub enum PlanError {
     /// A broadcast channel was off the broadcast receiver's 64–108 MHz,
     /// 100 kHz raster, or had a transmit frequency of its own.
     Broadcast,
+    /// A bank's origin named a generator this build does not define.
+    UnknownSource,
 }
 
 impl fmt::Display for PlanError {
@@ -212,6 +214,7 @@ impl fmt::Display for PlanError {
                 formatter.write_str("derived channel name is too long to display")
             }
             Self::NumberingOverflow => formatter.write_str("channel numbering overflows"),
+            Self::UnknownSource => formatter.write_str("unknown bank generator"),
             Self::UnsupportedEncoding => {
                 formatter.write_str("unsupported channel-plan encoding family")
             }
@@ -378,6 +381,99 @@ impl BankGroup {
         self.locator
     }
 }
+
+/// The studio's generator that made a bank (`ADR-117`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum BankSource {
+    /// UK repeaters.
+    Repeaters = 1,
+    /// Repeaters outside the UK.
+    WorldRepeaters = 2,
+    /// Internet gateways.
+    Gateways = 3,
+    /// Beacons.
+    Beacons = 4,
+    /// FM broadcast stations.
+    Stations = 5,
+    /// Airports' airband frequencies.
+    Airports = 6,
+    /// Gliding and small-airfield frequencies.
+    Airfields = 7,
+    /// Marine VHF channels.
+    Marine = 8,
+}
+
+impl BankSource {
+    /// Every source, in code order.
+    pub const ALL: [Self; 8] = [
+        Self::Repeaters,
+        Self::WorldRepeaters,
+        Self::Gateways,
+        Self::Beacons,
+        Self::Stations,
+        Self::Airports,
+        Self::Airfields,
+        Self::Marine,
+    ];
+
+    /// The source a stored code names.
+    pub fn from_code(code: u8) -> Result<Self, PlanError> {
+        Self::ALL
+            .into_iter()
+            .find(|source| *source as u8 == code)
+            .ok_or(PlanError::UnknownSource)
+    }
+
+    /// The code the project file stores.
+    pub const fn code(self) -> u8 {
+        self as u8
+    }
+}
+
+/// Where a bank came from: the generator that made it and the location it
+/// made it for, or none for a bank every location shares (`ADR-117`). It
+/// stays in the project; a radio never gets it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BankOrigin {
+    bank: BankId,
+    source: BankSource,
+    locator: Option<Locator>,
+}
+
+impl BankOrigin {
+    /// The origin of `bank`, which must be below [`MAX_BANKS`].
+    pub const fn new(
+        bank: BankId,
+        source: BankSource,
+        locator: Option<Locator>,
+    ) -> Result<Self, PlanError> {
+        if bank.get() >= MAX_BANKS {
+            return Err(PlanError::BankOutOfRange);
+        }
+        Ok(Self {
+            bank,
+            source,
+            locator,
+        })
+    }
+
+    /// Returns the bank it describes.
+    pub const fn bank(self) -> BankId {
+        self.bank
+    }
+
+    /// Returns the generator that made the bank.
+    pub const fn source(self) -> BankSource {
+        self.source
+    }
+
+    /// Returns the location the bank was made for, if only one.
+    pub const fn locator(self) -> Option<Locator> {
+        self.locator
+    }
+}
+
 /// A compact, display-safe explicit channel name.
 pub type ChannelName = FixedName<MAX_CHANNEL_NAME_LEN>;
 /// The short prefix a plan's expanded channel names are built from.
@@ -1447,8 +1543,8 @@ mod tests {
     use radio_domain::{Bandwidth, ChannelId, Modulation, PowerLevel, Tone};
 
     use super::{
-        generated_channel_index, BankGroup, BankName, BankSet, Designator, GeneratedBank,
-        PlanEncoding, PlanError, SharedSettings, MAX_GROUPS,
+        generated_channel_index, BankGroup, BankName, BankOrigin, BankSet, BankSource, Designator,
+        GeneratedBank, Locator, PlanEncoding, PlanError, SharedSettings, MAX_GROUPS,
     };
     use radio_domain::{BankId, Frequency, FrequencyStep, Offset};
 
@@ -1697,6 +1793,22 @@ mod tests {
         let record = plan.channel_record(7).unwrap();
         assert_eq!(generated_channel_index(record.id()), Some(7));
         assert_eq!(record.bank(), Some(BankId::new(MAX_BANKS - 1)));
+    }
+
+    #[test]
+    fn a_bank_origin_names_its_generator_by_a_stable_code() {
+        for source in BankSource::ALL {
+            assert_eq!(BankSource::from_code(source.code()), Ok(source));
+        }
+        assert_eq!(BankSource::from_code(0), Err(PlanError::UnknownSource));
+        assert_eq!(BankSource::from_code(9), Err(PlanError::UnknownSource));
+        let home = Locator::new("JO02EH").unwrap();
+        let origin = BankOrigin::new(BankId::new(3), BankSource::Marine, Some(home)).unwrap();
+        assert_eq!(origin.locator(), Some(home));
+        assert_eq!(
+            BankOrigin::new(BankId::new(MAX_BANKS), BankSource::Marine, None),
+            Err(PlanError::BankOutOfRange)
+        );
     }
 
     #[test]

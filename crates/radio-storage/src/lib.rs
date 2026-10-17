@@ -5,10 +5,10 @@
 
 use core::fmt;
 use radio_channel_plan::{
-    BankFlags, BankGroup, BankName, BankSet, BankSettings, ChannelBank, ChannelDefinition,
-    ChannelFlags, ChannelName, ChannelRecord, ChannelTemplate, Designator, GeneratedBank, Locator,
-    PlanEncoding, SharedSettings, StartPlace, MAX_BANK_NAME_LEN, MAX_CHANNEL_NAME_LEN,
-    MAX_DESIGNATOR_LEN, MAX_LOCATOR_LEN,
+    BankFlags, BankGroup, BankName, BankOrigin, BankSet, BankSettings, BankSource, ChannelBank,
+    ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord, ChannelTemplate, Designator,
+    GeneratedBank, Locator, PlanEncoding, SharedSettings, StartPlace, MAX_BANK_NAME_LEN,
+    MAX_CHANNEL_NAME_LEN, MAX_DESIGNATOR_LEN, MAX_LOCATOR_LEN,
 };
 use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, Offset, PowerLevel,
@@ -87,6 +87,9 @@ pub enum ObjectKind {
     BankGroup = 6,
     /// Where the radio starts (`ADR-116`); one, identifier zero.
     StartPlace = 7,
+    /// Which generator made a bank, and for which location (`ADR-117`);
+    /// the identifier is the bank's.
+    BankOrigin = 8,
 }
 
 impl TryFrom<u8> for ObjectKind {
@@ -101,6 +104,7 @@ impl TryFrom<u8> for ObjectKind {
             5 => Ok(Self::TxRange),
             6 => Ok(Self::BankGroup),
             7 => Ok(Self::StartPlace),
+            8 => Ok(Self::BankOrigin),
             _ => Err(StorageError::UnsupportedObject),
         }
     }
@@ -1310,6 +1314,52 @@ pub fn decode_bank_group(object: &impl Object) -> Result<BankGroup, StorageError
         .with_locator(locator))
 }
 
+/// Encoded byte length of a bank-origin object: version, generator and
+/// locator.
+pub const BANK_ORIGIN_ENCODED_LEN: usize = 1 + 1 + 1 + MAX_LOCATOR_LEN;
+
+/// Encodes where a bank came from as a storage object, keyed by the bank.
+pub fn encode_bank_origin(origin: BankOrigin) -> Result<StorageObject, StorageError> {
+    let mut data = [0_u8; BANK_ORIGIN_ENCODED_LEN];
+    data[0] = STORAGE_FORMAT_VERSION;
+    data[1] = origin.source().code();
+    if let Some(locator) = origin.locator() {
+        data[2] = locator.len();
+        data[3..11].copy_from_slice(&locator.field());
+    }
+    StorageObject::new(
+        ObjectKey {
+            kind: ObjectKind::BankOrigin,
+            id: origin.bank().get(),
+        },
+        &data,
+    )
+}
+
+/// Decodes and fully validates a bank-origin storage object.
+pub fn decode_bank_origin(object: &impl Object) -> Result<BankOrigin, StorageError> {
+    let key = object.key();
+    if key.kind != ObjectKind::BankOrigin {
+        return Err(StorageError::UnsupportedObject);
+    }
+    let data = object.data();
+    if data.len() != BANK_ORIGIN_ENCODED_LEN || data[0] != STORAGE_FORMAT_VERSION {
+        return Err(StorageError::MalformedObject);
+    }
+    let source = BankSource::from_code(data[1]).map_err(|_| StorageError::MalformedObject)?;
+    let locator = if data[2] == 0 {
+        if data[3..11].iter().any(|byte| *byte != 0) {
+            return Err(StorageError::MalformedObject);
+        }
+        None
+    } else {
+        let mut field = [0_u8; MAX_LOCATOR_LEN];
+        field.copy_from_slice(&data[3..11]);
+        Some(Locator::from_field(field, data[2]).map_err(|_| StorageError::MalformedObject)?)
+    };
+    BankOrigin::new(BankId::new(key.id), source, locator).map_err(|_| StorageError::MalformedObject)
+}
+
 /// Encoded byte length of a start-place object: version, group, bank, and
 /// the channel's bank and position.
 pub const START_PLACE_ENCODED_LEN: usize = 8;
@@ -1367,6 +1417,7 @@ pub fn decode_start_place(object: &impl Object) -> Result<StartPlace, StorageErr
 pub fn validate_object(object: &impl Object) -> bool {
     match object.key().kind {
         ObjectKind::StartPlace => decode_start_place(object).is_ok(),
+        ObjectKind::BankOrigin => decode_bank_origin(object).is_ok(),
         ObjectKind::BankGroup => decode_bank_group(object).is_ok(),
         ObjectKind::GeneratedBank => decode_generated_bank(object).is_ok(),
         ObjectKind::Channel => decode_channel(object).is_ok(),
@@ -2000,6 +2051,38 @@ mod tests {
         empty[27..59].fill(0);
         let kept = StorageObject::new(object.key(), &empty).unwrap();
         assert!(super::decode_bank_group(&kept).unwrap().banks().is_empty());
+    }
+
+    #[test]
+    fn a_bank_origin_and_its_locator_round_trip() {
+        use radio_channel_plan::{BankOrigin, BankSource, Locator};
+        let home = Locator::new("JO02EH").unwrap();
+        let origin = BankOrigin::new(BankId::new(253), BankSource::Airports, Some(home)).unwrap();
+        let object = super::encode_bank_origin(origin).unwrap();
+        assert_eq!(object.key().id, 253, "keyed by its bank");
+        assert_eq!(object.len(), super::BANK_ORIGIN_ENCODED_LEN);
+        assert_eq!(super::decode_bank_origin(&object), Ok(origin));
+        assert!(validate_object(&object));
+        let shared = BankOrigin::new(BankId::new(0), BankSource::Marine, None).unwrap();
+        assert_eq!(
+            super::decode_bank_origin(&super::encode_bank_origin(shared).unwrap()),
+            Ok(shared)
+        );
+        // An unknown generator, or a locator byte without a length, is
+        // refused.
+        for (at, value) in [(1, 0), (1, 9), (3, b'J')] {
+            let mut data = object.data().to_vec();
+            data[at] = value;
+            if at == 3 {
+                data[2] = 0;
+            }
+            let bad = StorageObject::new(object.key(), &data).unwrap();
+            assert_eq!(
+                super::decode_bank_origin(&bad),
+                Err(StorageError::MalformedObject),
+                "byte {at} = {value}"
+            );
+        }
     }
 
     #[test]
