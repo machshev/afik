@@ -3272,6 +3272,10 @@
      refetch after 30 days). A click picks the locator; saved locators are
      pinned; each generator's sites and radius are drawn, with a Show box
      per generator. Done.
+  10. Project rename and delete (operator request): Rename moves the open
+      project and its file to the typed name; Delete project asks inline,
+      then deletes the file and opens the next project, or a new default.
+      Done.
 
 ## BANKS-073 — Up to 254 banks, addressed by bank and position
 

@@ -278,6 +278,8 @@ pub struct StudioApp {
     saved: ProjectModel,
     projects: ProjectStore,
     new_project: String,
+    /// Whether Delete was pressed and waits for Yes or Cancel.
+    confirm_delete: bool,
     status: String,
     /// The status line as last logged at debug level, so `-v` shows each
     /// one once.
@@ -1597,6 +1599,7 @@ impl StudioApp {
             saved: ProjectModel::new(),
             projects,
             new_project: String::new(),
+            confirm_delete: false,
             status: "Ready.".to_owned(),
             logged_status: String::new(),
             errors: Vec::new(),
@@ -2012,6 +2015,33 @@ impl StudioApp {
         self.save_project();
     }
 
+    /// Renames the open project to the typed name; its changes, saved or
+    /// not, go with it.
+    fn rename_project(&mut self) {
+        let old = self.projects.current().name.clone();
+        let name = self.new_project.clone();
+        if let Err(reason) = self.projects.rename_current(&name) {
+            self.refuse(&reason);
+            return;
+        }
+        self.new_project.clear();
+        self.status = format!("Renamed {old} to {}.", self.projects.current().name);
+        log::info!("{}", self.status);
+    }
+
+    /// Deletes the open project, once confirmed, and opens the next.
+    fn delete_project(&mut self) {
+        self.confirm_delete = false;
+        match self.projects.delete_current() {
+            Ok(name) => {
+                log::info!("deleted project {name}");
+                self.load_project();
+                self.status = format!("Deleted {name}. {}", self.status);
+            }
+            Err(reason) => self.fail("deleting the project", reason),
+        }
+    }
+
     /// Appends one TX range preset's ranges after the operator's own.
     ///
     /// A range the project already has is skipped, and a preset that would take
@@ -2319,11 +2349,45 @@ impl StudioApp {
             ui.separator();
             ui.add(
                 TextEdit::singleline(&mut self.new_project)
-                    .hint_text("new project name")
+                    .hint_text("project name")
                     .desired_width(160.0),
-            );
-            if ui.button("New project").clicked() {
+            )
+            .on_hover_text("The name for New project or Rename");
+            if ui
+                .button("New project")
+                .on_hover_text("Creates an empty project with this name")
+                .clicked()
+            {
                 self.create_project();
+            }
+            if ui
+                .button("Rename")
+                .on_hover_text("Renames the open project, and its file, to this name")
+                .clicked()
+            {
+                self.rename_project();
+            }
+            if self.confirm_delete {
+                ui.colored_label(
+                    WARNING_COLOUR,
+                    format!("Delete {}?", self.projects.current().name),
+                );
+                if ui
+                    .button("Yes, delete")
+                    .on_hover_text("Deletes the project file; this cannot be undone")
+                    .clicked()
+                {
+                    self.delete_project();
+                }
+                if ui.button("Cancel").clicked() {
+                    self.confirm_delete = false;
+                }
+            } else if ui
+                .button("Delete project")
+                .on_hover_text("Deletes the open project, after asking")
+                .clicked()
+            {
+                self.confirm_delete = true;
             }
         });
         ui.separator();
@@ -4619,6 +4683,46 @@ mod tests {
     }
 
     #[test]
+    fn projects_are_renamed_and_deleted() {
+        let dir = scratch("rename-delete");
+        let projects = dir.join("projects");
+        let mut app = app_in(&dir, &Options::default());
+        app.project.add_bank();
+        app.save_project();
+        app.new_project = "Club".to_owned();
+        app.create_project();
+
+        app.new_project = "default".to_owned();
+        app.rename_project();
+        assert!(app.status.contains("already exists"), "{}", app.status);
+        app.new_project = "Club 2m".to_owned();
+        app.rename_project();
+        assert_eq!(app.status, "Renamed Club to Club 2m.");
+        assert!(app.new_project.is_empty());
+        assert!(projects.join("Club 2m.afik").is_file());
+        assert!(!projects.join("Club.afik").exists());
+
+        // Delete asks first; the project goes only on Yes.
+        let context = eframe::egui::Context::default();
+        let _ = context.run(eframe::egui::RawInput::default(), |context| {
+            eframe::egui::CentralPanel::default().show(context, |ui| app.project_bar(ui));
+        });
+        assert!(!app.confirm_delete);
+        app.confirm_delete = true;
+        app.delete_project();
+        assert!(!app.confirm_delete);
+        assert!(!projects.join("Club 2m.afik").exists());
+        assert_eq!(app.projects.current().name, "default");
+        assert_eq!(app.project.banks.len(), 1, "the next project is loaded");
+        assert!(
+            app.status.starts_with("Deleted Club 2m. Opened default"),
+            "{}",
+            app.status
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn projects_are_saved_by_name_and_reopened_at_start_up() {
         let dir = scratch("projects");
         let options = Options::default();
@@ -4938,10 +5042,11 @@ mod tests {
         // Spare width is shared between the columns, not left at the end.
         assert!(counts[0][0] > longest[0] + 250.0, "{counts:?} {longest:?}");
 
-        // Delete sits at the right edge of the 1100-point window on every row.
-        let deletes = text_left_edges(&output, "Delete");
+        // Delete sits at the right edge of the 1100-point window on every row;
+        // matched whole, so Delete project above is not counted.
+        let deletes = text_centres(&output, "Delete");
         assert_eq!(deletes.len(), 3, "{deletes:?}");
-        assert!(deletes.iter().all(|x| *x > 1_000.0), "{deletes:?}");
+        assert!(deletes.iter().all(|at| at.x > 1_000.0), "{deletes:?}");
     }
 
     #[test]

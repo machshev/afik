@@ -135,6 +135,64 @@ impl ProjectStore {
         Ok(self.current())
     }
 
+    /// Renames the open project to `name`, moving its file when it has one;
+    /// a file named on the command line stays in its own directory.
+    pub fn rename_current(&mut self, name: &str) -> Result<(), String> {
+        let name = valid_name(name)?;
+        let entry = self.current().clone();
+        if name == entry.name {
+            return Ok(());
+        }
+        if self.entries.iter().any(|other| other.name == name) {
+            return Err(format!("A project named {name} already exists."));
+        }
+        let path = entry
+            .path
+            .with_file_name(format!("{name}.{PROJECT_EXTENSION}"));
+        if path.exists() {
+            return Err(format!("{} already exists.", path.display()));
+        }
+        if entry.path.exists() {
+            fs::rename(&entry.path, &path)
+                .map_err(|error| format!("Could not rename {}: {error}", entry.path.display()))?;
+        }
+        self.entries.remove(self.current);
+        let at = self
+            .entries
+            .iter()
+            .position(|other| other.name > name)
+            .unwrap_or(self.entries.len());
+        self.entries.insert(at, ProjectEntry { name, path });
+        self.select(at);
+        Ok(())
+    }
+
+    /// Deletes the open project's file and opens the next project, or a new
+    /// [`DEFAULT_PROJECT`] when none is left; the name deleted.
+    pub fn delete_current(&mut self) -> Result<String, String> {
+        let entry = self.current().clone();
+        match fs::remove_file(&entry.path) {
+            Ok(()) => {}
+            // Never saved: there is only the entry to drop.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "Could not delete {}: {error}",
+                    entry.path.display()
+                ))
+            }
+        }
+        self.entries.remove(self.current);
+        if self.entries.is_empty() {
+            self.entries.push(ProjectEntry {
+                name: DEFAULT_PROJECT.to_owned(),
+                path: project_path(&self.dir, DEFAULT_PROJECT),
+            });
+        }
+        self.select(self.current.min(self.entries.len() - 1));
+        Ok(entry.name)
+    }
+
     /// Adds a project file named on the command line, wherever it is, and
     /// opens it.
     pub fn adopt(&mut self, path: &Path) {
@@ -265,6 +323,64 @@ mod tests {
         assert_eq!(store.current_index(), 0);
         assert_eq!(fs::read_to_string(&last).unwrap(), "Hill walk\n");
         assert!(store.create("Hill walk").is_err());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_open_project_is_renamed_with_its_file() {
+        let dir = scratch("rename");
+        let projects = dir.join("projects");
+        let last = dir.join("last-project");
+        fs::create_dir_all(&projects).unwrap();
+        for name in ["alpha", "beta"] {
+            fs::write(projects.join(format!("{name}.afik")), name).unwrap();
+        }
+        let mut store = ProjectStore::open_in(projects.clone(), Some(last.clone()));
+        assert!(store.rename_current("beta").is_err(), "taken");
+        assert!(store.rename_current("a/b").is_err());
+        store.rename_current(" zulu ").unwrap();
+        let names: Vec<_> = store.entries().iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["beta", "zulu"]);
+        assert_eq!(store.current().name, "zulu");
+        assert_eq!(
+            fs::read_to_string(projects.join("zulu.afik")).unwrap(),
+            "alpha"
+        );
+        assert!(!projects.join("alpha.afik").exists());
+        assert_eq!(fs::read_to_string(&last).unwrap(), "zulu\n");
+        store.rename_current("zulu").unwrap();
+
+        // A project never saved has no file to move.
+        store.create("fresh").unwrap();
+        store.rename_current("later").unwrap();
+        assert_eq!(store.current().path, projects.join("later.afik"));
+        assert!(!store.current().path.exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn deleting_the_open_project_opens_the_next_or_a_new_default() {
+        let dir = scratch("delete");
+        let projects = dir.join("projects");
+        fs::create_dir_all(&projects).unwrap();
+        for name in ["alpha", "beta"] {
+            fs::write(projects.join(format!("{name}.afik")), name).unwrap();
+        }
+        let mut store = ProjectStore::open_in(projects.clone(), None);
+        store.select(1);
+        assert_eq!(store.delete_current().unwrap(), "beta");
+        assert!(!projects.join("beta.afik").exists());
+        assert_eq!(
+            store.current().name,
+            "alpha",
+            "the last goes to the one before"
+        );
+        assert_eq!(store.delete_current().unwrap(), "alpha");
+        assert_eq!(store.entries().len(), 1);
+        assert_eq!(store.current().name, DEFAULT_PROJECT);
+        // The default, never saved, deletes to itself.
+        assert_eq!(store.delete_current().unwrap(), DEFAULT_PROJECT);
+        assert_eq!(store.current().name, DEFAULT_PROJECT);
         fs::remove_dir_all(&dir).unwrap();
     }
 

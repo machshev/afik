@@ -274,7 +274,10 @@ draws cached OpenStreetMap tiles (fetched while shown, by operator choice),
 picks the locator by click, pins saved locators, and plots each generator's
 sites and radius (gate: studio fmt and clippy `-D warnings` clean, `cargo
 test -p radio-programmer-gui` 184 passed 0 failed 3 ignored; one real tile
-fetched with the studio's agent and decoded). The studio takes `-v`/`--verbose`
+fetched with the studio's agent and decoded). Projects can be
+renamed (with their file) and deleted after an inline confirmation (gate:
+studio fmt and clippy `-D warnings` clean, `cargo test -p
+radio-programmer-gui` 187 passed 0 failed 3 ignored). The studio takes `-v`/`--verbose`
 (operator request): `-v` logs AFIK's debug lines, `-vv` its trace and other
 crates' debug, `-vvv` everything, without `AFIK_LOG` (which still works;
 the louder wins). Debug lines added: each HTTP fetch (URL, bytes, ms) and
