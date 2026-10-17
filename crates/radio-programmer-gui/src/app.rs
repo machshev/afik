@@ -1776,7 +1776,7 @@ impl StudioApp {
     fn load_project(&mut self) {
         let entry = self.projects.current().clone();
         let path = entry.path.as_path();
-        let loaded = if path.exists() {
+        let (loaded, converted) = if path.exists() {
             match read_project_file(path) {
                 Ok(project) => project,
                 Err(message) => {
@@ -1785,15 +1785,21 @@ impl StudioApp {
                 }
             }
         } else {
-            ProjectModel::new()
+            (ProjectModel::new(), false)
         };
         log::info!("opened project {} from {}", entry.name, path.display());
         self.status = if path.exists() {
             format!(
-                "Opened {}: {} channels in {} banks.",
+                "Opened {}: {} channels in {} banks.{}",
                 entry.name,
                 loaded.channel_count(),
-                loaded.banks.len()
+                loaded.banks.len(),
+                if converted {
+                    " Converted from an older project format; saving writes the new one, \
+                     which older studios cannot open."
+                } else {
+                    ""
+                }
             )
         } else {
             format!(
@@ -1988,8 +1994,8 @@ fn age(written: std::time::SystemTime) -> String {
     }
 }
 
-/// Reads one project file, either format the editor reads.
-fn read_project_file(path: &Path) -> Result<ProjectModel, String> {
+/// Reads one project file, and whether it was in an older format.
+fn read_project_file(path: &Path) -> Result<(ProjectModel, bool), String> {
     let bytes =
         fs::read(path).map_err(|error| format!("Could not read {}: {error}", path.display()))?;
     if bytes.len() > MAX_PROJECT_IMAGE_BYTES {
@@ -1998,7 +2004,9 @@ fn read_project_file(path: &Path) -> Result<ProjectModel, String> {
             path.display()
         ));
     }
-    ProjectModel::from_image(&bytes).map_err(|error| error.to_string())
+    ProjectModel::from_image(&bytes)
+        .map(|project| (project, ProjectModel::is_older_project(&bytes)))
+        .map_err(|error| error.to_string())
 }
 
 impl eframe::App for StudioApp {

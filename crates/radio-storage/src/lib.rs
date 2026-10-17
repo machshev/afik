@@ -17,8 +17,10 @@ use radio_tx_policy::{TxRange, MAX_TX_RANGES};
 
 /// Relative dual-slot canonical-image persistence model.
 pub mod dual_slot;
-/// The bank-grouped image a radio runs (format 6).
+/// The bank-grouped image a radio runs (format 7).
 pub mod radio_image;
+/// One-way upgrade of older project files.
+pub mod upgrade;
 
 /// Encoded calling-channel index meaning a plan marks no calling channel.
 ///
@@ -28,12 +30,16 @@ const NO_CALLING_INDEX: u16 = u16::MAX;
 
 /// Current object encoding version.
 ///
-/// Version 4 splits a generated bank into a shared core and a per-encoding
-/// tail, and stores the encoding family the plan declares rather than inferring
-/// it from a zero offset, so each plan costs what its own family needs. Version
-/// 3 carried the designator, numbering, calling index and a transmit offset
-/// every plan paid for. Earlier versions are rejected rather than guessed at.
-pub const STORAGE_FORMAT_VERSION: u8 = 4;
+/// Version 5 stores a channel's bank as a number rather than a 16-bit
+/// membership mask, so a project may hold more than 16 banks (`ADR-115`);
+/// [`upgrade`] rewrites a version 4 project as version 5, and nothing writes
+/// version 4 again. Version 4 splits a generated bank into a shared core and a
+/// per-encoding tail, and stores the encoding family the plan declares rather
+/// than inferring it from a zero offset, so each plan costs what its own
+/// family needs. Earlier versions are rejected rather than guessed at.
+pub const STORAGE_FORMAT_VERSION: u8 = 5;
+/// The bank field of a channel object in no bank.
+const NO_BANK_ID: u16 = u16::MAX;
 /// Maximum bytes held by one device object in the first storage model.
 pub const MAX_OBJECT_DATA: usize = 64;
 /// Encoded byte length of the shared core every generated-bank object carries.
@@ -912,10 +918,9 @@ pub fn encode_channel(channel: ChannelRecord) -> Result<StorageObject, StorageEr
     // data[37] held a squelch level; squelch is radio-wide, so it is reserved.
     data[38] = channel.flags().bits();
     // data[39] held a TX class before `ADR-101`; it is reserved and zero.
-    // A membership bit field once allowed several banks; a channel is now in
-    // one, so at most one bit is set.
-    let membership = channel.bank().map_or(0, |bank| 1_u16 << bank.get());
-    data[40..42].copy_from_slice(&membership.to_le_bytes());
+    // Version 4 held a membership mask here; [`upgrade`] converts it.
+    let bank = channel.bank().map_or(NO_BANK_ID, BankId::get);
+    data[40..42].copy_from_slice(&bank.to_le_bytes());
     StorageObject::new(
         ObjectKey {
             kind: ObjectKind::Channel,
@@ -957,12 +962,10 @@ pub fn decode_channel(object: &impl Object) -> Result<ChannelRecord, StorageErro
     // data[37] was a squelch level; older projects carry one and it is ignored.
     let flags = ChannelFlags::from_bits(data[38]).map_err(|_| StorageError::MalformedObject)?;
     // data[39] was the TX class; older projects carry one and it is ignored.
-    // An older project may name several banks; the channel stays in the first.
-    let membership = u16::from_le_bytes([data[40], data[41]]);
-    let bank = (membership != 0)
-        .then(|| u16::try_from(membership.trailing_zeros()).ok())
-        .flatten()
-        .map(BankId::new);
+    let bank = match u16::from_le_bytes([data[40], data[41]]) {
+        NO_BANK_ID => None,
+        bank => Some(BankId::new(bank)),
+    };
     ChannelRecord::new(ChannelDefinition {
         id: ChannelId::new(id),
         name,
@@ -1507,7 +1510,7 @@ fn validate_canonical_objects(objects: &[impl Object]) -> Result<(), StorageErro
     Ok(())
 }
 
-fn decode_image_entry(
+pub(crate) fn decode_image_entry(
     payload: &[u8],
     offset: usize,
 ) -> Result<(ObjectRef<'_>, usize), StorageError> {
@@ -1529,7 +1532,7 @@ fn decode_image_entry(
     Ok((object, data_end))
 }
 
-fn configuration_image_crc(header: &[u8], payload: &[u8]) -> u32 {
+pub(crate) fn configuration_image_crc(header: &[u8], payload: &[u8]) -> u32 {
     let crc = crc32_update(u32::MAX, header);
     !crc32_update(crc, payload)
 }
@@ -1795,7 +1798,7 @@ mod tests {
         assert!(
             super::encode_tx_range(0, radio_tx_policy::TxRange { max_mw: 0, ..range }).is_err()
         );
-        for (index, value) in [(0, STORAGE_FORMAT_VERSION + 1), (1, 0), (1, 7), (2, 2)] {
+        for (index, value) in [(0, STORAGE_FORMAT_VERSION + 1), (1, 0), (1, 8), (2, 2)] {
             let mut data = object.data().to_vec();
             data[index] = value;
             let bad = StorageObject::new(object.key(), &data).unwrap();
@@ -1808,16 +1811,19 @@ mod tests {
     }
 
     #[test]
-    fn a_channel_is_stored_in_one_bank_and_an_older_multi_bank_one_keeps_its_first() {
+    fn a_channel_stores_its_bank_as_a_number() {
         let encoded = encode_channel(channel(12, "GB3AB")).unwrap();
-        assert_eq!(&encoded.data()[40..42], &0b0100_u16.to_le_bytes());
+        assert_eq!(&encoded.data()[40..42], &2_u16.to_le_bytes());
         let mut data = encoded.data().to_vec();
-        data[40..42].copy_from_slice(&0b0110_u16.to_le_bytes());
+        data[40..42].copy_from_slice(&9_u16.to_le_bytes());
         let decoded = decode_channel(&StorageObject::new(encoded.key(), &data).unwrap()).unwrap();
-        assert_eq!(decoded.bank(), Some(BankId::new(1)));
-        data[40..42].copy_from_slice(&0_u16.to_le_bytes());
+        assert_eq!(decoded.bank(), Some(BankId::new(9)));
+        data[40..42].copy_from_slice(&u16::MAX.to_le_bytes());
         let decoded = decode_channel(&StorageObject::new(encoded.key(), &data).unwrap()).unwrap();
         assert_eq!(decoded.bank(), None);
+        // A bank past the radio's limit is refused, not truncated.
+        data[40..42].copy_from_slice(&radio_channel_plan::MAX_BANKS.to_le_bytes());
+        assert!(decode_channel(&StorageObject::new(encoded.key(), &data).unwrap()).is_err());
     }
 
     #[test]
@@ -2211,8 +2217,8 @@ mod tests {
         assert_eq!(
             &image[..image_len],
             &[
-                0x41, 0x46, 0x49, 0x4B, 0x01, 0x04, 0x01, 0x00, 0x3D, 0x00, 0x00, 0x00, 0x65, 0xDB,
-                0x8C, 0xBC, 0x01, 0x04, 0x00, 0x38, 0x00, 0x04, 0x00, 0x04, 0x00, 0x01, 0x41, 0x00,
+                0x41, 0x46, 0x49, 0x4B, 0x01, 0x05, 0x01, 0x00, 0x3D, 0x00, 0x00, 0x00, 0x90, 0x50,
+                0x24, 0xC4, 0x01, 0x04, 0x00, 0x38, 0x00, 0x05, 0x00, 0x04, 0x00, 0x01, 0x41, 0x00,
                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                 0xEA, 0x83, 0x95, 0x1A, 0xD4, 0x30, 0x00, 0x00, 0x10, 0x00, 0x00, 0x01, 0xE8, 0x03,
                 0x03, 0x17, 0x00, 0x00, 0x00, 0x84, 0xD4, 0x30, 0x00, 0x00, 0x00, 0x02, 0x02, 0x41,

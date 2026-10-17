@@ -1269,7 +1269,7 @@ mod tests {
             invoke(&["--sim", "info"]),
             CliOutcome {
                 exit_code: EXIT_SUCCESS,
-                stdout: "protocol_version=1\nstorage_version=4\nmax_frame_payload=128\nconfiguration_bytes=512\nmax_objects=24\nmax_object_size=64\nplan_encodings=0x0001\n".into(),
+                stdout: "protocol_version=1\nstorage_version=5\nmax_frame_payload=128\nconfiguration_bytes=512\nmax_objects=24\nmax_object_size=64\nplan_encodings=0x0001\n".into(),
                 stderr: String::new(),
             }
         );

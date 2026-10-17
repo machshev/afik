@@ -24,8 +24,8 @@ use radio_domain::{
 use radio_programmer::{ConfigurationCompiler, DeviceCapabilities, RadioProject};
 use radio_storage::{
     decode_channel, decode_channel_bank, decode_configuration_image, decode_generated_bank,
-    decode_radio_config, decode_tx_range, radio_image, ObjectKind, MAX_OBJECT_DATA,
-    STORAGE_FORMAT_VERSION,
+    decode_radio_config, decode_tx_range, radio_image, upgrade, ObjectKind,
+    CONFIGURATION_IMAGE_VERSION, MAX_OBJECT_DATA, STORAGE_FORMAT_VERSION,
 };
 use radio_tx_policy::{TxRange, MAX_TX_RANGES};
 
@@ -1231,9 +1231,17 @@ impl ProjectModel {
         Ok(image)
     }
 
+    /// Whether `bytes` is a project file an older studio saved, which
+    /// [`Self::from_image`] converts (`ADR-115`).
+    pub fn is_older_project(bytes: &[u8]) -> bool {
+        bytes.get(4..6) == Some(&[CONFIGURATION_IMAGE_VERSION, upgrade::MASK_FORMAT_VERSION])
+    }
+
     /// Builds a project from a project file or an image read from a radio.
     ///
-    /// Both the format 4 object set and the format 6 radio image are read.
+    /// The format 5 object set and the format 7 radio image are read, and a
+    /// format 4 project file is converted to format 5 first; saving then
+    /// writes format 5, so the conversion is one way.
     pub fn from_image(bytes: &[u8]) -> Result<Self, ModelError> {
         if bytes.len() > MAX_PROJECT_IMAGE_BYTES {
             return Err(error(
@@ -1250,7 +1258,9 @@ impl ProjectModel {
                 .map(|project| Self::from_project(&project))
                 .map_err(invalid);
         }
-        let image = decode_configuration_image(bytes).map_err(invalid)?;
+        let mut upgraded = bytes.to_vec();
+        upgrade::project(&mut upgraded).map_err(invalid)?;
+        let image = decode_configuration_image(&upgraded).map_err(invalid)?;
         let mut project = RadioProject::new();
         for object in image.objects() {
             match object.key().kind {
@@ -1541,11 +1551,65 @@ mod tests {
         assert_eq!(loaded.to_radio_image().unwrap(), image);
     }
 
+    /// Rewrites a current project file as a format 4 studio saved it:
+    /// format 4 in the header and every object, each channel's bank as a
+    /// membership mask, and the checksum resealed.
+    fn as_format_four(mut bytes: Vec<u8>) -> Vec<u8> {
+        fn crc32(bytes: &[u8]) -> u32 {
+            let mut crc = u32::MAX;
+            for byte in bytes {
+                crc ^= u32::from(*byte);
+                for _ in 0..8 {
+                    crc = (crc >> 1) ^ (0xEDB8_8320 & 0_u32.wrapping_sub(crc & 1));
+                }
+            }
+            !crc
+        }
+        bytes[5] = 4;
+        let mut offset = 16;
+        while offset < bytes.len() {
+            let len = usize::from(u16::from_le_bytes([bytes[offset + 3], bytes[offset + 4]]));
+            let data = offset + 5;
+            bytes[data] = 4;
+            if bytes[offset] == radio_storage::ObjectKind::Channel as u8 {
+                let bank = u16::from_le_bytes([bytes[data + 40], bytes[data + 41]]);
+                let mask = if bank == u16::MAX { 0 } else { 1_u16 << bank };
+                bytes[data + 40..data + 42].copy_from_slice(&mask.to_le_bytes());
+            }
+            offset = data + len;
+        }
+        let mut covered = bytes[..12].to_vec();
+        covered.extend_from_slice(&bytes[16..]);
+        let checksum = crc32(&covered);
+        bytes[12..16].copy_from_slice(&checksum.to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn a_project_an_older_studio_saved_opens_and_saves_in_the_new_format() {
+        let mut model = project();
+        pmr_plan(&mut model);
+        model.add_bank();
+        model.banks[2].name = "Marine".to_owned();
+        model.add_channel(2);
+        model.banks[2].channels[0].receive_mhz = "156.800000".to_owned();
+        model.banks[2].channels[0].transmit_mhz = "156.800000".to_owned();
+        let current = model.to_image().unwrap();
+        assert!(!ProjectModel::is_older_project(&current));
+        let older = as_format_four(current.clone());
+        assert!(ProjectModel::is_older_project(&older));
+
+        let loaded = ProjectModel::from_image(&older).unwrap();
+        assert_eq!(loaded, model);
+        // Saving writes the new format only.
+        assert_eq!(loaded.to_image().unwrap(), current);
+    }
+
     #[test]
     fn an_older_project_puts_each_channel_in_one_bank() {
         // A format 4 project could put a channel in no bank or in a plan's
         // bank; here every channel goes into exactly one. (One naming several
-        // banks is read into its first by the storage decoder.)
+        // banks is read into its first when the file is converted.)
         let model = project();
         let mut legacy = RadioProject::new();
         let valid = model.validate().unwrap();
