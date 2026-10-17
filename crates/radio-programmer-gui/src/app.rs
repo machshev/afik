@@ -2488,10 +2488,6 @@ impl StudioApp {
                     .range(1..=stations::MAX_CHANNELS_LIMIT),
             )
             .on_hover_text("How many stations the bank takes, strongest signal first");
-            for kind in StationKind::ALL {
-                ui.checkbox(&mut self.station_area.kinds[kind.index()], kind.label())
-                    .on_hover_text(format!("Takes the {}", kind.description()));
-            }
             if ui
                 .button("Add")
                 .on_hover_text(
@@ -2518,6 +2514,13 @@ impl StudioApp {
             }
             ui.end_row();
             ui.label(self.station_source());
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Licences");
+            for kind in StationKind::ALL {
+                ui.checkbox(&mut self.station_area.kinds[kind.index()], kind.label())
+                    .on_hover_text(format!("Takes the {}", kind.description()));
+            }
         });
     }
 
