@@ -2158,8 +2158,7 @@ fn render<B: RegisterBus, S: Speaker, C: BroadcastChip, M: Memory>(
                 },
             );
         }
-        Screen::SourceList | Screen::GroupList => {
-            let groups = shell.screen() == Screen::GroupList;
+        Screen::SourceList => {
             let mut rows = [SelectorRow::default(); LIST_ROWS];
             // The rows the shell offers are paged directly, so the cursor it
             // reports needs no translation into a second numbering scheme.
@@ -2167,29 +2166,18 @@ fn render<B: RegisterBus, S: Speaker, C: BroadcastChip, M: Memory>(
             let mut count = 0;
             for offset in 0..LIST_ROWS {
                 let row = first + offset;
-                let (source, active) = if groups {
-                    (shell.group_at(row), shell.is_active_group(row))
-                } else {
-                    (shell.source_at(row), shell.is_active_source(row))
-                };
-                let Some(source) = source else {
+                let Some(source) = shell.source_at(row) else {
                     break;
                 };
+                let active = shell.is_active_source(row);
                 rows[offset] = match source {
                     Source::Vfo => SelectorRow::text(b"VFO", active),
                     Source::AllChannels if shell.group().is_some() => {
                         SelectorRow::text(b"ALL OF GROUP", active)
                     }
                     Source::AllChannels => SelectorRow::text(b"ALL CHANNELS", active),
-                    Source::Groups => SelectorRow::text(b"GROUPS >", active),
-                    Source::Group(None) => SelectorRow::text(b"ALL BANKS", active),
-                    Source::Group(Some(group)) => {
-                        let name = group_name(group, memory);
-                        SelectorRow::text(
-                            name.as_ref().map_or(&b"GROUP"[..], |name| name.as_bytes()),
-                            active,
-                        )
-                    }
+                    // Groups are stepped with the side keys, never listed.
+                    Source::Group(_) => SelectorRow::default(),
                     Source::Bank(bank) => {
                         let name = bank_name(bank, memory);
                         SelectorRow::bank(
@@ -2201,16 +2189,11 @@ fn render<B: RegisterBus, S: Speaker, C: BroadcastChip, M: Memory>(
                 };
                 count += 1;
             }
-            // Inside a group the source list is titled with its name.
-            let group = shell
-                .group()
-                .filter(|_| !groups)
-                .and_then(|group| group_name(group, memory));
-            let title = match (&group, groups) {
-                (_, true) => &b"GROUPS"[..],
-                (Some(name), false) => name.as_bytes(),
-                (None, false) => &b"SOURCE"[..],
-            };
+            // The list is titled with the group it is narrowed to.
+            let group = shell.group().and_then(|group| group_name(group, memory));
+            let title = group
+                .as_ref()
+                .map_or(&b"SOURCE"[..], |name| name.as_bytes());
             render_selector_list(frame, title, &rows[..count], shell.source_cursor() - first);
         }
         Screen::Settings => {

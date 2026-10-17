@@ -170,10 +170,8 @@ pub enum Source {
     /// Only the channels in one bank.
     Bank(BankId),
     /// A group to narrow the list to, or `None` for every bank (`ADR-116`);
-    /// a row of the group list.
+    /// the side keys step through them on the source list.
     Group(Option<u8>),
-    /// The row that opens the group list.
-    Groups,
 }
 
 /// Which screen the operator is looking at.
@@ -182,11 +180,8 @@ pub enum Screen {
     /// The active channel or VFO frequency, and the receive state.
     #[default]
     Operating,
-    /// The VFO and every populated bank.
+    /// The VFO and every populated bank, or a group's (`ADR-116`).
     SourceList,
-    /// Every bank, then each group, for narrowing the source list
-    /// (`ADR-116`); it shares the source list's cursor.
-    GroupList,
     /// The selectable VFO tuning steps.
     StepList,
     /// The radio-wide settings an operator can change from the handset.
@@ -524,7 +519,7 @@ impl Shell {
             self.other.mode = Mode::Memory;
             self.other.bank_filter = None;
         }
-        if !capabilities.sources && matches!(self.screen, Screen::SourceList | Screen::GroupList) {
+        if !capabilities.sources && self.screen == Screen::SourceList {
             self.screen = Screen::Operating;
         }
         if !capabilities.settings
@@ -887,31 +882,11 @@ impl Shell {
         }
     }
 
-    /// Returns the number of source-list rows: the VFO, every channel, the
-    /// banks, then the row opening the group list when there are groups.
+    /// Returns the number of source-list rows: the VFO, every channel, then
+    /// the banks.
     #[must_use]
     pub fn source_rows(&self) -> usize {
-        self.listed().len()
-            + usize::from(self.group_count > 0)
-            + if self.capabilities.vfo { 2 } else { 1 }
-    }
-
-    /// Returns the number of group-list rows: every bank, then each group.
-    #[must_use]
-    pub const fn group_rows(&self) -> usize {
-        self.group_count as usize + 1
-    }
-
-    /// Returns the group one group-list row selects.
-    #[must_use]
-    pub fn group_at(&self, row: usize) -> Option<Source> {
-        match row {
-            0 => Some(Source::Group(None)),
-            _ => u8::try_from(row - 1)
-                .ok()
-                .filter(|group| *group < self.group_count)
-                .map(|group| Source::Group(Some(group))),
-        }
+        self.listed().len() + if self.capabilities.vfo { 2 } else { 1 }
     }
 
     /// Returns the source one row selects.
@@ -924,11 +899,7 @@ impl Shell {
         let Some(row) = (row - vfo).checked_sub(1) else {
             return Some(Source::AllChannels);
         };
-        let listed = self.listed();
-        if let Some(bank) = listed.nth(row) {
-            return Some(Source::Bank(bank));
-        }
-        (row == listed.len() && self.group_count > 0).then_some(Source::Groups)
+        self.listed().nth(row).map(Source::Bank)
     }
 
     /// Reports whether one source row is the source in use.
@@ -941,12 +912,6 @@ impl Shell {
             (Some(Source::Group(group)), _) => self.group == group,
             _ => false,
         }
-    }
-
-    /// Reports whether one group-list row is the group in force.
-    #[must_use]
-    pub fn is_active_group(&self, row: usize) -> bool {
-        self.group_at(row) == Some(Source::Group(self.group))
     }
 
     /// Selects the programmed memory as the source.
@@ -1102,6 +1067,13 @@ impl Shell {
             // Menu opens settings from the operating screen, as on the stock
             // and Armel firmware, so side key one opens the channel or step
             // list that Menu used to.
+            // On the source list the side keys step through the groups, the
+            // arrows through the banks.
+            Key::Side1 | Key::Side2
+                if self.screen == Screen::SourceList && self.group_count > 0 =>
+            {
+                self.step_group(key == Key::Side2)
+            }
             Key::Side1 if self.screen == Screen::Operating => {
                 self.entry = None;
                 Intent::ToggleRxTone
@@ -1265,7 +1237,6 @@ impl Shell {
                 },
             },
             Screen::SourceList => self.step_row(direction, self.source_rows(), Cursor::Source),
-            Screen::GroupList => self.step_row(direction, self.group_rows(), Cursor::Source),
             Screen::StepList => self.step_row(direction, VFO_STEPS_HZ.len(), Cursor::Step),
             Screen::Settings => self.step_row(direction, self.settings().len(), Cursor::Settings),
             Screen::SquelchList => {
@@ -1356,7 +1327,6 @@ impl Shell {
         }
         match self.screen {
             Screen::SourceList => self.commit_source(),
-            Screen::GroupList => self.commit_group(),
             Screen::StepList => {
                 self.screen = Screen::Operating;
                 self.step_index = self.step_cursor;
@@ -1483,11 +1453,6 @@ impl Shell {
         }
         // Exit unwinds one step, so a value list returns to the menu that opened
         // it rather than throwing the operator all the way out.
-        if self.screen == Screen::GroupList {
-            self.screen = Screen::SourceList;
-            self.source_cursor = self.source_rows() - 1;
-            return Intent::Redraw;
-        }
         self.screen = if matches!(
             self.screen,
             Screen::SquelchList
@@ -1636,7 +1601,7 @@ impl Shell {
             return Intent::Idle;
         }
         self.entry = None;
-        if matches!(self.screen, Screen::SourceList | Screen::GroupList) {
+        if self.screen == Screen::SourceList {
             self.screen = Screen::Operating;
             return Intent::Redraw;
         }
@@ -1645,20 +1610,20 @@ impl Shell {
         Intent::Redraw
     }
 
-    /// Opens the group list on the group in force, or narrows the source
-    /// list to the group the cursor names and returns to the operating screen.
-    fn commit_group(&mut self) -> Intent {
-        self.screen = Screen::Operating;
-        let Some(selected) = self.group_at(self.source_cursor) else {
-            return Intent::Redraw;
+    /// Steps the source list to the next group, or the one before: every
+    /// bank, then each group in turn. The list stays open on the group's
+    /// channels, which the interface rebuilds the view over.
+    fn step_group(&mut self, forward: bool) -> Intent {
+        let count = self.group_count;
+        let next = match (self.group, forward) {
+            (None, true) => Some(0),
+            (None, false) => count.checked_sub(1),
+            (Some(group), true) => (group + 1 < count).then_some(group + 1),
+            (Some(group), false) => group.checked_sub(1),
         };
-        if selected == Source::Group(self.group)
-            && self.mode == Mode::Memory
-            && self.bank_filter.is_none()
-        {
-            return Intent::Redraw;
-        }
-        self.apply_source(selected)
+        let intent = self.apply_source(Source::Group(next));
+        self.source_cursor = self.source_row();
+        intent
     }
 
     /// Applies the source the cursor names and returns to the operating screen.
@@ -1667,11 +1632,6 @@ impl Shell {
         let Some(selected) = self.source_at(self.source_cursor) else {
             return Intent::Redraw;
         };
-        if selected == Source::Groups {
-            self.screen = Screen::GroupList;
-            self.source_cursor = self.group.map_or(0, |group| usize::from(group) + 1);
-            return Intent::Redraw;
-        }
         if self.is_active_source(self.source_cursor) {
             return Intent::Redraw;
         }
@@ -1697,7 +1657,6 @@ impl Shell {
                 self.mode = Mode::Memory;
                 self.bank_filter = None;
             }
-            Source::Groups => {}
         }
         Intent::SetSource(selected)
     }
@@ -1764,91 +1723,67 @@ mod tests {
         assert_eq!(shell.screen(), Screen::StepList);
     }
 
-    /// Opens the source list and walks the cursor to `row`, then picks it.
-    fn choose_source(shell: &mut Shell, row: usize, at: u32) -> Intent {
-        tap_star(shell, at, context(8, 0));
-        let mut time = at + 1;
-        while shell.source_cursor() != row {
-            shell.press(Key::Down, time, context(8, 0));
-            time += 1;
-        }
-        shell.press(Key::Menu, time, context(8, 0))
-    }
-
-    /// On the group list, walks the cursor to `row` and picks it.
-    fn choose_group(shell: &mut Shell, row: usize, at: u32) -> Intent {
-        let mut time = at;
-        while shell.source_cursor() != row {
-            shell.press(Key::Down, time, context(8, 0));
-            time += 1;
-        }
-        shell.press(Key::Menu, time, context(8, 0))
-    }
-
     #[test]
-    fn groups_have_a_list_of_their_own_and_narrow_the_source_list() {
+    fn the_side_keys_step_the_source_list_through_the_groups() {
         let mut shell = memory_shell(&[1, 3, 5]);
         shell.set_groups(2);
-        // VFO, all channels, three banks, then the row opening the groups.
-        assert_eq!(shell.source_rows(), 6);
-        assert_eq!(shell.source_at(5), Some(Source::Groups));
-        assert_eq!(shell.source_at(6), None);
-        assert_eq!(shell.group_rows(), 3);
-        assert_eq!(shell.group_at(0), Some(Source::Group(None)));
-        assert_eq!(shell.group_at(2), Some(Source::Group(Some(1))));
-        assert_eq!(shell.group_at(3), None);
+        // VFO, all channels, three banks; groups are never rows.
+        assert_eq!(shell.source_rows(), 5);
+        assert_eq!(shell.source_at(5), None);
 
-        // Menu on GROUPS opens the group list, on the group in force.
-        assert_eq!(choose_source(&mut shell, 5, 10), Intent::Redraw);
-        assert_eq!(shell.screen(), Screen::GroupList);
-        assert_eq!(shell.source_cursor(), 0);
-        assert!(shell.is_active_group(0), "no group is in force");
-        // Exit goes back to the source list, on the GROUPS row.
-        assert_eq!(shell.press(Key::Exit, 20, context(8, 0)), Intent::Redraw);
+        tap_star(&mut shell, 10, context(8, 0));
         assert_eq!(shell.screen(), Screen::SourceList);
-        assert_eq!(shell.source_cursor(), 5);
-        assert_eq!(shell.press(Key::Menu, 21, context(8, 0)), Intent::Redraw);
+        // Side 2 steps forward: every bank, group 0, group 1, every bank.
         assert_eq!(
-            choose_group(&mut shell, 2, 30),
-            Intent::SetSource(Source::Group(Some(1)))
+            shell.press(Key::Side2, 20, context(8, 0)),
+            Intent::SetSource(Source::Group(Some(0)))
         );
-        assert_eq!(shell.screen(), Screen::Operating);
-        assert_eq!(shell.group(), Some(1));
+        assert_eq!(shell.screen(), Screen::SourceList, "the list stays open");
+        assert_eq!(shell.group(), Some(0));
         assert_eq!(shell.bank_filter(), None, "all of the group");
+        shell.press(Key::Side2, 30, context(8, 0));
+        assert_eq!(shell.group(), Some(1));
+        shell.press(Key::Side2, 40, context(8, 0));
+        assert_eq!(shell.group(), None);
+        // Side 1 steps back, wrapping to the last group.
+        shell.press(Key::Side1, 50, context(8, 0));
+        assert_eq!(shell.group(), Some(1));
 
         // The interface reads the group's banks: 3 and 5.
         shell.set_group_banks(bank_table(&[3, 5]));
-        assert_eq!(shell.source_rows(), 2 + 2 + 1);
+        assert_eq!(shell.source_rows(), 2 + 2);
         assert_eq!(shell.source_at(2), Some(Source::Bank(BankId::new(3))));
         assert_eq!(shell.source_at(3), Some(Source::Bank(BankId::new(5))));
-        assert_eq!(shell.source_at(4), Some(Source::Groups));
-        assert!(shell.is_active_source(1), "ALL is the group's");
+        assert_eq!(shell.source_cursor(), 1, "on ALL OF GROUP");
+        assert!(shell.is_active_source(1));
 
-        // A bank in the group filters as before; one outside it is dropped
-        // when the group's banks arrive.
-        choose_source(&mut shell, 3, 40);
+        // The arrows and Menu pick a bank as before.
+        shell.press(Key::Down, 60, context(8, 0));
+        shell.press(Key::Down, 61, context(8, 0));
+        assert_eq!(
+            shell.press(Key::Menu, 62, context(8, 0)),
+            Intent::SetSource(Source::Bank(BankId::new(5)))
+        );
         assert_eq!(shell.bank_filter(), Some(BankId::new(5)));
+        // A bank outside the group is dropped when the group's banks arrive.
         shell.set_group_banks(bank_table(&[3]));
         assert_eq!(shell.bank_filter(), None);
 
-        // Choosing the group in force again changes nothing; every bank
-        // leaves it.
-        choose_source(&mut shell, 3, 60);
-        assert_eq!(shell.source_cursor(), 2, "opens on the group in force");
-        assert!(shell.is_active_group(2));
-        assert_eq!(shell.press(Key::Menu, 70, context(8, 0)), Intent::Redraw);
-        choose_source(&mut shell, 3, 80);
-        assert_eq!(
-            choose_group(&mut shell, 0, 90),
-            Intent::SetSource(Source::Group(None))
-        );
-        assert_eq!(shell.group(), None);
-        assert_eq!(shell.source_rows(), 6);
-        // Star closes either list.
-        choose_source(&mut shell, 5, 100);
-        assert_eq!(shell.screen(), Screen::GroupList);
-        tap_star(&mut shell, 120, context(8, 0));
+        // Exit closes the list; outside it side 2 is monitor again.
+        tap_star(&mut shell, 80, context(8, 0));
+        assert_eq!(shell.press(Key::Exit, 90, context(8, 0)), Intent::Redraw);
         assert_eq!(shell.screen(), Screen::Operating);
+        assert_eq!(
+            shell.press(Key::Side2, 100, context(8, 0)),
+            Intent::ToggleMonitor
+        );
+        // Without groups the side keys keep their usual meaning on the list.
+        shell.set_groups(0);
+        tap_star(&mut shell, 110, context(8, 0));
+        assert_eq!(
+            shell.press(Key::Side2, 120, context(8, 0)),
+            Intent::ToggleMonitor
+        );
     }
 
     #[test]
@@ -1865,7 +1800,7 @@ mod tests {
         shell.restore_group(Some(1));
         shell.set_group_banks(BankSet::EMPTY);
         assert_eq!(shell.group(), None);
-        // Without groups the list has no GROUPS row.
+        // Without groups the list is the banks alone.
         shell.set_groups(0);
         assert_eq!(shell.source_rows(), 3);
         assert_eq!(shell.source_at(3), None);
