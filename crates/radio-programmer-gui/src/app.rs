@@ -183,9 +183,6 @@ const MAP_VIEW_FILE: &str = "map-view";
 #[derive(Default)]
 struct RememberedFilters {
     map_view_file: Option<PathBuf>,
-    /// Whether the Banks tab lists the banks under their groups, kept with
-    /// the map's view.
-    banks_by_group: bool,
     /// The filters as last written; none until first looked at.
     last: Option<String>,
 }
@@ -352,8 +349,8 @@ pub struct StudioApp {
     tx_preset: usize,
     /// A write or read running on a worker, which holds the session meanwhile.
     job: Option<DeviceJob>,
-    /// A bank row to open the next time the Banks tab is drawn.
-    expand_bank: Option<usize>,
+    /// Which banks the Banks tab lists, and a bank to open in it.
+    banks_tab: BanksTab,
     /// Where SatNOGS responses are cached, and what was last read from it.
     satellite_cache: SatelliteCache,
     satellites: Option<SatelliteList>,
@@ -556,7 +553,6 @@ impl StudioApp {
             *shown = words.contains(&generator.key());
         }
         self.map_all_locations = words.contains(&"all-locations");
-        self.remembered.banks_by_group = words.contains(&"banks-by-group");
     }
 
     /// Every filter the generators and the map take, as one string.
@@ -573,7 +569,6 @@ impl StudioApp {
                     &self.airfield_area
                 ),
                 (&self.marine_area, self.map_shown, self.map_all_locations),
-                self.remembered.banks_by_group,
             )
         )
     }
@@ -599,9 +594,7 @@ impl StudioApp {
         if self.map_all_locations {
             view.push("all-locations");
         }
-        if self.remembered.banks_by_group {
-            view.push("banks-by-group");
-        }
+
         let view = view.join(" ") + "\n";
         let saved = [
             save(&self.repeater_area_file, &|f| self.repeater_area.save(f)),
@@ -1957,7 +1950,7 @@ impl StudioApp {
             flash: FlashTab::default(),
             preset: 0,
             tx_preset: 0,
-            expand_bank: None,
+            banks_tab: BanksTab::default(),
             job: None,
             satellite_cache: SatelliteCache::none(),
             satellites: None,
@@ -2256,7 +2249,7 @@ impl StudioApp {
             BankKind::Named => self.project.add_bank(),
             BankKind::Generated => self.project.add_generated_bank(),
         }
-        self.expand_bank = Some(self.project.banks.len() - 1);
+        self.banks_tab.expand = Some(self.project.banks.len() - 1);
     }
 
     /// Whether the project differs from what was last loaded or saved.
@@ -4048,82 +4041,10 @@ impl StudioApp {
         });
     }
 
-    /// The project's bank groups (`ADR-116`): each a name, a locator when it
-    /// is a location, and its banks; the radio narrows its list to one.
-    fn groups_bar(&mut self, ui: &mut egui::Ui) {
-        let title = format!("Groups and locations ({})", self.project.groups.len());
-        egui::CollapsingHeader::new(title)
-            .id_salt("groups")
-            .show(ui, |ui| {
-                let mut remove = None;
-                let mut membership = None;
-                for (row, group) in self.project.groups.iter_mut().enumerate() {
-                    ui.push_id(("group", row), |ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.add(
-                                TextEdit::singleline(&mut group.name)
-                                    .char_limit(16)
-                                    .desired_width(130.0),
-                            )
-                            .on_hover_text("The name the radio shows, up to 16 characters");
-                            ui.label("Locator");
-                            ui.add(
-                                TextEdit::singleline(&mut group.locator)
-                                    .char_limit(8)
-                                    .hint_text("none")
-                                    .desired_width(70.0),
-                            )
-                            .on_hover_text(
-                                "A locator makes the group a location: the generators file the \
-                                 banks they make there under it. It stays in the project and is \
-                                 never sent to the radio",
-                            );
-                            let members: Vec<usize> = (0..self.project.banks.len())
-                                .filter(|bank| self.project.banks[*bank].groups.contains(&row))
-                                .collect();
-                            ui.menu_button(format!("Banks ({})", members.len()), |ui| {
-                                for (bank, draft) in self.project.banks.iter().enumerate() {
-                                    let mut member = members.contains(&bank);
-                                    if ui.checkbox(&mut member, &draft.name).changed() {
-                                        membership = Some((bank, row, member));
-                                    }
-                                }
-                            });
-                            if ui.button("Remove").clicked() {
-                                remove = Some(row);
-                            }
-                        });
-                    });
-                }
-                if let Some((bank, group, member)) = membership {
-                    self.project.set_member(bank, group, member);
-                }
-                if let Some(group) = remove {
-                    self.project.remove_group(group);
-                }
-                self.group_buttons(ui);
-                self.start_row(ui);
-            });
-    }
-
     /// Add group, and the buttons that file banks by locator, airband and
     /// marine.
     fn group_buttons(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
-            if ui
-                .button("Add group")
-                .on_hover_text("A group the radio can narrow its list to")
-                .clicked()
-            {
-                let number = self.project.groups.len() + 1;
-                if self
-                    .project
-                    .ensure_group(&format!("GROUP {number}"), None)
-                    .is_none()
-                {
-                    self.refuse(&format!("A radio holds {MAX_GROUPS} groups."));
-                }
-            }
             if ui
                 .button("Group by locator")
                 .on_hover_text(
@@ -4242,19 +4163,120 @@ impl StudioApp {
     /// The Banks tab's row of adds and how the list is shown.
     fn banks_toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
-            if ui.button("Add channel bank").clicked() {
-                self.add_bank(BankKind::Named);
+            let kinds = [
+                ("Add channel bank", BankKind::Named),
+                ("Add generated plan", BankKind::Generated),
+            ];
+            for (label, kind) in kinds {
+                if ui.button(label).clicked() {
+                    self.add_bank(kind);
+                    // Added in a group's tab, the bank joins that group.
+                    if let BankView::Group(group) = self.banks_tab.view {
+                        let row = self.project.banks.len() - 1;
+                        self.project.set_member(row, group, true);
+                    }
+                }
             }
-            if ui.button("Add generated plan").clicked() {
-                self.add_bank(BankKind::Generated);
-            }
-            ui.separator();
-            ui.checkbox(&mut self.remembered.banks_by_group, "Show by group")
-                .on_hover_text(
-                    "Lists the banks under each group they are in, a bank in several under \
-                     each; drag to reorder in the plain list",
-                );
         });
+    }
+
+    /// One tab for every bank, one for each group, one for the banks in no
+    /// group, and one that adds a group.
+    fn bank_view_tabs(&mut self, ui: &mut egui::Ui) {
+        if let BankView::Group(group) = self.banks_tab.view {
+            if group >= self.project.groups.len() {
+                self.banks_tab.view = BankView::All;
+            }
+        }
+        ui.horizontal_wrapped(|ui| {
+            let mut tabs = vec![(
+                BankView::All,
+                format!("All banks ({})", self.project.banks.len()),
+            )];
+            for (group, draft) in self.project.groups.iter().enumerate() {
+                let view = BankView::Group(group);
+                tabs.push((
+                    view,
+                    format!("{} ({})", draft.name, bank_rows(&self.project, view).len()),
+                ));
+            }
+            let loose = bank_rows(&self.project, BankView::Loose).len();
+            tabs.push((BankView::Loose, format!("Not in a group ({loose})")));
+            for (view, label) in tabs {
+                ui.selectable_value(&mut self.banks_tab.view, view, label);
+            }
+            if ui
+                .button("+ Group")
+                .on_hover_text("Adds a group the radio can narrow its list to, and opens it")
+                .clicked()
+            {
+                let number = self.project.groups.len() + 1;
+                match self.project.ensure_group(&format!("GROUP {number}"), None) {
+                    Some(group) => self.banks_tab.view = BankView::Group(group),
+                    None => self.refuse(&format!("A radio holds {MAX_GROUPS} groups.")),
+                }
+            }
+        });
+    }
+
+    /// The open group's name, locator, members and Remove.
+    fn group_editor(&mut self, ui: &mut egui::Ui, group: usize) {
+        let mut remove = false;
+        let mut membership = None;
+        let members = bank_rows(&self.project, BankView::Group(group));
+        let common = self.project.groups[group]
+            .name
+            .eq_ignore_ascii_case(COMMON_GROUP);
+        ui.horizontal_wrapped(|ui| {
+            let draft = &mut self.project.groups[group];
+            ui.label("Name");
+            ui.add(
+                TextEdit::singleline(&mut draft.name)
+                    .char_limit(16)
+                    .desired_width(130.0),
+            )
+            .on_hover_text("The name the radio shows, up to 16 characters");
+            ui.label("Locator");
+            ui.add(
+                TextEdit::singleline(&mut draft.locator)
+                    .char_limit(8)
+                    .hint_text("none")
+                    .desired_width(70.0),
+            )
+            .on_hover_text(
+                "A locator makes the group a location: the generators file the banks they \
+                 make there under it. It stays in the project and is never sent to the radio",
+            );
+            ui.menu_button(format!("Banks ({})", members.len()), |ui| {
+                ScrollArea::vertical().max_height(400.0).show(ui, |ui| {
+                    for (bank, draft) in self.project.banks.iter().enumerate() {
+                        let mut member = members.contains(&bank);
+                        if ui.checkbox(&mut member, &draft.name).changed() {
+                            membership = Some((bank, member));
+                        }
+                    }
+                });
+            })
+            .response
+            .on_hover_text("Ticks which banks are in the group");
+            if ui
+                .button("Remove group")
+                .on_hover_text("Its banks stay")
+                .clicked()
+            {
+                remove = true;
+            }
+        });
+        if common {
+            ui.label("Every bank here is in every group on the radio.");
+        }
+        if let Some((bank, member)) = membership {
+            self.project.set_member(bank, group, member);
+        }
+        if remove {
+            self.project.remove_group(group);
+            self.banks_tab.view = BankView::All;
+        }
     }
 
     /// Does what a bank row asked for.
@@ -4277,15 +4299,25 @@ impl StudioApp {
     fn banks_tab(&mut self, ui: &mut egui::Ui) {
         self.default_set_bar(ui);
         self.banks_toolbar(ui);
-        self.groups_bar(ui);
+        self.bank_view_tabs(ui);
         ui.separator();
-        let grouped = self.remembered.banks_by_group;
-        let sections = bank_sections(&self.project, grouped);
+        match self.banks_tab.view {
+            BankView::All => {
+                self.group_buttons(ui);
+                self.start_row(ui);
+            }
+            BankView::Group(group) => self.group_editor(ui, group),
+            BankView::Loose => {}
+        }
+        ui.separator();
+        // Only every bank at once can be dragged into a new order.
+        let grouped = self.banks_tab.view != BankView::All;
+        let rows = bank_rows(&self.project, self.banks_tab.view);
 
         let mut action = None;
         let mut toggle = None;
         let mut ids = Vec::with_capacity(self.project.banks.len());
-        let expand = self.expand_bank.take();
+        let expand = self.banks_tab.expand.take();
         let headers: Vec<_> = self
             .project
             .banks
@@ -4296,10 +4328,10 @@ impl StudioApp {
         let widths = column_widths(ui, &headers);
         let buttons_width = button_width(ui, "Delete") + button_width(ui, DRAG_HANDLE);
         let banks = &mut self.project.banks;
-        // One bank's header and editor; `salt` keeps a bank shown under
-        // several groups apart, and only the plain list can be dragged.
-        let mut show_bank = |ui: &mut egui::Ui, row: usize, salt: usize| {
-            ui.push_id((salt, row), |ui| {
+        // One bank's header and editor; only the list of every bank can be
+        // dragged.
+        let mut show_bank = |ui: &mut egui::Ui, row: usize| {
+            ui.push_id(row, |ui| {
                 // Banks are keyed by row, not by their label: the label shows
                 // what is being edited, and a key that changed with it would
                 // drop focus after one keystroke.
@@ -4343,23 +4375,10 @@ impl StudioApp {
         ScrollArea::vertical().show(ui, |ui| {
             // Each bank row's top and bottom, for where a dragged one lands.
             let mut spans = Vec::with_capacity(headers.len());
-            for (salt, (title, rows)) in sections.iter().enumerate() {
-                let Some(title) = title else {
-                    for &row in rows {
-                        let top = ui.cursor().top();
-                        show_bank(ui, row, salt);
-                        spans.push((top, ui.cursor().top()));
-                    }
-                    continue;
-                };
-                egui::CollapsingHeader::new(RichText::new(title).heading())
-                    .id_salt(("bank-section", salt))
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        for &row in rows {
-                            show_bank(ui, row, salt);
-                        }
-                    });
+            for &row in &rows {
+                let top = ui.cursor().top();
+                show_bank(ui, row);
+                spans.push((top, ui.cursor().top()));
             }
             if !grouped {
                 dropped = drop_bank(ui, &spans);
@@ -4770,53 +4789,39 @@ fn bank_drag_handle(ui: &mut egui::Ui, id: egui::Id, row: usize, name: &str) {
     .on_hover_text("Drag to move this bank");
 }
 
-/// The Banks tab's sections: one untitled list of every bank, or with
-/// `grouped` each group's banks under its name (and a location's locator),
-/// then the banks in no group.
-fn bank_sections(project: &ProjectModel, grouped: bool) -> Vec<(Option<String>, Vec<usize>)> {
-    let rows = 0..project.banks.len();
-    if !grouped {
-        return vec![(None, rows.collect())];
-    }
-    let count = |rows: &[usize]| {
-        format!(
-            "{} bank{}",
-            rows.len(),
-            if rows.len() == 1 { "" } else { "s" }
-        )
-    };
-    let mut sections: Vec<_> = project
-        .groups
-        .iter()
-        .enumerate()
-        .map(|(group, draft)| {
-            let held: Vec<usize> = rows
-                .clone()
-                .filter(|row| project.banks[*row].groups.contains(&group))
-                .collect();
-            let place = if !draft.locator.is_empty() {
-                format!(" \u{b7} {}", draft.locator)
-            } else if draft.name.eq_ignore_ascii_case(COMMON_GROUP) {
-                " \u{b7} in every group on the radio".to_owned()
-            } else {
-                String::new()
-            };
-            (
-                Some(format!("{}{place} \u{b7} {}", draft.name, count(&held))),
-                held,
-            )
+/// The Banks tab's own state.
+#[derive(Default)]
+struct BanksTab {
+    /// Which banks it lists.
+    view: BankView,
+    /// A bank just added, to open on the next frame.
+    expand: Option<usize>,
+}
+
+/// Which banks the Banks tab lists.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum BankView {
+    /// Every bank, in the radio's order, which can be dragged.
+    #[default]
+    All,
+    /// The banks in one group, by its place in the project's list.
+    Group(usize),
+    /// The banks in no group.
+    Loose,
+}
+
+/// The rows of the banks `view` lists, in the radio's order.
+fn bank_rows(project: &ProjectModel, view: BankView) -> Vec<usize> {
+    (0..project.banks.len())
+        .filter(|row| {
+            let groups = &project.banks[*row].groups;
+            match view {
+                BankView::All => true,
+                BankView::Group(group) => groups.contains(&group),
+                BankView::Loose => groups.is_empty(),
+            }
         })
-        .collect();
-    let loose: Vec<usize> = rows
-        .filter(|row| project.banks[*row].groups.is_empty())
-        .collect();
-    if !loose.is_empty() {
-        sections.push((
-            Some(format!("Not in a group \u{b7} {}", count(&loose))),
-            loose,
-        ));
-    }
-    sections
+        .collect()
 }
 
 /// Shows where a dragged bank would land and, when it is released over the
@@ -6076,12 +6081,12 @@ mod tests {
     }
 
     #[test]
-    fn by_group_the_banks_tab_lists_each_groups_banks_then_the_rest() {
-        use super::{bank_sections, COMMON_GROUP};
+    fn each_group_has_a_tab_listing_its_banks_and_editing_its_members() {
+        use super::{bank_rows, BankView, COMMON_GROUP};
 
         let context = eframe::egui::Context::default();
-        let mut app = app_in(&scratch("by-group"), &Options::default());
-        for name in ["RPT JO02EH", "SEA CORE", "MINE"] {
+        let mut app = app_in(&scratch("group-tabs"), &Options::default());
+        for name in ["RPT JO02EH", "SEA CORE", "MINE", "LOOSE"] {
             app.add_bank(BankKind::Named);
             app.project.banks.last_mut().unwrap().name = name.to_owned();
         }
@@ -6089,34 +6094,42 @@ mod tests {
         assert!(app.project.file_bank("SEA CORE", "HOME", "JO02EH", false));
         assert!(app.project.file_in("SEA CORE", "MARINE"));
         assert!(app.project.file_in("MINE", COMMON_GROUP));
-        let rows = |sections: Vec<(Option<String>, Vec<usize>)>| -> Vec<_> {
-            sections
-                .into_iter()
-                .map(|(title, rows)| (title.unwrap_or_default(), rows))
-                .collect()
-        };
-        assert_eq!(
-            rows(bank_sections(&app.project, false)),
-            [(String::new(), vec![0, 1, 2])]
-        );
-        assert_eq!(
-            rows(bank_sections(&app.project, true)),
-            [
-                ("HOME \u{b7} JO02EH \u{b7} 2 banks".to_owned(), vec![0, 1]),
-                ("MARINE \u{b7} 1 bank".to_owned(), vec![1]),
-                (
-                    "COMMON \u{b7} in every group on the radio \u{b7} 1 bank".to_owned(),
-                    vec![2]
-                ),
-            ]
-        );
+        let project = &app.project;
+        assert_eq!(bank_rows(project, BankView::All), [0, 1, 2, 3]);
+        assert_eq!(bank_rows(project, BankView::Group(0)), [0, 1]);
+        assert_eq!(bank_rows(project, BankView::Group(1)), [1]);
+        assert_eq!(bank_rows(project, BankView::Loose), [3]);
 
-        // Drawn by group, a bank in two groups shows under each.
-        app.remembered.banks_by_group = true;
+        // Every group has a tab; the open one lists its banks alone.
         frame(&context, &mut app, Vec::new());
         let output = frame(&context, &mut app, Vec::new());
+        for tab in [
+            "All banks (4)",
+            "HOME (2)",
+            "MARINE (1)",
+            "COMMON (1)",
+            "Not in a group (1)",
+        ] {
+            assert_eq!(text_centres(&output, tab).len(), 1, "{tab}");
+        }
         assert_eq!(text_centres(&output, "Delete").len(), 4);
-        assert_eq!(text_centres(&output, "MARINE \u{b7} 1 bank").len(), 1);
+        app.banks_tab.view = BankView::Group(0);
+        frame(&context, &mut app, Vec::new());
+        let output = frame(&context, &mut app, Vec::new());
+        assert_eq!(text_centres(&output, "Delete").len(), 2);
+        assert_eq!(text_centres(&output, "Remove group").len(), 1);
+
+        // A bank added in a group's tab joins the group.
+        app.add_bank(BankKind::Named);
+        let added = app.project.banks.len() - 1;
+        app.project.set_member(added, 0, true);
+        assert_eq!(bank_rows(&app.project, BankView::Group(0)), [0, 1, added]);
+
+        // A tab whose group goes falls back to every bank.
+        app.banks_tab.view = BankView::Group(2);
+        app.project.remove_group(2);
+        frame(&context, &mut app, Vec::new());
+        assert_eq!(app.banks_tab.view, BankView::All);
     }
 
     #[test]
@@ -6659,17 +6672,16 @@ mod tests {
         app.map_shown = [false; Generator::ALL.len()];
         app.map_shown[Generator::Airports as usize] = true;
         app.map_all_locations = true;
-        app.remembered.banks_by_group = true;
         app.airport_options.per_airport = true;
         app.remember_filters();
         let view = std::fs::read_to_string(dir.join("map-view")).unwrap();
-        assert_eq!(view, "airports all-locations banks-by-group\n");
+        assert_eq!(view, "airports all-locations\n");
         assert!(crate::airports::AirportOptions::load(&dir.join("airport-options")).per_airport);
 
         let mut next = simulated("filters-next");
         next.load_map_view(&dir.join("map-view"));
         assert_eq!(next.map_shown, app.map_shown);
-        assert!(next.map_all_locations && next.remembered.banks_by_group);
+        assert!(next.map_all_locations);
         let _ = std::fs::remove_dir_all(dir);
     }
 
