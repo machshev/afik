@@ -561,6 +561,7 @@ fn state_json(state: &GuiState) -> String {
             ObjectKind::BankGroup => "bank-group",
             ObjectKind::StartPlace => "start-place",
             ObjectKind::BankOrigin => "bank-origin",
+            ObjectKind::VfoStart => "vfo-start",
         };
         write!(
             &mut json,

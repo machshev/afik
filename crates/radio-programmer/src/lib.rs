@@ -5,6 +5,7 @@
 use core::fmt;
 use radio_channel_plan::{
     BankGroup, BankOrigin, ChannelBank, ChannelRecord, GeneratedBank, PlanEncoding, StartPlace,
+    VfoStart, VFO_SLOTS,
 };
 use radio_domain::{BankId, ChannelId, RadioConfig};
 use radio_platform::memory_link::IMAGE_REGION_BYTES;
@@ -19,10 +20,11 @@ use radio_storage::radio_image;
 use radio_storage::{
     configuration_image_len, decode_bank_group, decode_bank_origin, decode_channel,
     decode_channel_bank, decode_configuration_image, decode_generated_bank, decode_radio_config,
-    decode_start_place, decode_tx_range, encode_bank_group, encode_bank_origin, encode_channel,
-    encode_channel_bank, encode_configuration_image, encode_generated_bank, encode_radio_config,
-    encode_start_place, encode_tx_range, ObjectKey, ObjectKind, StorageError, StorageObject,
-    StorageUsage, MAX_OBJECT_DATA, OBJECT_ENTRY_HEADER_LEN, STORAGE_FORMAT_VERSION,
+    decode_start_place, decode_tx_range, decode_vfo_start, encode_bank_group, encode_bank_origin,
+    encode_channel, encode_channel_bank, encode_configuration_image, encode_generated_bank,
+    encode_radio_config, encode_start_place, encode_tx_range, encode_vfo_start, ObjectKey,
+    ObjectKind, StorageError, StorageObject, StorageUsage, MAX_OBJECT_DATA,
+    OBJECT_ENTRY_HEADER_LEN, STORAGE_FORMAT_VERSION,
 };
 use radio_tx_policy::{RangeError, TxPolicy, TxRange};
 
@@ -117,6 +119,7 @@ pub struct RadioProject {
     tx_ranges: Vec<TxRange>,
     groups: Vec<BankGroup>,
     start: Option<StartPlace>,
+    vfos: [Option<VfoStart>; VFO_SLOTS],
     origins: Vec<BankOrigin>,
 }
 
@@ -131,6 +134,7 @@ impl RadioProject {
             tx_ranges: Vec::new(),
             groups: Vec::new(),
             start: None,
+            vfos: [None; VFO_SLOTS],
             origins: Vec::new(),
         }
     }
@@ -155,6 +159,26 @@ impl RadioProject {
     /// Returns where the radio starts, if the project says.
     pub const fn start(&self) -> Option<StartPlace> {
         self.start
+    }
+
+    /// Sets slot `slot`'s VFO (A 0, B 1), which a write sends in the radio's
+    /// place record with the start place; `None` leaves it at the radio's
+    /// defaults. A slot past B is ignored.
+    pub fn set_vfo(&mut self, slot: usize, vfo: Option<VfoStart>) {
+        if let Some(each) = self.vfos.get_mut(slot) {
+            *each = vfo;
+        }
+    }
+
+    /// Returns each slot's programmed VFO, A first.
+    pub const fn vfos(&self) -> [Option<VfoStart>; VFO_SLOTS] {
+        self.vfos
+    }
+
+    /// Whether a write sends the radio a place record: a start place or a
+    /// programmed VFO.
+    pub fn writes_place(&self) -> bool {
+        self.start.is_some() || self.vfos.iter().any(Option::is_some)
     }
 
     /// Adds one bank group, or location (`ADR-116`).
@@ -487,6 +511,11 @@ impl ConfigurationCompiler {
         if let Some(start) = project.start {
             objects.push(encode_start_place(start)?);
         }
+        for (slot, vfo) in (0_u16..).zip(project.vfos) {
+            if let Some(vfo) = vfo {
+                objects.push(encode_vfo_start(slot, vfo)?);
+            }
+        }
         for origin in &project.origins {
             objects.push(encode_bank_origin(*origin)?);
         }
@@ -590,6 +619,9 @@ impl ConfigurationCompiler {
                 }
                 ObjectKind::StartPlace => {
                     decode_start_place(object)?;
+                }
+                ObjectKind::VfoStart => {
+                    decode_vfo_start(object)?;
                 }
                 ObjectKind::BankOrigin => {
                     decode_bank_origin(object)?;
@@ -741,6 +773,9 @@ impl ConfigurationSnapshot {
                 }
                 ObjectKind::StartPlace => {
                     decode_start_place(object)?;
+                }
+                ObjectKind::VfoStart => {
+                    decode_vfo_start(object)?;
                 }
                 ObjectKind::BankOrigin => {
                     decode_bank_origin(object)?;
@@ -1518,6 +1553,44 @@ mod tests {
             project.compile_radio_image().expect("radio image"),
             image,
             "the radio image is the same with or without it"
+        );
+    }
+
+    #[test]
+    fn programmed_vfos_survive_the_project_file_and_go_in_the_place_not_the_image() {
+        use radio_channel_plan::VfoStart;
+        use radio_domain::{PowerLevel, Tone};
+        let mut project = RadioProject::new();
+        project.add_channel(channel(2, 0));
+        project.add_bank(named_bank(0));
+        let image = project.compile_radio_image().expect("radio image");
+        assert!(!project.writes_place());
+        let b = VfoStart {
+            hz: 446_068_750,
+            step_hz: 6_250,
+            rx_tone: Tone::Ctcss(885),
+            tx_tone: Tone::Ctcss(885),
+            power: Some(PowerLevel::Low2),
+        };
+        project.set_vfo(1, Some(b));
+        project.set_vfo(2, Some(b));
+        assert_eq!(project.vfos(), [None, Some(b)]);
+        assert!(project.writes_place(), "a VFO alone sends a place");
+
+        let compiled = ConfigurationCompiler::new(capabilities_for(8))
+            .compile(&project)
+            .unwrap();
+        let kept: Vec<_> = compiled
+            .objects()
+            .iter()
+            .filter(|object| object.key().kind == ObjectKind::VfoStart)
+            .map(|object| radio_storage::decode_vfo_start(object).unwrap())
+            .collect();
+        assert_eq!(kept, [(1, b)]);
+        assert_eq!(
+            project.compile_radio_image().expect("radio image"),
+            image,
+            "the radio image is the same with or without them"
         );
     }
 

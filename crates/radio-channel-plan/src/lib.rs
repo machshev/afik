@@ -324,6 +324,26 @@ pub struct StartPlace {
     pub channel: Option<(BankId, u16)>,
 }
 
+/// One slot's VFO as the studio programs it: its frequency, tuning step,
+/// tones and power. The studio writes it into the radio's place record with
+/// the [`StartPlace`]; slot A is 0 and slot B is 1.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VfoStart {
+    /// The VFO frequency in hertz.
+    pub hz: u32,
+    /// The tuning step in hertz, one the radio offers.
+    pub step_hz: u32,
+    /// The tone that opens its squelch, or none for any carrier.
+    pub rx_tone: Tone,
+    /// The tone it transmits.
+    pub tx_tone: Tone,
+    /// Its TX power, or `None` for the programmed default.
+    pub power: Option<PowerLevel>,
+}
+
+/// VFO slots a radio has: A and B.
+pub const VFO_SLOTS: usize = 2;
+
 /// A named set of banks the radio can narrow its source list to
 /// (`ADR-116`); a bank may be in any number of groups.
 ///

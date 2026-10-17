@@ -1767,6 +1767,10 @@ impl ProjectModel {
                     project
                         .add_origin(radio_storage::decode_bank_origin(&object).map_err(invalid)?);
                 }
+                ObjectKind::VfoStart => {
+                    let (slot, vfo) = radio_storage::decode_vfo_start(&object).map_err(invalid)?;
+                    project.set_vfo(usize::from(slot), Some(vfo));
+                }
             }
         }
         Ok(Self::from_project(&project))

@@ -7,7 +7,7 @@ use core::fmt;
 use radio_channel_plan::{
     BankFlags, BankGroup, BankName, BankOrigin, BankSet, BankSettings, BankSource, ChannelBank,
     ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord, ChannelTemplate, Designator,
-    GeneratedBank, Locator, PlanEncoding, SharedSettings, StartPlace, MAX_BANK_NAME_LEN,
+    GeneratedBank, Locator, PlanEncoding, SharedSettings, StartPlace, VfoStart, MAX_BANK_NAME_LEN,
     MAX_CHANNEL_NAME_LEN, MAX_DESIGNATOR_LEN, MAX_LOCATOR_LEN,
 };
 use radio_domain::{
@@ -90,6 +90,8 @@ pub enum ObjectKind {
     /// Which generator made a bank, and for which location (`ADR-117`);
     /// the identifier is the bank's.
     BankOrigin = 8,
+    /// One slot's programmed VFO; the identifier is the slot, A 0 and B 1.
+    VfoStart = 9,
 }
 
 impl TryFrom<u8> for ObjectKind {
@@ -105,6 +107,7 @@ impl TryFrom<u8> for ObjectKind {
             6 => Ok(Self::BankGroup),
             7 => Ok(Self::StartPlace),
             8 => Ok(Self::BankOrigin),
+            9 => Ok(Self::VfoStart),
             _ => Err(StorageError::UnsupportedObject),
         }
     }
@@ -1413,10 +1416,68 @@ pub fn decode_start_place(object: &impl Object) -> Result<StartPlace, StorageErr
     })
 }
 
+/// Encoded byte length of a VFO object: version, frequency, step, receive and
+/// transmit tones, and power.
+pub const VFO_START_ENCODED_LEN: usize = 16;
+/// The power byte of a VFO at the programmed default.
+const DEFAULT_POWER: u8 = u8::MAX;
+
+/// Encodes one slot's programmed VFO as a storage object.
+pub fn encode_vfo_start(slot: u16, vfo: VfoStart) -> Result<StorageObject, StorageError> {
+    if usize::from(slot) >= radio_channel_plan::VFO_SLOTS {
+        return Err(StorageError::MalformedObject);
+    }
+    let mut data = [0_u8; VFO_START_ENCODED_LEN];
+    data[0] = STORAGE_FORMAT_VERSION;
+    data[1..5].copy_from_slice(&vfo.hz.to_le_bytes());
+    data[5..9].copy_from_slice(&vfo.step_hz.to_le_bytes());
+    encode_tone(vfo.rx_tone, &mut data[9..12]);
+    encode_tone(vfo.tx_tone, &mut data[12..15]);
+    data[15] = vfo.power.map_or(DEFAULT_POWER, |power| power as u8);
+    StorageObject::new(
+        ObjectKey {
+            kind: ObjectKind::VfoStart,
+            id: slot,
+        },
+        &data,
+    )
+}
+
+/// Decodes and validates one slot's programmed VFO, and its slot.
+pub fn decode_vfo_start(object: &impl Object) -> Result<(u16, VfoStart), StorageError> {
+    let key = object.key();
+    if key.kind != ObjectKind::VfoStart {
+        return Err(StorageError::UnsupportedObject);
+    }
+    let data = object.data();
+    if usize::from(key.id) >= radio_channel_plan::VFO_SLOTS
+        || data.len() != VFO_START_ENCODED_LEN
+        || data[0] != STORAGE_FORMAT_VERSION
+    {
+        return Err(StorageError::MalformedObject);
+    }
+    let word = |at: usize| u32::from_le_bytes([data[at], data[at + 1], data[at + 2], data[at + 3]]);
+    let power = match data[15] {
+        DEFAULT_POWER => None,
+        level => Some(PowerLevel::try_from(level).map_err(|_| StorageError::MalformedObject)?),
+    };
+    Ok((
+        key.id,
+        VfoStart {
+            hz: word(1),
+            step_hz: word(5),
+            rx_tone: decode_tone(&data[9..12])?,
+            tx_tone: decode_tone(&data[12..15])?,
+            power,
+        },
+    ))
+}
+
 /// Validates any currently supported configuration object.
 pub fn validate_object(object: &impl Object) -> bool {
     match object.key().kind {
         ObjectKind::StartPlace => decode_start_place(object).is_ok(),
+        ObjectKind::VfoStart => decode_vfo_start(object).is_ok(),
         ObjectKind::BankOrigin => decode_bank_origin(object).is_ok(),
         ObjectKind::BankGroup => decode_bank_group(object).is_ok(),
         ObjectKind::GeneratedBank => decode_generated_bank(object).is_ok(),
@@ -2005,6 +2066,50 @@ mod tests {
             let bad = StorageObject::new(object.key(), &data).unwrap();
             assert_eq!(
                 super::decode_start_place(&bad),
+                Err(StorageError::MalformedObject),
+                "byte {at}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_programmed_vfo_round_trips_and_refuses_what_a_radio_cannot_hold() {
+        use radio_channel_plan::VfoStart;
+        let vfo = VfoStart {
+            hz: 446_068_750,
+            step_hz: 6_250,
+            rx_tone: Tone::Ctcss(885),
+            tx_tone: Tone::Dcs {
+                code: 23,
+                inverted: true,
+            },
+            power: Some(PowerLevel::Low4),
+        };
+        for (slot, vfo) in [
+            (0, vfo),
+            (
+                1,
+                VfoStart {
+                    rx_tone: Tone::None,
+                    tx_tone: Tone::None,
+                    power: None,
+                    ..vfo
+                },
+            ),
+        ] {
+            let object = super::encode_vfo_start(slot, vfo).unwrap();
+            assert_eq!(object.len(), super::VFO_START_ENCODED_LEN);
+            assert_eq!(super::decode_vfo_start(&object), Ok((slot, vfo)));
+            assert!(validate_object(&object));
+        }
+        assert!(super::encode_vfo_start(2, vfo).is_err(), "two slots");
+        let object = super::encode_vfo_start(0, vfo).unwrap();
+        for (at, value) in [(0, 0xEE_u8), (9, 7), (15, 6)] {
+            let mut data = object.data().to_vec();
+            data[at] = value;
+            let bad = StorageObject::new(object.key(), &data).unwrap();
+            assert_eq!(
+                super::decode_vfo_start(&bad),
                 Err(StorageError::MalformedObject),
                 "byte {at}"
             );
