@@ -129,6 +129,7 @@ pub fn parse(csv: &str) -> Result<Vec<Station>, String> {
     let latitude_at = column("Lat")?;
     let longitude_at = column("Long")?;
     // Only the BBC filter reads it; a list without it keeps every station.
+    // The BBC's licence numbers run `BBC000001` upwards.
     let licence_at = column("Licence").ok();
     // Heights only sharpen the ranking; a list without them still reads.
     let site_height_at = column("Site Ht").ok();
@@ -168,7 +169,8 @@ pub fn parse(csv: &str) -> Result<Vec<Station>, String> {
                     .and_then(|(site, aerial)| Some(number(field(site))? + number(field(aerial))?)),
                 latitude: number(field(latitude_at))?,
                 longitude: number(field(longitude_at))?,
-                bbc: licence_at.is_some_and(|at| field(at).trim().eq_ignore_ascii_case("BBC")),
+                bbc: licence_at
+                    .is_some_and(|at| field(at).trim().to_ascii_uppercase().starts_with("BBC")),
             })
         })
         .collect();
@@ -449,13 +451,13 @@ mod tests {
     /// a few it has around them.
     const VHF: &str = "Date,Station,Area,Site,Licence ,Frequency,NGR,RDS PS,RDS PI,\
 Site Ht,In-Use Aerial Ht,In-UseERP/HP,In-Use ERP/VP,Lat,Long,\r
-01/01/2020,BBC Radio 4 (FM),London,Wrotham,BBC,93.5,TQ,_BBC_R4_,C204,219,150,\"124.999,996\",\"124.999,996\",51.320705,0.287703,\r
-01/01/2020,BBC Radio 4 (FM),London,Crystal Palace,BBC,93.2,TQ,_BBC_R4_,C204,110,170,\"0.000,000\",\"4.000,000\",51.424171,-0.074944,\r
-01/01/2020,Classic FM,London,Wrotham,CR1,100.9,TQ,Classic_,C2,219,150,\"124.999,996\",\"124.999,996\",51.320705,0.287703,\r
-01/01/2020,\"Rainbow Radio, London\",London,Crystal Palace,CR2,92.4,TQ,RAINBOW,C3,110,40,\"0.030,000\",\"0.030,000\",51.424171,-0.074944,\r
+01/01/2020,BBC Radio 4 (FM),London,Wrotham,BBC000004,93.5,TQ,_BBC_R4_,C204,219,150,\"124.999,996\",\"124.999,996\",51.320705,0.287703,\r
+01/01/2020,BBC Radio 4 (FM),London,Crystal Palace,BBC000004,93.2,TQ,_BBC_R4_,C204,110,170,\"0.000,000\",\"4.000,000\",51.424171,-0.074944,\r
+01/01/2020,Classic FM,London,Wrotham,AN000001,100.9,TQ,Classic_,C2,219,150,\"124.999,996\",\"124.999,996\",51.320705,0.287703,\r
+01/01/2020,\"Rainbow Radio, London\",London,Crystal Palace,AL000261,92.4,TQ,RAINBOW,C3,110,40,\"0.030,000\",\"0.030,000\",51.424171,-0.074944,\r
 01/01/2020,Local Two,Kent,Wrotham,CR3,92.4,TQ,,C4,219,20,\"0.010,000\",\"0.010,000\",51.320705,0.287703,\r
 01/01/2020,Off Air,London,Crystal Palace,CR4,95.0,TQ,OFF,C5,110,40,\"0.000,000\",\"0.000,000\",51.424171,-0.074944,\r
-01/01/2020,Radio Scotland,Glasgow,Black Hill,BBC,94.3,NS,_BBC__SCOT_,C6,275,200,\"125.000,000\",\"125.000,000\",55.861,-3.873,\r
+01/01/2020,Radio Scotland,Glasgow,Black Hill,BBC000041,94.3,NS,_BBC__SCOT_,C6,275,200,\"125.000,000\",\"125.000,000\",55.861,-3.873,\r
 01/01/2020,Odd Raster,London,Crystal Palace,CR5,95.05,TQ,ODD,C7,110,40,\"1.000,000\",\"1.000,000\",51.424171,-0.074944,\r
 ";
 
