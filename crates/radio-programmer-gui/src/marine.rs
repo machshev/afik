@@ -474,6 +474,11 @@ pub fn area_file() -> Option<PathBuf> {
     paths::state_dir().map(|dir| dir.join(AREA_FILE))
 }
 
+/// The radius marine places are taken within before the operator chooses
+/// one, in kilometres: about how far a coast station or ship reaches a
+/// handheld; a marina or lock carries less.
+pub const DEFAULT_RADIUS_KM: u16 = 30;
+
 /// The radius and how many local channels to take, as for the airports.
 pub type MarineArea = AirportArea;
 

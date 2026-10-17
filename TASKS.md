@@ -3291,6 +3291,10 @@
       network, tower, radio, aeroplane for airports and airfields, anchor),
       also leading its Show box. Per-airport banks were already limited to
       the radius; the hover text now says so. Done.
+  15. Realistic default radii (operator request): each generator starts at
+      about its handheld hearing range: repeaters and world 50 km, gateways
+      20, beacons 150, airports 150 (approach), airfields 50, marine 30. A
+      saved radius is kept. Done.
 
 ## BANKS-073 — Up to 254 banks, addressed by bank and position
 

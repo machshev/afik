@@ -38,8 +38,12 @@ const GATEWAY_BANDS_FILE: &str = "gateway-bands";
 const BEACON_BANDS_FILE: &str = "beacon-bands";
 const BEACON_AREA_FILE: &str = "beacon-area";
 /// The radius beacons are taken within before the operator chooses one, in
-/// kilometres: a beacon is put up to be heard far beyond a repeater's reach.
-pub const DEFAULT_BEACON_RADIUS_KM: u16 = 300;
+/// kilometres: about how far a hilltop beacon on SSB or CW reaches a
+/// handheld's own aerial, well beyond a repeater's reach.
+pub const DEFAULT_BEACON_RADIUS_KM: u16 = 150;
+/// The radius gateways are taken within before the operator chooses one, in
+/// kilometres: most are low-power simplex nodes on a house aerial.
+pub const DEFAULT_GATEWAY_RADIUS_KM: u16 = 20;
 /// How many repeaters a bank takes before the operator chooses: about a
 /// tenth of the radio's image.
 pub const DEFAULT_MAX_CHANNELS: u16 = 40;
@@ -47,7 +51,8 @@ pub const DEFAULT_MAX_CHANNELS: u16 = 40;
 /// storage the studio shows, not this, is what limits a bank. About 380
 /// repeaters fit an otherwise empty radio.
 pub const MAX_CHANNELS_LIMIT: u16 = 500;
-/// The radius offered before the operator chooses one, in kilometres.
+/// The radius repeaters are taken within before the operator chooses one,
+/// in kilometres: about how far a hilltop repeater reaches a handheld.
 pub const DEFAULT_RADIUS_KM: u16 = 50;
 /// The radii the studio offers, in kilometres: from a handheld's reach of
 /// a hilltop repeater up to the whole UK. The bank still takes only the

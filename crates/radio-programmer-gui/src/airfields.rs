@@ -77,6 +77,10 @@ pub fn area_file() -> Option<PathBuf> {
     paths::state_dir().map(|dir| dir.join(AREA_FILE))
 }
 
+/// The radius airfields are taken within before the operator chooses one, in
+/// kilometres: about how far a glider at height reaches a handheld.
+pub const DEFAULT_RADIUS_KM: u16 = 50;
+
 /// The radius and how many local channels to take, as for the airports.
 pub type AirfieldArea = AirportArea;
 

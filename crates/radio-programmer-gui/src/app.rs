@@ -438,11 +438,12 @@ impl StudioApp {
         app.use_marine_cache(MarineCache::open());
         app.marine_area_file = marine::area_file();
         if let Some(file) = &app.marine_area_file {
-            app.marine_area = MarineArea::load(file);
+            app.marine_area = MarineArea::load_or(file, &area_within(marine::DEFAULT_RADIUS_KM));
         }
         app.gateway_area_file = repeaters::gateway_area_file();
         if let Some(file) = &app.gateway_area_file {
-            app.gateway_area = AirportArea::load(file);
+            app.gateway_area =
+                AirportArea::load_or(file, &area_within(repeaters::DEFAULT_GATEWAY_RADIUS_KM));
         }
         app.repeater_bands_file = repeaters::repeater_bands_file();
         if let Some(file) = &app.repeater_bands_file {
@@ -462,16 +463,18 @@ impl StudioApp {
         }
         app.beacon_area_file = repeaters::beacon_area_file();
         if let Some(file) = &app.beacon_area_file {
-            app.beacon_area = AirportArea::load_or(file, &beacon_area_default());
+            app.beacon_area =
+                AirportArea::load_or(file, &area_within(repeaters::DEFAULT_BEACON_RADIUS_KM));
         }
         app.use_world_cache(WorldCache::open());
         app.world_area_file = world::area_file();
         if let Some(file) = &app.world_area_file {
-            app.world_area = WorldArea::load(file);
+            app.world_area = WorldArea::load_or(file, &area_within(repeaters::DEFAULT_RADIUS_KM));
         }
         app.airfield_area_file = airfields::area_file();
         if let Some(file) = &app.airfield_area_file {
-            app.airfield_area = AirfieldArea::load(file);
+            app.airfield_area =
+                AirfieldArea::load_or(file, &area_within(airfields::DEFAULT_RADIUS_KM));
         }
         app
     }
@@ -1651,22 +1654,22 @@ impl StudioApp {
             marine_cache: MarineCache::none(),
             marine: None,
             marine_sync: None,
-            marine_area: MarineArea::default(),
+            marine_area: area_within(marine::DEFAULT_RADIUS_KM),
             marine_area_file: None,
-            gateway_area: AirportArea::default(),
+            gateway_area: area_within(repeaters::DEFAULT_GATEWAY_RADIUS_KM),
             gateway_area_file: None,
             gateway_bands: BandFilter::default(),
             gateway_bands_file: None,
             beacon_bands: BandFilter::default(),
             beacon_bands_file: None,
-            beacon_area: beacon_area_default(),
+            beacon_area: area_within(repeaters::DEFAULT_BEACON_RADIUS_KM),
             beacon_area_file: None,
-            airfield_area: AirfieldArea::default(),
+            airfield_area: area_within(airfields::DEFAULT_RADIUS_KM),
             airfield_area_file: None,
             world_cache: WorldCache::none(),
             world: None,
             world_sync: None,
-            world_area: WorldArea::default(),
+            world_area: area_within(repeaters::DEFAULT_RADIUS_KM),
             world_area_file: None,
             world_bands: BandFilter::default(),
             world_bands_file: None,
@@ -2170,11 +2173,11 @@ fn repeater_sites(near: &[(&Repeater, f64)]) -> Vec<Site> {
         .collect()
 }
 
-/// The beacon radius and count before the operator chooses: wider than the
-/// other generators', since beacons are meant to be heard from afar.
-fn beacon_area_default() -> AirportArea {
+/// A generator's area before the operator chooses: its own radius, about
+/// how far what it lists is heard on a handheld, and the usual count.
+fn area_within(radius_km: u16) -> AirportArea {
     AirportArea {
-        radius_km: repeaters::DEFAULT_BEACON_RADIUS_KM,
+        radius_km,
         ..AirportArea::default()
     }
 }
@@ -5878,15 +5881,20 @@ mod tests {
             ],
             beacons: vec![
                 system("GB3VHF", 144_430_000, 51.3),
-                // About 280 km north: inside the beacons' wider default.
-                system("GB3FAR", 432_490_000, 54.0),
+                // About 140 km north: inside the beacons' wider default.
+                system("GB3FAR", 432_490_000, 52.78),
             ],
             synced: std::time::SystemTime::now(),
         });
         "IO91WM".clone_into(&mut app.repeater_area.locator);
-        assert_eq!(app.beacon_area.radius_km, 300);
+        assert_eq!(app.beacon_area.radius_km, 150);
+        assert_eq!(app.gateway_area.radius_km, 20);
+        assert_eq!(app.airport_area.radius_km, 150);
+        assert_eq!(app.airfield_area.radius_km, 50);
+        assert_eq!(app.marine_area.radius_km, 30);
+        assert_eq!(app.world_area.radius_km, 50);
         let source = app.etcc_source(EtccKind::Beacons);
-        assert!(source.starts_with("2 within 300 km, bank "), "{source}");
+        assert!(source.starts_with("2 within 150 km, bank "), "{source}");
         assert!(source.ends_with("2 beacons from the ETCC, synced just now."));
         app.add_etcc(EtccKind::Beacons);
         let bank = app.project.banks.last().unwrap();

@@ -30,7 +30,7 @@ use radio_domain::{Bandwidth, Modulation, PowerLevel};
 use crate::{
     model::{format_mhz, BankDraft, BankKind, ChannelDraft},
     paths,
-    repeaters::{distance_km, fetch, locator_centre, sanitise, DEFAULT_RADIUS_KM, MAX_RADIUS_KM},
+    repeaters::{distance_km, fetch, locator_centre, sanitise, MAX_RADIUS_KM},
     stations::records,
 };
 
@@ -680,6 +680,11 @@ impl AirportCache {
     }
 }
 
+/// The radius airports are taken within before the operator chooses one, in
+/// kilometres: the reach of approach, aircraft at height, the furthest
+/// service; each service's own range trims the rest.
+pub const DEFAULT_AIRPORT_RADIUS_KM: u16 = 150;
+
 /// The radius and channel count the operator last chose; the locator is the
 /// repeaters' own.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -693,7 +698,7 @@ pub struct AirportArea {
 impl Default for AirportArea {
     fn default() -> Self {
         Self {
-            radius_km: DEFAULT_RADIUS_KM,
+            radius_km: DEFAULT_AIRPORT_RADIUS_KM,
             max_channels: DEFAULT_MAX_CHANNELS,
         }
     }
