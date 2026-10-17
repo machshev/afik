@@ -862,7 +862,11 @@ impl StudioApp {
             .as_ref()
             .ok_or("sync the FM station list from Ofcom first")?;
         let locator = &self.repeater_area.locator;
-        let mut near = stations::strongest(&list.stations, locator)?;
+        // Left out before ranking, so a station sharing a frequency with a
+        // BBC one can still take it.
+        let no_bbc = self.station_area.no_bbc;
+        let taken = list.stations.iter().filter(|s| !(no_bbc && s.bbc));
+        let mut near = stations::strongest(taken, locator)?;
         let in_range = near.len();
         near.truncate(usize::from(self.station_area.max_channels));
         let (project, bank_bytes) = self.with_bank(stations::station_bank(locator, &near));
@@ -2481,6 +2485,8 @@ impl StudioApp {
                     .range(1..=stations::MAX_CHANNELS_LIMIT),
             )
             .on_hover_text("How many stations the bank takes, strongest signal first");
+            ui.checkbox(&mut self.station_area.no_bbc, "No BBC")
+                .on_hover_text("Leaves out the stations the BBC is licensed for");
             if ui
                 .button("Add")
                 .on_hover_text(
@@ -5090,6 +5096,7 @@ mod tests {
             height_m: None,
             latitude,
             longitude: -0.12,
+            bbc: false,
         };
         let mut app = simulated("stations");
         assert!(app.stations.is_none(), "tests never read the real cache");
@@ -5107,7 +5114,10 @@ mod tests {
             synced: std::time::SystemTime::now(),
         });
         app.repeater_area.locator = "io91wm".to_owned();
-        app.station_area = StationArea { max_channels: 30 };
+        app.station_area = StationArea {
+            max_channels: 30,
+            no_bbc: false,
+        };
         let source = app.station_source();
         assert!(
             source.starts_with("Strongest 3 of 3 stations, furthest transmitter "),
@@ -5140,6 +5150,37 @@ mod tests {
             "{}",
             app.status
         );
+
+        // Without the BBC, the weaker station sharing its frequency plays.
+        let list = app.stations.as_mut().unwrap();
+        list.stations.push(Station {
+            bbc: true,
+            ..station("BBC R4", 1_062, 125.0, 51.9)
+        });
+        app.add_stations();
+        let names: Vec<_> = app
+            .project
+            .banks
+            .last()
+            .unwrap()
+            .channels
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(names, ["FAR AWAY", "CLASSIC", "BBC R4"]);
+        app.station_area.no_bbc = true;
+        app.add_stations();
+        assert_eq!(app.project.banks.len(), banks + 1, "replaced, not added");
+        let names: Vec<_> = app
+            .project
+            .banks
+            .last()
+            .unwrap()
+            .channels
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(names, ["FAR AWAY", "CLASSIC", "LOCAL"]);
     }
 
     #[test]

@@ -32,6 +32,8 @@ spectrum/tv-transmitter-guidance/tech-parameters/txparamsvhf.csv";
 const CACHE_DIR: &str = "ofcom";
 const TRANSMITTERS_FILE: &str = "txparamsvhf.csv";
 const AREA_FILE: &str = "station-area";
+/// The word in the area file that leaves out the BBC.
+const NO_BBC: &str = "no-bbc";
 /// How many stations a bank takes before the operator chooses.
 pub const DEFAULT_MAX_CHANNELS: u16 = 30;
 /// The most the operator can ask for; a whole region rarely has more.
@@ -62,6 +64,8 @@ pub struct Station {
     pub latitude: f64,
     /// Site longitude in degrees east.
     pub longitude: f64,
+    /// Whether the BBC holds the licence, which the operator may leave out.
+    pub bbc: bool,
 }
 
 /// Splits CSV text into records, honouring quoted fields with doubled
@@ -124,6 +128,8 @@ pub fn parse(csv: &str) -> Result<Vec<Station>, String> {
     let vertical_at = column("In-Use ERP/VP")?;
     let latitude_at = column("Lat")?;
     let longitude_at = column("Long")?;
+    // Only the BBC filter reads it; a list without it keeps every station.
+    let licence_at = column("Licence").ok();
     // Heights only sharpen the ranking; a list without them still reads.
     let site_height_at = column("Site Ht").ok();
     let aerial_height_at = column("In-Use Aerial Ht").ok();
@@ -162,6 +168,7 @@ pub fn parse(csv: &str) -> Result<Vec<Station>, String> {
                     .and_then(|(site, aerial)| Some(number(field(site))? + number(field(aerial))?)),
                 latitude: number(field(latitude_at))?,
                 longitude: number(field(longitude_at))?,
+                bbc: licence_at.is_some_and(|at| field(at).trim().eq_ignore_ascii_case("BBC")),
             })
         })
         .collect();
@@ -201,12 +208,12 @@ fn strength(station: &Station, km: f64) -> f64 {
 /// station keeps only its strongest transmitter, and each frequency only its
 /// strongest station, so a bank holds one channel per programme.
 pub fn strongest<'a>(
-    stations: &'a [Station],
+    stations: impl IntoIterator<Item = &'a Station>,
     locator: &str,
 ) -> Result<Vec<(&'a Station, f64)>, String> {
     let home = locator_centre(locator)?;
     let mut near: Vec<_> = stations
-        .iter()
+        .into_iter()
         .map(|station| {
             let km = distance_km(home, (station.latitude, station.longitude));
             (station, km)
@@ -347,18 +354,21 @@ impl StationCache {
     }
 }
 
-/// The station count the operator last chose; the locator is the
-/// repeaters' own.
+/// The station count the operator last chose, and whether BBC stations are
+/// left out; the locator is the repeaters' own.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StationArea {
     /// How many stations, strongest first, the bank takes.
     pub max_channels: u16,
+    /// Leaves out every station the BBC is licensed for.
+    pub no_bbc: bool,
 }
 
 impl Default for StationArea {
     fn default() -> Self {
         Self {
             max_channels: DEFAULT_MAX_CHANNELS,
+            no_bbc: false,
         }
     }
 }
@@ -369,25 +379,32 @@ impl StationArea {
         paths::state_dir().map(|dir| dir.join(AREA_FILE))
     }
 
-    /// Reads `MAX_CHANNELS`, the last word, so a file from when a radius
-    /// came first still reads; anything missing or unreadable gives the
-    /// default.
+    /// Reads `MAX_CHANNELS`, the last number, so a file from when a radius
+    /// came first still reads, and `no-bbc` anywhere; anything missing or
+    /// unreadable gives the default.
     pub fn load(file: &Path) -> Self {
         let text = fs::read_to_string(file).unwrap_or_default();
         let max_channels = text
             .split_whitespace()
-            .last()
-            .and_then(|word| word.parse().ok())
+            .filter_map(|word| word.parse().ok())
+            .next_back()
             .filter(|value| (1..=MAX_CHANNELS_LIMIT).contains(value))
             .unwrap_or(DEFAULT_MAX_CHANNELS);
-        Self { max_channels }
+        let no_bbc = text.split_whitespace().any(|word| word == NO_BBC);
+        Self {
+            max_channels,
+            no_bbc,
+        }
     }
 
     /// Writes the area for the next start.
     pub fn save(&self, file: &Path) -> Result<(), String> {
         file.parent()
             .map_or(Ok(()), fs::create_dir_all)
-            .and_then(|()| fs::write(file, format!("{}\n", self.max_channels)))
+            .and_then(|()| {
+                let no_bbc = if self.no_bbc { NO_BBC } else { "" };
+                fs::write(file, format!("{no_bbc}\n{}\n", self.max_channels))
+            })
             .map_err(|error| format!("{}: {error}", file.display()))
     }
 }
@@ -480,6 +497,16 @@ Site Ht,In-Use Aerial Ht,In-UseERP/HP,In-Use ERP/VP,Lat,Long,\r
                 ("BBC SCOT", "Black Hill", 94_300_000, 125_000.0),
                 ("RAINBOW", "Crystal Palace", 92_400_000, 30.0),
             ]
+        );
+        let bbc: Vec<_> = stations
+            .iter()
+            .filter(|s| s.bbc)
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(
+            bbc,
+            ["BBC R4", "BBC R4", "BBC SCOT"],
+            "by the licence column"
         );
         assert!(parse("Station\n").is_err(), "no usable columns");
         assert!(parse(VHF.lines().next().unwrap()).is_err(), "no rows");
@@ -583,7 +610,16 @@ Site Ht,In-Use Aerial Ht,In-UseERP/HP,In-Use ERP/VP,Lat,Long,\r
         let dir = scratch("area");
         let file = dir.join("station-area");
         assert_eq!(StationArea::load(&file), StationArea::default());
-        let area = StationArea { max_channels: 12 };
+        let area = StationArea {
+            max_channels: 12,
+            no_bbc: false,
+        };
+        area.save(&file).unwrap();
+        assert_eq!(StationArea::load(&file), area);
+        let area = StationArea {
+            max_channels: 7,
+            no_bbc: true,
+        };
         area.save(&file).unwrap();
         assert_eq!(StationArea::load(&file), area);
         // A file from when the radius came first keeps its count.
