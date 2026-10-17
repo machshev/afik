@@ -183,6 +183,9 @@ const MAP_VIEW_FILE: &str = "map-view";
 #[derive(Default)]
 struct RememberedFilters {
     map_view_file: Option<PathBuf>,
+    /// Whether the Banks tab lists the banks under their groups, kept with
+    /// the map's view.
+    banks_by_group: bool,
     /// The filters as last written; none until first looked at.
     last: Option<String>,
 }
@@ -553,6 +556,7 @@ impl StudioApp {
             *shown = words.contains(&generator.key());
         }
         self.map_all_locations = words.contains(&"all-locations");
+        self.remembered.banks_by_group = words.contains(&"banks-by-group");
     }
 
     /// Every filter the generators and the map take, as one string.
@@ -569,6 +573,7 @@ impl StudioApp {
                     &self.airfield_area
                 ),
                 (&self.marine_area, self.map_shown, self.map_all_locations),
+                self.remembered.banks_by_group,
             )
         )
     }
@@ -593,6 +598,9 @@ impl StudioApp {
             .collect();
         if self.map_all_locations {
             view.push("all-locations");
+        }
+        if self.remembered.banks_by_group {
+            view.push("banks-by-group");
         }
         let view = view.join(" ") + "\n";
         let saved = [
@@ -4214,8 +4222,8 @@ impl StudioApp {
         });
     }
 
-    fn banks_tab(&mut self, ui: &mut egui::Ui) {
-        self.default_set_bar(ui);
+    /// The Banks tab's row of adds and how the list is shown.
+    fn banks_toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             if ui.button("Add channel bank").clicked() {
                 self.add_bank(BankKind::Named);
@@ -4223,9 +4231,39 @@ impl StudioApp {
             if ui.button("Add generated plan").clicked() {
                 self.add_bank(BankKind::Generated);
             }
+            ui.separator();
+            ui.checkbox(&mut self.remembered.banks_by_group, "Show by group")
+                .on_hover_text(
+                    "Lists the banks under each group they are in, a bank in several under \
+                     each; drag to reorder in the plain list",
+                );
         });
+    }
+
+    /// Does what a bank row asked for.
+    fn apply_bank_action(&mut self, row: usize, action: BankAction) {
+        match action {
+            BankAction::MoveTo(slot) => self.project.move_bank_to(row, slot),
+            BankAction::Remove => {
+                self.project.banks.remove(row);
+            }
+            BankAction::AddChannel => self.project.add_channel(row),
+            BankAction::Channel(channel, RowAction::Duplicate) => {
+                self.project.duplicate_channel(row, channel);
+            }
+            BankAction::Channel(channel, RowAction::Remove) => {
+                self.project.banks[row].channels.remove(channel);
+            }
+        }
+    }
+
+    fn banks_tab(&mut self, ui: &mut egui::Ui) {
+        self.default_set_bar(ui);
+        self.banks_toolbar(ui);
         self.groups_bar(ui);
         ui.separator();
+        let grouped = self.remembered.banks_by_group;
+        let sections = bank_sections(&self.project, grouped);
 
         let mut action = None;
         let mut toggle = None;
@@ -4240,52 +4278,79 @@ impl StudioApp {
             .collect();
         let widths = column_widths(ui, &headers);
         let buttons_width = button_width(ui, "Delete") + button_width(ui, DRAG_HANDLE);
+        let banks = &mut self.project.banks;
+        // One bank's header and editor; `salt` keeps a bank shown under
+        // several groups apart, and only the plain list can be dragged.
+        let mut show_bank = |ui: &mut egui::Ui, row: usize, salt: usize| {
+            ui.push_id((salt, row), |ui| {
+                // Banks are keyed by row, not by their label: the label shows
+                // what is being edited, and a key that changed with it would
+                // drop focus after one keystroke.
+                let id = ui.make_persistent_id("bank");
+                if !grouped {
+                    ids.push(id);
+                }
+                let mut state = CollapsingState::load_with_default_open(ui.ctx(), id, false);
+                if expand == Some(row) {
+                    state.set_open(true);
+                }
+                state
+                    .show_header(ui, |ui| {
+                        if !grouped {
+                            bank_drag_handle(ui, id.with("drag"), row, &headers[row][0]);
+                        }
+                        let gap = column_gap(ui.available_width() - buttons_width, &widths);
+                        for (text, width) in headers[row].iter().zip(widths) {
+                            let label = egui::Label::new(RichText::new(text).strong())
+                                .sense(egui::Sense::click());
+                            let response = ui.add(label);
+                            if response.clicked() {
+                                toggle = Some(id);
+                            }
+                            ui.add_space((width - response.rect.width()).max(0.0) + gap);
+                        }
+                        // The header runs the full width, its buttons at the right.
+                        if let Some(requested) = bank_header_buttons(ui) {
+                            action = Some((row, requested));
+                        }
+                    })
+                    .body(|ui| {
+                        if let Some(requested) = bank_row_editor(ui, &mut banks[row]) {
+                            action = Some((row, requested));
+                        }
+                    });
+                ui.separator();
+            });
+        };
+        let mut dropped = None;
         ScrollArea::vertical().show(ui, |ui| {
             // Each bank row's top and bottom, for where a dragged one lands.
             let mut spans = Vec::with_capacity(headers.len());
-            for (row, bank) in self.project.banks.iter_mut().enumerate() {
-                let top = ui.cursor().top();
-                ui.push_id(row, |ui| {
-                    // Banks are keyed by row, not by their label: the label
-                    // shows what is being edited, and a key that changed with
-                    // it would drop focus after one keystroke.
-                    let id = ui.make_persistent_id("bank");
-                    ids.push(id);
-                    let mut state = CollapsingState::load_with_default_open(ui.ctx(), id, false);
-                    if expand == Some(row) {
-                        state.set_open(true);
+            for (salt, (title, rows)) in sections.iter().enumerate() {
+                let Some(title) = title else {
+                    for &row in rows {
+                        let top = ui.cursor().top();
+                        show_bank(ui, row, salt);
+                        spans.push((top, ui.cursor().top()));
                     }
-                    state
-                        .show_header(ui, |ui| {
-                            bank_drag_handle(ui, id.with("drag"), row, &headers[row][0]);
-                            let gap = column_gap(ui.available_width() - buttons_width, &widths);
-                            for (text, width) in headers[row].iter().zip(widths) {
-                                let label = egui::Label::new(RichText::new(text).strong())
-                                    .sense(egui::Sense::click());
-                                let response = ui.add(label);
-                                if response.clicked() {
-                                    toggle = Some(id);
-                                }
-                                ui.add_space((width - response.rect.width()).max(0.0) + gap);
-                            }
-                            // The header runs the full width, its buttons at the right.
-                            if let Some(requested) = bank_header_buttons(ui) {
-                                action = Some((row, requested));
-                            }
-                        })
-                        .body(|ui| {
-                            if let Some(requested) = bank_row_editor(ui, bank) {
-                                action = Some((row, requested));
-                            }
-                        });
-                    ui.separator();
-                });
-                spans.push((top, ui.cursor().top()));
+                    continue;
+                };
+                egui::CollapsingHeader::new(RichText::new(title).heading())
+                    .id_salt(("bank-section", salt))
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        for &row in rows {
+                            show_bank(ui, row, salt);
+                        }
+                    });
             }
-            if let Some(change) = drop_bank(ui, &spans) {
-                action = Some(change);
+            if !grouped {
+                dropped = drop_bank(ui, &spans);
             }
         });
+        if dropped.is_some() {
+            action = dropped;
+        }
         let context = ui.ctx().clone();
         if let Some(id) = toggle {
             let mut state = CollapsingState::load_with_default_open(&context, id, false);
@@ -4293,21 +4358,10 @@ impl StudioApp {
             state.store(&context);
         }
         if let Some((row, change)) = action {
-            keep_open_state(&context, &ids, row, change);
-        }
-        match action {
-            Some((row, BankAction::MoveTo(slot))) => self.project.move_bank_to(row, slot),
-            Some((row, BankAction::Remove)) => {
-                self.project.banks.remove(row);
+            if !grouped {
+                keep_open_state(&context, &ids, row, change);
             }
-            Some((row, BankAction::AddChannel)) => self.project.add_channel(row),
-            Some((row, BankAction::Channel(channel, RowAction::Duplicate))) => {
-                self.project.duplicate_channel(row, channel);
-            }
-            Some((row, BankAction::Channel(channel, RowAction::Remove))) => {
-                self.project.banks[row].channels.remove(channel);
-            }
-            None => {}
+            self.apply_bank_action(row, change);
         }
     }
 
@@ -4697,6 +4751,53 @@ fn bank_drag_handle(ui: &mut egui::Ui, id: egui::Id, row: usize, name: &str) {
     })
     .response
     .on_hover_text("Drag to move this bank");
+}
+
+/// The Banks tab's sections: one untitled list of every bank, or with
+/// `grouped` each group's banks under its name (and a location's locator),
+/// then the banks in no group.
+fn bank_sections(project: &ProjectModel, grouped: bool) -> Vec<(Option<String>, Vec<usize>)> {
+    let rows = 0..project.banks.len();
+    if !grouped {
+        return vec![(None, rows.collect())];
+    }
+    let count = |rows: &[usize]| {
+        format!(
+            "{} bank{}",
+            rows.len(),
+            if rows.len() == 1 { "" } else { "s" }
+        )
+    };
+    let mut sections: Vec<_> = project
+        .groups
+        .iter()
+        .enumerate()
+        .map(|(group, draft)| {
+            let held: Vec<usize> = rows
+                .clone()
+                .filter(|row| project.banks[*row].groups.contains(&group))
+                .collect();
+            let place = if draft.locator.is_empty() {
+                String::new()
+            } else {
+                format!(" \u{b7} {}", draft.locator)
+            };
+            (
+                Some(format!("{}{place} \u{b7} {}", draft.name, count(&held))),
+                held,
+            )
+        })
+        .collect();
+    let loose: Vec<usize> = rows
+        .filter(|row| project.banks[*row].groups.is_empty())
+        .collect();
+    if !loose.is_empty() {
+        sections.push((
+            Some(format!("Not in a group \u{b7} {}", count(&loose))),
+            loose,
+        ));
+    }
+    sections
 }
 
 /// Shows where a dragged bank would land and, when it is released over the
@@ -5956,6 +6057,46 @@ mod tests {
     }
 
     #[test]
+    fn by_group_the_banks_tab_lists_each_groups_banks_then_the_rest() {
+        use super::bank_sections;
+
+        let context = eframe::egui::Context::default();
+        let mut app = app_in(&scratch("by-group"), &Options::default());
+        for name in ["RPT JO02EH", "SEA CORE", "MINE"] {
+            app.add_bank(BankKind::Named);
+            app.project.banks.last_mut().unwrap().name = name.to_owned();
+        }
+        assert!(app.project.file_bank("RPT JO02EH", "HOME", "JO02EH", false));
+        assert!(app.project.file_bank("SEA CORE", "HOME", "JO02EH", false));
+        assert!(app.project.file_in("SEA CORE", "MARINE"));
+        let rows = |sections: Vec<(Option<String>, Vec<usize>)>| -> Vec<_> {
+            sections
+                .into_iter()
+                .map(|(title, rows)| (title.unwrap_or_default(), rows))
+                .collect()
+        };
+        assert_eq!(
+            rows(bank_sections(&app.project, false)),
+            [(String::new(), vec![0, 1, 2])]
+        );
+        assert_eq!(
+            rows(bank_sections(&app.project, true)),
+            [
+                ("HOME \u{b7} JO02EH \u{b7} 2 banks".to_owned(), vec![0, 1]),
+                ("MARINE \u{b7} 1 bank".to_owned(), vec![1]),
+                ("Not in a group \u{b7} 1 bank".to_owned(), vec![2]),
+            ]
+        );
+
+        // Drawn by group, a bank in two groups shows under each.
+        app.remembered.banks_by_group = true;
+        frame(&context, &mut app, Vec::new());
+        let output = frame(&context, &mut app, Vec::new());
+        assert_eq!(text_centres(&output, "Delete").len(), 4);
+        assert_eq!(text_centres(&output, "MARINE \u{b7} 1 bank").len(), 1);
+    }
+
+    #[test]
     fn a_bank_header_has_no_up_or_down_buttons() {
         let context = eframe::egui::Context::default();
         let mut app = app_in(&scratch("reorder"), &Options::default());
@@ -6495,16 +6636,17 @@ mod tests {
         app.map_shown = [false; Generator::ALL.len()];
         app.map_shown[Generator::Airports as usize] = true;
         app.map_all_locations = true;
+        app.remembered.banks_by_group = true;
         app.airport_options.per_airport = true;
         app.remember_filters();
         let view = std::fs::read_to_string(dir.join("map-view")).unwrap();
-        assert_eq!(view, "airports all-locations\n");
+        assert_eq!(view, "airports all-locations banks-by-group\n");
         assert!(crate::airports::AirportOptions::load(&dir.join("airport-options")).per_airport);
 
         let mut next = simulated("filters-next");
         next.load_map_view(&dir.join("map-view"));
         assert_eq!(next.map_shown, app.map_shown);
-        assert!(next.map_all_locations);
+        assert!(next.map_all_locations && next.remembered.banks_by_group);
         let _ = std::fs::remove_dir_all(dir);
     }
 
