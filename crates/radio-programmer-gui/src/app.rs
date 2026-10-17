@@ -6584,6 +6584,8 @@ mod tests {
         let mut app = simulated("marine");
         assert!(app.marine.is_none(), "tests never read the real cache");
         app.repeater_area.locator = "JO01HP".to_owned();
+        // Burnham is about 13 km from the square's centre.
+        app.marine_area.radius_km = 20;
         let source = app.marine_source();
         assert!(source.starts_with("8 core and nearest 0 of 0"), "{source}");
         let banks = app.project.banks.len();
@@ -6869,7 +6871,7 @@ mod tests {
         app.beacon_area_file = Some(dir.join("beacon-area"));
         app.marine_area_file = Some(dir.join("marine-area"));
         assert_eq!(app.receiver, Receiver::Handheld);
-        assert_eq!(app.marine_area.radius_km, 30);
+        assert_eq!(app.marine_area.radius_km, 10);
 
         app.choose_receiver(Receiver::Base);
         assert_eq!(app.repeater_area.radius_km, 100);
@@ -6878,7 +6880,7 @@ mod tests {
         assert_eq!(app.beacon_area.radius_km, 300);
         assert_eq!(app.airport_area.radius_km, 300);
         assert_eq!(app.airfield_area.radius_km, 100);
-        assert_eq!(app.marine_area.radius_km, 75);
+        assert_eq!(app.marine_area.radius_km, 10);
         assert!(
             app.status.starts_with("Radii set for a base station:"),
             "{}",
@@ -6886,7 +6888,7 @@ mod tests {
         );
         assert_eq!(Receiver::load(&dir.join("receiver")), Receiver::Base);
         assert_eq!(AirportArea::load(&dir.join("beacon-area")).radius_km, 300);
-        assert_eq!(AirportArea::load(&dir.join("marine-area")).radius_km, 75);
+        assert_eq!(AirportArea::load(&dir.join("marine-area")).radius_km, 10);
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -7456,7 +7458,7 @@ mod tests {
         assert_eq!(app.gateway_area.radius_km, 20);
         assert_eq!(app.airport_area.radius_km, 150);
         assert_eq!(app.airfield_area.radius_km, 50);
-        assert_eq!(app.marine_area.radius_km, 30);
+        assert_eq!(app.marine_area.radius_km, 10);
         assert_eq!(app.world_area.radius_km, 50);
         let source = app.etcc_source(EtccKind::Beacons);
         assert!(source.starts_with("2 within 150 km, bank "), "{source}");

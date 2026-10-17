@@ -33,6 +33,10 @@ pub struct Radii {
     pub marine: u16,
 }
 
+/// The marine radius on every receiver: the marine bank is for the ports
+/// near where the radio is, and the `SEA CORE` bank covers the rest.
+const MARINE_KM: u16 = 10;
+
 /// What the radio listens with.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Receiver {
@@ -109,7 +113,7 @@ impl Receiver {
                 beacons: 150,
                 airports: 150,
                 airfields: 50,
-                marine: 30,
+                marine: MARINE_KM,
             },
             Self::Mobile => Radii {
                 repeaters: 75,
@@ -117,7 +121,7 @@ impl Receiver {
                 beacons: 200,
                 airports: 200,
                 airfields: 75,
-                marine: 50,
+                marine: MARINE_KM,
             },
             Self::Base => Radii {
                 repeaters: 100,
@@ -125,7 +129,7 @@ impl Receiver {
                 beacons: 300,
                 airports: 300,
                 airfields: 100,
-                marine: 75,
+                marine: MARINE_KM,
             },
         }
     }
@@ -167,11 +171,17 @@ mod tests {
             assert!(less.beacons < more.beacons, "{pair:?}");
             assert!(less.airports < more.airports, "{pair:?}");
             assert!(less.airfields < more.airfields, "{pair:?}");
-            assert!(less.marine < more.marine, "{pair:?}");
             assert!(pair[0].reach_km(30) < pair[1].reach_km(30), "{pair:?}");
         }
         assert_eq!(Receiver::Handheld.reach_km(150), 150);
         assert_eq!(Receiver::Base.reach_km(150), 300);
+    }
+
+    #[test]
+    fn marine_stays_local_whatever_the_receiver() {
+        for receiver in Receiver::ALL {
+            assert_eq!(receiver.radii().marine, 10, "{receiver:?}");
+        }
     }
 
     #[test]
