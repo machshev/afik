@@ -3,7 +3,9 @@
 #![forbid(unsafe_code)]
 
 use core::fmt;
-use radio_channel_plan::{BankGroup, ChannelBank, ChannelRecord, GeneratedBank, PlanEncoding};
+use radio_channel_plan::{
+    BankGroup, ChannelBank, ChannelRecord, GeneratedBank, PlanEncoding, StartPlace,
+};
 use radio_domain::{BankId, ChannelId, RadioConfig};
 use radio_platform::memory_link::IMAGE_REGION_BYTES;
 pub use radio_protocol::DeviceCapabilities;
@@ -16,11 +18,11 @@ use radio_protocol::{
 use radio_storage::radio_image;
 use radio_storage::{
     configuration_image_len, decode_bank_group, decode_channel, decode_channel_bank,
-    decode_configuration_image, decode_generated_bank, decode_radio_config, decode_tx_range,
-    encode_bank_group, encode_channel, encode_channel_bank, encode_configuration_image,
-    encode_generated_bank, encode_radio_config, encode_tx_range, ObjectKey, ObjectKind,
-    StorageError, StorageObject, StorageUsage, MAX_OBJECT_DATA, OBJECT_ENTRY_HEADER_LEN,
-    STORAGE_FORMAT_VERSION,
+    decode_configuration_image, decode_generated_bank, decode_radio_config, decode_start_place,
+    decode_tx_range, encode_bank_group, encode_channel, encode_channel_bank,
+    encode_configuration_image, encode_generated_bank, encode_radio_config, encode_start_place,
+    encode_tx_range, ObjectKey, ObjectKind, StorageError, StorageObject, StorageUsage,
+    MAX_OBJECT_DATA, OBJECT_ENTRY_HEADER_LEN, STORAGE_FORMAT_VERSION,
 };
 use radio_tx_policy::{RangeError, TxPolicy, TxRange};
 
@@ -110,6 +112,7 @@ pub struct RadioProject {
     config: Option<RadioConfig>,
     tx_ranges: Vec<TxRange>,
     groups: Vec<BankGroup>,
+    start: Option<StartPlace>,
 }
 
 impl RadioProject {
@@ -122,7 +125,19 @@ impl RadioProject {
             config: None,
             tx_ranges: Vec::new(),
             groups: Vec::new(),
+            start: None,
         }
+    }
+
+    /// Sets where the radio starts, which a write sends as its place record
+    /// (`ADR-116`); `None` leaves the radio's own.
+    pub fn set_start(&mut self, start: Option<StartPlace>) {
+        self.start = start;
+    }
+
+    /// Returns where the radio starts, if the project says.
+    pub const fn start(&self) -> Option<StartPlace> {
+        self.start
     }
 
     /// Adds one bank group, or location (`ADR-116`).
@@ -416,7 +431,8 @@ impl ConfigurationCompiler {
             + project.banks.len()
             + usize::from(project.config.is_some())
             + project.tx_ranges.len()
-            + project.groups.len();
+            + project.groups.len()
+            + usize::from(project.start.is_some());
         let mut objects = Vec::with_capacity(object_count);
         for bank in &project.generated_banks {
             objects.push(encode_generated_bank(*bank)?);
@@ -437,6 +453,9 @@ impl ConfigurationCompiler {
         }
         for group in &project.groups {
             objects.push(encode_bank_group(*group)?);
+        }
+        if let Some(start) = project.start {
+            objects.push(encode_start_place(start)?);
         }
         objects.sort_unstable_by_key(|object| object.key());
         if let Some(duplicate) = objects
@@ -535,6 +554,9 @@ impl ConfigurationCompiler {
                 }
                 ObjectKind::BankGroup => {
                     decode_bank_group(object)?;
+                }
+                ObjectKind::StartPlace => {
+                    decode_start_place(object)?;
                 }
             }
             report.object_count = report
@@ -680,6 +702,9 @@ impl ConfigurationSnapshot {
                 }
                 ObjectKind::BankGroup => {
                     decode_bank_group(object)?;
+                }
+                ObjectKind::StartPlace => {
+                    decode_start_place(object)?;
                 }
             }
             storage_bytes = storage_bytes

@@ -307,6 +307,20 @@ pub const MAX_LOCATOR_LEN: usize = 8;
 /// Bank groups a radio holds (`ADR-116`).
 pub const MAX_GROUPS: u8 = 32;
 
+/// Where a radio starts when it has no place of its own yet (`ADR-116`): the
+/// group its list is narrowed to, the bank filtering it, and a channel by its
+/// bank and position. The studio writes it as the radio's place record.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct StartPlace {
+    /// The group the source list is narrowed to, if one is.
+    pub group: Option<u8>,
+    /// The bank filtering the channels, if one is.
+    pub bank: Option<BankId>,
+    /// The channel selected, by its bank and position there; none is the
+    /// first channel of the view.
+    pub channel: Option<(BankId, u16)>,
+}
+
 /// A named set of banks the radio can narrow its source list to
 /// (`ADR-116`); a bank may be in any number of groups.
 ///

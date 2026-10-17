@@ -10,7 +10,7 @@ use embassy_futures::select::{select3, Either3};
 use embassy_time::Timer;
 use radio_platform::memory_link::{
     encode_hello_response, encode_read_response, encode_write_response, host_may_write, Decoder,
-    Push, Request, IMAGE_ORIGIN, RESPONSE_FRAME_BYTES,
+    Push, Request, IMAGE_ORIGIN, PLACE_ORIGIN, RESPONSE_FRAME_BYTES,
 };
 use radio_platform::operator_display::MemoryState;
 use radio_platform::serial::ApplicationIdentity;
@@ -101,8 +101,10 @@ pub async fn run<L: SerialLink, M: Memory>(
     let mut decoder = Decoder::new();
     let mut response = [0_u8; RESPONSE_FRAME_BYTES];
     let mut received = [0_u8; RECEIVE_BYTES];
-    // Whether a host has written since the image was last loaded.
+    // Whether a host has written since the image was last loaded, and whether
+    // it wrote the operator's place: a studio's start place.
     let mut written = false;
+    let mut place_written = false;
     loop {
         let reload = async {
             if written {
@@ -146,12 +148,18 @@ pub async fn run<L: SerialLink, M: Memory>(
                     }
                     load(cell.as_mut())
                 });
+                // A place the host wrote is where the radio goes now, as if
+                // the operator had left it there; otherwise the radio stays
+                // where it is.
+                let place = core::mem::take(&mut place_written)
+                    .then(|| memory.with_mut(|cell| cell.as_mut()?.read_operator_state()))
+                    .flatten();
                 PROGRAMMED.signal(Publication {
                     programmed,
                     generation,
                     retained: loaded,
                     memory: memory_state,
-                    place: None,
+                    place,
                 });
                 continue;
             }
@@ -197,6 +205,7 @@ pub async fn run<L: SerialLink, M: Memory>(
                             cell.as_mut()
                                 .is_some_and(|memory| memory.write(address, &data))
                         });
+                    place_written |= stored && address >= PLACE_ORIGIN;
                     // A refused or failed write is not acknowledged, so the
                     // host's write times out and it stops.
                     stored.then(|| encode_write_response(address, &mut response))

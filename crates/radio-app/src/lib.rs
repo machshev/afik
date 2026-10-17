@@ -15,7 +15,7 @@ pub mod configuration;
 pub mod drivers;
 pub mod interface;
 pub mod keys;
-pub mod operator_state;
+pub use radio_platform::operator_state;
 pub mod serial;
 mod state;
 

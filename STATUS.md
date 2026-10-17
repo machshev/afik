@@ -164,10 +164,18 @@ the place record keeps the group in byte 26 (zero is none). It fit after
 -D warnings` clean, `cargo test --workspace --no-fail-fast` 910 passed 0
 failed 3 ignored, K5 and K1 release builds pass. `7.0.54` (`15e0c85`)
 flashed to the K1 (`identify` first: bootloader `7.03.01`; image CRC-32
-`0c3fc070`, 298 pages acknowledged, not read back). Next: write a project
-with groups from the studio and check the group context on the K1; then the
-start place (operator request): the studio writes the place record at
-`0x1D00` after the image, no firmware change.
+`0c3fc070`, 298 pages acknowledged, not read back). Start place (operator
+request): the project keeps a start group, bank and channel (object kind 7,
+the Banks tab's Start on row); the studio writes it as the radio's own place
+record at `0x1D00` after the image (`write_afik_place`, `OperatorState` moved
+to `radio-platform`). Firmware: a write that touched the place publishes it,
+so the radio goes there at once; the K1 now keeps a host-written place and
+stores it on commit (its view refused place writes). `7.0.55` built, not yet
+flashed: K5 flash end `0xe810`, K1 76 316 bytes. Gate: `cargo fmt --all
+--check` clean, `cargo clippy --workspace --all-targets -- -D warnings`
+clean, `cargo test --workspace --no-fail-fast` 913 passed 0 failed 3
+ignored. Next: flash `7.0.55`, write a project with groups and a start place,
+and check the radio starts there, then the group context and scans.
 
 **`FLASH-074` done** (2026-10-17, operator request, `RISK-049`): the K5
 image had 16 bytes of flash left. `interface::run` was 22.6 KB because the

@@ -3324,3 +3324,8 @@
      existing banks by the locator in their name and by airband.
   4. Flash the K5 and check switching between two location groups, scanning
      ALL OF one, and that the context survives a power cycle.
+  5. Start place (operator request: "store that setting in the project so
+     that it's set for first boot"): the project keeps a start group, bank
+     and channel (object kind 7); a write sends it as the place record at
+     `0x1D00`; the radio goes there when the write ends; the K1 accepts the
+     host's place record. Done (tested on the host; hardware pending).

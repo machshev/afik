@@ -15,6 +15,7 @@
 //!
 //! Nothing here mints transmit authority: it names a selection, not a channel.
 
+use radio_channel_plan::StartPlace;
 use radio_domain::{BankId, SquelchLevel};
 use radio_tx_policy::ClassSet;
 
@@ -154,6 +155,28 @@ pub struct OperatorState {
 }
 
 impl OperatorState {
+    /// The record a studio writes so the radio starts at `start`
+    /// (`ADR-116`): on its channels, in that group, bank and channel, and
+    /// everything else where a radio nobody has used starts.
+    #[must_use]
+    pub fn starting_at(start: StartPlace) -> Self {
+        Self {
+            memory_mode: true,
+            bank: start.bank,
+            group: start.group,
+            channel: start
+                .channel
+                .map(|(bank, position)| ChannelPlace { bank, position }),
+            vfo_hz: crate::operator_shell::VFO_DEFAULT_HZ,
+            step_index: 1,
+            squelch: None,
+            tx_disabled: ClassSet::NONE,
+            other: None,
+            b_selected: false,
+            dual_watch: false,
+        }
+    }
+
     /// Encodes one record, checksum included.
     #[must_use]
     pub fn encode(&self) -> [u8; OPERATOR_STATE_BYTES] {

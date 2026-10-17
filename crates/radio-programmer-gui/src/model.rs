@@ -14,8 +14,8 @@ use std::fmt;
 use radio_channel_plan::{
     BankFlags, BankGroup, BankName, BankSet, BankSettings, ChannelBank, ChannelDefinition,
     ChannelFlags, ChannelName, ChannelRecord, ChannelTemplate, Designator, GeneratedBank, Locator,
-    PlanEncoding, SharedSettings, GENERATED_CHANNEL_ID_BASE, MAX_BANKS, MAX_DESIGNATOR_LEN,
-    MAX_GENERATED_CHANNELS, MAX_GROUPS,
+    PlanEncoding, SharedSettings, StartPlace, GENERATED_CHANNEL_ID_BASE, MAX_BANKS,
+    MAX_DESIGNATOR_LEN, MAX_GENERATED_CHANNELS, MAX_GROUPS,
 };
 use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, Offset, PowerLevel,
@@ -974,6 +974,21 @@ pub struct ProjectModel {
     /// The bank groups, in the radio's order (`ADR-116`); a group with a
     /// locator is a location.
     pub groups: Vec<GroupDraft>,
+    /// Where the radio starts, written as its place with the image; `None`
+    /// leaves the radio where it is.
+    pub start: Option<StartDraft>,
+}
+
+/// Where the radio starts (`ADR-116`), by names so moving banks or groups
+/// cannot point it elsewhere.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct StartDraft {
+    /// The group the list is narrowed to; empty for every bank.
+    pub group: String,
+    /// The bank filtering the channels; empty for all of them.
+    pub bank: String,
+    /// The channel in that bank, from one; zero is the first of the view.
+    pub channel: u16,
 }
 
 /// One editable bank group; its banks are those listing it.
@@ -1352,6 +1367,12 @@ impl ProjectModel {
             }
         }
 
+        if let Some(start) = &self.start {
+            match self.validate_start(start) {
+                Ok(start) => project.set_start(Some(start)),
+                Err(failure) => errors.push(failure),
+            }
+        }
         if self.groups.len() > usize::from(MAX_GROUPS) {
             errors.push(error(
                 ModelScope::Project,
@@ -1371,6 +1392,58 @@ impl ProjectModel {
         } else {
             Err(errors)
         }
+    }
+
+    /// Validates the start place: its group and bank exist, the bank is in
+    /// the group, and the channel is in the bank.
+    fn validate_start(&self, start: &StartDraft) -> Result<StartPlace, ModelError> {
+        let failed = |message: String| error(ModelScope::Project, "start", message);
+        let group = if start.group.trim().is_empty() {
+            None
+        } else {
+            Some(
+                self.group_named(&start.group)
+                    .ok_or_else(|| failed(format!("names no group {:?}", start.group)))?,
+            )
+        };
+        let bank = if start.bank.trim().is_empty() {
+            None
+        } else {
+            let row = self
+                .banks
+                .iter()
+                .position(|bank| bank.name.trim() == start.bank.trim())
+                .ok_or_else(|| failed(format!("names no bank {:?}", start.bank)))?;
+            if group.is_some_and(|group| !self.banks[row].groups.contains(&group)) {
+                return Err(failed(format!(
+                    "bank {:?} is not in group {:?}",
+                    start.bank, start.group
+                )));
+            }
+            Some(row)
+        };
+        let channel = match (bank, start.channel) {
+            (Some(row), number @ 1..) => {
+                let bank = &self.banks[row];
+                let count = match bank.kind {
+                    BankKind::Named => bank.channels.len(),
+                    BankKind::Generated => usize::from(bank.channel_count),
+                };
+                if usize::from(number) > count {
+                    return Err(failed(format!(
+                        "bank {:?} has {count} channels, not {number}",
+                        start.bank
+                    )));
+                }
+                Some((bank_id(row)?, number - 1))
+            }
+            _ => None,
+        };
+        Ok(StartPlace {
+            group: group.and_then(|group| u8::try_from(group).ok()),
+            bank: bank.map(bank_id).transpose()?,
+            channel,
+        })
     }
 
     /// Validates group `row`: its name, its locator, and the banks listing
@@ -1485,6 +1558,11 @@ impl ProjectModel {
                 ObjectKind::BankGroup => {
                     project.add_group(radio_storage::decode_bank_group(&object).map_err(invalid)?);
                 }
+                ObjectKind::StartPlace => {
+                    project.set_start(Some(
+                        radio_storage::decode_start_place(&object).map_err(invalid)?,
+                    ));
+                }
             }
         }
         Ok(Self::from_project(&project))
@@ -1525,8 +1603,10 @@ impl ProjectModel {
                         .map_or_else(String::new, |locator| locator.as_str().to_owned()),
                 })
                 .collect(),
+            start: None,
         };
         // A group names banks by identifier; each row below remembers its.
+        let start = project.start();
         let in_groups = |id: u16| -> Vec<usize> {
             (0..project.groups().len())
                 .filter(|row| project.groups()[*row].banks().contains(BankId::new(id)))
@@ -1562,6 +1642,7 @@ impl ProjectModel {
                 model.banks.push(draft);
             }
         }
+        model.start = start.map(|start| start_draft(project, &model.groups, start));
         let unbanked = channels_in(None);
         if !unbanked.is_empty() {
             model.banks.push(BankDraft {
@@ -1572,6 +1653,49 @@ impl ProjectModel {
         }
         model
     }
+}
+
+/// The studio's start place for a project's, naming its group and bank.
+fn start_draft(project: &RadioProject, groups: &[GroupDraft], start: StartPlace) -> StartDraft {
+    let name_of = |id: BankId| {
+        project
+            .banks()
+            .iter()
+            .find(|bank| bank.id() == id)
+            .map(|bank| bank.name().as_str().to_owned())
+            .or_else(|| {
+                project
+                    .generated_banks()
+                    .iter()
+                    .find(|plan| plan.id() == id)
+                    .map(|plan| plan.name().as_str().to_owned())
+            })
+            .unwrap_or_default()
+    };
+    StartDraft {
+        group: start
+            .group
+            .and_then(|group| groups.get(usize::from(group)))
+            .map(|group| group.name.clone())
+            .unwrap_or_default(),
+        bank: start.bank.map(name_of).unwrap_or_default(),
+        channel: start.channel.map_or(0, |(_, position)| position + 1),
+    }
+}
+
+/// The identifier of the bank in row `row`.
+fn bank_id(row: usize) -> Result<BankId, ModelError> {
+    u16::try_from(row)
+        .ok()
+        .filter(|id| *id < MAX_BANKS)
+        .map(BankId::new)
+        .ok_or_else(|| {
+            error(
+                ModelScope::Project,
+                "start",
+                "names a bank past the radio's limit",
+            )
+        })
 }
 
 /// The Maidenhead locator a bank name ends in, as a generator names its
@@ -1662,7 +1786,7 @@ pub(crate) fn move_to<T>(items: &mut [T], from: usize, slot: usize) {
 mod tests {
     use super::{
         format_mhz, parse_frequency, BankDraft, BankKind, ChannelDraft, ConfigDraft, ModelScope,
-        ProjectModel, ToneDraft, ToneKind, ValidatedBank, RADIO_IMAGE_BYTES,
+        ProjectModel, StartDraft, ToneDraft, ToneKind, ValidatedBank, RADIO_IMAGE_BYTES,
     };
     use radio_channel_plan::{ChannelFlags, SharedSettings, MAX_BANKS};
     use radio_domain::{Bandwidth, BankId, Modulation, PowerLevel, ScanResume, Tone};
@@ -1866,6 +1990,59 @@ mod tests {
         assert_eq!(read.groups().len(), 3);
         assert_eq!(read.groups()[2].banks().len(), 3);
         assert_eq!(read.groups()[0].locator(), None, "the radio never gets it");
+    }
+
+    #[test]
+    fn a_start_place_survives_the_project_file_and_is_checked() {
+        let mut model = project();
+        model.banks[0].name = "RPT JO02EH".to_owned();
+        model.add_channel(0);
+        am_bank(&mut model, "AIR JO02EH", "124.975000");
+        model.group_by_locator();
+        model.start = Some(StartDraft {
+            group: "JO02EH".to_owned(),
+            bank: "RPT JO02EH".to_owned(),
+            channel: 2,
+        });
+        let project = model.validate().unwrap();
+        assert_eq!(
+            project.start(),
+            Some(radio_channel_plan::StartPlace {
+                group: Some(0),
+                bank: Some(BankId::new(0)),
+                channel: Some((BankId::new(0), 1)),
+            })
+        );
+        let file = model.to_image().unwrap();
+        assert_eq!(ProjectModel::from_image(&file).unwrap(), model);
+
+        // A missing group or bank, a bank outside the group, or a channel
+        // past the bank is refused.
+        for (group, bank, channel) in [
+            ("NOWHERE", "", 0),
+            ("", "NO BANK", 0),
+            ("", "RPT JO02EH", 3),
+        ] {
+            model.start = Some(StartDraft {
+                group: group.to_owned(),
+                bank: bank.to_owned(),
+                channel,
+            });
+            assert!(model.validate().is_err(), "{group} {bank} {channel}");
+        }
+        model.ensure_group("OTHER", None);
+        model.start = Some(StartDraft {
+            group: "OTHER".to_owned(),
+            bank: "RPT JO02EH".to_owned(),
+            channel: 0,
+        });
+        assert!(model.validate().is_err(), "the bank is not in the group");
+        // Every bank, first channel.
+        model.start = Some(StartDraft::default());
+        assert_eq!(
+            model.validate().unwrap().start(),
+            Some(radio_channel_plan::StartPlace::default())
+        );
     }
 
     #[test]

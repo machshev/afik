@@ -118,6 +118,12 @@ impl DeviceSession {
             .map_err(SessionError::Compile)?;
         let report = radio_flasher::write_afik_image(&mut self.transport, &image, progress)
             .map_err(SessionError::Radio)?;
+        // A start place goes in the same write, so the radio goes there.
+        if let Some(start) = project.start() {
+            let record = radio_platform::operator_state::OperatorState::starting_at(start).encode();
+            radio_flasher::write_afik_place(&mut self.transport, &record)
+                .map_err(SessionError::Radio)?;
+        }
         report.firmware.version().clone_into(&mut self.firmware);
         Ok(report)
     }

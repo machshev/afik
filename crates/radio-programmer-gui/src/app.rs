@@ -28,8 +28,9 @@ use crate::{
     locators::{SavedLocator, SavedLocators},
     marine::{self, MarineArea, MarineCache, MarineList},
     model::{
-        move_to, BankDraft, BankKind, ChannelDraft, ModelError, ProjectModel, StorageSummary,
-        ToneDraft, ToneKind, TxRangeDraft, MAX_PROJECT_IMAGE_BYTES, RADIO_IMAGE_BYTES,
+        move_to, BankDraft, BankKind, ChannelDraft, ModelError, ProjectModel, StartDraft,
+        StorageSummary, ToneDraft, ToneKind, TxRangeDraft, MAX_PROJECT_IMAGE_BYTES,
+        RADIO_IMAGE_BYTES,
     },
     presets::{satellite_bank, PRESETS, SATELLITE_PRESET, TX_RANGE_PRESETS},
     projects::ProjectStore,
@@ -2990,7 +2991,70 @@ impl StudioApp {
                         self.status = format!("Filed {filed} airband banks under AIRBAND.");
                     }
                 });
+                self.start_row(ui);
             });
+    }
+
+    /// Where the radio starts: written as its place with the image, so it
+    /// boots, and goes at once, to that group, bank and channel (`ADR-116`).
+    fn start_row(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            let mut on = self.project.start.is_some();
+            if ui
+                .checkbox(&mut on, "Start on")
+                .on_hover_text(
+                    "Writes where the radio starts with the image: it goes there now and \
+                     after a power cycle, until you move it. Off leaves the radio where it is",
+                )
+                .changed()
+            {
+                self.project.start = on.then(StartDraft::default);
+            }
+            let groups: Vec<String> = self.project.groups.iter().map(|g| g.name.clone()).collect();
+            let banks: Vec<(String, Vec<usize>)> = self
+                .project
+                .banks
+                .iter()
+                .map(|bank| (bank.name.clone(), bank.groups.clone()))
+                .collect();
+            let Some(start) = self.project.start.as_mut() else {
+                return;
+            };
+            ComboBox::from_id_salt("start-group")
+                .selected_text(if start.group.is_empty() {
+                    "every bank".to_owned()
+                } else {
+                    start.group.clone()
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut start.group, String::new(), "every bank");
+                    for name in &groups {
+                        ui.selectable_value(&mut start.group, name.clone(), name);
+                    }
+                });
+            let group = groups
+                .iter()
+                .position(|name| name.eq_ignore_ascii_case(&start.group));
+            ComboBox::from_id_salt("start-bank")
+                .selected_text(if start.bank.is_empty() {
+                    "all channels".to_owned()
+                } else {
+                    start.bank.clone()
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut start.bank, String::new(), "all channels");
+                    for (name, in_groups) in &banks {
+                        if group.is_none_or(|group| in_groups.contains(&group)) {
+                            ui.selectable_value(&mut start.bank, name.clone(), name);
+                        }
+                    }
+                });
+            if !start.bank.is_empty() {
+                ui.label("channel");
+                ui.add(egui::DragValue::new(&mut start.channel).range(0..=u16::MAX))
+                    .on_hover_text("The channel in that bank, from 1; 0 is its first");
+            }
+        });
     }
 
     fn banks_tab(&mut self, ui: &mut egui::Ui) {

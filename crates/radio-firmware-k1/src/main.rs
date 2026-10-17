@@ -24,7 +24,7 @@ use py32_hal::spi::SpiTx;
 use py32_hal::usart::Uart;
 use radio_app::drivers::{Broadcast, Display, Keypad, LinkError, SerialLink, Speaker, Target};
 use radio_app::keys::Sample;
-use radio_app::operator_state::OperatorState;
+use radio_app::operator_state::{OperatorState, OPERATOR_STATE_BYTES};
 use radio_app::TaskCell;
 use radio_bk1080::{Bk1080, I2cRegisters};
 use radio_bk4819::{Bk4819, BK4829_PROFILE};
@@ -428,7 +428,11 @@ fn open_memory(memory: EepromPins) -> (Option<Memory>, MemoryState) {
     .and_then(|mut configuration| match configuration.identify() {
         Ok(id) => {
             state = MemoryState::Present([id.manufacturer, id.memory_type, id.capacity_code]);
-            Some(Memory(configuration))
+            Some(Memory {
+                configuration,
+                place: [0xFF; OPERATOR_STATE_BYTES],
+                place_written: false,
+            })
         }
         Err(RetainError::Absent(_)) => {
             state = MemoryState::Absent;
@@ -445,49 +449,74 @@ fn open_memory(memory: EepromPins) -> (Option<Memory>, MemoryState) {
 /// configuration region, so a K1 programmed by an earlier image keeps its
 /// channels; the place part is the latest record from its own sector and slot
 /// rotation; the calibration part reads the vendor block, so a host backup
-/// holds this unit's calibration. Host writes reach the image part only; they
-/// are staged and replace the configuration once the host has finished.
-struct Memory(RetainedConfiguration);
+/// holds this unit's calibration. Host writes to the image part are staged and
+/// replace the configuration once the host has finished; a place record the
+/// host writes (a studio's start place) is kept here and becomes the place
+/// then, as a K5's EEPROM takes it directly.
+struct Memory {
+    configuration: RetainedConfiguration,
+    place: [u8; OPERATOR_STATE_BYTES],
+    place_written: bool,
+}
 
 impl radio_app::drivers::Memory for Memory {
     fn read(&mut self, address: u16, output: &mut [u8]) -> bool {
         match locate(address, output.len()) {
-            Some(ViewSpan::Image(offset)) => self.0.read_configuration(offset, output),
+            Some(ViewSpan::Image(offset)) => self.configuration.read_configuration(offset, output),
             Some(ViewSpan::Place(offset)) => {
-                let record = self.0.read_operator_state().map(|state| state.encode());
+                let record = self
+                    .configuration
+                    .read_operator_state()
+                    .map(|state| state.encode());
                 fill_place(offset, record, output);
                 true
             }
-            Some(ViewSpan::Vendor(address)) => self.0.read_vendor(address, output),
+            Some(ViewSpan::Vendor(address)) => self.configuration.read_vendor(address, output),
             None => false,
         }
     }
 
     fn write(&mut self, address: u16, data: &[u8; WRITE_BYTES]) -> bool {
         match locate(address, WRITE_BYTES) {
-            Some(ViewSpan::Image(offset)) => self.0.write_configuration(offset, data),
+            Some(ViewSpan::Image(offset)) => self.configuration.write_configuration(offset, data),
+            Some(ViewSpan::Place(offset)) => {
+                let Some(slot) = self.place.get_mut(offset..offset + WRITE_BYTES) else {
+                    return false;
+                };
+                slot.copy_from_slice(data);
+                self.place_written = true;
+                true
+            }
             _ => false,
         }
     }
 
     fn commit_host_write(&mut self) -> bool {
-        self.0.commit_configuration()
+        let committed = self.configuration.commit_configuration();
+        if core::mem::take(&mut self.place_written) {
+            // Only a whole, checked record becomes the place.
+            if let Some(state) = OperatorState::decode(&self.place) {
+                let _ = self.configuration.write_operator_state(state);
+            }
+            self.place = [0xFF; OPERATOR_STATE_BYTES];
+        }
+        committed
     }
 
     fn read_battery_calibration(&mut self) -> Option<Calibration> {
-        self.0.read_battery_calibration()
+        self.configuration.read_battery_calibration()
     }
 
     fn read_tx_calibration(&mut self) -> Option<TxCalibration> {
-        self.0.read_tx_calibration()
+        self.configuration.read_tx_calibration()
     }
 
     fn read_operator_state(&mut self) -> Option<OperatorState> {
-        self.0.read_operator_state()
+        self.configuration.read_operator_state()
     }
 
     fn write_operator_state(&mut self, state: OperatorState) -> bool {
-        self.0.write_operator_state(state).is_ok()
+        self.configuration.write_operator_state(state).is_ok()
     }
 }
 

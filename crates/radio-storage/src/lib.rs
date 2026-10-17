@@ -7,8 +7,8 @@ use core::fmt;
 use radio_channel_plan::{
     BankFlags, BankGroup, BankName, BankSet, BankSettings, ChannelBank, ChannelDefinition,
     ChannelFlags, ChannelName, ChannelRecord, ChannelTemplate, Designator, GeneratedBank, Locator,
-    PlanEncoding, SharedSettings, MAX_BANK_NAME_LEN, MAX_CHANNEL_NAME_LEN, MAX_DESIGNATOR_LEN,
-    MAX_LOCATOR_LEN,
+    PlanEncoding, SharedSettings, StartPlace, MAX_BANK_NAME_LEN, MAX_CHANNEL_NAME_LEN,
+    MAX_DESIGNATOR_LEN, MAX_LOCATOR_LEN,
 };
 use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, Offset, PowerLevel,
@@ -85,6 +85,8 @@ pub enum ObjectKind {
     TxRange = 5,
     /// One bank group, and a location's locator (`ADR-116`).
     BankGroup = 6,
+    /// Where the radio starts (`ADR-116`); one, identifier zero.
+    StartPlace = 7,
 }
 
 impl TryFrom<u8> for ObjectKind {
@@ -98,6 +100,7 @@ impl TryFrom<u8> for ObjectKind {
             4 => Ok(Self::RadioConfig),
             5 => Ok(Self::TxRange),
             6 => Ok(Self::BankGroup),
+            7 => Ok(Self::StartPlace),
             _ => Err(StorageError::UnsupportedObject),
         }
     }
@@ -1307,9 +1310,63 @@ pub fn decode_bank_group(object: &impl Object) -> Result<BankGroup, StorageError
         .with_locator(locator))
 }
 
+/// Encoded byte length of a start-place object: version, group, bank, and
+/// the channel's bank and position.
+pub const START_PLACE_ENCODED_LEN: usize = 8;
+/// A start-place field holding nothing.
+const NONE_FIELD: u16 = u16::MAX;
+
+/// Encodes where the radio starts as a storage object.
+pub fn encode_start_place(start: StartPlace) -> Result<StorageObject, StorageError> {
+    let mut data = [0_u8; START_PLACE_ENCODED_LEN];
+    data[0] = STORAGE_FORMAT_VERSION;
+    data[1] = start.group.unwrap_or(u8::MAX);
+    data[2..4].copy_from_slice(&start.bank.map_or(NONE_FIELD, BankId::get).to_le_bytes());
+    let (bank, position) = start
+        .channel
+        .map_or((NONE_FIELD, 0), |(bank, position)| (bank.get(), position));
+    data[4..6].copy_from_slice(&bank.to_le_bytes());
+    data[6..8].copy_from_slice(&position.to_le_bytes());
+    StorageObject::new(
+        ObjectKey {
+            kind: ObjectKind::StartPlace,
+            id: 0,
+        },
+        &data,
+    )
+}
+
+/// Decodes and validates a start-place storage object.
+pub fn decode_start_place(object: &impl Object) -> Result<StartPlace, StorageError> {
+    let key = object.key();
+    if key.kind != ObjectKind::StartPlace {
+        return Err(StorageError::UnsupportedObject);
+    }
+    let data = object.data();
+    if key.id != 0 || data.len() != START_PLACE_ENCODED_LEN || data[0] != STORAGE_FORMAT_VERSION {
+        return Err(StorageError::MalformedObject);
+    }
+    let bank = |at: usize| match u16::from_le_bytes([data[at], data[at + 1]]) {
+        NONE_FIELD => Ok(None),
+        id if id < radio_channel_plan::MAX_BANKS => Ok(Some(BankId::new(id))),
+        _ => Err(StorageError::MalformedObject),
+    };
+    let group = match data[1] {
+        u8::MAX => None,
+        group if group < radio_channel_plan::MAX_GROUPS => Some(group),
+        _ => return Err(StorageError::MalformedObject),
+    };
+    Ok(StartPlace {
+        group,
+        bank: bank(2)?,
+        channel: bank(4)?.map(|bank| (bank, u16::from_le_bytes([data[6], data[7]]))),
+    })
+}
+
 /// Validates any currently supported configuration object.
 pub fn validate_object(object: &impl Object) -> bool {
     match object.key().kind {
+        ObjectKind::StartPlace => decode_start_place(object).is_ok(),
         ObjectKind::BankGroup => decode_bank_group(object).is_ok(),
         ObjectKind::GeneratedBank => decode_generated_bank(object).is_ok(),
         ObjectKind::Channel => decode_channel(object).is_ok(),
@@ -1867,6 +1924,38 @@ mod tests {
                 super::decode_tx_range(&bad),
                 Err(StorageError::MalformedObject),
                 "index {index} value {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_start_place_round_trips_and_refuses_what_a_radio_cannot_hold() {
+        use radio_channel_plan::StartPlace;
+        for start in [
+            StartPlace::default(),
+            StartPlace {
+                group: Some(31),
+                bank: Some(BankId::new(253)),
+                channel: Some((BankId::new(253), 700)),
+            },
+        ] {
+            let object = super::encode_start_place(start).unwrap();
+            assert_eq!(super::decode_start_place(&object), Ok(start));
+            assert!(validate_object(&object));
+        }
+        let object = super::encode_start_place(StartPlace::default()).unwrap();
+        for (at, value) in [(1, 32_u8), (2, 254), (4, 254)] {
+            let mut data = object.data().to_vec();
+            data[at] = value;
+            data[at + 1] = 0;
+            if at == 1 {
+                data[2] = 0xFF;
+            }
+            let bad = StorageObject::new(object.key(), &data).unwrap();
+            assert_eq!(
+                super::decode_start_place(&bad),
+                Err(StorageError::MalformedObject),
+                "byte {at}"
             );
         }
     }

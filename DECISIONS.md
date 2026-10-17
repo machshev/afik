@@ -1986,3 +1986,10 @@ meaning.
   up to 32 groups. Loading checks only a group's layout, to keep the K5
   loader small (196 bytes of flash); a group's set is checked, and narrowed
   to the banks the image holds, when it is read.
+- A start place (operator request) is the radio's own place record: the
+  studio encodes it with the radio's `OperatorState` (moved to
+  `radio-platform`) and writes it at `0x1D00` after the image, so it needs no
+  new image field. The radio goes there when the write ends and at the next
+  start, until the operator moves; the K5 view is its EEPROM, and the K1 now
+  keeps a host-written record and stores it on commit. Stored in the project
+  as object kind 7 (group, bank, channel by bank and position).

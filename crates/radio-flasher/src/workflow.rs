@@ -881,6 +881,28 @@ where
     })
 }
 
+/// Writes the operator's place record into an AFIK radio's memory view, as a
+/// studio's start place (`ADR-116`).
+///
+/// Call it straight after [`write_afik_image`], inside the same quiet window,
+/// so the radio takes the image and the place together and goes there. Each
+/// block is acknowledged; a K1 keeps the record until the write commits, so
+/// it is not read back.
+pub fn write_afik_place<T: Read + Write>(
+    transport: &mut T,
+    record: &[u8; radio_platform::operator_state::OPERATOR_STATE_BYTES],
+) -> Result<(), FlashError> {
+    let origin = radio_platform::memory_link::PLACE_ORIGIN;
+    for (index, chunk) in record.chunks_exact(EEPROM_WRITE_BYTES).enumerate() {
+        let offset = origin + u16::try_from(index * EEPROM_WRITE_BYTES).unwrap_or(0);
+        let mut block = [0_u8; EEPROM_WRITE_BYTES];
+        block.copy_from_slice(chunk);
+        send_packet(transport, &eeprom_write_request(offset, block))?;
+        parse_eeprom_write_response(&receive_packet(transport)?, offset)?;
+    }
+    Ok(())
+}
+
 fn afik_memory_hello<T: Read + Write>(transport: &mut T) -> Result<NormalFirmwareInfo, FlashError> {
     send_packet(transport, &hello_request())?;
     let firmware = parse_hello_response(&receive_packet(transport)?)?;
@@ -3262,6 +3284,26 @@ mod tests {
         fn a_k1_takes_an_image_filling_the_whole_region() {
             let mut radio = MemoryRadio::new(b"AFIK-K1-7.0.27");
             write_afik_image(&mut radio, &vec![0x5A; IMAGE_REGION], |_, _| {}).unwrap();
+        }
+
+        #[test]
+        fn a_start_place_is_written_as_the_place_record() {
+            use radio_platform::operator_state::OperatorState;
+            let mut radio = MemoryRadio::default();
+            write_afik_image(&mut radio, &image(16), |_, _| {}).unwrap();
+            let start = radio_channel_plan::StartPlace {
+                group: Some(1),
+                bank: Some(BankId::new(0)),
+                channel: Some((BankId::new(0), 3)),
+            };
+            let record = OperatorState::starting_at(start).encode();
+            super::super::write_afik_place(&mut radio, &record).unwrap();
+            let place = usize::from(radio_platform::memory_link::PLACE_ORIGIN);
+            assert_eq!(&radio.memory()[place..place + record.len()], &record);
+            let read = OperatorState::decode(&record).unwrap();
+            assert_eq!(read.group, Some(1));
+            assert_eq!(read.channel.map(|channel| channel.position), Some(3));
+            assert!(read.memory_mode);
         }
     }
 }

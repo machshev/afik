@@ -130,7 +130,20 @@ impl CliOutcome {
 enum Parsed {
     Help,
     Version,
-    Run { backend: Backend, command: Command },
+    // Boxed: a command carries a whole project.
+    Run {
+        backend: Backend,
+        command: Box<Command>,
+    },
+}
+
+impl Parsed {
+    fn run(backend: Backend, command: Command) -> Self {
+        Self::Run {
+            backend,
+            command: Box::new(command),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -200,7 +213,7 @@ pub fn run(arguments: &[String]) -> CliOutcome {
         Ok(Parsed::Version) => {
             CliOutcome::success(format!("afik-programmer {}\n", env!("CARGO_PKG_VERSION")))
         }
-        Ok(Parsed::Run { backend, command }) => match execute(backend, command) {
+        Ok(Parsed::Run { backend, command }) => match execute(backend, *command) {
             Ok(output) => CliOutcome::success(output),
             Err(CliError::Usage(message)) => CliOutcome::failure(EXIT_USAGE, message),
             Err(CliError::Operation(message)) => CliOutcome::failure(EXIT_OPERATION, message),
@@ -313,7 +326,7 @@ fn parse(arguments: &[String]) -> Result<Parsed, CliError> {
         }
         unknown => return Err(CliError::Usage(format!("unknown command: {unknown}"))),
     };
-    Ok(Parsed::Run { backend, command })
+    Ok(Parsed::run(backend, command))
 }
 
 fn require_value<'a>(
@@ -1031,6 +1044,7 @@ const fn object_kind_name(kind: ObjectKind) -> &'static str {
         ObjectKind::RadioConfig => "radio-config",
         ObjectKind::TxRange => "tx-range",
         ObjectKind::BankGroup => "bank-group",
+        ObjectKind::StartPlace => "start-place",
     }
 }
 
