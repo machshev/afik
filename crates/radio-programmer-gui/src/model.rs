@@ -14,13 +14,17 @@ use std::fmt;
 use radio_channel_plan::{
     BankFlags, BankGroup, BankName, BankOrigin, BankSet, BankSettings, BankSource, ChannelBank,
     ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord, ChannelTemplate, Designator,
-    GeneratedBank, Locator, PlanEncoding, SharedSettings, StartPlace, GENERATED_CHANNEL_ID_BASE,
-    MAX_BANKS, MAX_DESIGNATOR_LEN, MAX_GENERATED_CHANNELS, MAX_GROUPS,
+    GeneratedBank, Locator, PlanEncoding, SharedSettings, StartPlace, VfoStart,
+    GENERATED_CHANNEL_ID_BASE, MAX_BANKS, MAX_DESIGNATOR_LEN, MAX_GENERATED_CHANNELS, MAX_GROUPS,
+    VFO_SLOTS,
 };
 use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, Offset, PowerLevel,
     RadioConfig, RadioFlags, ScanResume, SquelchLevel, Tone, TxClass, MAX_BATTERY_SAVE_RATIO,
     MAX_SQUELCH_LEVEL, TX_POWER_LEVELS, TX_TIMEOUT_CHOICES,
+};
+use radio_platform::operator_shell::{
+    VFO_DEFAULT_HZ, VFO_MAXIMUM_HZ, VFO_MINIMUM_HZ, VFO_STEPS_HZ,
 };
 use radio_programmer::{ConfigurationCompiler, DeviceCapabilities, RadioProject};
 use radio_storage::{
@@ -1040,6 +1044,74 @@ pub struct ProjectModel {
     /// Where the radio starts, written as its place with the image; `None`
     /// leaves the radio where it is.
     pub start: Option<StartDraft>,
+    /// Each slot's programmed VFO, A first, written in the radio's place with
+    /// the start place; `None` leaves that slot's VFO at the radio's defaults.
+    pub vfos: [Option<VfoDraft>; VFO_SLOTS],
+}
+
+/// One slot's VFO as the Radio tab edits it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VfoDraft {
+    /// The VFO frequency in megahertz.
+    pub mhz: String,
+    /// The tuning step in hertz, one of [`VFO_STEPS_HZ`].
+    pub step_hz: u32,
+    /// The tone that opens its squelch, or none for any carrier.
+    pub rx_tone: Tone,
+    /// The tone it transmits.
+    pub tx_tone: Tone,
+    /// Its TX power, or `None` for the Transmit section's default.
+    pub power: Option<PowerLevel>,
+}
+
+impl Default for VfoDraft {
+    fn default() -> Self {
+        Self {
+            mhz: format_mhz(VFO_DEFAULT_HZ),
+            step_hz: VFO_STEPS_HZ[1],
+            rx_tone: Tone::None,
+            tx_tone: Tone::None,
+            power: None,
+        }
+    }
+}
+
+impl VfoDraft {
+    /// The draft of a programmed VFO.
+    #[must_use]
+    pub fn from_vfo(vfo: VfoStart) -> Self {
+        Self {
+            mhz: format_mhz(vfo.hz),
+            step_hz: vfo.step_hz,
+            rx_tone: vfo.rx_tone,
+            tx_tone: vfo.tx_tone,
+            power: vfo.power,
+        }
+    }
+
+    /// Checks the draft for slot `slot` (A 0, B 1).
+    ///
+    /// # Errors
+    ///
+    /// Returns a frequency the radio's VFO cannot tune, or a step it does not
+    /// offer.
+    pub fn validate(&self, slot: usize) -> Result<VfoStart, ModelError> {
+        let field = if slot == 0 { "VFO A" } else { "VFO B" };
+        let failed = |message: &str| error(ModelScope::Project, field, message);
+        let hz = parse_mhz(&self.mhz)
+            .filter(|hz| (VFO_MINIMUM_HZ..=VFO_MAXIMUM_HZ).contains(hz))
+            .ok_or_else(|| failed("enter a frequency from 1 to 999.999 MHz"))?;
+        if !VFO_STEPS_HZ.contains(&self.step_hz) {
+            return Err(failed("choose a step the radio offers"));
+        }
+        Ok(VfoStart {
+            hz,
+            step_hz: self.step_hz,
+            rx_tone: self.rx_tone,
+            tx_tone: self.tx_tone,
+            power: self.power,
+        })
+    }
 }
 
 /// Where the radio starts (`ADR-116`), by names so moving banks or groups
@@ -1516,12 +1588,7 @@ impl ProjectModel {
             }
         }
 
-        if let Some(start) = &self.start {
-            match self.validate_start(start) {
-                Ok(start) => project.set_start(Some(start)),
-                Err(failure) => errors.push(failure),
-            }
-        }
+        self.validate_place(&mut project, &mut errors);
         if self.groups.len() > usize::from(MAX_GROUPS) {
             errors.push(error(
                 ModelScope::Project,
@@ -1567,6 +1634,25 @@ impl ProjectModel {
 
     /// Validates the start place: its group and bank exist, the bank is in
     /// the group, and the channel is in the bank.
+    /// Checks what a write sends as the radio's place: the start place and
+    /// each programmed VFO.
+    fn validate_place(&self, project: &mut RadioProject, errors: &mut Vec<ModelError>) {
+        if let Some(start) = &self.start {
+            match self.validate_start(start) {
+                Ok(start) => project.set_start(Some(start)),
+                Err(failure) => errors.push(failure),
+            }
+        }
+        for (slot, vfo) in self.vfos.iter().enumerate() {
+            if let Some(vfo) = vfo {
+                match vfo.validate(slot) {
+                    Ok(vfo) => project.set_vfo(slot, Some(vfo)),
+                    Err(failure) => errors.push(failure),
+                }
+            }
+        }
+    }
+
     fn validate_start(&self, start: &StartDraft) -> Result<StartPlace, ModelError> {
         let failed = |message: String| error(ModelScope::Project, "start", message);
         let group = if start.group.trim().is_empty() {
@@ -1812,6 +1898,7 @@ impl ProjectModel {
                 })
                 .collect(),
             start: None,
+            vfos: project.vfos().map(|vfo| vfo.map(VfoDraft::from_vfo)),
         };
         // A group names banks by identifier; each row below remembers its.
         let start = project.start();
@@ -2307,6 +2394,65 @@ mod tests {
             channel: 1,
         });
         assert!(model.validate().is_ok() && model.validate_for_radio().is_ok());
+    }
+
+    #[test]
+    fn programmed_vfos_survive_the_project_file_and_are_checked() {
+        use super::VfoDraft;
+        use radio_channel_plan::VfoStart;
+
+        let mut model = project();
+        assert!(!model.validate().unwrap().writes_place());
+        model.vfos[1] = Some(VfoDraft {
+            mhz: "446.068750".to_owned(),
+            step_hz: 6_250,
+            rx_tone: Tone::Ctcss(885),
+            tx_tone: Tone::Dcs {
+                code: 23,
+                inverted: true,
+            },
+            power: Some(PowerLevel::Low4),
+        });
+        let project = model.validate().unwrap();
+        assert_eq!(
+            project.vfos(),
+            [
+                None,
+                Some(VfoStart {
+                    hz: 446_068_750,
+                    step_hz: 6_250,
+                    rx_tone: Tone::Ctcss(885),
+                    tx_tone: Tone::Dcs {
+                        code: 23,
+                        inverted: true,
+                    },
+                    power: Some(PowerLevel::Low4),
+                }),
+            ]
+        );
+        assert!(project.writes_place());
+        let file = model.to_image().unwrap();
+        assert_eq!(ProjectModel::from_image(&file).unwrap(), model);
+
+        // A frequency the VFO cannot tune, or a step it does not offer.
+        for (mhz, step_hz) in [
+            ("0.5", 6_250),
+            ("1000", 6_250),
+            ("", 6_250),
+            ("145.5", 7_000),
+        ] {
+            model.vfos[0] = Some(VfoDraft {
+                mhz: mhz.to_owned(),
+                step_hz,
+                ..VfoDraft::default()
+            });
+            assert!(model.validate().is_err(), "{mhz} {step_hz}");
+        }
+        model.vfos[0] = Some(VfoDraft::default());
+        assert_eq!(
+            model.validate().unwrap().vfos()[0].map(|vfo| (vfo.hz, vfo.step_hz)),
+            Some((145_500_000, 12_500))
+        );
     }
 
     #[test]

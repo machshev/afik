@@ -18,7 +18,10 @@ use radio_domain::{
     MAX_BATTERY_SAVE_RATIO, MAX_SQUELCH_LEVEL, TX_POWER_LEVELS, TX_TIMEOUT_CHOICES,
 };
 use radio_flasher::ImageWriteReport;
-use radio_platform::operator_shell::{TX_CLASSES, TX_POWER_NOMINAL_MW};
+use radio_platform::operator_display::tone_label;
+use radio_platform::operator_shell::{
+    tone_at_row, TONE_ROWS, TX_CLASSES, TX_POWER_NOMINAL_MW, VFO_STEPS_HZ,
+};
 use radio_tx_policy::MAX_TX_RANGES;
 
 use radio_programmer_serial::SUPPORTED_BAUDS;
@@ -37,7 +40,7 @@ use crate::{
     model::{
         move_to, trailing_locator, BankDraft, BankKind, BankRole, ChannelDraft, GroupDraft,
         ModelError, Origin, ProjectModel, StartDraft, StorageSummary, ToneDraft, ToneKind,
-        TxRangeDraft, AIRBAND_GROUP, COMMON_GROUP, MARINE_GROUP, MAX_PROJECT_IMAGE_BYTES,
+        TxRangeDraft, VfoDraft, AIRBAND_GROUP, COMMON_GROUP, MARINE_GROUP, MAX_PROJECT_IMAGE_BYTES,
         RADIO_IMAGE_BYTES,
     },
     presets::{satellite_bank, PRESETS, SATELLITE_PRESET, TX_RANGE_PRESETS},
@@ -75,10 +78,17 @@ can change it from the handset settings menu, and the radio stores what they \
 chose.";
 
 /// What the TX power and timeout settings govern, said once.
-const TX_HINT: &str = "TX power is the VFO's, since it has no channel; a \
-channel transmits at its own or its bank's. The operator can override it for \
-every channel from the handset settings menu until the radio is next switched \
-off.";
+const TX_HINT: &str = "The default TX power is a VFO's when the VFO section \
+sets none of its own; a channel transmits at its own or its bank's. The \
+operator can override it for every channel from the handset settings menu \
+until the radio is next switched off.";
+
+/// What programming a VFO does, said once.
+const VFO_HINT: &str = "A programmed VFO is written as the radio's place, with \
+the start place on the Banks tab: the radio starts there, on every channel \
+when no start is chosen, and slot B on its VFO. The operator can change a \
+VFO from the handset's settings menu, and the radio keeps those changes \
+until the next write that programs it.";
 
 /// What the TX ranges do, said once.
 const TX_RANGES_HINT: &str = "The only frequencies this radio may transmit on, \
@@ -314,17 +324,25 @@ enum RadioSection {
     #[default]
     Receive,
     Transmit,
+    Vfo,
     Scan,
     General,
 }
 
 impl RadioSection {
-    const ALL: [Self; 4] = [Self::Receive, Self::Transmit, Self::Scan, Self::General];
+    const ALL: [Self; 5] = [
+        Self::Receive,
+        Self::Transmit,
+        Self::Vfo,
+        Self::Scan,
+        Self::General,
+    ];
 
     const fn label(self) -> &'static str {
         match self {
             Self::Receive => "Receive",
             Self::Transmit => "Transmit",
+            Self::Vfo => "VFO",
             Self::Scan => "Scan",
             Self::General => "General",
         }
@@ -4864,9 +4882,20 @@ impl StudioApp {
                 ui.separator();
                 self.tx_ranges_editor(ui);
             }
+            RadioSection::Vfo => self.vfo_settings(ui),
             RadioSection::Scan => self.scan_settings(ui),
             RadioSection::General => self.general_settings(ui),
         }
+    }
+
+    fn vfo_settings(&mut self, ui: &mut egui::Ui) {
+        ui.label(VFO_HINT);
+        ui.add_space(4.0);
+        ui.columns(2, |columns| {
+            for (slot, (ui, vfo)) in columns.iter_mut().zip(&mut self.project.vfos).enumerate() {
+                vfo_slot_editor(ui, slot, vfo);
+            }
+        });
     }
 
     fn receive_settings(&mut self, ui: &mut egui::Ui) {
@@ -4890,7 +4919,7 @@ impl StudioApp {
     fn transmit_settings(&mut self, ui: &mut egui::Ui) {
         let config = &mut self.project.config;
         Grid::new("radio-transmit").num_columns(2).show(ui, |ui| {
-            ui.label("VFO TX power").on_hover_text(TX_HINT);
+            ui.label("Default TX power").on_hover_text(TX_HINT);
             ComboBox::from_id_salt("tx-power")
                 .selected_text(tx_power_label(config.tx_power))
                 .show_ui(ui, |ui| {
@@ -6039,6 +6068,92 @@ const fn tx_class_label(class: TxClass) -> &'static str {
 }
 
 /// One TX power level as the handset lists it: its nominal output.
+/// One slot's VFO on the Radio tab: a switch to program it, then its
+/// frequency, step, tones and power.
+fn vfo_slot_editor(ui: &mut egui::Ui, slot: usize, vfo: &mut Option<VfoDraft>) {
+    let letter = if slot == 0 { 'A' } else { 'B' };
+    let mut programmed = vfo.is_some();
+    if ui
+        .checkbox(&mut programmed, format!("Program VFO {letter}"))
+        .changed()
+    {
+        *vfo = programmed.then(VfoDraft::default);
+    }
+    let Some(vfo) = vfo else {
+        ui.weak("The radio keeps its own.");
+        return;
+    };
+    Grid::new(("radio-vfo", slot))
+        .num_columns(2)
+        .show(ui, |ui| {
+            ui.label("Frequency MHz");
+            ui.add(egui::TextEdit::singleline(&mut vfo.mhz).desired_width(90.0));
+            ui.end_row();
+
+            ui.label("Step");
+            ComboBox::from_id_salt(("vfo-step", slot))
+                .selected_text(vfo_step_label(vfo.step_hz))
+                .show_ui(ui, |ui| {
+                    for step in VFO_STEPS_HZ {
+                        ui.selectable_value(&mut vfo.step_hz, step, vfo_step_label(step));
+                    }
+                });
+            ui.end_row();
+
+            for (label, salt, tone) in [
+                ("RX tone", "vfo-rx-tone", &mut vfo.rx_tone),
+                ("TX tone", "vfo-tx-tone", &mut vfo.tx_tone),
+            ] {
+                ui.label(label);
+                ComboBox::from_id_salt((salt, slot))
+                    .selected_text(vfo_tone_label(*tone))
+                    .height(320.0)
+                    .show_ui(ui, |ui| {
+                        for each in (0..TONE_ROWS).filter_map(tone_at_row) {
+                            ui.selectable_value(tone, each, vfo_tone_label(each));
+                        }
+                    });
+                ui.end_row();
+            }
+
+            ui.label("TX power").on_hover_text(TX_HINT);
+            ComboBox::from_id_salt(("vfo-power", slot))
+                .selected_text(
+                    vfo.power
+                        .map_or_else(|| "Default".to_owned(), |power| tx_power_label(power as u8)),
+                )
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut vfo.power, None, "Default");
+                    for level in 0..TX_POWER_LEVELS {
+                        if let Ok(power) = PowerLevel::try_from(level) {
+                            ui.selectable_value(&mut vfo.power, Some(power), tx_power_label(level));
+                        }
+                    }
+                });
+            ui.end_row();
+        });
+}
+
+/// A VFO tone as the handset shows it, such as `88.5` or `D023N`, or `Off`.
+fn vfo_tone_label(tone: radio_domain::Tone) -> String {
+    if tone.is_some() {
+        String::from_utf8_lossy(&tone_label(tone)).trim().to_owned()
+    } else {
+        "Off".to_owned()
+    }
+}
+
+/// A VFO tuning step, such as `6.25 kHz` or `1 MHz`.
+fn vfo_step_label(step_hz: u32) -> String {
+    if step_hz >= 1_000_000 {
+        format!("{} MHz", step_hz / 1_000_000)
+    } else if step_hz % 1_000 == 0 {
+        format!("{} kHz", step_hz / 1_000)
+    } else {
+        format!("{} kHz", f64::from(step_hz) / 1_000.0)
+    }
+}
+
 fn tx_power_label(level: u8) -> String {
     TX_POWER_NOMINAL_MW.get(usize::from(level)).map_or_else(
         || format!("Level {level}"),
@@ -6160,6 +6275,29 @@ mod tests {
     use std::path::PathBuf;
 
     /// The studio names each TX choice as the handset menu lists it.
+    #[test]
+    fn vfo_steps_and_tones_read_as_the_handset_shows_them() {
+        use super::{vfo_step_label, vfo_tone_label};
+        use radio_domain::Tone;
+        let steps: Vec<String> = radio_platform::operator_shell::VFO_STEPS_HZ
+            .iter()
+            .map(|step| vfo_step_label(*step))
+            .collect();
+        assert_eq!(
+            steps,
+            ["6.25 kHz", "12.5 kHz", "25 kHz", "50 kHz", "100 kHz", "1 MHz"]
+        );
+        assert_eq!(vfo_tone_label(Tone::None), "Off");
+        assert_eq!(vfo_tone_label(Tone::Ctcss(885)), "88.5");
+        assert_eq!(
+            vfo_tone_label(Tone::Dcs {
+                code: 23,
+                inverted: true
+            }),
+            "D023I"
+        );
+    }
+
     #[test]
     fn tx_choices_are_labelled_as_the_handset_lists_them() {
         let powers: Vec<_> = (0..radio_domain::TX_POWER_LEVELS)
