@@ -3292,3 +3292,27 @@
 - **Steps:** keep one copy of the helpers the K5 build inlined at every
   caller (`#[inline(never)]`), each kept only where a link against a 64 KiB
   map showed the image shrink, alone and together. Done.
+
+## GROUP-075 — Bank groups and locations
+
+- **Status:** active (2026-10-17), operator request ("Can we have bank
+  groups and scan per group, where banks can belong to multiple groups",
+  airband banks in their own group, locator banks in a group per location
+  "so that I can have multiple locations and easily switch context"; chose
+  "group narrows banks" and project locations; `ADR-116`).
+- **Objective:** the radio switches context to a group, listing and scanning
+  only its banks; the studio keeps locations in the project and groups the
+  banks it generates by location and as airband.
+- **Steps (commit after each):**
+  1. Storage: `BankGroup` (name, bank set, optional locator); project object
+     kind 6; radio image format 8 carries each group's name and banks (no
+     locator); the radio's index keeps two bytes per group.
+  2. Radio: a group context in the shell (ALL OF the group, its banks, the
+     other groups), the controller filtering by a bank set, and the place
+     record keeping the context; within the K5 flash budget.
+  3. Studio: groups in the model and Banks tab (membership per bank), project
+     locations replacing the local locator, generators adding their bank to
+     the location's group and airband banks to AIRBAND, and buttons grouping
+     existing banks by the locator in their name and by airband.
+  4. Flash the K5 and check switching between two location groups, scanning
+     ALL OF one, and that the context survives a power cycle.

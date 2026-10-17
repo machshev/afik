@@ -1969,3 +1969,17 @@ meaning.
   keeps that, so rewriting other banks does not move the operator.
 - `MAX_BANKS` is 254 (`0xFF` is "no bank"). Project files store the bank as a
   number (object format 5); format 4 files are upgraded one way on load.
+
+## ADR-116 — Bank groups switch the radio's context; locations live in the project
+
+- **Date:** 2026-10-17
+- **Status:** accepted, operator request (`GROUP-075`).
+- A group is a name and a set of banks; a bank may be in any number of
+  groups. A location is a group that also carries a Maidenhead locator; the
+  locator stays in the project file (object kind 6) and is never sent to the
+  radio, which gets only the name and the banks (image format 8).
+- On the radio, choosing a group narrows the source list to ALL OF the group
+  (one list over its banks, which a scan walks), its banks, and the other
+  groups; the operator chose this over a group being one more source.
+- The radio keeps two bytes per group (its entry offset) and the chosen
+  group's bank set (32 bytes); up to 32 groups.
