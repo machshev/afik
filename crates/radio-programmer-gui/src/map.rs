@@ -12,7 +12,7 @@ use crate::tiles::{self, TileId, Tiles, MAX_ZOOM, MIN_ZOOM, TILE_SIZE};
 /// The Earth's circumference at the equator, in kilometres.
 const EQUATOR_KM: f64 = 40_075.017;
 /// How near the pointer a site must be, in points, to be named.
-const HOVER_POINTS: f32 = 8.0;
+const HOVER_POINTS: f32 = 10.0;
 /// The most names a tooltip lists before saying how many more.
 const HOVER_NAMES: usize = 12;
 
@@ -34,6 +34,8 @@ pub struct Layer {
     pub label: &'static str,
     /// The sites' colour.
     pub color: Color32,
+    /// The glyph each site is marked with, such as an aeroplane.
+    pub icon: &'static str,
     /// The sites the bank would take.
     pub sites: Vec<Site>,
     /// The radius the generator takes from, drawn about the locator.
@@ -216,7 +218,6 @@ pub fn show(
     }
 
     // Each generator's radius, then its sites.
-    let outline = Stroke::new(1.0_f32, Color32::from_gray(0x20));
     if let Some(home) = home {
         for layer in layers {
             if let Some(km) = layer.radius_km {
@@ -231,10 +232,19 @@ pub fn show(
             }
         }
     }
+    // Each site is its layer's glyph on a white disc ringed in its colour.
+    let icon_font = egui::FontId::proportional(13.0);
     for layer in layers {
         for site in &layer.sites {
             let at = projection.screen((site.latitude, site.longitude));
-            painter.circle(at, 5.0, layer.color, outline);
+            painter.circle(at, 9.0, Color32::WHITE, Stroke::new(1.5_f32, layer.color));
+            painter.text(
+                at,
+                egui::Align2::CENTER_CENTER,
+                layer.icon,
+                icon_font.clone(),
+                layer.color,
+            );
         }
     }
 

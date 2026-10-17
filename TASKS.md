@@ -3286,6 +3286,11 @@
   13. Band filter defaults (operator request): UK repeaters, world
       repeaters and beacons start on 2 m and 70 cm, as the gateways do, to
       match the radio's amateur bands; a saved choice is kept. Done.
+  14. Map icons (operator request): each generator's sites are its glyph
+      from egui's fonts on a white disc in its colour (aerial, globe,
+      network, tower, radio, aeroplane for airports and airfields, anchor),
+      also leading its Show box. Per-airport banks were already limited to
+      the radius; the hover text now says so. Done.
 
 ## BANKS-073 — Up to 254 banks, addressed by bank and position
 

@@ -198,6 +198,20 @@ impl Generator {
         }
     }
 
+    /// The glyph its sites are marked with on the map, from egui's own
+    /// fonts.
+    const fn icon(self) -> &'static str {
+        match self {
+            Self::Repeaters => "\u{1F4E1}",
+            Self::World => "\u{1F310}",
+            Self::Gateways => "\u{1F5A7}",
+            Self::Beacons => "\u{1F5FC}",
+            Self::Stations => "\u{1F4FB}",
+            Self::Airports | Self::Airfields => "\u{2708}",
+            Self::Marine => "\u{2693}",
+        }
+    }
+
     /// The colour its sites and radius are drawn in on the map.
     const fn color(self) -> egui::Color32 {
         match self {
@@ -2781,6 +2795,7 @@ impl StudioApp {
                 Some(Layer {
                     label: generator.label(),
                     color: generator.color(),
+                    icon: generator.icon(),
                     sites,
                     radius_km: radius_km.map(f64::from),
                 })
@@ -2806,7 +2821,8 @@ impl StudioApp {
         ui.horizontal_wrapped(|ui| {
             ui.label("Show");
             for (generator, shown) in Generator::ALL.into_iter().zip(&mut self.map_shown) {
-                let label = RichText::new(generator.label()).color(generator.color());
+                let label = RichText::new(format!("{} {}", generator.icon(), generator.label()))
+                    .color(generator.color());
                 ui.checkbox(shown, label)
                     .on_hover_text("Shows what this generator would add, and its radius");
             }
@@ -4978,8 +4994,8 @@ mod tests {
                             if text.galley.text() == other.label())
                     })
                     .count();
-                // Once as a tab, once as the map's Show box.
-                assert_eq!(tabs, 2, "{generator:?} offers {other:?}");
+                // Once as a tab; the map's Show box leads with its icon.
+                assert_eq!(tabs, 1, "{generator:?} offers {other:?}");
             }
             for (owner, row) in rows {
                 let shown = text_left_edges(&output, row).len();
@@ -5634,6 +5650,20 @@ mod tests {
         assert!(app.project.validate().is_ok());
         app.add_airfields();
         assert_eq!(app.project.banks.len(), banks + 1, "replaced, not added");
+    }
+
+    #[test]
+    fn every_map_icon_is_in_the_fonts() {
+        use eframe::egui::{Context, FontId, RawInput};
+        let context = Context::default();
+        let _ = context.run(RawInput::default(), |_| {});
+        for generator in Generator::ALL {
+            for glyph in generator.icon().chars() {
+                let found =
+                    context.fonts(|fonts| fonts.has_glyph(&FontId::proportional(13.0), glyph));
+                assert!(found, "{generator:?} {glyph}");
+            }
+        }
     }
 
     #[test]
