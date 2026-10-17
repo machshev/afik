@@ -1047,7 +1047,18 @@ carrier squelch or a tune shuts it at once. Gate: `cargo fmt --all` clean,
 clippy `-D warnings` clean (workspace, and `radio-app`/`radio-platform`
 rechecked), `cargo test -p radio-platform -p radio-app` 173 and 34 passed 0
 failed, K5 and K1 release images build. `7.0.59` (`6f734fa`) flashed to the
-K1 (300/300 pages acknowledged, not read back). Next: the toned VFO and a toned memory
+K1 (300/300 pages acknowledged, not read back).
+
+VFO settings (operator request, 2026-10-17): the standard tone lists moved
+to `radio_domain::tones` (`49da60c`); each slot's VFO keeps its RX tone, TX
+tone and power across a power cycle in place record version 5, still 32
+bytes (`bfc0262`). Gate: `cargo fmt --all` clean, clippy `-D warnings` clean
+on the workspace less `radio-programmer-gui` (another session's uncommitted
+airports work breaks it), `cargo test -p radio-platform -p radio-app` 175
+and 34 passed 0 failed, `-p radio-domain` and `-p radio-bk4819` pass.
+`7.0.60` flashed to the K1 (bootloader `7.03.01`, 306 pages acknowledged,
+not read back). Next: settings rows VFO RX TONE, VFO TX TONE and VFO POWER.
+Hardware checks still to do on `7.0.59`/`7.0.60`: the toned VFO and a toned memory
 channel stay open through a transmission and stay shut for a carrier
 without the tone.
 
