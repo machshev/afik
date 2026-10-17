@@ -16,7 +16,7 @@
 //! Nothing here mints transmit authority: it names a selection, not a channel.
 
 use crate::operator_shell::VfoSettings;
-use radio_channel_plan::StartPlace;
+use radio_channel_plan::{StartPlace, VfoStart, VFO_SLOTS};
 use radio_domain::{tones, BankId, SquelchLevel, Tone};
 use radio_tx_policy::ClassSet;
 
@@ -237,6 +237,50 @@ impl OperatorState {
             b_selected: false,
             dual_watch: false,
         }
+    }
+
+    /// The record a studio writes (`ADR-116`): the radio starts at `start`,
+    /// or on every channel without one, with each programmed slot's VFO and
+    /// the programmed dual watch. A programmed slot B listens to its VFO, as a
+    /// radio nobody has used does; a step the radio does not offer is its
+    /// default.
+    #[must_use]
+    pub fn programmed(
+        start: Option<StartPlace>,
+        vfos: [Option<VfoStart>; VFO_SLOTS],
+        dual_watch: bool,
+    ) -> Self {
+        let step_index = |vfo: VfoStart| {
+            crate::operator_shell::VFO_STEPS_HZ
+                .iter()
+                .position(|step| *step == vfo.step_hz)
+                .and_then(|index| u8::try_from(index).ok())
+                .unwrap_or(1)
+        };
+        let settings = |vfo: VfoStart| {
+            VfoSettings {
+                rx_tone: vfo.rx_tone,
+                tx_tone: vfo.tx_tone,
+                power: vfo.power.map(|power| power as u8),
+            }
+            .checked()
+        };
+        let mut state = Self::starting_at(start.unwrap_or_default());
+        state.dual_watch = dual_watch;
+        if let Some(a) = vfos[0] {
+            state.vfo_hz = a.hz;
+            state.step_index = step_index(a);
+            state.vfo = settings(a);
+        }
+        state.other = vfos[1].map(|b| OtherSlot {
+            memory_mode: false,
+            bank: None,
+            channel: None,
+            vfo_hz: b.hz,
+            step_index: step_index(b),
+            vfo: settings(b),
+        });
+        state
     }
 
     /// Encodes one record, checksum included.
@@ -586,6 +630,54 @@ mod tests {
             assert!(!is_erased(&encoded));
             assert_eq!(OperatorState::decode(&encoded), Some(variant));
         }
+    }
+
+    #[test]
+    fn a_studio_record_holds_its_start_both_vfos_and_dual_watch() {
+        use radio_channel_plan::{StartPlace, VfoStart};
+        use radio_domain::PowerLevel;
+        let start = StartPlace {
+            group: Some(1),
+            bank: Some(BankId::new(3)),
+            channel: Some((BankId::new(3), 4)),
+        };
+        let a = VfoStart {
+            hz: 433_500_000,
+            step_hz: 25_000,
+            rx_tone: Tone::Ctcss(885),
+            tx_tone: Tone::Ctcss(1000),
+            power: Some(PowerLevel::Mid),
+        };
+        let b = VfoStart {
+            hz: 446_068_750,
+            step_hz: 7_000,
+            rx_tone: Tone::None,
+            tx_tone: Tone::Dcs {
+                code: 23,
+                inverted: false,
+            },
+            power: None,
+        };
+        let state = OperatorState::programmed(Some(start), [Some(a), Some(b)], true);
+        assert!(state.memory_mode && state.dual_watch);
+        assert_eq!((state.group, state.bank), (start.group, start.bank));
+        assert_eq!((state.vfo_hz, state.step_index), (433_500_000, 2));
+        assert_eq!(state.vfo.power, Some(4));
+        assert_eq!(state.vfo.rx_tone, Tone::Ctcss(885));
+        let other = state.other.expect("slot B");
+        assert!(!other.memory_mode, "B listens to its VFO");
+        assert_eq!(
+            (other.vfo_hz, other.step_index),
+            (446_068_750, 1),
+            "unoffered step"
+        );
+        assert_eq!(other.vfo.tx_tone, b.tx_tone);
+        assert_eq!(OperatorState::decode(&state.encode()), Some(state));
+
+        // Without a start or VFOs: every channel, defaults, and dual watch
+        // as programmed.
+        let plain = OperatorState::programmed(None, [None, None], false);
+        assert_eq!(plain, OperatorState::starting_at(StartPlace::default()));
     }
 
     #[test]

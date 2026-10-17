@@ -118,9 +118,17 @@ impl DeviceSession {
             .map_err(SessionError::Compile)?;
         let report = radio_flasher::write_afik_image(&mut self.transport, &image, progress)
             .map_err(SessionError::Radio)?;
-        // A start place goes in the same write, so the radio goes there.
-        if let Some(start) = project.start() {
-            let record = radio_platform::operator_state::OperatorState::starting_at(start).encode();
+        // A start place or programmed VFOs go in the same write, as the
+        // radio's place, so it starts there; its dual watch is the one the
+        // configuration programs, which the place would otherwise override.
+        if project.writes_place() {
+            let dual_watch = project.config().is_some_and(|config| config.dual_watch);
+            let record = radio_platform::operator_state::OperatorState::programmed(
+                project.start(),
+                project.vfos(),
+                dual_watch,
+            )
+            .encode();
             radio_flasher::write_afik_place(&mut self.transport, &record)
                 .map_err(SessionError::Radio)?;
         }
@@ -286,6 +294,46 @@ mod tests {
 
         let read = ProjectModel::from_project(&session.read_project().unwrap());
         assert_eq!(read, model);
+    }
+
+    #[test]
+    fn a_write_sends_the_programmed_vfos_and_dual_watch_as_the_radios_place() {
+        use radio_channel_plan::VfoStart;
+        use radio_domain::{RadioConfig, Tone};
+        use radio_platform::memory_link::PLACE_ORIGIN;
+        use radio_platform::operator_state::{OperatorState, OPERATOR_STATE_BYTES};
+
+        let mut model = ProjectModel::new();
+        model.add_bank();
+        model.add_channel(0);
+        let mut project = model.validate().unwrap();
+        project.set_config(RadioConfig {
+            dual_watch: true,
+            ..project.config().unwrap_or_else(RadioConfig::conservative)
+        });
+        let a = VfoStart {
+            hz: 446_068_750,
+            step_hz: 6_250,
+            rx_tone: Tone::Ctcss(885),
+            tx_tone: Tone::Ctcss(885),
+            power: None,
+        };
+        project.set_vfo(0, Some(a));
+
+        let mut session = DeviceSession::connect_simulator().unwrap();
+        session.write_project(&project, |_, _| {}).unwrap();
+        let at = usize::from(PLACE_ORIGIN);
+        let record: [u8; OPERATOR_STATE_BYTES] = session.simulator().unwrap().memory()
+            [at..at + OPERATOR_STATE_BYTES]
+            .try_into()
+            .unwrap();
+        let place = OperatorState::decode(&record).expect("a place record");
+        assert_eq!(
+            place,
+            OperatorState::programmed(None, [Some(a), None], true)
+        );
+        assert!(place.dual_watch, "the Radio tab's dual watch, not off");
+        assert_eq!(place.vfo.rx_tone, Tone::Ctcss(885));
     }
 
     #[test]
