@@ -918,7 +918,7 @@ fn adopt_place(shell: &mut Shell, programmed: &Programmed, place: Option<Operato
                     bank_filter: other.bank,
                     vfo_hz: other.vfo_hz,
                     step_index: usize::from(other.step_index),
-                    vfo_tx_tone: Tone::None,
+                    vfo_tone: Tone::None,
                 },
             );
         }
@@ -1028,9 +1028,10 @@ fn activate_slot<M: Memory>(
 
 /// Builds the one-channel source holding the VFO frequency.
 ///
-/// The VFO is expressed as an ordinary receive-only channel record so it reuses
-/// the whole programmed receive path unchanged. It is `TxClass::Never` like
-/// everything else this image constructs.
+/// The VFO is expressed as an ordinary simplex channel record so it reuses
+/// the whole programmed receive path unchanged; the programmed TX ranges
+/// decide whether it may transmit, as for any channel. It receives and
+/// transmits the slot's VFO tone.
 fn vfo_source<M>(slot: Slot, tx_power: u8) -> Option<Listening<M>> {
     let receive = Frequency::from_hz(slot.vfo_hz).ok()?;
     let step = FrequencyStep::from_hz(slot.vfo_step_hz()).ok()?;
@@ -1038,11 +1039,9 @@ fn vfo_source<M>(slot: Slot, tx_power: u8) -> Option<Listening<M>> {
         id: ChannelId::new(1),
         name: ChannelName::new("VFO").ok()?,
         receive,
-        // Receive-only: the transmit frequency mirrors receive and the class
-        // denies transmission outright.
         transmit: receive,
-        rx_tone: Tone::None,
-        tx_tone: Tone::None,
+        rx_tone: slot.vfo_tone,
+        tx_tone: slot.vfo_tone,
         modulation: Modulation::Fm,
         bandwidth: Bandwidth::Narrow,
         // The VFO has no programmed power of its own, so it takes the default.
@@ -1295,7 +1294,7 @@ pub async fn run<D, K, B, F, W, S, V, M>(
                     .ok()
                     .map(TxSetup::simplex)
             },
-            |(controller, _)| Some(tx_setup(controller, shell.vfo_tx_tone())),
+            |(controller, _)| Some(tx_setup(controller, shell.vfo_tone())),
         );
         if tx_setup != tx_tuned {
             tx_tuned = tx_setup;
@@ -1304,16 +1303,13 @@ pub async fn run<D, K, B, F, W, S, V, M>(
         // The handset's class switches narrow the programmed ranges, and
         // apply from the next pass, mid-transmission included.
         let tx_policy_now = tx_policy.restricted(shell.tx_enabled());
-        // The power chosen for this channel, lowered to what the range being
-        // used allows.
-        let tx_level = transmit::level_within(
-            chosen_power(
-                &shell,
-                activation
-                    .as_ref()
-                    .map(|(controller, _)| controller.channel()),
-            ),
-            tx_setup.and_then(|setup| tx_policy_now.max_mw_at(setup.channel.transmit)),
+        let tx_level = sent_power(
+            &shell,
+            activation
+                .as_ref()
+                .map(|(controller, _)| controller.channel()),
+            tx_setup.map(|setup| setup.channel.transmit),
+            &tx_policy_now,
         );
         let tx_request = tx_request(
             &receiver,
@@ -1933,6 +1929,21 @@ fn chosen_power(shell: &Shell, channel: Option<ChannelRecord>) -> u8 {
     shell.tx_level(channel.map_or(shell.tx_power(), |channel| channel.power() as u8))
 }
 
+/// Returns the TX power level PTT sends at `transmit`: the chosen level
+/// ([`chosen_power`]), lowered to the highest the programmed range there
+/// allows. The slot shows this level, so a PMR446 frequency never reads H.
+fn sent_power(
+    shell: &Shell,
+    channel: Option<ChannelRecord>,
+    transmit: Option<Frequency>,
+    policy: &TxPolicy,
+) -> u8 {
+    transmit::level_within(
+        chosen_power(shell, channel),
+        transmit.and_then(|frequency| policy.max_mw_at(frequency)),
+    )
+}
+
 /// Adopts a squelch level the operator accepted on the handset.
 ///
 /// It is the operator's own setting, so it is kept in the place record rather
@@ -2388,7 +2399,7 @@ fn slot_channel<'a, B: RegisterBus, S: Speaker, C: BroadcastChip, M: Memory>(
             |_| channel.active().transmit,
         );
     let tx_tone = match slot.mode {
-        Mode::Vfo => slot.vfo_tx_tone,
+        Mode::Vfo => slot.vfo_tone,
         Mode::Memory => channel.tx_tone(),
     };
     Some(SlotChannel {
@@ -2406,7 +2417,12 @@ fn slot_channel<'a, B: RegisterBus, S: Speaker, C: BroadcastChip, M: Memory>(
         },
         modulation: channel.modulation(),
         bandwidth: channel.bandwidth(),
-        power: shell.tx_level(channel.power() as u8),
+        power: sent_power(
+            shell,
+            Some(channel),
+            Some(channel.active().transmit),
+            tx_policy,
+        ),
         meter: receiver
             .filter(|receiver| receiver.squelch_open)
             .map(|receiver| receiver.rssi_raw),
@@ -2781,6 +2797,61 @@ mod tests {
         shell.press(Key::Digit(6), 3, context());
         assert_eq!(chosen_power(&shell, Some(vfo)), 5);
         assert_eq!(chosen_power(&shell, None), 5);
+    }
+
+    #[test]
+    fn the_power_shown_and_sent_is_lowered_to_the_range_at_the_frequency() {
+        use super::sent_power;
+        use radio_domain::{Frequency, TxClass};
+        use radio_tx_policy::{TxPolicy, TxRange};
+
+        let mut shell = Shell::new();
+        shell.set_capabilities(radio_platform::operator_shell::Capabilities::K5);
+        // High (5 W) as the default the VFO takes.
+        shell.set_tx(5, 0);
+        let pmr = TxRange {
+            class: TxClass::LicenceFreePlan,
+            first_hz: 446_000_000,
+            last_hz: 446_200_000,
+            max_mw: 500,
+            wide_fm: false,
+            raster_hz: 6_250,
+        };
+        let amateur = TxRange {
+            class: TxClass::Amateur,
+            first_hz: 430_000_000,
+            last_hz: 440_000_000,
+            max_mw: 5_000,
+            wide_fm: true,
+            raster_hz: 2_500,
+        };
+        let policy = TxPolicy::new(&[pmr, amateur]).unwrap();
+        let at = |hz| Some(Frequency::from_hz(hz).unwrap());
+        let Some(Listening::Vfo(vfo)) = vfo_source::<()>(shell.slot(), shell.tx_power()) else {
+            panic!("a VFO source");
+        };
+        // PMR446 allows 500 mW: Low4, not High.
+        assert_eq!(sent_power(&shell, Some(vfo), at(446_068_750), &policy), 3);
+        assert_eq!(sent_power(&shell, Some(vfo), at(433_500_000), &policy), 5);
+        // Outside every range the policy refuses PTT; the level is the chosen.
+        assert_eq!(sent_power(&shell, Some(vfo), at(145_500_000), &policy), 5);
+    }
+
+    #[test]
+    fn a_caught_tone_is_the_vfos_receive_and_transmit_tone() {
+        use radio_domain::Tone;
+        use radio_platform::operator_shell::Slot;
+
+        let slot = Slot {
+            vfo_hz: 446_068_750,
+            vfo_tone: Tone::Ctcss(885),
+            ..Slot::VFO
+        };
+        let Some(Listening::Vfo(vfo)) = vfo_source::<()>(slot, 0) else {
+            panic!("a VFO source");
+        };
+        assert_eq!(vfo.rx_tone(), Tone::Ctcss(885));
+        assert_eq!(vfo.tx_tone(), Tone::Ctcss(885));
     }
 
     #[test]

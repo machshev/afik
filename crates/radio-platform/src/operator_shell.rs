@@ -136,8 +136,9 @@ pub struct Slot {
     pub vfo_hz: u32,
     /// Index into [`VFO_STEPS_HZ`].
     pub step_index: usize,
-    /// The tone the VFO transmits with: none, or one the F 4 catch heard.
-    pub vfo_tx_tone: Tone,
+    /// The VFO's tone, received and transmitted: none, or one the F 4 catch
+    /// heard.
+    pub vfo_tone: Tone,
 }
 
 impl Slot {
@@ -147,7 +148,7 @@ impl Slot {
         bank_filter: None,
         vfo_hz: VFO_DEFAULT_HZ,
         step_index: 1,
-        vfo_tx_tone: Tone::None,
+        vfo_tone: Tone::None,
     };
 
     /// Returns the VFO tuning step in hertz.
@@ -427,7 +428,7 @@ pub struct Shell {
     group_banks: BankSet,
     source_cursor: usize,
     vfo_hz: u32,
-    vfo_tx_tone: Tone,
+    vfo_tone: Tone,
     step_index: usize,
     step_cursor: usize,
     settings_cursor: usize,
@@ -483,7 +484,7 @@ impl Shell {
             group_banks: BankSet::EMPTY,
             source_cursor: 0,
             vfo_hz: VFO_DEFAULT_HZ,
-            vfo_tx_tone: Tone::None,
+            vfo_tone: Tone::None,
             step_index: 1,
             step_cursor: 1,
             settings_cursor: 0,
@@ -727,7 +728,7 @@ impl Shell {
             bank_filter: self.bank_filter,
             vfo_hz: self.vfo_hz,
             step_index: self.step_index,
-            vfo_tx_tone: self.vfo_tx_tone,
+            vfo_tone: self.vfo_tone,
         }
     }
 
@@ -748,14 +749,15 @@ impl Shell {
         self.dual_watch = on;
     }
 
-    /// Returns the tone the selected slot's VFO transmits with.
+    /// Returns the tone the selected slot's VFO receives and transmits with.
     #[must_use]
-    pub const fn vfo_tx_tone(&self) -> Tone {
-        self.vfo_tx_tone
+    pub const fn vfo_tone(&self) -> Tone {
+        self.vfo_tone
     }
 
     /// Puts a caught frequency in the selected slot's VFO, with the caught
-    /// tone (or none) to transmit, and shows the operating screen; the caller
+    /// tone (or none) to receive and transmit as the reference's scanner
+    /// saves it (`scanner.c:195-198`), and shows the operating screen; the caller
     /// rebuilds the slot as for VFO/MR. Refused, leaving the catch open,
     /// without a VFO or off its range.
     pub fn catch_to_vfo(&mut self, hertz: u32, tone: Option<Tone>) -> bool {
@@ -767,7 +769,7 @@ impl Shell {
         }
         self.mode = Mode::Vfo;
         self.vfo_hz = hertz;
-        self.vfo_tx_tone = tone.unwrap_or(Tone::None);
+        self.vfo_tone = tone.unwrap_or(Tone::None);
         self.entry = None;
         self.screen = Screen::Operating;
         true
@@ -794,7 +796,7 @@ impl Shell {
         self.mode = self.other.mode;
         self.bank_filter = self.other.bank_filter;
         self.vfo_hz = self.other.vfo_hz;
-        self.vfo_tx_tone = self.other.vfo_tx_tone;
+        self.vfo_tone = self.other.vfo_tone;
         self.step_index = self.other.step_index;
         self.step_cursor = self.step_index;
         self.other = selected;
@@ -2542,7 +2544,7 @@ mod tests {
         assert!(shell.catch_to_vfo(438_437_500, Some(Tone::Ctcss(1567))));
         assert_eq!(shell.mode(), Mode::Vfo);
         assert_eq!(shell.vfo_hz(), 438_437_500);
-        assert_eq!(shell.vfo_tx_tone(), Tone::Ctcss(1567));
+        assert_eq!(shell.vfo_tone(), Tone::Ctcss(1567));
         assert_eq!(shell.screen(), Screen::Operating);
         // Only from the catch.
         assert!(!shell.catch_to_vfo(145_500_000, None));
@@ -2554,15 +2556,15 @@ mod tests {
             shell.press(Key::Digit(2), 21, context(2, 0)),
             Intent::SwapSlot
         );
-        assert_eq!(shell.vfo_tx_tone(), Tone::None);
-        assert_eq!(shell.other_slot().vfo_tx_tone, Tone::Ctcss(1567));
+        assert_eq!(shell.vfo_tone(), Tone::None);
+        assert_eq!(shell.other_slot().vfo_tone, Tone::Ctcss(1567));
         // An untoned catch clears it.
         shell.press(Key::Function, 22, context(2, 0));
         shell.press(Key::Digit(2), 23, context(2, 0));
         shell.press(Key::Function, 24, context(2, 0));
         shell.press(Key::Digit(4), 25, context(2, 0));
         assert!(shell.catch_to_vfo(145_500_000, None));
-        assert_eq!(shell.vfo_tx_tone(), Tone::None);
+        assert_eq!(shell.vfo_tone(), Tone::None);
     }
 
     #[test]
