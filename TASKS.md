@@ -3300,6 +3300,12 @@
       generator's radius, scales the airband services' hearing ranges (x1,
       x1.5, x2) and the FM ranking's aerial height (2, 1.5, 10 m); kept in
       `receiver`. Estimates, not measurements. Done.
+  17. Live filter counts and Add all (operator request): each band,
+      licence-kind and airport-service box shows how many it would take in
+      range; Add all shown on the Map tab adds or updates the bank of every
+      generator shown and says why any was skipped. Generated banks were
+      already filed under the location (`ADR-116`); its group now takes a
+      new locator description, cut to 16 characters. Done.
 
 ## BANKS-073 — Up to 254 banks, addressed by bank and position
 

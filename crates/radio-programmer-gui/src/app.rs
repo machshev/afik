@@ -9,7 +9,9 @@ use std::{
 use eframe::egui::{
     self, collapsing_header::CollapsingState, ComboBox, Grid, RichText, ScrollArea, TextEdit,
 };
-use radio_channel_plan::{SharedSettings, MAX_BANKS, MAX_GENERATED_CHANNELS, MAX_GROUPS};
+use radio_channel_plan::{
+    SharedSettings, MAX_BANKS, MAX_BANK_NAME_LEN, MAX_GENERATED_CHANNELS, MAX_GROUPS,
+};
 use radio_domain::{
     Bandwidth, Modulation, PowerLevel, ScanResume, TxClass, BACKLIGHT_ALWAYS_ON,
     MAX_BATTERY_SAVE_RATIO, MAX_SQUELCH_LEVEL, TX_POWER_LEVELS, TX_TIMEOUT_CHOICES,
@@ -1049,6 +1051,15 @@ impl StudioApp {
         }
     }
 
+    /// The name the location at `locator` goes by: the saved locator's
+    /// description, cut to a group name, else the locator itself.
+    fn location_name(&self, locator: &str) -> String {
+        self.saved_locators
+            .find(locator)
+            .and_then(|saved| repeaters::sanitise(&saved.description, MAX_BANK_NAME_LEN))
+            .unwrap_or_else(|| locator.trim().to_ascii_uppercase())
+    }
+
     /// Takes a project a generator built, filing each bank it added or
     /// changed under the location of the current locator (`ADR-116`): named
     /// by the saved locator's description, else the locator itself. Airband
@@ -1062,12 +1073,7 @@ impl StudioApp {
             .collect();
         self.project = project;
         let locator = self.repeater_area.locator.trim().to_ascii_uppercase();
-        let name = self
-            .saved_locators
-            .find(&locator)
-            .map(|saved| saved.description.trim().to_ascii_uppercase())
-            .filter(|description| !description.is_empty())
-            .unwrap_or_else(|| locator.clone());
+        let name = self.location_name(&locator);
         let mut filed = true;
         for bank in &generated {
             filed &= self.project.file_bank(bank, &name, &locator, airband);
@@ -2195,13 +2201,42 @@ fn area_within(radius_km: u16) -> AirportArea {
     }
 }
 
+/// How many of `systems` within `radius_km` of `locator` are on each band,
+/// whatever the band filter; none when the locator does not read.
+fn band_counts(
+    systems: &[Repeater],
+    locator: &str,
+    radius_km: u16,
+) -> Option<[usize; AmateurBand::ALL.len()]> {
+    let near = repeaters::nearby(systems, locator, radius_km).ok()?;
+    let mut counts = [0; AmateurBand::ALL.len()];
+    for band in near
+        .iter()
+        .filter_map(|(system, _)| AmateurBand::of(system.output_hz))
+    {
+        counts[band.index()] += 1;
+    }
+    Some(counts)
+}
+
+/// A filter's label with how many it would take, when known.
+fn counted(label: &str, count: Option<usize>) -> String {
+    count.map_or_else(|| label.to_owned(), |count| format!("{label} ({count})"))
+}
+
 /// The row of amateur-band checkboxes under a generator, for `noun` such
-/// as `repeaters`.
-fn band_row(ui: &mut egui::Ui, bands: &mut BandFilter, noun: &str) {
+/// as `repeaters`, each with how many are in range on it.
+fn band_row(
+    ui: &mut egui::Ui,
+    bands: &mut BandFilter,
+    noun: &str,
+    counts: Option<[usize; AmateurBand::ALL.len()]>,
+) {
     ui.horizontal_wrapped(|ui| {
         ui.label("Bands");
         for band in AmateurBand::ALL {
-            ui.checkbox(&mut bands.bands[band.index()], band.label())
+            let label = counted(band.label(), counts.map(|counts| counts[band.index()]));
+            ui.checkbox(&mut bands.bands[band.index()], label)
                 .on_hover_text(format!("Takes the {noun} on {}", band.label()));
         }
     });
@@ -2624,7 +2659,11 @@ impl StudioApp {
             ui.end_row();
             ui.label(self.repeater_source());
         });
-        band_row(ui, &mut self.repeater_bands, "repeaters");
+        let counts = self.repeaters.as_ref().and_then(|list| {
+            let area = &self.repeater_area;
+            band_counts(&list.repeaters, &area.locator, area.radius_km)
+        });
+        band_row(ui, &mut self.repeater_bands, "repeaters", counts);
     }
 
     /// The row that adds the repeaters anywhere near the shared locator.
@@ -2671,7 +2710,11 @@ impl StudioApp {
             ui.end_row();
             ui.label(self.world_source());
         });
-        band_row(ui, &mut self.world_bands, "repeaters");
+        let counts = self.world.as_ref().and_then(|list| {
+            let locator = &self.repeater_area.locator;
+            band_counts(&list.repeaters, locator, self.world_area.radius_km)
+        });
+        band_row(ui, &mut self.world_bands, "repeaters", counts);
     }
 
     /// The row that adds the UK gateways or beacons near the shared locator,
@@ -2734,36 +2777,46 @@ impl StudioApp {
             ui.end_row();
             ui.label(self.etcc_source(kind));
         });
+        let counts = self.repeaters.as_ref().and_then(|list| {
+            let locator = &self.repeater_area.locator;
+            band_counts(kind.systems(list), locator, self.etcc_area(kind).radius_km)
+        });
         let bands = match kind {
             EtccKind::Gateways => &mut self.gateway_bands,
             EtccKind::Beacons => &mut self.beacon_bands,
         };
-        band_row(ui, bands, kind.noun());
+        band_row(ui, bands, kind.noun(), counts);
     }
 
     /// The sites `generator` would add at the locator, and the radius it
     /// takes them from; none when it cannot preview, such as before a sync.
     fn generator_sites(&self, generator: Generator) -> Option<(Vec<Site>, Option<u16>)> {
-        let (preview, radius_km) = match generator {
-            Generator::Repeaters => (self.repeater_preview(), Some(self.repeater_area.radius_km)),
-            Generator::World => (self.world_preview(), Some(self.world_area.radius_km)),
-            Generator::Gateways => (
-                self.etcc_preview(EtccKind::Gateways),
-                Some(self.gateway_area.radius_km),
-            ),
-            Generator::Beacons => (
-                self.etcc_preview(EtccKind::Beacons),
-                Some(self.beacon_area.radius_km),
-            ),
-            Generator::Stations => (self.station_preview(), None),
-            Generator::Airports => (
-                self.airport_preview().map(|(preview, _)| preview),
-                Some(self.airport_area.radius_km),
-            ),
-            Generator::Airfields => (self.airfield_preview(), Some(self.airfield_area.radius_km)),
-            Generator::Marine => (self.marine_preview(), Some(self.marine_area.radius_km)),
+        let radius_km = match generator {
+            Generator::Repeaters => Some(self.repeater_area.radius_km),
+            Generator::World => Some(self.world_area.radius_km),
+            Generator::Gateways => Some(self.gateway_area.radius_km),
+            Generator::Beacons => Some(self.beacon_area.radius_km),
+            Generator::Stations => None,
+            Generator::Airports => Some(self.airport_area.radius_km),
+            Generator::Airfields => Some(self.airfield_area.radius_km),
+            Generator::Marine => Some(self.marine_area.radius_km),
         };
-        preview.ok().map(|preview| (preview.sites, radius_km))
+        let preview = self.generator_preview(generator).ok()?;
+        Some((preview.sites, radius_km))
+    }
+
+    /// What `generator` would add here, or why it cannot.
+    fn generator_preview(&self, generator: Generator) -> Result<AreaPreview, String> {
+        match generator {
+            Generator::Repeaters => self.repeater_preview(),
+            Generator::World => self.world_preview(),
+            Generator::Gateways => self.etcc_preview(EtccKind::Gateways),
+            Generator::Beacons => self.etcc_preview(EtccKind::Beacons),
+            Generator::Stations => self.station_preview(),
+            Generator::Airports => self.airport_preview().map(|(preview, _)| preview),
+            Generator::Airfields => self.airfield_preview(),
+            Generator::Marine => self.marine_preview(),
+        }
     }
 
     /// Everything the map's layers are built from: the locator, every
@@ -2821,6 +2874,62 @@ impl StudioApp {
         layers
     }
 
+    /// Runs `generator`'s Add.
+    fn add_generator(&mut self, generator: Generator) {
+        match generator {
+            Generator::Repeaters => self.add_repeaters(),
+            Generator::World => self.add_world(),
+            Generator::Gateways => self.add_etcc(EtccKind::Gateways),
+            Generator::Beacons => self.add_etcc(EtccKind::Beacons),
+            Generator::Stations => self.add_stations(),
+            Generator::Airports => self.add_airports(),
+            Generator::Airfields => self.add_airfields(),
+            Generator::Marine => self.add_marine(),
+        }
+    }
+
+    /// Adds or updates the bank of every generator shown on the map, and
+    /// says which did and why the rest did not.
+    fn add_all_shown(&mut self) {
+        let mut added = Vec::new();
+        let mut skipped = Vec::new();
+        for (generator, shown) in Generator::ALL.into_iter().zip(self.map_shown) {
+            if !shown {
+                continue;
+            }
+            let preview = match self.generator_preview(generator) {
+                Ok(preview) => preview,
+                Err(reason) => {
+                    skipped.push(format!("{} ({reason})", generator.label()));
+                    continue;
+                }
+            };
+            // Airfields and marine always have their core channels.
+            let cored = matches!(generator, Generator::Airfields | Generator::Marine);
+            if preview.taken == 0 && !cored {
+                skipped.push(format!("{} (none in range)", generator.label()));
+            } else if preview.project.banks.len() > usize::from(MAX_BANKS)
+                || too_big(&preview.project)
+            {
+                skipped.push(format!("{} (would not fit the radio)", generator.label()));
+            } else {
+                self.add_generator(generator);
+                added.push(generator.label());
+            }
+        }
+        let added = if added.is_empty() {
+            "Nothing added".to_owned()
+        } else {
+            format!("Added or updated {}", added.join(", "))
+        };
+        self.status = if skipped.is_empty() {
+            format!("{added}.")
+        } else {
+            format!("{added}. Skipped {}.", skipped.join("; "))
+        };
+        log::info!("{}", self.status);
+    }
+
     /// Makes the locator holding a point clicked on the map the current one.
     fn pick_on_map(&mut self, (latitude, longitude): (f64, f64)) {
         let locator = map::locator_at(latitude, longitude);
@@ -2854,6 +2963,17 @@ impl StudioApp {
                 .clicked()
             {
                 self.map_locator.clear();
+            }
+            ui.separator();
+            if ui
+                .button("Add all shown")
+                .on_hover_text(
+                    "Adds or updates the bank of every generator shown, for this locator, \
+                     each filed under its location",
+                )
+                .clicked()
+            {
+                self.add_all_shown();
             }
         });
         let home = repeaters::locator_centre(&self.repeater_area.locator).ok();
@@ -3056,6 +3176,18 @@ impl StudioApp {
         let saved = self.saved_locators.find(locator).map(SavedLocator::label);
         self.status = format!("Saved {}.", saved.unwrap_or_default());
         self.write_saved_locators();
+        // The location's group follows its description.
+        let locator = self.repeater_area.locator.clone();
+        if let Some(group) = self.project.location(&locator) {
+            let name = self.location_name(&locator);
+            if self.project.groups[group].name != name {
+                self.status = format!(
+                    "{} Renamed its group {} to {name}.",
+                    self.status, self.project.groups[group].name
+                );
+                self.project.groups[group].name = name;
+            }
+        }
     }
 
     /// Forgets the current locator from the dropdown; the field keeps it.
@@ -3129,11 +3261,42 @@ impl StudioApp {
         });
         ui.horizontal_wrapped(|ui| {
             ui.label("Licences");
+            let counts = self.station_kind_counts();
             for kind in StationKind::ALL {
-                ui.checkbox(&mut self.station_area.kinds[kind.index()], kind.label())
+                let label = counted(kind.label(), counts.map(|counts| counts[kind.index()]));
+                ui.checkbox(&mut self.station_area.kinds[kind.index()], label)
                     .on_hover_text(format!("Takes the {}", kind.description()));
             }
         });
+    }
+
+    /// How many stations of each licence kind the ranking would offer at
+    /// the locator, whatever the kinds ticked.
+    fn station_kind_counts(&self) -> Option<[usize; StationKind::ALL.len()]> {
+        let list = self.stations.as_ref()?;
+        let ranked =
+            stations::strongest(&list.stations, &self.repeater_area.locator, self.receiver).ok()?;
+        let mut counts = [0; StationKind::ALL.len()];
+        for (station, _) in ranked {
+            counts[station.kind.index()] += 1;
+        }
+        Some(counts)
+    }
+
+    /// How many frequencies of each service are within the airport radius
+    /// and heard from the locator, whatever the services ticked.
+    fn airport_service_counts(&self) -> Option<[usize; Service::ALL.len()]> {
+        let list = self.airports.as_ref()?;
+        let home = repeaters::locator_centre(&self.repeater_area.locator).ok()?;
+        let radius = f64::from(self.airport_area.radius_km);
+        let mut counts = [0; Service::ALL.len()];
+        for frequency in &list.frequencies {
+            let km = repeaters::distance_km(home, (frequency.latitude, frequency.longitude));
+            if km <= radius && km <= f64::from(frequency.service.reach_km(self.receiver)) {
+                counts[frequency.service.index()] += 1;
+            }
+        }
+        Some(counts)
     }
 
     /// The row that adds the airport frequencies near the shared locator.
@@ -3188,6 +3351,7 @@ impl StudioApp {
         });
         ui.horizontal_wrapped(|ui| {
             ui.label("Take");
+            let counts = self.airport_service_counts();
             for service in Service::ALL {
                 let help = match service {
                     Service::Approach => {
@@ -3203,7 +3367,10 @@ impl StudioApp {
                 };
                 ui.checkbox(
                     &mut self.airport_options.services[service.index()],
-                    service.label(),
+                    counted(
+                        service.label(),
+                        counts.map(|counts| counts[service.index()]),
+                    ),
                 )
                 .on_hover_text(format!(
                     "{help}; heard to about {} km on a {}",
@@ -5806,6 +5973,91 @@ mod tests {
         }
         assert!(!rows.is_empty(), "the tooltip is shown");
         assert!(rows.iter().all(|rows| *rows == 1), "{rows:?}");
+    }
+
+    #[test]
+    fn add_all_shown_files_each_bank_under_its_location() {
+        use super::{band_counts, counted};
+        use crate::repeaters::{AmateurBand, Repeater, RepeaterList};
+
+        let repeater = |callsign: &str, hz: u32| Repeater {
+            callsign: callsign.to_owned(),
+            town: String::new(),
+            output_hz: hz,
+            input_hz: hz,
+            ctcss_tenths_hz: None,
+            wide: false,
+            latitude: 51.52,
+            longitude: -0.12,
+        };
+        let mut app = simulated("add-all");
+        app.repeaters = Some(RepeaterList {
+            repeaters: vec![
+                repeater("GB3TWO", 145_625_000),
+                repeater("GB3UHF", 433_100_000),
+                repeater("GB3SIX", 51_510_000),
+            ],
+            gateways: Vec::new(),
+            beacons: Vec::new(),
+            synced: std::time::SystemTime::now(),
+        });
+        "IO91WM".clone_into(&mut app.repeater_area.locator);
+        app.saved_locators.put("IO91WM", "Home").unwrap();
+
+        // Each band says how many are in range, ticked or not.
+        let list = &app.repeaters.as_ref().unwrap().repeaters;
+        let counts = band_counts(list, "IO91WM", 50).unwrap();
+        assert_eq!(counts[AmateurBand::SixMetres.index()], 1);
+        assert_eq!(counts[AmateurBand::TwoMetres.index()], 1);
+        assert_eq!(counts[AmateurBand::FourMetres.index()], 0);
+        assert_eq!(counted("6 m", Some(1)), "6 m (1)");
+        assert_eq!(counted("6 m", None), "6 m");
+        assert!(app.station_kind_counts().is_none(), "unsynced");
+        assert!(app.airport_service_counts().is_none(), "unsynced");
+
+        app.add_all_shown();
+        assert!(
+            app.status
+                .starts_with("Added or updated UK repeaters, Airfields, Marine. Skipped "),
+            "{}",
+            app.status
+        );
+        assert!(
+            app.status.contains("UK gateways (none in range)"),
+            "{}",
+            app.status
+        );
+        let home = app.project.location("IO91WM").unwrap();
+        assert_eq!(app.project.groups[home].name, "HOME");
+        let rpt = app
+            .project
+            .banks
+            .iter()
+            .find(|b| b.name == "RPT IO91WM")
+            .unwrap();
+        let names: Vec<_> = rpt.channels.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["GB3TWO", "GB3UHF"], "2 m and 70 cm by default");
+        assert!(rpt.groups.contains(&home));
+
+        // Again: the same banks are updated, not added twice.
+        let banks = app.project.banks.len();
+        app.add_all_shown();
+        assert_eq!(app.project.banks.len(), banks);
+        assert!(
+            app.status.starts_with("Added or updated UK repeaters"),
+            "{}",
+            app.status
+        );
+
+        // A new description renames the location's group.
+        "Allotment".clone_into(&mut app.locator_description);
+        app.save_locator();
+        assert_eq!(app.project.groups[home].name, "ALLOTMENT");
+        assert!(
+            app.status.ends_with("Renamed its group HOME to ALLOTMENT."),
+            "{}",
+            app.status
+        );
     }
 
     #[test]
