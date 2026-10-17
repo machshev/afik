@@ -242,6 +242,12 @@ M8LWA at 100 km the four locations' 12 large-airport approach channels
 become one bank of 7 carriers. Gate: `cargo fmt --all --check` clean,
 `cargo clippy --workspace --all-targets -- -D warnings` clean, `cargo test
 --workspace` 963 passed 0 failed 3 ignored.
+A large airport's approach is taken across the airport radius itself,
+whatever the receiver, so only medium and small keep a range of their own
+(`approach-medium=`, `approach-small=`; an older `approach-large=` is
+ignored) and the map rings those two. Gate: `cargo fmt --all --check`
+clean, `cargo clippy --workspace --all-targets -- -D warnings` clean,
+`cargo test --workspace` 964 passed 0 failed 3 ignored.
 
 **`FLASH-074` done** (2026-10-17, operator request, `RISK-049`): the K5
 image had 16 bytes of flash left. `interface::run` was 22.6 KB because the

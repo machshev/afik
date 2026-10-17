@@ -3948,7 +3948,12 @@ impl StudioApp {
         for frequency in &list.frequencies {
             let km = repeaters::distance_km(home, (frequency.latitude, frequency.longitude));
             if km <= radius
-                && km <= f64::from(self.airport_options.reach_km(frequency, self.receiver))
+                && km
+                    <= f64::from(self.airport_options.reach_km(
+                        frequency,
+                        self.receiver,
+                        self.airport_area.radius_km,
+                    ))
             {
                 counts[frequency.service.index()] += 1;
             }
@@ -4034,6 +4039,7 @@ impl StudioApp {
                     help,
                     &self.airport_options,
                     self.receiver,
+                    self.airport_area.radius_km,
                 ));
             }
         });
@@ -4046,8 +4052,10 @@ impl StudioApp {
         ui.add_enabled_ui(self.airport_options.takes(Service::Approach), |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.label("Approach heard to");
-                for size in AirportSize::ALL {
-                    let km = &mut self.airport_options.approach_km[size.index()];
+                for (size, km) in AirportSize::CHOSEN
+                    .into_iter()
+                    .zip(&mut self.airport_options.approach_km)
+                {
                     ui.label(size.label());
                     let reach = self.receiver.reach_km(*km);
                     ui.add(
@@ -4069,6 +4077,14 @@ impl StudioApp {
                 {
                     self.airport_options.approach_km = AirportOptions::default().approach_km;
                 }
+                ui.label(format!(
+                    "Large: the airport radius, {} km",
+                    self.airport_area.radius_km
+                ))
+                .on_hover_text(
+                    "Airliners into a large airport are high and heard from far off, so its \
+                     approach is taken anywhere within the airports radius",
+                );
             });
         });
     }
@@ -5622,13 +5638,15 @@ fn swatch(ui: &mut egui::Ui, colour: egui::Color32) {
     ui.painter().rect_filled(rect, 2.0, colour);
 }
 
-/// How far off `receiver` hears each size of airport's approach, labelled,
-/// for the map's faint rings.
+/// How far off `receiver` hears each chosen size of airport's approach,
+/// labelled, for the map's faint rings; a large airport's is the radius,
+/// drawn already.
 fn approach_rings(options: &AirportOptions, receiver: Receiver) -> Vec<(f64, String)> {
-    AirportSize::ALL
+    AirportSize::CHOSEN
         .into_iter()
-        .map(|size| {
-            let km = receiver.reach_km(options.approach_km[size.index()]);
+        .zip(options.approach_km)
+        .map(|(size, km)| {
+            let km = receiver.reach_km(km);
             (f64::from(km), format!("{} APP {km} km", size.label()))
         })
         .collect()
@@ -5636,14 +5654,20 @@ fn approach_rings(options: &AirportOptions, receiver: Receiver) -> Vec<(f64, Str
 
 /// The hover text of an airport service: what it is and how far off
 /// `receiver` hears it, approach by the size of the airport.
-fn heard_to(service: Service, help: &str, options: &AirportOptions, receiver: Receiver) -> String {
+fn heard_to(
+    service: Service,
+    help: &str,
+    options: &AirportOptions,
+    receiver: Receiver,
+    radius_km: u16,
+) -> String {
     let on = receiver.label().to_lowercase();
     if service == Service::Approach {
-        let [large, medium, small] =
-            AirportSize::ALL.map(|size| receiver.reach_km(options.approach_km[size.index()]));
+        let [medium, small] = options.approach_km.map(|km| receiver.reach_km(km));
         format!(
-            "{help}; on a {on}, heard to about {large} km at a large airport, {medium} km at a \
-             regional airport or military field and {small} km at a small field"
+            "{help}; a large airport's is taken across the airport radius, {radius_km} km; on \
+             a {on}, a regional airport's or military field's is heard to about {medium} km \
+             and a small field's {small} km"
         )
     } else {
         format!(
@@ -7187,7 +7211,7 @@ mod tests {
             ],
             synced: std::time::SystemTime::now(),
         });
-        app.airport_area.radius_km = 300;
+        app.airport_area.radius_km = 150;
         for locator in ["IO91WM", "IO92WM"] {
             locator.clone_into(&mut app.repeater_area.locator);
             app.add_airports();
@@ -7196,7 +7220,7 @@ mod tests {
         let names = |name: &str| -> Vec<String> {
             bank(name).channels.iter().map(|c| c.name.clone()).collect()
         };
-        // Gatwick is 90 km south of IO91WM but past a handheld's 150 km from
+        // Gatwick is 90 km south of IO91WM but past the 150 km radius from
         // IO92WM; the shared bank keeps both locations' airports, once each.
         assert_eq!(names(MAJOR_BANK), ["EGLL APP", "EGKK APP"]);
         assert_eq!(names("AIR IO91WM"), ["EGWU APP"]);
@@ -7247,16 +7271,21 @@ mod tests {
         use crate::{airports::Service, receiver::Receiver};
 
         let options = crate::airports::AirportOptions::default();
-        let text = heard_to(Service::Approach, "Approach", &options, Receiver::Handheld);
-        assert!(text.contains("150 km at a large airport"), "{text}");
-        assert!(text.contains("50 km at a regional"), "{text}");
-        assert!(text.contains("30 km at a small field"), "{text}");
-        let text = heard_to(Service::Tower, "Tower", &options, Receiver::Base);
+        let text = heard_to(
+            Service::Approach,
+            "Approach",
+            &options,
+            Receiver::Handheld,
+            120,
+        );
+        assert!(text.contains("airport radius, 120 km"), "{text}");
+        assert!(text.contains("about 50 km"), "{text}");
+        assert!(text.contains("small field's 30 km"), "{text}");
+        let text = heard_to(Service::Tower, "Tower", &options, Receiver::Base, 120);
         let rings = super::approach_rings(&options, Receiver::Base);
         assert_eq!(
             rings,
             [
-                (300.0, "Large APP 300 km".to_owned()),
                 (100.0, "Medium APP 100 km".to_owned()),
                 (60.0, "Small APP 60 km".to_owned()),
             ]
