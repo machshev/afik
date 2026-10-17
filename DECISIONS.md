@@ -1940,8 +1940,11 @@ meaning.
   in the ETCC list. 11 344 operational FM systems with an offset remain,
   before the receivable check. hearham gives no bandwidth, so every channel
   is 25 kHz.
-- The bank is `WRPT <locator>`, so it never replaces the ETCC's `RPT` bank;
-  the UK repeaters tab is the source in the UK.
+- With UK callsigns dropped the two lists do not overlap, so one Repeaters
+  tab takes both (2026-10-17, operator request): one Sync fetches each,
+  and `RPT <locator>` holds the most hearable from either, with one radius,
+  count and band filter. hearham's are standard coverage. Banks an older
+  studio named `WRPT` are kept as they are.
 
 ## ADR-114 — Airport frequencies are chosen by how far their service is heard
 

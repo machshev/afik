@@ -425,6 +425,17 @@ clean, `cargo test -p radio-programmer-gui` 168 passed 0 failed 3 ignored. Gate:
 clippy `-D warnings` clean, `cargo test --workspace` 881 passed 0 failed 3
 ignored.
 
+`GEN-072` repeaters (2026-10-17, operator request, `ADR-113`): the UK and
+World repeaters tabs are one Repeaters tab. One Sync fetches the ETCC list
+and hearham's; the bank `RPT <locator>` takes the most hearable from both,
+with one radius, count and Bands row. hearham entries with no offset
+(APRS iGates and digipeaters, gateways, nodes) and UK callsigns (G, M, 2,
+left to ETCC) are dropped, so the lists do not overlap. Existing `WRPT`
+banks are left as they are. Gate: `cargo fmt --all --check` clean, `cargo
+clippy --workspace --all-targets -- -D warnings` clean, `cargo test
+--workspace --no-fail-fast` 978 passed 0 failed 3 ignored. Not yet looked
+at on screen.
+
 **`MARINE-070` is active alongside** (2026-10-16, operator request,
 `ADR-109`): step 1 done. The Banks tab has a Marine row: Sync asks Overpass
 for every OpenStreetMap place tagged with a marine VHF channel and caches

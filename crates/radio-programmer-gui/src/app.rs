@@ -54,7 +54,7 @@ use crate::{
     session::{DeviceJob, DeviceOutcome, DeviceSession, JobKind},
     stations::{self, StationArea, StationCache, StationKind, StationList},
     tiles::Tiles,
-    world::{self, WorldArea, WorldCache, WorldList},
+    world::{self, WorldCache, WorldList},
     DeviceSelector, Options,
 };
 
@@ -122,7 +122,6 @@ enum Tab {
 enum Generator {
     #[default]
     Repeaters,
-    World,
     Gateways,
     Beacons,
     Stations,
@@ -211,9 +210,8 @@ const GENERATORS_TITLE: &str = "Banks near your locator";
 const ALL_LOCATIONS: &str = "All locations";
 
 impl Generator {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 7] = [
         Self::Repeaters,
-        Self::World,
         Self::Gateways,
         Self::Beacons,
         Self::Stations,
@@ -226,7 +224,6 @@ impl Generator {
     const fn key(self) -> &'static str {
         match self {
             Self::Repeaters => "repeaters",
-            Self::World => "world",
             Self::Gateways => "gateways",
             Self::Beacons => "beacons",
             Self::Stations => "stations",
@@ -238,8 +235,7 @@ impl Generator {
 
     const fn label(self) -> &'static str {
         match self {
-            Self::Repeaters => "UK repeaters",
-            Self::World => "World repeaters",
+            Self::Repeaters => "Repeaters",
             Self::Gateways => "UK gateways",
             Self::Beacons => "UK beacons",
             Self::Stations => "UK FM stations",
@@ -254,7 +250,6 @@ impl Generator {
     const fn icon(self) -> &'static str {
         match self {
             Self::Repeaters => "\u{1F4E1}",
-            Self::World => "\u{1F310}",
             Self::Gateways => "\u{1F5A7}",
             Self::Beacons => "\u{1F5FC}",
             Self::Stations => "\u{1F4FB}",
@@ -267,7 +262,6 @@ impl Generator {
     const fn color(self) -> egui::Color32 {
         match self {
             Self::Repeaters => egui::Color32::from_rgb(0xE0, 0x6C, 0x00),
-            Self::World => egui::Color32::from_rgb(0xB0, 0x30, 0xB0),
             Self::Gateways => egui::Color32::from_rgb(0x00, 0x90, 0x90),
             Self::Beacons => egui::Color32::from_rgb(0xC0, 0x9C, 0x00),
             Self::Stations => egui::Color32::from_rgb(0x20, 0x60, 0xD0),
@@ -446,18 +440,11 @@ pub struct StudioApp {
     airfield_area: AirfieldArea,
     airfield_area_file: Option<PathBuf>,
     /// Where hearham's worldwide repeater list is cached, and what was last
-    /// read from it.
+    /// read from it; the repeaters outside the UK.
     world_cache: WorldCache,
     world: Option<WorldList>,
     /// A hearham fetch running on a worker.
     world_sync: Option<world::SyncJob>,
-    /// The radius and count worldwide repeaters are added for, at the
-    /// repeaters' locator, and the state file they are remembered in.
-    world_area: WorldArea,
-    world_area_file: Option<PathBuf>,
-    /// The same for worldwide repeaters.
-    world_bands: BandFilter,
-    world_bands_file: Option<PathBuf>,
     /// The locators the operator keeps, their state file, and the
     /// description being typed for the current one.
     saved_locators: SavedLocators,
@@ -541,10 +528,6 @@ impl StudioApp {
         if let Some(file) = &app.repeater_bands_file {
             app.repeater_bands = BandFilter::load(file);
         }
-        app.world_bands_file = world::bands_file();
-        if let Some(file) = &app.world_bands_file {
-            app.world_bands = BandFilter::load(file);
-        }
         app.gateway_bands_file = repeaters::gateway_bands_file();
         if let Some(file) = &app.gateway_bands_file {
             app.gateway_bands = BandFilter::load(file);
@@ -558,10 +541,6 @@ impl StudioApp {
             app.beacon_area = AirportArea::load_or(file, &area_within(radii.beacons));
         }
         app.use_world_cache(WorldCache::open());
-        app.world_area_file = world::area_file();
-        if let Some(file) = &app.world_area_file {
-            app.world_area = WorldArea::load_or(file, &area_within(radii.repeaters));
-        }
         app.airfield_area_file = airfields::area_file();
         if let Some(file) = &app.airfield_area_file {
             app.airfield_area = AirfieldArea::load_or(file, &area_within(radii.airfields));
@@ -592,9 +571,9 @@ impl StudioApp {
         format!(
             "{:?}",
             (
-                (&self.repeater_area, &self.repeater_bands, &self.world_area),
+                (&self.repeater_area, &self.repeater_bands),
                 &self.repeater_reach,
-                (&self.world_bands, &self.gateway_area, &self.gateway_bands),
+                (&self.gateway_area, &self.gateway_bands),
                 (&self.beacon_area, &self.beacon_bands, &self.station_area),
                 (
                     &self.airport_area,
@@ -635,8 +614,6 @@ impl StudioApp {
             save(&self.remembered.repeater_reach_file, &|f| {
                 self.repeater_reach.save(f)
             }),
-            save(&self.world_area_file, &|f| self.world_area.save(f)),
-            save(&self.world_bands_file, &|f| self.world_bands.save(f)),
             save(&self.gateway_area_file, &|f| self.gateway_area.save(f)),
             save(&self.gateway_bands_file, &|f| self.gateway_bands.save(f)),
             save(&self.beacon_area_file, &|f| self.beacon_area.save(f)),
@@ -1540,18 +1517,31 @@ impl StudioApp {
         self.repeater_cache = cache;
     }
 
-    /// Starts fetching the repeater list from the ETCC.
+    /// Starts fetching the repeater lists: the ETCC's for the UK and
+    /// hearham's for everywhere else.
     fn sync_repeaters(&mut self) {
-        if self.repeater_sync.is_some() {
+        if self.repeater_sync.is_some() || self.world_sync.is_some() {
             return;
         }
-        if self.repeater_cache.dir().is_none() {
+        if self.repeater_cache.dir().is_none() || self.world_cache.dir().is_none() {
             self.refuse("Cannot sync repeaters: no XDG cache directory or HOME is set.");
             return;
         }
-        log::info!("syncing repeaters from the ETCC");
-        "Syncing repeaters from the ETCC...".clone_into(&mut self.status);
+        log::info!("syncing repeaters from the ETCC and hearham");
+        "Syncing repeaters from the ETCC and hearham...".clone_into(&mut self.status);
         self.repeater_sync = Some(repeaters::SyncJob::start(self.repeater_cache.clone()));
+        self.world_sync = Some(world::SyncJob::start(self.world_cache.clone()));
+    }
+
+    /// Every repeater synced: the ETCC's in the UK, then hearham's outside
+    /// it; none before either list is synced.
+    fn all_repeaters(&self) -> Option<impl Iterator<Item = &Repeater> + Clone> {
+        if self.repeaters.is_none() && self.world.is_none() {
+            return None;
+        }
+        let uk = self.repeaters.iter().flat_map(|list| &list.repeaters);
+        let world = self.world.iter().flat_map(|list| &list.repeaters);
+        Some(uk.chain(world))
     }
 
     /// Takes in a finished repeater sync.
@@ -1584,13 +1574,12 @@ impl StudioApp {
     /// Builds the repeater bank the area would add, and the project it would
     /// make: the bank replaces one of the same name, else follows the rest.
     fn repeater_preview(&self) -> Result<AreaPreview, String> {
-        let list = self
-            .repeaters
-            .as_ref()
-            .ok_or("sync the repeater list from the ETCC first")?;
+        let all = self
+            .all_repeaters()
+            .ok_or("sync the repeater lists first")?;
         let area = &self.repeater_area;
         let mut near = repeaters::hearable(
-            &list.repeaters,
+            all,
             &area.locator,
             area.radius_km,
             &self.repeater_reach,
@@ -1615,16 +1604,34 @@ impl StudioApp {
 
     /// Describes the repeater list, what the area would add, and its cost.
     fn repeater_source(&self) -> String {
-        if self.repeater_sync.is_some() {
+        if self.repeater_sync.is_some() || self.world_sync.is_some() {
             return "Syncing...".to_owned();
         }
-        let Some(list) = &self.repeaters else {
+        if self.repeaters.is_none() && self.world.is_none() {
             return "Not synced.".to_owned();
+        }
+        let listed = |count: Option<(usize, std::time::SystemTime)>, source: &str, place: &str| {
+            count.map_or_else(
+                || format!("{place} not synced"),
+                |(count, synced)| format!("{count} from {source} {place}, synced {}", age(synced)),
+            )
         };
         let synced = format!(
-            "{} repeaters from the ETCC, synced {}.",
-            list.repeaters.len(),
-            age(list.synced)
+            "{}; {}.",
+            listed(
+                self.repeaters
+                    .as_ref()
+                    .map(|list| (list.repeaters.len(), list.synced)),
+                "the ETCC",
+                "in the UK"
+            ),
+            listed(
+                self.world
+                    .as_ref()
+                    .map(|list| (list.repeaters.len(), list.synced)),
+                "hearham",
+                "elsewhere"
+            ),
         );
         let Ok(preview) = self.repeater_preview() else {
             return synced;
@@ -1674,7 +1681,7 @@ impl StudioApp {
         let (count, furthest) = (preview.taken, preview.furthest_km);
         self.status = format!(
             "Added {count} repeaters within {} km of {}, nearest first (furthest {furthest:.0} \
-             km). Confirm each against the ETCC list before use.",
+             km). Confirm each against a national list before use.",
             area.radius_km,
             area.locator.trim().to_ascii_uppercase()
         );
@@ -1710,20 +1717,6 @@ impl StudioApp {
         self.world_cache = cache;
     }
 
-    /// Starts fetching the worldwide repeater list from hearham.
-    fn sync_world(&mut self) {
-        if self.world_sync.is_some() {
-            return;
-        }
-        if self.world_cache.dir().is_none() {
-            self.refuse("Cannot sync repeaters: no XDG cache directory or HOME is set.");
-            return;
-        }
-        log::info!("syncing worldwide repeaters from hearham");
-        "Syncing worldwide repeaters from hearham...".clone_into(&mut self.status);
-        self.world_sync = Some(world::SyncJob::start(self.world_cache.clone()));
-    }
-
     /// Takes in a finished hearham sync.
     fn poll_world_sync(&mut self) {
         let Some(outcome) = self.world_sync.as_ref().and_then(world::SyncJob::poll) else {
@@ -1741,108 +1734,6 @@ impl StudioApp {
                 "syncing worldwide repeaters",
                 format!("Worldwide repeater sync failed: {error}"),
             ),
-        }
-    }
-
-    /// Builds the worldwide repeater bank the area would add, and the project
-    /// it would make, as [`Self::repeater_preview`] does.
-    fn world_preview(&self) -> Result<AreaPreview, String> {
-        let list = self
-            .world
-            .as_ref()
-            .ok_or("sync the worldwide list from hearham first")?;
-        let locator = &self.repeater_area.locator;
-        let mut near = repeaters::nearby(&list.repeaters, locator, self.world_area.radius_km)?;
-        near.retain(|(repeater, _)| self.world_bands.takes(repeater.output_hz));
-        let in_range = near.len();
-        near.truncate(usize::from(self.world_area.max_channels));
-        let (project, bank_bytes) = self.with_bank(
-            BankSource::WorldRepeaters,
-            world::world_bank(locator, &near),
-        );
-        Ok(AreaPreview {
-            in_range,
-            taken: near.len(),
-            furthest_km: near.last().map_or(0.0, |(_, km)| *km),
-            sites: repeater_sites(&near),
-            bank_bytes,
-            project,
-        })
-    }
-
-    /// Describes the worldwide list, what the area would add, and its cost.
-    fn world_source(&self) -> String {
-        if self.world_sync.is_some() {
-            return "Syncing...".to_owned();
-        }
-        let Some(list) = &self.world else {
-            return "Not synced.".to_owned();
-        };
-        let synced = format!(
-            "{} repeaters from hearham, synced {}.",
-            list.repeaters.len(),
-            age(list.synced)
-        );
-        let Ok(preview) = self.world_preview() else {
-            return synced;
-        };
-        let radius = self.world_area.radius_km;
-        let taking = if preview.taken < preview.in_range {
-            format!(
-                "{} within {radius} km, nearest {} taken",
-                preview.in_range, preview.taken
-            )
-        } else {
-            format!("{} within {radius} km", preview.in_range)
-        };
-        format!("{taking}{}. {synced}", cost(&preview))
-    }
-
-    /// Adds a bank of the worldwide repeaters near the locator, nearest
-    /// first.
-    fn add_world(&mut self) {
-        let preview = match self.world_preview() {
-            Ok(preview) => preview,
-            Err(error) => {
-                self.refuse(&format!("Cannot add repeaters: {error}."));
-                return;
-            }
-        };
-        let area = self.world_area.clone();
-        let locator = self.repeater_area.locator.trim().to_ascii_uppercase();
-        if preview.taken == 0 {
-            self.status = format!("No FM repeaters within {} km of {locator}.", area.radius_km);
-            return;
-        }
-        if preview.project.banks.len() > usize::from(MAX_BANKS) {
-            self.status =
-                format!("A radio holds {MAX_BANKS} banks and the project already has them.");
-            return;
-        }
-        if !self.overfill && too_big(&preview.project) {
-            self.refuse(&format!(
-                "{} repeaters would not fit the radio; take fewer.",
-                preview.taken
-            ));
-            return;
-        }
-        self.take_generated(preview.project, false);
-        let (count, furthest) = (preview.taken, preview.furthest_km);
-        self.status = format!(
-            "Added {count} repeaters within {} km of {locator}, nearest first (furthest \
-             {furthest:.0} km), all 25 kHz. hearham's list is volunteer-kept; confirm each \
-             against a national list before use.",
-            area.radius_km
-        );
-        if let Some(file) = &self.world_area_file {
-            if let Err(error) = area.save(file) {
-                log::warn!("could not remember the worldwide repeater area: {error}");
-            }
-        }
-        if let Some(file) = &self.world_bands_file {
-            if let Err(error) = self.world_bands.save(file) {
-                log::warn!("could not remember the worldwide repeater bands: {error}");
-            }
         }
     }
 
@@ -2110,10 +2001,6 @@ impl StudioApp {
             world_cache: WorldCache::none(),
             world: None,
             world_sync: None,
-            world_area: area_within(Receiver::Handheld.radii().repeaters),
-            world_area_file: None,
-            world_bands: BandFilter::default(),
-            world_bands_file: None,
             saved_locators: SavedLocators::default(),
             saved_locators_file: None,
             locator_description: String::new(),
@@ -2985,8 +2872,8 @@ fn area_within(radius_km: u16) -> AirportArea {
 
 /// How many of `systems` within `radius_km` of `locator` are on each band,
 /// whatever the band filter; none when the locator does not read.
-fn band_counts(
-    systems: &[Repeater],
+fn band_counts<'a>(
+    systems: impl IntoIterator<Item = &'a Repeater>,
     locator: &str,
     radius_km: u16,
 ) -> Option<[usize; AmateurBand::ALL.len()]> {
@@ -3376,7 +3263,6 @@ impl StudioApp {
     fn generator_row(&mut self, ui: &mut egui::Ui) {
         match self.generator {
             Generator::Repeaters => self.repeater_bar(ui),
-            Generator::World => self.world_bar(ui),
             Generator::Gateways => self.etcc_bar(ui, EtccKind::Gateways),
             Generator::Beacons => self.etcc_bar(ui, EtccKind::Beacons),
             Generator::Stations => self.station_bar(ui),
@@ -3386,10 +3272,10 @@ impl StudioApp {
         }
     }
 
-    /// The row that adds the UK repeaters near the shared locator.
+    /// The row that adds the repeaters near the shared locator.
     fn repeater_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
-            ui.label("UK repeaters within");
+            ui.label("Repeaters within");
             ComboBox::from_id_salt("repeater-radius")
                 .selected_text(format!("{} km", self.repeater_area.radius_km))
                 .show_ui(ui, |ui| {
@@ -3422,12 +3308,13 @@ impl StudioApp {
             }
             if ui
                 .add_enabled(
-                    self.repeater_sync.is_none(),
-                    egui::Button::new("Sync from ETCC"),
+                    self.repeater_sync.is_none() && self.world_sync.is_none(),
+                    egui::Button::new("Sync"),
                 )
                 .on_hover_text(
-                    "Fetches the UK repeater list from the RSGB ETCC and caches it; the \
-                     studio never fetches on its own",
+                    "Fetches the UK repeater list from the RSGB ETCC and hearham.com's \
+                     list for everywhere else (free to use, about 10 MB), and caches both; \
+                     the studio never fetches on its own",
                 )
                 .clicked()
             {
@@ -3436,9 +3323,9 @@ impl StudioApp {
             ui.end_row();
             ui.label(self.repeater_source());
         });
-        let counts = self.repeaters.as_ref().and_then(|list| {
+        let counts = self.all_repeaters().and_then(|all| {
             let area = &self.repeater_area;
-            band_counts(&list.repeaters, &area.locator, area.radius_km)
+            band_counts(all, &area.locator, area.radius_km)
         });
         band_row(ui, &mut self.repeater_bands, "repeaters", counts);
         self.repeater_reach_controls(ui);
@@ -3487,57 +3374,6 @@ impl StudioApp {
                 repeaters::LOCAL_HEIGHT_M
             ));
         });
-    }
-
-    /// The row that adds the repeaters anywhere near the shared locator.
-    fn world_bar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
-            ui.label("World repeaters within");
-            ComboBox::from_id_salt("world-radius")
-                .selected_text(format!("{} km", self.world_area.radius_km))
-                .show_ui(ui, |ui| {
-                    for km in repeaters::RADII_KM {
-                        ui.selectable_value(&mut self.world_area.radius_km, km, format!("{km} km"));
-                    }
-                });
-            ui.label("nearest");
-            ui.add(
-                egui::DragValue::new(&mut self.world_area.max_channels)
-                    .range(1..=airports::MAX_CHANNELS_LIMIT),
-            )
-            .on_hover_text("How many repeaters the bank takes, nearest first");
-            if ui
-                .button("Add")
-                .on_hover_text(
-                    "Adds the nearest FM repeaters in range, anywhere in the world, as one \
-                     bank, replacing one for the same locator; each receives the output and \
-                     transmits on the input with its CTCSS tone, 25 kHz wide",
-                )
-                .clicked()
-            {
-                self.add_world();
-            }
-            if ui
-                .add_enabled(
-                    self.world_sync.is_none(),
-                    egui::Button::new("Sync from hearham"),
-                )
-                .on_hover_text(
-                    "Fetches hearham.com's worldwide repeater list (free to use, about \
-                     10 MB) and caches it; the studio never fetches on its own",
-                )
-                .clicked()
-            {
-                self.sync_world();
-            }
-            ui.end_row();
-            ui.label(self.world_source());
-        });
-        let counts = self.world.as_ref().and_then(|list| {
-            let locator = &self.repeater_area.locator;
-            band_counts(&list.repeaters, locator, self.world_area.radius_km)
-        });
-        band_row(ui, &mut self.world_bands, "repeaters", counts);
     }
 
     /// The row that adds the UK gateways or beacons near the shared locator,
@@ -3616,7 +3452,6 @@ impl StudioApp {
     fn generator_sites(&self, generator: Generator) -> Option<(Vec<Site>, Option<u16>)> {
         let radius_km = match generator {
             Generator::Repeaters => Some(self.repeater_area.radius_km),
-            Generator::World => Some(self.world_area.radius_km),
             Generator::Gateways => Some(self.gateway_area.radius_km),
             Generator::Beacons => Some(self.beacon_area.radius_km),
             Generator::Stations => None,
@@ -3632,7 +3467,6 @@ impl StudioApp {
     fn generator_preview(&self, generator: Generator) -> Result<AreaPreview, String> {
         match generator {
             Generator::Repeaters => self.repeater_preview(),
-            Generator::World => self.world_preview(),
             Generator::Gateways => self.etcc_preview(EtccKind::Gateways),
             Generator::Beacons => self.etcc_preview(EtccKind::Beacons),
             Generator::Stations => self.station_preview(),
@@ -3661,9 +3495,9 @@ impl StudioApp {
         format!(
             "{:?}",
             (
-                (&self.repeater_area, &self.repeater_bands, &self.world_area),
+                (&self.repeater_area, &self.repeater_bands),
                 &self.repeater_reach,
-                (&self.world_bands, &self.gateway_area, &self.gateway_bands),
+                (&self.gateway_area, &self.gateway_bands),
                 (&self.beacon_area, &self.beacon_bands, &self.station_area),
                 (
                     &self.airport_area,
@@ -3761,7 +3595,6 @@ impl StudioApp {
     fn add_generator(&mut self, generator: Generator) {
         match generator {
             Generator::Repeaters => self.add_repeaters(),
-            Generator::World => self.add_world(),
             Generator::Gateways => self.add_etcc(EtccKind::Gateways),
             Generator::Beacons => self.add_etcc(EtccKind::Beacons),
             Generator::Stations => self.add_stations(),
@@ -4068,7 +3901,6 @@ impl StudioApp {
         self.receiver = receiver;
         let radii = receiver.radii();
         self.repeater_area.radius_km = radii.repeaters;
-        self.world_area.radius_km = radii.repeaters;
         self.gateway_area.radius_km = radii.gateways;
         self.beacon_area.radius_km = radii.beacons;
         self.airport_area.radius_km = radii.airports;
@@ -4090,9 +3922,6 @@ impl StudioApp {
             self.repeater_area_file
                 .as_ref()
                 .map(|file| self.repeater_area.save(file)),
-            self.world_area_file
-                .as_ref()
-                .map(|file| self.world_area.save(file)),
             self.gateway_area_file
                 .as_ref()
                 .map(|file| self.gateway_area.save(file)),
@@ -6704,8 +6533,7 @@ mod tests {
             "moved off the Banks tab"
         );
         let rows = [
-            (Generator::Repeaters, "UK repeaters within"),
-            (Generator::World, "World repeaters within"),
+            (Generator::Repeaters, "Repeaters within"),
             (Generator::Gateways, "UK gateways within"),
             (Generator::Beacons, "UK beacons within"),
             (Generator::Stations, "UK FM stations, strongest"),
@@ -7393,8 +7221,11 @@ mod tests {
     }
 
     #[test]
-    fn world_repeaters_are_added_once_synced() {
-        use crate::{repeaters::Repeater, world::WorldList};
+    fn repeaters_from_both_lists_share_one_bank() {
+        use crate::{
+            repeaters::{Repeater, RepeaterList},
+            world::WorldList,
+        };
 
         let repeater = |callsign: &str, latitude: f64| Repeater {
             callsign: callsign.to_owned(),
@@ -7409,32 +7240,52 @@ mod tests {
         };
         let mut app = simulated("world");
         assert!(app.world.is_none(), "tests never read the real cache");
-        assert_eq!(app.world_source(), "Not synced.");
+        assert_eq!(app.repeater_source(), "Not synced.");
         let banks = app.project.banks.len();
-        app.add_world();
+        app.add_repeaters();
         assert!(
             app.status.starts_with("Cannot add repeaters"),
             "{}",
             app.status
         );
 
+        // hearham's alone is enough outside the UK.
         app.world = Some(WorldList {
-            repeaters: vec![repeater("F1FAR", 49.2), repeater("F1NEAR", 48.86)],
+            repeaters: vec![repeater("F1FAR", 49.0), repeater("F1NEAR", 48.86)],
             synced: std::time::SystemTime::now(),
         });
         "JN18EU".clone_into(&mut app.repeater_area.locator);
-        let source = app.world_source();
-        assert!(source.starts_with("2 within 50 km, bank "), "{source}");
-        app.add_world();
-        let bank = app.project.banks.last().unwrap();
-        assert_eq!(bank.name, "WRPT JN18EU");
-        let names: Vec<_> = bank.channels.iter().map(|c| c.name.as_str()).collect();
-        assert_eq!(names, ["F1NEAR", "F1FAR"]);
+        let source = app.repeater_source();
+        assert!(
+            source.starts_with("2 heard within 50 km, bank "),
+            "{source}"
+        );
+        assert!(
+            source.ends_with("in the UK not synced; 2 from hearham elsewhere, synced just now."),
+            "{source}"
+        );
+        app.add_repeaters();
+        let names = |app: &StudioApp| -> Vec<String> {
+            let bank = app.project.banks.last().unwrap();
+            assert_eq!(bank.name, "RPT JN18EU");
+            bank.channels.iter().map(|c| c.name.clone()).collect()
+        };
+        assert_eq!(names(&app), ["F1NEAR", "F1FAR"]);
         assert!(app.project.validate().is_ok());
-        app.world_area.radius_km = 10;
-        app.add_world();
+
+        // The ETCC's join them in the one bank, most hearable first.
+        app.repeaters = Some(RepeaterList {
+            repeaters: vec![repeater("GB3MID", 48.93)],
+            gateways: Vec::new(),
+            beacons: Vec::new(),
+            synced: std::time::SystemTime::now(),
+        });
+        app.add_repeaters();
+        assert_eq!(names(&app), ["F1NEAR", "GB3MID", "F1FAR"]);
+        app.repeater_area.radius_km = 10;
+        app.add_repeaters();
         assert_eq!(app.project.banks.len(), banks + 1, "replaced, not added");
-        assert_eq!(app.project.banks.last().unwrap().channels.len(), 1);
+        assert_eq!(names(&app), ["F1NEAR", "GB3MID"]);
     }
 
     #[test]
@@ -7626,7 +7477,6 @@ mod tests {
 
         app.choose_receiver(Receiver::Base);
         assert_eq!(app.repeater_area.radius_km, 100);
-        assert_eq!(app.world_area.radius_km, 100);
         assert_eq!(app.gateway_area.radius_km, 50);
         assert_eq!(app.beacon_area.radius_km, 300);
         assert_eq!(app.airport_area.radius_km, 300);
@@ -7908,7 +7758,7 @@ mod tests {
         app.add_all_shown();
         assert!(
             app.status
-                .starts_with("Added or updated UK repeaters, Airfields, Marine. Skipped "),
+                .starts_with("Added or updated Repeaters, Airfields, Marine. Skipped "),
             "{}",
             app.status
         );
@@ -7943,7 +7793,7 @@ mod tests {
         app.add_all_shown();
         assert_eq!(app.project.banks.len(), banks);
         assert!(
-            app.status.starts_with("Added or updated UK repeaters"),
+            app.status.starts_with("Added or updated Repeaters"),
             "{}",
             app.status
         );
@@ -8009,7 +7859,7 @@ mod tests {
         app.add_all_shown();
         assert_eq!(
             app.status,
-            "Added or updated UK repeaters at IO91WM, UK repeaters at IO83WL."
+            "Added or updated Repeaters at IO91WM, Repeaters at IO83WL."
         );
         for (bank, location) in [("RPT IO91WM", "IO91WM"), ("RPT IO83WL", "IO83WL")] {
             let bank = app.project.banks.iter().find(|b| b.name == bank).unwrap();
@@ -8098,7 +7948,7 @@ mod tests {
         assert_eq!(
             app.status,
             format!(
-                "Added or updated UK repeaters. The project is now {} of the radio's \
+                "Added or updated Repeaters. The project is now {} of the radio's \
                  memory; remove banks before Write.",
                 memory_percent(used)
             )
@@ -8203,7 +8053,7 @@ mod tests {
         });
         "IO91WM".clone_into(&mut app.repeater_area.locator);
         let layers = app.map_layers();
-        let repeaters = layers.iter().find(|l| l.label == "UK repeaters").unwrap();
+        let repeaters = layers.iter().find(|l| l.label == "Repeaters").unwrap();
         assert_eq!(repeaters.sites.len(), 1);
         assert_eq!(repeaters.sites[0].name, "GB3NEAR");
         assert_eq!(
@@ -8214,7 +8064,7 @@ mod tests {
         // A filter change shows at once, with no wait.
         app.repeater_bands.bands[crate::repeaters::AmateurBand::TwoMetres.index()] = false;
         let layers = app.map_layers();
-        let repeaters = layers.iter().find(|l| l.label == "UK repeaters").unwrap();
+        let repeaters = layers.iter().find(|l| l.label == "Repeaters").unwrap();
         assert!(
             repeaters.sites.is_empty(),
             "the 2 m repeater is filtered out"
@@ -8222,13 +8072,9 @@ mod tests {
         app.repeater_bands = crate::repeaters::BandFilter::ALL;
         app.repeater_area.radius_km = 10;
         let layers = app.map_layers();
-        let repeaters = layers.iter().find(|l| l.label == "UK repeaters").unwrap();
+        let repeaters = layers.iter().find(|l| l.label == "Repeaters").unwrap();
         assert_eq!(repeaters.radius_km, Some(10.0));
         assert_eq!(repeaters.sites.len(), 1);
-        assert!(
-            layers.iter().all(|l| l.label != "World repeaters"),
-            "no layer without a sync"
-        );
         app.map_shown = [false; Generator::ALL.len()];
         assert!(
             app.map_layers().is_empty(),
@@ -8303,7 +8149,7 @@ mod tests {
     }
 
     #[test]
-    fn uk_and_world_repeaters_are_taken_from_the_ticked_bands() {
+    fn repeaters_are_taken_from_the_ticked_bands() {
         use crate::{
             repeaters::{AmateurBand, BandFilter, Repeater, RepeaterList},
             world::WorldList,
@@ -8320,44 +8166,36 @@ mod tests {
             longitude: -0.12,
             coverage: crate::repeaters::Coverage::Standard,
         };
-        let names = |app: &StudioApp, bank: &str| -> Vec<String> {
-            let bank = app.project.banks.iter().find(|b| b.name == bank).unwrap();
-            bank.channels.iter().map(|c| c.name.clone()).collect()
+        let names = |app: &StudioApp| -> Vec<String> {
+            let bank = app.project.banks.iter().find(|b| b.name == "RPT IO91WM");
+            bank.unwrap()
+                .channels
+                .iter()
+                .map(|c| c.name.clone())
+                .collect()
         };
-        let both = vec![
-            repeater("GB3TWO", 145_625_000),
-            repeater("GB3UHF", 433_100_000),
-        ];
         let mut app = simulated("repeater-bands");
         "IO91WM".clone_into(&mut app.repeater_area.locator);
         app.repeaters = Some(RepeaterList {
-            repeaters: both.clone(),
+            repeaters: vec![
+                repeater("GB3TWO", 145_625_000),
+                repeater("GB3UHF", 433_100_000),
+            ],
             gateways: Vec::new(),
             beacons: Vec::new(),
             synced: std::time::SystemTime::now(),
         });
         app.world = Some(WorldList {
-            repeaters: both,
+            repeaters: vec![repeater("F1TWO", 145_650_000)],
             synced: std::time::SystemTime::now(),
         });
         assert_eq!(app.repeater_bands, BandFilter::default(), "2 m and 70 cm");
-        assert_eq!(app.world_bands, BandFilter::default(), "2 m and 70 cm");
         app.add_repeaters();
-        assert_eq!(names(&app, "RPT IO91WM"), ["GB3TWO", "GB3UHF"]);
-        app.add_world();
-        assert_eq!(names(&app, "WRPT IO91WM"), ["GB3TWO", "GB3UHF"]);
+        assert_eq!(names(&app), ["F1TWO", "GB3TWO", "GB3UHF"]);
 
         app.repeater_bands.bands[AmateurBand::TwoMetres.index()] = false;
         app.add_repeaters();
-        assert_eq!(names(&app, "RPT IO91WM"), ["GB3UHF"]);
-        app.world_bands.bands[AmateurBand::SeventyCentimetres.index()] = false;
-        app.add_world();
-        assert_eq!(
-            names(&app, "WRPT IO91WM"),
-            ["GB3TWO"],
-            "each keeps its own bands"
-        );
-        assert_eq!(names(&app, "RPT IO91WM"), ["GB3UHF"]);
+        assert_eq!(names(&app), ["GB3UHF"], "both lists take the bands");
     }
 
     #[test]
@@ -8405,7 +8243,6 @@ mod tests {
         assert_eq!(app.airport_area.radius_km, 150);
         assert_eq!(app.airfield_area.radius_km, 50);
         assert_eq!(app.marine_area.radius_km, 10);
-        assert_eq!(app.world_area.radius_km, 50);
         let source = app.etcc_source(EtccKind::Beacons);
         assert!(source.starts_with("2 within 150 km, bank "), "{source}");
         assert!(source.ends_with("2 beacons from the ETCC, synced just now."));

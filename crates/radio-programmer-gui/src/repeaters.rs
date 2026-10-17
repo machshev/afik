@@ -599,13 +599,13 @@ pub fn distance_km(from: (f64, f64), to: (f64, f64)) -> f64 {
 /// Every repeater within `radius_km` of `locator`, nearest first, each with
 /// its distance in kilometres.
 pub fn nearby<'a>(
-    repeaters: &'a [Repeater],
+    repeaters: impl IntoIterator<Item = &'a Repeater>,
     locator: &str,
     radius_km: u16,
 ) -> Result<Vec<(&'a Repeater, f64)>, String> {
     let home = locator_centre(locator)?;
     let mut near: Vec<_> = repeaters
-        .iter()
+        .into_iter()
         .map(|repeater| {
             let km = distance_km(home, (repeater.latitude, repeater.longitude));
             (repeater, km)
@@ -620,7 +620,7 @@ pub fn nearby<'a>(
 /// its coverage, the most hearable (distance over reach) first, each with
 /// its distance in kilometres.
 pub fn hearable<'a>(
-    repeaters: &'a [Repeater],
+    repeaters: impl IntoIterator<Item = &'a Repeater>,
     locator: &str,
     radius_km: u16,
     reach: &RepeaterReach,

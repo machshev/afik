@@ -1,11 +1,9 @@
-//! FM repeaters anywhere near a Maidenhead locator, synced from hearham's
-//! worldwide repeater list and cached.
+//! FM repeaters outside the UK, synced from hearham's worldwide repeater
+//! list and cached; the Repeaters tab takes them with the ETCC's.
 //!
 //! As with the ETCC list, the studio fetches only when the operator presses
 //! Sync; otherwise it reads the raw response cached in
-//! `$XDG_CACHE_HOME/afik/hearham`. The locator is the repeaters' own; the
-//! radius and how many to take are kept in `$XDG_STATE_HOME/afik/world-area`,
-//! read and written as the airports' are.
+//! `$XDG_CACHE_HOME/afik/hearham`.
 
 use std::{
     fs,
@@ -19,10 +17,8 @@ use radio_channel_plan::MAX_CHANNEL_NAME_LEN;
 use serde_json::Value;
 
 use crate::{
-    airports::AirportArea,
-    model::BankDraft,
     paths,
-    repeaters::{ctcss, fetch_within, fm_bank, receivable_hz, sanitise, Repeater},
+    repeaters::{ctcss, fetch_within, receivable_hz, sanitise, Repeater},
 };
 
 /// Every repeater hearham lists, worldwide: about 23 000, 9.5 MB.
@@ -30,13 +26,11 @@ pub const REPEATERS_URL: &str = "https://hearham.com/api/repeaters/v1";
 
 /// The callsign prefixes the ITU gives the UK, which every ETCC system has.
 /// hearham's UK entries are an old copy of ukrepeater.net and IRLP's list;
-/// the ETCC list the UK repeaters tab reads is the current one.
+/// the ETCC list the Repeaters tab reads for the UK is the current one.
 const UK_PREFIXES: [char; 5] = ['G', 'M', '2', 'g', 'm'];
 
 const CACHE_DIR: &str = "hearham";
 const CACHE_FILE: &str = "repeaters.json";
-const AREA_FILE: &str = "world-area";
-const BANDS_FILE: &str = "world-bands";
 /// Long enough for the whole list on a slow link.
 const SYNC_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -103,13 +97,6 @@ pub fn parse(json: &str) -> Result<Vec<Repeater>, String> {
             .then(a.output_hz.cmp(&b.output_hz))
     });
     Ok(repeaters)
-}
-
-/// Builds the bank for the repeaters `nearby` chose, as the UK repeaters'
-/// is built, named `WRPT` and the locator so the two never replace each
-/// other.
-pub fn world_bank(locator: &str, near: &[(&Repeater, f64)]) -> BankDraft {
-    fm_bank("WRPT", locator, near)
 }
 
 /// The repeaters a sync read, and when the cache was written.
@@ -196,19 +183,6 @@ impl WorldCache {
     }
 }
 
-/// The state file the radius and count are kept in.
-pub fn area_file() -> Option<PathBuf> {
-    paths::state_dir().map(|dir| dir.join(AREA_FILE))
-}
-
-/// The state file the bands are kept in, as for the UK repeaters.
-pub fn bands_file() -> Option<PathBuf> {
-    paths::state_dir().map(|dir| dir.join(BANDS_FILE))
-}
-
-/// The radius and how many repeaters to take, as for the airports.
-pub type WorldArea = AirportArea;
-
 /// A sync running on a worker thread, so the window keeps drawing.
 pub struct SyncJob {
     outcome: mpsc::Receiver<Result<WorldList, String>>,
@@ -241,8 +215,11 @@ impl SyncJob {
 mod tests {
     use radio_domain::{Bandwidth, Tone};
 
-    use super::{parse, world_bank, WorldCache, REPEATERS_URL};
-    use crate::{model::ToneDraft, repeaters::nearby};
+    use super::{parse, WorldCache, REPEATERS_URL};
+    use crate::{
+        model::ToneDraft,
+        repeaters::{nearby, repeater_bank},
+    };
 
     /// Repeaters in the shape hearham returns, trimmed to the fields used.
     const REPEATERS: &str = r#"[
@@ -310,12 +287,12 @@ mod tests {
     }
 
     #[test]
-    fn a_bank_takes_the_nearest_with_their_access_tones() {
+    fn a_repeater_bank_takes_them_with_their_access_tones() {
         let repeaters = parse(REPEATERS).unwrap();
         // CN89 covers Vancouver.
         let near = nearby(&repeaters, "CN89", 100).unwrap();
-        let bank = world_bank("cn89", &near);
-        assert_eq!(bank.name, "WRPT CN89");
+        let bank = repeater_bank("cn89", &near);
+        assert_eq!(bank.name, "RPT CN89");
         assert_eq!(bank.channels.len(), 1);
         let channel = &bank.channels[0];
         assert_eq!(channel.name, "VE7RHS");
@@ -361,7 +338,7 @@ mod tests {
         }
         assert!(near.len() > 5);
         let mut project = crate::model::ProjectModel::new();
-        project.banks.push(world_bank("JN18EU", &near));
+        project.banks.push(repeater_bank("JN18EU", &near));
         assert!(project.to_radio_image().is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
