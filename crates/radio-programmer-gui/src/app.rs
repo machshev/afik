@@ -84,11 +84,12 @@ operator can override it for every channel from the handset settings menu \
 until the radio is next switched off.";
 
 /// What programming a VFO does, said once.
-const VFO_HINT: &str = "A programmed VFO is written as the radio's place, with \
-the start place on the Banks tab: the radio starts there, on every channel \
-when no start is chosen, and slot B on its VFO. The operator can change a \
-VFO from the handset's settings menu, and the radio keeps those changes \
-until the next write that programs it.";
+const VFO_HINT: &str = "Each slot's start and VFO are written as the place the \
+radio keeps over a power cycle: the radio goes there now and after a power \
+cycle, until the operator moves it. A slot with no start begins as a radio \
+nobody has used does, A on every channel and B on its VFO. The operator can \
+change a VFO from the handset's settings menu, and the radio keeps those \
+changes until the next write that programs it.";
 
 /// What the TX ranges do, said once.
 const TX_RANGES_HINT: &str = "The only frequencies this radio may transmit on, \
@@ -4473,68 +4474,6 @@ impl StudioApp {
         });
     }
 
-    /// Where the radio starts: written as its place with the image, so it
-    /// boots, and goes at once, to that group, bank and channel (`ADR-116`).
-    fn start_row(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
-            let mut on = self.project.start.is_some();
-            if ui
-                .checkbox(&mut on, "Start on")
-                .on_hover_text(
-                    "Writes where the radio starts with the image: it goes there now and \
-                     after a power cycle, until you move it. Off leaves the radio where it is",
-                )
-                .changed()
-            {
-                self.project.start = on.then(StartDraft::default);
-            }
-            let groups: Vec<String> = self.project.groups.iter().map(|g| g.name.clone()).collect();
-            let banks: Vec<(String, Vec<usize>)> = self
-                .project
-                .banks
-                .iter()
-                .map(|bank| (bank.name.clone(), bank.groups.clone()))
-                .collect();
-            let Some(start) = self.project.start.as_mut() else {
-                return;
-            };
-            ComboBox::from_id_salt("start-group")
-                .selected_text(if start.group.is_empty() {
-                    "every bank".to_owned()
-                } else {
-                    start.group.clone()
-                })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut start.group, String::new(), "every bank");
-                    for name in &groups {
-                        ui.selectable_value(&mut start.group, name.clone(), name);
-                    }
-                });
-            let group = groups
-                .iter()
-                .position(|name| name.eq_ignore_ascii_case(&start.group));
-            ComboBox::from_id_salt("start-bank")
-                .selected_text(if start.bank.is_empty() {
-                    "all channels".to_owned()
-                } else {
-                    start.bank.clone()
-                })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut start.bank, String::new(), "all channels");
-                    for (name, in_groups) in &banks {
-                        if group.is_none_or(|group| in_groups.contains(&group)) {
-                            ui.selectable_value(&mut start.bank, name.clone(), name);
-                        }
-                    }
-                });
-            if !start.bank.is_empty() {
-                ui.label("channel");
-                ui.add(egui::DragValue::new(&mut start.channel).range(0..=u16::MAX))
-                    .on_hover_text("The channel in that bank, from 1; 0 is its first");
-            }
-        });
-    }
-
     /// The Banks tab's row of adds and how the list is shown.
     fn banks_toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
@@ -4677,10 +4616,7 @@ impl StudioApp {
         self.bank_view_tabs(ui);
         ui.separator();
         match self.banks_tab.view {
-            BankView::All => {
-                self.group_buttons(ui);
-                self.start_row(ui);
-            }
+            BankView::All => self.group_buttons(ui),
             BankView::Group(group) => self.group_editor(ui, group),
             BankView::Loose => {}
         }
@@ -4796,11 +4732,27 @@ impl StudioApp {
         }
     }
 
+    /// Each slot's column: where it starts, then its VFO.
     fn vfo_settings(&mut self, ui: &mut egui::Ui) {
         ui.label(VFO_HINT);
         ui.add_space(4.0);
+        let groups: Vec<String> = self.project.groups.iter().map(|g| g.name.clone()).collect();
+        let banks: Vec<(String, Vec<usize>)> = self
+            .project
+            .banks
+            .iter()
+            .map(|bank| (bank.name.clone(), bank.groups.clone()))
+            .collect();
+        let project = &mut self.project;
         ui.columns(2, |columns| {
-            for (slot, (ui, vfo)) in columns.iter_mut().zip(&mut self.project.vfos).enumerate() {
+            for (slot, ((ui, start), vfo)) in columns
+                .iter_mut()
+                .zip(&mut project.starts)
+                .zip(&mut project.vfos)
+                .enumerate()
+            {
+                start_slot_editor(ui, slot, start, &groups, &banks);
+                ui.separator();
                 vfo_slot_editor(ui, slot, vfo);
             }
         });
@@ -6002,6 +5954,82 @@ const fn tx_class_label(class: TxClass) -> &'static str {
 }
 
 /// One TX power level as the handset lists it: its nominal output.
+/// Where one slot starts (`ADR-116`): a switch, then the group, the bank and
+/// the channel in it. The radio has one group, so both slots name the same.
+fn start_slot_editor(
+    ui: &mut egui::Ui,
+    slot: usize,
+    start: &mut Option<StartDraft>,
+    groups: &[String],
+    banks: &[(String, Vec<usize>)],
+) {
+    let letter = if slot == 0 { 'A' } else { 'B' };
+    let mut on = start.is_some();
+    if ui
+        .checkbox(&mut on, format!("Start {letter} on a channel"))
+        .on_hover_text(
+            "Writes where this slot starts with the image: it goes there now and after \
+             a power cycle, until you move it",
+        )
+        .changed()
+    {
+        *start = on.then(StartDraft::default);
+    }
+    let Some(start) = start else {
+        ui.weak(if slot == 0 {
+            "Starts on every channel."
+        } else {
+            "Starts on its VFO."
+        });
+        return;
+    };
+    Grid::new(("radio-start", slot))
+        .num_columns(2)
+        .show(ui, |ui| {
+            ui.label("Group");
+            ComboBox::from_id_salt(("start-group", slot))
+                .selected_text(if start.group.is_empty() {
+                    "every bank".to_owned()
+                } else {
+                    start.group.clone()
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut start.group, String::new(), "every bank");
+                    for name in groups {
+                        ui.selectable_value(&mut start.group, name.clone(), name);
+                    }
+                });
+            ui.end_row();
+
+            let group = groups
+                .iter()
+                .position(|name| name.eq_ignore_ascii_case(&start.group));
+            ui.label("Bank");
+            ComboBox::from_id_salt(("start-bank", slot))
+                .selected_text(if start.bank.is_empty() {
+                    "all channels".to_owned()
+                } else {
+                    start.bank.clone()
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut start.bank, String::new(), "all channels");
+                    for (name, in_groups) in banks {
+                        if group.is_none_or(|group| in_groups.contains(&group)) {
+                            ui.selectable_value(&mut start.bank, name.clone(), name);
+                        }
+                    }
+                });
+            ui.end_row();
+
+            if !start.bank.is_empty() {
+                ui.label("Channel");
+                ui.add(egui::DragValue::new(&mut start.channel).range(0..=u16::MAX))
+                    .on_hover_text("The channel in that bank, from 1; 0 is its first");
+                ui.end_row();
+            }
+        });
+}
+
 /// One slot's VFO on the Radio tab: a switch to program it, then its
 /// frequency, step, tones and power.
 fn vfo_slot_editor(ui: &mut egui::Ui, slot: usize, vfo: &mut Option<VfoDraft>) {

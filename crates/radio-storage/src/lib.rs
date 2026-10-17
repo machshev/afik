@@ -1369,8 +1369,11 @@ pub const START_PLACE_ENCODED_LEN: usize = 8;
 /// A start-place field holding nothing.
 const NONE_FIELD: u16 = u16::MAX;
 
-/// Encodes where the radio starts as a storage object.
-pub fn encode_start_place(start: StartPlace) -> Result<StorageObject, StorageError> {
+/// Encodes where slot `slot` (A 0, B 1) starts as a storage object.
+pub fn encode_start_place(slot: u16, start: StartPlace) -> Result<StorageObject, StorageError> {
+    if usize::from(slot) >= radio_channel_plan::VFO_SLOTS {
+        return Err(StorageError::MalformedObject);
+    }
     let mut data = [0_u8; START_PLACE_ENCODED_LEN];
     data[0] = STORAGE_FORMAT_VERSION;
     data[1] = start.group.unwrap_or(u8::MAX);
@@ -1383,20 +1386,24 @@ pub fn encode_start_place(start: StartPlace) -> Result<StorageObject, StorageErr
     StorageObject::new(
         ObjectKey {
             kind: ObjectKind::StartPlace,
-            id: 0,
+            id: slot,
         },
         &data,
     )
 }
 
-/// Decodes and validates a start-place storage object.
-pub fn decode_start_place(object: &impl Object) -> Result<StartPlace, StorageError> {
+/// Decodes and validates a start-place storage object, and its slot; a
+/// project written before each slot had one holds slot A's.
+pub fn decode_start_place(object: &impl Object) -> Result<(u16, StartPlace), StorageError> {
     let key = object.key();
     if key.kind != ObjectKind::StartPlace {
         return Err(StorageError::UnsupportedObject);
     }
     let data = object.data();
-    if key.id != 0 || data.len() != START_PLACE_ENCODED_LEN || data[0] != STORAGE_FORMAT_VERSION {
+    if usize::from(key.id) >= radio_channel_plan::VFO_SLOTS
+        || data.len() != START_PLACE_ENCODED_LEN
+        || data[0] != STORAGE_FORMAT_VERSION
+    {
         return Err(StorageError::MalformedObject);
     }
     let bank = |at: usize| match u16::from_le_bytes([data[at], data[at + 1]]) {
@@ -1409,11 +1416,14 @@ pub fn decode_start_place(object: &impl Object) -> Result<StartPlace, StorageErr
         group if group < radio_channel_plan::MAX_GROUPS => Some(group),
         _ => return Err(StorageError::MalformedObject),
     };
-    Ok(StartPlace {
-        group,
-        bank: bank(2)?,
-        channel: bank(4)?.map(|bank| (bank, u16::from_le_bytes([data[6], data[7]]))),
-    })
+    Ok((
+        key.id,
+        StartPlace {
+            group,
+            bank: bank(2)?,
+            channel: bank(4)?.map(|bank| (bank, u16::from_le_bytes([data[6], data[7]]))),
+        },
+    ))
 }
 
 /// Encoded byte length of a VFO object: version, frequency, step, receive and
@@ -2051,11 +2061,17 @@ mod tests {
                 channel: Some((BankId::new(253), 700)),
             },
         ] {
-            let object = super::encode_start_place(start).unwrap();
-            assert_eq!(super::decode_start_place(&object), Ok(start));
-            assert!(validate_object(&object));
+            for slot in 0..2 {
+                let object = super::encode_start_place(slot, start).unwrap();
+                assert_eq!(super::decode_start_place(&object), Ok((slot, start)));
+                assert!(validate_object(&object));
+            }
         }
-        let object = super::encode_start_place(StartPlace::default()).unwrap();
+        assert_eq!(
+            super::encode_start_place(2, StartPlace::default()),
+            Err(StorageError::MalformedObject)
+        );
+        let object = super::encode_start_place(0, StartPlace::default()).unwrap();
         for (at, value) in [(1, 32_u8), (2, 254), (4, 254)] {
             let mut data = object.data().to_vec();
             data[at] = value;

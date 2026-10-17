@@ -118,7 +118,7 @@ pub struct RadioProject {
     config: Option<RadioConfig>,
     tx_ranges: Vec<TxRange>,
     groups: Vec<BankGroup>,
-    start: Option<StartPlace>,
+    starts: [Option<StartPlace>; VFO_SLOTS],
     vfos: [Option<VfoStart>; VFO_SLOTS],
     origins: Vec<BankOrigin>,
 }
@@ -133,7 +133,7 @@ impl RadioProject {
             config: None,
             tx_ranges: Vec::new(),
             groups: Vec::new(),
-            start: None,
+            starts: [None; VFO_SLOTS],
             vfos: [None; VFO_SLOTS],
             origins: Vec::new(),
         }
@@ -150,19 +150,22 @@ impl RadioProject {
         &self.origins
     }
 
-    /// Sets where the radio starts, which a write sends as its place record
-    /// (`ADR-116`); `None` leaves the radio's own.
-    pub fn set_start(&mut self, start: Option<StartPlace>) {
-        self.start = start;
+    /// Sets where slot `slot` (A 0, B 1) starts, which a write sends in the
+    /// radio's place record (`ADR-116`); `None` leaves that slot on its VFO.
+    /// A slot past B is ignored.
+    pub fn set_start(&mut self, slot: usize, start: Option<StartPlace>) {
+        if let Some(each) = self.starts.get_mut(slot) {
+            *each = start;
+        }
     }
 
-    /// Returns where the radio starts, if the project says.
-    pub const fn start(&self) -> Option<StartPlace> {
-        self.start
+    /// Returns where each slot starts, A first, where the project says.
+    pub const fn starts(&self) -> [Option<StartPlace>; VFO_SLOTS] {
+        self.starts
     }
 
     /// Sets slot `slot`'s VFO (A 0, B 1), which a write sends in the radio's
-    /// place record with the start place; `None` leaves it at the radio's
+    /// place record with the start places; `None` leaves it at the radio's
     /// defaults. A slot past B is ignored.
     pub fn set_vfo(&mut self, slot: usize, vfo: Option<VfoStart>) {
         if let Some(each) = self.vfos.get_mut(slot) {
@@ -178,7 +181,7 @@ impl RadioProject {
     /// Whether a write sends the radio a place record: a start place or a
     /// programmed VFO.
     pub fn writes_place(&self) -> bool {
-        self.start.is_some() || self.vfos.iter().any(Option::is_some)
+        self.starts.iter().any(Option::is_some) || self.vfos.iter().any(Option::is_some)
     }
 
     /// Adds one bank group, or location (`ADR-116`).
@@ -485,7 +488,8 @@ impl ConfigurationCompiler {
             + usize::from(project.config.is_some())
             + project.tx_ranges.len()
             + project.groups.len()
-            + usize::from(project.start.is_some())
+            + project.starts.iter().flatten().count()
+            + project.vfos.iter().flatten().count()
             + project.origins.len();
         let mut objects = Vec::with_capacity(object_count);
         for bank in &project.generated_banks {
@@ -508,8 +512,10 @@ impl ConfigurationCompiler {
         for group in &project.groups {
             objects.push(encode_bank_group(*group)?);
         }
-        if let Some(start) = project.start {
-            objects.push(encode_start_place(start)?);
+        for (slot, start) in (0_u16..).zip(project.starts) {
+            if let Some(start) = start {
+                objects.push(encode_start_place(slot, start)?);
+            }
         }
         for (slot, vfo) in (0_u16..).zip(project.vfos) {
             if let Some(vfo) = vfo {
@@ -1592,6 +1598,34 @@ mod tests {
             image,
             "the radio image is the same with or without them"
         );
+    }
+
+    #[test]
+    fn each_slot_keeps_its_own_start_place_in_the_project_file() {
+        use radio_channel_plan::StartPlace;
+        let mut project = RadioProject::new();
+        project.add_channel(channel(2, 0));
+        project.add_bank(named_bank(0));
+        let b = StartPlace {
+            group: None,
+            bank: Some(BankId::new(0)),
+            channel: Some((BankId::new(0), 0)),
+        };
+        project.set_start(1, Some(b));
+        project.set_start(2, Some(b));
+        assert_eq!(project.starts(), [None, Some(b)]);
+        assert!(project.writes_place(), "a start alone sends a place");
+
+        let compiled = ConfigurationCompiler::new(capabilities_for(8))
+            .compile(&project)
+            .unwrap();
+        let kept: Vec<_> = compiled
+            .objects()
+            .iter()
+            .filter(|object| object.key().kind == ObjectKind::StartPlace)
+            .map(|object| radio_storage::decode_start_place(object).unwrap())
+            .collect();
+        assert_eq!(kept, [(1, b)]);
     }
 
     #[test]

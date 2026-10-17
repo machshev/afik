@@ -234,6 +234,8 @@ pub struct ChannelDraft {
     pub reverse: bool,
     /// Request the audio compander.
     pub compander: bool,
+    /// The calling channel of its band, which the radio can reach directly.
+    pub calling: bool,
 }
 
 impl Default for ChannelDraft {
@@ -252,6 +254,7 @@ impl Default for ChannelDraft {
             busy_lockout: false,
             reverse: false,
             compander: false,
+            calling: false,
         }
     }
 }
@@ -279,6 +282,7 @@ impl ChannelDraft {
             busy_lockout: flags.contains(ChannelFlags::BUSY_LOCKOUT),
             reverse: flags.contains(ChannelFlags::REVERSE),
             compander: flags.contains(ChannelFlags::COMPANDER),
+            calling: flags.contains(ChannelFlags::CALLING),
         }
     }
 
@@ -328,7 +332,9 @@ impl ChannelDraft {
         } else {
             self.tx_tone.validate(scope, "transmit tone")?
         };
-        let mut flags = ChannelFlags::default().with(ChannelFlags::SCAN_SKIP, self.scan_skip);
+        let mut flags = ChannelFlags::default()
+            .with(ChannelFlags::SCAN_SKIP, self.scan_skip)
+            .with(ChannelFlags::CALLING, self.calling);
         if !receive_only {
             flags = flags
                 .with(ChannelFlags::BUSY_LOCKOUT, self.busy_lockout)
@@ -1041,11 +1047,11 @@ pub struct ProjectModel {
     /// The bank groups, in the radio's order (`ADR-116`); a group with a
     /// locator is a location.
     pub groups: Vec<GroupDraft>,
-    /// Where the radio starts, written as its place with the image; `None`
-    /// leaves the radio where it is.
-    pub start: Option<StartDraft>,
+    /// Where each slot starts, A first, written in the radio's place with the
+    /// image; `None` starts slot A on every channel and slot B on its VFO.
+    pub starts: [Option<StartDraft>; VFO_SLOTS],
     /// Each slot's programmed VFO, A first, written in the radio's place with
-    /// the start place; `None` leaves that slot's VFO at the radio's defaults.
+    /// the start places; `None` leaves that slot's VFO at the radio's defaults.
     pub vfos: [Option<VfoDraft>; VFO_SLOTS],
 }
 
@@ -1114,7 +1120,7 @@ impl VfoDraft {
     }
 }
 
-/// Where the radio starts (`ADR-116`), by names so moving banks or groups
+/// Where one slot starts (`ADR-116`), by names so moving banks or groups
 /// cannot point it elsewhere.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct StartDraft {
@@ -1410,6 +1416,56 @@ impl ProjectModel {
         filed
     }
 
+    /// Turns the generated plan in row `row` into a channel bank holding the
+    /// channels it expands to, so each can be edited, and returns how many.
+    ///
+    /// The bank shares every setting the plan held except the tones, which
+    /// each channel carries so one can differ; the calling channel stays
+    /// marked. A plan whose channels would not fit the radio is refused and
+    /// left as it was, since each channel costs a record where the plan cost
+    /// one.
+    pub fn make_channels_editable(&mut self, row: usize) -> Result<usize, String> {
+        let Some(bank) = self.banks.get(row) else {
+            return Err("there is no such bank".to_owned());
+        };
+        let Ok(ValidatedBank::Generated(plan)) = bank.validate(row) else {
+            return Err(format!("{} is not a complete generated plan", bank.name));
+        };
+        let channels: Vec<_> = (0..plan.channel_count())
+            .filter_map(|index| plan.channel_record(index).ok())
+            .map(ChannelDraft::from_record)
+            .collect();
+        let count = channels.len();
+        let mut converted = self.clone();
+        let bank = &mut converted.banks[row];
+        bank.kind = BankKind::Named;
+        bank.shared = SharedSettings::from_bits(
+            SharedSettings::MODULATION
+                | SharedSettings::BANDWIDTH
+                | SharedSettings::STEP
+                | SharedSettings::POWER
+                | SharedSettings::OFFSET,
+        )
+        .unwrap_or_default();
+        bank.calling_index = None;
+        bank.channels = channels;
+        let before = self.radio_image_len();
+        match converted.radio_image_len() {
+            Some(bytes) if bytes > RADIO_IMAGE_BYTES => {
+                return Err(format!(
+                    "its {count} channels would take the image to {bytes} bytes; \
+                     a radio holds {RADIO_IMAGE_BYTES}"
+                ));
+            }
+            None if before.is_some() => {
+                return Err(format!("its {count} channels would not fit the radio"));
+            }
+            _ => {}
+        }
+        *self = converted;
+        Ok(count)
+    }
+
     /// Appends one channel to bank `bank`, taking the tuning of its last channel.
     pub fn add_channel(&mut self, bank: usize) {
         let Some(bank) = self.banks.get_mut(bank) else {
@@ -1632,15 +1688,25 @@ impl ProjectModel {
         }
     }
 
-    /// Validates the start place: its group and bank exist, the bank is in
-    /// the group, and the channel is in the bank.
-    /// Checks what a write sends as the radio's place: the start place and
-    /// each programmed VFO.
+    /// Checks what a write sends as the radio's place: each slot's start
+    /// place and programmed VFO. The radio has one group, so two start places
+    /// must name the same one.
     fn validate_place(&self, project: &mut RadioProject, errors: &mut Vec<ModelError>) {
-        if let Some(start) = &self.start {
-            match self.validate_start(start) {
-                Ok(start) => project.set_start(Some(start)),
-                Err(failure) => errors.push(failure),
+        for (slot, start) in self.starts.iter().enumerate() {
+            if let Some(start) = start {
+                match self.validate_start(slot, start) {
+                    Ok(start) => project.set_start(slot, Some(start)),
+                    Err(failure) => errors.push(failure),
+                }
+            }
+        }
+        if let [Some(a), Some(b)] = project.starts() {
+            if a.group != b.group {
+                errors.push(error(
+                    ModelScope::Project,
+                    "start",
+                    "slots A and B start in different groups; the radio has one group",
+                ));
             }
         }
         for (slot, vfo) in self.vfos.iter().enumerate() {
@@ -1653,8 +1719,11 @@ impl ProjectModel {
         }
     }
 
-    fn validate_start(&self, start: &StartDraft) -> Result<StartPlace, ModelError> {
-        let failed = |message: String| error(ModelScope::Project, "start", message);
+    /// Validates slot `slot`'s start place: its group and bank exist, the
+    /// bank is in the group, and the channel is in the bank.
+    fn validate_start(&self, slot: usize, start: &StartDraft) -> Result<StartPlace, ModelError> {
+        let field = if slot == 0 { "start A" } else { "start B" };
+        let failed = |message: String| error(ModelScope::Project, field, message);
         let group = if start.group.trim().is_empty() {
             None
         } else {
@@ -1845,9 +1914,9 @@ impl ProjectModel {
                     project.add_group(radio_storage::decode_bank_group(&object).map_err(invalid)?);
                 }
                 ObjectKind::StartPlace => {
-                    project.set_start(Some(
-                        radio_storage::decode_start_place(&object).map_err(invalid)?,
-                    ));
+                    let (slot, start) =
+                        radio_storage::decode_start_place(&object).map_err(invalid)?;
+                    project.set_start(usize::from(slot), Some(start));
                 }
                 ObjectKind::BankOrigin => {
                     project
@@ -1897,11 +1966,10 @@ impl ProjectModel {
                         .map_or_else(String::new, |locator| locator.as_str().to_owned()),
                 })
                 .collect(),
-            start: None,
+            starts: [None, None],
             vfos: project.vfos().map(|vfo| vfo.map(VfoDraft::from_vfo)),
         };
         // A group names banks by identifier; each row below remembers its.
-        let start = project.start();
         let in_groups = |id: u16| -> Vec<usize> {
             (0..project.groups().len())
                 .filter(|row| project.groups()[*row].banks().contains(BankId::new(id)))
@@ -1951,7 +2019,9 @@ impl ProjectModel {
                 model.banks.push(draft);
             }
         }
-        model.start = start.map(|start| start_draft(project, &model.groups, start));
+        model.starts = project
+            .starts()
+            .map(|start| start.map(|start| start_draft(project, &model.groups, start)));
         let unbanked = channels_in(None);
         if !unbanked.is_empty() {
             model.banks.push(BankDraft {
@@ -2388,7 +2458,7 @@ mod tests {
         assert!(!plain.groups()[home].banks().contains(pmr));
 
         // The radio may start on PMR446 within HOME.
-        model.start = Some(StartDraft {
+        model.starts[0] = Some(StartDraft {
             group: "HOME".to_owned(),
             bank: "PMR446".to_owned(),
             channel: 1,
@@ -2462,22 +2532,40 @@ mod tests {
         model.add_channel(0);
         am_bank(&mut model, "AIR JO02EH", "124.975000");
         model.group_by_locator();
-        model.start = Some(StartDraft {
+        model.starts[0] = Some(StartDraft {
             group: "JO02EH".to_owned(),
             bank: "RPT JO02EH".to_owned(),
             channel: 2,
         });
+        // Slot B starts on the airband bank in the same group.
+        model.starts[1] = Some(StartDraft {
+            group: "JO02EH".to_owned(),
+            bank: "AIR JO02EH".to_owned(),
+            channel: 1,
+        });
         let project = model.validate().unwrap();
         assert_eq!(
-            project.start(),
-            Some(radio_channel_plan::StartPlace {
-                group: Some(0),
-                bank: Some(BankId::new(0)),
-                channel: Some((BankId::new(0), 1)),
-            })
+            project.starts(),
+            [
+                Some(radio_channel_plan::StartPlace {
+                    group: Some(0),
+                    bank: Some(BankId::new(0)),
+                    channel: Some((BankId::new(0), 1)),
+                }),
+                Some(radio_channel_plan::StartPlace {
+                    group: Some(0),
+                    bank: Some(BankId::new(1)),
+                    channel: Some((BankId::new(1), 0)),
+                }),
+            ]
         );
         let file = model.to_image().unwrap();
         assert_eq!(ProjectModel::from_image(&file).unwrap(), model);
+
+        // The radio has one group, so the slots cannot start in two.
+        model.starts[1] = Some(StartDraft::default());
+        assert!(model.validate().is_err(), "B in every bank, A in JO02EH");
+        model.starts[1] = None;
 
         // A missing group or bank, a bank outside the group, or a channel
         // past the bank is refused.
@@ -2486,7 +2574,7 @@ mod tests {
             ("", "NO BANK", 0),
             ("", "RPT JO02EH", 3),
         ] {
-            model.start = Some(StartDraft {
+            model.starts[0] = Some(StartDraft {
                 group: group.to_owned(),
                 bank: bank.to_owned(),
                 channel,
@@ -2494,16 +2582,16 @@ mod tests {
             assert!(model.validate().is_err(), "{group} {bank} {channel}");
         }
         model.ensure_group("OTHER", None);
-        model.start = Some(StartDraft {
+        model.starts[0] = Some(StartDraft {
             group: "OTHER".to_owned(),
             bank: "RPT JO02EH".to_owned(),
             channel: 0,
         });
         assert!(model.validate().is_err(), "the bank is not in the group");
         // Every bank, first channel.
-        model.start = Some(StartDraft::default());
+        model.starts[0] = Some(StartDraft::default());
         assert_eq!(
-            model.validate().unwrap().start(),
+            model.validate().unwrap().starts()[0],
             Some(radio_channel_plan::StartPlace::default())
         );
     }

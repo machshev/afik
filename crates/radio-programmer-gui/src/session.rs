@@ -118,13 +118,13 @@ impl DeviceSession {
             .map_err(SessionError::Compile)?;
         let report = radio_flasher::write_afik_image(&mut self.transport, &image, progress)
             .map_err(SessionError::Radio)?;
-        // A start place or programmed VFOs go in the same write, as the
-        // radio's place, so it starts there; its dual watch is the one the
+        // Each slot's start place or programmed VFO goes in the same write,
+        // as the radio's place, so it starts there; its dual watch is the one the
         // configuration programs, which the place would otherwise override.
         if project.writes_place() {
             let dual_watch = project.config().is_some_and(|config| config.dual_watch);
             let record = radio_platform::operator_state::OperatorState::programmed(
-                project.start(),
+                project.starts(),
                 project.vfos(),
                 dual_watch,
             )
@@ -330,7 +330,7 @@ mod tests {
         let place = OperatorState::decode(&record).expect("a place record");
         assert_eq!(
             place,
-            OperatorState::programmed(None, [Some(a), None], true)
+            OperatorState::programmed([None, None], [Some(a), None], true)
         );
         assert!(place.dual_watch, "the Radio tab's dual watch, not off");
         assert_eq!(place.vfo.rx_tone, Tone::Ctcss(885));

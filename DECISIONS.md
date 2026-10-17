@@ -2004,6 +2004,10 @@ meaning.
   start, until the operator moves; the K5 view is its EEPROM, and the K1 now
   keeps a host-written record and stores it on commit. Stored in the project
   as object kind 7 (group, bank, channel by bank and position).
+- Each slot has its own start place (operator request, 2026-10-17), set on
+  the Radio tab's VFO section: kind 7's id is the slot, so older projects
+  load as slot A's. Slot B's goes in the record's other-slot fields. The
+  group is radio-wide, so the studio refuses two starts in different groups.
 
 ## ADR-117 — A bank records which generator made it, in the project only
 

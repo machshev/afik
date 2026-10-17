@@ -239,14 +239,15 @@ impl OperatorState {
         }
     }
 
-    /// The record a studio writes (`ADR-116`): the radio starts at `start`,
-    /// or on every channel without one, with each programmed slot's VFO and
-    /// the programmed dual watch. A programmed slot B listens to its VFO, as a
-    /// radio nobody has used does; a step the radio does not offer is its
-    /// default.
+    /// The record a studio writes (`ADR-116`): each slot starts at its start
+    /// place, on its channels; without one slot A starts on every channel and
+    /// slot B on its VFO, as a radio nobody has used does. Each programmed
+    /// slot's VFO is set; and dual watch is as programmed. The group is the
+    /// radio's, so it is slot A's where A has a start, else slot B's. A step
+    /// the radio does not offer is its default.
     #[must_use]
     pub fn programmed(
-        start: Option<StartPlace>,
+        starts: [Option<StartPlace>; VFO_SLOTS],
         vfos: [Option<VfoStart>; VFO_SLOTS],
         dual_watch: bool,
     ) -> Self {
@@ -265,21 +266,36 @@ impl OperatorState {
             }
             .checked()
         };
-        let mut state = Self::starting_at(start.unwrap_or_default());
+        let channel = |start: StartPlace| {
+            start
+                .channel
+                .map(|(bank, position)| ChannelPlace { bank, position })
+        };
+        let [start_a, start_b] = starts;
+        let mut state = Self::starting_at(start_a.unwrap_or_default());
+        state.group = start_a.or(start_b).and_then(|start| start.group);
         state.dual_watch = dual_watch;
         if let Some(a) = vfos[0] {
             state.vfo_hz = a.hz;
             state.step_index = step_index(a);
             state.vfo = settings(a);
         }
-        state.other = vfos[1].map(|b| OtherSlot {
-            memory_mode: false,
-            bank: None,
-            channel: None,
-            vfo_hz: b.hz,
-            step_index: step_index(b),
-            vfo: settings(b),
-        });
+        if start_b.is_some() || vfos[1].is_some() {
+            let mut b = OtherSlot {
+                memory_mode: start_b.is_some(),
+                bank: start_b.and_then(|start| start.bank),
+                channel: start_b.and_then(channel),
+                vfo_hz: crate::operator_shell::VFO_DEFAULT_HZ,
+                step_index: 1,
+                vfo: VfoSettings::DEFAULT,
+            };
+            if let Some(vfo) = vfos[1] {
+                b.vfo_hz = vfo.hz;
+                b.step_index = step_index(vfo);
+                b.vfo = settings(vfo);
+            }
+            state.other = Some(b);
+        }
         state
     }
 
@@ -658,7 +674,7 @@ mod tests {
             },
             power: None,
         };
-        let state = OperatorState::programmed(Some(start), [Some(a), Some(b)], true);
+        let state = OperatorState::programmed([Some(start), None], [Some(a), Some(b)], true);
         assert!(state.memory_mode && state.dual_watch);
         assert_eq!((state.group, state.bank), (start.group, start.bank));
         assert_eq!((state.vfo_hz, state.step_index), (433_500_000, 2));
@@ -676,8 +692,49 @@ mod tests {
 
         // Without a start or VFOs: every channel, defaults, and dual watch
         // as programmed.
-        let plain = OperatorState::programmed(None, [None, None], false);
+        let plain = OperatorState::programmed([None, None], [None, None], false);
         assert_eq!(plain, OperatorState::starting_at(StartPlace::default()));
+    }
+
+    #[test]
+    fn slot_b_starts_on_its_own_channel_beside_its_vfo() {
+        use radio_channel_plan::StartPlace;
+        let start = StartPlace {
+            group: Some(2),
+            bank: Some(BankId::new(5)),
+            channel: Some((BankId::new(5), 7)),
+        };
+        // B alone: A on every channel in B's group, B on its channel with
+        // the default VFO behind it.
+        let state = OperatorState::programmed([None, Some(start)], [None, None], false);
+        assert!(state.memory_mode);
+        assert_eq!(
+            (state.group, state.bank, state.channel),
+            (Some(2), None, None)
+        );
+        let other = state.other.expect("slot B");
+        assert!(other.memory_mode);
+        assert_eq!(other.bank, start.bank);
+        assert_eq!(
+            other.channel,
+            Some(ChannelPlace {
+                bank: BankId::new(5),
+                position: 7
+            })
+        );
+        assert_eq!(other.vfo_hz, crate::operator_shell::VFO_DEFAULT_HZ);
+        assert_eq!(OperatorState::decode(&state.encode()), Some(state));
+
+        // Both: each slot its own place, and the group is A's.
+        let a = StartPlace {
+            group: Some(1),
+            bank: None,
+            channel: None,
+        };
+        let both = OperatorState::programmed([Some(a), Some(start)], [None, None], false);
+        assert_eq!(both.group, Some(1));
+        assert_eq!(both.other.and_then(|other| other.bank), start.bank);
+        assert_eq!(OperatorState::decode(&both.encode()), Some(both));
     }
 
     #[test]

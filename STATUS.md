@@ -1147,6 +1147,18 @@ warnings` clean, `cargo test --workspace` 978 passed 0 failed (+1 label
 test since). Firmware unchanged. The layout was not checked on screen.
 Next: program both VFOs from the studio, write the K1, check each slot.
 
+Per-slot start (operator request, 2026-10-17): "Start on" moved from the
+Banks tab to the Radio tab's VFO section, one per slot. The project holds a
+start place per slot (object kind 7, id = slot; older files load as A), and
+`OperatorState::programmed` writes B's into the existing place record's
+other-slot fields, so B starts on its channel with its VFO behind it. The
+record format is unchanged. With no start, A is on every channel and B on its VFO, as
+before. The group is radio-wide, so two starts in different groups are
+refused. Gate: `cargo fmt --all --check` clean, workspace clippy `-D
+warnings` clean, `cargo test --workspace` 981 passed 0 failed. Firmware
+unchanged; layout not checked on screen. Next: start B on a channel from
+the studio, write the K1, check both slots after a power cycle.
+
 Beacon radii (operator request, 2026-10-17): the receiver presets now take
 beacons within 60 km for a handheld, 100 km mobile, 200 km base (were 150,
 200, 300). The ETCC lists four 2 m/70 cm beacons, all horizontal; a rough
