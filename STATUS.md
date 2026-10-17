@@ -1030,8 +1030,14 @@ reference's names (bit 7 CTCSS "found", bit 6 "lost"), but the reference
 starts listening on bit 6 and ends on bit 7 (`app.c:196`, `app.c:299-305`),
 DCS likewise on bits 8/9 with a positive code. Fixed (`3a9f90e`). Gate:
 `cargo fmt --all` clean, workspace clippy `-D warnings` clean, `cargo test
---workspace` 952 passed 0 failed, K5 and K1 release images build. `7.0.59`
-built, not flashed. Next: flash the K1; the toned VFO and a toned memory
+--workspace` 952 passed 0 failed, K5 and K1 release images build. Tone
+hold (operator request, `6f734fa`): `ToneHold` keeps a matched tone for 1 s
+after the chip reports it gone, as `gFoundCTCSSCountdown_10ms` does; a closed
+carrier squelch or a tune shuts it at once. Gate: `cargo fmt --all` clean,
+clippy `-D warnings` clean (workspace, and `radio-app`/`radio-platform`
+rechecked), `cargo test -p radio-platform -p radio-app` 173 and 34 passed 0
+failed, K5 and K1 release images build. `7.0.59` (`6f734fa`) flashed to the
+K1 (300/300 pages acknowledged, not read back). Next: the toned VFO and a toned memory
 channel stay open through a transmission and stay shut for a carrier
 without the tone.
 
