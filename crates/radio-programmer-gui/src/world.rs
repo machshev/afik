@@ -28,6 +28,11 @@ use crate::{
 /// Every repeater hearham lists, worldwide: about 23 000, 9.5 MB.
 pub const REPEATERS_URL: &str = "https://hearham.com/api/repeaters/v1";
 
+/// The callsign prefixes the ITU gives the UK, which every ETCC system has.
+/// hearham's UK entries are an old copy of ukrepeater.net and IRLP's list;
+/// the ETCC list the UK repeaters tab reads is the current one.
+const UK_PREFIXES: [char; 5] = ['G', 'M', '2', 'g', 'm'];
+
 const CACHE_DIR: &str = "hearham";
 const CACHE_FILE: &str = "repeaters.json";
 const AREA_FILE: &str = "world-area";
@@ -40,7 +45,8 @@ const SYNC_TIMEOUT: Duration = Duration::from_secs(120);
 /// A repeater is taken when it is operational, its mode is FM or a mix with
 /// FM (such as `YSF/FM`), it has an offset, and the radio can receive both
 /// its output and its input, the output plus the offset. hearham lists
-/// gateways, APRS digipeaters and iGates as FM too; they are simplex. Its `encode` tone, the one a
+/// gateways, APRS digipeaters and iGates as FM too; they are simplex. UK
+/// callsigns are left to the ETCC list. Its `encode` tone, the one a
 /// user sends, is the access tone. hearham gives no bandwidth, so every
 /// channel is 25 kHz, as most repeaters outside Europe are.
 pub fn parse(json: &str) -> Result<Vec<Repeater>, String> {
@@ -52,6 +58,12 @@ pub fn parse(json: &str) -> Result<Vec<Repeater>, String> {
     let mut repeaters: Vec<Repeater> = systems
         .iter()
         .filter(|system| system.get("operational").and_then(Value::as_i64) == Some(1))
+        .filter(|system| {
+            !system
+                .get("callsign")
+                .and_then(Value::as_str)
+                .is_some_and(|callsign| callsign.trim_start().starts_with(UK_PREFIXES))
+        })
         .filter(|system| {
             system
                 .get("mode")
@@ -259,7 +271,13 @@ mod tests {
          "city": "Fordham  (UK)", "mode": "FM", "encode": "0", "frequency": 144800000,
          "offset": 0, "operational": 1},
         {"callsign": "MB7IPH", "latitude": 51.17, "longitude": 0.67, "city": "Headcorn (UK)",
-         "mode": "FM", "encode": "0", "frequency": 145237500, "operational": 1}
+         "mode": "FM", "encode": "0", "frequency": 145237500, "operational": 1},
+        {"callsign": "G6OHM", "latitude": 52.48, "longitude": 0.04, "city": "Chatteris (UK)",
+         "mode": "FM", "encode": "94.8", "frequency": 438537500, "offset": -7600000,
+         "operational": 1},
+        {"callsign": "GB3OA", "latitude": 53.65, "longitude": -3.01,
+         "city": "Southport, LANCS England", "mode": "FM", "encode": "82.5",
+         "frequency": 145612500, "offset": -600000, "operational": 1}
     ]"#;
 
     #[test]
@@ -277,7 +295,8 @@ mod tests {
             })
             .collect();
         // Digital only, not operational, an input the radio cannot hear, no
-        // callsign and simplex (an APRS iGate, a gateway) are left out.
+        // callsign, simplex (an APRS iGate, a gateway) and UK callsigns, left
+        // to the ETCC list, are left out.
         assert_eq!(
             summary,
             [

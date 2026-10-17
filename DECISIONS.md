@@ -1933,9 +1933,15 @@ meaning.
   offset, output and output plus offset both receivable; `encode` is the
   access tone. hearham lists simplex gateways, APRS digipeaters and iGates
   (such as MB7UJM on 144.800) as FM, so an entry with no offset is not a
-  repeater. About 11 950 of the live list pass. hearham gives no bandwidth, so every channel is 25 kHz.
+  repeater. UK callsigns (ITU prefixes G, M and 2, which every ETCC system
+  has) are left out: hearham's UK entries are an old copy of ukrepeater.net
+  and IRLP's list (453 of its 1 892 ukrepeater.net callsigns are not in the
+  current ETCC list), and the UK tab reads ETCC. No remaining callsign is
+  in the ETCC list. 11 344 operational FM systems with an offset remain,
+  before the receivable check. hearham gives no bandwidth, so every channel
+  is 25 kHz.
 - The bank is `WRPT <locator>`, so it never replaces the ETCC's `RPT` bank;
-  the UK repeaters tab stays the better source in the UK.
+  the UK repeaters tab is the source in the UK.
 
 ## ADR-114 — Airport frequencies are chosen by how far their service is heard
 
