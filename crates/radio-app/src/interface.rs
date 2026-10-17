@@ -12,9 +12,12 @@ use radio_bk4819::{
 };
 use radio_channel_control::{
     BankedReceiveController, BankedScanPhase, ChannelReceiveSetup, ChannelSelection, ChannelSource,
-    QuietGate, ReceiveObservation, ReceiveState, ReceiveUpdate, TimerDirective, TimerToken,
+    QuietGate, ReceiveObservation, ReceiveState, ReceiveUpdate, TimerDirective, TimerToken, View,
 };
-use radio_channel_plan::{BankName, ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord};
+use radio_channel_plan::{
+    BankName, BankSet, ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord,
+    MAX_BANK_NAME_LEN,
+};
 use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, SquelchLevel,
     Tone,
@@ -881,6 +884,7 @@ fn cancel_pending_squelch(shell: &mut Shell, pending_operator_squelch: &mut Opti
 /// because a programmed radio which opened in the VFO would look unprogrammed.
 fn adopt_settings(shell: &mut Shell, programmed: &Programmed) {
     shell.set_banks(programmed.populated_banks());
+    shell.set_groups(programmed.group_count());
     let config = programmed.config();
     shell.set_squelch(config.squelch);
     shell.set_tx(config.tx_power, config.tx_timeout);
@@ -925,7 +929,10 @@ fn adopt_place(shell: &mut Shell, programmed: &Programmed, place: Option<Operato
         return;
     }
     match place {
-        Some(place) => shell.restore_source(place.memory_mode, place.bank),
+        Some(place) => {
+            shell.restore_group(place.group);
+            shell.restore_source(place.memory_mode, place.bank);
+        }
         None => shell.select_memory(),
     }
 }
@@ -976,7 +983,7 @@ fn activate<M: Memory>(
     keep: Option<Selected>,
     memory: &'static TaskCell<Option<M>>,
 ) -> Option<Activation<M>> {
-    activate_slot(programmed, shell.slot(), shell.tx_power(), keep, memory)
+    activate_slot(programmed, shell, shell.slot(), keep, memory)
 }
 
 /// Builds the receive controller for the slot not selected.
@@ -986,38 +993,34 @@ fn activate_other<M: Memory>(
     keep: Option<Selected>,
     memory: &'static TaskCell<Option<M>>,
 ) -> Option<Activation<M>> {
-    activate_slot(
-        programmed,
-        shell.other_slot(),
-        shell.tx_power(),
-        keep,
-        memory,
-    )
+    activate_slot(programmed, shell, shell.other_slot(), keep, memory)
 }
 
-/// Builds the receive controller for one slot; `tx_power` is the VFO's level.
+/// Builds the receive controller for one of the shell's slots: its bank, or
+/// else the group the list is narrowed to, or else every channel.
 fn activate_slot<M: Memory>(
     programmed: &Programmed,
+    shell: &Shell,
     slot: Slot,
-    tx_power: u8,
     keep: Option<Selected>,
     memory: &'static TaskCell<Option<M>>,
 ) -> Option<Activation<M>> {
-    let (memory, bank) = match slot.mode {
-        Mode::Vfo => (vfo_source(slot, tx_power)?, None),
+    let (memory, view) = match slot.mode {
+        Mode::Vfo => (vfo_source(slot, shell.tx_power())?, None),
         Mode::Memory => {
             if programmed.is_empty() {
                 return None;
             }
+            let group = shell.group().map(|_| View::Banks(shell.group_banks()));
             (
                 Listening::Memory(programmed.len(), memory),
-                slot.bank_filter,
+                slot.bank_filter.map(View::Bank).or(group),
             )
         }
     };
     let keep = keep.map(|kept| (kept.bank, kept.position));
     let (controller, update) =
-        BankedReceiveController::activate_at(memory, programmed.config(), bank, keep).ok()?;
+        BankedReceiveController::activate_at(memory, programmed.config(), view, keep).ok()?;
     Some((
         controller,
         update.activation.map(|activation| activation.setup),
@@ -1127,6 +1130,7 @@ pub async fn run<D, K, B, F, W, S, V, M>(
         &mut selected,
         &mut other_selected,
     );
+    read_group_banks(&mut shell, memory);
     let mut activation = activate(&programmed, &shell, selected, memory);
     let mut pending = activation.as_mut().and_then(|(_, setup)| setup.take());
     let mut other_activation = activate_other(&programmed, &shell, other_selected, memory);
@@ -1252,6 +1256,7 @@ pub async fn run<D, K, B, F, W, S, V, M>(
                 &mut selected,
                 &mut other_selected,
             );
+            read_group_banks(&mut shell, memory);
             if let Some(on) = backlight.set_seconds(programmed.config().backlight_seconds, now_ms())
             {
                 display.set_backlight(on);
@@ -1409,6 +1414,11 @@ pub async fn run<D, K, B, F, W, S, V, M>(
             // operator leaves an empty memory.
             Intent::SetSource(_) | Intent::TuneVfo => {
                 cancel_pending_squelch(&mut shell, &mut pending_operator_squelch);
+                if let Intent::SetSource(Source::Group(_)) = intent {
+                    // Narrowing the list reaches the other slot's view too.
+                    read_group_banks(&mut shell, memory);
+                    other_activation = activate_other(&programmed, &shell, other_selected, memory);
+                }
                 // Choosing a source is the one rebuild the operator did ask
                 // for, so a bank change lands on that bank's first channel
                 // rather than dragging the old selection into it.
@@ -1628,6 +1638,7 @@ pub async fn run<D, K, B, F, W, S, V, M>(
         let place = OperatorState {
             memory_mode: matches!(shell.mode(), Mode::Memory),
             bank: shell.bank_filter(),
+            group: shell.group(),
             channel: selected,
             vfo_hz: shell.vfo_hz(),
             step_index: u8::try_from(shell.step_index()).unwrap_or(0),
@@ -2162,7 +2173,18 @@ fn render<B: RegisterBus, S: Speaker, C: BroadcastChip, M: Memory>(
                 let active = shell.is_active_source(row);
                 rows[offset] = match source {
                     Source::Vfo => SelectorRow::text(b"VFO", active),
+                    Source::AllChannels if shell.group().is_some() => {
+                        SelectorRow::text(b"ALL OF GROUP", active)
+                    }
                     Source::AllChannels => SelectorRow::text(b"ALL CHANNELS", active),
+                    Source::Group(None) => SelectorRow::text(b"+ALL BANKS", active),
+                    Source::Group(Some(group)) => {
+                        let mut label = [b'+'; 1 + MAX_BANK_NAME_LEN];
+                        let name = group_name(group, memory);
+                        let name = name.as_ref().map_or(&b"GROUP"[..], |name| name.as_bytes());
+                        label[1..=name.len()].copy_from_slice(name);
+                        SelectorRow::text(&label[..=name.len()], active)
+                    }
                     Source::Bank(bank) => {
                         let name = bank_name(bank, memory);
                         SelectorRow::bank(
@@ -2403,6 +2425,32 @@ fn slot_channel<'a, B: RegisterBus, S: Speaker, C: BroadcastChip, M: Memory>(
     })
 }
 
+/// Reads group `group`'s name from the image.
+#[inline(never)]
+fn group_name<M: Memory>(group: u8, memory: &'static TaskCell<Option<M>>) -> Option<BankName> {
+    memory.with_mut(|cell| {
+        let memory = cell.as_mut()?;
+        INDEX.with(|image| {
+            image.group_name(|offset, buffer| read_image(memory, offset, buffer), group)
+        })
+    })
+}
+
+/// Gives the shell the banks of the group its list is narrowed to, read
+/// from the image; the shell leaves a group with none.
+#[inline(never)]
+fn read_group_banks<M: Memory>(shell: &mut Shell, memory: &'static TaskCell<Option<M>>) {
+    if let Some(group) = shell.group() {
+        let banks = memory.with_mut(|cell| {
+            let memory = cell.as_mut()?;
+            INDEX.with(|image| {
+                image.group_banks(|offset, buffer| read_image(memory, offset, buffer), group)
+            })
+        });
+        shell.set_group_banks(banks.unwrap_or(BankSet::EMPTY));
+    }
+}
+
 #[inline(never)]
 fn bank_name<M: Memory>(bank: BankId, memory: &'static TaskCell<Option<M>>) -> Option<BankName> {
     memory.with_mut(|cell| {
@@ -2449,6 +2497,7 @@ mod tests {
         OperatorState {
             memory_mode,
             bank: Some(BankId::new(1)),
+            group: None,
             channel: Some(ChannelPlace {
                 bank: BankId::new(1),
                 position: 3,

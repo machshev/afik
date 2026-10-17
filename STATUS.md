@@ -154,8 +154,17 @@ generated yet); the radio image leaves it out. Gate: fmt clean, `cargo clippy
 -p radio-programmer-gui -p radio-channel-plan -p radio-storage --all-targets
 -- -D warnings` clean, `cargo test -p radio-programmer-gui -p
 radio-channel-plan -p radio-storage -p radio-programmer` 260 passed 0 failed
-3 ignored. Next (step 2): the radio's group context, which overflows K5 flash
-by 432 bytes as first written.
+3 ignored. Step 2: the shell narrows its source list to a group (VFO, ALL OF
+GROUP, the group's banks, +ALL BANKS, each +group); choosing one reads its
+banks from the image (`Index::group_banks`); the controller filters by a
+`View` (one bank or a `BankSet`) so selection and scans stay in the group;
+the place record keeps the group in byte 26 (zero is none). It fit after
+`af92db1` freed 2.5 KB: K5 flash ends at `0xe7d8` (2 088 free). Gate:
+`cargo fmt --all --check` clean, `cargo clippy --workspace --all-targets --
+-D warnings` clean, `cargo test --workspace --no-fail-fast` 910 passed 0
+failed 3 ignored, K5 and K1 release builds pass. Next: flash and check on the
+radio; then the start place (operator request): the studio writes the place
+record at `0x1D00` after the image, no firmware change.
 
 **`FLASH-074` done** (2026-10-17, operator request, `RISK-049`): the K5
 image had 16 bytes of flash left. `interface::run` was 22.6 KB because the

@@ -1217,25 +1217,53 @@ impl Index {
         self.group_count
     }
 
-    /// Reads group `group`'s name and banks.
+    /// Payload offset of group `group`'s entry and its name's length.
+    fn group_entry(
+        &self,
+        read: &mut impl FnMut(usize, &mut [u8]) -> bool,
+        group: u8,
+    ) -> Option<(usize, usize)> {
+        if group >= self.group_count {
+            return None;
+        }
+        let at = usize::from(*self.groups.get(usize::from(group))?);
+        let [len] = read_array::<1>(read, at).ok()?;
+        Some((at, usize::from(len)))
+    }
+
+    /// Reads group `group`'s name.
+    pub fn group_name(
+        &self,
+        mut read: impl FnMut(usize, &mut [u8]) -> bool,
+        group: u8,
+    ) -> Option<BankName> {
+        let (at, len) = self.group_entry(&mut read, group)?;
+        let mut name = [0_u8; MAX_BANK_NAME_LEN];
+        read(at + 1, name.get_mut(..len)?).then_some(())?;
+        BankName::from_field(name, u8::try_from(len).ok()?).ok()
+    }
+
+    /// Reads group `group`'s banks, narrowed to those the image holds so a
+    /// group can never select a bank that is not there.
+    pub fn group_banks(
+        &self,
+        mut read: impl FnMut(usize, &mut [u8]) -> bool,
+        group: u8,
+    ) -> Option<BankSet> {
+        let (at, len) = self.group_entry(&mut read, group)?;
+        let banks = read_array::<32>(&mut read, at + 1 + len).ok()?;
+        Some(BankSet::from_bytes(banks).ok()?.within(&self.populated))
+    }
+
+    /// Reads group `group`'s name and banks; `None` for a group with no bank
+    /// the image holds.
     pub fn group(
         &self,
         mut read: impl FnMut(usize, &mut [u8]) -> bool,
         group: u8,
     ) -> Option<(BankName, BankSet)> {
-        if group >= self.group_count {
-            return None;
-        }
-        let at = usize::from(*self.groups.get(usize::from(group))?);
-        let [len] = read_array::<1>(&mut read, at).ok()?;
-        let mut name = [0_u8; MAX_BANK_NAME_LEN];
-        let name_bytes = name.get_mut(..usize::from(len))?;
-        read(at + 1, name_bytes).then_some(())?;
-        let name = BankName::from_field(name, len).ok()?;
-        let banks = read_array::<32>(&mut read, at + 1 + usize::from(len)).ok()?;
-        // Only banks the image holds, so a group can never select an empty
-        // view; one left with none is not offered.
-        let banks = BankSet::from_bytes(banks).ok()?.within(&self.populated);
+        let banks = self.group_banks(&mut read, group)?;
+        let name = self.group_name(&mut read, group)?;
         (!banks.is_empty()).then_some((name, banks))
     }
 

@@ -125,6 +125,8 @@ pub struct OperatorState {
     pub memory_mode: bool,
     /// The bank filtering the channel view, if one was in force.
     pub bank: Option<BankId>,
+    /// The group the source list was narrowed to, if one was (`ADR-116`).
+    pub group: Option<u8>,
     /// The memory channel selected, if one was; kept while the VFO is in use
     /// so leaving it returns there.
     pub channel: Option<ChannelPlace>,
@@ -198,6 +200,8 @@ impl OperatorState {
             flags |= TX_DISABLED_CLASS_7;
         }
         bytes[14] = flags;
+        // Zero is no group, which is what a record from before groups holds.
+        bytes[26] = self.group.map_or(0, |group| group.saturating_add(1));
         let checksum = crc16(&bytes[..OPERATOR_STATE_BYTES - 2]);
         bytes[OPERATOR_STATE_BYTES - 2..].copy_from_slice(&checksum.to_le_bytes());
         bytes
@@ -228,6 +232,7 @@ impl OperatorState {
             memory_mode: flags & MEMORY_MODE != 0,
             bank: (flags & BANK_FILTERED != 0)
                 .then(|| BankId::new(u16::from_le_bytes([bytes[2], bytes[3]]))),
+            group: None,
             channel: ChannelPlace::decode(&bytes[4..8]).filter(|_| by_place),
             vfo_hz: u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]),
             step_index: bytes[12],
@@ -245,6 +250,7 @@ impl OperatorState {
             let flags = bytes[14];
             state.b_selected = flags & B_SELECTED != 0;
             state.dual_watch = flags & DUAL_WATCH != 0;
+            state.group = bytes[26].checked_sub(1);
             if flags & TX_DISABLED_CLASS_7 != 0 {
                 state.tx_disabled = ClassSet::from_bits(state.tx_disabled.bits() | CLASS_7_BIT);
             }
@@ -302,6 +308,7 @@ mod tests {
         OperatorState {
             memory_mode: true,
             bank: Some(BankId::new(3)),
+            group: Some(2),
             channel: Some(ChannelPlace {
                 bank: BankId::new(3),
                 position: 41,
@@ -488,6 +495,7 @@ mod tests {
             OperatorState::decode(&legacy(state(), 1)),
             Some(OperatorState {
                 channel: None,
+                group: None,
                 squelch: None,
                 other: None,
                 b_selected: false,
@@ -505,6 +513,7 @@ mod tests {
             OperatorState::decode(&legacy(state(), 2)),
             Some(OperatorState {
                 channel: None,
+                group: None,
                 other: None,
                 b_selected: false,
                 dual_watch: false,

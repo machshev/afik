@@ -7,7 +7,9 @@
 
 use core::fmt;
 
-use radio_channel_plan::{generated_channel_index, ChannelFlags, ChannelRecord, GeneratedBank};
+use radio_channel_plan::{
+    generated_channel_index, BankSet, ChannelFlags, ChannelRecord, GeneratedBank,
+};
 use radio_domain::{
     Bandwidth, BankId, ChannelId, DomainError, Frequency, FrequencyStep, Modulation, RadioConfig,
     ScanResume, SquelchLevel, Tone,
@@ -452,11 +454,42 @@ impl fmt::Display for ReceiveError {
     }
 }
 
+/// The channels a controller's view holds: one bank, or several, such as a
+/// group's (`ADR-116`). No view is every channel.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum View {
+    /// The channels of one bank.
+    Bank(BankId),
+    /// The channels of every bank in the set.
+    Banks(BankSet),
+}
+
+impl View {
+    /// Whether a channel stored in `bank` is in the view.
+    fn holds(&self, bank: Option<BankId>) -> bool {
+        match self {
+            Self::Bank(only) => bank == Some(*only),
+            Self::Banks(set) => bank.is_some_and(|bank| set.contains(bank)),
+        }
+    }
+
+    /// Whether the channel at `index` is in the view, asking the source
+    /// rather than building the record.
+    fn holds_at<C: ChannelSource>(&self, source: &C, index: u16) -> bool {
+        match self {
+            Self::Bank(bank) => source.member_at(index, *bank),
+            Self::Banks(set) => source
+                .place_of(index)
+                .is_some_and(|(bank, _)| set.contains(bank)),
+        }
+    }
+}
+
 /// Banked memory, VFO, monitor, dual-watch, and scanning receive controller.
 pub struct BankedReceiveController<C: ChannelSource> {
     source: C,
     config: RadioConfig,
-    bank: Option<BankId>,
+    view: Option<View>,
     mode: ReceiveMode,
     index: u16,
     channel: ChannelRecord,
@@ -470,13 +503,13 @@ pub struct BankedReceiveController<C: ChannelSource> {
 }
 
 impl<C: ChannelSource> BankedReceiveController<C> {
-    /// Activates the first channel matching the requested bank filter.
+    /// Activates the first channel in the requested view.
     pub fn activate(
         source: C,
         config: RadioConfig,
-        bank: Option<BankId>,
+        view: Option<View>,
     ) -> Result<(Self, ReceiveUpdate), ReceiveError> {
-        Self::activate_at(source, config, bank, None)
+        Self::activate_at(source, config, view, None)
     }
 
     /// Activates over a replaced source, keeping one selection if it survives.
@@ -490,29 +523,29 @@ impl<C: ChannelSource> BankedReceiveController<C> {
     ///
     /// `keep` is the bank they were on and their position in it, which
     /// survives other banks being rewritten (`ADR-115`). It is honoured only
-    /// if that bank still has that position and it passes the bank filter.
+    /// if that bank still has that position and it is in the view.
     /// Anything else falls back to the first eligible channel, which is what a
     /// fresh activation would have given them.
     pub fn activate_at(
         source: C,
         config: RadioConfig,
-        bank: Option<BankId>,
+        view: Option<View>,
         keep: Option<(BankId, u16)>,
     ) -> Result<(Self, ReceiveUpdate), ReceiveError> {
         let config = config.validate().map_err(ReceiveError::InvalidConfig)?;
         let kept = keep
             .and_then(|(kept, position)| source.index_of(kept, position))
-            .filter(|index| bank.is_none_or(|bank| source.member_at(*index, bank)));
+            .filter(|index| in_view(&source, view, *index));
         let index = match kept {
             Some(index) => index,
-            None => first_member(&source, bank).ok_or(ReceiveError::NoEligibleChannel)?,
+            None => first_member(&source, view).ok_or(ReceiveError::NoEligibleChannel)?,
         };
         let channel = source.get(index).ok_or(ReceiveError::NoEligibleChannel)?;
         let vfo = channel_setup(&channel, config.squelch, false);
         let mut controller = Self {
             source,
             config,
-            bank,
+            view,
             mode: ReceiveMode::Memory,
             index,
             channel,
@@ -543,9 +576,9 @@ impl<C: ChannelSource> BankedReceiveController<C> {
         self.state
     }
 
-    /// Returns the active bank filter.
-    pub const fn bank(&self) -> Option<BankId> {
-        self.bank
+    /// Returns the active view.
+    pub const fn view(&self) -> Option<View> {
+        self.view
     }
 
     /// Returns the current storage index of the selected memory channel.
@@ -601,9 +634,9 @@ impl<C: ChannelSource> BankedReceiveController<C> {
     }
 
     /// Replaces the bank filter and selects its first eligible channel.
-    pub fn set_bank(&mut self, bank: Option<BankId>) -> Result<ReceiveUpdate, ReceiveError> {
-        let index = first_member(&self.source, bank).ok_or(ReceiveError::NoEligibleChannel)?;
-        self.bank = bank;
+    pub fn set_view(&mut self, view: Option<View>) -> Result<ReceiveUpdate, ReceiveError> {
+        let index = first_member(&self.source, view).ok_or(ReceiveError::NoEligibleChannel)?;
+        self.view = view;
         self.dual_watch_partner = None;
         self.select(index)
     }
@@ -613,7 +646,7 @@ impl<C: ChannelSource> BankedReceiveController<C> {
         let channel = self
             .source
             .get(index)
-            .filter(|channel| is_member(channel, self.bank))
+            .filter(|channel| is_member(channel, self.view))
             .ok_or(ReceiveError::IndexOutOfRange)?;
         self.index = index;
         self.channel = channel;
@@ -634,8 +667,7 @@ impl<C: ChannelSource> BankedReceiveController<C> {
     /// over a band-sized plan costs arithmetic per channel instead of a full
     /// expansion per channel.
     fn is_member_at(&self, index: u16) -> bool {
-        self.bank
-            .is_none_or(|bank| self.source.member_at(index, bank))
+        in_view(&self.source, self.view, index)
     }
 
     /// Returns the number of channels eligible under the active bank filter.
@@ -783,7 +815,7 @@ impl<C: ChannelSource> BankedReceiveController<C> {
             let eligible = self
                 .source
                 .get(index)
-                .is_some_and(|channel| is_member(&channel, self.bank));
+                .is_some_and(|channel| is_member(&channel, self.view));
             if !eligible || index == self.index {
                 return Err(ReceiveError::IndexOutOfRange);
             }
@@ -957,7 +989,7 @@ impl<C: ChannelSource> BankedReceiveController<C> {
         let channel = self
             .source
             .get(partner)
-            .filter(|channel| is_member(channel, self.bank))
+            .filter(|channel| is_member(channel, self.view))
             .ok_or(ReceiveError::IndexOutOfRange)?;
         self.index = partner;
         self.channel = channel;
@@ -1072,16 +1104,21 @@ impl<C: ChannelSource> BankedReceiveController<C> {
     }
 }
 
-fn is_member(channel: &ChannelRecord, bank: Option<BankId>) -> bool {
-    bank.is_none_or(|bank| channel.is_member_of(bank))
+fn is_member(channel: &ChannelRecord, view: Option<View>) -> bool {
+    view.is_none_or(|view| view.holds(channel.bank()))
 }
 
-/// Returns the first index passing one bank filter, building no record.
+/// Whether the channel at `index` is in `view`, building no record.
+fn in_view<C: ChannelSource>(source: &C, view: Option<View>, index: u16) -> bool {
+    view.is_none_or(|view| view.holds_at(source, index))
+}
+
+/// Returns the first index in one view, building no record.
 ///
 /// Membership is the source's own question, so choosing where a filtered view
 /// starts costs arithmetic per channel rather than one expansion per channel.
-fn first_member<C: ChannelSource>(source: &C, bank: Option<BankId>) -> Option<u16> {
-    (0..source.len()).find(|index| bank.is_none_or(|bank| source.member_at(*index, bank)))
+fn first_member<C: ChannelSource>(source: &C, view: Option<View>) -> Option<u16> {
+    (0..source.len()).find(|index| in_view(source, view, *index))
 }
 
 fn effective_squelch(squelch: SquelchLevel, monitor: bool) -> SquelchLevel {
@@ -1113,11 +1150,13 @@ mod tests {
     use super::{
         BankedReceiveController, ChannelMemory, ChannelSelection, ChannelSource, MemoryFull,
         ProgrammedMemory, ReceiveError, ReceiveMode, ReceiveObservation, ReceiveState, ScanPhase,
+        View,
     };
     use crate::{TimerDirective, TimerToken};
     use core::cell::Cell;
     use radio_channel_plan::{
-        BankName, ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord, GeneratedBank,
+        BankName, BankSet, ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord,
+        GeneratedBank,
     };
     use radio_domain::{
         Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel,
@@ -1214,7 +1253,7 @@ mod tests {
         let (mut controller, _) = BankedReceiveController::activate(
             memory,
             RadioConfig::conservative(),
-            Some(BankId::new(3)),
+            Some(View::Bank(BankId::new(3))),
         )
         .unwrap();
         assert_eq!(controller.visible_channels(), 4);
@@ -1252,7 +1291,7 @@ mod tests {
         let (mut controller, _) = BankedReceiveController::activate(
             memory,
             RadioConfig::conservative(),
-            Some(BankId::new(3)),
+            Some(View::Bank(BankId::new(3))),
         )
         .unwrap();
         let update = controller.select_calling().unwrap();
@@ -1264,7 +1303,9 @@ mod tests {
         assert_eq!(controller.visible_position(), 12);
 
         // A bank with none keeps the selection.
-        controller.set_bank(Some(BankId::new(4))).unwrap();
+        controller
+            .set_view(Some(View::Bank(BankId::new(4))))
+            .unwrap();
         controller.select_visible(2).unwrap();
         assert_eq!(
             controller.select_calling().map(|_| ()),
@@ -1288,7 +1329,7 @@ mod tests {
         config: RadioConfig,
         bank: Option<BankId>,
     ) -> BankedReceiveController<ChannelMemory<8>> {
-        BankedReceiveController::activate(memory(), config, bank)
+        BankedReceiveController::activate(memory(), config, bank.map(View::Bank))
             .unwrap()
             .0
     }
@@ -1326,6 +1367,44 @@ mod tests {
     }
 
     #[test]
+    fn a_view_of_several_banks_selects_and_scans_across_them() {
+        // Channels 1 and 2 are in bank 1, 3 in bank 2, 4 in bank 0; a group
+        // of banks 0 and 2 holds channels 3 and 4.
+        let mut memory = ChannelMemory::<8>::new();
+        memory.insert(channel(1, 145_100_000, Some(1), 0)).unwrap();
+        memory.insert(channel(2, 145_200_000, Some(1), 0)).unwrap();
+        memory.insert(channel(3, 145_300_000, Some(2), 0)).unwrap();
+        memory.insert(channel(4, 145_400_000, Some(0), 0)).unwrap();
+        let group = BankSet::EMPTY.with(BankId::new(0)).with(BankId::new(2));
+        let (mut controller, _) = BankedReceiveController::activate(
+            memory,
+            RadioConfig::conservative(),
+            Some(View::Banks(group)),
+        )
+        .unwrap();
+        assert_eq!(controller.channel().id(), ChannelId::new(3));
+        assert_eq!(controller.visible_channels(), 2);
+        controller.select_next().unwrap();
+        assert_eq!(controller.channel().id(), ChannelId::new(4));
+        controller.select_next().unwrap();
+        assert_eq!(
+            controller.channel().id(),
+            ChannelId::new(3),
+            "wraps in the group"
+        );
+        assert_eq!(controller.select(0), Err(ReceiveError::IndexOutOfRange));
+
+        // A scan stays in the group too.
+        let start = controller.start_scanning().unwrap();
+        let token = armed(start.timer);
+        let update = controller.timer_elapsed(token).unwrap();
+        assert_eq!(controller.channel().id(), ChannelId::new(4));
+        let token = armed(update.timer);
+        controller.timer_elapsed(token).unwrap();
+        assert_eq!(controller.channel().id(), ChannelId::new(3));
+    }
+
+    #[test]
     fn bank_filters_selection_and_wraps_around() {
         let mut controller = controller(RadioConfig::conservative(), Some(BankId::new(0)));
         assert_eq!(
@@ -1339,7 +1418,9 @@ mod tests {
         assert!(controller.select_next().unwrap().activation.is_some());
         assert_eq!(controller.index(), 3);
 
-        let update = controller.set_bank(Some(BankId::new(1))).unwrap();
+        let update = controller
+            .set_view(Some(View::Bank(BankId::new(1))))
+            .unwrap();
         assert_eq!(
             update.activation.unwrap().setup.frequency.as_hz(),
             145_100_000
@@ -1350,7 +1431,7 @@ mod tests {
         assert_eq!(controller.channel().id(), ChannelId::new(1));
 
         assert_eq!(
-            controller.set_bank(Some(BankId::new(5))),
+            controller.set_view(Some(View::Bank(BankId::new(5)))),
             Err(ReceiveError::NoEligibleChannel)
         );
         assert_eq!(controller.select(9), Err(ReceiveError::IndexOutOfRange));
@@ -1651,7 +1732,9 @@ mod tests {
         assert_eq!(controller.visible_position(), 2);
 
         // Bank 0 holds only channel 4, so the view collapses to one position.
-        controller.set_bank(Some(BankId::new(0))).unwrap();
+        controller
+            .set_view(Some(View::Bank(BankId::new(0))))
+            .unwrap();
         assert_eq!(controller.visible_channels(), 1);
         assert_eq!(controller.visible_position(), 0);
         assert!(controller.select_visible(1).is_err());
@@ -1712,7 +1795,7 @@ mod tests {
         let (filtered, _) = BankedReceiveController::activate_at(
             banked,
             config,
-            Some(BankId::new(1)),
+            Some(View::Bank(BankId::new(1))),
             Some((BankId::new(0), 0)),
         )
         .unwrap();
@@ -1790,7 +1873,7 @@ mod tests {
         let (mut controller, _) = BankedReceiveController::activate(
             source,
             RadioConfig::conservative(),
-            Some(BankId::new(0)),
+            Some(View::Bank(BankId::new(0))),
         )
         .unwrap();
 

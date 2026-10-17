@@ -169,6 +169,8 @@ pub enum Source {
     AllChannels,
     /// Only the channels in one bank.
     Bank(BankId),
+    /// A group to narrow the list to, or `None` for every bank (`ADR-116`).
+    Group(Option<u8>),
 }
 
 /// Which screen the operator is looking at.
@@ -416,6 +418,12 @@ pub struct Shell {
     entry: Option<Entry>,
     bank_filter: Option<BankId>,
     banks: BankSet,
+    /// The group the source list is narrowed to, if one is (`ADR-116`).
+    group: Option<u8>,
+    /// How many groups the configuration holds.
+    group_count: u8,
+    /// The banks of `group`, which the interface reads from the image.
+    group_banks: BankSet,
     source_cursor: usize,
     vfo_hz: u32,
     vfo_tx_tone: Tone,
@@ -469,6 +477,9 @@ impl Shell {
             entry: None,
             bank_filter: None,
             banks: BankSet::EMPTY,
+            group: None,
+            group_count: 0,
+            group_banks: BankSet::EMPTY,
             source_cursor: 0,
             vfo_hz: VFO_DEFAULT_HZ,
             vfo_tx_tone: Tone::None,
@@ -849,26 +860,60 @@ impl Shell {
         self.source_cursor
     }
 
-    /// Returns the number of source-list rows: the VFO, every channel, and banks.
+    /// Returns the group the source list is narrowed to, if one is.
+    #[must_use]
+    pub const fn group(&self) -> Option<u8> {
+        self.group
+    }
+
+    /// Returns the banks of the group the list is narrowed to.
+    #[must_use]
+    pub const fn group_banks(&self) -> BankSet {
+        self.group_banks
+    }
+
+    /// The banks the source list offers: the group's, or every bank.
+    const fn listed(&self) -> BankSet {
+        if self.group.is_some() {
+            self.group_banks
+        } else {
+            self.banks
+        }
+    }
+
+    /// Returns the number of source-list rows: the VFO, every channel, the
+    /// banks, then every bank and each group when there are groups.
     #[must_use]
     pub fn source_rows(&self) -> usize {
-        self.banks.len() + if self.capabilities.vfo { 2 } else { 1 }
+        let groups = if self.group_count > 0 {
+            usize::from(self.group_count) + 1
+        } else {
+            0
+        };
+        self.listed().len() + groups + if self.capabilities.vfo { 2 } else { 1 }
     }
 
     /// Returns the source one row selects.
     #[must_use]
     pub fn source_at(&self, row: usize) -> Option<Source> {
-        if self.capabilities.vfo {
-            match row {
-                0 => Some(Source::Vfo),
-                1 => Some(Source::AllChannels),
-                _ => self.banks.nth(row - 2).map(Source::Bank),
-            }
-        } else {
-            match row {
-                0 => Some(Source::AllChannels),
-                _ => self.banks.nth(row - 1).map(Source::Bank),
-            }
+        let vfo = usize::from(self.capabilities.vfo);
+        if row < vfo {
+            return Some(Source::Vfo);
+        }
+        let Some(row) = (row - vfo).checked_sub(1) else {
+            return Some(Source::AllChannels);
+        };
+        let listed = self.listed();
+        if let Some(bank) = listed.nth(row) {
+            return Some(Source::Bank(bank));
+        }
+        match row - listed.len() {
+            0 if self.group_count > 0 => Some(Source::Group(None)),
+            group => group
+                .checked_sub(1)
+                .and_then(|group| u8::try_from(group).ok())
+                .filter(|group| *group < self.group_count)
+                .map(|group| Source::Group(Some(group))),
         }
     }
 
@@ -879,6 +924,7 @@ impl Shell {
             (Some(Source::Vfo), Mode::Vfo) => true,
             (Some(Source::AllChannels), Mode::Memory) => self.bank_filter.is_none(),
             (Some(Source::Bank(bank)), Mode::Memory) => self.bank_filter == Some(bank),
+            (Some(Source::Group(group)), _) => self.group == group,
             _ => false,
         }
     }
@@ -904,7 +950,40 @@ impl Shell {
         self.screen = Screen::Operating;
         self.entry = None;
         self.mode = if memory_mode { Mode::Memory } else { Mode::Vfo };
-        self.bank_filter = bank.filter(|bank| self.banks.contains(*bank));
+        self.bank_filter = bank.filter(|bank| self.listed().contains(*bank));
+        self.source_cursor = self.source_row();
+    }
+
+    /// Restores the group the list was narrowed to; one the configuration
+    /// does not hold is dropped. [`Shell::set_groups`] must have run first,
+    /// and the interface then gives the group's banks.
+    pub fn restore_group(&mut self, group: Option<u8>) {
+        self.group = group.filter(|group| *group < self.group_count);
+    }
+
+    /// Takes the number of groups a configuration holds; a group past them is
+    /// left.
+    pub fn set_groups(&mut self, count: u8) {
+        self.group_count = count;
+        if self.group.is_some_and(|group| group >= count) {
+            self.group = None;
+        }
+    }
+
+    /// Takes the banks of the group the list is narrowed to, as read from the
+    /// image. A bank filter outside them is cleared, so the view is always in
+    /// the group; a group with none is left.
+    pub fn set_group_banks(&mut self, banks: BankSet) {
+        self.group_banks = banks;
+        if banks.is_empty() {
+            self.group = None;
+        }
+        if self
+            .bank_filter
+            .is_some_and(|bank| !self.listed().contains(bank))
+        {
+            self.bank_filter = None;
+        }
         self.source_cursor = self.source_row();
     }
 
@@ -975,7 +1054,7 @@ impl Shell {
         }
         let offset = usize::from(self.capabilities.vfo);
         self.bank_filter
-            .and_then(|filter| self.banks.position(filter))
+            .and_then(|filter| self.listed().position(filter))
             .map_or(offset, |position| position + offset + 1)
     }
 
@@ -1558,6 +1637,13 @@ impl Shell {
                 self.mode = Mode::Memory;
                 self.bank_filter = Some(bank);
             }
+            // Narrowing to a group selects all of it; the interface reads
+            // its banks before rebuilding the view.
+            Source::Group(group) => {
+                self.group = group;
+                self.mode = Mode::Memory;
+                self.bank_filter = None;
+            }
         }
         Intent::SetSource(selected)
     }
@@ -1622,6 +1708,80 @@ mod tests {
         }
         shell.press(Key::Menu, time + 1, context(0, 0));
         assert_eq!(shell.screen(), Screen::StepList);
+    }
+
+    /// Opens the source list and walks the cursor to `row`, then picks it.
+    fn choose_source(shell: &mut Shell, row: usize, at: u32) -> Intent {
+        tap_star(shell, at, context(8, 0));
+        let mut time = at + 1;
+        while shell.source_cursor() != row {
+            shell.press(Key::Down, time, context(8, 0));
+            time += 1;
+        }
+        shell.press(Key::Menu, time, context(8, 0))
+    }
+
+    #[test]
+    fn a_group_narrows_the_source_list_to_its_banks() {
+        let mut shell = memory_shell(&[1, 3, 5]);
+        shell.set_groups(2);
+        // VFO, all channels, three banks, every bank, two groups.
+        assert_eq!(shell.source_rows(), 8);
+        assert_eq!(shell.source_at(5), Some(Source::Group(None)));
+        assert_eq!(shell.source_at(6), Some(Source::Group(Some(0))));
+        assert_eq!(shell.source_at(7), Some(Source::Group(Some(1))));
+        assert_eq!(shell.source_at(8), None);
+        assert!(shell.is_active_source(5), "no group is in force");
+
+        assert_eq!(
+            choose_source(&mut shell, 7, 10),
+            Intent::SetSource(Source::Group(Some(1)))
+        );
+        assert_eq!(shell.group(), Some(1));
+        assert_eq!(shell.bank_filter(), None, "all of the group");
+        // The interface reads the group's banks: 3 and 5.
+        shell.set_group_banks(bank_table(&[3, 5]));
+        assert_eq!(shell.source_rows(), 2 + 2 + 3);
+        assert_eq!(shell.source_at(2), Some(Source::Bank(BankId::new(3))));
+        assert_eq!(shell.source_at(3), Some(Source::Bank(BankId::new(5))));
+        assert_eq!(shell.source_at(4), Some(Source::Group(None)));
+        assert!(shell.is_active_source(1), "ALL is the group's");
+        assert!(shell.is_active_source(6));
+
+        // A bank in the group filters as before; one outside it is dropped
+        // when the group's banks arrive.
+        choose_source(&mut shell, 3, 40);
+        assert_eq!(shell.bank_filter(), Some(BankId::new(5)));
+        shell.set_group_banks(bank_table(&[3]));
+        assert_eq!(shell.bank_filter(), None);
+
+        // Every bank again.
+        assert_eq!(
+            choose_source(&mut shell, 3, 80),
+            Intent::SetSource(Source::Group(None))
+        );
+        assert_eq!(shell.group(), None);
+        assert_eq!(shell.source_rows(), 8);
+    }
+
+    #[test]
+    fn a_group_past_the_configuration_is_left() {
+        let mut shell = memory_shell(&[1]);
+        shell.set_groups(3);
+        shell.restore_group(Some(2));
+        assert_eq!(shell.group(), Some(2));
+        shell.set_groups(2);
+        assert_eq!(shell.group(), None);
+        shell.restore_group(Some(5));
+        assert_eq!(shell.group(), None);
+        // A group with no bank the image holds is left too.
+        shell.restore_group(Some(1));
+        shell.set_group_banks(BankSet::EMPTY);
+        assert_eq!(shell.group(), None);
+        // Without groups the list has no group rows.
+        shell.set_groups(0);
+        assert_eq!(shell.source_rows(), 3);
+        assert_eq!(shell.source_at(3), None);
     }
 
     /// Returns a shell listening to every programmed channel, as an operator

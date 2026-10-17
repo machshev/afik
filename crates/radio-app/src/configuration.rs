@@ -29,6 +29,7 @@ pub const CONFIGURATION_STORE_BYTES: usize = IMAGE_REGION_BYTES as usize - HEADE
 pub struct Programmed {
     len: u16,
     populated: BankSet,
+    groups: u8,
     config: RadioConfig,
 }
 
@@ -45,6 +46,7 @@ impl Programmed {
         Self {
             len: 0,
             populated: BankSet::EMPTY,
+            groups: 0,
             config: RadioConfig::conservative(),
         }
     }
@@ -55,6 +57,7 @@ impl Programmed {
         Self {
             len: index.len(),
             populated: index.populated(),
+            groups: index.group_count(),
             config: index.config(),
         }
     }
@@ -70,6 +73,7 @@ impl Programmed {
         Self {
             len,
             populated: banks,
+            groups: 0,
             config: RadioConfig::conservative(),
         }
     }
@@ -121,6 +125,12 @@ impl Programmed {
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.len == 0
+    }
+
+    /// Returns how many bank groups the configuration holds (`ADR-116`).
+    #[must_use]
+    pub const fn group_count(&self) -> u8 {
+        self.groups
     }
 
     /// Returns the banks at least one channel is stored in, so a bank
@@ -227,6 +237,7 @@ mod tests {
                 .with(BankId::new(200))
                 .with(BankId::new(0))
                 .with(BankId::new(7)),
+            groups: 0,
             config: RadioConfig::conservative(),
         };
         let banks = programmed.populated_banks();

@@ -10,7 +10,7 @@ pub use banked::{
     BankedReceiveController, ChannelActivation as BankedChannelActivation, ChannelMemory,
     ChannelReceiveSetup, ChannelSelection, ChannelSource, MemoryFull, ProgrammedMemory,
     ReceiveError, ReceiveMode, ReceiveObservation, ReceiveState, ReceiveUpdate,
-    ScanPhase as BankedScanPhase,
+    ScanPhase as BankedScanPhase, View,
 };
 pub use quiet::QuietGate;
 

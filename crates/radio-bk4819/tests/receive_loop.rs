@@ -187,7 +187,7 @@ fn a_banked_scan_drives_the_receive_path_without_reaching_transmit() {
     let (mut controller, update) = BankedReceiveController::activate(
         memory,
         RadioConfig::conservative(),
-        Some(BankId::new(0)),
+        Some(radio_channel_control::View::Bank(BankId::new(0))),
     )
     .expect("activation");
 
