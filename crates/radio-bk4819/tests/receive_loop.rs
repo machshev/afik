@@ -209,10 +209,11 @@ fn a_banked_scan_drives_the_receive_path_without_reaching_transmit() {
     // Audio starts muted because nothing has been observed yet.
     assert_eq!(chip.written(REG_AF_OUTPUT), Some(0x6040));
 
-    // A carrier without the coded tone must not open audio.
+    // A carrier without the coded tone must not open audio: bit 7, which
+    // the reference names "found", is the tone absent.
     chip.set(REG_RSSI, 0x0100);
     chip.set(REG_SQUELCH_STATUS, 0x0002);
-    chip.raise(1 << 6);
+    chip.raise(1 << 7);
     let metrics = radio
         .receive_metrics(activation.setup.tone)
         .expect("metrics");
@@ -226,8 +227,9 @@ fn a_banked_scan_drives_the_receive_path_without_reaching_transmit() {
         .expect("observation");
     assert!(!update.audio_open);
 
-    // The matching tone opens audio through the controller's decision.
-    chip.raise(1 << 7);
+    // The matching tone (bit 6) opens audio through the controller's
+    // decision.
+    chip.raise(1 << 6);
     let metrics = radio
         .receive_metrics(activation.setup.tone)
         .expect("metrics");

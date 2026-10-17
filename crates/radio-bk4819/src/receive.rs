@@ -91,10 +91,18 @@ const NOISE_MASK: u16 = 0x007F;
 const INTERRUPT_MASK_SQUELCH_AND_TONE: u16 = (1 << 3) | (1 << 2) | (1 << 10);
 const INTERRUPT_MASK_CTCSS: u16 = (1 << 7) | (1 << 6);
 const INTERRUPT_MASK_CDCSS: u16 = (1 << 9) | (1 << 8);
-const INTERRUPT_CTCSS_FOUND: u16 = 1 << 7;
-const INTERRUPT_CTCSS_LOST: u16 = 1 << 6;
-const INTERRUPT_CDCSS_FOUND: u16 = 1 << 9;
-const INTERRUPT_CDCSS_LOST: u16 = 1 << 8;
+// The reference names `REG_02` bit 6 "CTCSS lost" and bit 7 "found", but
+// starts listening on bit 6 (`CheckForIncoming`, `app.c:196`) and ends
+// reception on bit 7 (`HandleReceive`, `app.c:299-305`); DCS likewise on
+// bits 8 and 9. These names say what the reference does with them.
+const INTERRUPT_CTCSS_MATCHED: u16 = 1 << 6;
+const INTERRUPT_CTCSS_GONE: u16 = 1 << 7;
+const INTERRUPT_CDCSS_MATCHED: u16 = 1 << 8;
+const INTERRUPT_CDCSS_GONE: u16 = 1 << 9;
+/// `REG_0C` bits 15:14 after a DCS interrupt: the polarity of the code heard
+/// (`BK4819_GetCDCSSCodeType`); 1 is `CDCSS_POSITIVE_CODE`.
+const CDCSS_CODE_TYPE_SHIFT: u16 = 14;
+const CDCSS_POSITIVE_CODE: u16 = 1;
 /// `REG_0C` bit 0: the chip has an interrupt request pending.
 const INTERRUPT_REQUEST: u16 = 1;
 /// Most pending interrupts serviced in one sample; the source loops without
@@ -883,9 +891,11 @@ impl<B: RegisterBus> Bk4819<B> {
         let noise = self.read(REG_NOISE)? & NOISE_MASK;
         let tone = match tone {
             Tone::None => None,
-            Tone::Ctcss(_) => Some(self.tone_status(INTERRUPT_CTCSS_FOUND, INTERRUPT_CTCSS_LOST)?),
+            Tone::Ctcss(_) => {
+                Some(self.tone_status(INTERRUPT_CTCSS_MATCHED, INTERRUPT_CTCSS_GONE, false)?)
+            }
             Tone::Dcs { .. } => {
-                Some(self.tone_status(INTERRUPT_CDCSS_FOUND, INTERRUPT_CDCSS_LOST)?)
+                Some(self.tone_status(INTERRUPT_CDCSS_MATCHED, INTERRUPT_CDCSS_GONE, true)?)
             }
         };
         Ok(ReceiveMetrics {
@@ -898,19 +908,29 @@ impl<B: RegisterBus> Bk4819<B> {
     }
 
     /// Services pending interrupts as `CheckRadioInterrupts` does, clearing
-    /// `REG_02` before reading it, and keeps the last found or lost event.
-    fn tone_status(&mut self, found: u16, lost: u16) -> Result<ToneStatus, DriverError<B::Error>> {
+    /// `REG_02` before reading it, and keeps whether the last tone event was
+    /// `matched` or `gone`; `gone` wins when both arrive together, as it does
+    /// in the reference. A DCS match counts only for a positive code, as
+    /// `CheckForIncoming` requires.
+    fn tone_status(
+        &mut self,
+        matched: u16,
+        gone: u16,
+        positive_code: bool,
+    ) -> Result<ToneStatus, DriverError<B::Error>> {
         for _ in 0..MAX_INTERRUPTS_PER_SAMPLE {
             if self.read(crate::REG_SQUELCH_STATUS)? & INTERRUPT_REQUEST == 0 {
                 break;
             }
             self.write(REG_INTERRUPT_FLAGS, 0)?;
             let flags = self.read(REG_INTERRUPT_FLAGS)?;
-            if flags & lost != 0 {
-                self.tone_found = false;
+            if flags & matched != 0 {
+                self.tone_found = !positive_code
+                    || (self.read(crate::REG_SQUELCH_STATUS)? >> CDCSS_CODE_TYPE_SHIFT) & 3
+                        == CDCSS_POSITIVE_CODE;
             }
-            if flags & found != 0 {
-                self.tone_found = true;
+            if flags & gone != 0 {
+                self.tone_found = false;
             }
         }
         Ok(if self.tone_found {
@@ -1774,8 +1794,9 @@ mod tests {
             Some(ToneStatus::Lost)
         );
 
-        // Squelch found, then CTCSS found, raised as two requests.
-        radio.bus_mut().interrupts.extend([1 << 3, 1 << 7]);
+        // Squelch found, then the tone matched (bit 6, which the reference
+        // names "lost" and opens on), raised as two requests.
+        radio.bus_mut().interrupts.extend([1 << 3, 1 << 6]);
         radio.bus_mut().operations.clear();
         let metrics = radio.receive_metrics(Tone::Ctcss(1_000)).unwrap();
         assert_eq!(
@@ -1804,10 +1825,18 @@ mod tests {
             Some(ToneStatus::Matched)
         );
 
-        radio.bus_mut().interrupts.push(1 << 6);
+        // Bit 7, the reference's "found", is the tone going.
+        radio.bus_mut().interrupts.push(1 << 7);
         let lost = radio.receive_metrics(Tone::Ctcss(1_000)).unwrap();
         assert_eq!(lost.tone, Some(ToneStatus::Lost));
         assert!(!lost.should_unmute());
+
+        // Both in one request: the tone has gone, as in the reference.
+        radio.bus_mut().interrupts.push((1 << 6) | (1 << 7));
+        assert_eq!(
+            radio.receive_metrics(Tone::Ctcss(1_000)).unwrap().tone,
+            Some(ToneStatus::Lost)
+        );
 
         let carrier_only = radio.receive_metrics(Tone::None).unwrap();
         assert_eq!(carrier_only.tone, None);
@@ -1828,7 +1857,11 @@ mod tests {
                 145_500_000,
             ))
             .unwrap();
-        radio.bus_mut().interrupts.extend([1 << 9; 20]);
+        // A positive code heard (`REG_0C` bits 15:14 = 1).
+        radio
+            .bus_mut()
+            .set_register(crate::REG_SQUELCH_STATUS, 1 << 14);
+        radio.bus_mut().interrupts.extend([1 << 8; 20]);
         let metrics = radio
             .receive_metrics(Tone::Dcs {
                 code: 23,
@@ -1837,6 +1870,42 @@ mod tests {
             .unwrap();
         assert_eq!(metrics.tone, Some(ToneStatus::Matched));
         assert_eq!(radio.bus().interrupts.len(), 12);
+    }
+
+    #[test]
+    fn a_dcs_match_counts_only_for_a_positive_code() {
+        let dcs = Tone::Dcs {
+            code: 23,
+            inverted: false,
+        };
+        let mut radio = Bk4819::new(FakeBus::new(None));
+        radio.recover_to_standby().unwrap();
+        radio
+            .configure_receive(&setup(Modulation::Fm, dcs, 145_500_000))
+            .unwrap();
+        // A negative code (`REG_0C` bits 15:14 = 2) keeps the squelch shut.
+        radio
+            .bus_mut()
+            .set_register(crate::REG_SQUELCH_STATUS, 2 << 14);
+        radio.bus_mut().interrupts.push(1 << 8);
+        assert_eq!(
+            radio.receive_metrics(dcs).unwrap().tone,
+            Some(ToneStatus::Lost)
+        );
+        radio
+            .bus_mut()
+            .set_register(crate::REG_SQUELCH_STATUS, 1 << 14);
+        radio.bus_mut().interrupts.push(1 << 8);
+        assert_eq!(
+            radio.receive_metrics(dcs).unwrap().tone,
+            Some(ToneStatus::Matched)
+        );
+        // Bit 9 is the code going.
+        radio.bus_mut().interrupts.push(1 << 9);
+        assert_eq!(
+            radio.receive_metrics(dcs).unwrap().tone,
+            Some(ToneStatus::Lost)
+        );
     }
 
     #[test]
