@@ -3576,7 +3576,10 @@ impl StudioApp {
                     });
                     layers.last_mut().expect("just pushed")
                 };
-                layer.centres.push(centre);
+                // A radius with nothing in it is not drawn.
+                if !sites.is_empty() {
+                    layer.centres.push(centre);
+                }
                 merge_sites(&mut layer.sites, sites);
             }
         }
@@ -7855,6 +7858,14 @@ mod tests {
             (vec!["GB3LDN".to_owned(), "GB3MAN".to_owned()], 2),
             "each saved locator's repeaters and radius"
         );
+        // A saved locator with no repeaters in range gets no radius.
+        app.saved_locators.put("IO70LI", "Cornwall").unwrap();
+        assert_eq!(
+            shown(&mut app),
+            (vec!["GB3LDN".to_owned(), "GB3MAN".to_owned()], 2),
+            "no radius where nothing is taken"
+        );
+        app.saved_locators.remove("IO70LI");
 
         app.add_all_shown();
         assert_eq!(

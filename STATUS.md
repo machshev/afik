@@ -434,7 +434,9 @@ left to ETCC) are dropped, so the lists do not overlap. Existing `WRPT`
 banks are left as they are. Gate: `cargo fmt --all --check` clean, `cargo
 clippy --workspace --all-targets -- -D warnings` clean, `cargo test
 --workspace --no-fail-fast` 978 passed 0 failed 3 ignored. Not yet looked
-at on screen.
+at on screen. The map no longer draws a generator's radius about a locator
+where it takes nothing (gate: fmt clean, studio clippy `-D warnings` clean,
+`cargo test -p radio-programmer-gui` 226 passed 0 failed 3 ignored).
 
 **`MARINE-070` is active alongside** (2026-10-16, operator request,
 `ADR-109`): step 1 done. The Banks tab has a Marine row: Sync asks Overpass
