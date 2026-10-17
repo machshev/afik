@@ -2399,7 +2399,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "radio-app"
-version = "7.0.52"
+version = "7.0.53"
 dependencies = [
  "embassy-futures",
  "embassy-sync",
@@ -2416,21 +2416,21 @@ dependencies = [
 
 [[package]]
 name = "radio-aprs"
-version = "7.0.52"
+version = "7.0.53"
 dependencies = [
  "radio-domain",
 ]
 
 [[package]]
 name = "radio-bk1080"
-version = "7.0.52"
+version = "7.0.53"
 dependencies = [
  "radio-domain",
 ]
 
 [[package]]
 name = "radio-bk4819"
-version = "7.0.52"
+version = "7.0.53"
 dependencies = [
  "radio-channel-control",
  "radio-channel-plan",
@@ -2440,7 +2440,7 @@ dependencies = [
 
 [[package]]
 name = "radio-channel-control"
-version = "7.0.52"
+version = "7.0.53"
 dependencies = [
  "radio-channel-plan",
  "radio-domain",
@@ -2449,14 +2449,14 @@ dependencies = [
 
 [[package]]
 name = "radio-channel-plan"
-version = "7.0.52"
+version = "7.0.53"
 dependencies = [
  "radio-domain",
 ]
 
 [[package]]
 name = "radio-device"
-version = "7.0.52"
+version = "7.0.53"
 dependencies = [
  "radio-channel-plan",
  "radio-domain",
@@ -2466,11 +2466,11 @@ dependencies = [
 
 [[package]]
 name = "radio-domain"
-version = "7.0.52"
+version = "7.0.53"
 
 [[package]]
 name = "radio-dp32g030"
-version = "7.0.52"
+version = "7.0.53"
 dependencies = [
  "critical-section",
  "embassy-time-driver",
@@ -2479,11 +2479,11 @@ dependencies = [
 
 [[package]]
 name = "radio-eeprom"
-version = "7.0.52"
+version = "7.0.53"
 
 [[package]]
 name = "radio-firmware-k1"
-version = "7.0.52"
+version = "7.0.53"
 dependencies = [
  "cortex-m",
  "cortex-m-rt",
@@ -2500,7 +2500,7 @@ dependencies = [
 
 [[package]]
 name = "radio-firmware-k5"
-version = "7.0.52"
+version = "7.0.53"
 dependencies = [
  "cortex-m",
  "embassy-executor",
@@ -2517,7 +2517,7 @@ dependencies = [
 
 [[package]]
 name = "radio-flasher"
-version = "7.0.52"
+version = "7.0.53"
 dependencies = [
  "radio-channel-plan",
  "radio-domain",
@@ -2528,7 +2528,7 @@ dependencies = [
 
 [[package]]
 name = "radio-flasher-cli"
-version = "7.0.52"
+version = "7.0.53"
 dependencies = [
  "radio-flasher",
  "radio-programmer-serial",
@@ -2536,7 +2536,7 @@ dependencies = [
 
 [[package]]
 name = "radio-platform"
-version = "7.0.52"
+version = "7.0.53"
 dependencies = [
  "radio-bk4819",
  "radio-channel-plan",
@@ -2546,7 +2546,7 @@ dependencies = [
 
 [[package]]
 name = "radio-programmer"
-version = "7.0.52"
+version = "7.0.53"
 dependencies = [
  "radio-channel-plan",
  "radio-domain",
@@ -2558,7 +2558,7 @@ dependencies = [
 
 [[package]]
 name = "radio-programmer-cli"
-version = "7.0.52"
+version = "7.0.53"
 dependencies = [
  "radio-channel-plan",
  "radio-domain",
@@ -2571,7 +2571,7 @@ dependencies = [
 
 [[package]]
 name = "radio-programmer-gui"
-version = "7.0.52"
+version = "7.0.53"
 dependencies = [
  "eframe",
  "log",
@@ -2590,14 +2590,14 @@ dependencies = [
 
 [[package]]
 name = "radio-programmer-serial"
-version = "7.0.52"
+version = "7.0.53"
 dependencies = [
  "radio-programmer",
 ]
 
 [[package]]
 name = "radio-programmer-web"
-version = "7.0.52"
+version = "7.0.53"
 dependencies = [
  "radio-channel-plan",
  "radio-domain",
@@ -2609,11 +2609,11 @@ dependencies = [
 
 [[package]]
 name = "radio-protocol"
-version = "7.0.52"
+version = "7.0.53"
 
 [[package]]
 name = "radio-sim"
-version = "7.0.52"
+version = "7.0.53"
 dependencies = [
  "radio-aprs",
  "radio-bk4819",
@@ -2630,7 +2630,7 @@ dependencies = [
 
 [[package]]
 name = "radio-storage"
-version = "7.0.52"
+version = "7.0.53"
 dependencies = [
  "radio-channel-plan",
  "radio-domain",
@@ -2639,7 +2639,7 @@ dependencies = [
 
 [[package]]
 name = "radio-tx-policy"
-version = "7.0.52"
+version = "7.0.53"
 dependencies = [
  "radio-domain",
 ]
