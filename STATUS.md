@@ -185,7 +185,9 @@ acknowledged, not read back); K5 flash end `0xe9d8`. Operator correction: no
 GROUPS row or group list; on the source list the side keys step through the
 groups (side 1 back, side 2 forward: every bank, each group, wrapping) while
 the arrows and Menu pick a bank and Exit closes; the list redraws on the
-group's banks, titled with its name. `7.0.57` built (K5 flash end `0xe818`).
+group's banks, titled with its name. `7.0.57` (`2c36fd0`) flashed to the
+K1 (bootloader `7.03.01`; CRC-32 `eedfbd42`, 298 pages acknowledged, not read
+back); K5 flash end `0xe818`.
 Gate: `cargo fmt --all --check` clean, `cargo clippy --workspace
 --all-targets -- -D warnings` clean, `cargo test --workspace --no-fail-fast`
 931 passed 0 failed 3 ignored. Gate: `cargo fmt --all --check` clean, `cargo
