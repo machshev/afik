@@ -408,6 +408,31 @@ impl BankKind {
     }
 }
 
+/// What a bank is for, as the memory bar colours it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BankRole {
+    /// Made for, or filed under, a location.
+    Location,
+    /// In [`COMMON_GROUP`], as a default set is: the same everywhere.
+    DefaultSet,
+    /// Any other bank.
+    Other,
+}
+
+impl BankRole {
+    /// Every role, in the order the memory bar draws them.
+    pub const ALL: [Self; 3] = [Self::Location, Self::DefaultSet, Self::Other];
+
+    /// The name the memory bar's key shows.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Location => "Locations",
+            Self::DefaultSet => "Default sets",
+            Self::Other => "Other",
+        }
+    }
+}
+
 /// What one project costs a radio.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct StorageSummary {
@@ -1384,6 +1409,57 @@ impl ProjectModel {
         summary
     }
 
+    /// What `bank` is for: COMMON's banks are default sets, then a bank a
+    /// generator made for a location, or filed under one, is a location's.
+    pub fn bank_role(&self, bank: &BankDraft) -> BankRole {
+        let common = self.group_named(COMMON_GROUP);
+        if common.is_some_and(|common| bank.groups.contains(&common)) {
+            return BankRole::DefaultSet;
+        }
+        let made_for_one = bank
+            .origin
+            .as_ref()
+            .is_some_and(|origin| !origin.locator.is_empty());
+        let filed_under_one = bank.groups.iter().any(|&group| {
+            self.groups
+                .get(group)
+                .is_some_and(|group| !group.locator.is_empty())
+        });
+        if made_for_one || filed_under_one {
+            BankRole::Location
+        } else {
+            BankRole::Other
+        }
+    }
+
+    /// The radio image bytes each [`BankRole`]'s banks take, in
+    /// [`BankRole::ALL`]'s order: each one's banks alone, less an empty
+    /// project. What the groups and configuration take is in none of them.
+    pub fn role_bytes(&self) -> Option<[usize; 3]> {
+        let empty = Self::new().radio_image_len()?;
+        let mut bytes = [0; 3];
+        for (role, total) in BankRole::ALL.into_iter().zip(&mut bytes) {
+            let banks: Vec<_> = self
+                .banks
+                .iter()
+                .filter(|bank| self.bank_role(bank) == role)
+                .map(|bank| BankDraft {
+                    groups: Vec::new(),
+                    ..bank.clone()
+                })
+                .collect();
+            if banks.is_empty() {
+                continue;
+            }
+            let alone = Self {
+                banks,
+                ..Self::new()
+            };
+            *total = alone.radio_image_len()?.saturating_sub(empty);
+        }
+        Some(bytes)
+    }
+
     /// Validates every row and builds one project.
     ///
     /// Channels are numbered through the project in the radio's order.
@@ -1927,9 +2003,9 @@ pub(crate) fn move_to<T>(items: &mut [T], from: usize, slot: usize) {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_mhz, parse_frequency, BankDraft, BankKind, ChannelDraft, ConfigDraft, ModelScope,
-        ProjectModel, StartDraft, ToneDraft, ToneKind, ValidatedBank, MARINE_GROUP,
-        RADIO_IMAGE_BYTES,
+        format_mhz, parse_frequency, BankDraft, BankKind, BankRole, BankSource, ChannelDraft,
+        ConfigDraft, ModelScope, Origin, ProjectModel, StartDraft, ToneDraft, ToneKind,
+        ValidatedBank, COMMON_GROUP, MARINE_GROUP, RADIO_IMAGE_BYTES,
     };
     use radio_channel_plan::{ChannelFlags, SharedSettings, MAX_BANKS};
     use radio_domain::{Bandwidth, BankId, Modulation, PowerLevel, ScanResume, Tone};
@@ -2644,6 +2720,38 @@ mod tests {
         assert_eq!(summary.image_bytes, None);
         assert_eq!(summary.used_per_mille(), None);
         assert_eq!(summary.banks, 2);
+    }
+
+    #[test]
+    fn the_memory_bar_splits_banks_by_what_they_are_for() {
+        let mut model = project();
+        pmr_plan(&mut model);
+        model.add_bank();
+        model.add_channel(2);
+        model.banks[2].channels[0].receive_mhz = "145.500".to_owned();
+        assert!(model.file_in(&model.banks[1].name.clone(), COMMON_GROUP));
+        let home = model.ensure_group("JO02EH", Some("JO02EH")).unwrap();
+        model.banks[2].groups.push(home);
+        let roles: Vec<_> = model.banks.iter().map(|b| model.bank_role(b)).collect();
+        assert_eq!(
+            roles,
+            [BankRole::Other, BankRole::DefaultSet, BankRole::Location]
+        );
+
+        // Made for a location, a bank is that location's wherever it is filed.
+        model.banks[0].origin = Some(Origin::new(BankSource::Repeaters, "JO02EH"));
+        assert_eq!(model.bank_role(&model.banks[0]), BankRole::Location);
+        model.banks[0].origin = None;
+
+        let [location, common, other] = model.role_bytes().unwrap();
+        assert!(location > 0 && common > 0 && other > 0);
+        let total = model.storage_summary().image_bytes.unwrap();
+        let empty = ProjectModel::new().radio_image_len().unwrap();
+        assert!(location + common + other <= total - empty);
+
+        // With no project image there is nothing to split.
+        model.banks[1].base_mhz = "not a frequency".to_owned();
+        assert_eq!(model.role_bytes(), None);
     }
 
     #[test]

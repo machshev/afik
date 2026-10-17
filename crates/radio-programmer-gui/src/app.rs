@@ -1,6 +1,7 @@
 //! The egui application drawing the validated project model.
 
 use std::{
+    fmt::Write as _,
     fs,
     path::{Path, PathBuf},
     time::Instant,
@@ -31,7 +32,7 @@ use crate::{
     map::{self, Layer, MapView, Pin, Site},
     marine::{self, MarineArea, MarineCache, MarineList},
     model::{
-        move_to, trailing_locator, BankDraft, BankKind, ChannelDraft, ModelError, Origin,
+        move_to, trailing_locator, BankDraft, BankKind, BankRole, ChannelDraft, ModelError, Origin,
         ProjectModel, StartDraft, StorageSummary, ToneDraft, ToneKind, TxRangeDraft, AIRBAND_GROUP,
         COMMON_GROUP, MARINE_GROUP, MAX_PROJECT_IMAGE_BYTES, RADIO_IMAGE_BYTES,
     },
@@ -2812,7 +2813,11 @@ impl eframe::App for StudioApp {
         egui::TopBottomPanel::top("tabs").show(context, |ui| self.tab_bar(ui));
 
         egui::TopBottomPanel::bottom("status").show(context, |ui| {
-            usage_bar(ui, &self.project.storage_summary());
+            usage_bar(
+                ui,
+                &self.project.storage_summary(),
+                self.project.role_bytes(),
+            );
             ui.separator();
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new(&self.status).strong());
@@ -5369,55 +5374,132 @@ fn generated_expansion(ui: &mut egui::Ui, bank: &BankDraft) {
 }
 
 /// Shows what the project gives and costs a radio, on every tab: its banks
-/// and channels, and how much of the radio's memory the image takes.
-fn usage_bar(ui: &mut egui::Ui, summary: &StorageSummary) {
+/// and channels, and how much of the radio's memory the image takes, split
+/// by what the banks are for. Kept short so it fits one line; the detail is
+/// on hover.
+fn usage_bar(ui: &mut egui::Ui, summary: &StorageSummary, roles: Option<[usize; 3]>) {
     ui.horizontal_wrapped(|ui| {
         ui.label(format!(
-            "{} banks · {} channels ({} stored, {} from {} plans)",
+            "{} banks · {} ch",
             summary.banks,
-            summary.selectable_channels(),
-            summary.stored_channels,
-            summary.expanded_channels,
-            summary.plans,
+            summary.selectable_channels()
+        ))
+        .on_hover_text(format!(
+            "{} stored, {} from {} plans",
+            summary.stored_channels, summary.expanded_channels, summary.plans,
         ));
         ui.separator();
-        match (summary.image_bytes, summary.used_per_mille()) {
-            (Some(bytes), Some(per_mille)) => {
-                let over = bytes > RADIO_IMAGE_BYTES;
-                let mut bar = egui::ProgressBar::new(
-                    f32::from(u16::try_from(per_mille).unwrap_or(1_000).min(1_000)) / 1_000.0,
-                )
-                .desired_width(120.0)
-                .text(memory_percent(per_mille));
-                if over {
-                    bar = bar.fill(WARNING_COLOUR);
-                }
-                ui.add(bar);
-                if over {
-                    ui.colored_label(
-                        WARNING_COLOUR,
-                        format!(
-                            "{bytes} of {RADIO_IMAGE_BYTES} bytes, {} over: remove banks or \
-                             channels before Write",
-                            bytes - RADIO_IMAGE_BYTES
-                        ),
-                    );
-                } else {
-                    ui.label(format!(
-                        "{bytes} of {RADIO_IMAGE_BYTES} bytes, {} free",
-                        RADIO_IMAGE_BYTES - bytes
-                    ));
-                }
-            }
-            _ => {
-                ui.colored_label(
-                    WARNING_COLOUR,
-                    "Memory: the project does not compile into a radio image yet; \
-                     Save or Write lists what to fix.",
-                );
+        let (Some(bytes), Some(per_mille)) = (summary.image_bytes, summary.used_per_mille()) else {
+            ui.colored_label(
+                WARNING_COLOUR,
+                "Memory: the project does not compile into a radio image yet; \
+                 Save or Write lists what to fix.",
+            );
+            return;
+        };
+        let over = bytes > RADIO_IMAGE_BYTES;
+        let roles = roles.unwrap_or_default();
+        let mut detail = format!("{bytes} of {RADIO_IMAGE_BYTES} bytes");
+        for (role, role_bytes) in BankRole::ALL.into_iter().zip(roles) {
+            let _ = write!(detail, "\n{}: {role_bytes} bytes", role.label());
+        }
+        let shared = bytes.saturating_sub(roles.iter().sum());
+        let _ = write!(detail, "\nGroups and settings: {shared} bytes");
+        memory_segments(ui, bytes, roles, over).on_hover_text(detail);
+        let text = if over {
+            format!(
+                "{} · {} B over: remove banks before Write",
+                memory_percent(per_mille),
+                bytes - RADIO_IMAGE_BYTES
+            )
+        } else {
+            format!(
+                "{} · {} free",
+                memory_percent(per_mille),
+                kilobytes(RADIO_IMAGE_BYTES - bytes)
+            )
+        };
+        if over {
+            ui.colored_label(WARNING_COLOUR, text);
+        } else {
+            ui.label(text);
+        }
+        for (role, role_bytes) in BankRole::ALL.into_iter().zip(roles) {
+            if role_bytes > 0 {
+                swatch(ui, role_colour(role));
+                ui.label(format!("{} {}", role.label(), kilobytes(role_bytes)));
             }
         }
     });
+}
+
+/// The width of the memory bar.
+const MEMORY_BAR_WIDTH: f32 = 220.0;
+
+/// Draws the radio's memory as one bar, each role's banks in its colour
+/// and the groups and settings after them; a project past the memory fills
+/// the bar to scale and is outlined in the warning colour.
+fn memory_segments(
+    ui: &mut egui::Ui,
+    bytes: usize,
+    roles: [usize; 3],
+    over: bool,
+) -> egui::Response {
+    let height = ui.spacing().interact_size.y * 0.6;
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(MEMORY_BAR_WIDTH, height), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    let visuals = ui.visuals();
+    // Square segments sit in it, so the bar is barely rounded.
+    let rounding = 2.0_f32;
+    painter.rect_filled(rect, rounding, visuals.extreme_bg_color);
+    let whole = bytes.max(RADIO_IMAGE_BYTES);
+    let shared = bytes.saturating_sub(roles.iter().sum());
+    let mut left = rect.left();
+    let segments = BankRole::ALL
+        .into_iter()
+        .zip(roles)
+        .map(|(role, role_bytes)| (role_colour(role), role_bytes))
+        .chain([(visuals.widgets.inactive.bg_fill, shared)]);
+    for (colour, segment_bytes) in segments {
+        let per_mille = u16::try_from(segment_bytes * 1_000 / whole).unwrap_or(1_000);
+        let width = MEMORY_BAR_WIDTH * f32::from(per_mille) / 1_000.0;
+        let segment = egui::Rect::from_min_max(
+            egui::pos2(left, rect.top()),
+            egui::pos2((left + width).min(rect.right()), rect.bottom()),
+        );
+        painter.rect_filled(segment, 0.0, colour);
+        left = segment.right();
+    }
+    let outline = if over {
+        egui::Stroke::new(2.0_f32, WARNING_COLOUR)
+    } else {
+        egui::Stroke::new(1.0_f32, visuals.widgets.noninteractive.bg_stroke.color)
+    };
+    painter.rect_stroke(rect.shrink(0.5), rounding, outline);
+    response
+}
+
+/// The colour a role's banks are drawn in on the memory bar.
+const fn role_colour(role: BankRole) -> egui::Color32 {
+    match role {
+        BankRole::Location => egui::Color32::from_rgb(0x26, 0xA2, 0x69),
+        BankRole::DefaultSet => egui::Color32::from_rgb(0x35, 0x84, 0xE4),
+        BankRole::Other => egui::Color32::from_rgb(0x91, 0x41, 0xAC),
+    }
+}
+
+/// A small square of `colour`, keying the memory bar.
+fn swatch(ui: &mut egui::Ui, colour: egui::Color32) {
+    let size = ui.spacing().interact_size.y * 0.45;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 2.0, colour);
+}
+
+/// Formats bytes as kilobytes to a tenth, such as `12.3 kB`.
+fn kilobytes(bytes: usize) -> String {
+    let tenths = (bytes + 50) / 100;
+    format!("{}.{} kB", tenths / 10, tenths % 10)
 }
 
 /// Formats tenths of a percent, such as `12.5%`.
@@ -6922,6 +7004,53 @@ mod tests {
         }
         assert!(!rows.is_empty(), "the tooltip is shown");
         assert!(rows.iter().all(|rows| *rows == 1), "{rows:?}");
+    }
+
+    #[test]
+    fn the_memory_bar_colours_each_role_and_fits_one_line() {
+        use super::{role_colour, usage_bar};
+        use crate::model::{BankRole, StorageSummary};
+        use eframe::egui::{CentralPanel, Pos2, RawInput, Rect, Shape, Vec2};
+
+        let summary = StorageSummary {
+            banks: 40,
+            stored_channels: 900,
+            expanded_channels: 120,
+            plans: 6,
+            image_bytes: Some(20_000),
+        };
+        let context = eframe::egui::Context::default();
+        let input = RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1100.0, 400.0))),
+            ..RawInput::default()
+        };
+        let output = context.run(input, |context| {
+            CentralPanel::default().show(context, |ui| {
+                usage_bar(ui, &summary, Some([9_000, 4_000, 6_000]));
+            });
+        });
+        let shapes: Vec<_> = output.shapes.iter().map(|clipped| &clipped.shape).collect();
+        for role in BankRole::ALL {
+            let fill = role_colour(role);
+            assert!(
+                shapes
+                    .iter()
+                    .any(|shape| matches!(shape, Shape::Rect(rect) if rect.fill == fill)),
+                "{role:?} is drawn"
+            );
+        }
+        let tops: Vec<f32> = shapes
+            .iter()
+            .filter_map(|shape| match shape {
+                Shape::Text(text) => Some(text.pos.y),
+                _ => None,
+            })
+            .collect();
+        assert!(tops.len() >= 5, "{tops:?}");
+        let (low, high) = tops.iter().fold((f32::MAX, f32::MIN), |(low, high), y| {
+            (low.min(*y), high.max(*y))
+        });
+        assert!(high - low < 10.0, "one line at 1100 points: {tops:?}");
     }
 
     #[test]
