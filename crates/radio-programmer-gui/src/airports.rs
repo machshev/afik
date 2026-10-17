@@ -429,14 +429,20 @@ impl AirportPlan<'_> {
     }
 }
 
+/// How near an airport must be to get a bank of its own: two thirds of
+/// where `receiver` hears its tower, 20 km on a handheld, as each bank is
+/// costly.
+pub const fn own_bank_km(receiver: Receiver) -> u16 {
+    Service::Tower.reach_km(receiver) * 2 / 3
+}
+
 /// Chooses the frequencies of the services `options` takes at the airports
 /// within the area's radius of `locator`.
 ///
 /// When each airport gets its own bank, the nearest `options.airports`
-/// airports within the radius with a local (tower, ground or ATIS)
-/// frequency heard from the locator each take all of their local ones,
-/// even those too weak to hear, since that bank is for when the operator
-/// is there.
+/// airports within the radius and [`own_bank_km`] with a local (tower,
+/// ground or ATIS) frequency each take all of their local ones, even those
+/// too weak to hear, since that bank is for when the operator is there.
 /// Every other frequency inside its service's hearing range from `receiver`
 /// goes to the area
 /// bank, most hearable first (distance over range, so approach 60 km off
@@ -469,13 +475,9 @@ pub fn plan<'a>(
             .iter()
             .filter(|(frequency, _)| frequency.service.is_local())
             .collect();
-        // Only an airport with a local frequency heard here gets a bank.
-        let near: HashSet<&str> = local
-            .iter()
-            .filter(|local| heard(local))
-            .map(|(frequency, _)| frequency.ident.as_str())
-            .collect();
-        local.retain(|(frequency, _)| near.contains(frequency.ident.as_str()));
+        // Only an airport near enough gets a bank.
+        let own_km = f64::from(own_bank_km(receiver));
+        local.retain(|(_, km)| *km <= own_km);
         local.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.ident.cmp(&b.0.ident)));
         for (frequency, km) in local {
             if let Some(group) = airports.iter_mut().find(|g| g.ident == frequency.ident) {
@@ -1144,6 +1146,22 @@ mod tests {
         let chosen = plan(&list, "IO91WM", &area(300, 40), &many, Receiver::Handheld).unwrap();
         let idents: Vec<_> = chosen.airports.iter().map(|g| g.ident).collect();
         assert_eq!(idents, ["EGLC", "EGLL"]);
+        // A tower heard at 25 km is past a handheld's 20 km for a bank of
+        // its own, so it goes in the area bank; a base station's is 40 km.
+        let heard_far = [heard("EGWU", "TWR", 124_475_000, 25.0)];
+        let chosen = plan(
+            &heard_far,
+            "IO91WM",
+            &area(300, 40),
+            &many,
+            Receiver::Handheld,
+        )
+        .unwrap();
+        assert!(chosen.airports.is_empty());
+        assert_eq!(chosen.area.len(), 1);
+        assert_eq!(super::own_bank_km(Receiver::Base), 40);
+        let chosen = plan(&heard_far, "IO91WM", &area(300, 40), &many, Receiver::Base).unwrap();
+        assert_eq!(chosen.airports.len(), 1);
     }
 
     #[test]

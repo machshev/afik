@@ -3061,6 +3061,9 @@ impl StudioApp {
                 ui.checkbox(shown, label)
                     .on_hover_text("Shows what this generator would add, and its radius");
             }
+            ui.separator();
+            self.per_airport_controls(ui);
+            ui.separator();
             if ui.button("\u{2212}").on_hover_text("Zooms out").clicked() {
                 map::zoom_by(&mut self.map_view, -1);
             }
@@ -3502,23 +3505,27 @@ impl StudioApp {
                     self.receiver.label().to_lowercase()
                 ));
             }
-            ui.separator();
-            ui.checkbox(&mut self.airport_options.per_airport, "Bank per airport")
-                .on_hover_text(
-                    "Gives each of the nearest airports heard from here a bank of its own \
-                     tower, ground and ATIS, for when you are there; the area bank keeps the \
-                     rest",
-                );
-            ui.add_enabled(
-                self.airport_options.per_airport,
-                egui::DragValue::new(&mut self.airport_options.airports)
-                    .range(1..=MAX_BANKS)
-                    .suffix(" airports"),
-            )
-            .on_hover_text(
-                "How many airports heard from here, nearest first, get a bank of their own",
-            );
         });
+    }
+
+    /// Whether the nearest airports each get a bank of their own, and how
+    /// many, on the map's Show row since every location's airports take it.
+    fn per_airport_controls(&mut self, ui: &mut egui::Ui) {
+        let km = airports::own_bank_km(self.receiver);
+        ui.checkbox(&mut self.airport_options.per_airport, "Bank per airport")
+            .on_hover_text(format!(
+                "Gives each of the nearest airports within {km} km a bank of its own tower, \
+                 ground and ATIS, for when you are there; the area bank keeps the rest"
+            ));
+        ui.add_enabled(
+            self.airport_options.per_airport,
+            egui::DragValue::new(&mut self.airport_options.airports)
+                .range(1..=MAX_BANKS)
+                .suffix(" airports"),
+        )
+        .on_hover_text(format!(
+            "How many airports within {km} km, nearest first, get a bank of their own"
+        ));
     }
 
     /// The row that adds the gliding and small-airfield frequencies near the
