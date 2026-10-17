@@ -35,9 +35,10 @@ use crate::{
     map::{self, Layer, MapView, Pin, Site, SiteSize},
     marine::{self, MarineArea, MarineCache, MarineList},
     model::{
-        move_to, trailing_locator, BankDraft, BankKind, BankRole, ChannelDraft, ModelError, Origin,
-        ProjectModel, StartDraft, StorageSummary, ToneDraft, ToneKind, TxRangeDraft, AIRBAND_GROUP,
-        COMMON_GROUP, MARINE_GROUP, MAX_PROJECT_IMAGE_BYTES, RADIO_IMAGE_BYTES,
+        move_to, trailing_locator, BankDraft, BankKind, BankRole, ChannelDraft, GroupDraft,
+        ModelError, Origin, ProjectModel, StartDraft, StorageSummary, ToneDraft, ToneKind,
+        TxRangeDraft, AIRBAND_GROUP, COMMON_GROUP, MARINE_GROUP, MAX_PROJECT_IMAGE_BYTES,
+        RADIO_IMAGE_BYTES,
     },
     presets::{satellite_bank, PRESETS, SATELLITE_PRESET, TX_RANGE_PRESETS},
     projects::ProjectStore,
@@ -1370,12 +1371,15 @@ impl StudioApp {
                     .as_ref()
                     .is_none_or(|origin| origin.locator.is_empty() || origin.locator == locator)
             })
+            // A bank locations share stays with those it was shared by.
+            .filter(|bank| !is_shared_location_bank(bank))
             .map(|bank| bank.name.clone())
             .collect();
         self.project = project;
         for bank in &generated {
             self.file_here(bank, airband);
         }
+        share_identical(&mut self.project);
     }
 
     /// Files the bank named `bank` under the location of the locator, under
@@ -1471,6 +1475,12 @@ impl StudioApp {
                 .get_or_insert_with(|| Origin::new(source, &self.repeater_area.locator));
         }
         let mut project = self.project.clone();
+        // A location's bank made again leaves any bank it shared.
+        for origin in banks.iter().filter_map(|bank| bank.origin.as_ref()) {
+            if !origin.locator.is_empty() {
+                unshare(&mut project, origin.source, &origin.locator);
+            }
+        }
         for bank in &banks {
             if let Some(existing) = project.banks.iter().position(|b| b.name == bank.name) {
                 // A regenerated bank stays in the groups it was in.
@@ -2737,6 +2747,142 @@ fn airport_site(frequency: &AirportFrequency, highlight: bool) -> Site {
         },
         ..site(&frequency.name, (frequency.latitude, frequency.longitude))
     }
+}
+
+/// The banks every location shares by design, whatever they hold.
+const CORE_SHARED: [&str; 4] = [
+    stations::STATION_BANK,
+    marine::CORE_BANK,
+    airfields::CORE_BANK,
+    airports::MAJOR_BANK,
+];
+
+/// Whether `bank` is the one bank several locations' identical generated
+/// banks became: made for no one locator, and not a bank shared by design.
+fn is_shared_location_bank(bank: &BankDraft) -> bool {
+    bank.origin
+        .as_ref()
+        .is_some_and(|origin| origin.locator.is_empty())
+        && !CORE_SHARED.contains(&bank.name.as_str())
+}
+
+/// The location groups `bank` is filed under.
+fn locations_of<'a>(project: &'a ProjectModel, bank: &BankDraft) -> Vec<&'a GroupDraft> {
+    bank.groups
+        .iter()
+        .filter_map(|group| project.groups.get(*group))
+        .filter(|group| !group.locator.is_empty())
+        .collect()
+}
+
+/// A generated bank's name: its prefix, such as `RPT`, then `rest`, cut to
+/// what a radio holds.
+fn prefixed_name(bank: &BankDraft, rest: &str) -> String {
+    let prefix = bank.name.split_whitespace().next().unwrap_or_default();
+    let mut name = format!("{prefix} {rest}");
+    name.truncate(MAX_BANK_NAME_LEN);
+    name
+}
+
+/// Takes the location at `locator` out of each bank `source`'s banks of
+/// several locations became, as its own is being made again; one left with
+/// a single location becomes that location's own again.
+fn unshare(project: &mut ProjectModel, source: BankSource, locator: &str) {
+    let Some(here) = project.location(locator) else {
+        return;
+    };
+    for row in 0..project.banks.len() {
+        let bank = &project.banks[row];
+        let ours = bank
+            .origin
+            .as_ref()
+            .is_some_and(|origin| origin.source == source);
+        if !ours || !is_shared_location_bank(bank) || !bank.groups.contains(&here) {
+            continue;
+        }
+        project.banks[row].groups.retain(|group| *group != here);
+        let bank = &project.banks[row];
+        if let [only] = locations_of(project, bank)[..] {
+            let locator = only.locator.clone();
+            let name = prefixed_name(bank, &locator);
+            let bank = &mut project.banks[row];
+            bank.name = name;
+            bank.origin = Some(Origin::new(source, &locator));
+        }
+    }
+}
+
+/// Makes the generated banks of different locations which hold the same
+/// channels one bank, filed under every one of them and named for them,
+/// such as `RPT HOME+WORK`; returns how many banks went.
+fn share_identical(project: &mut ProjectModel) -> usize {
+    // The same channels in any order: each location puts its most
+    // hearable first.
+    let content = |bank: &BankDraft| {
+        let mut channels = bank.channels.clone();
+        channels.sort_by(|a, b| (&a.receive_mhz, &a.name).cmp(&(&b.receive_mhz, &b.name)));
+        BankDraft {
+            name: String::new(),
+            groups: Vec::new(),
+            origin: None,
+            channels,
+            ..bank.clone()
+        }
+    };
+    // A location's own bank, named for its locator, or one already
+    // shared; an airport's own bank is named for the airport instead.
+    let shareable = |bank: &BankDraft| {
+        let own = bank.origin.as_ref().is_some_and(|origin| {
+            !origin.locator.is_empty()
+                && trailing_locator(&bank.name).as_deref() == Some(origin.locator.as_str())
+        });
+        !bank.channels.is_empty() && (own || is_shared_location_bank(bank))
+    };
+    let mut gone = 0;
+    let mut row = 0;
+    while row < project.banks.len() {
+        let mut merged = false;
+        let mut other = row + 1;
+        while other < project.banks.len() {
+            let (first, second) = (&project.banks[row], &project.banks[other]);
+            let same = shareable(first)
+                && shareable(second)
+                && first.origin.as_ref().map(|o| o.source)
+                    == second.origin.as_ref().map(|o| o.source)
+                && content(first) == content(second);
+            if same {
+                let second = project.banks.remove(other);
+                let first = &mut project.banks[row];
+                for group in second.groups {
+                    if !first.groups.contains(&group) {
+                        first.groups.push(group);
+                    }
+                }
+                merged = true;
+                gone += 1;
+            } else {
+                other += 1;
+            }
+        }
+        if merged {
+            // Named in the order the locations were made, whichever bank
+            // came first.
+            project.banks[row].groups.sort_unstable();
+            let bank = &project.banks[row];
+            let names: Vec<_> = locations_of(project, bank)
+                .iter()
+                .map(|group| group.name.clone())
+                .collect();
+            let name = prefixed_name(bank, &names.join("+"));
+            let bank = &mut project.banks[row];
+            bank.name = name;
+            if let Some(origin) = &mut bank.origin {
+                origin.locator.clear();
+            }
+        }
+        row += 1;
+    }
+    gone
 }
 
 /// Adds `more` to `sites`, a site already there taken once and singled out
@@ -8170,6 +8316,105 @@ mod tests {
         app.repeater_area.locator = "nonsense".to_owned();
         app.add_repeaters();
         assert_eq!(app.project.banks.len(), banks + 1);
+    }
+
+    #[test]
+    fn nearby_locations_hearing_the_same_share_one_bank() {
+        use crate::repeaters::{Coverage, Repeater, RepeaterList};
+
+        let repeater = |callsign: &str, latitude: f64, coverage| Repeater {
+            callsign: callsign.to_owned(),
+            town: String::new(),
+            output_hz: 145_625_000,
+            input_hz: 145_025_000,
+            ctcss_tenths_hz: Some(825),
+            wide: false,
+            latitude,
+            longitude: -0.125,
+            coverage,
+        };
+        let mut app = simulated("share-banks");
+        app.saved_locators.put("IO91WM", "Home").unwrap();
+        app.saved_locators.put("IO91WL", "Work").unwrap();
+        let synced = |repeaters| {
+            Some(RepeaterList {
+                repeaters,
+                gateways: Vec::new(),
+                beacons: Vec::new(),
+                synced: std::time::SystemTime::now(),
+            })
+        };
+        let near = repeater("GB3NEAR", 51.53, Coverage::Standard);
+        // Wide-area, so heard from both, but most hearable second from Home
+        // and first from Work.
+        let mut far = repeater("GB3FAR", 51.42, Coverage::WideArea);
+        far.output_hz = 145_750_000;
+        // Local, 11 km from IO91WL's centre and 16 km from IO91WM's.
+        let south = repeater("GB3SOUTH", 51.38, Coverage::Local);
+        let add_at = |app: &mut StudioApp, locator: &str| {
+            locator.clone_into(&mut app.repeater_area.locator);
+            app.add_repeaters();
+        };
+        let rpt = |app: &StudioApp| -> Vec<(String, Vec<String>)> {
+            app.project
+                .banks
+                .iter()
+                .filter(|b| b.name.starts_with("RPT"))
+                .map(|b| {
+                    let groups = b
+                        .groups
+                        .iter()
+                        .map(|g| app.project.groups[*g].name.clone())
+                        .collect();
+                    (b.name.clone(), groups)
+                })
+                .collect()
+        };
+        let shared = || {
+            vec![(
+                "RPT HOME+WORK".to_owned(),
+                vec!["HOME".to_owned(), "WORK".to_owned()],
+            )]
+        };
+
+        app.repeaters = synced(vec![near.clone(), far.clone()]);
+        let pair = [near.clone(), far.clone()];
+        let order = |locator: &str| -> Vec<String> {
+            let reach = crate::repeaters::RepeaterReach::default();
+            crate::repeaters::hearable(&pair, locator, 50, &reach, super::Receiver::Handheld)
+                .unwrap()
+                .iter()
+                .map(|(r, _)| r.callsign.clone())
+                .collect()
+        };
+        assert_eq!(order("IO91WM"), ["GB3NEAR", "GB3FAR"]);
+        assert_eq!(order("IO91WL"), ["GB3FAR", "GB3NEAR"]);
+        add_at(&mut app, "IO91WM");
+        add_at(&mut app, "IO91WL");
+        assert_eq!(rpt(&app), shared());
+        let bank = app.project.banks.iter().find(|b| b.name == "RPT HOME+WORK");
+        assert_eq!(bank.unwrap().origin.as_ref().unwrap().locator, "");
+
+        // Work now hears one Home does not: each has its own bank again.
+        app.repeaters = synced(vec![near.clone(), far.clone(), south]);
+        add_at(&mut app, "IO91WL");
+        assert_eq!(
+            rpt(&app),
+            [
+                ("RPT IO91WM".to_owned(), vec!["HOME".to_owned()]),
+                ("RPT IO91WL".to_owned(), vec!["WORK".to_owned()]),
+            ]
+        );
+        add_at(&mut app, "IO91WM");
+        assert_eq!(rpt(&app).len(), 2, "still different");
+
+        // The same again, they share again.
+        app.repeaters = synced(vec![near, far]);
+        add_at(&mut app, "IO91WL");
+        assert_eq!(rpt(&app), shared());
+        // Adding at one of them again keeps the one bank.
+        add_at(&mut app, "IO91WM");
+        assert_eq!(rpt(&app), shared());
     }
 
     #[test]
