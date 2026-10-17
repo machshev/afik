@@ -1981,5 +1981,8 @@ meaning.
 - On the radio, choosing a group narrows the source list to ALL OF the group
   (one list over its banks, which a scan walks), its banks, and the other
   groups; the operator chose this over a group being one more source.
-- The radio keeps two bytes per group (its entry offset) and the chosen
-  group's bank set (32 bytes); up to 32 groups.
+- The image stores a group as its name and a 32-byte bank set. The radio
+  keeps two bytes per group (its entry offset) and the chosen group's set;
+  up to 32 groups. Loading checks only a group's layout, to keep the K5
+  loader small (196 bytes of flash); a group's set is checked, and narrowed
+  to the banks the image holds, when it is read.

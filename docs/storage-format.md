@@ -1,19 +1,21 @@
 # Storage object model
 
-> **Radios run format 7 (`ADR-100`, `ADR-101`, `ADR-115`).** The object format below
+> **Radios run format 8 (`ADR-100`, `ADR-101`, `ADR-115`, `ADR-116`).** The object format below
 > is the host's project and editing format (object format 5). A radio runs the
 > bank-grouped image in `radio-storage::radio_image`, compiled from a project
 > by `RadioProject::compile_radio_image`; its module documentation is the
-> byte-level reference. In short: a 16-byte header (image version 2, format 7,
+> byte-level reference. In short: a 16-byte header (image version 2, format 8,
 > bank count, payload length, CRC-32), the 16-byte radio configuration, the
 > programmed TX ranges (a count, then 14 bytes each: class, flags, first and
 > last Hz, max mW, raster Hz; `ADR-101`), then up to 254 banks in identifier
 > order, each one entry (id, flags, kind, body length, name) and one block: a
 > *list* stores the values its channels share once and sets a `fields` bit for
 > each value its fixed-size records carry instead (a frequency is a `u16`
-> count of rasters when it fits); a *linear* block is a generated plan. Every
-> channel is in a bank, so a radio keeps four bytes of RAM per bank and reads
-> channels from memory. Sixteen named PMR446 channels cost 112 bytes of
+> count of rasters when it fits); a *linear* block is a generated plan. Then
+> up to 32 bank groups, each a name and its banks as a 32-byte set; a
+> location's locator stays in the project (object kind 6). Every channel is
+> in a bank, so a radio keeps four bytes of RAM per bank and two per group,
+> and reads channels from memory. Sixteen named PMR446 channels cost 112 bytes of
 > records, against 752 as objects.
 
 Device configuration is a bounded set of typed objects. Each object has a

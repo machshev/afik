@@ -131,6 +131,19 @@ confirmed by `identify` first, CRC-32 `e0d9ccc2`, 240/240 pages
 acknowledged, not read back). Next (step 3): time a scan of the 59-channel
 bank, and key a PMR446 channel to check it still stops there.
 
+**`GROUP-075` is active alongside** (2026-10-17, operator request,
+`ADR-116`): step 1 done. `BankGroup` (name, `BankSet`, optional `Locator`)
+is project object kind 6 (60 bytes) and reaches the radio in image format 8
+as a name and a 32-byte bank set, without its locator; `RadioProject` and the
+studio's file reader carry groups. The radio's loader checks only a group's
+layout and `Index::group` narrows its set to held banks when read: built as a
+list with full checks it cost about 600 bytes of K5 flash, now 196 (flash end
+`0xebd8`). Gate: `cargo fmt --all --check` clean, `cargo clippy --workspace
+--all-targets -- -D warnings` clean, `cargo test --workspace --no-fail-fast`
+902 passed 1 failed 3 ignored (the failure is the other session's
+uncommitted repeater band work in `app.rs`, which passes on its own rerun),
+K5 and K1 release builds pass. Next (step 2): the radio's group context.
+
 **`FLASH-074` done** (2026-10-17, operator request, `RISK-049`): the K5
 image had 16 bytes of flash left. `interface::run` was 22.6 KB because the
 build inlined helpers at every caller; `#[inline(never)]` on 21 of them

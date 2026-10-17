@@ -5,9 +5,10 @@
 
 use core::fmt;
 use radio_channel_plan::{
-    BankFlags, BankName, BankSettings, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
-    ChannelRecord, ChannelTemplate, Designator, GeneratedBank, PlanEncoding, SharedSettings,
-    MAX_BANK_NAME_LEN, MAX_CHANNEL_NAME_LEN, MAX_DESIGNATOR_LEN,
+    BankFlags, BankGroup, BankName, BankSet, BankSettings, ChannelBank, ChannelDefinition,
+    ChannelFlags, ChannelName, ChannelRecord, ChannelTemplate, Designator, GeneratedBank, Locator,
+    PlanEncoding, SharedSettings, MAX_BANK_NAME_LEN, MAX_CHANNEL_NAME_LEN, MAX_DESIGNATOR_LEN,
+    MAX_LOCATOR_LEN,
 };
 use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, Offset, PowerLevel,
@@ -17,7 +18,7 @@ use radio_tx_policy::{TxRange, MAX_TX_RANGES};
 
 /// Relative dual-slot canonical-image persistence model.
 pub mod dual_slot;
-/// The bank-grouped image a radio runs (format 7).
+/// The bank-grouped image a radio runs (format 8).
 pub mod radio_image;
 /// One-way upgrade of older project files.
 pub mod upgrade;
@@ -82,6 +83,8 @@ pub enum ObjectKind {
     RadioConfig = 4,
     /// One programmed TX range (`ADR-101`); the identifier is its position.
     TxRange = 5,
+    /// One bank group, and a location's locator (`ADR-116`).
+    BankGroup = 6,
 }
 
 impl TryFrom<u8> for ObjectKind {
@@ -94,6 +97,7 @@ impl TryFrom<u8> for ObjectKind {
             3 => Ok(Self::ChannelBank),
             4 => Ok(Self::RadioConfig),
             5 => Ok(Self::TxRange),
+            6 => Ok(Self::BankGroup),
             _ => Err(StorageError::UnsupportedObject),
         }
     }
@@ -1247,9 +1251,66 @@ pub fn decode_tx_range(object: &impl Object) -> Result<TxRange, StorageError> {
     decode_tx_range_body(&body)
 }
 
+/// Encoded byte length of a bank-group object: version, name, locator and
+/// the bank set.
+pub const BANK_GROUP_ENCODED_LEN: usize = 1 + 1 + MAX_BANK_NAME_LEN + 1 + MAX_LOCATOR_LEN + 32;
+
+/// Encodes a bank group, and a location's locator, as a storage object.
+pub fn encode_bank_group(group: BankGroup) -> Result<StorageObject, StorageError> {
+    let mut data = [0_u8; BANK_GROUP_ENCODED_LEN];
+    data[0] = STORAGE_FORMAT_VERSION;
+    data[1] = group.name().len();
+    data[2..18].copy_from_slice(&group.name().field());
+    if let Some(locator) = group.locator() {
+        data[18] = locator.len();
+        data[19..27].copy_from_slice(&locator.field());
+    }
+    data[27..59].copy_from_slice(&group.banks().to_bytes());
+    StorageObject::new(
+        ObjectKey {
+            kind: ObjectKind::BankGroup,
+            id: u16::from(group.id()),
+        },
+        &data,
+    )
+}
+
+/// Decodes and fully validates a bank-group storage object.
+pub fn decode_bank_group(object: &impl Object) -> Result<BankGroup, StorageError> {
+    let key = object.key();
+    if key.kind != ObjectKind::BankGroup {
+        return Err(StorageError::UnsupportedObject);
+    }
+    let data = object.data();
+    if data.len() != BANK_GROUP_ENCODED_LEN || data[0] != STORAGE_FORMAT_VERSION {
+        return Err(StorageError::MalformedObject);
+    }
+    let id = u8::try_from(key.id).map_err(|_| StorageError::MalformedObject)?;
+    let mut name = [0_u8; MAX_BANK_NAME_LEN];
+    name.copy_from_slice(&data[2..18]);
+    let name = BankName::from_field(name, data[1]).map_err(|_| StorageError::MalformedObject)?;
+    let locator = if data[18] == 0 {
+        if data[19..27].iter().any(|byte| *byte != 0) {
+            return Err(StorageError::MalformedObject);
+        }
+        None
+    } else {
+        let mut field = [0_u8; MAX_LOCATOR_LEN];
+        field.copy_from_slice(&data[19..27]);
+        Some(Locator::from_field(field, data[18]).map_err(|_| StorageError::MalformedObject)?)
+    };
+    let mut banks = [0_u8; 32];
+    banks.copy_from_slice(&data[27..59]);
+    let banks = BankSet::from_bytes(banks).map_err(|_| StorageError::MalformedObject)?;
+    Ok(BankGroup::new(id, name, banks)
+        .map_err(|_| StorageError::MalformedObject)?
+        .with_locator(locator))
+}
+
 /// Validates any currently supported configuration object.
 pub fn validate_object(object: &impl Object) -> bool {
     match object.key().kind {
+        ObjectKind::BankGroup => decode_bank_group(object).is_ok(),
         ObjectKind::GeneratedBank => decode_generated_bank(object).is_ok(),
         ObjectKind::Channel => decode_channel(object).is_ok(),
         ObjectKind::ChannelBank => decode_channel_bank(object).is_ok(),
@@ -1808,6 +1869,50 @@ mod tests {
                 "index {index} value {value}"
             );
         }
+    }
+
+    #[test]
+    fn a_bank_group_and_its_locator_round_trip() {
+        use radio_channel_plan::{BankGroup, BankSet, Locator};
+        let banks = BankSet::EMPTY
+            .with(BankId::new(0))
+            .with(BankId::new(200))
+            .with(BankId::new(253));
+        let group = BankGroup::new(31, BankName::new("HOME").unwrap(), banks)
+            .unwrap()
+            .with_locator(Some(Locator::new("JO02EH").unwrap()));
+        let object = super::encode_bank_group(group).unwrap();
+        assert_eq!(object.len(), super::BANK_GROUP_ENCODED_LEN);
+        assert!(object.len() <= super::MAX_OBJECT_DATA);
+        assert_eq!(super::decode_bank_group(&object), Ok(group));
+        assert!(validate_object(&object));
+        let plain = group.with_locator(None);
+        assert_eq!(
+            super::decode_bank_group(&super::encode_bank_group(plain).unwrap()),
+            Ok(plain)
+        );
+        // No banks, a bit past the last bank, or a locator byte without a
+        // length is refused.
+        for (at, value) in [(27 + 31, 0x40), (19, b'J')] {
+            let mut data = object.data().to_vec();
+            if at == 19 {
+                data[18] = 0;
+            }
+            data[at] |= value;
+            let bad = StorageObject::new(object.key(), &data).unwrap();
+            assert_eq!(
+                super::decode_bank_group(&bad),
+                Err(StorageError::MalformedObject),
+                "byte {at}"
+            );
+        }
+        let mut empty = object.data().to_vec();
+        empty[27..59].fill(0);
+        let bad = StorageObject::new(object.key(), &empty).unwrap();
+        assert_eq!(
+            super::decode_bank_group(&bad),
+            Err(StorageError::MalformedObject)
+        );
     }
 
     #[test]

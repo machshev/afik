@@ -3,7 +3,7 @@
 #![forbid(unsafe_code)]
 
 use core::fmt;
-use radio_channel_plan::{ChannelBank, ChannelRecord, GeneratedBank, PlanEncoding};
+use radio_channel_plan::{BankGroup, ChannelBank, ChannelRecord, GeneratedBank, PlanEncoding};
 use radio_domain::{BankId, ChannelId, RadioConfig};
 use radio_platform::memory_link::IMAGE_REGION_BYTES;
 pub use radio_protocol::DeviceCapabilities;
@@ -15,11 +15,12 @@ use radio_protocol::{
 };
 use radio_storage::radio_image;
 use radio_storage::{
-    configuration_image_len, decode_channel, decode_channel_bank, decode_configuration_image,
-    decode_generated_bank, decode_radio_config, decode_tx_range, encode_channel,
-    encode_channel_bank, encode_configuration_image, encode_generated_bank, encode_radio_config,
-    encode_tx_range, ObjectKey, ObjectKind, StorageError, StorageObject, StorageUsage,
-    MAX_OBJECT_DATA, OBJECT_ENTRY_HEADER_LEN, STORAGE_FORMAT_VERSION,
+    configuration_image_len, decode_bank_group, decode_channel, decode_channel_bank,
+    decode_configuration_image, decode_generated_bank, decode_radio_config, decode_tx_range,
+    encode_bank_group, encode_channel, encode_channel_bank, encode_configuration_image,
+    encode_generated_bank, encode_radio_config, encode_tx_range, ObjectKey, ObjectKind,
+    StorageError, StorageObject, StorageUsage, MAX_OBJECT_DATA, OBJECT_ENTRY_HEADER_LEN,
+    STORAGE_FORMAT_VERSION,
 };
 use radio_tx_policy::{RangeError, TxPolicy, TxRange};
 
@@ -108,6 +109,7 @@ pub struct RadioProject {
     banks: Vec<ChannelBank>,
     config: Option<RadioConfig>,
     tx_ranges: Vec<TxRange>,
+    groups: Vec<BankGroup>,
 }
 
 impl RadioProject {
@@ -119,7 +121,18 @@ impl RadioProject {
             banks: Vec::new(),
             config: None,
             tx_ranges: Vec::new(),
+            groups: Vec::new(),
         }
+    }
+
+    /// Adds one bank group, or location (`ADR-116`).
+    pub fn add_group(&mut self, group: BankGroup) {
+        self.groups.push(group);
+    }
+
+    /// Returns the bank groups.
+    pub fn groups(&self) -> &[BankGroup] {
+        &self.groups
     }
 
     /// Adds one compact generated bank.
@@ -173,7 +186,7 @@ impl RadioProject {
     }
 
     /// Compiles the project into the bank-grouped image a radio runs
-    /// (storage format 7, `ADR-115`), sized to the radio's image region.
+    /// (storage format 8, `ADR-116`), sized to the radio's image region.
     ///
     /// Each channel must be in at most one bank: in this format a channel is
     /// stored in its bank. Channels in no bank are kept in a bankless block.
@@ -185,6 +198,7 @@ impl RadioProject {
             &self.banks,
             &self.channels,
             &self.generated_banks,
+            &self.groups,
             &mut image,
         )?;
         image.truncate(len);
@@ -226,6 +240,7 @@ impl RadioProject {
                 continue;
             }
             let numbers = (0..).map_while(|position| index.index_of(bank, position));
+            // Banks first, so a group below finds every bank it names.
             for number in numbers {
                 let channel = index
                     .channel_at(read, number)
@@ -233,6 +248,12 @@ impl RadioProject {
                     .ok_or(StorageError::MalformedObject)?;
                 project.add_channel(channel);
             }
+        }
+        for id in 0..index.group_count() {
+            let (name, banks) = index.group(read, id).ok_or(StorageError::MalformedObject)?;
+            project.add_group(
+                BankGroup::new(id, name, banks).map_err(|_| StorageError::MalformedObject)?,
+            );
         }
         Ok(project)
     }
@@ -244,6 +265,7 @@ impl RadioProject {
             && self.banks.is_empty()
             && self.config.is_none()
             && self.tx_ranges.is_empty()
+            && self.groups.is_empty()
     }
 }
 
@@ -393,7 +415,8 @@ impl ConfigurationCompiler {
             + project.channels.len()
             + project.banks.len()
             + usize::from(project.config.is_some())
-            + project.tx_ranges.len();
+            + project.tx_ranges.len()
+            + project.groups.len();
         let mut objects = Vec::with_capacity(object_count);
         for bank in &project.generated_banks {
             objects.push(encode_generated_bank(*bank)?);
@@ -411,6 +434,9 @@ impl ConfigurationCompiler {
         for (position, range) in project.tx_ranges.iter().enumerate() {
             let position = u16::try_from(position).map_err(|_| CompileError::CapacityOverflow)?;
             objects.push(encode_tx_range(position, *range)?);
+        }
+        for group in &project.groups {
+            objects.push(encode_bank_group(*group)?);
         }
         objects.sort_unstable_by_key(|object| object.key());
         if let Some(duplicate) = objects
@@ -506,6 +532,9 @@ impl ConfigurationCompiler {
                 }
                 ObjectKind::TxRange => {
                     decode_tx_range(object)?;
+                }
+                ObjectKind::BankGroup => {
+                    decode_bank_group(object)?;
                 }
             }
             report.object_count = report
@@ -648,6 +677,9 @@ impl ConfigurationSnapshot {
                 }
                 ObjectKind::TxRange => {
                     decode_tx_range(object)?;
+                }
+                ObjectKind::BankGroup => {
+                    decode_bank_group(object)?;
                 }
             }
             storage_bytes = storage_bytes
@@ -1327,6 +1359,33 @@ mod tests {
             .collect();
         assert!(kinds.contains(&(ObjectKind::TxRange, 0)));
         assert!(kinds.contains(&(ObjectKind::TxRange, 1)));
+    }
+
+    #[test]
+    fn groups_survive_the_project_file_and_reach_the_radio_without_their_locator() {
+        use radio_channel_plan::{BankGroup, BankSet, Locator};
+        let mut project = RadioProject::new();
+        project.add_generated_bank(bank(1));
+        project.add_channel(channel(2, 0));
+        project.add_bank(named_bank(0));
+        let both = BankSet::EMPTY.with(BankId::new(0)).with(BankId::new(1));
+        let home = BankGroup::new(0, BankName::new("HOME").unwrap(), both)
+            .unwrap()
+            .with_locator(Some(Locator::new("JO02EH").unwrap()));
+        project.add_group(home);
+        assert!(!project.is_empty());
+
+        let compiled = ConfigurationCompiler::new(capabilities_for(8))
+            .compile(&project)
+            .unwrap();
+        assert!(compiled
+            .objects()
+            .iter()
+            .any(|object| object.key().kind == ObjectKind::BankGroup));
+
+        let image = project.compile_radio_image().expect("radio image");
+        let read = RadioProject::from_radio_image(&image).expect("reads back");
+        assert_eq!(read.groups(), &[home.with_locator(None)]);
     }
 
     #[test]

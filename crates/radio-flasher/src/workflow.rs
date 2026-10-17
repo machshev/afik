@@ -3187,6 +3187,7 @@ mod tests {
                 &[],
                 &[],
                 &[plan],
+                &[],
                 &mut image,
             )
             .unwrap();

@@ -320,6 +320,7 @@ mod tests {
             &[],
             &[channel(1), channel(2)],
             &[],
+            &[],
             &mut memory.0,
         )
         .expect("image");

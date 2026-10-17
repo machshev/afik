@@ -1280,6 +1280,9 @@ impl ProjectModel {
                 ObjectKind::TxRange => {
                     project.add_tx_range(decode_tx_range(&object).map_err(invalid)?);
                 }
+                ObjectKind::BankGroup => {
+                    project.add_group(radio_storage::decode_bank_group(&object).map_err(invalid)?);
+                }
             }
         }
         Ok(Self::from_project(&project))

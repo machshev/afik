@@ -193,6 +193,7 @@ mod tests {
             &[],
             &channels,
             &[],
+            &[],
             &mut image,
         )
         .expect("compiles");

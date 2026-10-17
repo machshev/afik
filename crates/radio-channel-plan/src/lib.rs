@@ -89,6 +89,38 @@ impl BankSet {
         self.words.iter().all(|word| *word == 0)
     }
 
+    /// The banks in both this set and `other`.
+    #[must_use]
+    pub fn within(mut self, other: &Self) -> Self {
+        for (word, theirs) in self.words.iter_mut().zip(other.words) {
+            *word &= theirs;
+        }
+        self
+    }
+
+    /// The set as 32 bytes, bank `n` as bit `n % 8` of byte `n / 8`.
+    pub fn to_bytes(&self) -> [u8; 32] {
+        let mut bytes = [0; 32];
+        for (chunk, word) in bytes.chunks_exact_mut(4).zip(self.words) {
+            chunk.copy_from_slice(&word.to_le_bytes());
+        }
+        bytes
+    }
+
+    /// Reads what [`Self::to_bytes`] wrote; a bit past the last bank is
+    /// refused.
+    pub fn from_bytes(bytes: [u8; 32]) -> Result<Self, PlanError> {
+        let mut set = Self::EMPTY;
+        for (word, chunk) in set.words.iter_mut().zip(bytes.chunks_exact(4)) {
+            *word = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        }
+        // Bits 254 and 255 name no bank.
+        if set.words[7] >> (MAX_BANKS % 32) != 0 {
+            return Err(PlanError::BankOutOfRange);
+        }
+        Ok(set)
+    }
+
     /// The banks in identifier order.
     pub fn iter(&self) -> impl Iterator<Item = BankId> + '_ {
         (0..MAX_BANKS)
@@ -140,6 +172,9 @@ pub enum PlanError {
     InvalidTone,
     /// A bank identifier was outside the addressable membership range.
     BankOutOfRange,
+    /// A group identifier was at or past [`MAX_GROUPS`], or a group held no
+    /// bank.
+    GroupOutOfRange,
     /// A reserved flag bit was set.
     ReservedFlag,
     /// A generated plan held more channels than one plan may contain.
@@ -168,6 +203,9 @@ impl fmt::Display for PlanError {
             Self::FrequencyOverflow => formatter.write_str("generated frequency overflow"),
             Self::InvalidTone => formatter.write_str("invalid CTCSS frequency or DCS code"),
             Self::BankOutOfRange => formatter.write_str("bank identifier is outside range"),
+            Self::GroupOutOfRange => {
+                formatter.write_str("group identifier is outside range, or the group is empty")
+            }
             Self::ReservedFlag => formatter.write_str("reserved flag bit is set"),
             Self::TooManyChannels => formatter.write_str("generated plan holds too many channels"),
             Self::ReservedChannelId => {
@@ -264,6 +302,69 @@ impl<const CAPACITY: usize> FixedName<CAPACITY> {
 
 /// A compact, display-safe bank name.
 pub type BankName = FixedName<MAX_BANK_NAME_LEN>;
+/// A Maidenhead locator of up to eight characters, such as `JO02EH`.
+pub type Locator = FixedName<MAX_LOCATOR_LEN>;
+
+/// Longest locator a group carries: an eight-character Maidenhead square.
+pub const MAX_LOCATOR_LEN: usize = 8;
+/// Bank groups a radio holds (`ADR-116`).
+pub const MAX_GROUPS: u8 = 32;
+
+/// A named set of banks the radio can narrow its source list to
+/// (`ADR-116`); a bank may be in any number of groups.
+///
+/// A group with a locator is a location: the studio files the banks it
+/// generates for that locator under it. The locator stays in the project; a
+/// radio gets the name and the banks.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BankGroup {
+    id: u8,
+    name: BankName,
+    banks: BankSet,
+    locator: Option<Locator>,
+}
+
+impl BankGroup {
+    /// A group of at least one bank, its identifier below [`MAX_GROUPS`].
+    pub fn new(id: u8, name: BankName, banks: BankSet) -> Result<Self, PlanError> {
+        if id >= MAX_GROUPS || banks.is_empty() {
+            return Err(PlanError::GroupOutOfRange);
+        }
+        Ok(Self {
+            id,
+            name,
+            banks,
+            locator: None,
+        })
+    }
+
+    /// Returns the group as a location at `locator`.
+    #[must_use]
+    pub const fn with_locator(mut self, locator: Option<Locator>) -> Self {
+        self.locator = locator;
+        self
+    }
+
+    /// Returns the group's identifier.
+    pub const fn id(self) -> u8 {
+        self.id
+    }
+
+    /// Returns the group's name.
+    pub const fn name(self) -> BankName {
+        self.name
+    }
+
+    /// Returns the banks in the group.
+    pub const fn banks(self) -> BankSet {
+        self.banks
+    }
+
+    /// Returns the locator of a location group.
+    pub const fn locator(self) -> Option<Locator> {
+        self.locator
+    }
+}
 /// A compact, display-safe explicit channel name.
 pub type ChannelName = FixedName<MAX_CHANNEL_NAME_LEN>;
 /// The short prefix a plan's expanded channel names are built from.
@@ -1333,8 +1434,8 @@ mod tests {
     use radio_domain::{Bandwidth, ChannelId, Modulation, PowerLevel, Tone};
 
     use super::{
-        generated_channel_index, BankName, BankSet, Designator, GeneratedBank, PlanEncoding,
-        PlanError, SharedSettings,
+        generated_channel_index, BankGroup, BankName, BankSet, Designator, GeneratedBank,
+        PlanEncoding, PlanError, SharedSettings, MAX_GROUPS,
     };
     use radio_domain::{BankId, Frequency, FrequencyStep, Offset};
 
@@ -1583,6 +1684,27 @@ mod tests {
         let record = plan.channel_record(7).unwrap();
         assert_eq!(generated_channel_index(record.id()), Some(7));
         assert_eq!(record.bank(), Some(BankId::new(MAX_BANKS - 1)));
+    }
+
+    #[test]
+    fn a_group_holds_at_least_one_bank_and_its_set_survives_bytes() {
+        let banks = BankSet::EMPTY.with(BankId::new(3)).with(BankId::new(253));
+        let name = BankName::new("HOME").unwrap();
+        let group = BankGroup::new(31, name, banks).unwrap();
+        assert_eq!(group.banks(), banks);
+        assert_eq!(group.locator(), None);
+        assert_eq!(
+            BankGroup::new(MAX_GROUPS, name, banks),
+            Err(PlanError::GroupOutOfRange)
+        );
+        assert_eq!(
+            BankGroup::new(0, name, BankSet::EMPTY),
+            Err(PlanError::GroupOutOfRange)
+        );
+        assert_eq!(BankSet::from_bytes(banks.to_bytes()), Ok(banks));
+        let mut past = [0_u8; 32];
+        past[31] = 0x80;
+        assert_eq!(BankSet::from_bytes(past), Err(PlanError::BankOutOfRange));
     }
 
     #[test]

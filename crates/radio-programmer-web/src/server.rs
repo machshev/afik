@@ -558,6 +558,7 @@ fn state_json(state: &GuiState) -> String {
             ObjectKind::ChannelBank => "channel-bank",
             ObjectKind::RadioConfig => "radio-config",
             ObjectKind::TxRange => "tx-range",
+            ObjectKind::BankGroup => "bank-group",
         };
         write!(
             &mut json,

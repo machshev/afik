@@ -1030,6 +1030,7 @@ const fn object_kind_name(kind: ObjectKind) -> &'static str {
         ObjectKind::ChannelBank => "channel-bank",
         ObjectKind::RadioConfig => "radio-config",
         ObjectKind::TxRange => "tx-range",
+        ObjectKind::BankGroup => "bank-group",
     }
 }
 

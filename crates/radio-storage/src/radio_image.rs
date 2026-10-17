@@ -1,10 +1,12 @@
-//! The image a radio runs: storage format 7, one block per bank.
+//! The image a radio runs: storage format 8, one block per bank, then the
+//! bank groups.
 //!
 //! The host compiles a project into this image and writes it into the radio's
 //! memory (`ADR-100`); the radio reads it in place. Every channel lives in a
 //! bank, and each bank is exactly one block carried in its bank-table entry
 //! (`ADR-115`), so the radio's RAM index is one small entry per bank and a
-//! bank filter is a range of channel numbers.
+//! bank filter is a range of channel numbers. A group (`ADR-116`) is a name
+//! and the banks in it; a location's locator stays in the project.
 //!
 //! A *list* bank holds explicit channels. The values all of its channels
 //! share are stored once in the list header; a `fields` bitfield names the
@@ -16,12 +18,15 @@
 //! no records at all.
 //!
 //! ```text
-//! header  : magic "AFIK", image version 2, format 7, bank count u16,
+//! header  : magic "AFIK", image version 2, format 8, bank count u16,
 //!           payload length u32, CRC-32 (as format 4)
 //! payload : radio configuration (16 bytes, as its format 4 object)
 //!           TX range count u8, then each range's 14 bytes (`ADR-101`)
 //!           banks in ascending id, each: id u8, flags u8, kind u8 (1 list,
 //!           2 linear), body length u16, name length u8, name bytes, body
+//!           group count u8, then per group: name length u8, name bytes,
+//!           its banks as 32 bytes, bank n bit n % 8 of byte n / 8 (each a
+//!           bank above, at least one)
 //! linear  : the generated-bank object bytes, its id the bank's
 //! list    : fields u16, name width u8, count u16, base Hz u32, raster Hz u32,
 //!           TX offset i32, step Hz u32, RX tone 3, TX tone 3, mode u8,
@@ -36,8 +41,9 @@
 //! modulation | bandwidth << 2 | power << 3.
 
 use radio_channel_plan::{
-    BankFlags, BankName, BankSet, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
-    ChannelRecord, GeneratedBank, MAX_BANKS, MAX_BANK_NAME_LEN, MAX_CHANNEL_NAME_LEN,
+    BankFlags, BankGroup, BankName, BankSet, ChannelBank, ChannelDefinition, ChannelFlags,
+    ChannelName, ChannelRecord, GeneratedBank, MAX_BANKS, MAX_BANK_NAME_LEN, MAX_CHANNEL_NAME_LEN,
+    MAX_GROUPS,
 };
 use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, RadioConfig,
@@ -54,10 +60,10 @@ use super::{
     TX_RANGE_ENCODED_LEN,
 };
 
-/// Image container version for format 7.
+/// Image container version for format 8.
 pub const IMAGE_VERSION: u8 = 2;
 /// Object format version this module reads and writes.
-pub const FORMAT_VERSION: u8 = 7;
+pub const FORMAT_VERSION: u8 = 8;
 /// Bytes in the image header.
 pub const HEADER_LEN: usize = 16;
 /// The bank byte meaning no bank; no bank may have this identifier.
@@ -388,6 +394,7 @@ pub fn compile(
     banks: &[ChannelBank],
     channels: &[ChannelRecord],
     plans: &[GeneratedBank],
+    groups: &[BankGroup],
     output: &mut [u8],
 ) -> Result<usize, CompileError> {
     for (index, plan) in plans.iter().enumerate() {
@@ -409,6 +416,7 @@ pub fn compile(
         writer.bytes(&encode_tx_range_body(*range))?;
     }
     let mut bank_count = 0_u16;
+    let mut held = BankSet::EMPTY;
     for bank in 0..u8::try_from(MAX_BANKS).unwrap_or(0) {
         let members = channels
             .iter()
@@ -443,6 +451,31 @@ pub fn compile(
             None => write_list(&mut writer, members)?,
         }
         bank_count += 1;
+        held.insert(BankId::new(u16::from(bank)));
+    }
+    // Groups in identifier order, each keeping only banks the image holds; a
+    // group left with none is dropped, so the radio never offers an empty one.
+    let mut ordered: [Option<&BankGroup>; MAX_GROUPS as usize] = [None; MAX_GROUPS as usize];
+    for group in groups {
+        if let Some(slot) = ordered.get_mut(usize::from(group.id())) {
+            *slot = Some(group);
+        }
+    }
+    let kept = || {
+        ordered.iter().flatten().filter_map(|group| {
+            let banks: BankSet = group
+                .banks()
+                .iter()
+                .filter(|bank| held.contains(*bank))
+                .fold(BankSet::EMPTY, BankSet::with);
+            (!banks.is_empty()).then_some((group.name(), banks))
+        })
+    };
+    writer.u8(u8::try_from(kept().count()).map_err(|_| CompileError::TooLarge)?)?;
+    for (name, banks) in kept() {
+        writer.u8(name.len())?;
+        writer.bytes(&name.field()[..usize::from(name.len())])?;
+        writer.bytes(&banks.to_bytes())?;
     }
     let len = writer.at;
     let output = writer.output;
@@ -493,6 +526,9 @@ pub struct Index {
     tx_ranges: u16,
     tx_range_count: u8,
     banks: [BankSlot; MAX_BANKS as usize],
+    /// Payload offset of each group's entry.
+    groups: [u16; MAX_GROUPS as usize],
+    group_count: u8,
     len: u16,
     populated: BankSet,
     /// Bytes the image occupies, header included.
@@ -748,6 +784,8 @@ impl Index {
                 entry: ABSENT,
                 first: 0,
             }; MAX_BANKS as usize],
+            groups: [ABSENT; MAX_GROUPS as usize],
+            group_count: 0,
             bytes: 0,
             len: 0,
             populated: BankSet::EMPTY,
@@ -891,6 +929,22 @@ impl Index {
             index.populated.insert(BankId::new(u16::from(id)));
             at = entry.body + entry.body_len;
         }
+        let [group_count] = read_array::<1>(&mut read, at)?;
+        at += 1;
+        if group_count > MAX_GROUPS {
+            return Err(StorageError::MalformedObject);
+        }
+        // Only the layout is checked here, to keep the radio's loader small:
+        // a group's name and banks are checked when it is read (`Self::group`).
+        for slot in 0..usize::from(group_count) {
+            index.groups[slot] = u16::try_from(at).map_err(|_| StorageError::ImageTooLarge)?;
+            let [name_len] = read_array::<1>(&mut read, at)?;
+            if name_len == 0 || usize::from(name_len) > MAX_BANK_NAME_LEN {
+                return Err(StorageError::MalformedObject);
+            }
+            at += 1 + usize::from(name_len) + 32;
+        }
+        index.group_count = group_count;
         if at != payload_len {
             return Err(StorageError::MalformedImage);
         }
@@ -1157,6 +1211,34 @@ impl Index {
             .flatten()
     }
 
+    /// How many groups the image holds; the radio numbers them from zero.
+    #[must_use]
+    pub const fn group_count(&self) -> u8 {
+        self.group_count
+    }
+
+    /// Reads group `group`'s name and banks.
+    pub fn group(
+        &self,
+        mut read: impl FnMut(usize, &mut [u8]) -> bool,
+        group: u8,
+    ) -> Option<(BankName, BankSet)> {
+        if group >= self.group_count {
+            return None;
+        }
+        let at = usize::from(*self.groups.get(usize::from(group))?);
+        let [len] = read_array::<1>(&mut read, at).ok()?;
+        let mut name = [0_u8; MAX_BANK_NAME_LEN];
+        let name_bytes = name.get_mut(..usize::from(len))?;
+        read(at + 1, name_bytes).then_some(())?;
+        let name = BankName::from_field(name, len).ok()?;
+        let banks = read_array::<32>(&mut read, at + 1 + usize::from(len)).ok()?;
+        // Only banks the image holds, so a group can never select an empty
+        // view; one left with none is not offered.
+        let banks = BankSet::from_bytes(banks).ok()?.within(&self.populated);
+        (!banks.is_empty()).then_some((name, banks))
+    }
+
     /// The name to show for `bank`: its own name, else its plan's.
     pub fn bank_name(
         &self,
@@ -1178,8 +1260,8 @@ mod tests {
         configuration_image_crc, StorageError, RADIO_CONFIG_ENCODED_LEN, TX_RANGE_ENCODED_LEN,
     };
     use radio_channel_plan::{
-        BankFlags, BankName, BankSet, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
-        ChannelRecord, ChannelTemplate, GeneratedBank, MAX_BANKS,
+        BankFlags, BankGroup, BankName, BankSet, ChannelBank, ChannelDefinition, ChannelFlags,
+        ChannelName, ChannelRecord, ChannelTemplate, GeneratedBank, Locator, MAX_BANKS,
     };
     use radio_domain::{
         Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel,
@@ -1272,6 +1354,7 @@ mod tests {
             &banks(),
             channels,
             plans,
+            &[],
             &mut image,
         )
         .expect("compile");
@@ -1344,6 +1427,7 @@ mod tests {
                 &[],
                 &[],
                 &[],
+                &[],
                 &mut image
             ),
             Err(CompileError::TxRange(RangeError::Power))
@@ -1352,6 +1436,7 @@ mod tests {
             compile(
                 RadioConfig::conservative(),
                 &[RANGES[0]; MAX_TX_RANGES + 1],
+                &[],
                 &[],
                 &[],
                 &[],
@@ -1519,6 +1604,7 @@ mod tests {
                 &banks(),
                 &[unbanked],
                 &[],
+                &[],
                 &mut image
             ),
             Err(CompileError::UnbankedChannel(ChannelId::new(9)))
@@ -1531,6 +1617,7 @@ mod tests {
                 &banks(),
                 &[in_plan_bank],
                 &[plan()],
+                &[],
                 &mut image
             ),
             Err(CompileError::MixedBank(BankId::new(2)))
@@ -1571,6 +1658,77 @@ mod tests {
         assert_eq!(index.populated().len(), 3);
     }
 
+    fn group(id: u8, name: &str, banks: &[u16]) -> BankGroup {
+        let set = banks
+            .iter()
+            .fold(BankSet::EMPTY, |set, bank| set.with(BankId::new(*bank)));
+        BankGroup::new(id, BankName::new(name).unwrap(), set).unwrap()
+    }
+
+    #[test]
+    fn groups_reach_the_radio_with_their_held_banks_only() {
+        // Banks 0 (PMR), 1 (repeaters) and 2 (the plan) are held; bank 7 is
+        // not, and a group of nothing but it is dropped.
+        let mut channels = pmr();
+        channels.extend(repeaters());
+        let groups = [
+            group(4, "AIRBAND", &[7]),
+            group(3, "HOME", &[0, 1, 7]).with_locator(Some(Locator::new("JO02EH").unwrap())),
+            group(9, "ALL", &[0, 1, 2]),
+        ];
+        let mut image = std::vec![0_u8; 8192];
+        let len = compile(
+            RadioConfig::conservative(),
+            &[],
+            &banks(),
+            &channels,
+            &[plan()],
+            &groups,
+            &mut image,
+        )
+        .unwrap();
+        image.truncate(len);
+        let index = index(&image).expect("index");
+        // In identifier order, renumbered from zero; the locator is not sent.
+        assert_eq!(index.group_count(), 2);
+        let (name, members) = index.group(reader(&image), 0).unwrap();
+        assert_eq!(name.as_str(), "HOME");
+        assert_eq!(
+            members,
+            BankSet::EMPTY.with(BankId::new(0)).with(BankId::new(1))
+        );
+        let (name, members) = index.group(reader(&image), 1).unwrap();
+        assert_eq!(name.as_str(), "ALL");
+        assert_eq!(members.len(), 3);
+        assert_eq!(index.group(reader(&image), 2), None);
+
+        // A bank the image does not hold is never offered: add bank 7 to
+        // the last group's set, whose first byte is 32 from the end.
+        let first_byte = image.len() - 32;
+        assert_eq!(image[first_byte], 0b111);
+        image[first_byte] |= 1 << 7;
+        reseal(&mut image);
+        let index = super::Index::build(&header_of(&image), reader(&image)).unwrap();
+        assert_eq!(index.group(reader(&image), 1).unwrap().1.len(), 3);
+        // A name length past the field is refused when the radio loads.
+        let mut long = image.clone();
+        let name_at = long.len() - 32 - 3 - 1;
+        assert_eq!(long[name_at], 3);
+        long[name_at] = 17;
+        reseal(&mut long);
+        assert!(index_result(&long).is_err());
+    }
+
+    fn header_of(image: &[u8]) -> [u8; HEADER_LEN] {
+        let mut header = [0_u8; HEADER_LEN];
+        header.copy_from_slice(&image[..HEADER_LEN]);
+        header
+    }
+
+    fn index_result(image: &[u8]) -> Result<(), StorageError> {
+        index(image).map(|_| ())
+    }
+
     #[test]
     fn banks_out_of_order_are_refused() {
         // Two banks of one channel each, then their entries swapped.
@@ -1583,10 +1741,10 @@ mod tests {
         // Bank 0's entry is named PMR446: 6 + 6 + 30 + 1 + 2 bytes; bank 1's
         // is unnamed: 6 + 30 + 1 + 2.
         let (zero, one) = (6 + 6 + 30 + 3, 6 + 30 + 3);
-        assert_eq!(image.len(), first + zero + one);
-        let mut swapped = image[first + zero..].to_vec();
+        assert_eq!(image.len(), first + zero + one + 1, "and no groups");
+        let mut swapped = image[first + zero..first + zero + one].to_vec();
         swapped.extend_from_slice(&image[first..first + zero]);
-        image[first..].copy_from_slice(&swapped);
+        image[first..first + zero + one].copy_from_slice(&swapped);
         reseal(&mut image);
         assert_eq!(index(&image), Err(StorageError::NonCanonicalImage));
     }
@@ -1596,8 +1754,8 @@ mod tests {
         let image = compiled(&pmr(), &[]);
         // Header 16, config 16, no TX ranges 1, the bank's entry 6 and name
         // 6, list header 30, then 16 records of a 5-byte name and a 2-byte
-        // frequency.
-        assert_eq!(image.len(), 16 + 16 + 1 + 6 + 6 + 30 + 16 * (5 + 2));
+        // frequency, and no groups 1.
+        assert_eq!(image.len(), 16 + 16 + 1 + 6 + 6 + 30 + 16 * (5 + 2) + 1);
     }
 
     #[test]
@@ -1616,10 +1774,12 @@ mod tests {
         old[entry + 3..entry + 5].copy_from_slice(&body.to_le_bytes());
         let payload = u32::from_le_bytes([old[8], old[9], old[10], old[11]]) + 16;
         old[8..12].copy_from_slice(&payload.to_le_bytes());
-        for record in image[records..].chunks(7) {
+        let groups = image.len() - 1;
+        for record in image[records..groups].chunks(7) {
             old.extend_from_slice(record);
             old.push(9);
         }
+        old.push(image[groups]);
         reseal(&mut old);
 
         let index = index(&old).expect("index");
