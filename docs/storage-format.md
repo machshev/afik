@@ -1,19 +1,20 @@
 # Storage object model
 
-> **Radios run format 6 (`ADR-100`, `ADR-101`).** The object format below is the host's
-> project and editing format. A radio runs the bank-grouped image in
-> `radio-storage::radio_image`, compiled from a project by
-> `RadioProject::compile_radio_image`; its module documentation is the
-> byte-level reference. In short: a 16-byte header (image version 2, format 6,
-> block count, payload length, CRC-32), the 16-byte radio configuration, the
+> **Radios run format 7 (`ADR-100`, `ADR-101`, `ADR-115`).** The object format below
+> is the host's project and editing format (object format 5). A radio runs the
+> bank-grouped image in `radio-storage::radio_image`, compiled from a project
+> by `RadioProject::compile_radio_image`; its module documentation is the
+> byte-level reference. In short: a 16-byte header (image version 2, format 7,
+> bank count, payload length, CRC-32), the 16-byte radio configuration, the
 > programmed TX ranges (a count, then 14 bytes each: class, flags, first and
-> last Hz, max mW, raster Hz; `ADR-101`), a bank-name table, then one block per bank and kind. A *list* block stores the
-> values its channels share once and sets a `fields` bit for each value its
-> fixed-size records carry instead (a frequency is a `u16` count of rasters
-> when it fits). A *linear* block is a generated plan. Every channel is stored
-> in one bank, so a radio indexes a few bytes per block and reads channels from
-> memory. Sixteen named PMR446 channels cost 112 bytes of records, against 752
-> as format 4 objects.
+> last Hz, max mW, raster Hz; `ADR-101`), then up to 254 banks in identifier
+> order, each one entry (id, flags, kind, body length, name) and one block: a
+> *list* stores the values its channels share once and sets a `fields` bit for
+> each value its fixed-size records carry instead (a frequency is a `u16`
+> count of rasters when it fits); a *linear* block is a generated plan. Every
+> channel is in a bank, so a radio keeps four bytes of RAM per bank and reads
+> channels from memory. Sixteen named PMR446 channels cost 112 bytes of
+> records, against 752 as objects.
 
 Device configuration is a bounded set of typed objects. Each object has a
 stable kind, numeric ID, encoded length, and encoded bytes. The first supported
@@ -243,9 +244,12 @@ The timeout is what the radio adopts when programmed; the handset menu can
 change it until the next power cycle.
 
 Bank membership is on the channel rather than a member list on the bank, so
-every object stays fixed size. A channel is in at most one bank: the 16-bit
-field once a membership mask (`ADR-050`) now carries at most one bit, and an
-older project naming several banks loads into the lowest. The configuration
+every object stays fixed size. A channel is in at most one bank: object
+format 5 stores its number in the 16-bit field (`0xFFFF` for none). Format 4
+held a membership mask there (`ADR-050`), which capped a project at 16 banks;
+`radio_storage::upgrade::project` rewrites a format 4 file as format 5 one
+way, an older channel naming several banks going into the lowest
+(`ADR-115`). The configuration
 compiler rejects any channel naming a bank the project does not define, before
 any device mutation begins.
 

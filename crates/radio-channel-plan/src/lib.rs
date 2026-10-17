@@ -22,8 +22,10 @@ pub const MAX_CHANNEL_NAME_LEN: usize = 12;
 pub const MAX_DESIGNATOR_LEN: usize = 4;
 /// Suffix appended to the derived name of a plan's calling channel.
 const CALLING_SUFFIX: &[u8] = b" CALL";
-/// Number of banks addressable by one channel membership mask.
-pub const MAX_BANKS: u16 = 16;
+/// Banks a radio holds (`ADR-115`): identifiers 0 to 253, so one fits a byte
+/// and `0xFF` is free to mean no bank. The image region limits a radio long
+/// before this does.
+pub const MAX_BANKS: u16 = 254;
 /// Lowest channel identifier reserved for channels a radio expands itself.
 ///
 /// Explicit channel records are stored one object each and may use any
@@ -32,9 +34,96 @@ pub const MAX_BANKS: u16 = 16;
 pub const GENERATED_CHANNEL_ID_BASE: u16 = 0x8000;
 /// Channels one generated plan may contain.
 ///
-/// The identifier of an expanded channel packs the bank identifier and the
-/// index into the reserved range, which bounds both.
+/// The identifier of an expanded channel is its index in the reserved range;
+/// the record carries its bank.
 pub const MAX_GENERATED_CHANNELS: u16 = 1 << 11;
+
+/// A set of banks, one bit per identifier.
+///
+/// What a radio lists in its source menu: the banks the running image
+/// populates, in identifier order. Bounded and heap-free like everything a
+/// radio holds, at 32 bytes for every bank there can be.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct BankSet {
+    words: [u32; 8],
+}
+
+impl BankSet {
+    /// No banks.
+    pub const EMPTY: Self = Self { words: [0; 8] };
+
+    /// Adds `bank`; one past [`MAX_BANKS`] is ignored.
+    pub fn insert(&mut self, bank: BankId) {
+        let id = bank.get();
+        if id < MAX_BANKS {
+            if let Some(word) = self.words.get_mut(usize::from(id / 32)) {
+                *word |= 1 << (id % 32);
+            }
+        }
+    }
+
+    /// Returns the set with `bank` added.
+    #[must_use]
+    pub fn with(mut self, bank: BankId) -> Self {
+        self.insert(bank);
+        self
+    }
+
+    /// Whether `bank` is in the set.
+    pub const fn contains(&self, bank: BankId) -> bool {
+        let id = bank.get();
+        // The mask keeps the word in range; past the last bank is never in.
+        id < MAX_BANKS && self.words[(id >> 5) as usize & 7] & (1 << (id & 31)) != 0
+    }
+
+    /// How many banks are in the set.
+    pub fn len(&self) -> usize {
+        self.words
+            .iter()
+            .map(|word| word.count_ones() as usize)
+            .sum()
+    }
+
+    /// Whether the set holds no bank.
+    pub fn is_empty(&self) -> bool {
+        self.words.iter().all(|word| *word == 0)
+    }
+
+    /// The banks in identifier order.
+    pub fn iter(&self) -> impl Iterator<Item = BankId> + '_ {
+        (0..MAX_BANKS)
+            .map(BankId::new)
+            .filter(|bank| self.contains(*bank))
+    }
+
+    /// The `n`th bank in identifier order, counting from zero.
+    pub fn nth(&self, mut n: usize) -> Option<BankId> {
+        // Plain loops: a radio's flash is tight and iterator chains cost it.
+        for id in 0..MAX_BANKS {
+            if self.contains(BankId::new(id)) {
+                if n == 0 {
+                    return Some(BankId::new(id));
+                }
+                n -= 1;
+            }
+        }
+        None
+    }
+
+    /// Where `bank` comes in identifier order, if it is in the set.
+    pub fn position(&self, bank: BankId) -> Option<usize> {
+        if !self.contains(bank) {
+            return None;
+        }
+        let mut before = 0;
+        for id in 0..bank.get() {
+            if self.contains(BankId::new(id)) {
+                before += 1;
+            }
+        }
+        Some(before)
+    }
+}
 
 /// Failure while constructing or expanding a channel plan.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -576,7 +665,7 @@ impl GeneratedBank {
         let receive = self.base.checked_add_steps(self.spacing, index)?;
         let calling = self.calling_index == Some(index);
         ChannelRecord::expanded(ChannelDefinition {
-            id: generated_channel_id(self.id, index)?,
+            id: generated_channel_id(index)?,
             name: self.channel_name(index)?,
             receive,
             // Simplex plans carry a zero offset, so this is the transmit
@@ -663,16 +752,14 @@ fn derived_designator(name: BankName) -> Result<Designator, PlanError> {
 }
 
 /// Returns the reserved identifier of one channel expanded from a plan.
-pub const fn generated_channel_id(bank: BankId, index: u16) -> Result<ChannelId, PlanError> {
-    if bank.get() >= MAX_BANKS {
-        return Err(PlanError::BankOutOfRange);
-    }
+///
+/// It is the channel's index in the reserved range; the record carries its
+/// bank, so plans in different banks mint the same identifiers.
+pub const fn generated_channel_id(index: u16) -> Result<ChannelId, PlanError> {
     if index >= MAX_GENERATED_CHANNELS {
         return Err(PlanError::TooManyChannels);
     }
-    Ok(ChannelId::new(
-        GENERATED_CHANNEL_ID_BASE | (bank.get() << 11) | index,
-    ))
+    Ok(ChannelId::new(GENERATED_CHANNEL_ID_BASE | index))
 }
 
 /// Reports whether one identifier belongs to a channel expanded from a plan.
@@ -680,18 +767,12 @@ pub const fn is_generated_channel_id(id: ChannelId) -> bool {
     id.get() >= GENERATED_CHANNEL_ID_BASE
 }
 
-/// Returns the bank and index one expanded channel identifier packs.
-///
-/// Expansion mints identifiers by packing the two, so unpacking answers "which
-/// channel is this?" arithmetically. A radio therefore resolves an expanded
-/// channel without walking, and can test bank membership without building a
-/// record at all, which is what lets a plan hold a whole band cheaply.
-pub const fn generated_channel_parts(id: ChannelId) -> Option<(BankId, u16)> {
+/// Returns the plan index of one expanded channel identifier.
+pub const fn generated_channel_index(id: ChannelId) -> Option<u16> {
     if id.get() < GENERATED_CHANNEL_ID_BASE {
         return None;
     }
-    let bits = id.get() & !GENERATED_CHANNEL_ID_BASE;
-    Some((BankId::new(bits >> 11), bits & (MAX_GENERATED_CHANNELS - 1)))
+    Some(id.get() & !GENERATED_CHANNEL_ID_BASE)
 }
 
 /// Returns the number of decimal digits one channel number is written with.
@@ -1185,7 +1266,7 @@ impl BankFlags {
 }
 
 impl ChannelBank {
-    /// Constructs a bank whose identifier is addressable by a membership mask.
+    /// Constructs a bank whose identifier is below [`MAX_BANKS`].
     pub const fn new(id: BankId, name: BankName, flags: BankFlags) -> Result<Self, PlanError> {
         if id.get() >= MAX_BANKS {
             return Err(PlanError::BankOutOfRange);
@@ -1252,8 +1333,8 @@ mod tests {
     use radio_domain::{Bandwidth, ChannelId, Modulation, PowerLevel, Tone};
 
     use super::{
-        generated_channel_parts, BankName, Designator, GeneratedBank, PlanEncoding, PlanError,
-        SharedSettings,
+        generated_channel_index, BankName, BankSet, Designator, GeneratedBank, PlanEncoding,
+        PlanError, SharedSettings,
     };
     use radio_domain::{BankId, Frequency, FrequencyStep, Offset};
 
@@ -1337,19 +1418,15 @@ mod tests {
 
     #[test]
     fn expanded_identifiers_are_reserved_and_never_collide() {
-        let low = generated_channel_id(BankId::new(0), 0).unwrap();
-        let high = generated_channel_id(BankId::new(15), MAX_GENERATED_CHANNELS - 1).unwrap();
+        let low = generated_channel_id(0).unwrap();
+        let high = generated_channel_id(MAX_GENERATED_CHANNELS - 1).unwrap();
         assert!(is_generated_channel_id(low));
         assert!(is_generated_channel_id(high));
         assert!(!is_generated_channel_id(ChannelId::new(
             GENERATED_CHANNEL_ID_BASE - 1
         )));
         assert_eq!(
-            generated_channel_id(BankId::new(16), 0),
-            Err(PlanError::BankOutOfRange)
-        );
-        assert_eq!(
-            generated_channel_id(BankId::new(0), MAX_GENERATED_CHANNELS),
+            generated_channel_id(MAX_GENERATED_CHANNELS),
             Err(PlanError::TooManyChannels)
         );
 
@@ -1490,14 +1567,46 @@ mod tests {
     }
 
     #[test]
-    fn an_expanded_identifier_resolves_to_its_bank_and_index() {
-        let id = generated_channel_id(BankId::new(5), 700).unwrap();
-        assert_eq!(
-            generated_channel_parts(id),
-            Some((BankId::new(5), 700)),
-            "expansion packs the bank and index, so unpacking needs no search"
-        );
-        assert_eq!(generated_channel_parts(ChannelId::new(7)), None);
+    fn an_expanded_identifier_resolves_to_its_index_and_the_record_to_its_bank() {
+        let id = generated_channel_id(700).unwrap();
+        assert_eq!(generated_channel_index(id), Some(700));
+        assert_eq!(generated_channel_index(ChannelId::new(7)), None);
+        // A plan in a bank past the old 4-bit limit expands as any other.
+        let plan = GeneratedBank::linear_simplex(
+            BankId::new(MAX_BANKS - 1),
+            BankName::new("LAST").unwrap(),
+            Frequency::from_hz(145_000_000).unwrap(),
+            FrequencyStep::from_hz(12_500).unwrap(),
+            8,
+        )
+        .unwrap();
+        let record = plan.channel_record(7).unwrap();
+        assert_eq!(generated_channel_index(record.id()), Some(7));
+        assert_eq!(record.bank(), Some(BankId::new(MAX_BANKS - 1)));
+    }
+
+    #[test]
+    fn a_bank_set_holds_every_bank_in_order() {
+        let mut set = BankSet::EMPTY;
+        assert!(set.is_empty());
+        for id in [253, 0, 31, 32, 100] {
+            set.insert(BankId::new(id));
+        }
+        // Past the last bank is ignored rather than wrapping.
+        set.insert(BankId::new(MAX_BANKS));
+        assert_eq!(set.len(), 5);
+        let mut ids = [0_u16; 5];
+        for (slot, bank) in ids.iter_mut().zip(set.iter()) {
+            *slot = bank.get();
+        }
+        assert_eq!(ids, [0, 31, 32, 100, 253]);
+        assert_eq!(set.nth(3), Some(BankId::new(100)));
+        assert_eq!(set.nth(5), None);
+        assert_eq!(set.position(BankId::new(32)), Some(2));
+        assert_eq!(set.position(BankId::new(33)), None);
+        assert!(set.contains(BankId::new(253)));
+        assert!(!set.contains(BankId::new(MAX_BANKS)));
+        assert_eq!(BankSet::EMPTY.with(BankId::new(4)).len(), 1);
     }
 
     #[test]
@@ -1673,9 +1782,15 @@ mod tests {
         .unwrap();
         assert!(bank.is_scan_enabled());
         assert_eq!(bank.name().as_str(), "Amateur 2m");
+        assert!(ChannelBank::new(
+            BankId::new(MAX_BANKS - 1),
+            BankName::new("last").unwrap(),
+            BankFlags::default()
+        )
+        .is_ok());
         assert_eq!(
             ChannelBank::new(
-                BankId::new(16),
+                BankId::new(MAX_BANKS),
                 BankName::new("out of range").unwrap(),
                 BankFlags::default()
             ),

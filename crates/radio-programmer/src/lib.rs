@@ -173,7 +173,7 @@ impl RadioProject {
     }
 
     /// Compiles the project into the bank-grouped image a radio runs
-    /// (storage format 6, `ADR-100`), sized to the radio's image region.
+    /// (storage format 7, `ADR-115`), sized to the radio's image region.
     ///
     /// Each channel must be in at most one bank: in this format a channel is
     /// stored in its bank. Channels in no bank are kept in a bankless block.

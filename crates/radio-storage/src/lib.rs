@@ -1815,9 +1815,9 @@ mod tests {
         let encoded = encode_channel(channel(12, "GB3AB")).unwrap();
         assert_eq!(&encoded.data()[40..42], &2_u16.to_le_bytes());
         let mut data = encoded.data().to_vec();
-        data[40..42].copy_from_slice(&9_u16.to_le_bytes());
+        data[40..42].copy_from_slice(&200_u16.to_le_bytes());
         let decoded = decode_channel(&StorageObject::new(encoded.key(), &data).unwrap()).unwrap();
-        assert_eq!(decoded.bank(), Some(BankId::new(9)));
+        assert_eq!(decoded.bank(), Some(BankId::new(200)));
         data[40..42].copy_from_slice(&u16::MAX.to_le_bytes());
         let decoded = decode_channel(&StorageObject::new(encoded.key(), &data).unwrap()).unwrap();
         assert_eq!(decoded.bank(), None);

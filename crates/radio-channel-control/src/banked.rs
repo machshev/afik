@@ -7,7 +7,7 @@
 
 use core::fmt;
 
-use radio_channel_plan::{generated_channel_parts, ChannelFlags, ChannelRecord, GeneratedBank};
+use radio_channel_plan::{generated_channel_index, ChannelFlags, ChannelRecord, GeneratedBank};
 use radio_domain::{
     Bandwidth, BankId, ChannelId, DomainError, Frequency, FrequencyStep, Modulation, RadioConfig,
     ScanResume, SquelchLevel, Tone,
@@ -261,14 +261,18 @@ impl<const CHANNELS: usize, const PLANS: usize> ProgrammedMemory<CHANNELS, PLANS
         self.expanded
     }
 
-    /// Returns the channel with one identifier, stored or expanded.
+    /// Returns the channel with one identifier in one bank, stored or
+    /// expanded.
     ///
-    /// An expanded identifier packs the bank and index that minted it, so the
-    /// channel is reconstructed directly from the owning plan rather than found
-    /// by expanding the space until one matches.
-    pub fn find(&self, id: ChannelId) -> Option<ChannelRecord> {
-        let Some((bank, index)) = generated_channel_parts(id) else {
-            return self.stored.find(id);
+    /// An expanded identifier is the index that minted it, so the channel is
+    /// reconstructed directly from the bank's plan rather than found by
+    /// expanding the space until one matches.
+    pub fn find(&self, bank: BankId, id: ChannelId) -> Option<ChannelRecord> {
+        let Some(index) = generated_channel_index(id) else {
+            return self
+                .stored
+                .find(id)
+                .filter(|channel| channel.is_member_of(bank));
         };
         self.plan(bank)?.channel_record(index).ok()
     }
@@ -1170,8 +1174,19 @@ mod tests {
         assert_eq!(memory.get(22), None);
 
         let expanded = memory.get(21).unwrap();
-        assert_eq!(memory.find(expanded.id()), Some(expanded));
-        assert_eq!(memory.find(ChannelId::new(2)), memory.get(1));
+        assert_eq!(memory.find(BankId::new(3), expanded.id()), Some(expanded));
+        // Plans in different banks mint the same identifiers; the bank tells
+        // them apart.
+        let pmr_first = memory.get(6).unwrap();
+        assert_eq!(
+            memory.find(BankId::new(1), pmr_first.id()),
+            memory.get(2),
+            "the marine plan's first channel, not PMR's"
+        );
+        assert_eq!(
+            memory.find(memory.get(1).unwrap().bank().unwrap(), ChannelId::new(2)),
+            memory.get(1)
+        );
 
         // Replacing a plan resizes the space instead of appending to it.
         memory.install(plan(3, "PMR446", 446_006_250, 8)).unwrap();

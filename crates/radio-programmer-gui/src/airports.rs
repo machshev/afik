@@ -1170,7 +1170,7 @@ mod tests {
         options.save(&file).unwrap();
         assert_eq!(AirportOptions::load(&file), options);
         // Nothing taken stays nothing taken; a bad count is the default.
-        std::fs::write(&file, "airports=99\n").unwrap();
+        std::fs::write(&file, "airports=999\n").unwrap();
         let none = AirportOptions::load(&file);
         assert!(Service::ALL.iter().all(|s| !none.takes(*s)));
         assert_eq!(none.airports, super::DEFAULT_AIRPORT_BANKS);

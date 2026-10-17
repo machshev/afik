@@ -1247,3 +1247,13 @@ lowered to the highest level within it (operator request), by nominal figures.
   marine range, so a wrong entry costs a silent channel.
 - Experiment: compare the bank for a familiar coastal locator against the
   harbour's published channels and listen to each.
+
+## RISK-049 — The K5 image has 16 bytes of flash left
+
+- **State:** open (2026-10-17, `BANKS-073`).
+- 254 banks cost about 200 bytes of K5 flash after trimming (plain loops in
+  `BankSet`, the index rebuilt in its static rather than on the stack, where
+  a kilobyte frame forced literal-pool stack offsets). The image ends at
+  `0xeff0` of `0xf000`, so the next firmware feature must recover space first.
+- Experiment: rank functions by size (`llvm-nm -S --size-sort`) and shrink or
+  drop the largest unused paths before adding firmware code.

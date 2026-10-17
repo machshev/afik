@@ -36,8 +36,8 @@
 //! modulation | bandwidth << 2 | power << 3.
 
 use radio_channel_plan::{
-    BankFlags, BankName, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord,
-    GeneratedBank, MAX_BANKS, MAX_BANK_NAME_LEN, MAX_CHANNEL_NAME_LEN,
+    BankFlags, BankName, BankSet, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
+    ChannelRecord, GeneratedBank, MAX_BANKS, MAX_BANK_NAME_LEN, MAX_CHANNEL_NAME_LEN,
 };
 use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel, RadioConfig,
@@ -456,7 +456,11 @@ pub fn compile(
     Ok(len)
 }
 
-/// One bank as the radio indexes it.
+/// One bank as the radio indexes it: four bytes.
+///
+/// Every bank the image holds has at least one channel and they number in
+/// identifier order, so a bank's channels run from its `first` to the next
+/// held bank's.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct BankSlot {
     /// Payload offset of the bank's entry; [`ABSENT`] for a bank the image
@@ -464,8 +468,6 @@ struct BankSlot {
     entry: u16,
     /// Number of the bank's first channel on the radio.
     first: u16,
-    /// Channels in the bank.
-    count: u16,
 }
 
 /// A bank's entry as read from the image.
@@ -492,7 +494,7 @@ pub struct Index {
     tx_range_count: u8,
     banks: [BankSlot; MAX_BANKS as usize],
     len: u16,
-    populated: u16,
+    populated: BankSet,
     /// Bytes the image occupies, header included.
     bytes: u16,
 }
@@ -745,11 +747,10 @@ impl Index {
             banks: [BankSlot {
                 entry: ABSENT,
                 first: 0,
-                count: 0,
             }; MAX_BANKS as usize],
             bytes: 0,
             len: 0,
-            populated: 0,
+            populated: BankSet::EMPTY,
         }
     }
 
@@ -760,8 +761,36 @@ impl Index {
     /// never runs on an image any part of which is malformed.
     pub fn build(
         header: &[u8; HEADER_LEN],
-        mut read: impl FnMut(usize, &mut [u8]) -> bool,
+        read: impl FnMut(usize, &mut [u8]) -> bool,
     ) -> Result<Self, StorageError> {
+        let mut index = Self::empty();
+        index.rebuild(header, read)?;
+        Ok(index)
+    }
+
+    /// Indexes an image in place, as [`Self::build`] does, leaving this index
+    /// empty if the image is refused.
+    ///
+    /// The index is a kilobyte; a radio keeps one in a static and rebuilds it
+    /// there rather than building another on its small stack.
+    pub fn rebuild(
+        &mut self,
+        header: &[u8; HEADER_LEN],
+        read: impl FnMut(usize, &mut [u8]) -> bool,
+    ) -> Result<(), StorageError> {
+        *self = Self::empty();
+        let built = self.index(header, read);
+        if built.is_err() {
+            *self = Self::empty();
+        }
+        built
+    }
+
+    fn index(
+        &mut self,
+        header: &[u8; HEADER_LEN],
+        mut read: impl FnMut(usize, &mut [u8]) -> bool,
+    ) -> Result<(), StorageError> {
         if header[..4] != CONFIGURATION_IMAGE_MAGIC {
             return Err(StorageError::MalformedImage);
         }
@@ -785,7 +814,7 @@ impl Index {
             start: 0,
             end: 0,
         };
-        let decoded = Self::decode(
+        let decoded = self.decode(
             &mut |offset, buffer| stream.read(offset, buffer),
             bank_count,
             payload_len,
@@ -795,10 +824,10 @@ impl Index {
         if !stream.finish()? != expected {
             return Err(StorageError::ImageIntegrity);
         }
-        let mut index = decoded?;
+        decoded?;
         // Saturates only for an image no memory region could hold.
-        index.bytes = u16::try_from(HEADER_LEN + payload_len).unwrap_or(u16::MAX);
-        Ok(index)
+        self.bytes = u16::try_from(HEADER_LEN + payload_len).unwrap_or(u16::MAX);
+        Ok(())
     }
 
     /// Returns the bytes the image occupies, header included; zero for none.
@@ -807,13 +836,15 @@ impl Index {
         self.bytes
     }
 
-    /// Decodes and checks every object in a payload of `payload_len` bytes.
+    /// Decodes and checks every object in a payload of `payload_len` bytes
+    /// into this index, which starts empty.
     fn decode(
+        &mut self,
         mut read: &mut impl FnMut(usize, &mut [u8]) -> bool,
         bank_count: usize,
         payload_len: usize,
-    ) -> Result<Self, StorageError> {
-        let mut index = Self::empty();
+    ) -> Result<(), StorageError> {
+        let index = self;
         let config = read_array::<RADIO_CONFIG_ENCODED_LEN>(&mut read, 0)?;
         index.configured = true;
         index.config = decode_radio_config(&ObjectRef::new(
@@ -852,22 +883,19 @@ impl Index {
             index.banks[usize::from(id)] = BankSlot {
                 entry: u16::try_from(at).map_err(|_| StorageError::ImageTooLarge)?,
                 first: u16::try_from(first).map_err(|_| StorageError::ImageTooLarge)?,
-                count,
             };
             first += u32::from(count);
             if first > u32::from(u16::MAX) {
                 return Err(StorageError::ImageTooLarge);
             }
-            if count > 0 {
-                index.populated |= 1 << id;
-            }
+            index.populated.insert(BankId::new(u16::from(id)));
             at = entry.body + entry.body_len;
         }
         if at != payload_len {
             return Err(StorageError::MalformedImage);
         }
         index.len = u16::try_from(first).unwrap_or(u16::MAX);
-        Ok(index)
+        Ok(())
     }
 
     /// Reads the bank entry at `at`: its identifier, and where its name and
@@ -1016,39 +1044,53 @@ impl Index {
         self.len == 0
     }
 
-    /// Banks with at least one channel, as a bit per bank.
+    /// Banks with at least one channel: every bank the image holds.
     #[must_use]
-    pub const fn populated(&self) -> u16 {
+    pub const fn populated(&self) -> BankSet {
         self.populated
     }
 
-    /// The bank holding channel number `index`, and its slot.
-    fn slot_of(&self, index: u16) -> Option<(u8, &BankSlot)> {
-        (0_u8..).zip(&self.banks).find(|(_, slot)| {
-            slot.entry != ABSENT && index >= slot.first && index - slot.first < slot.count
-        })
+    /// The channel numbers of `bank`: from its first to the next held
+    /// bank's, or to the end.
+    fn span(&self, bank: usize) -> Option<core::ops::Range<u16>> {
+        let slot = self.banks.get(bank)?;
+        if slot.entry == ABSENT {
+            return None;
+        }
+        let end = self.banks[bank + 1..]
+            .iter()
+            .find(|next| next.entry != ABSENT)
+            .map_or(self.len, |next| next.first);
+        Some(slot.first..end)
     }
 
     /// The bank and position within it of channel number `index`.
     #[must_use]
     pub fn place_of(&self, index: u16) -> Option<(BankId, u16)> {
-        self.slot_of(index)
-            .map(|(id, slot)| (BankId::new(u16::from(id)), index - slot.first))
+        if index >= self.len {
+            return None;
+        }
+        // The last held bank starting at or before `index`.
+        let (bank, slot) = (0_u16..)
+            .zip(&self.banks)
+            .filter(|(_, slot)| slot.entry != ABSENT && slot.first <= index)
+            .last()?;
+        Some((BankId::new(bank), index - slot.first))
     }
 
     /// The channel number of position `position` in `bank`, if it has one.
     #[must_use]
     pub fn index_of(&self, bank: BankId, position: u16) -> Option<u16> {
-        let slot = self.banks.get(usize::from(bank.get()))?;
-        (slot.entry != ABSENT && position < slot.count).then(|| slot.first + position)
+        let span = self.span(usize::from(bank.get()))?;
+        let index = span.start.checked_add(position)?;
+        span.contains(&index).then_some(index)
     }
 
     /// Whether channel number `index` is stored in `bank`, from RAM alone.
     #[must_use]
     pub fn member_at(&self, index: u16, bank: BankId) -> bool {
-        self.banks.get(usize::from(bank.get())).is_some_and(|slot| {
-            slot.entry != ABSENT && index >= slot.first && index - slot.first < slot.count
-        })
+        self.span(usize::from(bank.get()))
+            .is_some_and(|span| span.contains(&index))
     }
 
     /// Reads the entry of `bank`, if the image holds it.
@@ -1132,8 +1174,8 @@ mod tests {
         configuration_image_crc, StorageError, RADIO_CONFIG_ENCODED_LEN, TX_RANGE_ENCODED_LEN,
     };
     use radio_channel_plan::{
-        BankFlags, BankName, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
-        ChannelRecord, ChannelTemplate, GeneratedBank,
+        BankFlags, BankName, BankSet, ChannelBank, ChannelDefinition, ChannelFlags, ChannelName,
+        ChannelRecord, ChannelTemplate, GeneratedBank, MAX_BANKS,
     };
     use radio_domain::{
         Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, PowerLevel,
@@ -1392,7 +1434,8 @@ mod tests {
                 assert_eq!(index.member_at(position, bank), want.is_member_of(bank));
             }
         }
-        assert_eq!(index.populated(), 0b1111);
+        let held: Vec<u16> = index.populated().iter().map(BankId::get).collect();
+        assert_eq!(held, [0, 1, 2, 3]);
         // A channel is named by its bank and its position there.
         assert_eq!(index.place_of(0), Some((BankId::new(0), 0)));
         assert_eq!(index.place_of(17), Some((BankId::new(1), 1)));
@@ -1492,7 +1535,36 @@ mod tests {
         let image = compiled(&[], &[plan()]);
         let index = index(&image).expect("index");
         assert_eq!(index.bank(reader(&image), BankId::new(0)), None);
-        assert_eq!(index.populated(), 0b100);
+        assert_eq!(index.populated(), BankSet::EMPTY.with(BankId::new(2)));
+    }
+
+    #[test]
+    fn the_last_bank_identifier_holds_a_list_and_a_plan_bank_beside_it() {
+        let last = MAX_BANKS - 1;
+        let channels = vec_of([
+            channel(1, "LOW", 145_500_000, 145_500_000, Some(1)),
+            channel(2, "HIGH", 433_500_000, 433_500_000, Some(last)),
+        ]);
+        let wide_plan = GeneratedBank::linear_simplex(
+            BankId::new(200),
+            BankName::new("AIR").unwrap(),
+            Frequency::from_hz(118_000_000).unwrap(),
+            FrequencyStep::from_hz(25_000).unwrap(),
+            760,
+        )
+        .unwrap();
+        let image = compiled(&channels, &[wide_plan]);
+        let index = index(&image).expect("index");
+        assert_eq!(index.len(), 1 + 760 + 1);
+        assert_eq!(index.place_of(761), Some((BankId::new(last), 0)));
+        assert_eq!(index.index_of(BankId::new(200), 759), Some(760));
+        assert!(index.member_at(761, BankId::new(last)));
+        assert!(!index.member_at(760, BankId::new(last)));
+        let top = index.channel_at(reader(&image), 761).unwrap();
+        same_channel(&top, &channels[1]);
+        let plan = index.channel_at(reader(&image), 760).unwrap();
+        assert_eq!(plan.bank(), Some(BankId::new(200)));
+        assert_eq!(index.populated().len(), 3);
     }
 
     #[test]

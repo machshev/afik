@@ -726,13 +726,14 @@ impl<B: RegisterBus, S: Speaker, C: BroadcastChip> Receiver<B, S, C> {
 
 /// What the operator is listening to: the VFO, or the programmed channels.
 ///
-/// The programmed variant holds only the index. Counting, bank filtering and
-/// scan navigation — the walks which touch every channel — are answered from it
-/// and the bank masks without reading memory. Only materialising a record,
-/// once per channel actually shown or tuned, reads the memory.
+/// The programmed variant holds only the channel count. Counting, bank
+/// filtering and scan navigation — the walks which touch every channel — are
+/// answered from the image index's bank table without reading memory. Only
+/// materialising a record, once per channel actually shown or tuned, reads the
+/// memory.
 enum Listening<M: 'static> {
     Vfo(ChannelRecord),
-    Memory(Programmed, &'static TaskCell<Option<M>>),
+    Memory(u16, &'static TaskCell<Option<M>>),
 }
 
 impl<M> Clone for Listening<M> {
@@ -747,7 +748,7 @@ impl<M: Memory> ChannelSource for Listening<M> {
     fn len(&self) -> u16 {
         match self {
             Self::Vfo(_) => 1,
-            Self::Memory(programmed, _) => programmed.len(),
+            Self::Memory(len, _) => *len,
         }
     }
 
@@ -869,8 +870,7 @@ fn cancel_pending_squelch(shell: &mut Shell, pending_operator_squelch: &mut Opti
 /// frequency the operator chose. One which has not starts on its channels,
 /// because a programmed radio which opened in the VFO would look unprogrammed.
 fn adopt_settings(shell: &mut Shell, programmed: &Programmed) {
-    let (banks, bank_count) = programmed.populated_banks();
-    shell.set_banks(banks, bank_count);
+    shell.set_banks(programmed.populated_banks());
     let config = programmed.config();
     shell.set_squelch(config.squelch);
     shell.set_tx(config.tx_power, config.tx_timeout);
@@ -999,7 +999,10 @@ fn activate_slot<M: Memory>(
             if programmed.is_empty() {
                 return None;
             }
-            (Listening::Memory(*programmed, memory), slot.bank_filter)
+            (
+                Listening::Memory(programmed.len(), memory),
+                slot.bank_filter,
+            )
         }
     };
     let keep = keep.map(|kept| (kept.bank, kept.position));

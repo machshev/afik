@@ -215,21 +215,22 @@ pub async fn run<L: SerialLink, M: Memory>(
 /// A missing, erased, torn, or corrupt image indexes as empty, so the radio
 /// runs on the VFO rather than on half a configuration.
 fn load<M: Memory>(memory: Option<&mut M>) -> (Programmed, bool) {
-    let (index, policy) = memory
-        .and_then(|memory| {
-            let mut header = [0_u8; HEADER_LEN];
-            if !memory.read(IMAGE_ORIGIN, &mut header) {
-                return None;
-            }
-            let index =
-                Index::build(&header, |offset, buffer| read_image(memory, offset, buffer)).ok()?;
-            let policy = index.tx_policy(|offset, buffer| read_image(memory, offset, buffer));
-            Some((index, policy))
-        })
-        .unwrap_or_else(|| (Index::empty(), TxPolicy::deny_all()));
-    INDEX.with_mut(|stored| *stored = index);
-    TX_POLICY.with_mut(|stored| *stored = policy);
-    let programmed = Programmed::of(&index);
+    // The index is rebuilt where it lives: a kilobyte is too much to build
+    // on the stack and copy.
+    let policy = INDEX.with_mut(|index| {
+        *index = Index::empty();
+        let memory = memory?;
+        let mut header = [0_u8; HEADER_LEN];
+        if !memory.read(IMAGE_ORIGIN, &mut header) {
+            return None;
+        }
+        index
+            .rebuild(&header, |offset, buffer| read_image(memory, offset, buffer))
+            .ok()?;
+        Some(index.tx_policy(|offset, buffer| read_image(memory, offset, buffer)))
+    });
+    TX_POLICY.with_mut(|stored| *stored = policy.unwrap_or_else(TxPolicy::deny_all));
+    let programmed = INDEX.with(Programmed::of);
     (programmed, !programmed.is_empty())
 }
 

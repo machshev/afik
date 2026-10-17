@@ -153,7 +153,20 @@ the same banks and counts and compiles to a 3 557-byte format 7 image. Also
 fixed `44f4165`'s storage test (class 8 is the first invalid one now). Gate:
 `cargo fmt --all --check` clean, `cargo clippy --workspace --all-targets --
 -D warnings` clean, `cargo test --workspace --no-fail-fast` 891 passed 0
-failed 3 ignored. Next (step 3): `MAX_BANKS` 254.
+failed 3 ignored. Step 3: `MAX_BANKS` is 254. A `BankSet` (32 bytes)
+replaces the populated mask and the shell's bank array; plan channel
+identifiers are the index alone; the RAM bank entry is 4 bytes (its count is
+the next held bank's start), so `INDEX` is about 1 KB for 254 banks. The
+index is rebuilt in its static (`Index::rebuild`): built on the stack, its
+kilobyte pushed other stack slots out of Thumb-1 `ldr` reach and cost 350
+bytes of flash. A 40-bank image lists 42 source rows on the radio side and
+round-trips in the studio. K5 flash ends at `0xeff0`, 16 bytes free
+(`RISK-049`); static RAM 6 972 bytes. Gate: `cargo fmt --all --check` clean,
+`cargo clippy --workspace --all-targets -- -D warnings` clean, `cargo test
+--workspace --no-fail-fast` 895 passed 0 failed 3 ignored, K5 and K1 release
+builds pass. Next (step 4, hardware): bump the version, write the operator's
+project (converted) plus a test bank beyond 16 to the K5, check the banks list
+and step, and that the place survives a power cycle.
 
 **`GEN-072` is active alongside** (2026-10-16, operator request,
 `ADR-111`): step 1 done. The Banks tab has UK gateways and UK beacons tabs,

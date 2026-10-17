@@ -1586,6 +1586,22 @@ mod tests {
     }
 
     #[test]
+    fn more_than_sixteen_banks_reach_the_radio_and_come_back() {
+        let mut model = ProjectModel::new();
+        for row in 0..40 {
+            model.add_bank();
+            model.banks[row].name = format!("B{row}");
+            model.add_channel(row);
+            model.banks[row].channels[0].receive_mhz = format!("{}.000000", 430 + row);
+            model.banks[row].channels[0].transmit_mhz = format!("{}.000000", 430 + row);
+        }
+        let image = model.to_radio_image().expect("40 banks of one channel fit");
+        assert_eq!(ProjectModel::from_image(&image).unwrap(), model);
+        let file = model.to_image().unwrap();
+        assert_eq!(ProjectModel::from_image(&file).unwrap(), model);
+    }
+
+    #[test]
     fn a_project_an_older_studio_saved_opens_and_saves_in_the_new_format() {
         let mut model = project();
         pmr_plan(&mut model);

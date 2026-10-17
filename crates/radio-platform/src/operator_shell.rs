@@ -23,7 +23,7 @@ use radio_domain::{BankId, SquelchLevel, Tone, TxClass, MAX_SQUELCH_LEVEL};
 use radio_tx_policy::ClassSet;
 
 use crate::receive_app::Key;
-use radio_channel_plan::MAX_BANKS;
+use radio_channel_plan::BankSet;
 
 /// Digits a channel-number entry accepts.
 pub const ENTRY_DIGITS: usize = 2;
@@ -415,8 +415,7 @@ pub struct Shell {
     mode: Mode,
     entry: Option<Entry>,
     bank_filter: Option<BankId>,
-    banks: [Option<BankId>; MAX_BANKS as usize],
-    bank_count: usize,
+    banks: BankSet,
     source_cursor: usize,
     vfo_hz: u32,
     vfo_tx_tone: Tone,
@@ -469,8 +468,7 @@ impl Shell {
             mode: Mode::Vfo,
             entry: None,
             bank_filter: None,
-            banks: [None; MAX_BANKS as usize],
-            bank_count: 0,
+            banks: BankSet::EMPTY,
             source_cursor: 0,
             vfo_hz: VFO_DEFAULT_HZ,
             vfo_tx_tone: Tone::None,
@@ -835,10 +833,10 @@ impl Shell {
         self.entry.map(|entry| entry.value)
     }
 
-    /// Returns the populated banks in identifier order.
+    /// Returns the populated banks.
     #[must_use]
-    pub fn banks(&self) -> &[Option<BankId>] {
-        &self.banks[..self.bank_count]
+    pub const fn banks(&self) -> BankSet {
+        self.banks
     }
 
     /// Returns the source-list cursor row.
@@ -849,8 +847,8 @@ impl Shell {
 
     /// Returns the number of source-list rows: the VFO, every channel, and banks.
     #[must_use]
-    pub const fn source_rows(&self) -> usize {
-        self.bank_count + if self.capabilities.vfo { 2 } else { 1 }
+    pub fn source_rows(&self) -> usize {
+        self.banks.len() + if self.capabilities.vfo { 2 } else { 1 }
     }
 
     /// Returns the source one row selects.
@@ -860,12 +858,12 @@ impl Shell {
             match row {
                 0 => Some(Source::Vfo),
                 1 => Some(Source::AllChannels),
-                _ => self.banks.get(row - 2).copied().flatten().map(Source::Bank),
+                _ => self.banks.nth(row - 2).map(Source::Bank),
             }
         } else {
             match row {
                 0 => Some(Source::AllChannels),
-                _ => self.banks.get(row - 1).copied().flatten().map(Source::Bank),
+                _ => self.banks.nth(row - 1).map(Source::Bank),
             }
         }
     }
@@ -902,7 +900,7 @@ impl Shell {
         self.screen = Screen::Operating;
         self.entry = None;
         self.mode = if memory_mode { Mode::Memory } else { Mode::Vfo };
-        self.bank_filter = bank.filter(|bank| self.banks[..self.bank_count].contains(&Some(*bank)));
+        self.bank_filter = bank.filter(|bank| self.banks.contains(*bank));
         self.source_cursor = self.source_row();
     }
 
@@ -913,9 +911,7 @@ impl Shell {
     pub fn restore_other(&mut self, active: SlotId, other: Slot) {
         self.active = active;
         self.other.mode = other.mode;
-        self.other.bank_filter = other
-            .bank_filter
-            .filter(|bank| self.banks[..self.bank_count].contains(&Some(*bank)));
+        self.other.bank_filter = other.bank_filter.filter(|bank| self.banks.contains(*bank));
         if (VFO_MINIMUM_HZ..=VFO_MAXIMUM_HZ).contains(&other.vfo_hz) {
             self.other.vfo_hz = other.vfo_hz;
         }
@@ -946,20 +942,19 @@ impl Shell {
     ///
     /// A filter which the new configuration does not populate is cleared, so
     /// the operator can never be left looking at an empty view.
-    pub fn set_banks(&mut self, banks: [Option<BankId>; MAX_BANKS as usize], count: usize) -> bool {
+    pub fn set_banks(&mut self, banks: BankSet) -> bool {
         self.banks = banks;
-        self.bank_count = count.min(MAX_BANKS as usize);
         self.entry = None;
         if self
             .other
             .bank_filter
-            .is_some_and(|filter| !self.banks[..self.bank_count].contains(&Some(filter)))
+            .is_some_and(|filter| !self.banks.contains(filter))
         {
             self.other.bank_filter = None;
         }
         if self
             .bank_filter
-            .is_some_and(|filter| !self.banks[..self.bank_count].contains(&Some(filter)))
+            .is_some_and(|filter| !self.banks.contains(filter))
         {
             self.bank_filter = None;
             self.source_cursor = self.source_row();
@@ -976,11 +971,7 @@ impl Shell {
         }
         let offset = usize::from(self.capabilities.vfo);
         self.bank_filter
-            .and_then(|filter| {
-                self.banks[..self.bank_count]
-                    .iter()
-                    .position(|bank| *bank == Some(filter))
-            })
+            .and_then(|filter| self.banks.position(filter))
             .map_or(offset, |position| position + offset + 1)
     }
 
@@ -1574,7 +1565,7 @@ mod tests {
         VFO_STEPS_HZ,
     };
     use crate::receive_app::Key;
-    use radio_channel_plan::MAX_BANKS;
+    use radio_channel_plan::BankSet;
     use radio_domain::{BankId, SquelchLevel};
 
     fn context(visible: u16, active: u16) -> Context {
@@ -1604,12 +1595,9 @@ mod tests {
         }
     }
 
-    fn bank_table(ids: &[u16]) -> ([Option<BankId>; MAX_BANKS as usize], usize) {
-        let mut banks = [None; MAX_BANKS as usize];
-        for (slot, id) in banks.iter_mut().zip(ids) {
-            *slot = Some(BankId::new(*id));
-        }
-        (banks, ids.len())
+    fn bank_table(ids: &[u16]) -> BankSet {
+        ids.iter()
+            .fold(BankSet::EMPTY, |banks, id| banks.with(BankId::new(*id)))
     }
 
     /// Opens the VFO step list the way an operator does: Menu, down to the
@@ -1634,8 +1622,7 @@ mod tests {
     /// with a programmed radio would leave it.
     fn memory_shell(ids: &[u16]) -> Shell {
         let mut shell = Shell::new();
-        let (banks, count) = bank_table(ids);
-        shell.set_banks(banks, count);
+        shell.set_banks(bank_table(ids));
         tap_star(&mut shell, 0, context(8, 0));
         shell.press(Key::Down, 1, context(8, 0));
         assert_eq!(
@@ -1765,8 +1752,7 @@ mod tests {
     #[test]
     fn the_source_list_offers_the_vfo_every_channel_and_each_bank() {
         let mut shell = Shell::new();
-        let (banks, count) = bank_table(&[1, 3]);
-        assert!(!shell.set_banks(banks, count));
+        assert!(!shell.set_banks(bank_table(&[1, 3])));
 
         assert_eq!(tap_star(&mut shell, 0, context(8, 0)), Intent::Redraw);
         assert_eq!(shell.screen(), Screen::SourceList);
@@ -1821,8 +1807,7 @@ mod tests {
     #[test]
     fn up_moves_towards_the_first_row_on_every_list() {
         let mut shell = Shell::new();
-        let (banks, count) = bank_table(&[1, 3]);
-        shell.set_banks(banks, count);
+        shell.set_banks(bank_table(&[1, 3]));
 
         // Source list: four rows, opening on the VFO.
         tap_star(&mut shell, 0, context(8, 0));
@@ -2182,17 +2167,15 @@ mod tests {
     #[test]
     fn a_filter_the_new_configuration_does_not_populate_is_cleared() {
         let mut shell = Shell::new();
-        let (banks, count) = bank_table(&[1, 3]);
-        shell.set_banks(banks, count);
+        shell.set_banks(bank_table(&[1, 3]));
         tap_star(&mut shell, 0, context(8, 0));
         shell.press(Key::Down, 5, context(8, 0));
         shell.press(Key::Down, 6, context(8, 0));
         shell.press(Key::Menu, 8, context(8, 0));
         assert_eq!(shell.bank_filter(), Some(BankId::new(1)));
 
-        let (banks, count) = bank_table(&[5]);
         assert!(
-            shell.set_banks(banks, count),
+            shell.set_banks(bank_table(&[5])),
             "reprogramming reports that the filter had to be cleared"
         );
         assert_eq!(shell.bank_filter(), None);
@@ -2241,9 +2224,8 @@ mod tests {
 
     #[test]
     fn f_then_2_selects_the_other_slot_and_each_keeps_its_own_source() {
-        let (banks, count) = bank_table(&[3, 7]);
         let mut shell = Shell::new();
-        shell.set_banks(banks, count);
+        shell.set_banks(bank_table(&[3, 7]));
         shell.select_memory();
         // A on bank 3.
         tap_star(&mut shell, 0, context(4, 0));
