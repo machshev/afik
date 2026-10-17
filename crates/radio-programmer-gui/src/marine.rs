@@ -325,20 +325,42 @@ fn draft(name: &str, channel: &MarineChannel) -> ChannelDraft {
     }
 }
 
-/// Builds the marine bank: the core channels, then the local ones in the
-/// order `nearby` chose, each named by its designator and place.
-pub fn marine_bank(locator: &str, local: &[LocalChannel]) -> BankDraft {
-    let mut name = format!("SEA {}", locator.trim().to_ascii_uppercase());
-    name.truncate(MAX_BANK_NAME_LEN);
+/// The one bank of the core channels every location shares.
+pub const CORE_BANK: &str = "SEA CORE";
+
+/// Builds the bank of the core channels, which every location shares.
+pub fn core_bank() -> BankDraft {
     let core = CORE.iter().filter_map(|(designator, use_)| {
         channel(designator).map(|channel| draft(&format!("{designator} {use_}"), &channel))
     });
+    bank(CORE_BANK.to_owned(), core.collect())
+}
+
+/// Builds a location's marine bank: the local channels beyond the core, in
+/// the order `nearby` chose, each named by its designator and place.
+pub fn marine_bank(locator: &str, local: &[LocalChannel]) -> BankDraft {
+    let mut name = format!("SEA {}", locator.trim().to_ascii_uppercase());
+    name.truncate(MAX_BANK_NAME_LEN);
     let local = local.iter().map(|local| {
         draft(
             &format!("{} {}", local.channel.designator, local.place),
             &local.channel,
         )
     });
+    bank(name, local.collect())
+}
+
+/// Whether `channel` is one of the core's, as a location's bank an older
+/// studio made held them.
+pub fn is_core(channel: &ChannelDraft) -> bool {
+    core_bank()
+        .channels
+        .iter()
+        .any(|core| core.receive_mhz == channel.receive_mhz)
+}
+
+/// A receive-and-transmit marine bank holding `channels`.
+fn bank(name: String, channels: Vec<ChannelDraft>) -> BankDraft {
     BankDraft {
         name,
         kind: BankKind::Named,
@@ -354,12 +376,12 @@ pub fn marine_bank(locator: &str, local: &[LocalChannel]) -> BankDraft {
         bandwidth: Bandwidth::Wide,
         power: PowerLevel::Low1,
         step_hz: STEP_HZ,
-        channels: core.chain(local).collect(),
+        channels,
         ..BankDraft::default()
     }
 }
 
-/// How many channels a bank holds before any local one.
+/// How many channels the core bank holds.
 pub const CORE_CHANNELS: usize = CORE.len();
 
 /// The Overpass query for every place in the world tagged with a channel.
@@ -508,7 +530,8 @@ impl SyncJob {
 #[cfg(test)]
 mod tests {
     use super::{
-        channel, channels_in, marine_bank, nearby, parse, query_url, MarineCache, CORE_CHANNELS,
+        channel, channels_in, core_bank, is_core, marine_bank, nearby, parse, query_url,
+        MarineCache, CORE_CHANNELS,
     };
     use crate::model::ProjectModel;
     use radio_domain::{Bandwidth, Modulation};
@@ -629,15 +652,20 @@ mod tests {
     }
 
     #[test]
-    fn the_bank_starts_with_the_core_and_compiles() {
+    fn the_core_is_one_shared_bank_and_each_location_holds_the_rest() {
         let places = parse(ANSWER).unwrap();
         let near = nearby(&places, "jo01hp", 75).unwrap();
+        let core = core_bank();
+        assert_eq!(core.name, "SEA CORE");
+        assert_eq!(core.channels.len(), CORE_CHANNELS);
+        assert_eq!(core.channels[0].name, "16 CALL");
+        assert_eq!(core.channels[0].receive_mhz, "156.800000");
+        assert!(core.channels.iter().all(is_core));
         let bank = marine_bank("jo01hp", &near);
         assert_eq!(bank.name, "SEA JO01HP");
-        assert_eq!(bank.channels.len(), CORE_CHANNELS + 4);
-        assert_eq!(bank.channels[0].name, "16 CALL");
-        assert_eq!(bank.channels[0].receive_mhz, "156.800000");
-        let burnham = &bank.channels[CORE_CHANNELS];
+        assert_eq!(bank.channels.len(), 4, "the core is shared, not repeated");
+        assert!(!bank.channels.iter().any(is_core));
+        let burnham = &bank.channels[0];
         assert_eq!(burnham.name, "80 BURNHAM Y");
         assert_eq!(burnham.receive_mhz, "161.625000");
         assert_eq!(burnham.transmit_mhz, "157.025000");
@@ -646,10 +674,10 @@ mod tests {
             .iter()
             .all(|c| c.modulation == Modulation::Fm && c.bandwidth == Bandwidth::Wide));
         let project = ProjectModel {
-            banks: vec![bank],
+            banks: vec![core, bank],
             ..ProjectModel::new()
         };
-        project.to_radio_image().expect("a valid marine bank");
+        project.to_radio_image().expect("valid marine banks");
     }
 
     #[test]

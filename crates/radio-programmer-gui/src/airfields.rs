@@ -10,9 +10,11 @@
 
 use std::{collections::HashSet, path::PathBuf};
 
+use radio_domain::Frequency;
+
 use crate::{
     airports::{am_bank, am_channel, carrier_hz, nearby_matching, AirportArea, AirportFrequency},
-    model::BankDraft,
+    model::{parse_frequency, BankDraft, ChannelDraft},
     paths,
 };
 
@@ -36,8 +38,11 @@ const CORE: [(&str, &str); 9] = [
     ("PARA DZ", "130.530"),
 ];
 
-/// How many channels a bank holds before any local one.
+/// How many channels the core bank holds.
 pub const CORE_CHANNELS: usize = CORE.len();
+
+/// The one bank of the sporting core every location shares.
+pub const CORE_BANK: &str = "FLD CORE";
 
 /// The core's names and carriers in hertz.
 fn core() -> impl Iterator<Item = (&'static str, u32)> {
@@ -62,14 +67,31 @@ pub fn nearby<'a>(
     )
 }
 
-/// Builds the receive-only AM bank: the core, then the local frequencies in
-/// the order `nearby` chose.
+/// Builds the receive-only AM bank of the sporting core, which every
+/// location shares.
+pub fn core_bank() -> BankDraft {
+    let mut bank = am_bank(
+        "",
+        "",
+        core().map(|(name, hz)| am_channel(name, hz)).collect(),
+    );
+    CORE_BANK.clone_into(&mut bank.name);
+    bank
+}
+
+/// Builds a location's receive-only AM bank: the local frequencies beyond
+/// the core, in the order `nearby` chose.
 pub fn airfield_bank(locator: &str, near: &[(&AirportFrequency, f64)]) -> BankDraft {
-    let core = core().map(|(name, hz)| am_channel(name, hz));
     let local = near
         .iter()
         .map(|(frequency, _)| am_channel(&frequency.name, frequency.frequency_hz));
-    am_bank("FLD", locator, core.chain(local).collect())
+    am_bank("FLD", locator, local.collect())
+}
+
+/// Whether `channel` is one of the core's, as a location's bank an older
+/// studio made held them.
+pub fn is_core(channel: &ChannelDraft) -> bool {
+    core().any(|(_, hz)| parse_frequency(&channel.receive_mhz).map(Frequency::as_hz) == Some(hz))
 }
 
 /// The state file the airfield radius and channel count are kept in.
@@ -84,7 +106,7 @@ pub type AirfieldArea = AirportArea;
 mod tests {
     use radio_domain::Modulation;
 
-    use super::{airfield_bank, nearby, CORE_CHANNELS};
+    use super::{airfield_bank, core_bank, is_core, nearby, CORE_CHANNELS};
     use crate::{airports::AirportFrequency, model::ProjectModel};
 
     fn field(name: &str, hz: u32, latitude: f64, small: bool) -> AirportFrequency {
@@ -103,8 +125,16 @@ mod tests {
 
     #[test]
     fn the_core_is_the_sporting_carriers() {
-        let bank = airfield_bank("io91wm", &[]);
-        assert_eq!(bank.name, "FLD IO91WM");
+        let bank = core_bank();
+        assert_eq!(bank.name, "FLD CORE");
+        assert_eq!(bank.channels.len(), CORE_CHANNELS);
+        assert!(bank.channels.iter().all(is_core));
+        let local = airfield_bank("io91wm", &[]);
+        assert_eq!(local.name, "FLD IO91WM");
+        assert!(
+            local.channels.is_empty(),
+            "the core is shared, not repeated"
+        );
         let core: Vec<_> = bank
             .channels
             .iter()
@@ -146,8 +176,9 @@ mod tests {
         // frequency; the microlight frequency is already in the core.
         assert_eq!(names, ["GB-0001 A/G", "GB-03 RADIO"]);
         let bank = airfield_bank("IO91WM", &near);
-        assert_eq!(bank.channels.len(), CORE_CHANNELS + 2);
-        assert_eq!(bank.channels[CORE_CHANNELS].name, "GB-0001 A/G");
+        assert_eq!(bank.channels.len(), 2);
+        assert_eq!(bank.channels[0].name, "GB-0001 A/G");
+        assert!(!bank.channels.iter().any(is_core));
         let project = ProjectModel {
             banks: vec![bank],
             ..ProjectModel::new()

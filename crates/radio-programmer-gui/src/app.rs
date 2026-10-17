@@ -564,7 +564,12 @@ impl StudioApp {
         };
         let in_range = near.len();
         near.truncate(usize::from(self.marine_area.max_channels));
-        let (project, bank_bytes) = self.with_bank(marine::marine_bank(locator, &near));
+        let (project, bank_bytes) = self.with_core(
+            marine::core_bank(),
+            marine::marine_bank(locator, &near),
+            "SEA ",
+            marine::is_core,
+        );
         Ok(AreaPreview {
             in_range,
             taken: near.len(),
@@ -631,6 +636,8 @@ impl StudioApp {
             return;
         }
         self.take_generated(preview.project, false);
+        // The core is shared, so it may be unchanged; it is filed here too.
+        self.file_here(marine::CORE_BANK, false);
         self.status = format!(
             "Added {} core and {} local marine channels near {locator} (furthest {:.0} km). \
              Local channels are OpenStreetMap data (ODbL), mapped by volunteers; check \
@@ -660,7 +667,12 @@ impl StudioApp {
         };
         let in_range = near.len();
         near.truncate(usize::from(self.airfield_area.max_channels));
-        let (project, bank_bytes) = self.with_bank(airfields::airfield_bank(locator, &near));
+        let (project, bank_bytes) = self.with_core(
+            airfields::core_bank(),
+            airfields::airfield_bank(locator, &near),
+            "FLD ",
+            airfields::is_core,
+        );
         Ok(AreaPreview {
             in_range,
             taken: near.len(),
@@ -727,6 +739,8 @@ impl StudioApp {
             return;
         }
         self.take_generated(preview.project, true);
+        // The core is shared, so it may be unchanged; it is filed here too.
+        self.file_here(airfields::CORE_BANK, true);
         self.status = format!(
             "Added {} sporting and {} local airfield frequencies near {locator} (furthest \
              {:.0} km), receive only. The sporting set is CAP 1606's, which the CAA has \
@@ -1136,30 +1150,87 @@ impl StudioApp {
     /// by the saved locator's description, else the locator itself. Airband
     /// banks go under AIRBAND too.
     fn take_generated(&mut self, project: ProjectModel, airband: bool) {
+        let locator = self.repeater_area.locator.trim().to_ascii_uppercase();
+        // Another location's bank the add changed stays filed where it is.
         let generated: Vec<String> = project
             .banks
             .iter()
             .filter(|bank| !self.project.banks.contains(bank))
+            .filter(|bank| trailing_locator(&bank.name).is_none_or(|own| own == locator))
             .map(|bank| bank.name.clone())
             .collect();
         self.project = project;
+        for bank in &generated {
+            self.file_here(bank, airband);
+        }
+    }
+
+    /// Files the bank named `bank` under the location of the locator, under
+    /// the airband group when `airband`, and under the marine group when it
+    /// holds marine channels.
+    fn file_here(&mut self, bank: &str, airband: bool) {
         let locator = self.repeater_area.locator.trim().to_ascii_uppercase();
         let name = self.location_name(&locator);
-        let mut filed = true;
-        for bank in &generated {
-            filed &= self.project.file_bank(bank, &name, &locator, airband);
-            let marine = self
-                .project
-                .banks
-                .iter()
-                .any(|b| b.name == *bank && b.is_marine());
-            if marine {
-                filed &= self.project.file_in(bank, MARINE_GROUP);
-            }
+        let mut filed = self.project.file_bank(bank, &name, &locator, airband);
+        let marine = self
+            .project
+            .banks
+            .iter()
+            .any(|b| b.name == *bank && b.is_marine());
+        if marine {
+            filed &= self.project.file_in(bank, MARINE_GROUP);
         }
         if !filed {
             log::warn!("a radio holds {MAX_GROUPS} groups; some generated banks are not filed");
         }
+    }
+
+    /// The project with a generator's `core` bank, which every location
+    /// shares, and this location's `local` bank of the rest, left out when
+    /// it holds nothing; and the bytes they add. Each location's bank named
+    /// with `prefix` loses the core channels an older studio put in it, a
+    /// bank left empty is dropped and the core filed where it was.
+    fn with_core(
+        &self,
+        core: BankDraft,
+        local: BankDraft,
+        prefix: &str,
+        is_core: fn(&ChannelDraft) -> bool,
+    ) -> (ProjectModel, Option<usize>) {
+        let core_name = core.name.clone();
+        let local_name = local.name.clone();
+        let empty = local.channels.is_empty();
+        let mut banks = vec![core];
+        if !empty {
+            banks.push(local);
+        }
+        let (mut project, bank_bytes) = self.with_banks(banks);
+        let mut filed = Vec::new();
+        for bank in &mut project.banks {
+            if !bank.name.starts_with(prefix) || trailing_locator(&bank.name).is_none() {
+                continue;
+            }
+            bank.channels.retain(|channel| !is_core(channel));
+            if empty && bank.name == local_name {
+                bank.channels.clear();
+            }
+            if bank.channels.is_empty() {
+                filed.extend(bank.groups.iter().copied());
+            }
+        }
+        project.banks.retain(|bank| {
+            !(bank.name.starts_with(prefix)
+                && trailing_locator(&bank.name).is_some()
+                && bank.channels.is_empty())
+        });
+        if let Some(core) = project.banks.iter_mut().find(|bank| bank.name == core_name) {
+            for group in filed {
+                if !core.groups.contains(&group) {
+                    core.groups.push(group);
+                }
+            }
+        }
+        (project, bank_bytes)
     }
 
     /// The project with `bank` replacing one of the same name, else after
@@ -6037,9 +6108,14 @@ mod tests {
         assert!(source.starts_with("8 core and nearest 0 of 0"), "{source}");
         let banks = app.project.banks.len();
         app.add_marine();
+        // Unsynced, only the shared core: no empty bank for the location.
+        assert_eq!(app.project.banks.len(), banks + 1);
         let bank = app.project.banks.last().unwrap();
-        assert_eq!(bank.name, "SEA JO01HP");
+        assert_eq!(bank.name, "SEA CORE");
         assert_eq!(bank.channels.len(), CORE_CHANNELS);
+        let home = app.project.location("JO01HP").unwrap();
+        let marine = app.project.group_named(super::MARINE_GROUP).unwrap();
+        assert!(bank.groups.contains(&home) && bank.groups.contains(&marine));
 
         app.marine = Some(MarineList {
             places: vec![MarinePlace {
@@ -6051,11 +6127,33 @@ mod tests {
             synced: std::time::SystemTime::now(),
         });
         app.add_marine();
-        assert_eq!(app.project.banks.len(), banks + 1, "replaced, not added");
+        assert_eq!(app.project.banks.len(), banks + 2);
         let bank = app.project.banks.last().unwrap();
-        assert_eq!(bank.channels.len(), CORE_CHANNELS + 1);
-        assert_eq!(bank.channels[CORE_CHANNELS].name, "80 BURNHAM");
+        assert_eq!(bank.name, "SEA JO01HP");
+        let names: Vec<_> = bank.channels.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["80 BURNHAM"], "16 is in the shared core");
         assert!(app.project.validate().is_ok());
+
+        // Another location files the same core bank, held once.
+        "JO02PP".clone_into(&mut app.repeater_area.locator);
+        app.add_marine();
+        let cores: Vec<_> = app
+            .project
+            .banks
+            .iter()
+            .filter(|b| b.name == "SEA CORE")
+            .collect();
+        assert_eq!(cores.len(), 1);
+        let norwich = app.project.location("JO02PP").unwrap();
+        assert!(cores[0].groups.contains(&home) && cores[0].groups.contains(&norwich));
+        assert!(
+            app.project.banks.iter().all(|b| b.name != "SEA JO02PP"),
+            "nothing local near Norwich"
+        );
+        assert!(
+            app.project.banks.iter().any(|b| b.name == "SEA JO01HP"),
+            "another location's bank stays"
+        );
 
         app.repeater_area.locator = "nonsense".to_owned();
         app.add_marine();
@@ -6130,12 +6228,56 @@ mod tests {
         assert!(source.ends_with("Not synced: the sporting frequencies only."));
         app.add_airfields();
         let bank = app.project.banks.last().unwrap();
-        assert_eq!(bank.name, "FLD IO91WM");
+        assert_eq!(bank.name, "FLD CORE");
         assert_eq!(bank.channels.len(), CORE_CHANNELS);
         assert_eq!(bank.channels[0].name, "SAFETYCOM");
         assert!(app.project.validate().is_ok());
         app.add_airfields();
         assert_eq!(app.project.banks.len(), banks + 1, "replaced, not added");
+
+        // A location's bank an older studio made with the core in it loses
+        // the core; left with nothing it goes, the core filed in its place.
+        let mut old = crate::airfields::core_bank();
+        "FLD JO02PP".clone_into(&mut old.name);
+        let mut kept = crate::airfields::core_bank();
+        "FLD JO01PX".clone_into(&mut kept.name);
+        kept.channels
+            .push(crate::airports::am_channel("GB-0177", 123_200_000));
+        app.project.banks.extend([old, kept]);
+        assert!(app
+            .project
+            .file_bank("FLD JO02PP", "NORWICH", "JO02PP", true));
+        assert!(app
+            .project
+            .file_bank("FLD JO01PX", "FELIXSTOWE", "JO01PX", true));
+        app.add_airfields();
+        assert!(app.project.banks.iter().all(|b| b.name != "FLD JO02PP"));
+        let felixstowe = app.project.banks.iter().find(|b| b.name == "FLD JO01PX");
+        let names: Vec<_> = felixstowe
+            .unwrap()
+            .channels
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(names, ["GB-0177"]);
+        let norwich = app.project.location("JO02PP").unwrap();
+        let here = app.project.location("IO91WM").unwrap();
+        let felixstowe = app.project.location("JO01PX").unwrap();
+        let core = app
+            .project
+            .banks
+            .iter()
+            .find(|b| b.name == "FLD CORE")
+            .unwrap();
+        assert!(core.groups.contains(&norwich) && core.groups.contains(&here));
+        assert!(!core.groups.contains(&felixstowe), "until added there");
+        let fld = app
+            .project
+            .banks
+            .iter()
+            .find(|b| b.name == "FLD JO01PX")
+            .unwrap();
+        assert!(!fld.groups.contains(&here), "stays filed where it was");
     }
 
     #[test]
@@ -6270,7 +6412,7 @@ mod tests {
             .project
             .banks
             .iter()
-            .find(|b| b.name == "SEA IO91WM")
+            .find(|b| b.name == "SEA CORE")
             .unwrap();
         assert!(sea.groups.contains(&home) && sea.groups.contains(&marine));
 
