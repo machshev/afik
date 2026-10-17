@@ -1188,6 +1188,16 @@ PMR446 channel 8, saw `PMR 8 CALL`. Gate: `cargo fmt --all --check` clean,
 workspace clippy `-D warnings` clean, `cargo test -p radio-programmer-gui`
 227 passed 0 failed. Firmware unchanged.
 
+Per-channel tones on a plan (operator request, 2026-10-17): "Make channels
+editable" turns a generated plan into a channel bank of its channels, sharing
+everything but the tones so each channel has its own; channel rows gain a
+Calling flag, so the calling channel survives. Refused, plan unchanged, when
+the channels would not fit the radio. Studio only, no format change. Tried
+under Xvfb: PMR446 with channel 8 calling became 16 channels, `PMR 8 CALL`
+ticked Calling, per-channel RX/TX tones shown, memory 3.5% to 6.1%. Gate:
+`cargo fmt --all --check` clean, workspace clippy `-D warnings` clean,
+`cargo test -p radio-programmer-gui` 229 passed 0 failed. Firmware unchanged.
+
 Side key 1 (operator request): on the operating screen it switches tone
 squelch on the selected slot; on requires the channel's RX tone or, without
 one, its TX tone (repeater output, caught VFO tone), off opens on any

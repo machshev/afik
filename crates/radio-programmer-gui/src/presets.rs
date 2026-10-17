@@ -1436,4 +1436,57 @@ mod tests {
         let after = PRESETS[0].build();
         assert_ne!(before.banks.len(), after.banks.len());
     }
+
+    /// A default set's plan becomes channels an operator can give their own
+    /// tones, keeping its names, frequencies and calling channel.
+    #[test]
+    fn a_plan_made_editable_keeps_its_channels_and_takes_a_tone_on_one() {
+        use crate::model::ToneDraft;
+        use radio_channel_plan::ChannelFlags;
+        use radio_domain::Tone;
+        let mut project = project_of("UK and EU simplex");
+        project.banks[0].calling_index = Some(7);
+        assert_eq!(project.make_channels_editable(0), Ok(16));
+
+        let bank = &project.banks[0];
+        assert_eq!(bank.kind, BankKind::Named);
+        assert_eq!(bank.channels[0].name, "PMR 1");
+        assert_eq!(bank.channels[0].receive_mhz, "446.006250");
+        assert_eq!(bank.channels[7].name, "PMR 8 CALL");
+        assert!(bank.channels[7].calling);
+        assert!(!bank.channels[0].calling);
+        assert_eq!(bank.channels[15].receive_mhz, "446.193750");
+
+        project.banks[0].channels[2].tx_tone = ToneDraft::from_tone(Tone::Ctcss(885));
+        project.banks[0].channels[2].rx_tone = ToneDraft::from_tone(Tone::Ctcss(885));
+        let radio = project.validate().unwrap();
+        let channels: Vec<_> = radio.channels().iter().take(16).collect();
+        assert_eq!(channels[2].tx_tone(), Tone::Ctcss(885));
+        assert_eq!(channels[2].rx_tone(), Tone::Ctcss(885));
+        assert_eq!(
+            channels[3].tx_tone(),
+            Tone::None,
+            "only the one channel changes"
+        );
+        assert_eq!(channels[2].bandwidth(), Bandwidth::Narrow);
+        assert!(channels[7].flags().contains(ChannelFlags::CALLING));
+
+        // A saved project keeps the tone and the calling channel.
+        let reopened = ProjectModel::from_image(&project.to_image().unwrap()).unwrap();
+        assert_eq!(reopened.banks[0].channels[2], project.banks[0].channels[2]);
+        assert!(reopened.banks[0].channels[7].calling);
+    }
+
+    /// A plan whose channels no longer fit beside the rest stays a plan.
+    #[test]
+    fn a_plan_too_big_for_the_radio_as_channels_stays_a_plan() {
+        let mut project = project_of("VHF airband receive");
+        let mut second = project.banks[0].clone();
+        second.name = "AIR AGAIN".to_owned();
+        project.banks.push(second);
+        assert_eq!(project.make_channels_editable(0), Ok(760));
+        let before = project.clone();
+        assert!(project.make_channels_editable(1).is_err());
+        assert_eq!(project, before);
+    }
 }

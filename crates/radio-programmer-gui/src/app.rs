@@ -4601,6 +4601,19 @@ impl StudioApp {
                 self.project.banks.remove(row);
             }
             BankAction::AddChannel => self.project.add_channel(row),
+            BankAction::MakeChannels => {
+                let name = self.project.banks.get(row).map(|bank| bank.name.clone());
+                self.status = match (self.project.make_channels_editable(row), name) {
+                    (Ok(count), Some(name)) => format!(
+                        "{name} is now a channel bank of {count} channels; each \
+                         channel has its own tones."
+                    ),
+                    (Ok(_), None) => String::new(),
+                    (Err(reason), name) => {
+                        format!("{} stays a plan: {reason}.", name.unwrap_or_default())
+                    }
+                };
+            }
             BankAction::Channel(channel, RowAction::Duplicate) => {
                 self.project.duplicate_channel(row, channel);
             }
@@ -5108,6 +5121,8 @@ enum BankAction {
     Remove,
     /// Append a channel to the bank.
     AddChannel,
+    /// Turn a generated plan into a channel bank of the channels it expands to.
+    MakeChannels,
     /// Act on one of the bank's channels.
     Channel(usize, RowAction),
 }
@@ -5295,6 +5310,8 @@ fn channel_row_editor(
         ui.label("Flags");
         ui.horizontal_wrapped(|ui| {
             ui.checkbox(&mut channel.scan_skip, "Scan skip");
+            ui.checkbox(&mut channel.calling, "Calling")
+                .on_hover_text("The band's calling channel, which the radio can reach directly");
             if !receive_only {
                 ui.checkbox(&mut channel.busy_lockout, "Busy lockout");
                 ui.checkbox(&mut channel.reverse, "Reverse");
@@ -5358,6 +5375,17 @@ fn bank_row_editor(ui: &mut egui::Ui, bank: &mut BankDraft) -> Option<BankAction
     match bank.kind {
         BankKind::Generated => {
             generated_expansion(ui, bank);
+            if ui
+                .button("Make channels editable")
+                .on_hover_text(
+                    "Turns the plan into a channel bank of the channels it expands \
+                     to, so each can have its own tones. Each channel then costs \
+                     radio memory, and base, spacing and count are no longer a plan.",
+                )
+                .clicked()
+            {
+                action = Some(BankAction::MakeChannels);
+            }
             if !bank.channels.is_empty() {
                 ui.colored_label(
                     WARNING_COLOUR,
