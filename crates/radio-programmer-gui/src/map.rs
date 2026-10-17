@@ -71,6 +71,9 @@ pub struct Layer {
     /// The locators the radius is drawn about: the operator's, or every
     /// saved one when all are shown.
     pub centres: Vec<(f64, f64)>,
+    /// Further ranges drawn faintly about each centre, in kilometres, with
+    /// a label, such as how far each size of airport's approach is heard.
+    pub rings: Vec<(f64, String)>,
 }
 
 /// A named point drawn on the map, such as a saved locator.
@@ -262,6 +265,26 @@ pub fn show(
                 layer.color.gamma_multiply(0.08),
                 Stroke::new(2.0_f32, layer.color),
             );
+        }
+    }
+    // The faint ranges, each named at its top.
+    let ring_font = egui::FontId::proportional(11.0);
+    for layer in layers {
+        for centre in &layer.centres {
+            for (km, label) in &layer.rings {
+                #[allow(clippy::cast_possible_truncation)]
+                let radius = (km * projection.points_per_km(centre.0)) as f32;
+                let at = projection.screen(*centre);
+                let faint = layer.color.gamma_multiply(0.45);
+                painter.circle_stroke(at, radius, Stroke::new(1.0_f32, faint));
+                painter.text(
+                    at - Vec2::new(0.0, radius),
+                    egui::Align2::CENTER_BOTTOM,
+                    label,
+                    ring_font.clone(),
+                    faint,
+                );
+            }
         }
     }
     // Each site is its layer's glyph on a white disc ringed in its colour,

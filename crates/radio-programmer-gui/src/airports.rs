@@ -88,21 +88,6 @@ impl AirportFrequency {
     pub fn is_small(&self) -> bool {
         self.size == AirportSize::Small
     }
-
-    /// Roughly how far off a handheld at ground level hears it, in
-    /// kilometres: its service's range, approach and radar cut to what the
-    /// airport's traffic flies at.
-    pub const fn range_km(&self) -> u16 {
-        match self.service {
-            Service::Approach => self.size.approach_km(),
-            service => service.range_km(),
-        }
-    }
-
-    /// How far off `receiver` hears it, in kilometres.
-    pub const fn reach_km(&self, receiver: Receiver) -> u16 {
-        receiver.reach_km(self.range_km())
-    }
 }
 
 /// How big an airport is, as `OurAirports` types it.
@@ -120,6 +105,9 @@ pub enum AirportSize {
 }
 
 impl AirportSize {
+    /// Every size, largest first, as the studio shows them.
+    pub const ALL: [Self; 3] = [Self::Large, Self::Medium, Self::Small];
+
     /// The size of an `OurAirports` airport type.
     pub fn of(kind: &str) -> Self {
         match kind {
@@ -130,14 +118,46 @@ impl AirportSize {
     }
 
     /// Roughly how far off a handheld hears the airport's approach and
-    /// radar, in kilometres: an estimate from how high its traffic flies,
-    /// not a measurement.
-    pub const fn approach_km(self) -> u16 {
+    /// radar before the operator chooses, in kilometres: an estimate from
+    /// how high its traffic flies, not a measurement.
+    pub const fn default_approach_km(self) -> u16 {
         match self {
             Self::Large => Service::Approach.range_km(),
             Self::Medium => 50,
             Self::Small => 30,
         }
+    }
+
+    /// What the studio calls it.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Large => "Large",
+            Self::Medium => "Medium",
+            Self::Small => "Small",
+        }
+    }
+
+    /// What it covers, for the studio's hover text.
+    pub const fn help(self) -> &'static str {
+        match self {
+            Self::Large => "a large airport, taking airliners",
+            Self::Medium => "a regional airport or military field",
+            Self::Small => "a small field, heliport or airstrip",
+        }
+    }
+
+    /// The word the options file keeps its approach range under.
+    const fn key(self) -> &'static str {
+        match self {
+            Self::Large => "approach-large",
+            Self::Medium => "approach-medium",
+            Self::Small => "approach-small",
+        }
+    }
+
+    /// Its place in [`Self::ALL`].
+    pub const fn index(self) -> usize {
+        self as usize
     }
 }
 
@@ -239,8 +259,8 @@ impl Service {
 
     /// Roughly how far off a handheld at ground level hears it at most, in
     /// kilometres: an estimate from the height of what transmits, not a
-    /// measurement. A large airport's approach is heard this far; see
-    /// [`AirportFrequency::range_km`].
+    /// measurement. Approach is heard as far as [`AirportOptions`] says for
+    /// the airport's size.
     pub const fn range_km(self) -> u16 {
         match self {
             Self::Approach => 150,
@@ -527,8 +547,9 @@ pub fn plan<'a>(
         .filter(|(_, km)| *km <= f64::from(area.radius_km))
         .collect();
 
-    let heard =
-        |(frequency, km): &(&AirportFrequency, f64)| *km <= f64::from(frequency.reach_km(receiver));
+    let heard = |(frequency, km): &(&AirportFrequency, f64)| {
+        *km <= f64::from(options.reach_km(frequency, receiver))
+    };
     let mut airports: Vec<AirportGroup<'a>> = Vec::new();
     if options.per_airport {
         let mut local: Vec<_> = in_radius
@@ -570,8 +591,9 @@ pub fn plan<'a>(
     let own_bank = |frequency: &AirportFrequency| {
         frequency.service.is_local() && airports.iter().any(|g| g.ident == frequency.ident)
     };
-    let hearability =
-        |(frequency, km): &(&AirportFrequency, f64)| km / f64::from(frequency.reach_km(receiver));
+    let hearability = |(frequency, km): &(&AirportFrequency, f64)| {
+        km / f64::from(options.reach_km(frequency, receiver))
+    };
     let mut near: Vec<_> = in_radius
         .iter()
         .filter(|candidate| heard(candidate) && !own_bank(candidate.0))
@@ -835,7 +857,13 @@ pub struct AirportOptions {
     pub per_airport: bool,
     /// How many airports get a bank of their own.
     pub airports: u16,
+    /// How far off a handheld hears approach and radar, in kilometres, by
+    /// [`AirportSize::index`].
+    pub approach_km: [u16; AirportSize::ALL.len()],
 }
+
+/// The furthest approach range the operator can choose, in kilometres.
+pub const MAX_APPROACH_KM: u16 = 500;
 
 /// How many airports get a bank of their own before the operator chooses.
 pub const DEFAULT_AIRPORT_BANKS: u16 = 5;
@@ -850,6 +878,7 @@ impl Default for AirportOptions {
             services,
             per_airport: false,
             airports: DEFAULT_AIRPORT_BANKS,
+            approach_km: AirportSize::ALL.map(AirportSize::default_approach_km),
         }
     }
 }
@@ -860,23 +889,47 @@ impl AirportOptions {
         self.services[service.index()]
     }
 
+    /// Roughly how far off a handheld at ground level hears `frequency`, in
+    /// kilometres: its service's range, approach and radar as far as chosen
+    /// for the airport's size, since that is how high its traffic flies.
+    pub const fn range_km(&self, frequency: &AirportFrequency) -> u16 {
+        match frequency.service {
+            Service::Approach => self.approach_km[frequency.size.index()],
+            service => service.range_km(),
+        }
+    }
+
+    /// How far off `receiver` hears `frequency`, in kilometres.
+    pub const fn reach_km(&self, frequency: &AirportFrequency, receiver: Receiver) -> u16 {
+        receiver.reach_km(self.range_km(frequency))
+    }
+
     /// The state file the options are kept in.
     pub fn file() -> Option<PathBuf> {
         paths::state_dir().map(|dir| dir.join(OPTIONS_FILE))
     }
 
-    /// Reads the services taken by name, `per-airport` and `airports=N`;
-    /// with no file, the defaults.
+    /// Reads the services taken by name, `per-airport`, `airports=N` and
+    /// each size's `approach-<size>=KM`; with no file, the defaults.
     pub fn load(file: &Path) -> Self {
         let Ok(text) = fs::read_to_string(file) else {
             return Self::default();
         };
         let mut options = Self {
             services: [false; Service::ALL.len()],
-            per_airport: false,
-            airports: DEFAULT_AIRPORT_BANKS,
+            ..Self::default()
         };
         for word in text.split_whitespace() {
+            let approach = AirportSize::ALL.iter().find_map(|size| {
+                let km = word.strip_prefix(size.key())?.strip_prefix('=')?;
+                Some((size, km.parse().ok()))
+            });
+            if let Some((size, km)) = approach {
+                if let Some(km) = km.filter(|km| (1..=MAX_APPROACH_KM).contains(km)) {
+                    options.approach_km[size.index()] = km;
+                }
+                continue;
+            }
             if let Some(service) = Service::ALL.iter().find(|s| s.key() == word) {
                 options.services[service.index()] = true;
             } else if word == "per-airport" {
@@ -905,6 +958,9 @@ impl AirportOptions {
             words.push("per-airport".to_owned());
         }
         words.push(format!("airports={}", self.airports));
+        for size in AirportSize::ALL {
+            words.push(format!("{}={}", size.key(), self.approach_km[size.index()]));
+        }
         file.parent()
             .map_or(Ok(()), fs::create_dir_all)
             .and_then(|()| fs::write(file, words.join(" ") + "\n"))
@@ -1273,7 +1329,24 @@ mod tests {
             size: AirportSize::Small,
             ..heard("EGSO", "TWR", 118_000_000, 20.0)
         };
-        assert_eq!(tower.range_km(), Service::Tower.range_km());
+        let options = AirportOptions::default();
+        assert_eq!(options.range_km(&tower), Service::Tower.range_km());
+        // The operator can hear a medium airport further.
+        let mut further = AirportOptions::default();
+        further.approach_km[AirportSize::Medium.index()] = 70;
+        let names: Vec<_> = plan(
+            &list,
+            "IO91WM",
+            &area(300, 40),
+            &further,
+            Receiver::Handheld,
+        )
+        .unwrap()
+        .area
+        .iter()
+        .map(|(f, _)| f.ident.clone())
+        .collect();
+        assert_eq!(names, ["EGSC", "EGSO", "EGSH", "EGSS"]);
         assert_eq!(AirportSize::of("large_airport"), AirportSize::Large);
         assert_eq!(AirportSize::of("medium_airport"), AirportSize::Medium);
         assert_eq!(AirportSize::of("heliport"), AirportSize::Small);
@@ -1381,6 +1454,7 @@ mod tests {
             services: [false, true, true, true, false],
             per_airport: true,
             airports: 5,
+            approach_km: [200, 60, 20],
         };
         options.save(&file).unwrap();
         assert_eq!(AirportOptions::load(&file), options);
@@ -1389,6 +1463,11 @@ mod tests {
         let none = AirportOptions::load(&file);
         assert!(Service::ALL.iter().all(|s| !none.takes(*s)));
         assert_eq!(none.airports, super::DEFAULT_AIRPORT_BANKS);
+        // A file from before the ranges, or a bad range, keeps the default.
+        std::fs::write(&file, "approach per-airport approach-medium=0\n").unwrap();
+        let older = AirportOptions::load(&file);
+        assert!(older.takes(Service::Approach) && older.per_airport);
+        assert_eq!(older.approach_km, AirportOptions::default().approach_km);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

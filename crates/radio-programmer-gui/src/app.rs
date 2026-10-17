@@ -3288,6 +3288,15 @@ impl StudioApp {
         }
     }
 
+    /// The faint ranges drawn about each centre of `generator`'s layer: how
+    /// far off each size of airport's approach is heard, when taken.
+    fn generator_rings(&self, generator: Generator) -> Vec<(f64, String)> {
+        if generator != Generator::Airports || !self.airport_options.takes(Service::Approach) {
+            return Vec::new();
+        }
+        approach_rings(&self.airport_options, self.receiver)
+    }
+
     /// Everything the map's layers are built from: the locator, every
     /// generator's area and filters, which are shown, and when each list
     /// was synced.
@@ -3371,6 +3380,7 @@ impl StudioApp {
                         sites: Vec::new(),
                         radius_km: radius_km.map(f64::from),
                         centres: Vec::new(),
+                        rings: self.generator_rings(generator),
                     });
                     layers.last_mut().expect("just pushed")
                 };
@@ -3872,7 +3882,9 @@ impl StudioApp {
         let mut counts = [0; Service::ALL.len()];
         for frequency in &list.frequencies {
             let km = repeaters::distance_km(home, (frequency.latitude, frequency.longitude));
-            if km <= radius && km <= f64::from(frequency.reach_km(self.receiver)) {
+            if km <= radius
+                && km <= f64::from(self.airport_options.reach_km(frequency, self.receiver))
+            {
                 counts[frequency.service.index()] += 1;
             }
         }
@@ -3952,8 +3964,47 @@ impl StudioApp {
                         counts.map(|counts| counts[service.index()]),
                     ),
                 )
-                .on_hover_text(heard_to(service, help, self.receiver));
+                .on_hover_text(heard_to(
+                    service,
+                    help,
+                    &self.airport_options,
+                    self.receiver,
+                ));
             }
+        });
+        self.approach_range_controls(ui);
+    }
+
+    /// How far off each size of airport's approach is heard, set while
+    /// approach is taken.
+    fn approach_range_controls(&mut self, ui: &mut egui::Ui) {
+        ui.add_enabled_ui(self.airport_options.takes(Service::Approach), |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Approach heard to");
+                for size in AirportSize::ALL {
+                    let km = &mut self.airport_options.approach_km[size.index()];
+                    ui.label(size.label());
+                    let reach = self.receiver.reach_km(*km);
+                    ui.add(
+                        egui::DragValue::new(km)
+                            .range(1..=airports::MAX_APPROACH_KM)
+                            .suffix(" km"),
+                    )
+                    .on_hover_text(format!(
+                        "How far off a handheld hears approach and radar at {}; a {} hears \
+                         it to about {reach} km. Drawn faintly about each locator on the map",
+                        size.help(),
+                        self.receiver.label().to_lowercase()
+                    ));
+                }
+                if ui
+                    .button("Defaults")
+                    .on_hover_text("Puts each size's approach range back to its estimate")
+                    .clicked()
+                {
+                    self.airport_options.approach_km = AirportOptions::default().approach_km;
+                }
+            });
         });
     }
 
@@ -5506,13 +5557,25 @@ fn swatch(ui: &mut egui::Ui, colour: egui::Color32) {
     ui.painter().rect_filled(rect, 2.0, colour);
 }
 
+/// How far off `receiver` hears each size of airport's approach, labelled,
+/// for the map's faint rings.
+fn approach_rings(options: &AirportOptions, receiver: Receiver) -> Vec<(f64, String)> {
+    AirportSize::ALL
+        .into_iter()
+        .map(|size| {
+            let km = receiver.reach_km(options.approach_km[size.index()]);
+            (f64::from(km), format!("{} APP {km} km", size.label()))
+        })
+        .collect()
+}
+
 /// The hover text of an airport service: what it is and how far off
 /// `receiver` hears it, approach by the size of the airport.
-fn heard_to(service: Service, help: &str, receiver: Receiver) -> String {
+fn heard_to(service: Service, help: &str, options: &AirportOptions, receiver: Receiver) -> String {
     let on = receiver.label().to_lowercase();
     if service == Service::Approach {
-        let [large, medium, small] = [AirportSize::Large, AirportSize::Medium, AirportSize::Small]
-            .map(|size| receiver.reach_km(size.approach_km()));
+        let [large, medium, small] =
+            AirportSize::ALL.map(|size| receiver.reach_km(options.approach_km[size.index()]));
         format!(
             "{help}; on a {on}, heard to about {large} km at a large airport, {medium} km at a \
              regional airport or military field and {small} km at a small field"
@@ -7067,11 +7130,21 @@ mod tests {
         use super::heard_to;
         use crate::{airports::Service, receiver::Receiver};
 
-        let text = heard_to(Service::Approach, "Approach", Receiver::Handheld);
+        let options = crate::airports::AirportOptions::default();
+        let text = heard_to(Service::Approach, "Approach", &options, Receiver::Handheld);
         assert!(text.contains("150 km at a large airport"), "{text}");
         assert!(text.contains("50 km at a regional"), "{text}");
         assert!(text.contains("30 km at a small field"), "{text}");
-        let text = heard_to(Service::Tower, "Tower", Receiver::Base);
+        let text = heard_to(Service::Tower, "Tower", &options, Receiver::Base);
+        let rings = super::approach_rings(&options, Receiver::Base);
+        assert_eq!(
+            rings,
+            [
+                (300.0, "Large APP 300 km".to_owned()),
+                (100.0, "Medium APP 100 km".to_owned()),
+                (60.0, "Small APP 60 km".to_owned()),
+            ]
+        );
         assert!(
             text.ends_with("heard to about 60 km on a base station"),
             "{text}"

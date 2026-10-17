@@ -229,6 +229,12 @@ The map sizes each airport's mark by the same type: a larger disc and
 glyph for a large airport, smaller for a small field. Gate: `cargo fmt --all
 --check` clean, `cargo clippy --workspace --all-targets -- -D warnings`
 clean, `cargo test --workspace` 958 passed 0 failed 3 ignored.
+Each size's approach range is the operator's to set on the airport row
+(`approach-large=`, `-medium=`, `-small=` in `airport-options`, defaults
+150/50/30 km), and the map rings each locator faintly at each size's reach.
+Gate: `cargo fmt --all --check` clean, `cargo clippy --workspace
+--all-targets -- -D warnings` clean, `cargo test --workspace` 960 passed 0
+failed 3 ignored.
 
 **`FLASH-074` done** (2026-10-17, operator request, `RISK-049`): the K5
 image had 16 bytes of flash left. `interface::run` was 22.6 KB because the
