@@ -3295,6 +3295,11 @@
       about its handheld hearing range: repeaters and world 50 km, gateways
       20, beacons 150, airports 150 (approach), airfields 50, marine 30. A
       saved radius is kept. Done.
+  16. Receiver type (operator request): a Receiver dropdown (handheld,
+      mobile, base station with a roof aerial) on the locator row sets every
+      generator's radius, scales the airband services' hearing ranges (x1,
+      x1.5, x2) and the FM ranking's aerial height (2, 1.5, 10 m); kept in
+      `receiver`. Estimates, not measurements. Done.
 
 ## BANKS-073 — Up to 254 banks, addressed by bank and position
 

@@ -301,7 +301,10 @@ the cached list at JO02EH (gate: studio fmt and clippy `-D warnings` clean,
 `cargo test -p radio-programmer-gui` 189 passed 0 failed 3 ignored). Each generator now
 starts at a realistic handheld hearing radius (gate: studio fmt and clippy
 `-D warnings` clean, `cargo test -p radio-programmer-gui` 189 passed 0
-failed 3 ignored). The studio takes `-v`/`--verbose`
+failed 3 ignored). A Receiver dropdown
+(handheld, mobile, base) sets every radius, the airband reach and the FM
+aerial height (gate: studio fmt and clippy `-D warnings` clean, `cargo test
+-p radio-programmer-gui` 195 passed 0 failed 3 ignored). The studio takes `-v`/`--verbose`
 (operator request): `-v` logs AFIK's debug lines, `-vv` its trace and other
 crates' debug, `-vvv` everything, without `AFIK_LOG` (which still works;
 the louder wins). Debug lines added: each HTTP fetch (URL, bytes, ms) and

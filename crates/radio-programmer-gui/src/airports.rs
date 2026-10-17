@@ -30,6 +30,7 @@ use radio_domain::{Bandwidth, Modulation, PowerLevel};
 use crate::{
     model::{format_mhz, BankDraft, BankKind, ChannelDraft},
     paths,
+    receiver::Receiver,
     repeaters::{distance_km, fetch, locator_centre, sanitise, MAX_RADIUS_KM},
     stations::records,
 };
@@ -187,6 +188,11 @@ impl Service {
             Self::Tower => 30,
             Self::Ground => 10,
         }
+    }
+
+    /// How far off `receiver` hears it, in kilometres.
+    pub const fn reach_km(self, receiver: Receiver) -> u16 {
+        receiver.reach_km(self.range_km())
     }
 
     /// What the studio calls it.
@@ -430,7 +436,8 @@ impl AirportPlan<'_> {
 /// airports within the radius with a local (tower, ground or ATIS)
 /// frequency each take all of theirs, even those too weak to hear from the
 /// locator, since that bank is for when the operator is there.
-/// Every other frequency inside its service's hearing range goes to the area
+/// Every other frequency inside its service's hearing range from `receiver`
+/// goes to the area
 /// bank, most hearable first (distance over range, so approach 60 km off
 /// comes before a tower 20 km off), a carrier several airports share kept
 /// for the most hearable, up to `area.max_channels`.
@@ -439,6 +446,7 @@ pub fn plan<'a>(
     locator: &str,
     area: &AirportArea,
     options: &AirportOptions,
+    receiver: Receiver,
 ) -> Result<AirportPlan<'a>, String> {
     let home = locator_centre(locator)?;
     let in_radius: Vec<_> = frequencies
@@ -489,12 +497,13 @@ pub fn plan<'a>(
     let own_bank = |frequency: &AirportFrequency| {
         frequency.service.is_local() && airports.iter().any(|g| g.ident == frequency.ident)
     };
-    let hearability =
-        |(frequency, km): &(&AirportFrequency, f64)| km / f64::from(frequency.service.range_km());
+    let hearability = |(frequency, km): &(&AirportFrequency, f64)| {
+        km / f64::from(frequency.service.reach_km(receiver))
+    };
     let mut near: Vec<_> = in_radius
         .iter()
         .filter(|(frequency, km)| {
-            *km <= f64::from(frequency.service.range_km()) && !own_bank(frequency)
+            *km <= f64::from(frequency.service.reach_km(receiver)) && !own_bank(frequency)
         })
         .copied()
         .collect();
@@ -868,6 +877,7 @@ mod tests {
         AirportOptions, Service, AIRPORTS_URL, FREQUENCIES_URL,
     };
     use crate::model::ProjectModel;
+    use crate::receiver::Receiver;
     use radio_domain::Modulation;
 
     /// Rows in the shape `OurAirports` publishes, trimmed.
@@ -1007,7 +1017,7 @@ mod tests {
             heard("EGKK", "TWR", 124_225_000, 90.0),
         ];
         let names = |options: &AirportOptions, area: &AirportArea| -> Vec<String> {
-            plan(&list, "IO91WM", area, options)
+            plan(&list, "IO91WM", area, options, Receiver::Handheld)
                 .unwrap()
                 .area
                 .iter()
@@ -1021,7 +1031,7 @@ mod tests {
             names(&options, &area(300, 40)),
             ["EGLL APP", "EGLC GND", "EGKK APP", "EGLL TWR"]
         );
-        let chosen = plan(&list, "IO91WM", &area(300, 2), &options).unwrap();
+        let chosen = plan(&list, "IO91WM", &area(300, 2), &options, Receiver::Handheld).unwrap();
         assert_eq!(chosen.area.len(), 2);
         assert_eq!(chosen.hearable, 4);
         // The radius still bounds everything.
@@ -1054,7 +1064,14 @@ mod tests {
             airports: 2,
             ..AirportOptions::default()
         };
-        let chosen = plan(&list, "IO91WM", &area(300, 40), &options).unwrap();
+        let chosen = plan(
+            &list,
+            "IO91WM",
+            &area(300, 40),
+            &options,
+            Receiver::Handheld,
+        )
+        .unwrap();
         let area_names: Vec<_> = chosen.area.iter().map(|(f, _)| f.name.as_str()).collect();
         assert_eq!(area_names, ["EGLL APP", "EGKK APP"]);
         let idents: Vec<_> = chosen.airports.iter().map(|g| g.ident).collect();
@@ -1098,7 +1115,7 @@ mod tests {
         // With approach left out nothing is left for the area bank.
         let mut local = options;
         local.services[Service::Approach.index()] = false;
-        let chosen = plan(&list, "IO91WM", &area(300, 40), &local).unwrap();
+        let chosen = plan(&list, "IO91WM", &area(300, 40), &local, Receiver::Handheld).unwrap();
         assert!(chosen.area.is_empty());
         assert_eq!(airport_banks("IO91WM", &chosen).len(), 2);
 
@@ -1109,9 +1126,28 @@ mod tests {
             airports: 5,
             ..AirportOptions::default()
         };
-        let chosen = plan(&list, "IO91WM", &area(10, 40), &many).unwrap();
+        let chosen = plan(&list, "IO91WM", &area(10, 40), &many, Receiver::Handheld).unwrap();
         let idents: Vec<_> = chosen.airports.iter().map(|g| g.ident).collect();
         assert_eq!(idents, ["EGLC"]);
+    }
+
+    #[test]
+    fn a_better_receiver_hears_further() {
+        // Ground at 15 km is past a handheld's 10 km, inside a base
+        // station's 20 km.
+        let list = [heard("EGLC", "GND", 121_825_000, 15.0)];
+        let options = AirportOptions::default();
+        let names = |receiver| -> Vec<String> {
+            plan(&list, "IO91WM", &area(50, 40), &options, receiver)
+                .unwrap()
+                .area
+                .iter()
+                .map(|(f, _)| f.name.clone())
+                .collect()
+        };
+        assert!(names(Receiver::Handheld).is_empty());
+        assert_eq!(names(Receiver::Base), ["EGLC GND"]);
+        assert_eq!(Service::Ground.reach_km(Receiver::Base), 20);
     }
 
     #[test]
@@ -1120,7 +1156,14 @@ mod tests {
         let options = AirportOptions::default();
         // JO02BF is the square holding Cambridge; Manchester is about 200
         // km, too far to hear its ground, and ATIS is left out.
-        let chosen = plan(&list, "jo02bf", &area(300, 40), &options).unwrap();
+        let chosen = plan(
+            &list,
+            "jo02bf",
+            &area(300, 40),
+            &options,
+            Receiver::Handheld,
+        )
+        .unwrap();
         let names: Vec<_> = chosen.area.iter().map(|(f, _)| f.name.as_str()).collect();
         // The strip's 122.2 is Cambridge Tower's, which is more hearable.
         assert_eq!(names, ["EGSC RDR", "EGSC TWR", "EGYY UNIC", "EGYY SAFETYC"]);
@@ -1131,7 +1174,14 @@ mod tests {
             .channels
             .iter()
             .all(|c| c.modulation == Modulation::Am && c.transmit_mhz.is_empty()));
-        assert!(plan(&list, "nonsense", &area(50, 40), &options).is_err());
+        assert!(plan(
+            &list,
+            "nonsense",
+            &area(50, 40),
+            &options,
+            Receiver::Handheld
+        )
+        .is_err());
     }
 
     #[test]

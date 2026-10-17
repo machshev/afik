@@ -37,13 +37,6 @@ const REPEATER_BANDS_FILE: &str = "repeater-bands";
 const GATEWAY_BANDS_FILE: &str = "gateway-bands";
 const BEACON_BANDS_FILE: &str = "beacon-bands";
 const BEACON_AREA_FILE: &str = "beacon-area";
-/// The radius beacons are taken within before the operator chooses one, in
-/// kilometres: about how far a hilltop beacon on SSB or CW reaches a
-/// handheld's own aerial, well beyond a repeater's reach.
-pub const DEFAULT_BEACON_RADIUS_KM: u16 = 150;
-/// The radius gateways are taken within before the operator chooses one, in
-/// kilometres: most are low-power simplex nodes on a house aerial.
-pub const DEFAULT_GATEWAY_RADIUS_KM: u16 = 20;
 /// How many repeaters a bank takes before the operator chooses: about a
 /// tenth of the radio's image.
 pub const DEFAULT_MAX_CHANNELS: u16 = 40;

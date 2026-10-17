@@ -20,6 +20,7 @@ pub mod model;
 pub mod paths;
 pub mod presets;
 pub mod projects;
+pub mod receiver;
 pub mod repeaters;
 pub mod satellites;
 pub mod session;

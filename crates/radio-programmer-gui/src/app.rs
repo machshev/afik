@@ -35,6 +35,7 @@ use crate::{
     },
     presets::{satellite_bank, PRESETS, SATELLITE_PRESET, TX_RANGE_PRESETS},
     projects::ProjectStore,
+    receiver::Receiver,
     repeaters::{
         self, AmateurBand, BandFilter, Repeater, RepeaterArea, RepeaterCache, RepeaterList,
     },
@@ -394,6 +395,9 @@ pub struct StudioApp {
     saved_locators: SavedLocators,
     saved_locators_file: Option<PathBuf>,
     locator_description: String,
+    /// What the radio listens with, and its state file.
+    receiver: Receiver,
+    receiver_file: Option<PathBuf>,
     /// Where the Map tab looks, the locator it last centred on, and the
     /// generators it shows, by their place in [`Generator::ALL`].
     map_view: MapView,
@@ -412,9 +416,18 @@ impl StudioApp {
         app.use_satellite_cache(SatelliteCache::open());
         app.tiles = Tiles::open();
         app.use_repeater_cache(RepeaterCache::open());
+        // The receiver comes first: it sets the radii no file has saved.
+        app.receiver_file = Receiver::file();
+        if let Some(file) = &app.receiver_file {
+            app.receiver = Receiver::load(file);
+        }
+        let radii = app.receiver.radii();
         app.repeater_area_file = RepeaterArea::file();
         if let Some(file) = &app.repeater_area_file {
             app.repeater_area = RepeaterArea::load(file);
+            if !file.exists() {
+                app.repeater_area.radius_km = radii.repeaters;
+            }
         }
         app.saved_locators_file = SavedLocators::file();
         if let Some(file) = &app.saved_locators_file {
@@ -429,7 +442,7 @@ impl StudioApp {
         app.use_airport_cache(AirportCache::open());
         app.airport_area_file = AirportArea::file();
         if let Some(file) = &app.airport_area_file {
-            app.airport_area = AirportArea::load(file);
+            app.airport_area = AirportArea::load_or(file, &area_within(radii.airports));
         }
         app.airport_options_file = AirportOptions::file();
         if let Some(file) = &app.airport_options_file {
@@ -438,12 +451,11 @@ impl StudioApp {
         app.use_marine_cache(MarineCache::open());
         app.marine_area_file = marine::area_file();
         if let Some(file) = &app.marine_area_file {
-            app.marine_area = MarineArea::load_or(file, &area_within(marine::DEFAULT_RADIUS_KM));
+            app.marine_area = MarineArea::load_or(file, &area_within(radii.marine));
         }
         app.gateway_area_file = repeaters::gateway_area_file();
         if let Some(file) = &app.gateway_area_file {
-            app.gateway_area =
-                AirportArea::load_or(file, &area_within(repeaters::DEFAULT_GATEWAY_RADIUS_KM));
+            app.gateway_area = AirportArea::load_or(file, &area_within(radii.gateways));
         }
         app.repeater_bands_file = repeaters::repeater_bands_file();
         if let Some(file) = &app.repeater_bands_file {
@@ -463,18 +475,16 @@ impl StudioApp {
         }
         app.beacon_area_file = repeaters::beacon_area_file();
         if let Some(file) = &app.beacon_area_file {
-            app.beacon_area =
-                AirportArea::load_or(file, &area_within(repeaters::DEFAULT_BEACON_RADIUS_KM));
+            app.beacon_area = AirportArea::load_or(file, &area_within(radii.beacons));
         }
         app.use_world_cache(WorldCache::open());
         app.world_area_file = world::area_file();
         if let Some(file) = &app.world_area_file {
-            app.world_area = WorldArea::load_or(file, &area_within(repeaters::DEFAULT_RADIUS_KM));
+            app.world_area = WorldArea::load_or(file, &area_within(radii.repeaters));
         }
         app.airfield_area_file = airfields::area_file();
         if let Some(file) = &app.airfield_area_file {
-            app.airfield_area =
-                AirfieldArea::load_or(file, &area_within(airfields::DEFAULT_RADIUS_KM));
+            app.airfield_area = AirfieldArea::load_or(file, &area_within(radii.airfields));
         }
         app
     }
@@ -786,6 +796,7 @@ impl StudioApp {
             locator,
             &self.airport_area,
             &self.airport_options,
+            self.receiver,
         )?;
         let banks = airports::airport_banks(locator, &plan);
         let bank_count = banks.len();
@@ -958,7 +969,7 @@ impl StudioApp {
         // Kinds are left out before ranking, so a station sharing a frequency
         // with one left out can still take it.
         let taken = list.stations.iter().filter(|s| self.station_area.takes(s));
-        let mut near = stations::strongest(taken, locator)?;
+        let mut near = stations::strongest(taken, locator, self.receiver)?;
         let in_range = near.len();
         near.truncate(usize::from(self.station_area.max_channels));
         let (project, bank_bytes) = self.with_bank(stations::station_bank(locator, &near));
@@ -1654,28 +1665,30 @@ impl StudioApp {
             marine_cache: MarineCache::none(),
             marine: None,
             marine_sync: None,
-            marine_area: area_within(marine::DEFAULT_RADIUS_KM),
+            marine_area: area_within(Receiver::Handheld.radii().marine),
             marine_area_file: None,
-            gateway_area: area_within(repeaters::DEFAULT_GATEWAY_RADIUS_KM),
+            gateway_area: area_within(Receiver::Handheld.radii().gateways),
             gateway_area_file: None,
             gateway_bands: BandFilter::default(),
             gateway_bands_file: None,
             beacon_bands: BandFilter::default(),
             beacon_bands_file: None,
-            beacon_area: area_within(repeaters::DEFAULT_BEACON_RADIUS_KM),
+            beacon_area: area_within(Receiver::Handheld.radii().beacons),
             beacon_area_file: None,
-            airfield_area: area_within(airfields::DEFAULT_RADIUS_KM),
+            airfield_area: area_within(Receiver::Handheld.radii().airfields),
             airfield_area_file: None,
             world_cache: WorldCache::none(),
             world: None,
             world_sync: None,
-            world_area: area_within(repeaters::DEFAULT_RADIUS_KM),
+            world_area: area_within(Receiver::Handheld.radii().repeaters),
             world_area_file: None,
             world_bands: BandFilter::default(),
             world_bands_file: None,
             saved_locators: SavedLocators::default(),
             saved_locators_file: None,
             locator_description: String::new(),
+            receiver: Receiver::Handheld,
+            receiver_file: None,
             map_view: MapView::default(),
             map_locator: String::new(),
             map_shown: [true; Generator::ALL.len()],
@@ -2768,7 +2781,7 @@ impl StudioApp {
                     &self.airport_options,
                     &self.airfield_area
                 ),
-                (&self.marine_area, self.map_shown),
+                (&self.marine_area, self.map_shown, self.receiver),
                 (
                     self.repeaters.as_ref().map(|list| list.synced),
                     self.world.as_ref().map(|list| list.synced),
@@ -2939,6 +2952,30 @@ impl StudioApp {
             {
                 self.forget_locator();
             }
+            ui.separator();
+            ui.label("Receiver");
+            let mut chosen = None;
+            ComboBox::from_id_salt("receiver")
+                .selected_text(self.receiver.label())
+                .show_ui(ui, |ui| {
+                    for receiver in Receiver::ALL {
+                        if ui
+                            .selectable_label(receiver == self.receiver, receiver.label())
+                            .on_hover_text(receiver.description())
+                            .clicked()
+                        {
+                            chosen = Some(receiver);
+                        }
+                    }
+                })
+                .response
+                .on_hover_text(
+                    "What you listen with; choosing one sets every generator's radius to \
+                     about how far it hears, and how far the airband services carry",
+                );
+            if let Some(receiver) = chosen {
+                self.choose_receiver(receiver);
+            }
         });
     }
 
@@ -2955,6 +2992,58 @@ impl StudioApp {
         locator.clone_into(&mut self.repeater_area.locator);
         self.locator_description = self.saved_description();
         self.remember_locator();
+    }
+
+    /// Listens with `receiver`: every generator's radius becomes its own,
+    /// and all of them are kept for the next start.
+    fn choose_receiver(&mut self, receiver: Receiver) {
+        self.receiver = receiver;
+        let radii = receiver.radii();
+        self.repeater_area.radius_km = radii.repeaters;
+        self.world_area.radius_km = radii.repeaters;
+        self.gateway_area.radius_km = radii.gateways;
+        self.beacon_area.radius_km = radii.beacons;
+        self.airport_area.radius_km = radii.airports;
+        self.airfield_area.radius_km = radii.airfields;
+        self.marine_area.radius_km = radii.marine;
+        self.status = format!(
+            "Radii set for a {}: repeaters {} km, gateways {} km, beacons {} km, airports {} \
+             km, airfields {} km, marine {} km.",
+            receiver.label().to_lowercase(),
+            radii.repeaters,
+            radii.gateways,
+            radii.beacons,
+            radii.airports,
+            radii.airfields,
+            radii.marine
+        );
+        let saved = [
+            self.receiver_file.as_ref().map(|file| receiver.save(file)),
+            self.repeater_area_file
+                .as_ref()
+                .map(|file| self.repeater_area.save(file)),
+            self.world_area_file
+                .as_ref()
+                .map(|file| self.world_area.save(file)),
+            self.gateway_area_file
+                .as_ref()
+                .map(|file| self.gateway_area.save(file)),
+            self.beacon_area_file
+                .as_ref()
+                .map(|file| self.beacon_area.save(file)),
+            self.airport_area_file
+                .as_ref()
+                .map(|file| self.airport_area.save(file)),
+            self.airfield_area_file
+                .as_ref()
+                .map(|file| self.airfield_area.save(file)),
+            self.marine_area_file
+                .as_ref()
+                .map(|file| self.marine_area.save(file)),
+        ];
+        for error in saved.into_iter().flatten().filter_map(Result::err) {
+            log::warn!("could not remember the receiver's radii: {error}");
+        }
     }
 
     /// Keeps the current locator and its description in the dropdown.
@@ -3117,8 +3206,9 @@ impl StudioApp {
                     service.label(),
                 )
                 .on_hover_text(format!(
-                    "{help}; heard to about {} km here",
-                    service.range_km()
+                    "{help}; heard to about {} km on a {}",
+                    service.reach_km(self.receiver),
+                    self.receiver.label().to_lowercase()
                 ));
             }
             ui.separator();
@@ -5653,6 +5743,37 @@ mod tests {
         assert!(app.project.validate().is_ok());
         app.add_airfields();
         assert_eq!(app.project.banks.len(), banks + 1, "replaced, not added");
+    }
+
+    #[test]
+    fn choosing_a_receiver_sets_every_radius_and_keeps_them() {
+        use crate::{airports::AirportArea, receiver::Receiver};
+
+        let dir = scratch("receiver");
+        let mut app = simulated("receiver");
+        app.receiver_file = Some(dir.join("receiver"));
+        app.beacon_area_file = Some(dir.join("beacon-area"));
+        app.marine_area_file = Some(dir.join("marine-area"));
+        assert_eq!(app.receiver, Receiver::Handheld);
+        assert_eq!(app.marine_area.radius_km, 30);
+
+        app.choose_receiver(Receiver::Base);
+        assert_eq!(app.repeater_area.radius_km, 100);
+        assert_eq!(app.world_area.radius_km, 100);
+        assert_eq!(app.gateway_area.radius_km, 50);
+        assert_eq!(app.beacon_area.radius_km, 300);
+        assert_eq!(app.airport_area.radius_km, 300);
+        assert_eq!(app.airfield_area.radius_km, 100);
+        assert_eq!(app.marine_area.radius_km, 75);
+        assert!(
+            app.status.starts_with("Radii set for a base station:"),
+            "{}",
+            app.status
+        );
+        assert_eq!(Receiver::load(&dir.join("receiver")), Receiver::Base);
+        assert_eq!(AirportArea::load(&dir.join("beacon-area")).radius_km, 300);
+        assert_eq!(AirportArea::load(&dir.join("marine-area")).radius_km, 75);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

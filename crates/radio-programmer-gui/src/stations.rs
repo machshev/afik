@@ -21,6 +21,7 @@ use radio_domain::{Bandwidth, Modulation, PowerLevel, BROADCAST_FIRST_HZ, BROADC
 use crate::{
     model::{format_mhz, BankDraft, BankKind, ChannelDraft},
     paths,
+    receiver::Receiver,
     repeaters::{distance_km, fetch, locator_centre, sanitise},
 };
 
@@ -42,8 +43,6 @@ pub const DEFAULT_MAX_CHANNELS: u16 = 30;
 pub const MAX_CHANNELS_LIMIT: u16 = 200;
 /// The raster broadcast channels sit on.
 const RASTER_HZ: u32 = 100_000;
-/// A handheld's aerial height, for the radio horizon.
-const RECEIVER_HEIGHT_M: f64 = 2.0;
 
 /// One transmitter of one station.
 #[derive(Clone, Debug, PartialEq)]
@@ -289,13 +288,13 @@ pub fn parse(csv: &str) -> Result<Vec<Station>, String> {
 /// The estimated strength of `station` at `km`: power over distance squared,
 /// falling a further fourth power of distance beyond the radio horizon, so a
 /// big transmitter far past it ranks below a small local one.
-fn strength(station: &Station, km: f64) -> f64 {
+fn strength(station: &Station, km: f64, receiver: Receiver) -> f64 {
     let near = station.erp_watts / km.max(1.0).powi(2);
     let Some(height_m) = station.height_m else {
         return near;
     };
     // The 4/3-earth radio horizon, in kilometres, for heights in metres.
-    let horizon_km = 4.12 * (height_m.max(0.0).sqrt() + RECEIVER_HEIGHT_M.sqrt());
+    let horizon_km = 4.12 * (height_m.max(0.0).sqrt() + receiver.aerial_height_m().sqrt());
     if km <= horizon_km {
         near
     } else {
@@ -313,6 +312,7 @@ fn strength(station: &Station, km: f64) -> f64 {
 pub fn strongest<'a>(
     stations: impl IntoIterator<Item = &'a Station>,
     locator: &str,
+    receiver: Receiver,
 ) -> Result<Vec<(&'a Station, f64)>, String> {
     let home = locator_centre(locator)?;
     let mut near: Vec<_> = stations
@@ -323,8 +323,8 @@ pub fn strongest<'a>(
         })
         .collect();
     near.sort_by(|a, b| {
-        strength(b.0, b.1)
-            .total_cmp(&strength(a.0, a.1))
+        strength(b.0, b.1, receiver)
+            .total_cmp(&strength(a.0, a.1, receiver))
             .then(a.0.station.cmp(&b.0.station))
     });
     let mut programmes = HashSet::new();
@@ -571,6 +571,7 @@ mod tests {
         TRANSMITTERS_URL,
     };
     use crate::model::ProjectModel;
+    use crate::receiver::Receiver;
     use radio_domain::Modulation;
 
     /// Rows in the shape Ofcom publishes, trimmed to the columns used plus
@@ -675,11 +676,31 @@ Classic,A,AN000001,90.7,CLASSIC,1,1,51,0\n";
     }
 
     #[test]
+    fn a_roof_aerial_sees_further_past_the_horizon() {
+        let station = super::Station {
+            name: "FAR".to_owned(),
+            station: "Far FM".to_owned(),
+            site: String::new(),
+            frequency_hz: 100_000_000,
+            erp_watts: 1_000.0,
+            height_m: Some(100.0),
+            latitude: 0.0,
+            longitude: 0.0,
+            kind: StationKind::Local,
+        };
+        // A handheld's horizon with a 100 m mast is about 47 km, a roof
+        // aerial's about 54 km; at 30 km both see it the same.
+        let at = |km, receiver| super::strength(&station, km, receiver);
+        assert!(at(100.0, Receiver::Base) > at(100.0, Receiver::Handheld));
+        assert!((at(30.0, Receiver::Base) - at(30.0, Receiver::Handheld)).abs() < 1e-12);
+    }
+
+    #[test]
     fn each_programme_and_frequency_keeps_its_strongest_transmitter() {
         let stations = parse(VHF).unwrap();
         // IO91WM, central London: Crystal Palace about 11 km, Wrotham 36 km,
         // Black Hill in Scotland about 550 km.
-        let near = strongest(&stations, "IO91WM").unwrap();
+        let near = strongest(&stations, "IO91WM", Receiver::Handheld).unwrap();
         let chosen: Vec<_> = near
             .iter()
             .map(|(s, _)| (s.name.as_str(), s.frequency_hz))
@@ -706,19 +727,19 @@ Classic,A,AN000001,90.7,CLASSIC,1,1,51,0\n";
                 ..s.clone()
             })
             .collect();
-        let names: Vec<_> = strongest(&flat, "IO91WM")
+        let names: Vec<_> = strongest(&flat, "IO91WM", Receiver::Handheld)
             .unwrap()
             .iter()
             .map(|(s, _)| s.name.clone())
             .collect();
         assert_eq!(names, ["BBC R4", "CLASSIC", "BBC SCOT", "RAINBOW"]);
-        assert!(strongest(&stations, "nonsense").is_err());
+        assert!(strongest(&stations, "nonsense", Receiver::Handheld).is_err());
     }
 
     #[test]
     fn the_bank_plays_each_station_in_frequency_order_and_never_transmits() {
         let stations = parse(VHF).unwrap();
-        let mut near = strongest(&stations, "io91wm").unwrap();
+        let mut near = strongest(&stations, "io91wm", Receiver::Handheld).unwrap();
         near.truncate(3);
         let bank = station_bank("io91wm", &near);
         assert_eq!(bank.name, "FM IO91WM");
