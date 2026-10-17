@@ -3253,10 +3253,12 @@
      gateway outside every band is kept. Done. The beacons tab has the same
      row, every band by default (most beacons are on 10 m, 6 m, 4 m and
      23 cm), kept in `beacon-bands`. Done.
-  6. FM BBC filter (operator request): a No BBC checkbox on the UK FM
-     stations row, ticked by default, leaves out stations with a `BBC...`
-     licence number or `BBC` anywhere in the station or RDS name,
-     before ranking so a station sharing a BBC frequency can take it; kept
+  6. FM licence-kind filter (operator request): checkboxes on the UK FM
+     stations row for BBC (`BBC...` licence or `BBC` in the station or RDS
+     name), National (`AN`), Local (`AL`), Community (`CR`), Restricted
+     (`LRSL`) and Other; all but BBC ticked by default. Ofcom's list has no
+     genre column. Kinds are left out before ranking, so a station sharing
+     a frequency with one left out can still take it; kept
      in `station-area`. Done.
 
 ## BANKS-073 — Up to 254 banks, addressed by bank and position

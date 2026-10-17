@@ -37,7 +37,7 @@ use crate::{
     },
     satellites::{SatelliteCache, SatelliteList, SyncJob},
     session::{DeviceJob, DeviceOutcome, DeviceSession, JobKind},
-    stations::{self, StationArea, StationCache, StationList},
+    stations::{self, StationArea, StationCache, StationKind, StationList},
     world::{self, WorldArea, WorldCache, WorldList},
     DeviceSelector, Options,
 };
@@ -862,10 +862,9 @@ impl StudioApp {
             .as_ref()
             .ok_or("sync the FM station list from Ofcom first")?;
         let locator = &self.repeater_area.locator;
-        // Left out before ranking, so a station sharing a frequency with a
-        // BBC one can still take it.
-        let no_bbc = self.station_area.no_bbc;
-        let taken = list.stations.iter().filter(|s| !(no_bbc && s.bbc));
+        // Kinds are left out before ranking, so a station sharing a frequency
+        // with one left out can still take it.
+        let taken = list.stations.iter().filter(|s| self.station_area.takes(s));
         let mut near = stations::strongest(taken, locator)?;
         let in_range = near.len();
         near.truncate(usize::from(self.station_area.max_channels));
@@ -2485,10 +2484,10 @@ impl StudioApp {
                     .range(1..=stations::MAX_CHANNELS_LIMIT),
             )
             .on_hover_text("How many stations the bank takes, strongest signal first");
-            ui.checkbox(&mut self.station_area.no_bbc, "No BBC")
-                .on_hover_text(
-                    "Leaves out the stations the BBC is licensed for, and any with BBC in the name",
-                );
+            for kind in StationKind::ALL {
+                ui.checkbox(&mut self.station_area.kinds[kind.index()], kind.label())
+                    .on_hover_text(format!("Takes the {}", kind.description()));
+            }
             if ui
                 .button("Add")
                 .on_hover_text(
@@ -5086,7 +5085,7 @@ mod tests {
 
     #[test]
     fn stations_near_the_locator_are_added_strongest_first_once_synced() {
-        use crate::stations::{Station, StationArea, StationList};
+        use crate::stations::{Station, StationArea, StationKind, StationList};
         use radio_domain::Modulation;
 
         let station = |name: &str, mhz: u32, kw: f64, latitude: f64| Station {
@@ -5098,7 +5097,7 @@ mod tests {
             height_m: None,
             latitude,
             longitude: -0.12,
-            bbc: false,
+            kind: StationKind::Local,
         };
         let mut app = simulated("stations");
         assert!(app.stations.is_none(), "tests never read the real cache");
@@ -5116,10 +5115,14 @@ mod tests {
             synced: std::time::SystemTime::now(),
         });
         app.repeater_area.locator = "io91wm".to_owned();
-        assert!(app.station_area.no_bbc, "the BBC is left out by default");
+        assert_eq!(
+            app.station_area.kinds,
+            StationArea::NO_BBC,
+            "every kind but the BBC by default"
+        );
         app.station_area = StationArea {
             max_channels: 30,
-            no_bbc: false,
+            kinds: [true; 6],
         };
         let source = app.station_source();
         assert!(
@@ -5157,33 +5160,33 @@ mod tests {
         // Without the BBC, the weaker station sharing its frequency plays.
         let list = app.stations.as_mut().unwrap();
         list.stations.push(Station {
-            bbc: true,
+            kind: StationKind::Bbc,
             ..station("BBC R4", 1_062, 125.0, 51.9)
         });
+        list.stations.push(Station {
+            kind: StationKind::Community,
+            ..station("TOWN FM", 1_070, 0.05, 51.52)
+        });
         app.add_stations();
-        let names: Vec<_> = app
-            .project
-            .banks
-            .last()
-            .unwrap()
-            .channels
-            .iter()
-            .map(|c| c.name.as_str())
-            .collect();
-        assert_eq!(names, ["FAR AWAY", "CLASSIC", "BBC R4"]);
-        app.station_area.no_bbc = true;
+        let last_names = |app: &StudioApp| -> Vec<String> {
+            let bank = app.project.banks.last().unwrap();
+            bank.channels.iter().map(|c| c.name.clone()).collect()
+        };
+        assert_eq!(
+            last_names(&app),
+            ["FAR AWAY", "CLASSIC", "BBC R4", "TOWN FM"]
+        );
+        app.station_area.kinds = StationArea::NO_BBC;
         app.add_stations();
         assert_eq!(app.project.banks.len(), banks + 1, "replaced, not added");
-        let names: Vec<_> = app
-            .project
-            .banks
-            .last()
-            .unwrap()
-            .channels
-            .iter()
-            .map(|c| c.name.as_str())
-            .collect();
-        assert_eq!(names, ["FAR AWAY", "CLASSIC", "LOCAL"]);
+        assert_eq!(
+            last_names(&app),
+            ["FAR AWAY", "CLASSIC", "LOCAL", "TOWN FM"]
+        );
+        // Only community radio.
+        app.station_area.kinds = [false, false, false, true, false, false];
+        app.add_stations();
+        assert_eq!(last_names(&app), ["TOWN FM"]);
     }
 
     #[test]

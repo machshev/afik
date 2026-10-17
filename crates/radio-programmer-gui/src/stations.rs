@@ -3,8 +3,8 @@
 //!
 //! As with the repeaters, the studio fetches only when the operator presses
 //! Sync; otherwise it reads the raw CSV cached in `$XDG_CACHE_HOME/afik/ofcom`.
-//! The locator is the repeaters' own; how many stations to take is kept in
-//! `$XDG_STATE_HOME/afik/station-area`.
+//! The locator is the repeaters' own; how many stations to take, and of
+//! which licence kinds, is kept in `$XDG_STATE_HOME/afik/station-area`.
 
 use std::{
     collections::HashSet,
@@ -32,9 +32,10 @@ spectrum/tv-transmitter-guidance/tech-parameters/txparamsvhf.csv";
 const CACHE_DIR: &str = "ofcom";
 const TRANSMITTERS_FILE: &str = "txparamsvhf.csv";
 const AREA_FILE: &str = "station-area";
-/// The word in the area file that keeps the BBC; without it, as in a file
-/// from before the filter, the BBC is left out.
+/// The word in an area file from before the kinds that kept the BBC.
 const KEEP_BBC: &str = "bbc";
+/// What leads the word in the area file naming the kinds taken.
+const KINDS_PREFIX: &str = "kinds=";
 /// How many stations a bank takes before the operator chooses.
 pub const DEFAULT_MAX_CHANNELS: u16 = 30;
 /// The most the operator can ask for; a whole region rarely has more.
@@ -65,9 +66,107 @@ pub struct Station {
     pub latitude: f64,
     /// Site longitude in degrees east.
     pub longitude: f64,
-    /// Whether the BBC holds the licence or `BBC` is in the station's or
-    /// channel's name, which the operator may leave out.
-    pub bbc: bool,
+    /// The kind of licence, which the operator filters on.
+    pub kind: StationKind,
+}
+
+/// The kind of licence a station broadcasts under, from the prefix of its
+/// Ofcom licence number.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StationKind {
+    /// `BBC...`, or `BBC` anywhere in the station's or channel's name.
+    Bbc,
+    /// `AN...`, national commercial, such as Classic FM.
+    National,
+    /// `AL...`, local commercial, such as Capital or Heart.
+    Local,
+    /// `CR...`, community radio.
+    Community,
+    /// `LRSL...`, low-power and restricted service: forces bases, hospital
+    /// radio, events.
+    Restricted,
+    /// Anything else: the Isle of Man, Gibraltar, or no licence given.
+    Other,
+}
+
+impl StationKind {
+    /// Every kind, in the order the checkboxes show them.
+    pub const ALL: [Self; 6] = [
+        Self::Bbc,
+        Self::National,
+        Self::Local,
+        Self::Community,
+        Self::Restricted,
+        Self::Other,
+    ];
+
+    /// The position of this kind in [`Self::ALL`].
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+
+    /// The checkbox label.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Bbc => "BBC",
+            Self::National => "National",
+            Self::Local => "Local",
+            Self::Community => "Community",
+            Self::Restricted => "Restricted",
+            Self::Other => "Other",
+        }
+    }
+
+    /// What the checkbox takes, for its hover text.
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::Bbc => "BBC stations, and any station with BBC in its name",
+            Self::National => "national commercial stations, such as Classic FM",
+            Self::Local => "local commercial stations, such as Capital and Heart",
+            Self::Community => "community radio stations",
+            Self::Restricted => {
+                "low-power and restricted service stations: forces bases, hospital radio, events"
+            }
+            Self::Other => "stations licensed elsewhere: the Isle of Man and Gibraltar",
+        }
+    }
+
+    /// The word the area file keeps the kind under.
+    const fn word(self) -> &'static str {
+        match self {
+            Self::Bbc => "bbc",
+            Self::National => "national",
+            Self::Local => "local",
+            Self::Community => "community",
+            Self::Restricted => "restricted",
+            Self::Other => "other",
+        }
+    }
+
+    /// The kind for an Ofcom licence number and the station's names. The
+    /// BBC is matched broadly on purpose: the operator asked for anything
+    /// named BBC to go with it.
+    fn of(licence: &str, names: &[&str]) -> Self {
+        let licence = licence.trim().to_ascii_uppercase();
+        if licence.starts_with("BBC")
+            || names
+                .iter()
+                .any(|name| name.to_ascii_uppercase().contains("BBC"))
+        {
+            return Self::Bbc;
+        }
+        let prefix: String = licence
+            .chars()
+            .take_while(char::is_ascii_alphabetic)
+            .collect();
+        match prefix.as_str() {
+            "AN" => Self::National,
+            "AL" => Self::Local,
+            "CR" => Self::Community,
+            "LRSL" => Self::Restricted,
+            _ => Self::Other,
+        }
+    }
 }
 
 /// Splits CSV text into records, honouring quoted fields with doubled
@@ -130,8 +229,8 @@ pub fn parse(csv: &str) -> Result<Vec<Station>, String> {
     let vertical_at = column("In-Use ERP/VP")?;
     let latitude_at = column("Lat")?;
     let longitude_at = column("Long")?;
-    // Only the BBC filter reads it; a list without it still matches names.
-    // The BBC's licence numbers run `BBC000001` upwards.
+    // Only the kind filter reads it; without it the BBC still matches by
+    // name and the rest are Other.
     let licence_at = column("Licence").ok();
     // Heights only sharpen the ranking; a list without them still reads.
     let site_height_at = column("Site Ht").ok();
@@ -160,14 +259,7 @@ pub fn parse(csv: &str) -> Result<Vec<Station>, String> {
             let rds = rds.split_whitespace().collect::<Vec<_>>().join(" ");
             let name = sanitise(&rds, MAX_CHANNEL_NAME_LEN)
                 .or_else(|| sanitise(&station, MAX_CHANNEL_NAME_LEN))?;
-            // Broad on purpose: the operator asked for anything named BBC.
-            let bbc = licence_at
-                .map_or("", |at| field(at))
-                .trim()
-                .to_ascii_uppercase()
-                .starts_with("BBC")
-                || station.to_ascii_uppercase().contains("BBC")
-                || name.to_ascii_uppercase().contains("BBC");
+            let kind = StationKind::of(licence_at.map_or("", field), &[&station, &name]);
             Some(Station {
                 name,
                 station,
@@ -179,7 +271,7 @@ pub fn parse(csv: &str) -> Result<Vec<Station>, String> {
                     .and_then(|(site, aerial)| Some(number(field(site))? + number(field(aerial))?)),
                 latitude: number(field(latitude_at))?,
                 longitude: number(field(longitude_at))?,
-                bbc,
+                kind,
             })
         })
         .collect();
@@ -365,34 +457,43 @@ impl StationCache {
     }
 }
 
-/// The station count the operator last chose, and whether BBC stations are
-/// left out; the locator is the repeaters' own.
+/// The station count the operator last chose, and the licence kinds taken;
+/// the locator is the repeaters' own.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StationArea {
     /// How many stations, strongest first, the bank takes.
     pub max_channels: u16,
-    /// Leaves out every station [`Station::bbc`] marks; on by default.
-    pub no_bbc: bool,
+    /// Whether each [`StationKind`] is taken, by [`StationKind::index`].
+    pub kinds: [bool; StationKind::ALL.len()],
 }
 
 impl Default for StationArea {
     fn default() -> Self {
         Self {
             max_channels: DEFAULT_MAX_CHANNELS,
-            no_bbc: true,
+            kinds: Self::NO_BBC,
         }
     }
 }
 
 impl StationArea {
+    /// Every kind but the BBC, the default.
+    pub const NO_BBC: [bool; StationKind::ALL.len()] = [false, true, true, true, true, true];
+
+    /// Whether `station` is of a kind taken.
+    pub const fn takes(&self, station: &Station) -> bool {
+        self.kinds[station.kind.index()]
+    }
+
     /// The state file the area is kept in.
     pub fn file() -> Option<PathBuf> {
         paths::state_dir().map(|dir| dir.join(AREA_FILE))
     }
 
     /// Reads `MAX_CHANNELS`, the last number, so a file from when a radius
-    /// came first still reads, and keeps the BBC only for a `bbc` word; anything missing or
-    /// unreadable gives the default.
+    /// came first still reads, and the kinds from a `kinds=` word. A file
+    /// from before the kinds takes every kind for a `bbc` word, else all but
+    /// the BBC; anything missing or unreadable gives the default.
     pub fn load(file: &Path) -> Self {
         let text = fs::read_to_string(file).unwrap_or_default();
         let max_channels = text
@@ -401,10 +502,18 @@ impl StationArea {
             .next_back()
             .filter(|value| (1..=MAX_CHANNELS_LIMIT).contains(value))
             .unwrap_or(DEFAULT_MAX_CHANNELS);
-        let no_bbc = !text.split_whitespace().any(|word| word == KEEP_BBC);
+        let words = || text.split_whitespace();
+        let kinds = if let Some(list) = words().find_map(|word| word.strip_prefix(KINDS_PREFIX)) {
+            let taken: Vec<_> = list.split(',').collect();
+            StationKind::ALL.map(|kind| taken.contains(&kind.word()))
+        } else if words().any(|word| word == KEEP_BBC) {
+            [true; StationKind::ALL.len()]
+        } else {
+            Self::NO_BBC
+        };
         Self {
             max_channels,
-            no_bbc,
+            kinds,
         }
     }
 
@@ -413,8 +522,15 @@ impl StationArea {
         file.parent()
             .map_or(Ok(()), fs::create_dir_all)
             .and_then(|()| {
-                let keep_bbc = if self.no_bbc { "" } else { KEEP_BBC };
-                fs::write(file, format!("{keep_bbc}\n{}\n", self.max_channels))
+                let kinds: Vec<_> = StationKind::ALL
+                    .into_iter()
+                    .filter(|kind| self.kinds[kind.index()])
+                    .map(StationKind::word)
+                    .collect();
+                fs::write(
+                    file,
+                    format!("{KINDS_PREFIX}{}\n{}\n", kinds.join(","), self.max_channels),
+                )
             })
             .map_err(|error| format!("{}: {error}", file.display()))
     }
@@ -451,7 +567,8 @@ impl SyncJob {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse, records, station_bank, strongest, StationArea, StationCache, TRANSMITTERS_URL,
+        parse, records, station_bank, strongest, StationArea, StationCache, StationKind,
+        TRANSMITTERS_URL,
     };
     use crate::model::ProjectModel;
     use radio_domain::Modulation;
@@ -509,14 +626,17 @@ Site Ht,In-Use Aerial Ht,In-UseERP/HP,In-Use ERP/VP,Lat,Long,\r
                 ("RAINBOW", "Crystal Palace", 92_400_000, 30.0),
             ]
         );
-        let bbc: Vec<_> = stations
-            .iter()
-            .filter(|s| s.bbc)
-            .map(|s| s.name.as_str())
-            .collect();
+        let kinds: Vec<_> = stations.iter().map(|s| (s.name.as_str(), s.kind)).collect();
         assert_eq!(
-            bbc,
-            ["BBC R4", "BBC R4", "BBC SCOT"],
+            kinds,
+            [
+                ("BBC R4", StationKind::Bbc),
+                ("BBC R4", StationKind::Bbc),
+                ("CLASSIC", StationKind::National),
+                ("LOCAL TWO", StationKind::Community),
+                ("BBC SCOT", StationKind::Bbc),
+                ("RAINBOW", StationKind::Local),
+            ],
             "by the licence column"
         );
         assert!(parse("Station\n").is_err(), "no usable columns");
@@ -524,24 +644,32 @@ Site Ht,In-Use Aerial Ht,In-UseERP/HP,In-Use ERP/VP,Lat,Long,\r
     }
 
     #[test]
-    fn bbc_is_the_licence_or_anywhere_in_a_name() {
+    fn the_kind_is_the_licence_prefix_and_bbc_also_by_name() {
         let csv = "Station,Site,Licence,Frequency,RDS PS,In-UseERP/HP,In-Use ERP/VP,Lat,Long\n\
 Plain,A,AL000001,90.0,PLAIN,1,1,51,0\n\
 Licensed,A,BBC000002,90.1,LICENSED,1,1,51,0\n\
 Not the BBC,A,CR000003,90.2,NOT,1,1,51,0\n\
-Quiet,A,CR000004,90.3,_bbcfan_,1,1,51,0\n";
-        let bbc: Vec<_> = parse(csv)
+Quiet,A,CR000004,90.3,_bbcfan_,1,1,51,0\n\
+Forces,A,LRSL000005,90.4,FORCES,1,1,51,0\n\
+Manx,A,IOM000006,90.5,MANX,1,1,51,0\n\
+Rock,A,,90.6,ROCK,1,1,51,0\n\
+Classic,A,AN000001,90.7,CLASSIC,1,1,51,0\n";
+        let kinds: Vec<_> = parse(csv)
             .unwrap()
             .iter()
-            .map(|s| (s.station.clone(), s.bbc))
+            .map(|s| (s.station.clone(), s.kind))
             .collect();
         assert_eq!(
-            bbc,
+            kinds,
             [
-                ("Licensed".to_owned(), true),
-                ("Not the BBC".to_owned(), true),
-                ("Plain".to_owned(), false),
-                ("Quiet".to_owned(), true),
+                ("Classic".to_owned(), StationKind::National),
+                ("Forces".to_owned(), StationKind::Restricted),
+                ("Licensed".to_owned(), StationKind::Bbc),
+                ("Manx".to_owned(), StationKind::Other),
+                ("Not the BBC".to_owned(), StationKind::Bbc),
+                ("Plain".to_owned(), StationKind::Local),
+                ("Quiet".to_owned(), StationKind::Bbc),
+                ("Rock".to_owned(), StationKind::Other),
             ]
         );
     }
@@ -644,23 +772,25 @@ Quiet,A,CR000004,90.3,_bbcfan_,1,1,51,0\n";
         let dir = scratch("area");
         let file = dir.join("station-area");
         assert_eq!(StationArea::load(&file), StationArea::default());
-        let area = StationArea {
-            max_channels: 12,
-            no_bbc: false,
-        };
-        area.save(&file).unwrap();
-        assert_eq!(StationArea::load(&file), area);
-        let area = StationArea {
-            max_channels: 7,
-            no_bbc: true,
-        };
-        area.save(&file).unwrap();
-        assert_eq!(StationArea::load(&file), area);
+        for kinds in [
+            [true; 6],
+            [false; 6],
+            [true, false, true, false, false, true],
+        ] {
+            let area = StationArea {
+                max_channels: 12,
+                kinds,
+            };
+            area.save(&file).unwrap();
+            assert_eq!(StationArea::load(&file), area);
+        }
         // A file from when the radius came first keeps its count, and one
-        // from before the filter leaves the BBC out.
+        // from before the kinds leaves the BBC out unless it kept it.
         std::fs::write(&file, "50 30\n").unwrap();
         assert_eq!(StationArea::load(&file).max_channels, 30);
-        assert!(StationArea::load(&file).no_bbc);
+        assert_eq!(StationArea::load(&file).kinds, StationArea::NO_BBC);
+        std::fs::write(&file, "bbc\n30\n").unwrap();
+        assert_eq!(StationArea::load(&file).kinds, [true; 6]);
         std::fs::write(&file, "0 9999\n").unwrap();
         assert_eq!(StationArea::load(&file), StationArea::default());
         let _ = std::fs::remove_dir_all(dir);

@@ -210,12 +210,13 @@ a Bands row (10 m to 23 cm checkboxes, 2 m and 70 cm by default, remembered
 in `gateway-bands`) and drops gateways on unticked bands. The beacons tab has the same row,
 every band ticked by default, remembered in `beacon-bands` (gate: `cargo
 fmt --all --check` clean, workspace clippy `-D warnings` clean, `cargo test
---workspace` 895 passed 0 failed 3 ignored). The UK FM stations row has a
-No BBC checkbox, ticked by default (BBC by the `BBC` prefix of Ofcom's licence numbers
-or `BBC` anywhere in a station or RDS name, left out before ranking,
+--workspace` 895 passed 0 failed 3 ignored). The UK FM stations row has
+licence-kind checkboxes (BBC, National, Local, Community, Restricted,
+Other, from the prefix of Ofcom's licence numbers; BBC also by `BBC` anywhere
+in a station or RDS name), all but BBC ticked by default, left out before ranking,
 remembered in `station-area`; gate: fmt clean, `cargo clippy -p
 radio-programmer-gui --all-targets -- -D warnings` clean, `cargo test -p
-radio-programmer-gui` 172 passed 0 failed 3 ignored). The studio takes `-v`/`--verbose`
+radio-programmer-gui` 173 passed 0 failed 3 ignored). The studio takes `-v`/`--verbose`
 (operator request): `-v` logs AFIK's debug lines, `-vv` its trace and other
 crates' debug, `-vvv` everything, without `AFIK_LOG` (which still works;
 the louder wins). Debug lines added: each HTTP fetch (URL, bytes, ms) and
