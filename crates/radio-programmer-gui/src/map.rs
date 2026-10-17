@@ -41,8 +41,11 @@ pub struct Layer {
     pub icon: &'static str,
     /// The sites the bank would take.
     pub sites: Vec<Site>,
-    /// The radius the generator takes from, drawn about the locator.
+    /// The radius the generator takes from, drawn about each centre.
     pub radius_km: Option<f64>,
+    /// The locators the radius is drawn about: the operator's, or every
+    /// saved one when all are shown.
+    pub centres: Vec<(f64, f64)>,
 }
 
 /// A named point drawn on the map, such as a saved locator.
@@ -220,19 +223,20 @@ pub fn show(
         }
     }
 
-    // Each generator's radius, then its sites.
-    if let Some(home) = home {
-        for layer in layers {
-            if let Some(km) = layer.radius_km {
-                #[allow(clippy::cast_possible_truncation)]
-                let radius = (km * projection.points_per_km(home.0)) as f32;
-                painter.circle(
-                    projection.screen(home),
-                    radius,
-                    layer.color.gamma_multiply(0.08),
-                    Stroke::new(2.0_f32, layer.color),
-                );
-            }
+    // Each generator's radius about each centre, then its sites.
+    for layer in layers {
+        let Some(km) = layer.radius_km else {
+            continue;
+        };
+        for centre in &layer.centres {
+            #[allow(clippy::cast_possible_truncation)]
+            let radius = (km * projection.points_per_km(centre.0)) as f32;
+            painter.circle(
+                projection.screen(*centre),
+                radius,
+                layer.color.gamma_multiply(0.08),
+                Stroke::new(2.0_f32, layer.color),
+            );
         }
     }
     // Each site is its layer's glyph on a white disc ringed in its colour,

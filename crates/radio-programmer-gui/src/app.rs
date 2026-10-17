@@ -175,6 +175,8 @@ fn generator_tab(
 
 /// The title of the panel holding the bank generators.
 const GENERATORS_TITLE: &str = "Banks near your locator";
+/// The saved-locator dropdown's entry showing every saved locator on the map.
+const ALL_LOCATIONS: &str = "All locations";
 
 impl Generator {
     const ALL: [Self; 8] = [
@@ -405,6 +407,9 @@ pub struct StudioApp {
     map_view: MapView,
     map_locator: String,
     map_shown: [bool; Generator::ALL.len()],
+    /// Whether the map shows what the generators would add at every saved
+    /// locator at once, rather than at the operator's alone.
+    map_all_locations: bool,
     /// The layers last drawn and the settings they were built from, so the
     /// previews behind them are rebuilt only when a setting changes.
     map_layers: Option<(String, Vec<Layer>)>,
@@ -1710,6 +1715,7 @@ impl StudioApp {
             map_view: MapView::default(),
             map_locator: String::new(),
             map_shown: [true; Generator::ALL.len()],
+            map_all_locations: false,
             map_layers: None,
             tiles: Tiles::none(),
         };
@@ -2195,6 +2201,22 @@ fn site(name: &str, (latitude, longitude): (f64, f64)) -> Site {
         latitude,
         longitude,
         highlight: false,
+    }
+}
+
+/// Adds `more` to `sites`, a site already there taken once and singled out
+/// when either is.
+fn merge_sites(sites: &mut Vec<Site>, more: Vec<Site>) {
+    for site in more {
+        let same = sites.iter_mut().find(|known| {
+            known.name == site.name
+                && known.latitude.to_bits() == site.latitude.to_bits()
+                && known.longitude.to_bits() == site.longitude.to_bits()
+        });
+        match same {
+            Some(known) => known.highlight |= site.highlight,
+            None => sites.push(site),
+        }
     }
 }
 
@@ -2838,6 +2860,11 @@ impl StudioApp {
                 ),
                 (&self.marine_area, self.map_shown, self.receiver),
                 (
+                    self.map_all_locations,
+                    &self.saved_locators.list,
+                    &self.repeater_area.locator,
+                ),
+                (
                     self.repeaters.as_ref().map(|list| list.synced),
                     self.world.as_ref().map(|list| list.synced),
                     self.stations.as_ref().map(|list| list.synced),
@@ -2846,6 +2873,20 @@ impl StudioApp {
                 ),
             )
         )
+    }
+
+    /// The locators the map shows and "Add all shown" adds for: the
+    /// operator's, then with every location shown each saved one.
+    fn map_locators(&self) -> Vec<String> {
+        let mut locators = vec![self.repeater_area.locator.clone()];
+        if self.map_all_locations {
+            for saved in &self.saved_locators.list {
+                if !locators.contains(&saved.locator) {
+                    locators.push(saved.locator.clone());
+                }
+            }
+        }
+        locators
     }
 
     /// The map's layers for the generators shown, rebuilt whenever a setting
@@ -2857,21 +2898,48 @@ impl StudioApp {
                 return layers.clone();
             }
         }
-        let layers: Vec<Layer> = Generator::ALL
-            .into_iter()
-            .zip(self.map_shown)
-            .filter(|(_, shown)| *shown)
-            .filter_map(|(generator, _)| {
-                let (sites, radius_km) = self.generator_sites(generator)?;
-                Some(Layer {
-                    label: generator.label(),
-                    color: generator.color(),
-                    icon: generator.icon(),
-                    sites,
-                    radius_km: radius_km.map(f64::from),
-                })
-            })
-            .collect();
+        let locators = self.map_locators();
+        // Each locator's previews read the shared locator, so it is set to
+        // each in turn and put back.
+        let own = self.repeater_area.locator.clone();
+        let mut layers: Vec<Layer> = Vec::new();
+        for locator in &locators {
+            let Ok(centre) = repeaters::locator_centre(locator) else {
+                continue;
+            };
+            locator.clone_into(&mut self.repeater_area.locator);
+            for (generator, shown) in Generator::ALL.into_iter().zip(self.map_shown) {
+                if !shown {
+                    continue;
+                }
+                let Some((sites, radius_km)) = self.generator_sites(generator) else {
+                    continue;
+                };
+                let label = generator.label();
+                let layer = if let Some(layer) = layers.iter_mut().find(|l| l.label == label) {
+                    layer
+                } else {
+                    layers.push(Layer {
+                        label,
+                        color: generator.color(),
+                        icon: generator.icon(),
+                        sites: Vec::new(),
+                        radius_km: radius_km.map(f64::from),
+                        centres: Vec::new(),
+                    });
+                    layers.last_mut().expect("just pushed")
+                };
+                layer.centres.push(centre);
+                merge_sites(&mut layer.sites, sites);
+            }
+        }
+        self.repeater_area.locator = own;
+        // Layers keep the order of [`Generator::ALL`].
+        layers.sort_by_key(|layer| {
+            Generator::ALL
+                .iter()
+                .position(|generator| generator.label() == layer.label)
+        });
         self.map_layers = Some((settings, layers.clone()));
         layers
     }
@@ -2895,29 +2963,50 @@ impl StudioApp {
     fn add_all_shown(&mut self) {
         let mut added = Vec::new();
         let mut skipped = Vec::new();
-        for (generator, shown) in Generator::ALL.into_iter().zip(self.map_shown) {
-            if !shown {
-                continue;
-            }
-            let preview = match self.generator_preview(generator) {
-                Ok(preview) => preview,
-                Err(reason) => {
-                    skipped.push(format!("{} ({reason})", generator.label()));
-                    continue;
+        let locators = self.map_locators();
+        let own = self.repeater_area.locator.clone();
+        for locator in &locators {
+            // With every location shown, each is named in what it added.
+            let at = |label: &str| {
+                if locators.len() > 1 {
+                    format!("{label} at {locator}")
+                } else {
+                    label.to_owned()
                 }
             };
-            // Airfields and marine always have their core channels.
-            let cored = matches!(generator, Generator::Airfields | Generator::Marine);
-            if preview.taken == 0 && !cored {
-                skipped.push(format!("{} (none in range)", generator.label()));
-            } else if preview.project.banks.len() > usize::from(MAX_BANKS)
-                || too_big(&preview.project)
-            {
-                skipped.push(format!("{} (would not fit the radio)", generator.label()));
-            } else {
-                self.add_generator(generator);
-                added.push(generator.label());
+            locator.clone_into(&mut self.repeater_area.locator);
+            for (generator, shown) in Generator::ALL.into_iter().zip(self.map_shown) {
+                if !shown {
+                    continue;
+                }
+                let preview = match self.generator_preview(generator) {
+                    Ok(preview) => preview,
+                    Err(reason) => {
+                        skipped.push(format!("{} ({reason})", at(generator.label())));
+                        continue;
+                    }
+                };
+                // Airfields and marine always have their core channels.
+                let cored = matches!(generator, Generator::Airfields | Generator::Marine);
+                if preview.taken == 0 && !cored {
+                    skipped.push(format!("{} (none in range)", at(generator.label())));
+                } else if preview.project.banks.len() > usize::from(MAX_BANKS)
+                    || too_big(&preview.project)
+                {
+                    skipped.push(format!(
+                        "{} (would not fit the radio)",
+                        at(generator.label())
+                    ));
+                } else {
+                    self.add_generator(generator);
+                    added.push(at(generator.label()));
+                }
             }
+        }
+        self.repeater_area.locator = own;
+        // An add keeps the locator it ran at; the operator's is kept instead.
+        if locators.len() > 1 {
+            self.remember_locator();
         }
         let added = if added.is_empty() {
             "Nothing added".to_owned()
@@ -2970,8 +3059,9 @@ impl StudioApp {
             if ui
                 .button("Add all shown")
                 .on_hover_text(
-                    "Adds or updates the bank of every generator shown, for this locator, \
-                     each filed under its location",
+                    "Adds or updates the bank of every generator shown, for this locator \
+                     or with All locations for every saved one, each filed under its \
+                     location",
                 )
                 .clicked()
             {
@@ -3038,11 +3128,22 @@ impl StudioApp {
             }
             let current = self.saved_locators.find(&self.repeater_area.locator);
             let mut chosen = None;
+            let mut all = self.map_all_locations;
+            let selected_text = if all {
+                ALL_LOCATIONS.to_owned()
+            } else {
+                current.map_or_else(|| "Saved...".to_owned(), SavedLocator::label)
+            };
             ComboBox::from_id_salt("saved-locators")
-                .selected_text(current.map_or_else(|| "Saved...".to_owned(), SavedLocator::label))
+                .selected_text(selected_text)
                 .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut all, true, ALL_LOCATIONS)
+                        .on_hover_text(
+                            "Shows every saved locator on the map at once, and Add all \
+                             shown adds for each",
+                        );
                     for saved in &self.saved_locators.list {
-                        let selected = current.is_some_and(|c| c.locator == saved.locator);
+                        let selected = !all && current.is_some_and(|c| c.locator == saved.locator);
                         if ui.selectable_label(selected, saved.label()).clicked() {
                             chosen = Some(saved.locator.clone());
                         }
@@ -3050,6 +3151,7 @@ impl StudioApp {
                 })
                 .response
                 .on_hover_text("Chooses a saved locator");
+            self.map_all_locations = all;
             if let Some(locator) = chosen {
                 self.choose_locator(&locator);
             }
@@ -3111,6 +3213,7 @@ impl StudioApp {
 
     /// Makes a kept locator the current one.
     fn choose_locator(&mut self, locator: &str) {
+        self.map_all_locations = false;
         locator.clone_into(&mut self.repeater_area.locator);
         self.locator_description = self.saved_description();
         self.remember_locator();
@@ -6090,6 +6193,70 @@ mod tests {
             "{}",
             app.status
         );
+    }
+
+    #[test]
+    fn all_locations_shows_and_adds_for_every_saved_locator() {
+        use crate::repeaters::{Repeater, RepeaterList};
+
+        let repeater = |callsign: &str, latitude: f64, longitude: f64| Repeater {
+            callsign: callsign.to_owned(),
+            town: String::new(),
+            output_hz: 145_625_000,
+            input_hz: 145_025_000,
+            ctcss_tenths_hz: None,
+            wide: false,
+            latitude,
+            longitude,
+        };
+        let mut app = simulated("all-locations");
+        app.repeaters = Some(RepeaterList {
+            // Near London and near Manchester.
+            repeaters: vec![
+                repeater("GB3LDN", 51.52, -0.12),
+                repeater("GB3MAN", 53.48, -2.24),
+            ],
+            gateways: Vec::new(),
+            beacons: Vec::new(),
+            synced: std::time::SystemTime::now(),
+        });
+        app.saved_locators.put("IO91WM", "Home").unwrap();
+        app.saved_locators.put("IO83WL", "Away").unwrap();
+        "IO91WM".clone_into(&mut app.repeater_area.locator);
+        app.map_shown = [false; Generator::ALL.len()];
+        app.map_shown[0] = true;
+        let shown = |app: &mut StudioApp| {
+            let layers = app.map_layers();
+            let layer = &layers[0];
+            let mut names: Vec<_> = layer.sites.iter().map(|s| s.name.clone()).collect();
+            names.sort();
+            (names, layer.centres.len())
+        };
+
+        assert_eq!(shown(&mut app), (vec!["GB3LDN".to_owned()], 1));
+        app.map_all_locations = true;
+        assert_eq!(
+            shown(&mut app),
+            (vec!["GB3LDN".to_owned(), "GB3MAN".to_owned()], 2),
+            "each saved locator's repeaters and radius"
+        );
+
+        app.add_all_shown();
+        assert_eq!(
+            app.status,
+            "Added or updated UK repeaters at IO91WM, UK repeaters at IO83WL."
+        );
+        for (bank, location) in [("RPT IO91WM", "IO91WM"), ("RPT IO83WL", "IO83WL")] {
+            let bank = app.project.banks.iter().find(|b| b.name == bank).unwrap();
+            let group = app.project.location(location).unwrap();
+            assert!(bank.groups.contains(&group), "{location}");
+        }
+        assert_eq!(app.repeater_area.locator, "IO91WM", "the locator stays");
+
+        // Choosing one locator shows it alone again.
+        app.choose_locator("IO83WL");
+        assert!(!app.map_all_locations);
+        assert_eq!(shown(&mut app), (vec!["GB3MAN".to_owned()], 1));
     }
 
     #[test]
