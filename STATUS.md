@@ -997,6 +997,21 @@ TX sends it and the tone row shows it (`70fd395`). Gate: `cargo fmt --all
 flashed. Next: flash; catch a toned radio, Menu, check `T` shows the tone
 and the other radio hears it with tone squelch on.
 
+Hardware (K1, operator, 2026-10-17): a PMR446 ch 6 (446.06875) catch showed
+its tone, but the VFO slot showed none and neither heard the other radio nor
+carried audio to it (its squelch opened), and read `H` for power. Fixed
+(`2553b73`): the caught tone is now the VFO's receive tone as well as its
+transmit tone, as the reference's scanner saves it (`scanner.c:195-198`);
+slots show the power PTT sends, lowered to the range at the transmit
+frequency (`sent_power`, shared with the TX path), so PMR446 reads `L4`.
+Gate: `cargo fmt --all` clean, workspace clippy `-D warnings` clean, `cargo
+test --workspace` 949 passed 0 failed, `tool/build-k5.sh --release` and
+`tool/build-k1.sh --release` pass. `7.0.58` built, not flashed. Next: flash
+the K1, repeat the catch, check `T` and `R` show the tone, the VFO hears the
+other radio and the other radio hears speech. If speech is still missing,
+key the same frequency from a memory channel to tell the VFO from K1 TX
+audio.
+
 Side key 1 (operator request): on the operating screen it switches tone
 squelch on the selected slot; on requires the channel's RX tone or, without
 one, its TX tone (repeater output, caught VFO tone), off opens on any
