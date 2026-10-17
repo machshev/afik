@@ -3279,6 +3279,10 @@
   11. Projects tab (operator request): a first tab lists every project to
       open, with Save, Revert, New, Rename and Delete; Banks and Radio keep
       only the open project's name, Save and Revert. Done.
+  12. Generators on the Map tab (operator request): the "Banks near your
+      locator" box moved from Banks to the top of the Map tab, and the map's
+      layers rebuild whenever a setting behind them changes, so the map
+      follows each filter as it is set. Done.
 
 ## BANKS-073 — Up to 254 banks, addressed by bank and position
 

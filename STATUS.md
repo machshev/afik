@@ -280,6 +280,9 @@ studio fmt and clippy `-D warnings` clean, `cargo test -p
 radio-programmer-gui` 187 passed 0 failed 3 ignored). Project management
 moved to a Projects tab; Banks and Radio keep the name, Save and Revert
 (gate: studio fmt and clippy `-D warnings` clean, `cargo test -p
+radio-programmer-gui` 188 passed 0 failed 3 ignored). The generator box
+moved to the Map tab, whose layers now follow every filter change at once
+(gate: studio fmt and clippy `-D warnings` clean, `cargo test -p
 radio-programmer-gui` 188 passed 0 failed 3 ignored). The studio takes `-v`/`--verbose`
 (operator request): `-v` logs AFIK's debug lines, `-vv` its trace and other
 crates' debug, `-vvv` everything, without `AFIK_LOG` (which still works;

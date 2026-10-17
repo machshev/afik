@@ -385,9 +385,9 @@ pub struct StudioApp {
     map_view: MapView,
     map_locator: String,
     map_shown: [bool; Generator::ALL.len()],
-    /// The layers last drawn, the locator they were for, and when, so the
-    /// previews behind them are not rebuilt every frame.
-    map_layers: Option<(Instant, String, [bool; Generator::ALL.len()], Vec<Layer>)>,
+    /// The layers last drawn and the settings they were built from, so the
+    /// previews behind them are rebuilt only when a setting changes.
+    map_layers: Option<(String, Vec<Layer>)>,
     tiles: Tiles,
 }
 
@@ -2464,6 +2464,12 @@ impl StudioApp {
                 }
             }
         });
+        ui.separator();
+    }
+
+    /// The bordered box of the locator and the generators that use it, at
+    /// the top of the Map tab.
+    fn generators_box(&mut self, ui: &mut egui::Ui) {
         // One bordered panel holds the locator and the generators that use
         // it; the chosen generator's row sits in a second panel joined to
         // its tab, so the tabs read as belonging to it.
@@ -2522,7 +2528,6 @@ impl StudioApp {
                 );
             }
         });
-        ui.separator();
     }
 
     /// The chosen generator's row.
@@ -2731,15 +2736,39 @@ impl StudioApp {
         preview.ok().map(|preview| (preview.sites, radius_km))
     }
 
-    /// The map's layers for the generators shown, rebuilt at most once a
-    /// second unless the locator or the choice of generators changes.
+    /// Everything the map's layers are built from: the locator, every
+    /// generator's area and filters, which are shown, and when each list
+    /// was synced.
+    fn map_settings(&self) -> String {
+        format!(
+            "{:?}",
+            (
+                (&self.repeater_area, &self.repeater_bands, &self.world_area),
+                (&self.world_bands, &self.gateway_area, &self.gateway_bands),
+                (&self.beacon_area, &self.beacon_bands, &self.station_area),
+                (
+                    &self.airport_area,
+                    &self.airport_options,
+                    &self.airfield_area
+                ),
+                (&self.marine_area, self.map_shown),
+                (
+                    self.repeaters.as_ref().map(|list| list.synced),
+                    self.world.as_ref().map(|list| list.synced),
+                    self.stations.as_ref().map(|list| list.synced),
+                    self.airports.as_ref().map(|list| list.synced),
+                    self.marine.as_ref().map(|list| list.synced),
+                ),
+            )
+        )
+    }
+
+    /// The map's layers for the generators shown, rebuilt whenever a setting
+    /// behind them changes, so the map follows the filters as they are set.
     fn map_layers(&mut self) -> Vec<Layer> {
-        let locator = &self.repeater_area.locator;
-        if let Some((built, for_locator, shown, layers)) = &self.map_layers {
-            if built.elapsed() < std::time::Duration::from_secs(1)
-                && for_locator == locator
-                && *shown == self.map_shown
-            {
+        let settings = self.map_settings();
+        if let Some((built_from, layers)) = &self.map_layers {
+            if *built_from == settings {
                 return layers.clone();
             }
         }
@@ -2757,12 +2786,7 @@ impl StudioApp {
                 })
             })
             .collect();
-        self.map_layers = Some((
-            Instant::now(),
-            locator.clone(),
-            self.map_shown,
-            layers.clone(),
-        ));
+        self.map_layers = Some((settings, layers.clone()));
         layers
     }
 
@@ -2775,9 +2799,10 @@ impl StudioApp {
         self.status = format!("Chose {locator} on the map.");
     }
 
-    /// The Map tab: the locator row, which generators to show, and the map.
+    /// The Map tab: the generators and their locator, which to show, and
+    /// the map, which follows every change to them.
     fn map_tab(&mut self, ui: &mut egui::Ui) {
-        self.locator_bar(ui);
+        self.generators_box(ui);
         ui.horizontal_wrapped(|ui| {
             ui.label("Show");
             for (generator, shown) in Generator::ALL.into_iter().zip(&mut self.map_shown) {
@@ -4884,7 +4909,10 @@ mod tests {
             ..RawInput::default()
         };
         context.run(input, |context| {
-            CentralPanel::default().show(context, |ui| app.banks_tab(ui));
+            CentralPanel::default().show(context, |ui| match app.tab {
+                Tab::Map => app.map_tab(ui),
+                _ => app.banks_tab(ui),
+            });
         })
     }
 
@@ -4914,9 +4942,15 @@ mod tests {
     }
 
     #[test]
-    fn the_banks_tab_shows_one_generator_at_a_time() {
+    fn the_map_tab_shows_one_generator_at_a_time() {
         let context = eframe::egui::Context::default();
         let mut app = app_in(&scratch("generators"), &Options::default());
+        let banks = frame(&context, &mut app, Vec::new());
+        app.tab = Tab::Map;
+        assert!(
+            text_left_edges(&banks, GENERATORS_TITLE).is_empty(),
+            "moved off the Banks tab"
+        );
         let rows = [
             (Generator::Repeaters, "UK repeaters within"),
             (Generator::World, "World repeaters within"),
@@ -4942,7 +4976,8 @@ mod tests {
                             if text.galley.text() == other.label())
                     })
                     .count();
-                assert_eq!(tabs, 1, "{generator:?} offers {other:?}");
+                // Once as a tab, once as the map's Show box.
+                assert_eq!(tabs, 2, "{generator:?} offers {other:?}");
             }
             for (owner, row) in rows {
                 let shown = text_left_edges(&output, row).len();
@@ -4959,6 +4994,7 @@ mod tests {
     fn clicking_a_generator_tab_chooses_it() {
         let context = eframe::egui::Context::default();
         let mut app = app_in(&scratch("generator-click"), &Options::default());
+        app.tab = Tab::Map;
         let output = frame(&context, &mut app, Vec::new());
         let at = output
             .shapes
@@ -5628,6 +5664,21 @@ mod tests {
             repeaters.radius_km,
             Some(f64::from(app.repeater_area.radius_km))
         );
+
+        // A filter change shows at once, with no wait.
+        app.repeater_bands.bands[crate::repeaters::AmateurBand::TwoMetres.index()] = false;
+        let layers = app.map_layers();
+        let repeaters = layers.iter().find(|l| l.label == "UK repeaters").unwrap();
+        assert!(
+            repeaters.sites.is_empty(),
+            "the 2 m repeater is filtered out"
+        );
+        app.repeater_bands = crate::repeaters::BandFilter::ALL;
+        app.repeater_area.radius_km = 10;
+        let layers = app.map_layers();
+        let repeaters = layers.iter().find(|l| l.label == "UK repeaters").unwrap();
+        assert_eq!(repeaters.radius_km, Some(10.0));
+        assert_eq!(repeaters.sites.len(), 1);
         assert!(
             layers.iter().all(|l| l.label != "World repeaters"),
             "no layer without a sync"
