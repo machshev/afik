@@ -25,7 +25,9 @@ use radio_programmer_serial::SUPPORTED_BAUDS;
 
 use crate::{
     airfields::{self, AirfieldArea},
-    airports::{self, AirportArea, AirportCache, AirportList, AirportOptions, Service},
+    airports::{
+        self, AirportArea, AirportCache, AirportList, AirportOptions, AirportSize, Service,
+    },
     device::{DeviceChoice, DeviceChooser},
     flash_tab::FlashTab,
     locators::{SavedLocator, SavedLocators},
@@ -822,7 +824,7 @@ impl StudioApp {
             |list| {
                 format!(
                     "{} small-field frequencies from OurAirports, synced {}.",
-                    list.frequencies.iter().filter(|f| f.small).count(),
+                    list.frequencies.iter().filter(|f| f.is_small()).count(),
                     age(list.synced)
                 )
             },
@@ -3858,7 +3860,7 @@ impl StudioApp {
         let mut counts = [0; Service::ALL.len()];
         for frequency in &list.frequencies {
             let km = repeaters::distance_km(home, (frequency.latitude, frequency.longitude));
-            if km <= radius && km <= f64::from(frequency.service.reach_km(self.receiver)) {
+            if km <= radius && km <= f64::from(frequency.reach_km(self.receiver)) {
                 counts[frequency.service.index()] += 1;
             }
         }
@@ -3938,11 +3940,7 @@ impl StudioApp {
                         counts.map(|counts| counts[service.index()]),
                     ),
                 )
-                .on_hover_text(format!(
-                    "{help}; heard to about {} km on a {}",
-                    service.reach_km(self.receiver),
-                    self.receiver.label().to_lowercase()
-                ));
+                .on_hover_text(heard_to(service, help, self.receiver));
             }
         });
     }
@@ -5496,6 +5494,25 @@ fn swatch(ui: &mut egui::Ui, colour: egui::Color32) {
     ui.painter().rect_filled(rect, 2.0, colour);
 }
 
+/// The hover text of an airport service: what it is and how far off
+/// `receiver` hears it, approach by the size of the airport.
+fn heard_to(service: Service, help: &str, receiver: Receiver) -> String {
+    let on = receiver.label().to_lowercase();
+    if service == Service::Approach {
+        let [large, medium, small] = [AirportSize::Large, AirportSize::Medium, AirportSize::Small]
+            .map(|size| receiver.reach_km(size.approach_km()));
+        format!(
+            "{help}; on a {on}, heard to about {large} km at a large airport, {medium} km at a \
+             regional airport or military field and {small} km at a small field"
+        )
+    } else {
+        format!(
+            "{help}; heard to about {} km on a {on}",
+            service.reach_km(receiver)
+        )
+    }
+}
+
 /// Formats bytes as kilobytes to a tenth, such as `12.3 kB`.
 fn kilobytes(bytes: usize) -> String {
     let tenths = (bytes + 50) / 100;
@@ -7007,6 +7024,22 @@ mod tests {
     }
 
     #[test]
+    fn the_approach_hover_gives_each_airport_size_its_range() {
+        use super::heard_to;
+        use crate::{airports::Service, receiver::Receiver};
+
+        let text = heard_to(Service::Approach, "Approach", Receiver::Handheld);
+        assert!(text.contains("150 km at a large airport"), "{text}");
+        assert!(text.contains("50 km at a regional"), "{text}");
+        assert!(text.contains("30 km at a small field"), "{text}");
+        let text = heard_to(Service::Tower, "Tower", Receiver::Base);
+        assert!(
+            text.ends_with("heard to about 60 km on a base station"),
+            "{text}"
+        );
+    }
+
+    #[test]
     fn the_memory_bar_colours_each_role_and_fits_one_line() {
         use super::{role_colour, usage_bar};
         use crate::model::{BankRole, StorageSummary};
@@ -7320,7 +7353,7 @@ mod tests {
             frequency_hz,
             latitude: 51.520_833 + km / 111.2,
             longitude: -0.125,
-            small: false,
+            size: crate::airports::AirportSize::Medium,
             kind: "TWR".to_owned(),
             service: Service::Tower,
         };

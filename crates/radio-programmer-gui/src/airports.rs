@@ -12,8 +12,10 @@
 //! carries depends on its service: an aircraft working approach or radar is
 //! high and heard from far off, one in the circuit on tower is low, and one
 //! taxiing on ground is heard only nearby. Each [`Service`] has a rough
-//! hearing range, and the bank keeps the frequencies inside theirs, the most
-//! hearable (distance over range) first.
+//! hearing range, approach cut by the [`AirportSize`] (airliners into a
+//! large airport are high, a small field's traffic low), and the bank keeps
+//! the frequencies inside theirs, the most hearable (distance over range)
+//! first.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -72,13 +74,71 @@ pub struct AirportFrequency {
     pub latitude: f64,
     /// Airport longitude in degrees east.
     pub longitude: f64,
-    /// Whether it is a small field: an airstrip, gliding site, heliport,
-    /// balloon port or seaplane base rather than a medium or large airport.
-    pub small: bool,
+    /// How big the airport is, which decides how high its approach traffic
+    /// flies.
+    pub size: AirportSize,
     /// The use as listed, such as `TWR`, cut to a channel name.
     pub kind: String,
     /// What the frequency is for, read from its use.
     pub service: Service,
+}
+
+impl AirportFrequency {
+    /// Whether it is a small field's.
+    pub fn is_small(&self) -> bool {
+        self.size == AirportSize::Small
+    }
+
+    /// Roughly how far off a handheld at ground level hears it, in
+    /// kilometres: its service's range, approach and radar cut to what the
+    /// airport's traffic flies at.
+    pub const fn range_km(&self) -> u16 {
+        match self.service {
+            Service::Approach => self.size.approach_km(),
+            service => service.range_km(),
+        }
+    }
+
+    /// How far off `receiver` hears it, in kilometres.
+    pub const fn reach_km(&self, receiver: Receiver) -> u16 {
+        receiver.reach_km(self.range_km())
+    }
+}
+
+/// How big an airport is, as `OurAirports` types it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AirportSize {
+    /// A major airport taking airliners, long haul among them, which
+    /// approach at height and are heard from far off.
+    Large,
+    /// A regional airport or military airfield, whose traffic approaches
+    /// lower.
+    Medium,
+    /// An airstrip, gliding site, heliport, balloon port or seaplane base,
+    /// whose traffic stays low.
+    Small,
+}
+
+impl AirportSize {
+    /// The size of an `OurAirports` airport type.
+    pub fn of(kind: &str) -> Self {
+        match kind {
+            "large_airport" => Self::Large,
+            kind if SMALL_TYPES.contains(&kind) => Self::Small,
+            _ => Self::Medium,
+        }
+    }
+
+    /// Roughly how far off a handheld hears the airport's approach and
+    /// radar, in kilometres: an estimate from how high its traffic flies,
+    /// not a measurement.
+    pub const fn approach_km(self) -> u16 {
+        match self {
+            Self::Large => Service::Approach.range_km(),
+            Self::Medium => 50,
+            Self::Small => 30,
+        }
+    }
 }
 
 /// What an airport frequency is for, which decides how far off it is heard.
@@ -177,9 +237,10 @@ impl Service {
             .unwrap_or(Self::Other)
     }
 
-    /// Roughly how far off a handheld at ground level hears it, in
+    /// Roughly how far off a handheld at ground level hears it at most, in
     /// kilometres: an estimate from the height of what transmits, not a
-    /// measurement.
+    /// measurement. A large airport's approach is heard this far; see
+    /// [`AirportFrequency::range_km`].
     pub const fn range_km(self) -> u16 {
         match self {
             Self::Approach => 150,
@@ -311,7 +372,7 @@ pub fn parse(airports_csv: &str, frequencies_csv: &str) -> Result<Vec<AirportFre
             "longitude_deg",
         ],
     )?;
-    let airports: HashMap<String, (String, String, f64, f64, bool)> = rows
+    let airports: HashMap<String, (String, String, f64, f64, AirportSize)> = rows
         .filter_map(|row| {
             let field = |at: usize| row.get(at).map_or("", String::as_str).trim();
             let id = field(id_at);
@@ -325,7 +386,7 @@ pub fn parse(airports_csv: &str, frequencies_csv: &str) -> Result<Vec<AirportFre
                     field(name_at).to_owned(),
                     field(latitude_at).parse().ok()?,
                     field(longitude_at).parse().ok()?,
-                    SMALL_TYPES.contains(&field(type_at)),
+                    AirportSize::of(field(type_at)),
                 ),
             ))
         })
@@ -334,7 +395,7 @@ pub fn parse(airports_csv: &str, frequencies_csv: &str) -> Result<Vec<AirportFre
     let mut frequencies: Vec<AirportFrequency> = listed
         .into_iter()
         .filter_map(|(id, kind, frequency_hz)| {
-            let (ident, airport, latitude, longitude, small) = airports.get(&id)?;
+            let (ident, airport, latitude, longitude, size) = airports.get(&id)?;
             Some(AirportFrequency {
                 name: sanitise(&format!("{ident} {kind}"), MAX_CHANNEL_NAME_LEN)?,
                 service: Service::of(&kind),
@@ -344,7 +405,7 @@ pub fn parse(airports_csv: &str, frequencies_csv: &str) -> Result<Vec<AirportFre
                 frequency_hz,
                 latitude: *latitude,
                 longitude: *longitude,
-                small: *small,
+                size: *size,
             })
         })
         .collect();
@@ -466,9 +527,8 @@ pub fn plan<'a>(
         .filter(|(_, km)| *km <= f64::from(area.radius_km))
         .collect();
 
-    let heard = |(frequency, km): &(&AirportFrequency, f64)| {
-        *km <= f64::from(frequency.service.reach_km(receiver))
-    };
+    let heard =
+        |(frequency, km): &(&AirportFrequency, f64)| *km <= f64::from(frequency.reach_km(receiver));
     let mut airports: Vec<AirportGroup<'a>> = Vec::new();
     if options.per_airport {
         let mut local: Vec<_> = in_radius
@@ -510,9 +570,8 @@ pub fn plan<'a>(
     let own_bank = |frequency: &AirportFrequency| {
         frequency.service.is_local() && airports.iter().any(|g| g.ident == frequency.ident)
     };
-    let hearability = |(frequency, km): &(&AirportFrequency, f64)| {
-        km / f64::from(frequency.service.reach_km(receiver))
-    };
+    let hearability =
+        |(frequency, km): &(&AirportFrequency, f64)| km / f64::from(frequency.reach_km(receiver));
     let mut near: Vec<_> = in_radius
         .iter()
         .filter(|candidate| heard(candidate) && !own_bank(candidate.0))
@@ -885,7 +944,7 @@ impl SyncJob {
 mod tests {
     use super::{
         airport_banks, carrier_hz, parse, plan, AirportArea, AirportCache, AirportFrequency,
-        AirportOptions, Service, AIRPORTS_URL, FREQUENCIES_URL,
+        AirportOptions, AirportSize, Service, AIRPORTS_URL, FREQUENCIES_URL,
     };
     use crate::model::ProjectModel;
     use crate::receiver::Receiver;
@@ -960,6 +1019,11 @@ mod tests {
             ]
         );
         assert_eq!(list[2].airport, "Cambridge City Airport");
+        let sizes: Vec<_> = [0, 2, 5].map(|at| list[at].size).into();
+        assert_eq!(
+            sizes,
+            [AirportSize::Large, AirportSize::Medium, AirportSize::Small]
+        );
         assert!(parse(AIRPORTS, "\"id\"\n").is_err(), "no usable columns");
         assert!(
             parse("\"id\"\n", FREQUENCIES).is_err(),
@@ -983,7 +1047,7 @@ mod tests {
             frequency_hz: hz,
             latitude: HOME.0 + km / 111.2,
             longitude: HOME.1,
-            small: false,
+            size: AirportSize::Large,
             kind: kind.to_owned(),
             service: Service::of(kind),
         }
@@ -1162,6 +1226,57 @@ mod tests {
         assert_eq!(super::own_bank_km(Receiver::Base), 40);
         let chosen = plan(&heard_far, "IO91WM", &area(300, 40), &many, Receiver::Base).unwrap();
         assert_eq!(chosen.airports.len(), 1);
+    }
+
+    #[test]
+    fn a_smaller_airports_approach_is_heard_only_nearer() {
+        let sized = |ident: &str, size, km: u16| AirportFrequency {
+            size,
+            ..heard(
+                ident,
+                "APP",
+                120_000_000 + u32::from(km) * 25_000,
+                f64::from(km),
+            )
+        };
+        // Airliners into a large airport are heard 140 km off; a regional
+        // airport's or airfield's approach only nearer.
+        let list = [
+            sized("EGSS", AirportSize::Large, 140),
+            sized("EGSC", AirportSize::Medium, 45),
+            sized("EGSH", AirportSize::Medium, 60),
+            sized("EGSO", AirportSize::Small, 25),
+            sized("GB-0001", AirportSize::Small, 35),
+        ];
+        let names = |receiver| -> Vec<String> {
+            plan(
+                &list,
+                "IO91WM",
+                &area(300, 40),
+                &AirportOptions::default(),
+                receiver,
+            )
+            .unwrap()
+            .area
+            .iter()
+            .map(|(f, _)| f.ident.clone())
+            .collect()
+        };
+        assert_eq!(names(Receiver::Handheld), ["EGSO", "EGSC", "EGSS"]);
+        // A better aerial hears every size further.
+        assert_eq!(
+            names(Receiver::Base),
+            ["EGSO", "EGSC", "EGSS", "GB-0001", "EGSH"]
+        );
+        // The tower is heard as far whatever the size.
+        let tower = AirportFrequency {
+            size: AirportSize::Small,
+            ..heard("EGSO", "TWR", 118_000_000, 20.0)
+        };
+        assert_eq!(tower.range_km(), Service::Tower.range_km());
+        assert_eq!(AirportSize::of("large_airport"), AirportSize::Large);
+        assert_eq!(AirportSize::of("medium_airport"), AirportSize::Medium);
+        assert_eq!(AirportSize::of("heliport"), AirportSize::Small);
     }
 
     #[test]

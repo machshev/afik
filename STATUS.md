@@ -215,6 +215,17 @@ clean, `cargo clippy --workspace --all-targets -- -D warnings` clean, `cargo
 test --workspace` 944 passed 0 failed 3 ignored. Next: open M8LWA in the
 studio, Add all shown on All locations, Save, and write it to the K1.
 
+Airport approach by size (2026-10-17, operator request, `AIRPORT-068`):
+approach and radar are heard by how high the airport's traffic flies, from
+the `OurAirports` type: 150 km at a large airport, 50 km at a medium one
+(regional and military) and 30 km at a small field, on a handheld; tower,
+ground and ATIS are unchanged. On M8LWA at the saved 100 km and 50 channels
+the AIR banks fall from 50/50/39/23 to 11/17/8/10 channels (about 1.6 kB).
+Gate: `cargo fmt --all --check` clean for these files (another session's
+`radio-app/src/interface.rs` is unformatted), `cargo clippy --workspace
+--all-targets -- -D warnings` clean, `cargo test --workspace` 957 passed 0
+failed 3 ignored. Next: Add all shown on M8LWA and check the bar.
+
 **`FLASH-074` done** (2026-10-17, operator request, `RISK-049`): the K5
 image had 16 bytes of flash left. `interface::run` was 22.6 KB because the
 build inlined helpers at every caller; `#[inline(never)]` on 21 of them

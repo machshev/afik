@@ -62,7 +62,7 @@ pub fn nearby<'a>(
         frequencies,
         locator,
         radius_km,
-        |frequency| frequency.small,
+        AirportFrequency::is_small,
         core,
     )
 }
@@ -107,7 +107,10 @@ mod tests {
     use radio_domain::Modulation;
 
     use super::{airfield_bank, core_bank, is_core, nearby, CORE_CHANNELS};
-    use crate::{airports::AirportFrequency, model::ProjectModel};
+    use crate::{
+        airports::{AirportFrequency, AirportSize},
+        model::ProjectModel,
+    };
 
     fn field(name: &str, hz: u32, latitude: f64, small: bool) -> AirportFrequency {
         AirportFrequency {
@@ -117,7 +120,11 @@ mod tests {
             frequency_hz: hz,
             latitude,
             longitude: 0.0,
-            small,
+            size: if small {
+                AirportSize::Small
+            } else {
+                AirportSize::Medium
+            },
             kind: String::new(),
             service: crate::airports::Service::Other,
         }
