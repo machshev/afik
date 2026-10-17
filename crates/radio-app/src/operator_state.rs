@@ -59,6 +59,11 @@ const OTHER_BANK_FILTERED: u8 = 0b0000_0010;
 const B_SELECTED: u8 = 0b0000_0100;
 /// Second flags byte: dual watch was on.
 const DUAL_WATCH: u8 = 0b0000_1000;
+/// Second flags byte: TX class 7 (CB), which the first byte has no room for,
+/// was switched off. A record without the byte has it clear, which is on.
+const TX_DISABLED_CLASS_7: u8 = 0b0001_0000;
+/// The [`ClassSet`] bit of class 7.
+const CLASS_7_BIT: u8 = 1 << 7;
 
 /// Where the slot not selected was left.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -162,6 +167,9 @@ impl OperatorState {
         if self.dual_watch {
             flags |= DUAL_WATCH;
         }
+        if self.tx_disabled.bits() & CLASS_7_BIT != 0 {
+            flags |= TX_DISABLED_CLASS_7;
+        }
         bytes[14] = flags;
         let checksum = crc16(&bytes[..OPERATOR_STATE_BYTES - 2]);
         bytes[OPERATOR_STATE_BYTES - 2..].copy_from_slice(&checksum.to_le_bytes());
@@ -208,6 +216,9 @@ impl OperatorState {
             let flags = bytes[14];
             state.b_selected = flags & B_SELECTED != 0;
             state.dual_watch = flags & DUAL_WATCH != 0;
+            if flags & TX_DISABLED_CLASS_7 != 0 {
+                state.tx_disabled = ClassSet::from_bits(state.tx_disabled.bits() | CLASS_7_BIT);
+            }
             state.other = (bytes[25] != 0xFF).then(|| OtherSlot {
                 memory_mode: flags & OTHER_MEMORY_MODE != 0,
                 bank: (flags & OTHER_BANK_FILTERED != 0)
@@ -314,6 +325,10 @@ mod tests {
                 ..state()
             },
             OperatorState {
+                tx_disabled: ClassSet::NONE.with(TxClass::CitizensBand, true),
+                ..state()
+            },
+            OperatorState {
                 tx_disabled: [
                     TxClass::LicenceFreePlan,
                     TxClass::Amateur,
@@ -321,6 +336,7 @@ mod tests {
                     TxClass::Aeronautical,
                     TxClass::Business,
                     TxClass::Experimental,
+                    TxClass::CitizensBand,
                 ]
                 .into_iter()
                 .fold(ClassSet::NONE, |set, class| set.with(class, true)),

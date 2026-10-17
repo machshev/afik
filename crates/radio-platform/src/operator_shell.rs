@@ -260,13 +260,14 @@ pub const SETTINGS_WITH_TX: [Setting; 7] = [
 ];
 
 /// Every TX class, in the order the class list shows them.
-pub const TX_CLASSES: [TxClass; 6] = [
+pub const TX_CLASSES: [TxClass; 7] = [
     TxClass::LicenceFreePlan,
     TxClass::Amateur,
     TxClass::Marine,
     TxClass::Aeronautical,
     TxClass::Business,
     TxClass::Experimental,
+    TxClass::CitizensBand,
 ];
 
 /// Selectable TX power levels. The programmed configuration names one of

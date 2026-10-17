@@ -769,7 +769,24 @@ pub const TX_RANGE_PRESETS: &[TxRangePreset] = &[
             raster_hz: 25_000,
         }],
     },
+    TxRangePreset {
+        name: "CB 27 MHz",
+        detail: "UK 27/81 (27.60125-27.99125 MHz) and CEPT (26.965-27.405 MHz) \
+                 CB, narrow FM at 4 W on the 10 kHz grid.",
+        ranges: &[cb(27_601_250, 27_991_250), cb(26_965_000, 27_405_000)],
+    },
 ];
+
+const fn cb(first_hz: u32, last_hz: u32) -> PresetRange {
+    PresetRange {
+        class: TxClass::CitizensBand,
+        first_hz,
+        last_hz,
+        max_mw: 4_000,
+        wide_fm: false,
+        raster_hz: 10_000,
+    }
+}
 
 impl TxRangePreset {
     /// Returns the editor label.
@@ -1001,6 +1018,14 @@ mod tests {
             assert!(contains(&uk, hz), "UK {hz}");
         }
         assert!(!contains(&uk, 147_000_000));
+        let cb = policy_of("CB 27 MHz");
+        // UK channels 1 and 40, CEPT channels 1 and 40.
+        for hz in [27_601_250, 27_991_250, 26_965_000, 27_405_000] {
+            assert!(contains(&cb, hz), "CB {hz}");
+        }
+        assert!(cb
+            .ranges()
+            .all(|range| range.class == radio_domain::TxClass::CitizensBand));
         let us = policy_of("US");
         for hz in [
             462_562_500,

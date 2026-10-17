@@ -81,6 +81,20 @@ programmed TX ranges protect channel and VFO mode alike.
   clippy `-D warnings` clean, `cargo test --workspace` 723 passed 0 failed,
   `tool/build-k5.sh --release` and `tool/build-k1.sh --release` pass. Not
   flashed; needs a version bump before it is.
+- CB class (operator request): `TxClass::CitizensBand` (7) can be
+  programmed and switched off on the handset like the others (`CB` in
+  SETTINGS > TX CLASSES; kept in bit 4 of the place record's second flags
+  byte, clear in older records). The studio's TX presets add `CB 27 MHz`:
+  UK 27/81 and CEPT, narrow FM, 4 W, 10 kHz grid. The hardware envelope is
+  still 400-470 MHz, so the radio refuses 27 MHz TX until a low-band PA
+  path is calibrated. Gate (another session's uncommitted banks work breaks
+  `radio-app` in the tree, so per crate and on a clean worktree of this
+  change): `cargo fmt` clean, `cargo clippy -p radio-domain -p
+  radio-tx-policy -p radio-platform -p radio-programmer-gui -p radio-app
+  --all-targets -- -D warnings` clean, `cargo test` on those crates all
+  passed (radio-app 38, radio-programmer-gui 168 / 3 ignored, radio-platform
+  160), `tool/build-k5.sh --release` (flash end `0x0000ef00`) and
+  `tool/build-k1.sh --release` pass. Not flashed.
 - `7.0.21` is the image to flash (`Cargo.lock` and both targets rebuilt;
   K5 flash end `0x0000d138`). `cargo test --workspace` 698 passed 0 failed.
 - Next (step 6, hardware): flash K5 `7.0.21`; the old format 5 image is

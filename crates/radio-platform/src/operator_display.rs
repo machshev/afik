@@ -502,6 +502,7 @@ impl SelectorRow {
             TxClass::Aeronautical => b"AERO",
             TxClass::Business => b"BUSINESS",
             TxClass::Experimental => b"EXPERIMENT",
+            TxClass::CitizensBand => b"CB",
         };
         let mut label = [b' '; LIST_NAME_BYTES];
         label[..name.len()].copy_from_slice(name);

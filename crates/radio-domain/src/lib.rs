@@ -542,6 +542,8 @@ pub enum TxClass {
     Business = 5,
     /// Experimental service.
     Experimental = 6,
+    /// Citizens' band, 27 MHz.
+    CitizensBand = 7,
 }
 
 impl TryFrom<u8> for TxClass {
@@ -555,6 +557,7 @@ impl TryFrom<u8> for TxClass {
             4 => Ok(Self::Aeronautical),
             5 => Ok(Self::Business),
             6 => Ok(Self::Experimental),
+            7 => Ok(Self::CitizensBand),
             _ => Err(DomainError::Overflow),
         }
     }

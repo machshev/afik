@@ -3731,6 +3731,7 @@ const fn tx_class_label(class: TxClass) -> &'static str {
         TxClass::Aeronautical => "Aeronautical",
         TxClass::Business => "Business",
         TxClass::Experimental => "Experimental",
+        TxClass::CitizensBand => "CB",
     }
 }
 
