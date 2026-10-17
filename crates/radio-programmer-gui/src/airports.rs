@@ -433,10 +433,10 @@ impl AirportPlan<'_> {
 /// within the area's radius of `locator`.
 ///
 /// When each airport gets its own bank, the nearest `options.airports`
-/// airports within `options.travel_km` (how far the operator would go to
-/// one, whatever the radius) with a local (tower, ground or ATIS)
-/// frequency each take all of theirs, even those too weak to hear from the
-/// locator, since that bank is for when the operator is there.
+/// airports within the radius with a local (tower, ground or ATIS)
+/// frequency heard from the locator each take all of their local ones,
+/// even those too weak to hear, since that bank is for when the operator
+/// is there.
 /// Every other frequency inside its service's hearing range from `receiver`
 /// goes to the area
 /// bank, most hearable first (distance over range, so approach 60 km off
@@ -450,28 +450,32 @@ pub fn plan<'a>(
     receiver: Receiver,
 ) -> Result<AirportPlan<'a>, String> {
     let home = locator_centre(locator)?;
-    let taken: Vec<_> = frequencies
+    let in_radius: Vec<_> = frequencies
         .iter()
         .filter(|frequency| options.takes(frequency.service))
         .map(|frequency| {
             let km = distance_km(home, (frequency.latitude, frequency.longitude));
             (frequency, km)
         })
-        .collect();
-    let in_radius: Vec<_> = taken
-        .iter()
         .filter(|(_, km)| *km <= f64::from(area.radius_km))
-        .copied()
         .collect();
 
+    let heard = |(frequency, km): &(&AirportFrequency, f64)| {
+        *km <= f64::from(frequency.service.reach_km(receiver))
+    };
     let mut airports: Vec<AirportGroup<'a>> = Vec::new();
     if options.per_airport {
-        let mut local: Vec<_> = taken
+        let mut local: Vec<_> = in_radius
             .iter()
-            .filter(|(frequency, km)| {
-                frequency.service.is_local() && *km <= f64::from(options.travel_km)
-            })
+            .filter(|(frequency, _)| frequency.service.is_local())
             .collect();
+        // Only an airport with a local frequency heard here gets a bank.
+        let near: HashSet<&str> = local
+            .iter()
+            .filter(|local| heard(local))
+            .map(|(frequency, _)| frequency.ident.as_str())
+            .collect();
+        local.retain(|(frequency, _)| near.contains(frequency.ident.as_str()));
         local.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.ident.cmp(&b.0.ident)));
         for (frequency, km) in local {
             if let Some(group) = airports.iter_mut().find(|g| g.ident == frequency.ident) {
@@ -509,9 +513,7 @@ pub fn plan<'a>(
     };
     let mut near: Vec<_> = in_radius
         .iter()
-        .filter(|(frequency, km)| {
-            *km <= f64::from(frequency.service.reach_km(receiver)) && !own_bank(frequency)
-        })
+        .filter(|candidate| heard(candidate) && !own_bank(candidate.0))
         .copied()
         .collect();
     near.sort_by(|a, b| {
@@ -772,19 +774,10 @@ pub struct AirportOptions {
     pub per_airport: bool,
     /// How many airports get a bank of their own.
     pub airports: u16,
-    /// How far off, in kilometres, an airport may be to get a bank of its
-    /// own: how far the operator would travel to it, not how far it is
-    /// heard.
-    pub travel_km: u16,
 }
 
 /// How many airports get a bank of their own before the operator chooses.
 pub const DEFAULT_AIRPORT_BANKS: u16 = 5;
-/// How far off an airport may be to get a bank of its own before the
-/// operator chooses: about an hour's drive or less.
-pub const DEFAULT_TRAVEL_KM: u16 = 50;
-/// The furthest travel range taken.
-pub const MAX_TRAVEL_KM: u16 = 1000;
 const OPTIONS_FILE: &str = "airport-options";
 
 impl Default for AirportOptions {
@@ -796,7 +789,6 @@ impl Default for AirportOptions {
             services,
             per_airport: false,
             airports: DEFAULT_AIRPORT_BANKS,
-            travel_km: DEFAULT_TRAVEL_KM,
         }
     }
 }
@@ -812,8 +804,8 @@ impl AirportOptions {
         paths::state_dir().map(|dir| dir.join(OPTIONS_FILE))
     }
 
-    /// Reads the services taken by name, `per-airport`, `airports=N` and
-    /// `travel=KM`; with no file, the defaults.
+    /// Reads the services taken by name, `per-airport` and `airports=N`;
+    /// with no file, the defaults.
     pub fn load(file: &Path) -> Self {
         let Ok(text) = fs::read_to_string(file) else {
             return Self::default();
@@ -822,7 +814,6 @@ impl AirportOptions {
             services: [false; Service::ALL.len()],
             per_airport: false,
             airports: DEFAULT_AIRPORT_BANKS,
-            travel_km: DEFAULT_TRAVEL_KM,
         };
         for word in text.split_whitespace() {
             if let Some(service) = Service::ALL.iter().find(|s| s.key() == word) {
@@ -836,14 +827,6 @@ impl AirportOptions {
                     .filter(|count| (1..=MAX_BANKS).contains(count))
                 {
                     options.airports = count;
-                }
-            } else if let Some(km) = word.strip_prefix("travel=") {
-                if let Some(km) = km
-                    .parse()
-                    .ok()
-                    .filter(|km| (1..=MAX_TRAVEL_KM).contains(km))
-                {
-                    options.travel_km = km;
                 }
             }
         }
@@ -861,7 +844,6 @@ impl AirportOptions {
             words.push("per-airport".to_owned());
         }
         words.push(format!("airports={}", self.airports));
-        words.push(format!("travel={}", self.travel_km));
         file.parent()
             .map_or(Ok(()), fs::create_dir_all)
             .and_then(|()| fs::write(file, words.join(" ") + "\n"))
@@ -1146,26 +1128,22 @@ mod tests {
         assert!(chosen.area.is_empty());
         assert_eq!(airport_banks("IO91WM", &chosen).len(), 2);
 
-        // Only airports within travel get a bank, however many are asked
-        // for: Heathrow at 20 km is past 10 km.
+        // Only airports inside the radius get a bank, however many are asked
+        // for: Heathrow at 20 km is outside 10 km.
         let many = AirportOptions {
             per_airport: true,
             airports: 5,
-            travel_km: 10,
             ..AirportOptions::default()
         };
-        let chosen = plan(&list, "IO91WM", &area(300, 40), &many, Receiver::Handheld).unwrap();
+        let chosen = plan(&list, "IO91WM", &area(10, 40), &many, Receiver::Handheld).unwrap();
         let idents: Vec<_> = chosen.airports.iter().map(|g| g.ident).collect();
         assert_eq!(idents, ["EGLC"]);
-        // Travel is not hearing: Gatwick at 90 km is outside a 10 km radius
-        // but within 100 km of travel, so it still gets its bank.
-        let far = AirportOptions {
-            travel_km: 100,
-            ..many
-        };
-        let chosen = plan(&list, "IO91WM", &area(10, 40), &far, Receiver::Handheld).unwrap();
+        // Nor does one whose tower and ground are too far to hear: Gatwick's
+        // tower at 90 km is past a handheld's 30 km, so it stays in the area
+        // bank's approach alone.
+        let chosen = plan(&list, "IO91WM", &area(300, 40), &many, Receiver::Handheld).unwrap();
         let idents: Vec<_> = chosen.airports.iter().map(|g| g.ident).collect();
-        assert_eq!(idents, ["EGLC", "EGLL", "EGKK"]);
+        assert_eq!(idents, ["EGLC", "EGLL"]);
     }
 
     #[test]
@@ -1269,17 +1247,15 @@ mod tests {
         let options = AirportOptions {
             services: [false, true, true, true, false],
             per_airport: true,
-            airports: 7,
-            travel_km: 80,
+            airports: 5,
         };
         options.save(&file).unwrap();
         assert_eq!(AirportOptions::load(&file), options);
         // Nothing taken stays nothing taken; a bad count is the default.
-        std::fs::write(&file, "airports=999 travel=0\n").unwrap();
+        std::fs::write(&file, "airports=999\n").unwrap();
         let none = AirportOptions::load(&file);
         assert!(Service::ALL.iter().all(|s| !none.takes(*s)));
         assert_eq!(none.airports, super::DEFAULT_AIRPORT_BANKS);
-        assert_eq!(none.travel_km, super::DEFAULT_TRAVEL_KM);
         let _ = std::fs::remove_dir_all(dir);
     }
 }
