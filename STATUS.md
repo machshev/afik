@@ -170,8 +170,9 @@ the Banks tab's Start on row); the studio writes it as the radio's own place
 record at `0x1D00` after the image (`write_afik_place`, `OperatorState` moved
 to `radio-platform`). Firmware: a write that touched the place publishes it,
 so the radio goes there at once; the K1 now keeps a host-written place and
-stores it on commit (its view refused place writes). `7.0.55` built, not yet
-flashed: K5 flash end `0xe810`, K1 76 316 bytes. Gate: `cargo fmt --all
+stores it on commit (its view refused place writes). `7.0.55` (`e60ef2a`)
+flashed to the K1 (`identify` first: bootloader `7.03.01`; image CRC-32
+`a9d3add2`, 299 pages acknowledged, not read back); K5 flash end `0xe810`. Gate: `cargo fmt --all
 --check` clean, `cargo clippy --workspace --all-targets -- -D warnings`
 clean, `cargo test --workspace --no-fail-fast` 913 passed 0 failed 3
 ignored. Next: flash `7.0.55`, write a project with groups and a start place,
