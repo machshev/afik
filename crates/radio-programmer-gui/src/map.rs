@@ -25,6 +25,9 @@ pub struct Site {
     pub latitude: f64,
     /// Longitude in degrees east.
     pub longitude: f64,
+    /// Whether it is singled out, such as an airport given a bank of its
+    /// own; drawn as a disc filled in its layer's colour.
+    pub highlight: bool,
 }
 
 /// One generator's sites, drawn in one colour.
@@ -232,19 +235,31 @@ pub fn show(
             }
         }
     }
-    // Each site is its layer's glyph on a white disc ringed in its colour.
+    // Each site is its layer's glyph on a white disc ringed in its colour,
+    // or white on a disc of its colour when singled out, drawn on top.
     let icon_font = egui::FontId::proportional(13.0);
-    for layer in layers {
-        for site in &layer.sites {
-            let at = projection.screen((site.latitude, site.longitude));
-            painter.circle(at, 9.0, Color32::WHITE, Stroke::new(1.5_f32, layer.color));
-            painter.text(
-                at,
-                egui::Align2::CENTER_CENTER,
-                layer.icon,
-                icon_font.clone(),
-                layer.color,
-            );
+    for highlight in [false, true] {
+        for layer in layers {
+            for site in layer
+                .sites
+                .iter()
+                .filter(|site| site.highlight == highlight)
+            {
+                let at = projection.screen((site.latitude, site.longitude));
+                let (disc, glyph) = if highlight {
+                    (layer.color, Color32::WHITE)
+                } else {
+                    (Color32::WHITE, layer.color)
+                };
+                painter.circle(at, 9.0, disc, Stroke::new(1.5_f32, layer.color));
+                painter.text(
+                    at,
+                    egui::Align2::CENTER_CENTER,
+                    layer.icon,
+                    icon_font.clone(),
+                    glyph,
+                );
+            }
         }
     }
 

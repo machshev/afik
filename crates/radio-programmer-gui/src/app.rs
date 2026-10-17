@@ -818,12 +818,16 @@ impl StudioApp {
                     .area
                     .iter()
                     .map(|(f, _)| *f)
+                    .map(|f| site(&f.name, (f.latitude, f.longitude)))
                     .chain(
                         plan.airports
                             .iter()
-                            .flat_map(|group| group.frequencies.iter().copied()),
+                            .flat_map(|group| group.frequencies.iter())
+                            .map(|f| Site {
+                                highlight: true,
+                                ..site(&f.name, (f.latitude, f.longitude))
+                            }),
                     )
-                    .map(|f| site(&f.name, (f.latitude, f.longitude)))
                     .collect(),
                 bank_bytes,
                 project,
@@ -2190,6 +2194,7 @@ fn site(name: &str, (latitude, longitude): (f64, f64)) -> Site {
         name: name.to_owned(),
         latitude,
         longitude,
+        highlight: false,
     }
 }
 
@@ -6099,6 +6104,62 @@ mod tests {
                 assert!(found, "{generator:?} {glyph}");
             }
         }
+    }
+
+    #[test]
+    fn the_map_singles_out_the_airports_given_their_own_bank() {
+        use crate::airports::{AirportFrequency, AirportList, Service};
+
+        let tower = |ident: &str, km: f64, frequency_hz: u32| AirportFrequency {
+            name: format!("{ident} TWR"),
+            ident: ident.to_owned(),
+            airport: format!("{ident} Field"),
+            frequency_hz,
+            latitude: 51.520_833 + km / 111.2,
+            longitude: -0.125,
+            small: false,
+            kind: "TWR".to_owned(),
+            service: Service::Tower,
+        };
+        let mut app = simulated("map-airports");
+        app.airports = Some(AirportList {
+            frequencies: vec![
+                tower("EGNR", 5.0, 118_500_000),
+                tower("EGFA", 10.0, 119_250_000),
+            ],
+            synced: std::time::SystemTime::now(),
+        });
+        "IO91WM".clone_into(&mut app.repeater_area.locator);
+        let highlighted = |app: &mut StudioApp| {
+            let layers = app.map_layers();
+            let airports = layers.iter().find(|l| l.label == "Airports").unwrap();
+            let mut names: Vec<_> = airports
+                .sites
+                .iter()
+                .map(|site| (site.name.clone(), site.highlight))
+                .collect();
+            names.sort();
+            names
+        };
+
+        app.airport_options.per_airport = false;
+        assert_eq!(
+            highlighted(&mut app),
+            [
+                ("EGFA TWR".to_owned(), false),
+                ("EGNR TWR".to_owned(), false)
+            ]
+        );
+        app.airport_options.per_airport = true;
+        app.airport_options.airports = 1;
+        assert_eq!(
+            highlighted(&mut app),
+            [
+                ("EGFA TWR".to_owned(), false),
+                ("EGNR TWR".to_owned(), true)
+            ],
+            "only the nearest airport has a bank of its own"
+        );
     }
 
     #[test]
