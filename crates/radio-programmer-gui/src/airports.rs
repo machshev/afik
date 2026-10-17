@@ -427,8 +427,9 @@ impl AirportPlan<'_> {
 /// within the area's radius of `locator`.
 ///
 /// When each airport gets its own bank, the nearest `options.airports`
-/// airports with a local (tower, ground or ATIS) frequency each take all of
-/// theirs, however far, since that bank is for when the operator is there.
+/// airports within the radius with a local (tower, ground or ATIS)
+/// frequency each take all of theirs, even those too weak to hear from the
+/// locator, since that bank is for when the operator is there.
 /// Every other frequency inside its service's hearing range goes to the area
 /// bank, most hearable first (distance over range, so approach 60 km off
 /// comes before a tower 20 km off), a carrier several airports share kept
@@ -1095,6 +1096,17 @@ mod tests {
         let chosen = plan(&list, "IO91WM", &area(300, 40), &local).unwrap();
         assert!(chosen.area.is_empty());
         assert_eq!(airport_banks("IO91WM", &chosen).len(), 2);
+
+        // Only airports inside the radius get a bank, however many are asked
+        // for: Heathrow at 20 km is outside 10 km.
+        let many = AirportOptions {
+            per_airport: true,
+            airports: 5,
+            ..AirportOptions::default()
+        };
+        let chosen = plan(&list, "IO91WM", &area(10, 40), &many).unwrap();
+        let idents: Vec<_> = chosen.airports.iter().map(|g| g.ident).collect();
+        assert_eq!(idents, ["EGLC"]);
     }
 
     #[test]

@@ -3105,9 +3105,9 @@ impl StudioApp {
             ui.separator();
             ui.checkbox(&mut self.airport_options.per_airport, "Bank per airport")
                 .on_hover_text(
-                    "Gives each of the nearest airports a bank of its own tower, ground and \
-                     ATIS, however far they carry, for when you are there; the area bank \
-                     keeps the rest",
+                    "Gives each of the nearest airports within the radius a bank of its own \
+                     tower, ground and ATIS, even those too weak to hear from here, for when \
+                     you are there; the area bank keeps the rest",
                 );
             ui.add_enabled(
                 self.airport_options.per_airport,
@@ -3115,7 +3115,9 @@ impl StudioApp {
                     .range(1..=MAX_BANKS)
                     .suffix(" airports"),
             )
-            .on_hover_text("How many airports, nearest first, get a bank of their own");
+            .on_hover_text(
+                "How many airports within the radius, nearest first, get a bank of their own",
+            );
         });
     }
 
