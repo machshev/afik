@@ -195,7 +195,10 @@ a `BCN` bank to the K5 and hear GB3VHF (144.430) or GB3UHF as a tone; then
 a `FLD` bank. Bank headers lost their Up and Down buttons
 (operator request); the drag handle reorders. Step 5: the UK gateways tab has
 a Bands row (10 m to 23 cm checkboxes, 2 m and 70 cm by default, remembered
-in `gateway-bands`) and drops gateways on unticked bands. Gate: `cargo fmt`
+in `gateway-bands`) and drops gateways on unticked bands. The beacons tab has the same row,
+every band ticked by default, remembered in `beacon-bands` (gate: `cargo
+fmt --all --check` clean, workspace clippy `-D warnings` clean, `cargo test
+--workspace` 895 passed 0 failed 3 ignored). Gate: `cargo fmt`
 clean, `cargo clippy -p radio-programmer-gui --all-targets -- -D warnings`
 clean, `cargo test -p radio-programmer-gui` 168 passed 0 failed 3 ignored. Gate: fmt clean, workspace
 clippy `-D warnings` clean, `cargo test --workspace` 881 passed 0 failed 3

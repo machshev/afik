@@ -324,6 +324,9 @@ pub struct StudioApp {
     /// The amateur bands gateways are taken from, and their state file.
     gateway_bands: BandFilter,
     gateway_bands_file: Option<PathBuf>,
+    /// The same for beacons, every band by default.
+    beacon_bands: BandFilter,
+    beacon_bands_file: Option<PathBuf>,
     /// The same for beacons.
     beacon_area: AirportArea,
     beacon_area_file: Option<PathBuf>,
@@ -378,6 +381,10 @@ impl StudioApp {
         app.gateway_bands_file = repeaters::gateway_bands_file();
         if let Some(file) = &app.gateway_bands_file {
             app.gateway_bands = BandFilter::load(file);
+        }
+        app.beacon_bands_file = repeaters::beacon_bands_file();
+        if let Some(file) = &app.beacon_bands_file {
+            app.beacon_bands = BandFilter::load_or(file, &BandFilter::ALL);
         }
         app.beacon_area_file = repeaters::beacon_area_file();
         if let Some(file) = &app.beacon_area_file {
@@ -1257,6 +1264,14 @@ impl StudioApp {
         }
     }
 
+    /// The bands chosen for `kind`.
+    const fn etcc_bands(&self, kind: EtccKind) -> &BandFilter {
+        match kind {
+            EtccKind::Gateways => &self.gateway_bands,
+            EtccKind::Beacons => &self.beacon_bands,
+        }
+    }
+
     /// Builds the gateway or beacon bank the area would add, and the project
     /// it would make, as [`Self::repeater_preview`] does.
     fn etcc_preview(&self, kind: EtccKind) -> Result<AreaPreview, String> {
@@ -1267,9 +1282,8 @@ impl StudioApp {
         let locator = &self.repeater_area.locator;
         let area = self.etcc_area(kind);
         let mut near = repeaters::nearby(kind.systems(list), locator, area.radius_km)?;
-        if kind == EtccKind::Gateways {
-            near.retain(|(gateway, _)| self.gateway_bands.takes(gateway.output_hz));
-        }
+        let bands = self.etcc_bands(kind);
+        near.retain(|(system, _)| bands.takes(system.output_hz));
         let in_range = near.len();
         near.truncate(usize::from(area.max_channels));
         let (project, bank_bytes) = self.with_bank(kind.bank(locator, &near));
@@ -1364,9 +1378,13 @@ impl StudioApp {
                 log::warn!("could not remember the {noun} area: {error}");
             }
         }
-        if let (EtccKind::Gateways, Some(file)) = (kind, &self.gateway_bands_file) {
-            if let Err(error) = self.gateway_bands.save(file) {
-                log::warn!("could not remember the gateway bands: {error}");
+        let file = match kind {
+            EtccKind::Gateways => &self.gateway_bands_file,
+            EtccKind::Beacons => &self.beacon_bands_file,
+        };
+        if let Some(file) = file {
+            if let Err(error) = self.etcc_bands(kind).save(file) {
+                log::warn!("could not remember the {noun} bands: {error}");
             }
         }
     }
@@ -1487,6 +1505,8 @@ impl StudioApp {
             gateway_area_file: None,
             gateway_bands: BandFilter::default(),
             gateway_bands_file: None,
+            beacon_bands: BandFilter::ALL,
+            beacon_bands_file: None,
             beacon_area: beacon_area_default(),
             beacon_area_file: None,
             airfield_area: AirfieldArea::default(),
@@ -2388,15 +2408,17 @@ impl StudioApp {
             }
             ui.label(self.etcc_source(kind));
         });
-        if kind == EtccKind::Gateways {
-            ui.horizontal_wrapped(|ui| {
-                ui.label("Bands");
-                for band in AmateurBand::ALL {
-                    ui.checkbox(&mut self.gateway_bands.bands[band.index()], band.label())
-                        .on_hover_text(format!("Takes the gateways on {}", band.label()));
-                }
-            });
-        }
+        let bands = match kind {
+            EtccKind::Gateways => &mut self.gateway_bands,
+            EtccKind::Beacons => &mut self.beacon_bands,
+        };
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Bands");
+            for band in AmateurBand::ALL {
+                ui.checkbox(&mut bands.bands[band.index()], band.label())
+                    .on_hover_text(format!("Takes the {} on {}", kind.noun(), band.label()));
+            }
+        });
     }
 
     /// The row holding the locator the repeaters, stations and airports share.
@@ -4810,7 +4832,7 @@ mod tests {
 
     #[test]
     fn gateways_and_beacons_come_from_the_repeater_list() {
-        use crate::repeaters::{AmateurBand, Repeater, RepeaterList};
+        use crate::repeaters::{AmateurBand, BandFilter, Repeater, RepeaterList};
 
         let system = |callsign: &str, hz: u32, latitude: f64| Repeater {
             callsign: callsign.to_owned(),
@@ -4860,6 +4882,20 @@ mod tests {
             .channels
             .iter()
             .all(|c| c.modulation == Modulation::Usb));
+        assert_eq!(app.beacon_bands, BandFilter::ALL, "beacons take every band");
+        app.beacon_bands.bands[AmateurBand::TwoMetres.index()] = false;
+        app.add_etcc(EtccKind::Beacons);
+        assert_eq!(app.project.banks.len(), banks + 1, "replaced, not added");
+        let names: Vec<_> = app
+            .project
+            .banks
+            .last()
+            .unwrap()
+            .channels
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(names, ["GB3FAR"]);
 
         app.gateway_area.radius_km = 10;
         app.add_etcc(EtccKind::Gateways);

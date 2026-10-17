@@ -34,6 +34,7 @@ const SYSTEMS_FILE: &str = "systems.json";
 const AREA_FILE: &str = "repeater-area";
 const GATEWAY_AREA_FILE: &str = "gateway-area";
 const GATEWAY_BANDS_FILE: &str = "gateway-bands";
+const BEACON_BANDS_FILE: &str = "beacon-bands";
 const BEACON_AREA_FILE: &str = "beacon-area";
 /// The radius beacons are taken within before the operator chooses one, in
 /// kilometres: a beacon is put up to be heard far beyond a repeater's reach.
@@ -801,6 +802,11 @@ impl Default for BandFilter {
 }
 
 impl BandFilter {
+    /// Every band, which beacons start from: most are on the quieter bands.
+    pub const ALL: Self = Self {
+        bands: [true; AmateurBand::ALL.len()],
+    };
+
     /// Whether a system on `hz` is taken; one outside every band is kept,
     /// since no box could drop it.
     pub fn takes(&self, hz: u32) -> bool {
@@ -809,8 +815,14 @@ impl BandFilter {
 
     /// Reads the bands taken by name; with no file, the default.
     pub fn load(file: &Path) -> Self {
+        Self::load_or(file, &Self::default())
+    }
+
+    /// Reads the bands as [`Self::load`] does, with `defaults` when there is
+    /// no file.
+    pub fn load_or(file: &Path, defaults: &Self) -> Self {
         let Ok(text) = fs::read_to_string(file) else {
-            return Self::default();
+            return defaults.clone();
         };
         let mut filter = Self {
             bands: [false; AmateurBand::ALL.len()],
@@ -840,6 +852,11 @@ impl BandFilter {
 /// The state file the gateway bands are kept in.
 pub fn gateway_bands_file() -> Option<PathBuf> {
     paths::state_dir().map(|dir| dir.join(GATEWAY_BANDS_FILE))
+}
+
+/// The state file the beacon bands are kept in.
+pub fn beacon_bands_file() -> Option<PathBuf> {
+    paths::state_dir().map(|dir| dir.join(BEACON_BANDS_FILE))
 }
 
 /// The state file the gateway radius and count are kept in; they read and

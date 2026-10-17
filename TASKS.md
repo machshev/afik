@@ -3250,7 +3250,9 @@
   5. Gateway band filter (operator request): a Bands row of checkboxes
      (10 m, 6 m, 4 m, 2 m, 70 cm, 23 cm) drops gateways on unticked bands;
      2 m and 70 cm by default, kept in the `gateway-bands` state file. A
-     gateway outside every band is kept. Done.
+     gateway outside every band is kept. Done. The beacons tab has the same
+     row, every band by default (most beacons are on 10 m, 6 m, 4 m and
+     23 cm), kept in `beacon-bands`. Done.
 
 ## BANKS-073 — Up to 254 banks, addressed by bank and position
 
