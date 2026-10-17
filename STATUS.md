@@ -1073,7 +1073,8 @@ removed (`RISK-046`), with encoded place comparison and a shared power list
 drawing path (`RISK-049`). Gate: `cargo fmt --all --check` clean, workspace
 clippy `-D warnings` clean, `cargo test --workspace` 964 passed 0 failed,
 `tool/build-k5.sh --release` (flash end `0xef40`) and `tool/build-k1.sh
---release` pass. `7.0.61` built, not flashed. Next: flash the K1; set each
+--release` pass. `7.0.61` (`c1a285d`) flashed to the K1 (bootloader
+`7.03.01`, 308 pages acknowledged, not read back). Next: set each
 VFO's tones and power from SETTINGS, power-cycle, check both slots keep them.
 Hardware checks still to do on `7.0.59`/`7.0.60`: the toned VFO and a toned memory
 channel stay open through a transmission and stay shut for a carrier
