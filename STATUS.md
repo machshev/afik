@@ -162,9 +162,12 @@ the place record keeps the group in byte 26 (zero is none). It fit after
 `af92db1` freed 2.5 KB: K5 flash ends at `0xe7d8` (2 088 free). Gate:
 `cargo fmt --all --check` clean, `cargo clippy --workspace --all-targets --
 -D warnings` clean, `cargo test --workspace --no-fail-fast` 910 passed 0
-failed 3 ignored, K5 and K1 release builds pass. Next: flash and check on the
-radio; then the start place (operator request): the studio writes the place
-record at `0x1D00` after the image, no firmware change.
+failed 3 ignored, K5 and K1 release builds pass. `7.0.54` (`15e0c85`)
+flashed to the K1 (`identify` first: bootloader `7.03.01`; image CRC-32
+`0c3fc070`, 298 pages acknowledged, not read back). Next: write a project
+with groups from the studio and check the group context on the K1; then the
+start place (operator request): the studio writes the place record at
+`0x1D00` after the image, no firmware change.
 
 **`FLASH-074` done** (2026-10-17, operator request, `RISK-049`): the K5
 image had 16 bytes of flash left. `interface::run` was 22.6 KB because the
