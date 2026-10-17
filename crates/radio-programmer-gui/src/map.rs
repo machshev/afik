@@ -28,6 +28,31 @@ pub struct Site {
     /// Whether it is singled out, such as an airport given a bank of its
     /// own; drawn as a disc filled in its layer's colour.
     pub highlight: bool,
+    /// How big its mark is drawn, such as larger for a major airport.
+    pub size: SiteSize,
+}
+
+/// How big a site's mark is drawn.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SiteSize {
+    /// A minor site, such as a small airfield.
+    Small,
+    /// Most sites.
+    #[default]
+    Medium,
+    /// A major site, such as an airport taking airliners.
+    Large,
+}
+
+impl SiteSize {
+    /// The radius of its disc and the size of its glyph, in points.
+    pub const fn points(self) -> (f32, f32) {
+        match self {
+            Self::Small => (6.5, 9.0),
+            Self::Medium => (9.0, 13.0),
+            Self::Large => (12.5, 18.0),
+        }
+    }
 }
 
 /// One generator's sites, drawn in one colour.
@@ -240,27 +265,30 @@ pub fn show(
         }
     }
     // Each site is its layer's glyph on a white disc ringed in its colour,
-    // or white on a disc of its colour when singled out, drawn on top.
-    let icon_font = egui::FontId::proportional(13.0);
+    // or white on a disc of its colour when singled out, drawn on top; the
+    // disc is sized by the site, the larger under the smaller.
     for highlight in [false, true] {
         for layer in layers {
-            for site in layer
+            let mut sites: Vec<_> = layer
                 .sites
                 .iter()
                 .filter(|site| site.highlight == highlight)
-            {
+                .collect();
+            sites.sort_by_key(|site| std::cmp::Reverse(site.size));
+            for site in sites {
+                let (radius, glyph_points) = site.size.points();
                 let at = projection.screen((site.latitude, site.longitude));
                 let (disc, glyph) = if highlight {
                     (layer.color, Color32::WHITE)
                 } else {
                     (Color32::WHITE, layer.color)
                 };
-                painter.circle(at, 9.0, disc, Stroke::new(1.5_f32, layer.color));
+                painter.circle(at, radius, disc, Stroke::new(1.5_f32, layer.color));
                 painter.text(
                     at,
                     egui::Align2::CENTER_CENTER,
                     layer.icon,
-                    icon_font.clone(),
+                    egui::FontId::proportional(glyph_points),
                     glyph,
                 );
             }

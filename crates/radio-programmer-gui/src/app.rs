@@ -26,12 +26,13 @@ use radio_programmer_serial::SUPPORTED_BAUDS;
 use crate::{
     airfields::{self, AirfieldArea},
     airports::{
-        self, AirportArea, AirportCache, AirportList, AirportOptions, AirportSize, Service,
+        self, AirportArea, AirportCache, AirportFrequency, AirportList, AirportOptions,
+        AirportSize, Service,
     },
     device::{DeviceChoice, DeviceChooser},
     flash_tab::FlashTab,
     locators::{SavedLocator, SavedLocators},
-    map::{self, Layer, MapView, Pin, Site},
+    map::{self, Layer, MapView, Pin, Site, SiteSize},
     marine::{self, MarineArea, MarineCache, MarineList},
     model::{
         move_to, trailing_locator, BankDraft, BankKind, BankRole, ChannelDraft, ModelError, Origin,
@@ -968,15 +969,12 @@ impl StudioApp {
                     .area
                     .iter()
                     .map(|(f, _)| *f)
-                    .map(|f| site(&f.name, (f.latitude, f.longitude)))
+                    .map(|f| airport_site(f, false))
                     .chain(
                         plan.airports
                             .iter()
                             .flat_map(|group| group.frequencies.iter())
-                            .map(|f| Site {
-                                highlight: true,
-                                ..site(&f.name, (f.latitude, f.longitude))
-                            }),
+                            .map(|f| airport_site(f, true)),
                     )
                     .collect(),
                 bank_bytes,
@@ -2578,6 +2576,7 @@ fn site(name: &str, (latitude, longitude): (f64, f64)) -> Site {
         latitude,
         longitude,
         highlight: false,
+        size: SiteSize::Medium,
     }
 }
 
@@ -2629,6 +2628,19 @@ fn infer_origin(project: &ProjectModel, bank: &BankDraft) -> Option<Origin> {
             .all(|channel| channel.modulation == Modulation::Am && channel.transmit_mhz.is_empty());
     (bank.groups.contains(&airband) && receive_only_am)
         .then(|| Origin::new(BankSource::Airports, &location.locator))
+}
+
+/// One airport frequency for the map, its mark sized by the airport's.
+fn airport_site(frequency: &AirportFrequency, highlight: bool) -> Site {
+    Site {
+        highlight,
+        size: match frequency.size {
+            AirportSize::Large => SiteSize::Large,
+            AirportSize::Medium => SiteSize::Medium,
+            AirportSize::Small => SiteSize::Small,
+        },
+        ..site(&frequency.name, (frequency.latitude, frequency.longitude))
+    }
 }
 
 /// Adds `more` to `sites`, a site already there taken once and singled out
@@ -7021,6 +7033,33 @@ mod tests {
         }
         assert!(!rows.is_empty(), "the tooltip is shown");
         assert!(rows.iter().all(|rows| *rows == 1), "{rows:?}");
+    }
+
+    #[test]
+    fn an_airports_mark_is_sized_by_the_airport() {
+        use super::airport_site;
+        use crate::{
+            airports::{AirportFrequency, AirportSize, Service},
+            map::SiteSize,
+        };
+
+        let at = |size| AirportFrequency {
+            name: "EGSS APP".to_owned(),
+            ident: "EGSS".to_owned(),
+            airport: "Stansted".to_owned(),
+            frequency_hz: 120_625_000,
+            latitude: 51.885,
+            longitude: 0.235,
+            size,
+            kind: "APP".to_owned(),
+            service: Service::Approach,
+        };
+        let sizes = [AirportSize::Small, AirportSize::Medium, AirportSize::Large]
+            .map(|size| airport_site(&at(size), false).size);
+        assert_eq!(sizes, [SiteSize::Small, SiteSize::Medium, SiteSize::Large]);
+        assert!(airport_site(&at(AirportSize::Large), true).highlight);
+        let radii = sizes.map(|size| size.points().0);
+        assert!(radii[0] < radii[1] && radii[1] < radii[2], "{radii:?}");
     }
 
     #[test]

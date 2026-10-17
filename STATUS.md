@@ -225,6 +225,10 @@ Gate: `cargo fmt --all --check` clean for these files (another session's
 `radio-app/src/interface.rs` is unformatted), `cargo clippy --workspace
 --all-targets -- -D warnings` clean, `cargo test --workspace` 957 passed 0
 failed 3 ignored. Next: Add all shown on M8LWA and check the bar.
+The map sizes each airport's mark by the same type: a larger disc and
+glyph for a large airport, smaller for a small field. Gate: `cargo fmt --all
+--check` clean, `cargo clippy --workspace --all-targets -- -D warnings`
+clean, `cargo test --workspace` 958 passed 0 failed 3 ignored.
 
 **`FLASH-074` done** (2026-10-17, operator request, `RISK-049`): the K5
 image had 16 bytes of flash left. `interface::run` was 22.6 KB because the
