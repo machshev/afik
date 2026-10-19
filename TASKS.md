@@ -3389,9 +3389,10 @@
   smaller 1400mAh battery and it doesn't seem right", then "correct the curve
   based on expected model of a lithium battery pack like this"); hardware
   pending.
-- **Objective:** the K1 indicator follows a 2S lithium-ion discharge rather
-  than the reference firmware's estimated straight line.
+- **Objective:** the K1 and K5 indicators follow a 2S lithium-ion discharge
+  rather than the reference firmware's estimated straight lines.
 - **Steps:** replace the K1 curve with the modelled one (`EVID-K1-063`),
-  `7.0.65`. Done. Flash the K1 and watch the indicator over a discharge;
+  `7.0.65`. Done. Share it with the K5 (operator: "share the curve for both
+  radios"), three near-linear points dropped to fit K5 flash. Done. Flash both and watch the indicator over a discharge;
   if it still looks wrong, show the pack voltage so it can be checked
   against a meter.

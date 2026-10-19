@@ -2143,8 +2143,10 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   which is the operator's pack. The operator found its readings wrong, and the
   near-straight estimated curve puts 7.58 V, about half charge for lithium-ion,
   at 25 %. AFIK now uses the usual LCO/NMC open-circuit curve doubled for 2S
-  (4.11 V a cell 90 %, 3.84 V 50 %, 3.69 V 10 %, 3.61 V 5 %), with 8.28 V as
-  full and 6.30 V as empty kept from the pinned source. It is a model, not a
+  (4.11 V a cell 90 %, 3.84 V about 50 %, 3.69 V 10 %, 3.61 V 5 %), with
+  8.28 V as full and 6.30 V as empty kept from the pinned source. The K5 and
+  K6 take the same 2S lithium-ion packs and share the curve
+  (`radio_platform::battery::LITHIUM_ION_2S`). It is a model, not a
   measurement of this pack; the in-radio reading includes a small receive-load
   sag that the model ignores.
 - **Confidence:** high for the sense pin, channel, converter configuration,
@@ -2900,7 +2902,8 @@ or hardware/calibration envelope is established here. `RISK-007`, `RISK-038`,
   soft reset. A reading starts, waits for channel 9 EOC, and reads the 12-bit
   data at `0x14 + 8*ch`. Calibration is six half-words at EEPROM `0x1F40`;
   entry 3 is the count at 7.60 V. Default 1600 mAh curve `{828,100} {814,97}
-  {760,25} {729,6} {630,0}`. Sampled once a second outside TX, four averaged.
+  {760,25} {729,6} {630,0}`, replaced in AFIK by the shared lithium-ion curve
+  (`EVID-K1-063`, `BATT-077`). Sampled once a second outside TX, four averaged.
 - **Method:** copied. **Confidence:** high (reference runs on these units).
 - **Observation (2026-10-13):** `7.0.3` on the operator's K5 showed 100% just
   after charging, then 99% (about 8.23 V on this curve) once unplugged.

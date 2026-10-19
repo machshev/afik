@@ -39,6 +39,30 @@ const CALIBRATION_MAXIMUM: u16 = 4_095;
 /// A discharge curve: hundredths of a volt and percent, highest voltage first.
 pub type Curve = &'static [(u16, u8)];
 
+/// Discharge curve for a two-cell lithium-ion pack, the K5, K6 and K1 alike.
+///
+/// Every pack these radios take is 2S lithium-ion charged to 8.4 V, and the
+/// voltage at a given charge depends on that chemistry, not the capacity. The
+/// reference firmware's curves are estimated near straight lines that read
+/// low through the long flat middle of a discharge, so this is instead the
+/// usual LCO/NMC open-circuit voltage against charge, doubled for two cells.
+/// The top point is the 8.28 V the reference measured on a charged radio
+/// rather than 8.40 V, so a pack just off charge reads full, and the bottom
+/// keeps the reference 6.30 V floor. `EVID-K1-063` records it; it is a model,
+/// not a measurement of any one pack. Points the line between their
+/// neighbours already gives to within 2 % are left out to save K5 flash.
+pub const LITHIUM_ION_2S: Curve = &[
+    (828, 100),
+    (822, 90),
+    (790, 70),
+    (774, 60),
+    (760, 40),
+    (746, 20),
+    (738, 10),
+    (722, 5),
+    (630, 0),
+];
+
 /// The count this unit's input reads at 7.60 V.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Calibration(u16);
@@ -182,7 +206,10 @@ pub fn percent_from_centivolts(curve: Curve, centivolts: u16) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::{percent_from_centivolts, Battery, Calibration, Curve, CALIBRATION_BYTES, SAMPLES};
+    use super::{
+        percent_from_centivolts, Battery, Calibration, Curve, CALIBRATION_BYTES, LITHIUM_ION_2S,
+        SAMPLES,
+    };
 
     const CURVE: Curve = &[(828, 100), (813, 97), (758, 25), (726, 6), (630, 0)];
 
@@ -295,6 +322,26 @@ mod tests {
             let percent = percent_from_centivolts(CURVE, centivolts);
             assert!(percent >= previous, "charge cannot fall as voltage rises");
             previous = percent;
+        }
+    }
+
+    #[test]
+    fn the_shared_curve_follows_a_two_cell_lithium_ion_discharge() {
+        let percent = |centivolts| percent_from_centivolts(LITHIUM_ION_2S, centivolts);
+        assert_eq!(percent(840), 100, "off charge is full");
+        assert_eq!(percent(828), 100);
+        // The flat middle: 3.84 V a cell is about half charge, not a quarter.
+        assert_eq!(percent(768), 51);
+        assert_eq!(percent(758), 37);
+        assert_eq!(percent(738), 10);
+        assert_eq!(percent(630), 0, "the reference floor is empty");
+        assert_eq!(percent(600), 0);
+
+        let mut previous = 0;
+        for centivolts in 600..=850 {
+            let now = percent(centivolts);
+            assert!(now >= previous, "charge cannot fall as voltage rises");
+            previous = now;
         }
     }
 }
