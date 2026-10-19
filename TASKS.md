@@ -3399,10 +3399,12 @@
 
 ## LINK-078 — Retry missed requests and test the link
 
-- **Status:** done on the host (2026-10-19), operator request ("Please do 1
-  and 3": retry on the host side, a built-in link test); hardware pending.
+- **Status:** done (2026-10-19), operator request ("Please do 1 and 3":
+  retry on the host side, a built-in link test); link test clean on a K5 on
+  `7.0.65`, K1 not yet run.
 - **Objective:** a write survives a lost request, and a lossy link can be
   seen in seconds.
 - **Steps:** resend a memory request with no answer and skip stale answers
   (`radio-flasher`). Done. `test_link`, `afik-flasher link-test`, and
-  Studio's Test link button. Done. Run the link test and a write on the K1.
+  Studio's Test link button. Done. Link test on hardware: K5 clean. Done.
+  Run it on the K1.

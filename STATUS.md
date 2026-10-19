@@ -284,8 +284,7 @@ and before every Save and Write, not only after an add. The saved M8LWA
 --check` clean, `cargo clippy --workspace --all-targets -- -D warnings`
 clean, `cargo test --workspace` 972 passed 0 failed 3 ignored.
 
-**`LINK-078` done on the host** (2026-10-19, operator request, hardware
-pending): the host sends every memory request again when no answer comes
+**`LINK-078` done** (2026-10-19, operator request, hardware observed): the host sends every memory request again when no answer comes
 (the hello, reads and block writes; up to four sends, 1.2 s each, input
 discarded before a resend), and skips a packet that answers something else,
 so a late or doubled answer is not taken for the next one. Studio's Connect
@@ -294,7 +293,9 @@ and reports which were answered; `afik-flasher link-test` prints them
 (`.` answered, `X` missed) and fails unless all were, and Studio has a Test
 link button. Gate: `cargo fmt --all --check` clean, `cargo clippy --workspace
 --all-targets -- -D warnings` clean, `cargo test --workspace` 990 passed 0
-failed. Hardware: not yet run, the radio was in another session's use.
+failed. Hardware: `afik-flasher link-test` on a K5 running `AFIK-K5-7.0.65`
+read `................`, 16/16 answered; the operator reports it works. Not
+yet run on the K1.
 
 **`BATT-077` done on the host** (2026-10-19, operator request, hardware
 pending): the K1 and K5 curves were the reference firmware's estimated near
