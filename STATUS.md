@@ -305,8 +305,11 @@ already matched armel exactly. Nine points, not twelve, so the K5 image fits
 (it overflowed by 4 bytes). `7.0.65`. Gate: `cargo fmt --all --check` clean,
 `cargo clippy --workspace --all-targets -- -D warnings` clean, `cargo test
 --workspace` 990 passed 0 failed 3 ignored, `tool/build-k1.sh --release` and
-`tool/build-k5.sh --release` pass. Next: flash both and watch the indicator
-over a discharge.
+`tool/build-k5.sh --release` pass. Flashed with `afik-flasher flash-afik`:
+the K1 (bootloader `7.03.01`) took 308/308 pages and boots; the K5 (`4.00.01`)
+took 240/240 on the third try (one detection read and one write at page 48
+failed on garbled replies; nothing else had the port open). Next: watch both
+indicators over a discharge.
 
 **`LINK-076` done** (2026-10-19, operator report, hardware observed): the K1
 lost every request that came within 10 ms of its previous answer (none after
