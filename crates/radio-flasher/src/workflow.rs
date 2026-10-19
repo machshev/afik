@@ -2,7 +2,8 @@ use std::{error::Error, fmt, io, io::Read, io::Write};
 
 use crate::{
     codec::{
-        is_device_marker, receive_packet, receive_packet_with_response_crc, send_packet, Packet,
+        discard_input, is_device_marker, receive_packet, receive_packet_with_response_crc,
+        receive_packet_within, send_packet, Packet,
     },
     image::{sha256, ApplicationImage, EepromBackup, ImageError, EEPROM_BYTES, FLASH_PAGE_BYTES},
 };
@@ -813,6 +814,71 @@ pub struct ImageWriteReport {
     pub image_bytes: usize,
 }
 
+/// Requests a link test sends back to back by default.
+pub const LINK_TEST_REQUESTS: usize = 16;
+
+/// Result of a link test: which of the back-to-back reads were answered.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LinkTestReport {
+    /// Firmware identity returned by the hello.
+    pub firmware: NormalFirmwareInfo,
+    /// One entry per read, in order: answered or missed.
+    pub answered: Vec<bool>,
+}
+
+impl LinkTestReport {
+    /// Reads the radio answered.
+    pub fn answered_count(&self) -> usize {
+        self.answered.iter().filter(|answered| **answered).count()
+    }
+
+    /// Whether every read was answered.
+    pub fn is_clean(&self) -> bool {
+        self.answered.iter().all(|answered| *answered)
+    }
+
+    /// One mark per read: `.` answered, `X` missed.
+    pub fn pattern(&self) -> String {
+        self.answered
+            .iter()
+            .map(|answered| if *answered { '.' } else { 'X' })
+            .collect()
+    }
+}
+
+/// Sends `requests` memory reads back to back, each once, and reports which
+/// were answered.
+///
+/// A write sends each request as soon as the last is answered, and sends a
+/// missed one again; this does neither, so it shows a link which loses
+/// requests rather than hiding it. A K1 which lost every request arriving
+/// straight after an answer showed `.X.X.X.X`. Only reads are sent.
+pub fn test_link<T: Read + Write>(
+    transport: &mut T,
+    requests: usize,
+) -> Result<LinkTestReport, FlashError> {
+    let firmware = probe_normal_firmware(transport)?;
+    let mut answered = Vec::with_capacity(requests);
+    let blocks = IMAGE_REGION / EEPROM_BLOCK_BYTES;
+    for index in 0..requests {
+        let at = (index % blocks) * EEPROM_BLOCK_BYTES;
+        let offset = u16::try_from(at).map_err(|_| FlashError::PacketTooLarge(at))?;
+        send_packet(transport, &eeprom_read_request(offset, EEPROM_BLOCK_BYTES))?;
+        let mut block = [0_u8; EEPROM_BLOCK_BYTES];
+        let answer = receive_packet_within(transport, EXCHANGE_EMPTY_READS)
+            .and_then(|packet| parse_eeprom_response(&packet, offset, &mut block));
+        match answer {
+            Ok(()) => answered.push(true),
+            Err(FlashError::Io(error)) => return Err(FlashError::Io(error)),
+            Err(_) => {
+                answered.push(false);
+                discard_input(transport)?;
+            }
+        }
+    }
+    Ok(LinkTestReport { firmware, answered })
+}
+
 /// Reads the configuration image region of an AFIK radio (`ADR-100`).
 ///
 /// Returns the whole region; the image's own header says how much of it is
@@ -862,10 +928,11 @@ where
         let offset = u16::try_from(at).map_err(|_| FlashError::PacketTooLarge(at))?;
         let mut block = [0_u8; EEPROM_WRITE_BYTES];
         block.copy_from_slice(&wanted[at..at + EEPROM_WRITE_BYTES]);
-        send_packet(transport, &eeprom_write_request(offset, block))?;
-        parse_eeprom_write_response(&receive_packet(transport)?, offset)?;
+        exchange(transport, &eeprom_write_request(offset, block), |packet| {
+            parse_eeprom_write_response(packet, offset)
+        })?;
         let mut verified = [0_u8; EEPROM_WRITE_BYTES];
-        read_eeprom_bytes(transport, offset, &mut verified)?;
+        read_memory_block(transport, offset, &mut verified)?;
         if verified != block {
             return Err(FlashError::EepromBlockVerificationFailed { offset });
         }
@@ -897,17 +964,90 @@ pub fn write_afik_place<T: Read + Write>(
         let offset = origin + u16::try_from(index * EEPROM_WRITE_BYTES).unwrap_or(0);
         let mut block = [0_u8; EEPROM_WRITE_BYTES];
         block.copy_from_slice(chunk);
-        send_packet(transport, &eeprom_write_request(offset, block))?;
-        parse_eeprom_write_response(&receive_packet(transport)?, offset)?;
+        exchange(transport, &eeprom_write_request(offset, block), |packet| {
+            parse_eeprom_write_response(packet, offset)
+        })?;
     }
     Ok(())
 }
 
+/// Times a memory request is sent before the radio is taken not to answer.
+const EXCHANGE_ATTEMPTS: usize = 4;
+
+/// Empty reads before one attempt is given up: 1.2 seconds on a serial port
+/// configured with a 0.2-second read timer. A K1 erases its staging sectors
+/// before it acknowledges the first block of a write, which can take most
+/// of a second.
+const EXCHANGE_EMPTY_READS: usize = 6;
+
+/// Packets that answer something else, skipped before an attempt is given up.
+const EXCHANGE_STALE_PACKETS: usize = 4;
+
+/// Sends one memory request and returns its parsed answer, sending it again
+/// when no answer comes.
+///
+/// A radio which misses a request says nothing, so the host waits, discards
+/// whatever has arrived and sends the same request again. Every memory
+/// request may be sent twice: a read changes nothing, and a block written
+/// again holds the same bytes. A packet `parse` refuses is taken as a late
+/// answer to an earlier attempt or request and skipped; when nothing else
+/// arrives, the last refusal is the error.
+fn exchange<T, R>(
+    transport: &mut T,
+    request: &[u8],
+    mut parse: impl FnMut(&Packet) -> Result<R, FlashError>,
+) -> Result<R, FlashError>
+where
+    T: Read + Write,
+{
+    let mut failure = FlashError::Timeout;
+    for attempt in 0..EXCHANGE_ATTEMPTS {
+        if attempt > 0 {
+            discard_input(transport)?;
+        }
+        send_packet(transport, request)?;
+        for _ in 0..EXCHANGE_STALE_PACKETS {
+            match receive_packet_within(transport, EXCHANGE_EMPTY_READS) {
+                Ok(packet) => match parse(&packet) {
+                    Ok(answer) => return Ok(answer),
+                    Err(error) => failure = error,
+                },
+                Err(FlashError::Io(error)) => return Err(FlashError::Io(error)),
+                Err(FlashError::Timeout) => break,
+                // A torn or garbled frame is a missed answer.
+                Err(error) => {
+                    failure = error;
+                    break;
+                }
+            }
+        }
+    }
+    Err(failure)
+}
+
 fn afik_memory_hello<T: Read + Write>(transport: &mut T) -> Result<NormalFirmwareInfo, FlashError> {
-    send_packet(transport, &hello_request())?;
-    let firmware = parse_hello_response(&receive_packet(transport)?)?;
+    let firmware = exchange(transport, &hello_request(), parse_hello_response)?;
     require_afik_memory(&firmware)?;
     Ok(firmware)
+}
+
+/// Reads one block of an AFIK radio's memory view.
+fn read_memory_block<T: Read + Write>(
+    transport: &mut T,
+    offset: u16,
+    output: &mut [u8],
+) -> Result<(), FlashError> {
+    if output.is_empty() || output.len() > EEPROM_BLOCK_BYTES {
+        return Err(FlashError::PacketTooLarge(output.len()));
+    }
+    let request = eeprom_read_request(offset, output.len());
+    let mut block = [0_u8; EEPROM_BLOCK_BYTES];
+    let length = output.len();
+    exchange(transport, &request, |packet| {
+        parse_eeprom_response(packet, offset, &mut block[..length])
+    })?;
+    output.copy_from_slice(&block[..length]);
+    Ok(())
 }
 
 /// Reads `len` bytes from the start of the memory view.
@@ -916,7 +1056,7 @@ fn read_memory<T: Read + Write>(transport: &mut T, len: usize) -> Result<Vec<u8>
     for (block, chunk) in bytes.chunks_mut(EEPROM_BLOCK_BYTES).enumerate() {
         let offset = block * EEPROM_BLOCK_BYTES;
         let offset = u16::try_from(offset).map_err(|_| FlashError::PacketTooLarge(offset))?;
-        read_eeprom_bytes(transport, offset, chunk)?;
+        read_memory_block(transport, offset, chunk)?;
     }
     Ok(bytes)
 }
@@ -924,14 +1064,13 @@ fn read_memory<T: Read + Write>(transport: &mut T, len: usize) -> Result<Vec<u8>
 /// Sends the observed read-only normal-firmware hello and returns its identity.
 ///
 /// This is intentionally separate from [`backup_eeprom`]: it performs one
-/// hello exchange and never requests EEPROM/configuration data. It is the
+/// hello exchange, sending the hello again if no answer comes, and never
+/// requests EEPROM/configuration data. It is the
 /// host-side witness for an AFIK application running over the K1 serial path.
 pub fn probe_normal_firmware<T: Read + Write>(
     transport: &mut T,
 ) -> Result<NormalFirmwareInfo, FlashError> {
-    let hello = hello_request();
-    send_packet(transport, &hello)?;
-    parse_hello_response(&receive_packet(transport)?)
+    exchange(transport, &hello_request(), parse_hello_response)
 }
 
 /// Requests one raw, receive-only main-key matrix observation.
@@ -3284,6 +3423,99 @@ mod tests {
         fn a_k1_takes_an_image_filling_the_whole_region() {
             let mut radio = MemoryRadio::new(b"AFIK-K1-7.0.27");
             write_afik_image(&mut radio, &vec![0x5A; IMAGE_REGION], |_, _| {}).unwrap();
+        }
+
+        /// A radio which misses some requests, as a K1 did when one arrived
+        /// straight after an answer, or answers some twice.
+        struct Unreliable {
+            radio: MemoryRadio,
+            requests: usize,
+            lose: fn(usize) -> bool,
+            twice: bool,
+        }
+
+        impl Unreliable {
+            fn losing(lose: fn(usize) -> bool) -> Self {
+                Self {
+                    radio: MemoryRadio::default(),
+                    requests: 0,
+                    lose,
+                    twice: false,
+                }
+            }
+        }
+
+        impl std::io::Write for Unreliable {
+            fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+                // Each request is sent whole in one write.
+                self.requests += 1;
+                if !(self.lose)(self.requests) {
+                    self.radio.write_all(buffer)?;
+                    if self.twice {
+                        self.radio.write_all(buffer)?;
+                    }
+                }
+                Ok(buffer.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        impl std::io::Read for Unreliable {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                self.radio.read(buffer)
+            }
+        }
+
+        #[test]
+        fn a_request_the_radio_misses_is_sent_again() {
+            let written = image(16);
+            let mut radio = Unreliable::losing(|request| request % 2 == 0);
+            let report = write_afik_image(&mut radio, &written, |_, _| {}).unwrap();
+            assert_eq!(
+                usize::from(report.changed_blocks),
+                written.len().div_ceil(8)
+            );
+            assert_eq!(radio.radio.index().unwrap().len(), 16);
+            let (_, region) = read_afik_image(&mut radio).unwrap();
+            assert_eq!(&region[..written.len()], written.as_slice());
+        }
+
+        #[test]
+        fn an_answer_arriving_twice_is_not_taken_for_the_next_one() {
+            let written = image(16);
+            let mut radio = Unreliable::losing(|_| false);
+            radio.twice = true;
+            write_afik_image(&mut radio, &written, |_, _| {}).unwrap();
+            assert_eq!(radio.radio.index().unwrap().len(), 16);
+        }
+
+        #[test]
+        fn a_radio_which_stops_answering_is_given_up_after_a_bounded_retry() {
+            let mut radio = Unreliable::losing(|request| request > 1);
+            let error = write_afik_image(&mut radio, &image(16), |_, _| {}).unwrap_err();
+            assert!(matches!(error, FlashError::Timeout), "{error}");
+            assert_eq!(radio.requests, 1 + super::super::EXCHANGE_ATTEMPTS);
+        }
+
+        #[test]
+        fn a_link_test_shows_which_back_to_back_reads_were_missed() {
+            use super::super::test_link;
+            let mut radio = Unreliable::losing(|_| false);
+            let report = test_link(&mut radio, 6).unwrap();
+            assert!(report.is_clean());
+            assert_eq!(report.pattern(), "......");
+
+            // The hello is request 1; it reads nothing back to back, so the
+            // reads after it are lost alternately, from the first.
+            let mut radio = Unreliable::losing(|request| request % 2 == 0);
+            let report = test_link(&mut radio, 6).unwrap();
+            assert_eq!(report.pattern(), "X.X.X.");
+            assert_eq!(report.answered_count(), 3);
+            assert!(!report.is_clean());
+            assert_eq!(radio.radio.writes(), 0, "a link test only reads");
         }
 
         #[test]

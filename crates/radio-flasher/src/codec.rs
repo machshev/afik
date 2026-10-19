@@ -110,7 +110,42 @@ pub(crate) fn receive_packet_without_response_crc<T: Read>(
 pub(crate) fn receive_packet_with_response_crc<T: Read>(
     transport: &mut T,
 ) -> Result<(Packet, u16), FlashError> {
-    find_header(transport)?;
+    receive_frame(transport, MAX_EMPTY_READS)
+}
+
+/// Reads and decodes one device packet, giving up after `empty_reads` reads
+/// in a row return nothing.
+pub(crate) fn receive_packet_within<T: Read>(
+    transport: &mut T,
+    empty_reads: usize,
+) -> Result<Packet, FlashError> {
+    let (packet, response_crc) = receive_frame(transport, empty_reads)?;
+    if !is_device_marker(response_crc, packet.as_slice().len()) {
+        return Err(FlashError::InvalidResponseCrc(response_crc));
+    }
+    Ok(packet)
+}
+
+/// Discards whatever is waiting to be read, up to one frame's worth of reads.
+pub(crate) fn discard_input<T: Read>(transport: &mut T) -> Result<(), FlashError> {
+    let mut buffer = [0_u8; MAX_FRAME_BYTES];
+    for _ in 0..=MAX_SYNC_BYTES / MAX_FRAME_BYTES {
+        match transport.read(&mut buffer) {
+            Ok(0) => return Ok(()),
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(FlashError::Io(error)),
+        }
+    }
+    Ok(())
+}
+
+fn receive_frame<T: Read>(
+    transport: &mut T,
+    empty_reads: usize,
+) -> Result<(Packet, u16), FlashError> {
+    let read_byte = |transport: &mut T| read_byte(transport, empty_reads);
+    find_header(transport, empty_reads)?;
     let length_low = read_byte(transport)?;
     let length_high = read_byte(transport)?;
     let length = usize::from(u16::from_le_bytes([length_low, length_high]));
@@ -119,7 +154,7 @@ pub(crate) fn receive_packet_with_response_crc<T: Read>(
     }
 
     let mut encoded = [0_u8; MAX_RESPONSE_BODY_BYTES];
-    read_complete(transport, &mut encoded[..length + 2])?;
+    read_complete(transport, &mut encoded[..length + 2], empty_reads)?;
     let footer = [read_byte(transport)?, read_byte(transport)?];
     if footer != [0xDC, 0xBA] {
         return Err(FlashError::InvalidFooter(footer));
@@ -130,10 +165,10 @@ pub(crate) fn receive_packet_with_response_crc<T: Read>(
     Ok((packet, response_crc))
 }
 
-fn find_header<T: Read>(transport: &mut T) -> Result<(), FlashError> {
+fn find_header<T: Read>(transport: &mut T, empty_reads: usize) -> Result<(), FlashError> {
     let mut saw_ab = false;
     for _ in 0..MAX_SYNC_BYTES {
-        let byte = read_byte(transport)?;
+        let byte = read_byte(transport, empty_reads)?;
         if saw_ab && byte == 0xCD {
             return Ok(());
         }
@@ -142,21 +177,25 @@ fn find_header<T: Read>(transport: &mut T) -> Result<(), FlashError> {
     Err(FlashError::SyncLimit)
 }
 
-fn read_complete<T: Read>(transport: &mut T, buffer: &mut [u8]) -> Result<(), FlashError> {
+fn read_complete<T: Read>(
+    transport: &mut T,
+    buffer: &mut [u8],
+    empty_reads: usize,
+) -> Result<(), FlashError> {
     for byte in buffer {
-        *byte = read_byte(transport)?;
+        *byte = read_byte(transport, empty_reads)?;
     }
     Ok(())
 }
 
-fn read_byte<T: Read>(transport: &mut T) -> Result<u8, FlashError> {
+fn read_byte<T: Read>(transport: &mut T, empty_reads: usize) -> Result<u8, FlashError> {
     let mut byte = [0_u8; 1];
-    let mut empty_reads = 0;
+    let mut empty = 0;
     loop {
         match transport.read(&mut byte) {
             Ok(0) => {
-                empty_reads += 1;
-                if empty_reads >= MAX_EMPTY_READS {
+                empty += 1;
+                if empty >= empty_reads {
                     return Err(FlashError::Timeout);
                 }
             }
