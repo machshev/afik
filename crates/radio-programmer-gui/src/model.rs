@@ -887,6 +887,24 @@ impl BankDraft {
             .collect()
     }
 
+    /// Returns the name the radio shows for the channel at `position`, or
+    /// `None` past the bank's end or in a plan which does not yet expand.
+    pub fn channel_name(&self, position: usize) -> Option<String> {
+        match self.kind {
+            BankKind::Named => self
+                .channels
+                .get(position)
+                .map(|channel| channel.name.trim().to_owned()),
+            BankKind::Generated => {
+                let Ok(ValidatedBank::Generated(plan)) = self.validate(0) else {
+                    return None;
+                };
+                let channel = plan.channel_record(u16::try_from(position).ok()?).ok()?;
+                Some(channel.name().as_str().trim().to_owned())
+            }
+        }
+    }
+
     /// Returns the lowest and highest receive frequency the bank covers in
     /// megahertz: a plan's span, or the span of its channels which parse.
     pub fn frequency_span(&self) -> Option<(String, String)> {

@@ -1477,6 +1477,22 @@ mod tests {
         assert!(reopened.banks[0].channels[7].calling);
     }
 
+    /// A start channel reads by the name the radio shows, from a plan or
+    /// from channels alike, and nothing past the bank's end.
+    #[test]
+    fn a_bank_names_the_channel_at_a_position() {
+        let mut project = project_of("UK and EU simplex");
+        project.banks[0].calling_index = Some(7);
+        let plan = project.banks[0].clone();
+        assert_eq!(plan.channel_name(0).as_deref(), Some("PMR 1"));
+        assert_eq!(plan.channel_name(7).as_deref(), Some("PMR 8 CALL"));
+        assert_eq!(plan.channel_name(16), None);
+        project.make_channels_editable(0).unwrap();
+        let bank = &project.banks[0];
+        assert_eq!(bank.channel_name(7).as_deref(), Some("PMR 8 CALL"));
+        assert_eq!(bank.channel_name(16), None);
+    }
+
     /// A plan whose channels no longer fit beside the rest stays a plan.
     #[test]
     fn a_plan_too_big_for_the_radio_as_channels_stays_a_plan() {

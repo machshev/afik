@@ -4750,21 +4750,15 @@ impl StudioApp {
         ui.label(VFO_HINT);
         ui.add_space(4.0);
         let groups: Vec<String> = self.project.groups.iter().map(|g| g.name.clone()).collect();
-        let banks: Vec<(String, Vec<usize>)> = self
-            .project
-            .banks
-            .iter()
-            .map(|bank| (bank.name.clone(), bank.groups.clone()))
-            .collect();
-        let project = &mut self.project;
+        let ProjectModel {
+            banks,
+            starts,
+            vfos,
+            ..
+        } = &mut self.project;
         ui.columns(2, |columns| {
-            for (slot, ((ui, start), vfo)) in columns
-                .iter_mut()
-                .zip(&mut project.starts)
-                .zip(&mut project.vfos)
-                .enumerate()
-            {
-                start_slot_editor(ui, slot, start, &groups, &banks);
+            for (slot, ((ui, start), vfo)) in columns.iter_mut().zip(starts).zip(vfos).enumerate() {
+                start_slot_editor(ui, slot, start, &groups, banks);
                 ui.separator();
                 vfo_slot_editor(ui, slot, vfo);
             }
@@ -5989,7 +5983,7 @@ fn start_slot_editor(
     slot: usize,
     start: &mut Option<StartDraft>,
     groups: &[String],
-    banks: &[(String, Vec<usize>)],
+    banks: &[BankDraft],
 ) {
     let letter = if slot == 0 { 'A' } else { 'B' };
     let mut on = start.is_some();
@@ -6041,18 +6035,30 @@ fn start_slot_editor(
                 })
                 .show_ui(ui, |ui| {
                     ui.selectable_value(&mut start.bank, String::new(), "all channels");
-                    for (name, in_groups) in banks {
-                        if group.is_none_or(|group| in_groups.contains(&group)) {
-                            ui.selectable_value(&mut start.bank, name.clone(), name);
+                    for bank in banks {
+                        if group.is_none_or(|group| bank.groups.contains(&group)) {
+                            ui.selectable_value(&mut start.bank, bank.name.clone(), &bank.name);
                         }
                     }
                 });
             ui.end_row();
 
-            if !start.bank.is_empty() {
+            let bank = banks
+                .iter()
+                .find(|bank| bank.name.trim() == start.bank.trim());
+            if let Some(bank) = bank {
                 ui.label("Channel");
-                ui.add(egui::DragValue::new(&mut start.channel).range(0..=u16::MAX))
-                    .on_hover_text("The channel in that bank, from 1; 0 is its first");
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut start.channel).range(0..=u16::MAX))
+                        .on_hover_text("The channel in that bank, from 1; 0 is its first");
+                    // The name the radio shows, so the number reads as a
+                    // channel; zero is the first, as the radio takes it.
+                    let position = usize::from(start.channel.saturating_sub(1));
+                    match bank.channel_name(position) {
+                        Some(name) => ui.label(name),
+                        None => ui.colored_label(WARNING_COLOUR, "past the bank's end"),
+                    };
+                });
                 ui.end_row();
             }
         });

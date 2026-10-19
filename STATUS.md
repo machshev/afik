@@ -1158,6 +1158,10 @@ refused. Gate: `cargo fmt --all --check` clean, workspace clippy `-D
 warnings` clean, `cargo test --workspace` 981 passed 0 failed. Firmware
 unchanged; layout not checked on screen. Next: start B on a channel from
 the studio, write the K1, check both slots after a power cycle.
+The start channel number now shows the name the radio gives that channel
+(`BankDraft::channel_name`, plan or channel bank), or a warning past the
+bank's end. Gate: fmt clean, workspace clippy `-D warnings` clean, `cargo
+test -p radio-programmer-gui` 230 passed 0 failed.
 
 Beacon radii (operator request, 2026-10-17): the receiver presets now take
 beacons within 60 km for a handheld, 100 km mobile, 200 km base (were 150,
