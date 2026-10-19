@@ -284,6 +284,16 @@ and before every Save and Write, not only after an add. The saved M8LWA
 --check` clean, `cargo clippy --workspace --all-targets -- -D warnings`
 clean, `cargo test --workspace` 972 passed 0 failed 3 ignored.
 
+**`BATT-077` done on the host** (2026-10-19, operator request, hardware
+pending): the K1 1400 mAh curve was the reference firmware's estimated near
+straight line, which put about half charge at 25 %. It is now the usual 2S
+lithium-ion open-circuit curve between the reference 8.28 V full and 6.30 V
+empty (`EVID-K1-063`); the voltage arithmetic already matched armel exactly.
+`7.0.65`. Gate: `cargo fmt --all --check` clean, `cargo clippy --workspace
+--all-targets -- -D warnings` clean, `cargo test --workspace` 990 passed 0
+failed 3 ignored, `tool/build-k1.sh --release` passes. Next: flash the K1 and
+watch the indicator over a discharge.
+
 **`LINK-076` done** (2026-10-19, operator report, hardware observed): the K1
 lost every request that came within 10 ms of its previous answer (none after
 50 ms): it re-armed its one-shot DMA receive only when the serial task next ran,

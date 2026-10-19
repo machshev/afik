@@ -2136,15 +2136,21 @@ static-image, or simulation results and `RISK-002`/`RISK-005` remain open.
   source comments it as an estimated curve to be improved. `BATTERY_VoltsToPercent`
   interpolates linearly between adjacent points and clamps to 0..100. Below
   630 the pinned firmware declares the pack critical and reduces service.
-- **AFIK boundary:** AFIK selects the 1500 mAh curve because it cannot read
-  which pack is fitted, and reports no charge at all when the calibration is
-  absent, erased, or outside the converter's range. The percentage is therefore
-  an estimate from an estimated curve; it is a warning that the pack is going,
-  not a measurement of energy remaining.
+- **AFIK boundary:** AFIK reports no charge at all when the calibration is
+  absent, erased, or outside the converter's range.
+- **Curve (`BATT-077`, 2026-10-19):** upstream armel has since renamed the
+  1500 mAh K1 type to 1400 mAh with the same points (`8ce5790a`, issue #623),
+  which is the operator's pack. The operator found its readings wrong, and the
+  near-straight estimated curve puts 7.58 V, about half charge for lithium-ion,
+  at 25 %. AFIK now uses the usual LCO/NMC open-circuit curve doubled for 2S
+  (4.11 V a cell 90 %, 3.84 V 50 %, 3.69 V 10 %, 3.61 V 5 %), with 8.28 V as
+  full and 6.30 V as empty kept from the pinned source. It is a model, not a
+  measurement of this pack; the in-radio reading includes a small receive-load
+  sag that the model ignores.
 - **Confidence:** high for the sense pin, channel, converter configuration,
   calibration location, and scale, all of which come directly from a working
-  implementation on this board. Medium for the curve, which the pinned source
-  itself marks estimated. No AFIK conversion has yet been observed on hardware.
+  implementation on this board. Medium for the curve, which is a generic
+  lithium-ion model. No AFIK conversion has yet been observed on hardware.
 - **Required experiment:** on the exact unit, compare the reported voltage
   against a meter across the pack at a charged and a part-discharged state, and
   confirm the indicator falls monotonically over a discharge. Until that is

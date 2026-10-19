@@ -3382,3 +3382,16 @@
 - **Steps:** gate the operator place save on a quiet link and skip it during
   a host write (`7.0.62`); send K1 answers blocking so receive is re-armed
   straight after the last byte (`7.0.64`). Done and observed on hardware.
+
+## BATT-077 — K1 battery percentage from a lithium-ion curve
+
+- **Status:** done on the host (2026-10-19), operator request ("My K1 is the
+  smaller 1400mAh battery and it doesn't seem right", then "correct the curve
+  based on expected model of a lithium battery pack like this"); hardware
+  pending.
+- **Objective:** the K1 indicator follows a 2S lithium-ion discharge rather
+  than the reference firmware's estimated straight line.
+- **Steps:** replace the K1 curve with the modelled one (`EVID-K1-063`),
+  `7.0.65`. Done. Flash the K1 and watch the indicator over a discharge;
+  if it still looks wrong, show the pack voltage so it can be checked
+  against a meter.
