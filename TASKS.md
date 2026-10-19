@@ -3373,3 +3373,12 @@
      and channel (object kind 7); a write sends it as the place record at
      `0x1D00`; the radio goes there when the write ends; the K1 accepts the
      host's place record. Done (tested on the host; hardware pending).
+
+## LINK-076 — K1 answers back-to-back requests
+
+- **Status:** done (2026-10-19), operator report ("Can't program the radio,
+  just getting serial response timed out").
+- **Objective:** a studio write never loses a request on the K1.
+- **Steps:** gate the operator place save on a quiet link and skip it during
+  a host write (`7.0.62`); send K1 answers blocking so receive is re-armed
+  straight after the last byte (`7.0.64`). Done and observed on hardware.

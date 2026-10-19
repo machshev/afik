@@ -284,6 +284,20 @@ and before every Save and Write, not only after an add. The saved M8LWA
 --check` clean, `cargo clippy --workspace --all-targets -- -D warnings`
 clean, `cargo test --workspace` 972 passed 0 failed 3 ignored.
 
+**`LINK-076` done** (2026-10-19, operator report, hardware observed): the K1
+lost every request that came within 10 ms of its previous answer (none after
+50 ms): it re-armed its one-shot DMA receive only when the serial task next ran,
+which could be after another task, so the studio's write timed out on its first
+read. The K1 now sends each answer blocking and goes straight back to receive.
+A ring-buffered receive (`7.0.63`) answered only the first hello on this chip
+and is not used. The serial task also takes a settled operator place only
+after 1 s of link quiet, never while a host is writing, and discards one
+settled during the write. On `7.0.64` 18 back-to-back reads were all answered
+(`7.0.62`: every other lost), and the studio wrote and verified 4591 bytes,
+558 blocks. Gate: `cargo fmt --all --check` clean, `cargo clippy --workspace
+--all-targets -- -D warnings` clean, `cargo test --workspace` 986 passed 0
+failed, `tool/build-k1.sh --release` passes.
+
 **`FLASH-074` done** (2026-10-17, operator request, `RISK-049`): the K5
 image had 16 bytes of flash left. `interface::run` was 22.6 KB because the
 build inlined helpers at every caller; `#[inline(never)]` on 21 of them

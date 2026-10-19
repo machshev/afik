@@ -392,8 +392,19 @@ impl SerialLink for Link {
         self.0.read_until_idle(buffer).await.map_err(|_| LinkError)
     }
 
+    /// Sends an answer without yielding.
+    ///
+    /// The receive is armed only while the serial task waits in it, and a
+    /// host sends its next request as soon as it has an answer. Awaiting the
+    /// send let another task take the processor as the answer finished, and a
+    /// request arriving before the serial task ran again overran the receiver:
+    /// a K1 lost every request that followed an answer within 10 ms and none
+    /// that followed it after 50 ms. Sending in place returns to the receive
+    /// straight after the last byte. An answer is at most 150 bytes, about
+    /// 40 ms at 38400 baud.
     async fn write(&mut self, bytes: &[u8]) {
-        let _ = self.0.write(bytes).await;
+        let _ = self.0.blocking_write(bytes);
+        let _ = self.0.blocking_flush();
     }
 }
 
