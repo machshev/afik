@@ -297,7 +297,16 @@ asserts before the extra tick. Gate: `cargo fmt --all --check` clean,
 clippy --all-targets -- -D warnings` for the CLI and serial crates on
 `x86_64-pc-windows-msvc` and `aarch64-apple-darwin` clean (Studio's `ring`
 C cannot cross-compile here; the release run builds it); `actionlint` clean.
-Next: the Nix package of the released binaries.
+The flake's `afik-bin` package (`nix/afik-bin.nix`) installs the release
+named in `nix/release.json`, which `tool/update-release-nix.sh` pins from the
+release's `SHA256SUMS`; it is absent while nothing is pinned. Linux binaries
+are patched and Studio gets its GL/window libraries. Gate: a mock release
+staged like the CI job (Ubuntu interpreter, no RPATH) pinned through the
+script with `AFIK_RELEASES=file://…`, `nix build path:.#afik-bin` built,
+all four tools ran under `env -i`; `nix flake check path:. --no-build`
+passes unpinned, and `--all-systems` passes pinned; `shellcheck` and
+`nixfmt` clean. Next: push `v7.0.65`, pin it, and run `afik-flasher
+link-test` on Windows and macOS.
 
 **`LINK-078` done** (2026-10-19, operator request, hardware observed): the host sends every memory request again when no answer comes
 (the hello, reads and block writes; up to four sends, 1.2 s each, input

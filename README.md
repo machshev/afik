@@ -20,6 +20,20 @@ a write to a V1 radio can be observed rather than only acknowledged. On that
 target the display, keypad, timer, configuration memory, board RF and every
 on-air path remain unimplemented.
 
+## Releases
+
+Each `vX.Y.Z` tag publishes the K5 and K1 images and the host tools
+(`afik-studio`, `afik-flasher`, `afik-programmer`, `afik-programmer-web`) for
+Linux x86_64/aarch64, macOS Apple Silicon/Intel and Windows x86_64 on the
+GitHub release page, with `SHA256SUMS`. The macOS and Windows binaries are
+unsigned. Serial ports are named as the system names them: `/dev/ttyUSB0`,
+`/dev/cu.usbserial-110` or `COM3`.
+
+With Nix, `nix run github:machshev/afik` starts the studio from the pinned
+release, and `nix shell github:machshev/afik` puts all four tools on the path;
+the images are in `share/afik/firmware`. After publishing a release, pin it
+with `tool/update-release-nix.sh` and commit `nix/release.json`.
+
 ## Programmer CLI
 
 The CLI exposes the complete currently supported programmer surface over a
