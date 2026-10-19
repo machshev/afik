@@ -1,0 +1,137 @@
+name: release
+
+# Pushing a tag `vX.Y.Z` builds the firmware images and the host tools for
+# each platform and publishes them on the tag's GitHub release. The tag must
+# name the workspace version in the root `Cargo.toml` (ADR-097).
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the tag names the workspace version
+        id: version
+        run: |
+          version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)"
+          if [[ "v$version" != "$GITHUB_REF_NAME" ]]; then
+            echo "tag $GITHUB_REF_NAME does not match workspace version $version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  firmware:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/determinate-nix-action@v3.21.0
+      - name: Build, verify and package K5 image
+        run: nix develop path:. -c tool/build-k5.sh --release
+      - name: Build, verify and package K1 image
+        run: |
+          nix develop path:. -c tool/build-k1.sh --release
+          nix develop path:. -c tool/test-k1-image.sh
+      - name: Name images by version
+        run: |
+          version="${{ needs.version.outputs.version }}"
+          mkdir dist
+          cp target/thumbv6m-none-eabi/release/afik-k5-v1.raw "dist/afik-k5-v1-$version.raw"
+          cp target/thumbv6m-none-eabi/release/radio-firmware-k1.raw "dist/afik-k1-$version.raw"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: dist/*
+          if-no-files-found: error
+
+  host:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - name: linux-aarch64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - name: macos-aarch64
+            os: macos-latest
+            target: aarch64-apple-darwin
+          - name: macos-x86_64
+            os: macos-latest
+            target: x86_64-apple-darwin
+          - name: windows-x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.86.0 --profile minimal --target ${{ matrix.target }}
+      - name: Build host tools
+        run: >
+          cargo +1.86.0 build --release --locked
+          --target ${{ matrix.target }}
+          --package radio-flasher-cli
+          --package radio-programmer-cli
+          --package radio-programmer-web
+          --package radio-programmer-gui
+      - name: Package
+        run: |
+          stage="afik-${{ needs.version.outputs.version }}-${{ matrix.name }}"
+          exe=""
+          if [[ "${{ runner.os }}" == "Windows" ]]; then exe=".exe"; fi
+          mkdir -p "$stage" dist
+          for bin in afik-flasher afik-programmer afik-programmer-web afik-studio; do
+            cp "target/${{ matrix.target }}/release/$bin$exe" "$stage/"
+          done
+          cp LICENSE README.md "$stage/"
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            7z a -tzip "dist/$stage.zip" "$stage"
+          else
+            tar -czf "dist/$stage.tar.gz" "$stage"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: host-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: [version, firmware, host]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum -- * > SHA256SUMS
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "$GITHUB_REF_NAME" dist/*
+          --repo "$GITHUB_REPOSITORY"
+          --title "AFIK ${{ needs.version.outputs.version }}"
+          --generate-notes
+          --verify-tag
