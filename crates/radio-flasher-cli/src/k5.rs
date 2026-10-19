@@ -2,14 +2,16 @@
 //! and AFIK application flashing.
 
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, OpenOptions},
     io::Write,
-    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
 };
 
 #[cfg(unix)]
-use std::os::unix::fs::MetadataExt;
+use std::{
+    fs::File,
+    os::unix::fs::{MetadataExt, OpenOptionsExt},
+};
 
 use radio_flasher::k5::{control as k5_control, ControlRequest, ControlResponse, LogicalKey, View};
 use radio_flasher::{
@@ -19,7 +21,7 @@ use radio_flasher::{
     K5_RECOVERY_SOURCE_BYTES,
 };
 
-use radio_programmer_serial::LinuxSerialTransport;
+use radio_programmer_serial::SerialTransport;
 
 use crate::prompt::Confirm;
 use crate::{
@@ -445,7 +447,7 @@ pub(crate) fn flash_afik_gated<W: Write>(
 
 /// Writes an AFIK application to a K5 V1 whose bootloader was already detected.
 pub(crate) fn flash_afik_detected<C: Confirm, W: Write>(
-    serial: &mut LinuxSerialTransport,
+    serial: &mut SerialTransport,
     flash: &DetectedFlash<'_>,
     version: Option<&str>,
     confirm: &mut C,
@@ -503,7 +505,9 @@ pub(crate) fn flash_afik_detected<C: Confirm, W: Write>(
 fn write_private_file_atomic(path: &Path, bytes: &[u8]) -> Result<(), CliError> {
     let temporary = path.with_extension(format!("restore-{}.tmp", std::process::id()));
     let mut options = OpenOptions::new();
-    options.write(true).create_new(true).mode(0o600);
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
     let mut file = options.open(&temporary).map_err(|error| {
         CliError::Operation(format!(
             "could not create temporary pre-write backup: {error}"
@@ -524,15 +528,26 @@ fn write_private_file_atomic(path: &Path, bytes: &[u8]) -> Result<(), CliError> 
             "could not publish pre-write backup without overwrite: {error}"
         )));
     }
+    // Windows cannot open a directory as a file, and its file system commits
+    // the new entry with the file's own flush.
+    #[cfg(unix)]
+    let result = sync_parent_directory(path);
+    #[cfg(not(unix))]
+    let result = Ok(());
+    let _ = fs::remove_file(&temporary);
+    result
+}
+
+/// Makes the new directory entry durable.
+#[cfg(unix)]
+fn sync_parent_directory(path: &Path) -> Result<(), CliError> {
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let result = File::open(parent)
+    File::open(parent)
         .and_then(|directory| directory.sync_all())
-        .map_err(|error| CliError::Operation(format!("could not sync backup directory: {error}")));
-    let _ = fs::remove_file(&temporary);
-    result
+        .map_err(|error| CliError::Operation(format!("could not sync backup directory: {error}")))
 }
 
 fn paths_same(left: &Path, right: &Path) -> bool {

@@ -30,7 +30,7 @@ use radio_flasher::{
     FirmwareVersion, FlashPrerequisites, FlashPurpose, ForcedFamily, RadioPresence, VersionCheck,
     FLASH_PAGE_COUNT,
 };
-use radio_programmer_serial::LinuxSerialTransport;
+use radio_programmer_serial::SerialTransport;
 
 /// Serial baud used by every supported bootloader path.
 pub const FLASH_BAUD: u32 = 38_400;
@@ -260,7 +260,7 @@ pub fn identify(device: &Path) -> Result<RadioPresence, FlashRequestError> {
     if device.as_os_str().is_empty() {
         return Err(FlashRequestError::new("select a serial device path"));
     }
-    let mut serial = LinuxSerialTransport::open(device, FLASH_BAUD)
+    let mut serial = SerialTransport::open(device, FLASH_BAUD)
         .map_err(|error| FlashRequestError::new(format!("serial setup failed: {error}")))?;
     identify_radio(&mut serial).map_err(|error| FlashRequestError::new(error.to_string()))
 }
@@ -390,12 +390,10 @@ impl DigestCache {
 /// be reused between runs. Generating it removes the operator's opportunity to
 /// retype a previous one.
 pub fn fresh_transaction_id() -> Result<u32, FlashRequestError> {
-    let mut random = File::open("/dev/urandom")
-        .map_err(|error| FlashRequestError::new(format!("could not read /dev/urandom: {error}")))?;
     for _ in 0..4 {
         let mut bytes = [0_u8; 4];
-        random.read_exact(&mut bytes).map_err(|error| {
-            FlashRequestError::new(format!("could not read /dev/urandom: {error}"))
+        getrandom::fill(&mut bytes).map_err(|error| {
+            FlashRequestError::new(format!("could not read system randomness: {error}"))
         })?;
         let transaction_id = u32::from_le_bytes(bytes);
         if transaction_id != 0 {
@@ -529,7 +527,7 @@ fn run(
     request: &FlashRequest,
     sender: &Sender<FlashProgress>,
 ) -> Result<String, FlashRequestError> {
-    let mut serial = LinuxSerialTransport::open(&request.device, FLASH_BAUD)
+    let mut serial = SerialTransport::open(&request.device, FLASH_BAUD)
         .map_err(|error| FlashRequestError::new(format!("serial setup failed: {error}")))?;
 
     match operation {
@@ -596,7 +594,7 @@ fn run(
 
 /// Writes an AFIK application to whichever radio's bootloader answers.
 fn flash_afik(
-    serial: &mut LinuxSerialTransport,
+    serial: &mut SerialTransport,
     request: &FlashRequest,
     sender: &Sender<FlashProgress>,
 ) -> Result<String, FlashRequestError> {
@@ -728,7 +726,7 @@ fn confirm_image_crc32(
 /// page sequence. The detected version must equal the confirmation the operator
 /// supplied, so a mistyped version stops the run before any page is written.
 fn classify_k1(
-    serial: &mut LinuxSerialTransport,
+    serial: &mut SerialTransport,
     confirmed_version: &str,
 ) -> Result<(), FlashRequestError> {
     let family =
@@ -1012,7 +1010,7 @@ mod tests {
 
     #[test]
     fn a_fresh_transaction_identifier_is_never_zero() {
-        let first = fresh_transaction_id().expect("/dev/urandom is readable");
+        let first = fresh_transaction_id().expect("system randomness is readable");
         assert_ne!(first, 0);
     }
 

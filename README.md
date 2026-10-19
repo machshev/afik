@@ -23,7 +23,7 @@ on-air path remain unimplemented.
 ## Programmer CLI
 
 The CLI exposes the complete currently supported programmer surface over a
-fresh deterministic simulator or an explicit Linux serial path and baud:
+fresh deterministic simulator or an explicit serial path and baud:
 
 ```sh
 nix develop

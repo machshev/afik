@@ -37,6 +37,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/determinate-nix-action@v3.21.0
+      - name: Fetch crates for the offline K1 build
+        run: nix develop path:. -c cargo fetch --locked
       - name: Build, verify and package K5 image
         run: nix develop path:. -c tool/build-k5.sh --release
       - name: Build, verify and package K1 image
@@ -83,10 +85,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install pinned Rust toolchain
-        run: rustup toolchain install 1.86.0 --profile minimal --target ${{ matrix.target }}
+        run: |
+          rustup toolchain install
+          rustup target add ${{ matrix.target }}
       - name: Build host tools
         run: >
-          cargo +1.86.0 build --release --locked
+          cargo build --release --locked
           --target ${{ matrix.target }}
           --package radio-flasher-cli
           --package radio-programmer-cli

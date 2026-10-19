@@ -1,19 +1,26 @@
-//! Shared Linux serial transport and USB candidate discovery for front ends.
+//! Shared cross-platform serial transport and USB candidate discovery for
+//! front ends.
 
 #![forbid(unsafe_code)]
 
 use radio_programmer::ProtocolTransport;
+#[cfg(target_os = "linux")]
+use std::{ffi::OsStr, fs};
 use std::{
-    ffi::OsStr,
     fmt,
-    fs::{self, File, OpenOptions},
     io::{self, Read, Write},
     path::{Path, PathBuf},
-    process::Command,
+    time::Duration,
 };
 
-/// Baud values accepted by the shared Linux serial adapter.
+/// Baud values accepted by the shared serial adapter.
 pub const SUPPORTED_BAUDS: [u32; 8] = [1_200, 2_400, 4_800, 9_600, 19_200, 38_400, 57_600, 115_200];
+
+/// How long one read waits for a byte before reporting none.
+///
+/// The protocol layers read an empty result as "nothing yet" and keep their own
+/// deadlines, so a read must return rather than block indefinitely.
+pub const READ_TIMEOUT: Duration = Duration::from_millis(200);
 
 /// Reports whether a baud is in the explicit supported set.
 pub const fn is_supported_baud(baud: u32) -> bool {
@@ -25,11 +32,43 @@ pub const fn is_supported_baud(baud: u32) -> bool {
 
 /// Finds USB serial device paths suitable for protocol-level identification.
 ///
-/// Stable `/dev/serial/by-id` USB symlinks are preferred. If that directory is
-/// unavailable, Linux `ttyUSB*` and `ttyACM*` device nodes are returned. The
-/// returned paths are only transport candidates; the radio protocol must still
-/// classify the bootloader before any operation is selected.
+/// On Linux, stable `/dev/serial/by-id` USB symlinks are preferred. If that
+/// directory is unavailable, `ttyUSB*` and `ttyACM*` device nodes are returned.
+/// Elsewhere the operating system's USB serial ports are listed: `COMn` on
+/// Windows and the `/dev/cu.*` call-out devices on macOS. The returned paths
+/// are only transport candidates; the radio protocol must still classify the
+/// bootloader before any operation is selected.
 pub fn discover_usb_serial_devices() -> io::Result<Vec<PathBuf>> {
+    #[cfg(target_os = "linux")]
+    {
+        discover_linux()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let mut devices: Vec<PathBuf> = serialport::available_ports()?
+            .into_iter()
+            .filter(|port| matches!(port.port_type, serialport::SerialPortType::UsbPort(_)))
+            .map(|port| port.port_name)
+            .filter(|name| is_candidate_port_name(name))
+            .map(PathBuf::from)
+            .collect();
+        devices.sort();
+        devices.dedup();
+        Ok(devices)
+    }
+}
+
+/// Keeps one name per port where the system lists two.
+///
+/// macOS lists every port as a `tty.*` dial-in device, whose open waits for
+/// carrier, and a `cu.*` call-out device, which is the one a host opens.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+fn is_candidate_port_name(name: &str) -> bool {
+    !name.starts_with("/dev/tty.")
+}
+
+#[cfg(target_os = "linux")]
+fn discover_linux() -> io::Result<Vec<PathBuf>> {
     let by_id = Path::new("/dev/serial/by-id");
     match fs::read_dir(by_id) {
         Ok(entries) => {
@@ -60,6 +99,7 @@ pub fn discover_usb_serial_devices() -> io::Result<Vec<PathBuf>> {
     Ok(devices)
 }
 
+#[cfg(target_os = "linux")]
 fn is_usb_serial_name(name: &OsStr) -> bool {
     let Some(name) = name.to_str() else {
         return false;
@@ -71,95 +111,73 @@ fn is_usb_serial_name(name: &OsStr) -> bool {
     })
 }
 
-/// Explicit Linux serial setup failure before protocol negotiation.
+/// Serial setup failure before protocol negotiation.
 #[derive(Debug)]
 pub enum SerialOpenError {
     /// Baud is outside the shared explicit set.
     UnsupportedBaud(u32),
-    /// The host could not execute `stty`.
-    Stty(io::Error),
-    /// `stty` rejected the path or requested terminal configuration.
-    Configure {
-        /// Child process exit status, if available.
-        status: Option<i32>,
-        /// Bounded-by-process captured diagnostic text.
-        detail: String,
-    },
-    /// The configured path could not be opened for ordered reads and writes.
-    Open(io::Error),
+    /// The path could not be opened or configured as a serial port.
+    Open(serialport::Error),
 }
 
 impl fmt::Display for SerialOpenError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnsupportedBaud(baud) => write!(formatter, "unsupported baud: {baud}"),
-            Self::Stty(error) => write!(formatter, "could not execute stty: {error}"),
-            Self::Configure { status, detail } => {
-                write!(formatter, "stty configuration failed with {status:?}")?;
-                if !detail.is_empty() {
-                    write!(formatter, ": {detail}")?;
-                }
-                Ok(())
-            }
             Self::Open(error) => write!(formatter, "could not open serial device: {error}"),
         }
     }
 }
 
-/// Ordered file byte stream configured through Linux `stty`.
-pub struct LinuxSerialTransport {
-    file: File,
+/// Ordered byte stream over one raw 8N1 serial port.
+pub struct SerialTransport {
+    port: Box<dyn serialport::SerialPort>,
 }
 
-impl LinuxSerialTransport {
-    /// Configures one explicit path as raw/no-echo with a 0.2-second read timer.
+impl SerialTransport {
+    /// Opens one explicit path as raw 8N1 without flow control, with reads
+    /// returning empty after [`READ_TIMEOUT`].
     pub fn open(path: &Path, baud: u32) -> Result<Self, SerialOpenError> {
         if !is_supported_baud(baud) {
             return Err(SerialOpenError::UnsupportedBaud(baud));
         }
-        let baud_text = baud.to_string();
-        let configured = Command::new("stty")
-            .arg("-F")
-            .arg(path)
-            .args(["raw", "-echo", "min", "0", "time", "2"])
-            .arg(&baud_text)
-            .output()
-            .map_err(SerialOpenError::Stty)?;
-        if !configured.status.success() {
-            let detail = String::from_utf8_lossy(&configured.stderr)
-                .trim()
-                .to_owned();
-            return Err(SerialOpenError::Configure {
-                status: configured.status.code(),
-                detail,
-            });
-        }
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(path)
+        let port = serialport::new(path.to_string_lossy(), baud)
+            .data_bits(serialport::DataBits::Eight)
+            .parity(serialport::Parity::None)
+            .stop_bits(serialport::StopBits::One)
+            .flow_control(serialport::FlowControl::None)
+            .timeout(READ_TIMEOUT)
+            .open()
             .map_err(SerialOpenError::Open)?;
-        Ok(Self { file })
+        Ok(Self { port })
     }
 }
 
-impl Read for LinuxSerialTransport {
+/// Reports a read which timed out as no bytes, as a terminal read does.
+fn timeout_as_empty(result: io::Result<usize>) -> io::Result<usize> {
+    match result {
+        Err(error) if error.kind() == io::ErrorKind::TimedOut => Ok(0),
+        other => other,
+    }
+}
+
+impl Read for SerialTransport {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        self.file.read(buffer)
+        timeout_as_empty(self.port.read(buffer))
     }
 }
 
-impl Write for LinuxSerialTransport {
+impl Write for SerialTransport {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        self.file.write(buffer)
+        self.port.write(buffer)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.file.flush()
+        self.port.flush()
     }
 }
 
-impl ProtocolTransport for LinuxSerialTransport {
+impl ProtocolTransport for SerialTransport {
     type Error = io::Error;
 
     fn send(&mut self, frame: &[u8]) -> Result<(), Self::Error> {
@@ -189,10 +207,10 @@ impl ProtocolTransport for LinuxSerialTransport {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_supported_baud, is_usb_serial_name, LinuxSerialTransport, SerialOpenError,
-        SUPPORTED_BAUDS,
+        is_candidate_port_name, is_supported_baud, timeout_as_empty, SerialOpenError,
+        SerialTransport, SUPPORTED_BAUDS,
     };
-    use std::{ffi::OsStr, path::Path};
+    use std::{io, path::Path};
 
     #[test]
     fn supported_baud_contract_is_exact_and_open_rechecks_it() {
@@ -202,18 +220,49 @@ mod tests {
         assert!(!is_supported_baud(0));
         assert!(!is_supported_baud(123));
         assert!(matches!(
-            LinuxSerialTransport::open(Path::new("/definitely/missing"), 123),
+            SerialTransport::open(Path::new("/definitely/missing"), 123),
             Err(SerialOpenError::UnsupportedBaud(123))
         ));
     }
 
     #[test]
     fn missing_explicit_path_fails_before_protocol_use() {
-        assert!(LinuxSerialTransport::open(Path::new("/definitely/missing"), 9_600).is_err());
+        assert!(matches!(
+            SerialTransport::open(Path::new("/definitely/missing"), 9_600),
+            Err(SerialOpenError::Open(_))
+        ));
     }
 
     #[test]
+    fn a_path_that_is_not_a_serial_port_is_refused() {
+        assert!(SerialTransport::open(Path::new("Cargo.toml"), 9_600).is_err());
+    }
+
+    #[test]
+    fn a_read_timeout_is_no_bytes_and_other_failures_stay_failures() {
+        let timed_out = io::Error::new(io::ErrorKind::TimedOut, "timed out");
+        assert_eq!(timeout_as_empty(Err(timed_out)).unwrap(), 0);
+        assert_eq!(timeout_as_empty(Ok(3)).unwrap(), 3);
+        let broken = io::Error::new(io::ErrorKind::BrokenPipe, "unplugged");
+        assert_eq!(
+            timeout_as_empty(Err(broken)).unwrap_err().kind(),
+            io::ErrorKind::BrokenPipe
+        );
+    }
+
+    #[test]
+    fn macos_dial_in_devices_are_not_candidates() {
+        assert!(is_candidate_port_name("/dev/cu.usbserial-110"));
+        assert!(is_candidate_port_name("COM3"));
+        assert!(!is_candidate_port_name("/dev/tty.usbserial-110"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn usb_candidate_names_are_narrow_and_numeric() {
+        use super::is_usb_serial_name;
+        use std::ffi::OsStr;
+
         assert!(is_usb_serial_name(OsStr::new("ttyUSB0")));
         assert!(is_usb_serial_name(OsStr::new("ttyACM12")));
         assert!(!is_usb_serial_name(OsStr::new("ttyUSB")));

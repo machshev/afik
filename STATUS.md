@@ -284,6 +284,21 @@ and before every Save and Write, not only after an add. The saved M8LWA
 --check` clean, `cargo clippy --workspace --all-targets -- -D warnings`
 clean, `cargo test --workspace` 972 passed 0 failed 3 ignored.
 
+**`REL-079` is active alongside** (2026-10-19, operator request,
+`ADR-118`): a `v*` tag builds and publishes release packages for Linux,
+macOS and Windows. The serial transport now uses `serialport` rather than
+`stty`, and the flasher and Studio no longer use `/dev/urandom` or Unix-only
+file calls, which kept them from building or running on Windows. The
+toolchain pin follows the devshell (1.97.1), CI fetches crates before the
+offline K1 build, and a Studio test that raced a fast-failing open now
+asserts before the extra tick. Gate: `cargo fmt --all --check` clean,
+`cargo clippy --workspace --all-targets -- -D warnings` clean,
+`cargo test --workspace` 993 passed 0 failed (three runs); `cargo +1.97.1
+clippy --all-targets -- -D warnings` for the CLI and serial crates on
+`x86_64-pc-windows-msvc` and `aarch64-apple-darwin` clean (Studio's `ring`
+C cannot cross-compile here; the release run builds it); `actionlint` clean.
+Next: the Nix package of the released binaries.
+
 **`LINK-078` done** (2026-10-19, operator request, hardware observed): the host sends every memory request again when no answer comes
 (the hello, reads and block writes; up to four sends, 1.2 s each, input
 discarded before a resend), and skips a packet that answers something else,

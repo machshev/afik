@@ -8,7 +8,7 @@ use radio_programmer::{
     CapacityReport, CompileError, DeviceCapabilities, ObjectListing, Programmer, ProgrammerError,
     ProtocolTransport, RadioProject, RestoreError, VerifiedConfigurationReceipt,
 };
-use radio_programmer_serial::{LinuxSerialTransport, SerialOpenError};
+use radio_programmer_serial::{SerialOpenError, SerialTransport};
 use radio_sim::{SimDevice, SimTransport};
 use std::{convert::Infallible, fmt, io, path::Path};
 
@@ -137,7 +137,7 @@ impl From<ProgrammerError<GuiTransportError>> for GuiError {
 
 enum GuiTransport {
     Simulator(Box<SimTransport>),
-    Serial(LinuxSerialTransport),
+    Serial(SerialTransport),
 }
 
 impl ProtocolTransport for GuiTransport {
@@ -175,9 +175,9 @@ impl GuiSession {
         ))))
     }
 
-    /// Configures and connects one explicit Linux serial path and baud.
+    /// Configures and connects one explicit serial path and baud.
     pub fn connect_serial(path: &Path, baud: u32) -> Result<Self, GuiError> {
-        let transport = LinuxSerialTransport::open(path, baud).map_err(GuiError::SerialOpen)?;
+        let transport = SerialTransport::open(path, baud).map_err(GuiError::SerialOpen)?;
         Self::connect(GuiTransport::Serial(transport))
     }
 

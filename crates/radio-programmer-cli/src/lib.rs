@@ -11,7 +11,7 @@ use radio_domain::{
     RadioConfig, SquelchLevel, Tone,
 };
 use radio_programmer::{ControlOutcome, Programmer, ProtocolTransport, RadioProject};
-use radio_programmer_serial::{is_supported_baud, LinuxSerialTransport};
+use radio_programmer_serial::{is_supported_baud, SerialTransport};
 use radio_protocol::{
     ControlRequest, ReceiveMetricsReport, ReceiveMode as ProtocolReceiveMode, ReceiveStateReport,
     ScanActivity,
@@ -736,9 +736,9 @@ fn execute(backend: Backend, command: Command) -> Result<String, CliError> {
         Backend::Simulator => {
             CliTransport::Simulator(Box::new(SimTransport::new(SimDevice::new())))
         }
-        Backend::Serial { path, baud } => CliTransport::Serial(
-            LinuxSerialTransport::open(&path, baud).map_err(CliError::operation)?,
-        ),
+        Backend::Serial { path, baud } => {
+            CliTransport::Serial(SerialTransport::open(&path, baud).map_err(CliError::operation)?)
+        }
     };
     let mut programmer = Programmer::connect(transport).map_err(CliError::operation)?;
     match command {
@@ -1085,7 +1085,7 @@ fn write_output(path: &Path, bytes: &[u8], force: bool) -> Result<(), CliError> 
 
 enum CliTransport {
     Simulator(Box<SimTransport>),
-    Serial(LinuxSerialTransport),
+    Serial(SerialTransport),
 }
 
 #[derive(Debug)]

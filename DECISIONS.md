@@ -2020,3 +2020,19 @@ meaning.
 - The studio rewrites, cleans up and shares generated banks by origin rather
   than by name. A project saved before this records no origins; the studio
   infers them once from the generator names when it opens one.
+
+## ADR-118 — Host tools are released for Linux, macOS and Windows
+
+- **Date:** 2026-10-19
+- **Status:** accepted, operator request (`REL-079`).
+- A `v*` tag naming the workspace version builds the firmware images and the
+  host tools for Linux x86_64/aarch64, macOS aarch64/x86_64 and Windows
+  x86_64, and publishes them on the GitHub release with `SHA256SUMS`.
+- `radio-programmer-serial` opens ports through the `serialport` crate
+  (default features off, so no libudev); a read timeout is an empty read, as
+  the `stty` `time` read was. Linux discovery is unchanged; elsewhere the
+  system's USB ports are listed, `cu.*` only on macOS.
+- `rust-toolchain.toml` names the devshell's rustc (1.97.1), which every gate
+  already ran on; the 1.86 pin no longer built (`image` needs 1.88).
+  `rust-version` stays 1.86 for clippy's MSRV lints until it is raised on
+  purpose.

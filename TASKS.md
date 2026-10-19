@@ -3408,3 +3408,15 @@
   (`radio-flasher`). Done. `test_link`, `afik-flasher link-test`, and
   Studio's Test link button. Done. Link test on hardware: K5 clean. Done.
   Run it on the K1.
+
+## REL-079 — Release packages for Linux, macOS and Windows
+
+- **Status:** active (2026-10-19), operator request ("fix the serialport
+  issue and also can we have a nix package that uses the released binaries").
+- **Objective:** a `v*` tag publishes the firmware images and host tools for
+  every desktop platform, and the tools reach a radio on each of them.
+- **Steps:** release workflow (`.github/workflows/release.yml`). Done.
+  Serial transport on `serialport`, no `stty`/`/dev/urandom`/Unix-only file
+  calls; toolchain pin follows the devshell (`ADR-118`). Done. Nix package of
+  the released binaries. Push a tag, then try `afik-flasher link-test` on
+  Windows and macOS.

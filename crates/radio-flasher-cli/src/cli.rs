@@ -13,7 +13,7 @@ use radio_flasher::{
     EepromBackup, FlashPrerequisites, FlashPurpose, VersionCheck, APPLICATION_BYTES,
     LINK_TEST_REQUESTS,
 };
-use radio_programmer_serial::{discover_usb_serial_devices, LinuxSerialTransport};
+use radio_programmer_serial::{discover_usb_serial_devices, SerialTransport};
 
 use crate::k5::{self, GatedAfikArguments, RestoreArguments};
 use crate::{
@@ -754,7 +754,7 @@ fn check_afik_image(radio: Radio, image_raw: &[u8]) -> Result<(), String> {
 }
 
 fn flash_afik_k1<W: Write, C: Confirm>(
-    serial: &mut LinuxSerialTransport,
+    serial: &mut SerialTransport,
     flash: &DetectedFlash<'_>,
     confirm: &mut C,
     stdout: &mut W,
@@ -812,7 +812,7 @@ fn flash_afik_k1<W: Write, C: Confirm>(
 }
 
 fn flash_k1<W: Write>(
-    serial: &mut LinuxSerialTransport,
+    serial: &mut SerialTransport,
     context: &FlashContext<'_>,
     info: &radio_flasher::BootloaderInfo,
     stdout: &mut W,
@@ -851,7 +851,7 @@ fn flash_k1<W: Write>(
 }
 
 fn flash_k5<W: Write>(
-    serial: &mut LinuxSerialTransport,
+    serial: &mut SerialTransport,
     context: &FlashContext<'_>,
     version: Option<&str>,
     stdout: &mut W,

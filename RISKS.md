@@ -216,6 +216,9 @@
   makes no hardware-success claim. Establish target UART/boot behavior,
   recovery, timeout/retry requirements, and hardware-in-loop fixtures before
   documenting any device/baud default or physical programming workflow.
+- **REL-079, 2026-10-19:** the transport is now the `serialport` crate on
+  every platform. Linux behaviour is covered by the existing tests; Windows
+  `COMn` and macOS `cu.*` ports are untried on hardware.
 - **APP-052 software narrowing, 2026-08-13:** the K5 host control witness is
   one fixed-session request followed by one bounded response. It validates the
   existing CRC/footer/marker, exact `0x0620` response command and lengths, and

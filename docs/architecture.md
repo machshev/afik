@@ -166,7 +166,7 @@ argument parsing, files, rendering, process status, and explicit transport
 selection; no programming logic moves out of the library.
 
 Work Package 9 moves verified write, backup, and restore orchestration fully
-into `radio-programmer` and moves the explicit Linux file/`stty` adapter into
+into `radio-programmer` and moves the explicit serial adapter (now cross-platform) into
 the reusable host-only `radio-programmer-serial` crate. Both CLI and GUI are
 thin leaves over those layers. `radio-programmer-web` owns one persistent
 selected session, strict generated-bank form parsing, a bounded loopback HTTP
@@ -199,7 +199,7 @@ requires a complete expected-current image and a target/image confirmation;
 the host sends only source-backed eight-byte `0x051D` writes after an immediate
 compare and requires both per-block and complete-image read-back. It is not
 an allocation decision or target persistence adapter.
-Its CLI is a thin explicit-path adapter over the shared Linux serial port. This
+Its CLI is a thin explicit-path adapter over the shared serial port. This
 protocol is the stock UV-K5 deployment protocol and does not enter
 `radio-protocol`, which remains AFIK's object-level runtime configuration
 protocol.

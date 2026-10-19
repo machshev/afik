@@ -5,8 +5,8 @@
 require exactly one backend:
 
 - `--sim` creates a fresh deterministic `SimDevice` for that invocation.
-- `--device PATH --baud BAUD` configures and opens one explicit Linux serial
-  path. Supported baud values are listed in help; there is no default.
+- `--device PATH --baud BAUD` configures and opens one explicit serial port
+  (`/dev/ttyUSB0`, `/dev/cu.usbserial-110`, `COM3`). Supported baud values are listed in help; there is no default.
 
 The commands are:
 
@@ -56,9 +56,10 @@ standard error with an `error:` prefix.
 
 ## Serial boundary
 
-The shared host-only `radio-programmer-serial` adapter runs
-`stty -F PATH raw -echo min 0 time 1 BAUD`, then opens the path for ordered reads
-and writes through `ProtocolTransport`. The CLI and GUI select this same
+The shared host-only `radio-programmer-serial` adapter opens the path through
+the `serialport` crate as raw 8N1 without flow control, with each read returning
+empty after 200 ms, and carries ordered reads and writes through
+`ProtocolTransport` on Linux, macOS and Windows. The CLI and GUI select this same
 adapter; neither reimplements serial setup. It contains no unsafe code and adds
 no raw-object or raw-memory command. This host adapter does not establish target
 pins, boot mode, baud, protocol availability, timeout suitability, recovery, or

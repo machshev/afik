@@ -16,7 +16,7 @@ use std::{
 
 use radio_flasher::{FlashError, ImageWriteReport, LinkTestReport, LINK_TEST_REQUESTS};
 use radio_programmer::{RadioImageError, RadioProject};
-use radio_programmer_serial::{LinuxSerialTransport, SerialOpenError};
+use radio_programmer_serial::{SerialOpenError, SerialTransport};
 use radio_sim::memory_radio::MemoryRadio;
 use radio_storage::StorageError;
 
@@ -46,7 +46,7 @@ impl fmt::Display for SessionError {
 
 enum Transport {
     Simulator(Box<MemoryRadio>),
-    Serial(LinuxSerialTransport),
+    Serial(SerialTransport),
 }
 
 impl io::Read for Transport {
@@ -89,7 +89,7 @@ impl DeviceSession {
 
     /// Connects one explicit serial path and baud.
     pub fn connect_serial(path: &Path, baud: u32) -> Result<Self, SessionError> {
-        let serial = LinuxSerialTransport::open(path, baud).map_err(SessionError::SerialOpen)?;
+        let serial = SerialTransport::open(path, baud).map_err(SessionError::SerialOpen)?;
         Self::connect(
             Transport::Serial(serial),
             format!("{} at {baud} baud", path.display()),

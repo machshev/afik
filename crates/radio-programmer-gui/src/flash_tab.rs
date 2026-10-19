@@ -1246,7 +1246,8 @@ mod tests {
             tab.tick(now);
             std::thread::yield_now();
         }
-        tab.tick(now);
+        // The tick that frees the port starts the backup; another tick could
+        // already collect it, since opening a missing port fails at once.
         assert!(!tab.pending_backup);
         assert!(tab.job.is_some(), "the queued backup started");
         while tab.job.is_some() {

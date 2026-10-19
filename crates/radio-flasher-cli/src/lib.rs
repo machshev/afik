@@ -8,12 +8,13 @@ pub mod prompt;
 
 use prompt::Confirm;
 use radio_flasher::BootloaderInfo;
-use radio_programmer_serial::LinuxSerialTransport;
+use radio_programmer_serial::SerialTransport;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::{
     fmt,
     fs::{File, OpenOptions},
     io::{Read, Write},
-    os::unix::fs::OpenOptionsExt,
     path::Path,
 };
 
@@ -59,8 +60,8 @@ fn set_once<T>(slot: &mut Option<T>, value: T, option: &str) -> Result<(), Strin
     }
 }
 
-fn open_serial(path: &Path) -> Result<LinuxSerialTransport, CliError> {
-    LinuxSerialTransport::open(path, K5_BAUD).map_err(CliError::operation)
+fn open_serial(path: &Path) -> Result<SerialTransport, CliError> {
+    SerialTransport::open(path, K5_BAUD).map_err(CliError::operation)
 }
 
 fn read_bounded(path: &Path, maximum: usize, description: &str) -> Result<Vec<u8>, CliError> {
@@ -81,7 +82,9 @@ fn read_bounded(path: &Path, maximum: usize, description: &str) -> Result<Vec<u8
 
 fn write_private_file(path: &Path, bytes: &[u8], force: bool) -> Result<(), CliError> {
     let mut options = OpenOptions::new();
-    options.write(true).mode(0o600);
+    options.write(true);
+    #[cfg(unix)]
+    options.mode(0o600);
     if force {
         options.create(true).truncate(true);
     } else {
@@ -105,10 +108,9 @@ fn parse_crc32(value: &str) -> Result<u32, CliError> {
 }
 
 fn fresh_transaction_id() -> Result<u32, CliError> {
-    let mut random = File::open("/dev/urandom").map_err(CliError::operation)?;
     for _ in 0..4 {
         let mut bytes = [0_u8; 4];
-        random.read_exact(&mut bytes).map_err(CliError::operation)?;
+        getrandom::fill(&mut bytes).map_err(CliError::operation)?;
         let transaction_id = u32::from_le_bytes(bytes);
         if transaction_id != 0 {
             return Ok(transaction_id);

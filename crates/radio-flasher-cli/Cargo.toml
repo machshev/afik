@@ -9,6 +9,7 @@ description = "Thin device-selecting CLI for UV-K5 V1 and UV-K1 flashing"
 
 [dependencies]
 radio-flasher = { path = "../radio-flasher" }
+getrandom = "0.3"
 radio-programmer-serial = { path = "../radio-programmer-serial" }
 
 [[bin]]
