@@ -14,7 +14,7 @@ use std::{
     thread,
 };
 
-use radio_flasher::{FlashError, ImageWriteReport};
+use radio_flasher::{FlashError, ImageWriteReport, LinkTestReport, LINK_TEST_REQUESTS};
 use radio_programmer::{RadioImageError, RadioProject};
 use radio_programmer_serial::{LinuxSerialTransport, SerialOpenError};
 use radio_sim::memory_radio::MemoryRadio;
@@ -144,6 +144,14 @@ impl DeviceSession {
         RadioProject::from_radio_image(&region).map_err(SessionError::Image)
     }
 
+    /// Sends back-to-back reads, each once, and reports which were answered.
+    pub fn test_link(&mut self) -> Result<LinkTestReport, SessionError> {
+        let report = radio_flasher::test_link(&mut self.transport, LINK_TEST_REQUESTS)
+            .map_err(SessionError::Radio)?;
+        report.firmware.version().clone_into(&mut self.firmware);
+        Ok(report)
+    }
+
     /// The simulated radio, when that is what is connected.
     pub fn simulator(&self) -> Option<&MemoryRadio> {
         match &self.transport {
@@ -169,6 +177,13 @@ impl DeviceSession {
         })
     }
 
+    /// Tests the link on a worker thread.
+    pub fn start_link_test(self) -> Result<DeviceJob, SessionError> {
+        DeviceJob::start(self, JobKind::LinkTest, |session, _| {
+            DeviceOutcome::LinkTested(session.test_link())
+        })
+    }
+
     fn connect(mut transport: Transport, description: String) -> Result<Self, SessionError> {
         let firmware = radio_flasher::probe_normal_firmware(&mut transport)
             .map_err(SessionError::Radio)?
@@ -189,6 +204,8 @@ pub enum JobKind {
     Write,
     /// Reading the project from the radio.
     Read,
+    /// Testing the link with back-to-back reads.
+    LinkTest,
 }
 
 /// How a [`DeviceJob`] ended.
@@ -198,6 +215,8 @@ pub enum DeviceOutcome {
     Wrote(Result<ImageWriteReport, SessionError>),
     /// A read, decoded or failed.
     Read(Result<RadioProject, SessionError>),
+    /// A link test, with which reads were answered.
+    LinkTested(Result<LinkTestReport, SessionError>),
 }
 
 /// A write or read running off the calling thread.
@@ -360,5 +379,20 @@ mod tests {
         };
         assert_eq!(ProjectModel::from_project(&project), model);
         assert_eq!(session.simulator().unwrap().index().unwrap().len(), 1);
+
+        let writes = session.simulator().unwrap().writes();
+        let job = session.start_link_test().unwrap();
+        assert_eq!(job.kind(), JobKind::LinkTest);
+        let (session, outcome) = job.wait().unwrap();
+        let DeviceOutcome::LinkTested(Ok(report)) = outcome else {
+            panic!("the link test runs");
+        };
+        assert!(report.is_clean(), "{}", report.pattern());
+        assert_eq!(report.answered.len(), radio_flasher::LINK_TEST_REQUESTS);
+        assert_eq!(
+            session.simulator().unwrap().writes(),
+            writes,
+            "only reads were sent"
+        );
     }
 }

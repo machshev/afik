@@ -9,8 +9,9 @@ use radio_flasher::k5::ControlRequest;
 use radio_flasher::{
     backup_eeprom, crc32, detect_bootloader, flash_application, observe_bootloader,
     probe_clock_control, probe_clock_register, probe_clock_snapshot, probe_keypad_matrix,
-    probe_normal_firmware, probe_rf, set_rf_audio, ApplicationImage, BootloaderFamily,
+    probe_normal_firmware, probe_rf, set_rf_audio, test_link, ApplicationImage, BootloaderFamily,
     EepromBackup, FlashPrerequisites, FlashPurpose, VersionCheck, APPLICATION_BYTES,
+    LINK_TEST_REQUESTS,
 };
 use radio_programmer_serial::{discover_usb_serial_devices, LinuxSerialTransport};
 
@@ -41,6 +42,7 @@ Usage:\n\
   afik-flasher [--device PATH|auto] restore-eeprom RESTORE --current BACKUP \\\n    --recovery IMAGE --pre-write-backup OUTPUT --version NORMAL_VERSION \\\n    --confirm-target TARGET --confirm-recovery-crc32 CRC32 \\\n    --confirm-recovery-sha256 SHA256 --confirm-restore TARGET:CRC32\n\
   afik-flasher [--device PATH|auto] control view|capabilities|key AUDIO|UP|DOWN\n\
   afik-flasher [--device PATH|auto] probe-normal\n\
+  afik-flasher [--device PATH|auto] link-test\n\
   afik-flasher [--device PATH|auto] probe-keypad\n\
   afik-flasher [--device PATH|auto] probe-rf\n\
   afik-flasher [--device PATH|auto] rf-audio on|off\n\
@@ -74,7 +76,9 @@ prints a K5 image's vectors and CRC-32 without a radio.\n\
 \n\
 Normal-mode commands talk to running AFIK firmware. control (K5) sends one\n\
 bounded read or key request and never writes EEPROM, persists configuration,\n\
-transmits or flashes. probe-normal sends one hello. probe-keypad prints four\n\
+transmits or flashes. probe-normal sends one hello. link-test sends sixteen\n\
+memory reads back to back, each once, prints which were answered (. answered,\n\
+X missed) and fails unless every one was. probe-keypad prints four\n\
 raw active-low row masks. probe-rf prints the raw receive observation, and\n\
 rf-audio routes or mutes receive audio; neither can key the radio. probe-clock\n\
 prints the inherited RCC clock registers and the fail-closed contract result,\n\
@@ -136,6 +140,7 @@ enum DeviceSelector {
 enum Command {
     Identify,
     ProbeNormal,
+    LinkTest,
     ProbeKeypad,
     ProbeRf,
     RfAudio(bool),
@@ -218,7 +223,7 @@ fn parse(arguments: &[String]) -> Result<Parsed, String> {
         (DeviceSelector::Auto, 0)
     };
     let command = arguments.get(command_index).ok_or_else(|| {
-        "a command is required: identify, flash-afik, backup-eeprom, flash-recovery, restore-eeprom, control, probe-normal, probe-keypad, probe-rf, rf-audio, probe-clock, probe-clock-register, or probe-clock-control"
+        "a command is required: identify, flash-afik, backup-eeprom, flash-recovery, restore-eeprom, control, probe-normal, link-test, probe-keypad, probe-rf, rf-audio, probe-clock, probe-clock-register, or probe-clock-control"
             .to_owned()
     })?;
     let command = parse_command(command, &arguments[command_index + 1..])?;
@@ -229,6 +234,7 @@ fn parse_command(command: &str, tail: &[String]) -> Result<Command, String> {
     let bare = match command {
         "identify" => Some(Command::Identify),
         "probe-normal" => Some(Command::ProbeNormal),
+        "link-test" => Some(Command::LinkTest),
         "probe-rf" => Some(Command::ProbeRf),
         "probe-keypad" => Some(Command::ProbeKeypad),
         "probe-clock" => Some(Command::ProbeClock),
@@ -373,6 +379,7 @@ fn execute<W: Write, C: Confirm>(
     match command {
         Command::Identify => identify(&device, stdout),
         Command::ProbeNormal => probe_normal(&device, stdout),
+        Command::LinkTest => link_test(&device, stdout),
         Command::ProbeKeypad => probe_keypad(&device, stdout),
         Command::ProbeRf => probe_rf_observation(&device, stdout),
         Command::RfAudio(routed) => rf_audio(&device, routed, stdout),
@@ -458,6 +465,31 @@ fn probe_normal<W: Write>(device: &Path, stdout: &mut W) -> Result<(), CliError>
     writeln!(stdout, "baud={K5_BAUD}").map_err(CliError::operation)?;
     writeln!(stdout, "protocol=normal-firmware-hello").map_err(CliError::operation)?;
     writeln!(stdout, "firmware={}", info.version()).map_err(CliError::operation)
+}
+
+fn link_test<W: Write>(device: &Path, stdout: &mut W) -> Result<(), CliError> {
+    let mut serial = open_serial(device)?;
+    let report = test_link(&mut serial, LINK_TEST_REQUESTS).map_err(CliError::operation)?;
+    writeln!(stdout, "device={}", device.display()).map_err(CliError::operation)?;
+    writeln!(stdout, "baud={K5_BAUD}").map_err(CliError::operation)?;
+    writeln!(stdout, "firmware={}", report.firmware.version()).map_err(CliError::operation)?;
+    writeln!(stdout, "reads={}", report.pattern()).map_err(CliError::operation)?;
+    writeln!(
+        stdout,
+        "answered={}/{}",
+        report.answered_count(),
+        report.answered.len()
+    )
+    .map_err(CliError::operation)?;
+    if report.is_clean() {
+        Ok(())
+    } else {
+        Err(CliError::Operation(format!(
+            "the radio missed {} of {} back-to-back reads",
+            report.answered.len() - report.answered_count(),
+            report.answered.len()
+        )))
+    }
 }
 
 fn rf_audio<W: Write>(device: &Path, routed: bool, stdout: &mut W) -> Result<(), CliError> {
@@ -900,6 +932,14 @@ mod tests {
             }
         ));
         assert!(parse(&strings(&["probe-keypad", "extra"])).is_err());
+        assert!(matches!(
+            parse(&strings(&["link-test"])).unwrap(),
+            Parsed::Hardware {
+                device: DeviceSelector::Auto,
+                command: Command::LinkTest,
+            }
+        ));
+        assert!(parse(&strings(&["link-test", "extra"])).is_err());
         assert!(matches!(
             parse(&strings(&["probe-clock"])).unwrap(),
             Parsed::Hardware {

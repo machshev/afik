@@ -2132,6 +2132,7 @@ impl StudioApp {
         let doing = match job.kind() {
             JobKind::Write => "writing to",
             JobKind::Read => "reading from",
+            JobKind::LinkTest => "testing the link to",
         };
         let message = format!(
             "Wait until the studio has finished {doing} {}.",
@@ -2250,6 +2251,29 @@ impl StudioApp {
         }
     }
 
+    /// Starts a link test on a worker thread.
+    fn test_link(&mut self) {
+        if self.refuse_while_busy() {
+            return;
+        }
+        let Some(session) = self.session.take() else {
+            self.refuse("Connect a radio first.");
+            return;
+        };
+        let device = session.description().to_owned();
+        match session.start_link_test() {
+            Ok(job) => {
+                log::info!("testing the link to {device}");
+                self.status = format!("Testing the link to {device}…");
+                self.job = Some(job);
+            }
+            Err(error) => self.fail(
+                &format!("starting a link test on {device}"),
+                error.to_string(),
+            ),
+        }
+    }
+
     /// Takes back the session and reports the outcome once the job has ended.
     fn poll_job(&mut self) {
         let Some(finished) = self.job.as_ref().and_then(DeviceJob::poll) else {
@@ -2308,6 +2332,28 @@ impl StudioApp {
                 &format!("reading the project from {device}"),
                 error.to_string(),
             ),
+            DeviceOutcome::LinkTested(Ok(report)) => {
+                let (answered, sent) = (report.answered_count(), report.answered.len());
+                log::info!(
+                    "link test on {device} running {}: {answered} of {sent} back-to-back reads \
+                     answered ({})",
+                    report.firmware.version(),
+                    report.pattern()
+                );
+                self.status = if report.is_clean() {
+                    format!("The link is clean: all {sent} back-to-back reads were answered.")
+                } else {
+                    format!(
+                        "The radio missed {} of {sent} back-to-back reads ({}: . answered, \
+                         X missed). A write sends a missed request again, but slowly.",
+                        sent - answered,
+                        report.pattern()
+                    )
+                };
+            }
+            DeviceOutcome::LinkTested(Err(error)) => {
+                self.fail(&format!("testing the link to {device}"), error.to_string());
+            }
         }
     }
 
@@ -4962,6 +5008,9 @@ impl StudioApp {
                     (JobKind::Read, _) => {
                         ui.label(format!("Reading from {}", job.description()));
                     }
+                    (JobKind::LinkTest, _) => {
+                        ui.label(format!("Testing the link to {}", job.description()));
+                    }
                 }
             });
         } else if let Some(session) = self.session.as_ref() {
@@ -4986,6 +5035,16 @@ impl StudioApp {
                 }
                 if ui.button("Write project to radio").clicked() {
                     self.write_project();
+                }
+                if ui
+                    .button("Test link")
+                    .on_hover_text(
+                        "Sends sixteen reads back to back, each once, and reports how many \
+                         the radio answered. Nothing is written.",
+                    )
+                    .clicked()
+                {
+                    self.test_link();
                 }
             });
         });

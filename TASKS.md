@@ -3396,3 +3396,13 @@
   radios"), three near-linear points dropped to fit K5 flash. Done. Flash both and watch the indicator over a discharge;
   if it still looks wrong, show the pack voltage so it can be checked
   against a meter.
+
+## LINK-078 — Retry missed requests and test the link
+
+- **Status:** done on the host (2026-10-19), operator request ("Please do 1
+  and 3": retry on the host side, a built-in link test); hardware pending.
+- **Objective:** a write survives a lost request, and a lossy link can be
+  seen in seconds.
+- **Steps:** resend a memory request with no answer and skip stale answers
+  (`radio-flasher`). Done. `test_link`, `afik-flasher link-test`, and
+  Studio's Test link button. Done. Run the link test and a write on the K1.
