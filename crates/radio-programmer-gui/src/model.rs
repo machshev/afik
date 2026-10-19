@@ -18,6 +18,7 @@ use radio_channel_plan::{
     GENERATED_CHANNEL_ID_BASE, MAX_BANKS, MAX_DESIGNATOR_LEN, MAX_GENERATED_CHANNELS, MAX_GROUPS,
     VFO_SLOTS,
 };
+use radio_domain::tones::{standard_tone, CTCSS_COUNT, TONE_POSITIONS};
 use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, Offset, PowerLevel,
     RadioConfig, RadioFlags, ScanResume, SquelchLevel, Tone, TxClass, MAX_BATTERY_SAVE_RATIO,
@@ -145,6 +146,21 @@ impl ToneKind {
     /// Returns every selectable kind in display order.
     pub const fn all() -> [Self; 4] {
         [Self::None, Self::Ctcss, Self::Dcs, Self::DcsInverted]
+    }
+
+    /// Returns the standard values of this kind as a [`ToneDraft`] holds
+    /// them, ascending: each CTCSS tone in hertz, such as `88.5`, or each DCS
+    /// code's octal digits, such as `023`. The handset lists the same ones.
+    pub fn standard_values(self) -> Vec<String> {
+        let positions = match self {
+            Self::None => 0..0,
+            Self::Ctcss => 1..1 + CTCSS_COUNT,
+            Self::Dcs | Self::DcsInverted => 1 + CTCSS_COUNT..TONE_POSITIONS,
+        };
+        positions
+            .filter_map(|position| standard_tone(position, false))
+            .map(|tone| ToneDraft::from_tone(tone).value)
+            .collect()
     }
 }
 
@@ -2189,6 +2205,31 @@ mod tests {
     use radio_channel_plan::{ChannelFlags, SharedSettings, MAX_BANKS};
     use radio_domain::{Bandwidth, BankId, Modulation, PowerLevel, ScanResume, Tone};
     use radio_programmer::RadioProject;
+
+    /// The tone editor offers the handset's tones, each one a draft takes.
+    #[test]
+    fn each_tone_kind_offers_the_standard_values_and_each_validates() {
+        let ctcss = ToneKind::Ctcss.standard_values();
+        assert_eq!(ctcss.len(), 50);
+        assert_eq!(ctcss.first().unwrap(), "67.0");
+        assert!(ctcss.contains(&"88.5".to_owned()));
+        assert_eq!(ctcss.last().unwrap(), "254.1");
+        let dcs = ToneKind::Dcs.standard_values();
+        assert_eq!(dcs.len(), 104);
+        assert_eq!(dcs.first().unwrap(), "023");
+        assert_eq!(dcs.last().unwrap(), "754");
+        assert_eq!(ToneKind::DcsInverted.standard_values(), dcs);
+        assert!(ToneKind::None.standard_values().is_empty());
+        for kind in ToneKind::all() {
+            for value in kind.standard_values() {
+                let draft = ToneDraft { kind, value };
+                assert!(
+                    draft.validate(ModelScope::Project, "tone").is_ok(),
+                    "{draft:?}"
+                );
+            }
+        }
+    }
 
     fn project() -> ProjectModel {
         let mut model = ProjectModel::new();

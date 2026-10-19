@@ -5068,6 +5068,7 @@ impl StudioApp {
 
 fn tone_editor(ui: &mut egui::Ui, id: &str, tone: &mut ToneDraft) {
     ui.horizontal(|ui| {
+        let before = tone.kind;
         ComboBox::from_id_salt(id)
             .selected_text(tone.kind.label())
             .width(110.0)
@@ -5076,10 +5077,35 @@ fn tone_editor(ui: &mut egui::Ui, id: &str, tone: &mut ToneDraft) {
                     ui.selectable_value(&mut tone.kind, kind, kind.label());
                 }
             });
-        ui.add_enabled(
-            !matches!(tone.kind, ToneKind::None),
-            TextEdit::singleline(&mut tone.value).desired_width(70.0),
-        );
+        let values = tone.kind.standard_values();
+        if tone.kind != before {
+            // A CTCSS frequency means nothing as a DCS code, nor the
+            // reverse, so a new kind starts on its first standard value.
+            if !values.contains(&tone.value) {
+                tone.value = values.first().cloned().unwrap_or_default();
+            }
+        }
+        if values.is_empty() {
+            return;
+        }
+        // Only the standard tones are offered, as on the handset; one an
+        // older project holds outside them is kept and shown as such.
+        let standard = values.contains(&tone.value);
+        let shown = if standard || tone.value.is_empty() {
+            tone.value.clone()
+        } else {
+            format!("{} (non-standard)", tone.value)
+        };
+        ComboBox::from_id_salt((id, "value"))
+            .selected_text(shown)
+            .width(70.0)
+            .height(320.0)
+            .show_ui(ui, |ui| {
+                for value in values {
+                    let label = value.clone();
+                    ui.selectable_value(&mut tone.value, value, label);
+                }
+            });
     });
 }
 

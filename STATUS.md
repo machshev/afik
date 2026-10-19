@@ -1202,6 +1202,14 @@ ticked Calling, per-channel RX/TX tones shown, memory 3.5% to 6.1%. Gate:
 `cargo fmt --all --check` clean, workspace clippy `-D warnings` clean,
 `cargo test -p radio-programmer-gui` 229 passed 0 failed. Firmware unchanged.
 
+Tone dropdowns (operator request, 2026-10-19): the studio's tone value is a
+dropdown of the 50 standard CTCSS tones or 104 DCS codes, as the handset lists
+them (`radio_domain::tones`), not free text; a new kind starts on its first
+value, and a non-standard value an older project holds is kept and shown as
+such. Tried under Xvfb: PMR446 RX tone CTCSS, picked 88.5. Gate: `cargo fmt
+--all --check` clean, workspace clippy `-D warnings` clean, `cargo test -p
+radio-programmer-gui` 231 passed 0 failed. Firmware unchanged.
+
 Side key 1 (operator request): on the operating screen it switches tone
 squelch on the selected slot; on requires the channel's RX tone or, without
 one, its TX tone (repeater output, caught VFO tone), off opens on any
