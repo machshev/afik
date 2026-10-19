@@ -34,6 +34,29 @@ use radio_tx_policy::TxPolicy;
 /// loads only the finished one.
 const RELOAD_QUIET_MILLISECONDS: u64 = 1_000;
 
+/// Milliseconds the link must stay quiet before a settled operator place is
+/// taken and written down.
+///
+/// Taking the place abandons the receive in progress, and writing it stops the
+/// task listening, so a host request arriving then is lost and the host's
+/// write times out. A host sends its next request as soon as it has an
+/// answer, so a quiet link is one no request is arriving on.
+const PLACE_QUIET_MILLISECONDS: u64 = 1_000;
+
+/// How long the link must be quiet before the task listens for a settled
+/// operator place, or `None` while a host is writing.
+///
+/// A host write blanks the configuration, so a place settled during it
+/// describes that blank and not where the operator left the radio; it is
+/// discarded when the written image loads.
+const fn place_quiet_millis(written: bool) -> Option<u64> {
+    if written {
+        None
+    } else {
+        Some(PLACE_QUIET_MILLISECONDS)
+    }
+}
+
 /// Bytes collected per burst. A host sends one request and waits for its
 /// answer, and the largest request is 28 bytes.
 const RECEIVE_BYTES: usize = 64;
@@ -113,12 +136,16 @@ pub async fn run<L: SerialLink, M: Memory>(
                 core::future::pending::<()>().await;
             }
         };
-        let received_count = match select3(
-            link.read_until_idle(&mut received),
-            OPERATOR_PLACE.wait(),
-            reload,
-        )
-        .await
+        let place = async {
+            match place_quiet_millis(written) {
+                Some(quiet) => {
+                    Timer::after_millis(quiet).await;
+                    OPERATOR_PLACE.wait().await
+                }
+                None => core::future::pending().await,
+            }
+        };
+        let received_count = match select3(link.read_until_idle(&mut received), place, reload).await
         {
             Either3::First(Ok(received_count)) => received_count,
             Either3::First(Err(_)) => {
@@ -139,6 +166,9 @@ pub async fn run<L: SerialLink, M: Memory>(
                 // The host has finished. What it wrote is the configuration
                 // now, squelch included, so nothing of the old one is kept.
                 written = false;
+                // A place settled while the configuration was blank is not
+                // one the operator chose.
+                OPERATOR_PLACE.reset();
                 generation = generation.wrapping_add(1);
                 let (programmed, loaded) = memory.with_mut(|cell| {
                     // A commit which failed leaves the old image, or none, and
@@ -251,7 +281,7 @@ pub(crate) fn read_image<M: Memory>(memory: &mut M, offset: usize, buffer: &mut 
 
 #[cfg(test)]
 mod tests {
-    use super::load;
+    use super::{load, place_quiet_millis, PLACE_QUIET_MILLISECONDS};
     use crate::drivers::Memory;
     use crate::state::TX_POLICY;
     use radio_channel_plan::{ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord};
@@ -309,6 +339,12 @@ mod tests {
             bank: Some(radio_domain::BankId::new(0)),
         })
         .expect("channel")
+    }
+
+    #[test]
+    fn a_place_waits_for_a_quiet_link_and_none_is_taken_during_a_host_write() {
+        assert_eq!(place_quiet_millis(false), Some(PLACE_QUIET_MILLISECONDS));
+        assert_eq!(place_quiet_millis(true), None);
     }
 
     /// One test, because the copy it loads into is the image's one static.
