@@ -1,0 +1,46 @@
+name: pages
+
+# Publishes the browser Studio (ADR-119) to GitHub Pages from main.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/determinate-nix-action@v3.21.0
+      - name: Build the browser Studio
+        # trunk, wasm-bindgen-cli and binaryen come from the devshell, so the
+        # wasm-bindgen CLI matches Cargo.lock.
+        working-directory: crates/radio-programmer-gui
+        run: >
+          nix develop path:../.. -c
+          trunk build --release --offline=true --locked=true
+          --dist "${{ github.workspace }}/dist"
+          --public-url "/${{ github.event.repository.name }}/"
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

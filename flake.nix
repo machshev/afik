@@ -38,6 +38,11 @@
               rustfmt
               llvmPackages.bintools
               python3
+              # The browser Studio (`ADR-119`): `trunk build` bundles it, and
+              # wasm-bindgen-cli must match the locked wasm-bindgen exactly.
+              trunk
+              wasm-bindgen-cli
+              binaryen
             ] ++ guiLibraries;
 
             RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
