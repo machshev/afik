@@ -48,8 +48,6 @@ radio-protocol ──→ radio-programmer ──→ radio-sim
                          ├────────────→ radio-programmer-serial
                          │                 │
                          └─────────────────┴→ radio-programmer-cli
-                         │                 │
-                         └─────────────────┴→ radio-programmer-web
 radio-bk4819 ─────────────────────────→ radio-sim
 radio-channel-control ────────────────→ radio-sim
 radio-domain ─────────→ radio-aprs ───→ radio-sim
@@ -168,11 +166,9 @@ selection; no programming logic moves out of the library.
 Work Package 9 moves verified write, backup, and restore orchestration fully
 into `radio-programmer` and moves the explicit serial adapter (now cross-platform) into
 the reusable host-only `radio-programmer-serial` crate. Both CLI and GUI are
-thin leaves over those layers. `radio-programmer-web` owns one persistent
-selected session, strict generated-bank form parsing, a bounded loopback HTTP
-boundary, embedded browser assets, downloads/uploads, and presentation. It
-does not introduce a remote service, raw object writes, arbitrary server file
-paths, target behavior, or a physical-programming claim.
+thin leaves over those layers. (The loopback web front end it added,
+`radio-programmer-web`, was removed in `WEB-080`; Studio itself is built for
+the browser instead.)
 
 Work Package 10 adds no crate or behavior. Its Frequency Copy feasibility
 design keeps a measurement candidate separate from `ActiveChannel`, storage,

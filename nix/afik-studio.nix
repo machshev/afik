@@ -75,7 +75,7 @@ stdenv.mkDerivation {
 
   installPhase = ''
     runHook preInstall
-    install -Dm755 -t $out/bin afik-flasher afik-programmer afik-programmer-web afik-studio
+    install -Dm755 -t $out/bin afik-flasher afik-programmer afik-studio
     install -Dm644 -t $out/share/doc/afik README.md LICENSE
     mkdir -p $out/share/afik/firmware
     for image in ${lib.escapeShellArgs images}; do

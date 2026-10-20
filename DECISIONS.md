@@ -2036,3 +2036,21 @@ meaning.
   already ran on; the 1.86 pin no longer built (`image` needs 1.88).
   `rust-version` stays 1.86 for clippy's MSRV lints until it is raised on
   purpose.
+
+## ADR-119 — One Studio codebase for desktop and browser
+
+- **Date:** 2026-10-20
+- **Status:** accepted, operator request (`WEB-080`).
+- The browser Studio is `radio-programmer-gui` built for
+  `wasm32-unknown-unknown` with eframe's web backend, not a second front end.
+  Only the platform edges differ, each behind one native/web module: serial
+  (`serialport` / Web Serial), files (paths / pick and download), background
+  work (threads / `spawn_local`) and HTTP (`ureq` / `fetch`). Features and
+  fixes land once.
+- Web Serial only returns Promises, so programming and flashing logic becomes
+  poll-driven state machines fed bytes and time; blocking `Read`/`Write`
+  loops stay only in the native adapter. No worker plus `SharedArrayBuffer`
+  scheme: GitHub Pages cannot send the COOP/COEP headers it needs.
+- `radio-programmer-web` (loopback HTTP front end) is removed as
+  unmaintained.
+

@@ -3420,3 +3420,20 @@
   calls; toolchain pin follows the devshell (`ADR-118`). Done. Nix package of
   the released binaries (`nix/afik-studio.nix`). Done. Push a tag, pin it, then try `afik-flasher link-test` on
   Windows and macOS.
+
+## WEB-080 — Studio in the browser over Web Serial
+
+- **Status:** active (2026-10-20), operator request ("a wasm version of the
+  studio hosted on github-pages that can flash the radio using web serial";
+  "essentially the same codebase as the existing afik-studio", `ADR-119`).
+- **Objective:** the same `radio-programmer-gui` crate builds for
+  `wasm32-unknown-unknown`, is published on GitHub Pages, and writes a radio
+  over Web Serial (Chromium and, per the operator, recent Firefox).
+- **Steps:** remove the unmaintained loopback `radio-programmer-web`. Done.
+  Build the hardware-independent crates for `wasm32` in CI. Make the
+  programmer session and flasher workflows poll-driven (bytes and time in,
+  bytes out) so one engine runs over blocking serial and Web Serial. Split
+  Studio's serial, files, workers and HTTP behind native/web modules; build
+  it with `trunk` and deploy to Pages. Write a configuration from the browser
+  to a K5 and a K1, then flash firmware from it.
+

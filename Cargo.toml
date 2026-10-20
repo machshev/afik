@@ -20,7 +20,6 @@ members = [
     "crates/radio-protocol",
     "crates/radio-programmer",
     "crates/radio-programmer-cli",
-    "crates/radio-programmer-web",
     "crates/radio-programmer-gui",
     "crates/radio-programmer-serial",
     "crates/radio-sim",

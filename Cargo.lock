@@ -2561,18 +2561,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "radio-programmer-web"
-version = "7.0.66"
-dependencies = [
- "radio-channel-plan",
- "radio-domain",
- "radio-programmer",
- "radio-programmer-serial",
- "radio-sim",
- "radio-storage",
-]
-
-[[package]]
 name = "radio-protocol"
 version = "7.0.66"
 

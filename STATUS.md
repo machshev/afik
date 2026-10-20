@@ -284,6 +284,16 @@ and before every Save and Write, not only after an add. The saved M8LWA
 --check` clean, `cargo clippy --workspace --all-targets -- -D warnings`
 clean, `cargo test --workspace` 972 passed 0 failed 3 ignored.
 
+**`WEB-080` is active alongside** (2026-10-20, operator request,
+`ADR-119`): Studio is to build for the browser from the same crate and write
+radios over Web Serial from GitHub Pages. Step 1 removes the unmaintained
+loopback `radio-programmer-web` crate, its `afik-programmer-web` binary from
+the release and Nix package, and its docs. Gate: `cargo fmt --all --check`
+clean, `cargo clippy --workspace --all-targets -- -D warnings` clean,
+`cargo test --workspace` 983 passed 0 failed 3 ignored (the web crate's 10
+tests gone), `nix flake check path:. --no-build` passes. Next: build the
+hardware-independent crates for `wasm32-unknown-unknown` in CI.
+
 **`REL-079` is active alongside** (2026-10-19, operator request,
 `ADR-118`): a `v*` tag builds and publishes release packages for Linux,
 macOS and Windows. The serial transport now uses `serialport` rather than

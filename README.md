@@ -23,7 +23,7 @@ on-air path remain unimplemented.
 ## Releases
 
 Each `vX.Y.Z` tag publishes the K5 and K1 images and the host tools
-(`afik-studio`, `afik-flasher`, `afik-programmer`, `afik-programmer-web`) for
+(`afik-studio`, `afik-flasher`, `afik-programmer`) for
 Linux x86_64/aarch64, macOS Apple Silicon/Intel and Windows x86_64 on the
 GitHub release page, with `SHA256SUMS`. The macOS and Windows binaries are
 unsigned. Serial ports are named as the system names them: `/dev/ttyUSB0`,
@@ -51,21 +51,6 @@ cargo run --package radio-programmer-cli --bin afik-programmer -- \
 canonical images, validated transactions, and read-back verification from the
 programmer library. Serial use requires both `--device PATH` and `--baud BAUD`;
 no physical device/baud default or interoperability claim exists yet.
-
-## Local programmer GUI
-
-The GUI retains one simulator or explicit serial session and serves responsive
-embedded assets only on a loopback IP address:
-
-```sh
-cargo run --package radio-programmer-web --bin afik-programmer-web -- --sim
-```
-
-It exposes the same negotiated capability, object, compile, verified write,
-backup, and restore workflows as the programmer library. Mutation requires a
-per-process token plus explicit replacement confirmation. This reduces
-accidental local mutation but is not authentication; the GUI must not be bound
-remotely or treated as a shared service. See `docs/programmer-web.md`.
 
 ## Native editor and flashing front end
 

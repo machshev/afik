@@ -94,7 +94,6 @@ jobs:
           --target ${{ matrix.target }}
           --package radio-flasher-cli
           --package radio-programmer-cli
-          --package radio-programmer-web
           --package radio-programmer-gui
       - name: Package
         run: |
@@ -102,7 +101,7 @@ jobs:
           exe=""
           if [[ "${{ runner.os }}" == "Windows" ]]; then exe=".exe"; fi
           mkdir -p "$stage" dist
-          for bin in afik-flasher afik-programmer afik-programmer-web afik-studio; do
+          for bin in afik-flasher afik-programmer afik-studio; do
             cp "target/${{ matrix.target }}/release/$bin$exe" "$stage/"
           done
           cp LICENSE README.md "$stage/"
