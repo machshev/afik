@@ -16,13 +16,21 @@ jobs:
         # The toolchain named in rust-toolchain.toml, which is the devshell's.
         run: |
           rustup toolchain install
-          rustup target add thumbv6m-none-eabi
+          rustup target add thumbv6m-none-eabi wasm32-unknown-unknown
       - name: Formatting
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Tests
         run: cargo test --workspace
+      - name: Shared crates build for the browser
+        # Studio's browser build (ADR-119) shares these crates unchanged.
+        run: >
+          cargo clippy --locked --target wasm32-unknown-unknown
+          -p radio-domain -p radio-protocol -p radio-programmer
+          -p radio-channel-plan -p radio-storage -p radio-tx-policy
+          -p radio-platform -p radio-flasher -p radio-sim
+          -- -D warnings
 
   target-images:
     runs-on: ubuntu-latest

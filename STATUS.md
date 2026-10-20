@@ -291,8 +291,14 @@ loopback `radio-programmer-web` crate, its `afik-programmer-web` binary from
 the release and Nix package, and its docs. Gate: `cargo fmt --all --check`
 clean, `cargo clippy --workspace --all-targets -- -D warnings` clean,
 `cargo test --workspace` 983 passed 0 failed 3 ignored (the web crate's 10
-tests gone), `nix flake check path:. --no-build` passes. Next: build the
-hardware-independent crates for `wasm32-unknown-unknown` in CI.
+tests gone), `nix flake check path:. --no-build` passes. Step 2: CI runs clippy for
+`wasm32-unknown-unknown` on the nine shared crates (domain, protocol,
+programmer, channel plan, storage, TX policy, platform, flasher, sim), which
+build unchanged. Studio itself does not yet: `ureq`'s `ring` pulls
+`getrandom` 0.2 without its web backend. Gate: that clippy `--locked
+--target wasm32-unknown-unknown … -D warnings` clean, `actionlint` clean.
+Next: make `ProgrammerSession::exchange` poll-driven (bytes and time in,
+bytes out), tested against `radio-sim`.
 
 **`REL-079` is active alongside** (2026-10-19, operator request,
 `ADR-118`): a `v*` tag builds and publishes release packages for Linux,

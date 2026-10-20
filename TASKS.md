@@ -3430,7 +3430,7 @@
   `wasm32-unknown-unknown`, is published on GitHub Pages, and writes a radio
   over Web Serial (Chromium and, per the operator, recent Firefox).
 - **Steps:** remove the unmaintained loopback `radio-programmer-web`. Done.
-  Build the hardware-independent crates for `wasm32` in CI. Make the
+  Build the hardware-independent crates for `wasm32` in CI. Done. Make the
   programmer session and flasher workflows poll-driven (bytes and time in,
   bytes out) so one engine runs over blocking serial and Web Serial. Split
   Studio's serial, files, workers and HTTP behind native/web modules; build
