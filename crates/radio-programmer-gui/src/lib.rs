@@ -18,6 +18,7 @@ pub mod map;
 pub mod marine;
 pub mod model;
 pub mod paths;
+pub mod platform;
 pub mod presets;
 pub mod projects;
 pub mod receiver;

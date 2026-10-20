@@ -5,17 +5,20 @@
 //! again when it loads it.
 
 use std::{
-    fmt, io,
-    path::Path,
+    fmt,
+    future::Future,
+    io,
     sync::{
         atomic::{AtomicU32, Ordering},
         mpsc, Arc,
     },
-    thread,
 };
 
-use radio_flasher::{FlashError, ImageWriteReport, LinkTestReport, LINK_TEST_REQUESTS};
+use radio_flasher::{
+    block_on, FlashError, ImageWriteReport, LinkRead, LinkTestReport, LinkWrite, LINK_TEST_REQUESTS,
+};
 use radio_programmer::{RadioImageError, RadioProject};
+#[cfg(not(target_arch = "wasm32"))]
 use radio_programmer_serial::{SerialOpenError, SerialTransport};
 use radio_sim::memory_radio::MemoryRadio;
 use radio_storage::StorageError;
@@ -24,7 +27,11 @@ use radio_storage::StorageError;
 #[derive(Debug)]
 pub enum SessionError {
     /// The serial device could not be opened.
+    #[cfg(not(target_arch = "wasm32"))]
     SerialOpen(SerialOpenError),
+    /// The browser could not open a serial port.
+    #[cfg(target_arch = "wasm32")]
+    SerialOpen(String),
     /// The project does not compile into a radio image.
     Compile(RadioImageError),
     /// The radio refused, did not answer, or read back differently.
@@ -46,30 +53,26 @@ impl fmt::Display for SessionError {
 
 enum Transport {
     Simulator(Box<MemoryRadio>),
+    #[cfg(not(target_arch = "wasm32"))]
     Serial(SerialTransport),
+    #[cfg(target_arch = "wasm32")]
+    Serial(crate::web_serial::WebSerialLink),
 }
 
-impl io::Read for Transport {
-    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+impl LinkRead for Transport {
+    async fn receive(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         match self {
-            Self::Simulator(radio) => radio.read(buffer),
-            Self::Serial(serial) => serial.read(buffer),
+            Self::Simulator(radio) => radio.as_mut().receive(buffer).await,
+            Self::Serial(serial) => serial.receive(buffer).await,
         }
     }
 }
 
-impl io::Write for Transport {
-    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+impl LinkWrite for Transport {
+    async fn send(&mut self, bytes: &[u8]) -> io::Result<()> {
         match self {
-            Self::Simulator(radio) => radio.write(buffer),
-            Self::Serial(serial) => serial.write(buffer),
-        }
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        match self {
-            Self::Simulator(radio) => radio.flush(),
-            Self::Serial(serial) => serial.flush(),
+            Self::Simulator(radio) => radio.as_mut().send(bytes).await,
+            Self::Serial(serial) => serial.send(bytes).await,
         }
     }
 }
@@ -84,16 +87,34 @@ pub struct DeviceSession {
 impl DeviceSession {
     /// Connects a simulated radio with erased memory.
     pub fn connect_simulator() -> Result<Self, SessionError> {
-        Self::connect(Transport::Simulator(Box::default()), "simulator".to_owned())
+        block_on(Self::connect(
+            Transport::Simulator(Box::default()),
+            "simulator".to_owned(),
+        ))
     }
 
     /// Connects one explicit serial path and baud.
-    pub fn connect_serial(path: &Path, baud: u32) -> Result<Self, SessionError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn connect_serial(path: &std::path::Path, baud: u32) -> Result<Self, SessionError> {
         let serial = SerialTransport::open(path, baud).map_err(SessionError::SerialOpen)?;
-        Self::connect(
+        block_on(Self::connect(
             Transport::Serial(serial),
             format!("{} at {baud} baud", path.display()),
-        )
+        ))
+    }
+
+    /// Asks the browser for a serial port, opens it at `baud` and connects
+    /// the radio on it. The browser shows its port chooser, so this must
+    /// follow a click.
+    #[cfg(target_arch = "wasm32")]
+    pub fn start_connect_web_serial(baud: u32) -> ConnectJob {
+        ConnectJob::start(async move {
+            let link = crate::web_serial::WebSerialLink::request(baud)
+                .await
+                .map_err(SessionError::SerialOpen)?;
+            let description = format!("{} at {baud} baud", link.description());
+            Self::connect(Transport::Serial(link), description).await
+        })
     }
 
     /// Returns a short description of the connected backend.
@@ -108,7 +129,7 @@ impl DeviceSession {
 
     /// Compiles the project, writes it into the radio's memory and reads it
     /// back. `progress` is told each written block and the number to write.
-    pub fn write_project(
+    pub async fn write_project(
         &mut self,
         project: &RadioProject,
         progress: impl FnMut(u16, u16),
@@ -116,12 +137,9 @@ impl DeviceSession {
         let image = project
             .compile_radio_image()
             .map_err(SessionError::Compile)?;
-        let report = radio_flasher::block_on(radio_flasher::write_afik_image(
-            &mut self.transport,
-            &image,
-            progress,
-        ))
-        .map_err(SessionError::Radio)?;
+        let report = radio_flasher::write_afik_image(&mut self.transport, &image, progress)
+            .await
+            .map_err(SessionError::Radio)?;
         // Each slot's start place or programmed VFO goes in the same write,
         // as the radio's place, so it starts there; its dual watch is the one the
         // configuration programs, which the place would otherwise override.
@@ -133,32 +151,28 @@ impl DeviceSession {
                 dual_watch,
             )
             .encode();
-            radio_flasher::block_on(radio_flasher::write_afik_place(
-                &mut self.transport,
-                &record,
-            ))
-            .map_err(SessionError::Radio)?;
+            radio_flasher::write_afik_place(&mut self.transport, &record)
+                .await
+                .map_err(SessionError::Radio)?;
         }
         report.firmware.version().clone_into(&mut self.firmware);
         Ok(report)
     }
 
     /// Reads the radio's image and decodes it as the radio would.
-    pub fn read_project(&mut self) -> Result<RadioProject, SessionError> {
-        let (firmware, region) =
-            radio_flasher::block_on(radio_flasher::read_afik_image(&mut self.transport))
-                .map_err(SessionError::Radio)?;
+    pub async fn read_project(&mut self) -> Result<RadioProject, SessionError> {
+        let (firmware, region) = radio_flasher::read_afik_image(&mut self.transport)
+            .await
+            .map_err(SessionError::Radio)?;
         firmware.version().clone_into(&mut self.firmware);
         RadioProject::from_radio_image(&region).map_err(SessionError::Image)
     }
 
     /// Sends back-to-back reads, each once, and reports which were answered.
-    pub fn test_link(&mut self) -> Result<LinkTestReport, SessionError> {
-        let report = radio_flasher::block_on(radio_flasher::test_link(
-            &mut self.transport,
-            LINK_TEST_REQUESTS,
-        ))
-        .map_err(SessionError::Radio)?;
+    pub async fn test_link(&mut self) -> Result<LinkTestReport, SessionError> {
+        let report = radio_flasher::test_link(&mut self.transport, LINK_TEST_REQUESTS)
+            .await
+            .map_err(SessionError::Radio)?;
         report.firmware.version().clone_into(&mut self.firmware);
         Ok(report)
     }
@@ -171,36 +185,48 @@ impl DeviceSession {
         }
     }
 
-    /// Writes `project` on a worker thread, which owns the session until the
-    /// write ends and hands it back with the outcome.
+    /// Writes `project` off the calling thread; the job owns the session
+    /// until the write ends and hands it back with the outcome.
     pub fn start_write(self, project: RadioProject) -> Result<DeviceJob, SessionError> {
-        DeviceJob::start(self, JobKind::Write, move |session, progress| {
-            DeviceOutcome::Wrote(session.write_project(&project, |done, total| {
-                progress.store(u32::from(done) << 16 | u32::from(total), Ordering::Relaxed);
-            }))
-        })
+        DeviceJob::start(
+            self,
+            JobKind::Write,
+            move |mut session, progress| async move {
+                let outcome = DeviceOutcome::Wrote(
+                    session
+                        .write_project(&project, |done, total| {
+                            progress
+                                .store(u32::from(done) << 16 | u32::from(total), Ordering::Relaxed);
+                        })
+                        .await,
+                );
+                (session, outcome)
+            },
+        )
     }
 
-    /// Reads the radio's project on a worker thread.
+    /// Reads the radio's project off the calling thread.
     pub fn start_read(self) -> Result<DeviceJob, SessionError> {
-        DeviceJob::start(self, JobKind::Read, |session, _| {
-            DeviceOutcome::Read(session.read_project())
+        DeviceJob::start(self, JobKind::Read, |mut session, _| async move {
+            let outcome = DeviceOutcome::Read(session.read_project().await);
+            (session, outcome)
         })
     }
 
-    /// Tests the link on a worker thread.
+    /// Tests the link off the calling thread.
     pub fn start_link_test(self) -> Result<DeviceJob, SessionError> {
-        DeviceJob::start(self, JobKind::LinkTest, |session, _| {
-            DeviceOutcome::LinkTested(session.test_link())
+        DeviceJob::start(self, JobKind::LinkTest, |mut session, _| async move {
+            let outcome = DeviceOutcome::LinkTested(session.test_link().await);
+            (session, outcome)
         })
     }
 
-    fn connect(mut transport: Transport, description: String) -> Result<Self, SessionError> {
-        let firmware =
-            radio_flasher::block_on(radio_flasher::probe_normal_firmware(&mut transport))
-                .map_err(SessionError::Radio)?
-                .version()
-                .to_owned();
+    async fn connect(mut transport: Transport, description: String) -> Result<Self, SessionError> {
+        let firmware = radio_flasher::probe_normal_firmware(&mut transport)
+            .await
+            .map_err(SessionError::Radio)?
+            .version()
+            .to_owned();
         Ok(Self {
             transport,
             description,
@@ -231,7 +257,8 @@ pub enum DeviceOutcome {
     LinkTested(Result<LinkTestReport, SessionError>),
 }
 
-/// A write or read running off the calling thread.
+/// A write or read running off the calling thread: on a worker thread on the
+/// desktop, as a task of the page in the browser.
 pub struct DeviceJob {
     kind: JobKind,
     description: String,
@@ -240,22 +267,19 @@ pub struct DeviceJob {
 }
 
 impl DeviceJob {
-    fn start(
-        mut session: DeviceSession,
-        kind: JobKind,
-        work: impl FnOnce(&mut DeviceSession, &AtomicU32) -> DeviceOutcome + Send + 'static,
-    ) -> Result<Self, SessionError> {
+    fn start<W, F>(session: DeviceSession, kind: JobKind, work: W) -> Result<Self, SessionError>
+    where
+        W: FnOnce(DeviceSession, Arc<AtomicU32>) -> F + Send + 'static,
+        F: Future<Output = (DeviceSession, DeviceOutcome)> + 'static,
+    {
         let description = session.description.clone();
         let progress = Arc::new(AtomicU32::new(0));
         let shared = Arc::clone(&progress);
         let (sender, outcome) = mpsc::channel();
-        thread::Builder::new()
-            .name("afik-device".to_owned())
-            .spawn(move || {
-                let result = work(&mut session, &shared);
-                let _ignored = sender.send((session, result));
-            })
-            .map_err(|error| SessionError::Radio(FlashError::Io(error)))?;
+        crate::platform::spawn("afik-device", move || async move {
+            let _ignored = sender.send(work(session, shared).await);
+        })
+        .map_err(|error| SessionError::Radio(FlashError::Io(error)))?;
         Ok(Self {
             kind,
             description,
@@ -293,8 +317,37 @@ impl DeviceJob {
     }
 
     /// Waits for the job to end.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn wait(self) -> Option<(DeviceSession, DeviceOutcome)> {
         self.outcome.recv().ok()
+    }
+}
+
+/// A browser serial port being chosen, opened and connected.
+#[cfg(target_arch = "wasm32")]
+pub struct ConnectJob {
+    outcome: mpsc::Receiver<Result<DeviceSession, SessionError>>,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl ConnectJob {
+    fn start(work: impl Future<Output = Result<DeviceSession, SessionError>> + 'static) -> Self {
+        let (sender, outcome) = mpsc::channel();
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ignored = sender.send(work.await);
+        });
+        Self { outcome }
+    }
+
+    /// The connected session, or why it could not connect, once known.
+    pub fn poll(&self) -> Option<Result<DeviceSession, SessionError>> {
+        match self.outcome.try_recv() {
+            Ok(done) => Some(done),
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => Some(Err(SessionError::SerialOpen(
+                "the connection attempt stopped without a result".to_owned(),
+            ))),
+        }
     }
 }
 
@@ -302,6 +355,7 @@ impl DeviceJob {
 mod tests {
     use super::{DeviceSession, SessionError};
     use crate::model::ProjectModel;
+    use radio_flasher::block_on;
 
     #[test]
     fn a_simulated_radio_loads_what_is_written_and_reads_it_back() {
@@ -314,16 +368,16 @@ mod tests {
         assert_eq!(session.description(), "simulator");
         assert!(session.firmware().starts_with("AFIK-K5-"));
         assert!(matches!(
-            session.read_project(),
+            block_on(session.read_project()),
             Err(SessionError::Image(_))
         ));
 
-        let report = session.write_project(&project, |_, _| {}).unwrap();
+        let report = block_on(session.write_project(&project, |_, _| {})).unwrap();
         assert!(report.changed_blocks > 0);
         let index = session.simulator().unwrap().index().unwrap();
         assert_eq!(index.len(), 1);
 
-        let read = ProjectModel::from_project(&session.read_project().unwrap());
+        let read = ProjectModel::from_project(&block_on(session.read_project()).unwrap());
         assert_eq!(read, model);
     }
 
@@ -352,7 +406,7 @@ mod tests {
         project.set_vfo(0, Some(a));
 
         let mut session = DeviceSession::connect_simulator().unwrap();
-        session.write_project(&project, |_, _| {}).unwrap();
+        block_on(session.write_project(&project, |_, _| {})).unwrap();
         let at = usize::from(PLACE_ORIGIN);
         let record: [u8; OPERATOR_STATE_BYTES] = session.simulator().unwrap().memory()
             [at..at + OPERATOR_STATE_BYTES]
