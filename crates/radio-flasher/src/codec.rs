@@ -1,4 +1,6 @@
-use std::io::{self, Read, Write};
+use std::io;
+
+use crate::link::{LinkRead, LinkWrite};
 
 use crate::workflow::FlashError;
 
@@ -43,7 +45,10 @@ impl Packet {
 ///
 /// This cannot panic for a payload accepted by the bounded packet-size check;
 /// the conversion is guarded by the same fixed maximum.
-pub fn send_packet<T: Write>(transport: &mut T, payload: &[u8]) -> Result<(), FlashError> {
+pub async fn send_packet<T: LinkWrite>(
+    transport: &mut T,
+    payload: &[u8],
+) -> Result<(), FlashError> {
     if payload.len() > MAX_PACKET_BYTES {
         return Err(FlashError::PacketTooLarge(payload.len()));
     }
@@ -56,8 +61,7 @@ pub fn send_packet<T: Write>(transport: &mut T, payload: &[u8]) -> Result<(), Fl
     frame[4 + payload.len()..6 + payload.len()].copy_from_slice(&crc.to_le_bytes());
     xor(&mut frame[4..6 + payload.len()]);
     frame[6 + payload.len()..8 + payload.len()].copy_from_slice(&[0xDC, 0xBA]);
-    transport.write_all(&frame[..payload.len() + 8])?;
-    transport.flush()?;
+    transport.send(&frame[..payload.len() + 8]).await?;
     Ok(())
 }
 
@@ -86,8 +90,8 @@ pub(crate) fn is_device_marker(decoded: u16, length: usize) -> bool {
 }
 
 /// Reads and decodes one complete legacy packet with bounded resynchronisation.
-pub fn receive_packet<T: Read>(transport: &mut T) -> Result<Packet, FlashError> {
-    let (packet, response_crc) = receive_packet_with_response_crc(transport)?;
+pub async fn receive_packet<T: LinkRead>(transport: &mut T) -> Result<Packet, FlashError> {
+    let (packet, response_crc) = receive_packet_with_response_crc(transport).await?;
     if !is_device_marker(response_crc, packet.as_slice().len()) {
         return Err(FlashError::InvalidResponseCrc(response_crc));
     }
@@ -101,25 +105,27 @@ pub fn receive_packet<T: Read>(transport: &mut T) -> Result<Packet, FlashError> 
 /// marker. This is not a K1 peculiarity: `EVID-K5-013` records that every
 /// observed bootloader sends the literal form, and that the exemption here
 /// happened to be the only reason the K1 path worked.
-pub(crate) fn receive_packet_without_response_crc<T: Read>(
+pub(crate) async fn receive_packet_without_response_crc<T: LinkRead>(
     transport: &mut T,
 ) -> Result<Packet, FlashError> {
-    receive_packet_with_response_crc(transport).map(|(packet, _)| packet)
+    receive_packet_with_response_crc(transport)
+        .await
+        .map(|(packet, _)| packet)
 }
 
-pub(crate) fn receive_packet_with_response_crc<T: Read>(
+pub(crate) async fn receive_packet_with_response_crc<T: LinkRead>(
     transport: &mut T,
 ) -> Result<(Packet, u16), FlashError> {
-    receive_frame(transport, MAX_EMPTY_READS)
+    receive_frame(transport, MAX_EMPTY_READS).await
 }
 
 /// Reads and decodes one device packet, giving up after `empty_reads` reads
 /// in a row return nothing.
-pub(crate) fn receive_packet_within<T: Read>(
+pub(crate) async fn receive_packet_within<T: LinkRead>(
     transport: &mut T,
     empty_reads: usize,
 ) -> Result<Packet, FlashError> {
-    let (packet, response_crc) = receive_frame(transport, empty_reads)?;
+    let (packet, response_crc) = receive_frame(transport, empty_reads).await?;
     if !is_device_marker(response_crc, packet.as_slice().len()) {
         return Err(FlashError::InvalidResponseCrc(response_crc));
     }
@@ -127,10 +133,10 @@ pub(crate) fn receive_packet_within<T: Read>(
 }
 
 /// Discards whatever is waiting to be read, up to one frame's worth of reads.
-pub(crate) fn discard_input<T: Read>(transport: &mut T) -> Result<(), FlashError> {
+pub(crate) async fn discard_input<T: LinkRead>(transport: &mut T) -> Result<(), FlashError> {
     let mut buffer = [0_u8; MAX_FRAME_BYTES];
     for _ in 0..=MAX_SYNC_BYTES / MAX_FRAME_BYTES {
-        match transport.read(&mut buffer) {
+        match transport.receive(&mut buffer).await {
             Ok(0) => return Ok(()),
             Ok(_) => {}
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
@@ -140,22 +146,24 @@ pub(crate) fn discard_input<T: Read>(transport: &mut T) -> Result<(), FlashError
     Ok(())
 }
 
-fn receive_frame<T: Read>(
+async fn receive_frame<T: LinkRead>(
     transport: &mut T,
     empty_reads: usize,
 ) -> Result<(Packet, u16), FlashError> {
-    let read_byte = |transport: &mut T| read_byte(transport, empty_reads);
-    find_header(transport, empty_reads)?;
-    let length_low = read_byte(transport)?;
-    let length_high = read_byte(transport)?;
+    find_header(transport, empty_reads).await?;
+    let length_low = read_byte(transport, empty_reads).await?;
+    let length_high = read_byte(transport, empty_reads).await?;
     let length = usize::from(u16::from_le_bytes([length_low, length_high]));
     if length > MAX_PACKET_BYTES {
         return Err(FlashError::PacketTooLarge(length));
     }
 
     let mut encoded = [0_u8; MAX_RESPONSE_BODY_BYTES];
-    read_complete(transport, &mut encoded[..length + 2], empty_reads)?;
-    let footer = [read_byte(transport)?, read_byte(transport)?];
+    read_complete(transport, &mut encoded[..length + 2], empty_reads).await?;
+    let footer = [
+        read_byte(transport, empty_reads).await?,
+        read_byte(transport, empty_reads).await?,
+    ];
     if footer != [0xDC, 0xBA] {
         return Err(FlashError::InvalidFooter(footer));
     }
@@ -165,10 +173,10 @@ fn receive_frame<T: Read>(
     Ok((packet, response_crc))
 }
 
-fn find_header<T: Read>(transport: &mut T, empty_reads: usize) -> Result<(), FlashError> {
+async fn find_header<T: LinkRead>(transport: &mut T, empty_reads: usize) -> Result<(), FlashError> {
     let mut saw_ab = false;
     for _ in 0..MAX_SYNC_BYTES {
-        let byte = read_byte(transport, empty_reads)?;
+        let byte = read_byte(transport, empty_reads).await?;
         if saw_ab && byte == 0xCD {
             return Ok(());
         }
@@ -177,22 +185,22 @@ fn find_header<T: Read>(transport: &mut T, empty_reads: usize) -> Result<(), Fla
     Err(FlashError::SyncLimit)
 }
 
-fn read_complete<T: Read>(
+async fn read_complete<T: LinkRead>(
     transport: &mut T,
     buffer: &mut [u8],
     empty_reads: usize,
 ) -> Result<(), FlashError> {
     for byte in buffer {
-        *byte = read_byte(transport, empty_reads)?;
+        *byte = read_byte(transport, empty_reads).await?;
     }
     Ok(())
 }
 
-fn read_byte<T: Read>(transport: &mut T, empty_reads: usize) -> Result<u8, FlashError> {
+async fn read_byte<T: LinkRead>(transport: &mut T, empty_reads: usize) -> Result<u8, FlashError> {
     let mut byte = [0_u8; 1];
     let mut empty = 0;
     loop {
-        match transport.read(&mut byte) {
+        match transport.receive(&mut byte).await {
             Ok(0) => {
                 empty += 1;
                 if empty >= empty_reads {
@@ -291,7 +299,7 @@ mod tests {
 
     #[test]
     fn sourced_beacon_vector_decodes_exactly() {
-        let packet = receive_packet(&mut Cursor::new(SOURCED_V2_BEACON)).unwrap();
+        let packet = crate::block_on(receive_packet(&mut Cursor::new(SOURCED_V2_BEACON))).unwrap();
         assert_eq!(packet.as_slice(), CLEAR_V2_BEACON);
     }
 
@@ -301,13 +309,13 @@ mod tests {
         // length-dependent rather than the running-mode marker. The frames
         // differ only in their version string.
         for frame in [CAPTURED_K6_BEACON, CAPTURED_UV5R_BEACON] {
-            let packet = receive_packet(&mut Cursor::new(frame)).unwrap();
+            let packet = crate::block_on(receive_packet(&mut Cursor::new(frame))).unwrap();
             assert_eq!(packet.as_slice().len(), 36);
             assert_eq!(&packet.as_slice()[0..2], &[0x18, 0x05]);
         }
 
         let versions = [CAPTURED_K6_BEACON, CAPTURED_UV5R_BEACON].map(|frame| {
-            let packet = receive_packet(&mut Cursor::new(frame)).unwrap();
+            let packet = crate::block_on(receive_packet(&mut Cursor::new(frame))).unwrap();
             packet.as_slice()[20..27].to_vec()
         });
         assert_eq!(versions[0], b"2.00.06");
@@ -332,7 +340,7 @@ mod tests {
 
         let frame = encode_response_with_trailer(&CLEAR_V2_BEACON, 0x1234);
         assert!(matches!(
-            receive_packet(&mut Cursor::new(frame)),
+            crate::block_on(receive_packet(&mut Cursor::new(frame))),
             Err(FlashError::InvalidResponseCrc(0x1234))
         ));
     }
@@ -341,7 +349,7 @@ mod tests {
     fn scanner_resynchronises_before_a_fragmented_response() {
         let mut input = vec![0x00, 0xAB, 0x00, 0xAB];
         input.extend(encode_response(&CLEAR_V2_BEACON));
-        let packet = receive_packet(&mut Cursor::new(input)).unwrap();
+        let packet = crate::block_on(receive_packet(&mut Cursor::new(input))).unwrap();
         assert_eq!(packet.as_slice(), CLEAR_V2_BEACON);
     }
 
@@ -349,7 +357,7 @@ mod tests {
     fn request_encoding_has_exact_envelope_crc_and_footer() {
         let payload = [0x14, 0x05, 0x04, 0x00, 0x6A, 0x39, 0x57, 0x64];
         let mut encoded = Vec::new();
-        send_packet(&mut encoded, &payload).unwrap();
+        crate::block_on(send_packet(&mut encoded, &payload)).unwrap();
         assert_eq!(&encoded[..4], &[0xAB, 0xCD, 0x08, 0x00]);
         assert_eq!(&encoded[encoded.len() - 2..], &[0xDC, 0xBA]);
         assert_eq!(encoded.len(), payload.len() + 8);
@@ -361,20 +369,20 @@ mod tests {
         let mut corrupt_crc = encode_response(&CLEAR_V2_BEACON);
         corrupt_crc[40] ^= 1;
         assert!(matches!(
-            receive_packet(&mut Cursor::new(corrupt_crc)),
+            crate::block_on(receive_packet(&mut Cursor::new(corrupt_crc))),
             Err(FlashError::InvalidResponseCrc(_))
         ));
 
         let mut corrupt_footer = encode_response(&CLEAR_V2_BEACON);
         *corrupt_footer.last_mut().unwrap() = 0;
         assert!(matches!(
-            receive_packet(&mut Cursor::new(corrupt_footer)),
+            crate::block_on(receive_packet(&mut Cursor::new(corrupt_footer))),
             Err(FlashError::InvalidFooter(_))
         ));
 
         let oversized = [0xAB, 0xCD, 0x11, 0x01];
         assert!(matches!(
-            receive_packet(&mut Cursor::new(oversized)),
+            crate::block_on(receive_packet(&mut Cursor::new(oversized))),
             Err(FlashError::PacketTooLarge(273))
         ));
     }
@@ -387,13 +395,13 @@ mod tests {
         // it too and the explicit path remains equivalent for these frames.
         let frame = encode_response_with_trailer(&CLEAR_V2_BEACON, 0x6ED1);
         assert_eq!(
-            receive_packet(&mut Cursor::new(frame.clone()))
+            crate::block_on(receive_packet(&mut Cursor::new(frame.clone())))
                 .unwrap()
                 .as_slice(),
             CLEAR_V2_BEACON
         );
         assert_eq!(
-            receive_packet_without_response_crc(&mut Cursor::new(frame))
+            crate::block_on(receive_packet_without_response_crc(&mut Cursor::new(frame)))
                 .unwrap()
                 .as_slice(),
             CLEAR_V2_BEACON

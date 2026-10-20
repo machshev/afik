@@ -262,7 +262,8 @@ pub fn identify(device: &Path) -> Result<RadioPresence, FlashRequestError> {
     }
     let mut serial = SerialTransport::open(device, FLASH_BAUD)
         .map_err(|error| FlashRequestError::new(format!("serial setup failed: {error}")))?;
-    identify_radio(&mut serial).map_err(|error| FlashRequestError::new(error.to_string()))
+    radio_flasher::block_on(identify_radio(&mut serial))
+        .map_err(|error| FlashRequestError::new(error.to_string()))
 }
 
 /// A read-only identification running on a worker thread.
@@ -532,7 +533,7 @@ fn run(
 
     match operation {
         FlashOperation::BackupEeprom => {
-            let (info, backup) = radio_flasher::backup_eeprom(&mut serial)
+            let (info, backup) = radio_flasher::block_on(radio_flasher::backup_eeprom(&mut serial))
                 .map_err(|error| FlashRequestError::new(error.to_string()))?;
             write_new_file(&request.eeprom_output, backup.bytes())?;
             Ok(format!(
@@ -546,14 +547,14 @@ fn run(
             confirm_image_crc32(&image, request.image_crc32)?;
             classify_k1(&mut serial, &request.bootloader_version)?;
             let total = image.page_count();
-            let report = k1::flash_recovery(
+            let report = radio_flasher::block_on(k1::flash_recovery(
                 &mut serial,
                 &image,
                 &request.bootloader_version,
                 &request.target_confirmation,
                 request.transaction_id,
                 |page| step(sender, page, total),
-            )
+            ))
             .map_err(|error| FlashRequestError::new(error.to_string()))?;
             Ok(format!(
                 "wrote {} recovery pages under transaction {:08x}",
@@ -567,7 +568,7 @@ fn run(
             let backup = read_eeprom_backup(&request.eeprom_backup)?;
             let version = FirmwareVersion::new(&request.firmware_version)
                 .map_err(|error| FlashRequestError::new(error.to_string()))?;
-            let report = radio_flasher::flash_application(
+            let report = radio_flasher::block_on(radio_flasher::flash_application(
                 &mut serial,
                 FlashPrerequisites {
                     image: &image,
@@ -582,7 +583,7 @@ fn run(
                     },
                 },
                 |page| step(sender, page, K5_PAGES),
-            )
+            ))
             .map_err(|error| FlashRequestError::new(error.to_string()))?;
             Ok(format!(
                 "wrote {} application pages with CRC-32 {:08x}",
@@ -603,9 +604,12 @@ fn flash_afik(
     // both write paths require of their caller. A forced family still needs a
     // page-write beacon, and then writes whatever version it reports.
     let (family, check) = match request.forced_family {
-        None => (detect_bootloader(serial), VersionCheck::Known),
+        None => (
+            radio_flasher::block_on(detect_bootloader(serial)),
+            VersionCheck::Known,
+        ),
         Some(forced) => (
-            force_bootloader_family(serial, forced.forced()),
+            radio_flasher::block_on(force_bootloader_family(serial, forced.forced())),
             VersionCheck::Any,
         ),
     };
@@ -613,7 +617,7 @@ fn flash_afik(
     match afik_image_for(Radio::of(&family), family.info().version(), &raw)? {
         AfikImage::K5V1(image) => {
             let version = FirmwareVersion::for_bootloader(family.info().version());
-            let report = flash_afik_application(
+            let report = radio_flasher::block_on(flash_afik_application(
                 serial,
                 &image,
                 &version,
@@ -622,7 +626,7 @@ fn flash_afik(
                 |page| {
                     step(sender, page, K5_PAGES);
                 },
-            )
+            ))
             .map_err(|error| FlashRequestError::new(error.to_string()))?;
             Ok(format!(
                 "wrote {} K5 V1 application pages with CRC-32 {:08x} under transaction \
@@ -632,7 +636,7 @@ fn flash_afik(
         }
         AfikImage::K1(image) => {
             let total = image.page_count();
-            let report = k1::flash_application(
+            let report = radio_flasher::block_on(k1::flash_application(
                 serial,
                 &image,
                 None,
@@ -640,7 +644,7 @@ fn flash_afik(
                 request.transaction_id,
                 check,
                 |page| step(sender, page, total),
-            )
+            ))
             .map_err(|error| FlashRequestError::new(error.to_string()))?;
             Ok(format!(
                 "wrote {} K1 application pages with CRC-32 {:08x} under transaction \
@@ -729,8 +733,8 @@ fn classify_k1(
     serial: &mut SerialTransport,
     confirmed_version: &str,
 ) -> Result<(), FlashRequestError> {
-    let family =
-        detect_bootloader(serial).map_err(|error| FlashRequestError::new(error.to_string()))?;
+    let family = radio_flasher::block_on(detect_bootloader(serial))
+        .map_err(|error| FlashRequestError::new(error.to_string()))?;
     let info = match &family {
         BootloaderFamily::K1(info) => info,
         BootloaderFamily::K5V1(info) => {

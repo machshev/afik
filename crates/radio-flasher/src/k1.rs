@@ -1,6 +1,8 @@
 //! Independently implemented UV-K1 recovery protocol.
 
-use std::{fmt, io::Read, io::Write};
+use std::fmt;
+
+use crate::link::{LinkRead, LinkWrite};
 
 use crate::{
     codec::receive_packet_without_response_crc, send_packet, FlashError, Packet, VersionCheck,
@@ -211,7 +213,7 @@ pub struct K1FlashReport {
 /// device. Three additional beacons are required for the version handshakes.
 /// Missing, malformed, mismatched, and rejected pages stop immediately; this
 /// function never retries a page.
-pub fn flash_recovery<T, F>(
+pub async fn flash_recovery<T, F>(
     transport: &mut T,
     image: &K1RecoveryImage,
     bootloader_version: &str,
@@ -220,7 +222,7 @@ pub fn flash_recovery<T, F>(
     page_acknowledged: F,
 ) -> Result<K1FlashReport, K1FlashError>
 where
-    T: Read + Write,
+    T: LinkRead + LinkWrite,
     F: FnMut(u16),
 {
     if target_confirmation != K1_RECOVERY_TARGET_CONFIRMATION {
@@ -243,6 +245,7 @@ where
         VersionCheck::Known,
         page_acknowledged,
     )
+    .await
 }
 
 /// Writes an AFIK K1 application after the target and rehearsal gates.
@@ -274,7 +277,7 @@ where
 ///
 /// `check` is [`VersionCheck::Known`] unless the operator forced the family,
 /// in which case any printable version on the K1 beacon is written to.
-pub fn flash_application<T, F>(
+pub async fn flash_application<T, F>(
     transport: &mut T,
     image: &K1RecoveryImage,
     recovery_image: Option<&K1RecoveryImage>,
@@ -284,7 +287,7 @@ pub fn flash_application<T, F>(
     page_acknowledged: F,
 ) -> Result<K1FlashReport, K1FlashError>
 where
-    T: Read + Write,
+    T: LinkRead + LinkWrite,
     F: FnMut(u16),
 {
     if recovery_image.is_some_and(|recovery| image == recovery) {
@@ -307,9 +310,10 @@ where
         check,
         page_acknowledged,
     )
+    .await
 }
 
-fn flash_image<T, F>(
+async fn flash_image<T, F>(
     transport: &mut T,
     image: &K1RecoveryImage,
     bootloader_version: &str,
@@ -318,16 +322,16 @@ fn flash_image<T, F>(
     mut page_acknowledged: F,
 ) -> Result<K1FlashReport, K1FlashError>
 where
-    T: Read + Write,
+    T: LinkRead + LinkWrite,
     F: FnMut(u16),
 {
     for _ in 0..3 {
-        let beacon = receive_packet_without_response_crc(transport)?;
+        let beacon = receive_packet_without_response_crc(transport).await?;
         let actual_version = parse_k1_beacon(&beacon, check)?;
         if actual_version != bootloader_version {
             return Err(K1FlashError::UnsupportedBootloader(actual_version));
         }
-        send_packet(transport, &version_request())?;
+        send_packet(transport, &version_request()).await?;
     }
 
     let page_count = image.page_count();
@@ -335,8 +339,9 @@ where
         send_packet(
             transport,
             &page_request(image, transaction_id, page, page_count),
-        )?;
-        receive_page_ack(transport, transaction_id, page, check)?;
+        )
+        .await?;
+        receive_page_ack(transport, transaction_id, page, check).await?;
         page_acknowledged(page);
     }
 
@@ -395,14 +400,14 @@ fn page_request(image: &K1RecoveryImage, transaction: u32, page: u16, page_count
     payload
 }
 
-fn receive_page_ack<T: Read>(
+async fn receive_page_ack<T: LinkRead>(
     transport: &mut T,
     transaction: u32,
     expected_page: u16,
     check: VersionCheck,
 ) -> Result<(), K1FlashError> {
     loop {
-        let packet = receive_packet_without_response_crc(transport)?;
+        let packet = receive_packet_without_response_crc(transport).await?;
         if packet_command(packet.as_slice()) == K1_BEACON {
             parse_k1_beacon(&packet, check)?;
             continue;
@@ -539,14 +544,14 @@ mod tests {
             input: Cursor::new(input),
             output: Vec::new(),
         };
-        let report = flash_recovery(
+        let report = crate::block_on(flash_recovery(
             &mut transport,
             &image,
             "7.03.01",
             K1_RECOVERY_TARGET_CONFIRMATION,
             transaction,
             |_| {},
-        )
+        ))
         .unwrap();
         assert_eq!(report.pages_acknowledged, 2);
         assert_eq!(transport.output.len(), 3 * 16 + 2 * 280);
@@ -574,14 +579,14 @@ mod tests {
             input: Cursor::new(input),
             output: Vec::new(),
         };
-        let result = flash_recovery(
+        let result = crate::block_on(flash_recovery(
             &mut transport,
             &image,
             "7.03.01",
             K1_RECOVERY_TARGET_CONFIRMATION,
             transaction,
             |_| {},
-        );
+        ));
         assert!(matches!(
             result,
             Err(K1FlashError::PageRejected { page: 0, result: 9 })
@@ -597,7 +602,7 @@ mod tests {
             input: Cursor::new(Vec::new()),
             output: Vec::new(),
         };
-        let result = flash_application(
+        let result = crate::block_on(flash_application(
             &mut transport,
             &image,
             Some(&image),
@@ -605,7 +610,7 @@ mod tests {
             1,
             crate::VersionCheck::Known,
             |_| {},
-        );
+        ));
         assert!(matches!(
             result,
             Err(K1FlashError::ApplicationMatchesRecovery)
@@ -622,7 +627,7 @@ mod tests {
             output: Vec::new(),
         };
 
-        let result = flash_application(
+        let result = crate::block_on(flash_application(
             &mut transport,
             &image,
             None,
@@ -630,11 +635,11 @@ mod tests {
             0,
             crate::VersionCheck::Known,
             |_| {},
-        );
+        ));
         assert!(matches!(result, Err(K1FlashError::InvalidTransactionId)));
         assert!(transport.output.is_empty());
 
-        let result = flash_application(
+        let result = crate::block_on(flash_application(
             &mut transport,
             &image,
             None,
@@ -642,7 +647,7 @@ mod tests {
             1,
             crate::VersionCheck::Known,
             |_| {},
-        );
+        ));
         assert!(matches!(
             result,
             Err(K1FlashError::UnsupportedBootloader(_))
@@ -667,7 +672,7 @@ mod tests {
             input: Cursor::new(input.clone()),
             output: Vec::new(),
         };
-        let report = flash_application(
+        let report = crate::block_on(flash_application(
             &mut transport,
             &image,
             None,
@@ -675,7 +680,7 @@ mod tests {
             transaction,
             crate::VersionCheck::Any,
             |_| {},
-        )
+        ))
         .unwrap();
         assert_eq!(report.pages_acknowledged, 1);
 
@@ -683,7 +688,7 @@ mod tests {
             input: Cursor::new(input),
             output: Vec::new(),
         };
-        let result = flash_application(
+        let result = crate::block_on(flash_application(
             &mut transport,
             &image,
             None,
@@ -691,7 +696,7 @@ mod tests {
             transaction,
             crate::VersionCheck::Known,
             |_| {},
-        );
+        ));
         assert!(matches!(
             result,
             Err(K1FlashError::UnsupportedBootloader(_))

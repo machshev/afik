@@ -183,7 +183,8 @@ fn write_block(radio: &mut SimulatedRadio, address: u16, data: [u8; 8]) -> Optio
 #[test]
 fn the_host_backup_reads_the_whole_eeprom_through_the_image() {
     let mut radio = SimulatedRadio::new();
-    let (info, backup) = backup_eeprom(&mut radio).expect("the image serves a complete backup");
+    let (info, backup) = radio_flasher::block_on(backup_eeprom(&mut radio))
+        .expect("the image serves a complete backup");
     assert_eq!(info.version().as_bytes(), IDENTITY);
     assert_eq!(backup.bytes(), radio.eeprom().memory.as_slice());
     // One bus transaction per 128-byte block, each closed with a stop.

@@ -6,7 +6,7 @@
 //! exactly one response.  No retry, EEPROM operation, persistence operation,
 //! flash operation, or transmit operation is reachable from this module.
 
-use std::io::{Read, Write};
+use crate::link::{LinkRead, LinkWrite};
 
 use crate::{codec::receive_packet, codec::send_packet, workflow::FlashError};
 
@@ -83,7 +83,7 @@ pub enum ControlResponse {
 /// footer and decoded device marker, and validates the response CRC trailer.
 /// The remaining checks below validate the exact `0x0620` response command,
 /// inner length, reserved bytes, and common payload.
-pub fn control<T: Read + Write>(
+pub async fn control<T: LinkRead + LinkWrite>(
     transport: &mut T,
     request: ControlRequest,
 ) -> Result<ControlResponse, FlashError> {
@@ -92,9 +92,9 @@ pub fn control<T: Read + Write>(
     payload[0..2].copy_from_slice(&command.to_le_bytes());
     payload[2..4].copy_from_slice(&4_u16.to_le_bytes());
     payload[4..8].copy_from_slice(&K5_SESSION_WORD.to_le_bytes());
-    send_packet(transport, &payload)?;
+    send_packet(transport, &payload).await?;
 
-    let response = receive_packet(transport)?;
+    let response = receive_packet(transport).await?;
     parse_response(&response, request)
 }
 
@@ -263,7 +263,7 @@ mod tests {
     fn view_request_uses_one_fixed_session_exchange_and_decodes_exact_view() {
         let mut radio = Radio::new(response(&[0x81, 7, 1, 2]));
         assert_eq!(
-            control(&mut radio, ControlRequest::View).unwrap(),
+            crate::block_on(control(&mut radio, ControlRequest::View)).unwrap(),
             ControlResponse::View(View {
                 channel: 7,
                 audio: true,
@@ -302,7 +302,7 @@ mod tests {
             ),
         ] {
             let mut radio = Radio::new(response(data));
-            let _ = control(&mut radio, request).unwrap();
+            let _ = crate::block_on(control(&mut radio, request)).unwrap();
             let mut decoded = radio.writes[4..14].to_vec();
             for (index, byte) in decoded.iter_mut().enumerate() {
                 *byte ^= XOR_KEY[index % XOR_KEY.len()];
@@ -327,7 +327,10 @@ mod tests {
                 frame[index] ^= value;
             }
             let mut radio = Radio::new(frame);
-            assert!(control(&mut radio, ControlRequest::View).is_err(), "{name}");
+            assert!(
+                crate::block_on(control(&mut radio, ControlRequest::View)).is_err(),
+                "{name}"
+            );
         }
     }
 
@@ -336,25 +339,25 @@ mod tests {
         let mut frame = response(&[0x81, 1, 1, 8]);
         let mut radio = Radio::new(frame.clone());
         assert!(matches!(
-            control(&mut radio, ControlRequest::View),
+            crate::block_on(control(&mut radio, ControlRequest::View)),
             Err(FlashError::InvalidK5Response("view response flags"))
         ));
         frame = response(&[0x82, 7, 0]);
         let mut radio = Radio::new(frame);
-        assert!(control(&mut radio, ControlRequest::View).is_err());
+        assert!(crate::block_on(control(&mut radio, ControlRequest::View)).is_err());
     }
 
     #[test]
     fn state_change_fault_view_is_a_typed_host_failure_but_query_reports_it() {
         let mut radio = Radio::new(response(&[0x83, 1, 1, 0]));
         assert!(matches!(
-            control(&mut radio, ControlRequest::ToggleAudio),
+            crate::block_on(control(&mut radio, ControlRequest::ToggleAudio)),
             Err(FlashError::K5StateChangeRejected)
         ));
 
         let mut radio = Radio::new(response(&[0x81, 1, 1, 0]));
         assert_eq!(
-            control(&mut radio, ControlRequest::View).unwrap(),
+            crate::block_on(control(&mut radio, ControlRequest::View)).unwrap(),
             ControlResponse::View(View {
                 channel: 1,
                 audio: true,
@@ -368,8 +371,8 @@ mod tests {
     #[test]
     fn view_and_key_response_opcodes_are_not_interchangeable() {
         let mut radio = Radio::new(response(&[0x83, 1, 1, 0]));
-        assert!(control(&mut radio, ControlRequest::View).is_err());
+        assert!(crate::block_on(control(&mut radio, ControlRequest::View)).is_err());
         let mut radio = Radio::new(response(&[0x81, 1, 1, 0]));
-        assert!(control(&mut radio, ControlRequest::ToggleAudio).is_err());
+        assert!(crate::block_on(control(&mut radio, ControlRequest::ToggleAudio)).is_err());
     }
 }

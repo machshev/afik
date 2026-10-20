@@ -13,6 +13,7 @@ mod codec;
 mod image;
 pub mod k1;
 pub mod k5;
+mod link;
 mod workflow;
 
 pub use codec::{receive_packet, send_packet, Packet};
@@ -20,6 +21,7 @@ pub use image::{
     crc32, sha256, ApplicationImage, EepromBackup, ImageError, APPLICATION_BYTES, EEPROM_BYTES,
     FLASH_PAGE_BYTES, FLASH_PAGE_COUNT,
 };
+pub use link::{block_on, LinkRead, LinkWrite};
 pub use workflow::{
     afik_image_version, apply_eeprom_restore, backup_eeprom, detect_bootloader,
     flash_afik_application, flash_application, force_bootloader_family, identify_radio,

@@ -116,8 +116,12 @@ impl DeviceSession {
         let image = project
             .compile_radio_image()
             .map_err(SessionError::Compile)?;
-        let report = radio_flasher::write_afik_image(&mut self.transport, &image, progress)
-            .map_err(SessionError::Radio)?;
+        let report = radio_flasher::block_on(radio_flasher::write_afik_image(
+            &mut self.transport,
+            &image,
+            progress,
+        ))
+        .map_err(SessionError::Radio)?;
         // Each slot's start place or programmed VFO goes in the same write,
         // as the radio's place, so it starts there; its dual watch is the one the
         // configuration programs, which the place would otherwise override.
@@ -129,8 +133,11 @@ impl DeviceSession {
                 dual_watch,
             )
             .encode();
-            radio_flasher::write_afik_place(&mut self.transport, &record)
-                .map_err(SessionError::Radio)?;
+            radio_flasher::block_on(radio_flasher::write_afik_place(
+                &mut self.transport,
+                &record,
+            ))
+            .map_err(SessionError::Radio)?;
         }
         report.firmware.version().clone_into(&mut self.firmware);
         Ok(report)
@@ -139,15 +146,19 @@ impl DeviceSession {
     /// Reads the radio's image and decodes it as the radio would.
     pub fn read_project(&mut self) -> Result<RadioProject, SessionError> {
         let (firmware, region) =
-            radio_flasher::read_afik_image(&mut self.transport).map_err(SessionError::Radio)?;
+            radio_flasher::block_on(radio_flasher::read_afik_image(&mut self.transport))
+                .map_err(SessionError::Radio)?;
         firmware.version().clone_into(&mut self.firmware);
         RadioProject::from_radio_image(&region).map_err(SessionError::Image)
     }
 
     /// Sends back-to-back reads, each once, and reports which were answered.
     pub fn test_link(&mut self) -> Result<LinkTestReport, SessionError> {
-        let report = radio_flasher::test_link(&mut self.transport, LINK_TEST_REQUESTS)
-            .map_err(SessionError::Radio)?;
+        let report = radio_flasher::block_on(radio_flasher::test_link(
+            &mut self.transport,
+            LINK_TEST_REQUESTS,
+        ))
+        .map_err(SessionError::Radio)?;
         report.firmware.version().clone_into(&mut self.firmware);
         Ok(report)
     }
@@ -185,10 +196,11 @@ impl DeviceSession {
     }
 
     fn connect(mut transport: Transport, description: String) -> Result<Self, SessionError> {
-        let firmware = radio_flasher::probe_normal_firmware(&mut transport)
-            .map_err(SessionError::Radio)?
-            .version()
-            .to_owned();
+        let firmware =
+            radio_flasher::block_on(radio_flasher::probe_normal_firmware(&mut transport))
+                .map_err(SessionError::Radio)?
+                .version()
+                .to_owned();
         Ok(Self {
             transport,
             description,

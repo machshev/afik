@@ -449,7 +449,8 @@ fn select_auto_device<C: Confirm>(
 
 fn identify<W: Write>(device: &Path, stdout: &mut W) -> Result<(), CliError> {
     let mut serial = open_serial(device)?;
-    let beacon = observe_bootloader(&mut serial).map_err(CliError::operation)?;
+    let beacon =
+        radio_flasher::block_on(observe_bootloader(&mut serial)).map_err(CliError::operation)?;
     writeln!(stdout, "device={}", device.display()).map_err(CliError::operation)?;
     writeln!(stdout, "baud={K5_BAUD}").map_err(CliError::operation)?;
     writeln!(stdout, "beacon_command=0x{:04x}", beacon.command()).map_err(CliError::operation)?;
@@ -460,7 +461,8 @@ fn identify<W: Write>(device: &Path, stdout: &mut W) -> Result<(), CliError> {
 
 fn probe_normal<W: Write>(device: &Path, stdout: &mut W) -> Result<(), CliError> {
     let mut serial = open_serial(device)?;
-    let info = probe_normal_firmware(&mut serial).map_err(CliError::operation)?;
+    let info =
+        radio_flasher::block_on(probe_normal_firmware(&mut serial)).map_err(CliError::operation)?;
     writeln!(stdout, "device={}", device.display()).map_err(CliError::operation)?;
     writeln!(stdout, "baud={K5_BAUD}").map_err(CliError::operation)?;
     writeln!(stdout, "protocol=normal-firmware-hello").map_err(CliError::operation)?;
@@ -469,7 +471,8 @@ fn probe_normal<W: Write>(device: &Path, stdout: &mut W) -> Result<(), CliError>
 
 fn link_test<W: Write>(device: &Path, stdout: &mut W) -> Result<(), CliError> {
     let mut serial = open_serial(device)?;
-    let report = test_link(&mut serial, LINK_TEST_REQUESTS).map_err(CliError::operation)?;
+    let report = radio_flasher::block_on(test_link(&mut serial, LINK_TEST_REQUESTS))
+        .map_err(CliError::operation)?;
     writeln!(stdout, "device={}", device.display()).map_err(CliError::operation)?;
     writeln!(stdout, "baud={K5_BAUD}").map_err(CliError::operation)?;
     writeln!(stdout, "firmware={}", report.firmware.version()).map_err(CliError::operation)?;
@@ -494,13 +497,14 @@ fn link_test<W: Write>(device: &Path, stdout: &mut W) -> Result<(), CliError> {
 
 fn rf_audio<W: Write>(device: &Path, routed: bool, stdout: &mut W) -> Result<(), CliError> {
     let mut serial = open_serial(device)?;
-    let report = set_rf_audio(&mut serial, routed).map_err(CliError::operation)?;
+    let report =
+        radio_flasher::block_on(set_rf_audio(&mut serial, routed)).map_err(CliError::operation)?;
     write_rf_report(device, &report, stdout)
 }
 
 fn probe_rf_observation<W: Write>(device: &Path, stdout: &mut W) -> Result<(), CliError> {
     let mut serial = open_serial(device)?;
-    let report = probe_rf(&mut serial).map_err(CliError::operation)?;
+    let report = radio_flasher::block_on(probe_rf(&mut serial)).map_err(CliError::operation)?;
     write_rf_report(device, &report, stdout)
 }
 
@@ -531,7 +535,8 @@ fn write_rf_report<W: Write>(
 
 fn probe_keypad<W: Write>(device: &Path, stdout: &mut W) -> Result<(), CliError> {
     let mut serial = open_serial(device)?;
-    let report = probe_keypad_matrix(&mut serial).map_err(CliError::operation)?;
+    let report =
+        radio_flasher::block_on(probe_keypad_matrix(&mut serial)).map_err(CliError::operation)?;
     let idr = report.gpio_b_idr_by_column();
     writeln!(stdout, "device={}", device.display()).map_err(CliError::operation)?;
     writeln!(stdout, "baud={K5_BAUD}").map_err(CliError::operation)?;
@@ -546,7 +551,8 @@ fn probe_keypad<W: Write>(device: &Path, stdout: &mut W) -> Result<(), CliError>
 
 fn probe_clock<W: Write>(device: &Path, stdout: &mut W) -> Result<(), CliError> {
     let mut serial = open_serial(device)?;
-    let report = probe_clock_snapshot(&mut serial).map_err(CliError::operation)?;
+    let report =
+        radio_flasher::block_on(probe_clock_snapshot(&mut serial)).map_err(CliError::operation)?;
     let registers = report.registers();
     writeln!(stdout, "device={}", device.display()).map_err(CliError::operation)?;
     writeln!(stdout, "baud={K5_BAUD}").map_err(CliError::operation)?;
@@ -565,7 +571,8 @@ fn probe_clock_register_named<W: Write>(
 ) -> Result<(), CliError> {
     const NAMES: [&str; 4] = ["CR", "ICSCR", "CFGR", "PLLCFGR"];
     let mut serial = open_serial(device)?;
-    let value = probe_clock_register(&mut serial, index).map_err(CliError::operation)?;
+    let value = radio_flasher::block_on(probe_clock_register(&mut serial, index))
+        .map_err(CliError::operation)?;
     writeln!(stdout, "device={}", device.display()).map_err(CliError::operation)?;
     writeln!(stdout, "baud={K5_BAUD}").map_err(CliError::operation)?;
     writeln!(stdout, "protocol=afik-k1-clock-register").map_err(CliError::operation)?;
@@ -575,7 +582,8 @@ fn probe_clock_register_named<W: Write>(
 
 fn probe_clock_control_marker<W: Write>(device: &Path, stdout: &mut W) -> Result<(), CliError> {
     let mut serial = open_serial(device)?;
-    let marker = probe_clock_control(&mut serial).map_err(CliError::operation)?;
+    let marker =
+        radio_flasher::block_on(probe_clock_control(&mut serial)).map_err(CliError::operation)?;
     writeln!(stdout, "device={}", device.display()).map_err(CliError::operation)?;
     writeln!(stdout, "baud={K5_BAUD}").map_err(CliError::operation)?;
     writeln!(stdout, "protocol=afik-k1-clock-control").map_err(CliError::operation)?;
@@ -589,7 +597,8 @@ fn backup<W: Write>(
     stdout: &mut W,
 ) -> Result<(), CliError> {
     let mut serial = open_serial(device)?;
-    let (info, backup) = backup_eeprom(&mut serial).map_err(CliError::operation)?;
+    let (info, backup) =
+        radio_flasher::block_on(backup_eeprom(&mut serial)).map_err(CliError::operation)?;
     write_private_file(output, backup.bytes(), force)?;
     writeln!(stdout, "device={}", device.display()).map_err(CliError::operation)?;
     writeln!(stdout, "firmware={}", info.version()).map_err(CliError::operation)?;
@@ -613,7 +622,8 @@ fn flash<W: Write>(
     let supplied_crc = parse_crc32(&arguments.image_crc32_confirmation)?;
     let transaction_id = fresh_transaction_id()?;
     let mut serial = open_serial(device)?;
-    let family = detect_bootloader(&mut serial).map_err(CliError::operation)?;
+    let family =
+        radio_flasher::block_on(detect_bootloader(&mut serial)).map_err(CliError::operation)?;
     let context = FlashContext {
         image_raw: &image_raw,
         backup: &backup,
@@ -649,7 +659,8 @@ fn flash_afik<W: Write, C: Confirm>(
     // Classification is read-only, so it runs before the operator is asked. That
     // way the confirmation names the radio actually on the other end of the
     // cable rather than the one the operator meant to plug in.
-    let family = detect_bootloader(&mut serial).map_err(CliError::operation)?;
+    let family =
+        radio_flasher::block_on(detect_bootloader(&mut serial)).map_err(CliError::operation)?;
     let radio = Radio::of(&family);
     let image_path = arguments
         .image
@@ -786,7 +797,7 @@ fn flash_afik_k1<W: Write, C: Confirm>(
     writeln!(stdout, "transaction_id={:08x}", flash.transaction_id).map_err(CliError::operation)?;
     stdout.flush().map_err(CliError::operation)?;
 
-    let report = radio_flasher::k1::flash_application(
+    let report = radio_flasher::block_on(radio_flasher::k1::flash_application(
         serial,
         &image,
         None,
@@ -804,7 +815,7 @@ fn flash_afik_k1<W: Write, C: Confirm>(
                 let _ = stdout.flush();
             }
         },
-    )
+    ))
     .map_err(CliError::operation)?;
     writeln!(stdout, "pages_acknowledged={}", report.pages_acknowledged)
         .map_err(CliError::operation)?;
@@ -825,7 +836,7 @@ fn flash_k1<W: Write>(
             context.supplied_crc
         )));
     }
-    let report = radio_flasher::k1::flash_recovery(
+    let report = radio_flasher::block_on(radio_flasher::k1::flash_recovery(
         serial,
         &image,
         info.version(),
@@ -842,7 +853,7 @@ fn flash_k1<W: Write>(
                 let _ = stdout.flush();
             }
         },
-    )
+    ))
     .map_err(CliError::operation)?;
     writeln!(stdout, "bootloader={}", report.bootloader_version).map_err(CliError::operation)?;
     writeln!(stdout, "pages_acknowledged={}", report.pages_acknowledged)
@@ -878,13 +889,13 @@ fn flash_k5<W: Write>(
         transaction_id: context.transaction_id,
         purpose: FlashPurpose::RecoveryRehearsal,
     };
-    let report = flash_application(serial, prerequisites, |page| {
+    let report = radio_flasher::block_on(flash_application(serial, prerequisites, |page| {
         let complete = page + 1;
         if complete % 16 == 0 || complete == 240 {
             let _ = writeln!(stdout, "acknowledged_pages={complete}/240");
             let _ = stdout.flush();
         }
-    })
+    }))
     .map_err(CliError::operation)?;
     writeln!(stdout, "bootloader={}", report.bootloader.version()).map_err(CliError::operation)?;
     writeln!(stdout, "pages_acknowledged={}", report.pages_acknowledged)

@@ -188,7 +188,8 @@ pub(crate) fn control<W: Write>(
     stdout: &mut W,
 ) -> Result<(), CliError> {
     let mut serial = open_serial(device)?;
-    let response = k5_control(&mut serial, request).map_err(CliError::operation)?;
+    let response =
+        radio_flasher::block_on(k5_control(&mut serial, request)).map_err(CliError::operation)?;
     writeln!(stdout, "device={}", device.display()).map_err(CliError::operation)?;
     writeln!(stdout, "baud={K5_BAUD}").map_err(CliError::operation)?;
     writeln!(stdout, "request={}", request_label(request)).map_err(CliError::operation)?;
@@ -314,7 +315,7 @@ pub(crate) fn restore<W: Write>(
     stdout.flush().map_err(CliError::operation)?;
 
     let mut serial = open_serial(device)?;
-    let plan = prepare_eeprom_restore(
+    let plan = radio_flasher::block_on(prepare_eeprom_restore(
         &mut serial,
         EepromRestorePrerequisites {
             restore_image: &restore_image,
@@ -327,7 +328,7 @@ pub(crate) fn restore<W: Write>(
             target_confirmation: &arguments.target_confirmation,
             restore_confirmation: &arguments.restore_confirmation,
         },
-    )
+    ))
     .map_err(CliError::operation)?;
     writeln!(stdout, "firmware={}", plan.firmware().version()).map_err(CliError::operation)?;
     writeln!(stdout, "live_crc32={:08x}", plan.live_backup().crc32())
@@ -342,7 +343,8 @@ pub(crate) fn restore<W: Write>(
     )
     .map_err(CliError::operation)?;
     stdout.flush().map_err(CliError::operation)?;
-    let report = apply_eeprom_restore(&mut serial, &plan).map_err(CliError::operation)?;
+    let report = radio_flasher::block_on(apply_eeprom_restore(&mut serial, &plan))
+        .map_err(CliError::operation)?;
     writeln!(
         stdout,
         "status={}",
@@ -431,13 +433,13 @@ pub(crate) fn flash_afik_gated<W: Write>(
     stdout.flush().map_err(CliError::operation)?;
 
     let mut serial = open_serial(device)?;
-    let report = flash_application(&mut serial, prerequisites, |page| {
+    let report = radio_flasher::block_on(flash_application(&mut serial, prerequisites, |page| {
         let complete = page + 1;
         if complete % 16 == 0 || complete == 240 {
             let _ = writeln!(stdout, "acknowledged_pages={complete}/240");
             let _ = stdout.flush();
         }
-    })
+    }))
     .map_err(CliError::operation)?;
     writeln!(stdout, "bootloader={}", report.bootloader.version()).map_err(CliError::operation)?;
     writeln!(stdout, "pages_acknowledged={}", report.pages_acknowledged)
@@ -481,7 +483,7 @@ pub(crate) fn flash_afik_detected<C: Confirm, W: Write>(
     writeln!(stdout, "image_crc32={:08x}", image.crc32()).map_err(CliError::operation)?;
     writeln!(stdout, "transaction_id={:08x}", flash.transaction_id).map_err(CliError::operation)?;
     stdout.flush().map_err(CliError::operation)?;
-    let report = flash_afik_application(
+    let report = radio_flasher::block_on(flash_afik_application(
         serial,
         &image,
         &version,
@@ -494,7 +496,7 @@ pub(crate) fn flash_afik_detected<C: Confirm, W: Write>(
                 let _ = stdout.flush();
             }
         },
-    )
+    ))
     .map_err(CliError::operation)?;
     writeln!(stdout, "bootloader={}", report.bootloader.version()).map_err(CliError::operation)?;
     writeln!(stdout, "pages_acknowledged={}", report.pages_acknowledged)

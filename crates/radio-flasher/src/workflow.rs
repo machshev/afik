@@ -1,4 +1,6 @@
-use std::{error::Error, fmt, io, io::Read, io::Write};
+use std::{error::Error, fmt, io};
+
+use crate::link::{LinkRead, LinkWrite};
 
 use crate::{
     codec::{
@@ -704,32 +706,32 @@ pub struct EepromRestoreReport {
 }
 
 /// Reads and validates the complete 8 KiB EEPROM without exposing any write.
-pub fn backup_eeprom<T: Read + Write>(
+pub async fn backup_eeprom<T: LinkRead + LinkWrite>(
     transport: &mut T,
 ) -> Result<(NormalFirmwareInfo, EepromBackup), FlashError> {
     let hello = hello_request();
-    send_packet(transport, &hello)?;
-    let info = parse_hello_response(&receive_packet(transport)?)?;
+    send_packet(transport, &hello).await?;
+    let info = parse_hello_response(&receive_packet(transport).await?)?;
     require_eeprom_service(&info)?;
 
-    let backup = read_eeprom_image(transport)?;
+    let backup = read_eeprom_image(transport).await?;
     Ok((info, backup))
 }
 
 /// Performs the hello, complete live backup, and changed-block plan without writing.
-pub fn prepare_eeprom_restore<T: Read + Write>(
+pub async fn prepare_eeprom_restore<T: LinkRead + LinkWrite>(
     transport: &mut T,
     prerequisites: EepromRestorePrerequisites<'_>,
 ) -> Result<EepromRestorePlan, FlashError> {
     validate_restore_prerequisites(&prerequisites)?;
     let hello = hello_request();
-    send_packet(transport, &hello)?;
-    let firmware = parse_hello_response(&receive_packet(transport)?)?;
+    send_packet(transport, &hello).await?;
+    let firmware = parse_hello_response(&receive_packet(transport).await?)?;
     require_eeprom_restore(&firmware)?;
     if firmware.version() != prerequisites.expected_firmware.as_str() {
         return Err(FlashError::EepromFirmwareMismatch);
     }
-    let live_backup = read_eeprom_image(transport)?;
+    let live_backup = read_eeprom_image(transport).await?;
     if live_backup.bytes() != prerequisites.expected_current.bytes() {
         return Err(FlashError::EepromCurrentMismatch);
     }
@@ -752,7 +754,7 @@ pub fn prepare_eeprom_restore<T: Read + Write>(
 
 /// Applies a previously prepared plan. The caller must preserve `live_backup`
 /// before calling this function; no retry is performed after an ambiguous write.
-pub fn apply_eeprom_restore<T: Read + Write>(
+pub async fn apply_eeprom_restore<T: LinkRead + LinkWrite>(
     transport: &mut T,
     plan: &EepromRestorePlan,
 ) -> Result<EepromRestoreReport, FlashError> {
@@ -766,9 +768,9 @@ pub fn apply_eeprom_restore<T: Read + Write>(
     }
     for &offset in &plan.changed_offsets {
         let mut current = [0_u8; EEPROM_WRITE_BYTES];
-        read_eeprom_bytes(transport, offset, &mut current)?;
+        read_eeprom_bytes(transport, offset, &mut current).await?;
         let mut stable = [0_u8; EEPROM_WRITE_BYTES];
-        read_eeprom_bytes(transport, offset, &mut stable)?;
+        read_eeprom_bytes(transport, offset, &mut stable).await?;
         if current != stable {
             return Err(FlashError::EepromBlockChangedDuringPreflight { offset });
         }
@@ -781,16 +783,16 @@ pub fn apply_eeprom_restore<T: Read + Write>(
         let mut replacement_block = [0_u8; EEPROM_WRITE_BYTES];
         replacement_block.copy_from_slice(replacement);
         let request = eeprom_write_request(offset, replacement_block);
-        send_packet(transport, &request)?;
-        let response = receive_packet(transport)?;
+        send_packet(transport, &request).await?;
+        let response = receive_packet(transport).await?;
         parse_eeprom_write_response(&response, offset)?;
         let mut verified = [0_u8; EEPROM_WRITE_BYTES];
-        read_eeprom_bytes(transport, offset, &mut verified)?;
+        read_eeprom_bytes(transport, offset, &mut verified).await?;
         if verified != replacement {
             return Err(FlashError::EepromBlockVerificationFailed { offset });
         }
     }
-    let final_image = read_eeprom_image(transport)?;
+    let final_image = read_eeprom_image(transport).await?;
     if final_image.bytes() != plan.restore_image.bytes() {
         return Err(FlashError::EepromRestoreVerificationFailed);
     }
@@ -853,26 +855,27 @@ impl LinkTestReport {
 /// missed one again; this does neither, so it shows a link which loses
 /// requests rather than hiding it. A K1 which lost every request arriving
 /// straight after an answer showed `.X.X.X.X`. Only reads are sent.
-pub fn test_link<T: Read + Write>(
+pub async fn test_link<T: LinkRead + LinkWrite>(
     transport: &mut T,
     requests: usize,
 ) -> Result<LinkTestReport, FlashError> {
-    let firmware = probe_normal_firmware(transport)?;
+    let firmware = probe_normal_firmware(transport).await?;
     let mut answered = Vec::with_capacity(requests);
     let blocks = IMAGE_REGION / EEPROM_BLOCK_BYTES;
     for index in 0..requests {
         let at = (index % blocks) * EEPROM_BLOCK_BYTES;
         let offset = u16::try_from(at).map_err(|_| FlashError::PacketTooLarge(at))?;
-        send_packet(transport, &eeprom_read_request(offset, EEPROM_BLOCK_BYTES))?;
+        send_packet(transport, &eeprom_read_request(offset, EEPROM_BLOCK_BYTES)).await?;
         let mut block = [0_u8; EEPROM_BLOCK_BYTES];
         let answer = receive_packet_within(transport, EXCHANGE_EMPTY_READS)
+            .await
             .and_then(|packet| parse_eeprom_response(&packet, offset, &mut block));
         match answer {
             Ok(()) => answered.push(true),
             Err(FlashError::Io(error)) => return Err(FlashError::Io(error)),
             Err(_) => {
                 answered.push(false);
-                discard_input(transport)?;
+                discard_input(transport).await?;
             }
         }
     }
@@ -883,11 +886,11 @@ pub fn test_link<T: Read + Write>(
 ///
 /// Returns the whole region; the image's own header says how much of it is
 /// the image. Nothing is written.
-pub fn read_afik_image<T: Read + Write>(
+pub async fn read_afik_image<T: LinkRead + LinkWrite>(
     transport: &mut T,
 ) -> Result<(NormalFirmwareInfo, Vec<u8>), FlashError> {
-    let firmware = afik_memory_hello(transport)?;
-    let region = read_memory(transport, IMAGE_REGION)?;
+    let firmware = afik_memory_hello(transport).await?;
+    let region = read_memory(transport, IMAGE_REGION).await?;
     Ok((firmware, region))
 }
 
@@ -897,13 +900,13 @@ pub fn read_afik_image<T: Read + Write>(
 /// Only blocks which differ are written, each acknowledged and read back
 /// before the next. The radio validates the image itself a second after the
 /// last write. `progress` is told each written block and the number to write.
-pub fn write_afik_image<T, F>(
+pub async fn write_afik_image<T, F>(
     transport: &mut T,
     image: &[u8],
     mut progress: F,
 ) -> Result<ImageWriteReport, FlashError>
 where
-    T: Read + Write,
+    T: LinkRead + LinkWrite,
     F: FnMut(u16, u16),
 {
     if image.len() > IMAGE_REGION {
@@ -912,11 +915,11 @@ where
             capacity: IMAGE_REGION,
         });
     }
-    let firmware = afik_memory_hello(transport)?;
+    let firmware = afik_memory_hello(transport).await?;
     // The image is written in whole blocks; a short last block keeps the
     // bytes after the image as they are.
     let span = image.len().div_ceil(EEPROM_WRITE_BYTES) * EEPROM_WRITE_BYTES;
-    let live = read_memory(transport, span)?;
+    let live = read_memory(transport, span).await?;
     let mut wanted = live.clone();
     wanted[..image.len()].copy_from_slice(image);
     let changed = (0..span)
@@ -930,15 +933,16 @@ where
         block.copy_from_slice(&wanted[at..at + EEPROM_WRITE_BYTES]);
         exchange(transport, &eeprom_write_request(offset, block), |packet| {
             parse_eeprom_write_response(packet, offset)
-        })?;
+        })
+        .await?;
         let mut verified = [0_u8; EEPROM_WRITE_BYTES];
-        read_memory_block(transport, offset, &mut verified)?;
+        read_memory_block(transport, offset, &mut verified).await?;
         if verified != block {
             return Err(FlashError::EepromBlockVerificationFailed { offset });
         }
         progress(u16::try_from(done + 1).unwrap_or(total), total);
     }
-    if read_memory(transport, span)?[..image.len()] != *image {
+    if read_memory(transport, span).await?[..image.len()] != *image {
         return Err(FlashError::ConfigurationVerificationFailed);
     }
     Ok(ImageWriteReport {
@@ -955,7 +959,7 @@ where
 /// so the radio takes the image and the place together and goes there. Each
 /// block is acknowledged; a K1 keeps the record until the write commits, so
 /// it is not read back.
-pub fn write_afik_place<T: Read + Write>(
+pub async fn write_afik_place<T: LinkRead + LinkWrite>(
     transport: &mut T,
     record: &[u8; radio_platform::operator_state::OPERATOR_STATE_BYTES],
 ) -> Result<(), FlashError> {
@@ -966,7 +970,8 @@ pub fn write_afik_place<T: Read + Write>(
         block.copy_from_slice(chunk);
         exchange(transport, &eeprom_write_request(offset, block), |packet| {
             parse_eeprom_write_response(packet, offset)
-        })?;
+        })
+        .await?;
     }
     Ok(())
 }
@@ -992,22 +997,22 @@ const EXCHANGE_STALE_PACKETS: usize = 4;
 /// again holds the same bytes. A packet `parse` refuses is taken as a late
 /// answer to an earlier attempt or request and skipped; when nothing else
 /// arrives, the last refusal is the error.
-fn exchange<T, R>(
+async fn exchange<T, R>(
     transport: &mut T,
     request: &[u8],
     mut parse: impl FnMut(&Packet) -> Result<R, FlashError>,
 ) -> Result<R, FlashError>
 where
-    T: Read + Write,
+    T: LinkRead + LinkWrite,
 {
     let mut failure = FlashError::Timeout;
     for attempt in 0..EXCHANGE_ATTEMPTS {
         if attempt > 0 {
-            discard_input(transport)?;
+            discard_input(transport).await?;
         }
-        send_packet(transport, request)?;
+        send_packet(transport, request).await?;
         for _ in 0..EXCHANGE_STALE_PACKETS {
-            match receive_packet_within(transport, EXCHANGE_EMPTY_READS) {
+            match receive_packet_within(transport, EXCHANGE_EMPTY_READS).await {
                 Ok(packet) => match parse(&packet) {
                     Ok(answer) => return Ok(answer),
                     Err(error) => failure = error,
@@ -1025,14 +1030,16 @@ where
     Err(failure)
 }
 
-fn afik_memory_hello<T: Read + Write>(transport: &mut T) -> Result<NormalFirmwareInfo, FlashError> {
-    let firmware = exchange(transport, &hello_request(), parse_hello_response)?;
+async fn afik_memory_hello<T: LinkRead + LinkWrite>(
+    transport: &mut T,
+) -> Result<NormalFirmwareInfo, FlashError> {
+    let firmware = exchange(transport, &hello_request(), parse_hello_response).await?;
     require_afik_memory(&firmware)?;
     Ok(firmware)
 }
 
 /// Reads one block of an AFIK radio's memory view.
-fn read_memory_block<T: Read + Write>(
+async fn read_memory_block<T: LinkRead + LinkWrite>(
     transport: &mut T,
     offset: u16,
     output: &mut [u8],
@@ -1045,18 +1052,22 @@ fn read_memory_block<T: Read + Write>(
     let length = output.len();
     exchange(transport, &request, |packet| {
         parse_eeprom_response(packet, offset, &mut block[..length])
-    })?;
+    })
+    .await?;
     output.copy_from_slice(&block[..length]);
     Ok(())
 }
 
 /// Reads `len` bytes from the start of the memory view.
-fn read_memory<T: Read + Write>(transport: &mut T, len: usize) -> Result<Vec<u8>, FlashError> {
+async fn read_memory<T: LinkRead + LinkWrite>(
+    transport: &mut T,
+    len: usize,
+) -> Result<Vec<u8>, FlashError> {
     let mut bytes = vec![0_u8; len];
     for (block, chunk) in bytes.chunks_mut(EEPROM_BLOCK_BYTES).enumerate() {
         let offset = block * EEPROM_BLOCK_BYTES;
         let offset = u16::try_from(offset).map_err(|_| FlashError::PacketTooLarge(offset))?;
-        read_memory_block(transport, offset, chunk)?;
+        read_memory_block(transport, offset, chunk).await?;
     }
     Ok(bytes)
 }
@@ -1067,30 +1078,30 @@ fn read_memory<T: Read + Write>(transport: &mut T, len: usize) -> Result<Vec<u8>
 /// hello exchange, sending the hello again if no answer comes, and never
 /// requests EEPROM/configuration data. It is the
 /// host-side witness for an AFIK application running over the K1 serial path.
-pub fn probe_normal_firmware<T: Read + Write>(
+pub async fn probe_normal_firmware<T: LinkRead + LinkWrite>(
     transport: &mut T,
 ) -> Result<NormalFirmwareInfo, FlashError> {
-    exchange(transport, &hello_request(), parse_hello_response)
+    exchange(transport, &hello_request(), parse_hello_response).await
 }
 
 /// Requests one raw, receive-only main-key matrix observation.
-pub fn probe_keypad_matrix<T: Read + Write>(
+pub async fn probe_keypad_matrix<T: LinkRead + LinkWrite>(
     transport: &mut T,
 ) -> Result<KeypadMatrixReport, FlashError> {
-    send_packet(transport, &session_request(COMMAND_KEYPAD_REQUEST))?;
-    parse_keypad_response(&receive_packet(transport)?)
+    send_packet(transport, &session_request(COMMAND_KEYPAD_REQUEST)).await?;
+    parse_keypad_response(&receive_packet(transport).await?)
 }
 
 /// Requests one raw, read-only BK4819 receive observation.
-pub fn probe_rf<T: Read + Write>(transport: &mut T) -> Result<RfReport, FlashError> {
-    send_packet(transport, &session_request(COMMAND_RF_REQUEST))?;
-    parse_rf_response(&receive_packet(transport)?)
+pub async fn probe_rf<T: LinkRead + LinkWrite>(transport: &mut T) -> Result<RfReport, FlashError> {
+    send_packet(transport, &session_request(COMMAND_RF_REQUEST)).await?;
+    parse_rf_response(&receive_packet(transport).await?)
 }
 
 /// Routes or mutes demodulated receive audio and returns a fresh observation.
 ///
 /// This drives the receive audio chain only and carries no transmit capability.
-pub fn set_rf_audio<T: Read + Write>(
+pub async fn set_rf_audio<T: LinkRead + LinkWrite>(
     transport: &mut T,
     routed: bool,
 ) -> Result<RfReport, FlashError> {
@@ -1099,29 +1110,31 @@ pub fn set_rf_audio<T: Read + Write>(
     } else {
         COMMAND_RF_AUDIO_OFF_REQUEST
     };
-    send_packet(transport, &session_request(command))?;
-    parse_rf_response(&receive_packet(transport)?)
+    send_packet(transport, &session_request(command)).await?;
+    parse_rf_response(&receive_packet(transport).await?)
 }
 
 /// Requests one raw, read-only inherited RCC clock observation.
-pub fn probe_clock_snapshot<T: Read + Write>(
+pub async fn probe_clock_snapshot<T: LinkRead + LinkWrite>(
     transport: &mut T,
 ) -> Result<ClockSnapshotReport, FlashError> {
-    send_packet(transport, &session_request(COMMAND_CLOCK_REQUEST))?;
-    parse_clock_response(&receive_packet(transport)?)
+    send_packet(transport, &session_request(COMMAND_CLOCK_REQUEST)).await?;
+    parse_clock_response(&receive_packet(transport).await?)
 }
 
 /// Requests the four inherited RCC registers as individually identified reads.
-pub fn probe_clock_registers<T: Read + Write>(transport: &mut T) -> Result<[u32; 4], FlashError> {
+pub async fn probe_clock_registers<T: LinkRead + LinkWrite>(
+    transport: &mut T,
+) -> Result<[u32; 4], FlashError> {
     let mut registers = [0_u32; 4];
     for (index, register) in registers.iter_mut().enumerate() {
-        *register = probe_clock_register(transport, index)?;
+        *register = probe_clock_register(transport, index).await?;
     }
     Ok(registers)
 }
 
 /// Requests one indexed inherited RCC register without touching the others.
-pub fn probe_clock_register<T: Read + Write>(
+pub async fn probe_clock_register<T: LinkRead + LinkWrite>(
     transport: &mut T,
     index: usize,
 ) -> Result<u32, FlashError> {
@@ -1132,14 +1145,16 @@ pub fn probe_clock_register<T: Read + Write>(
             length: 0,
         });
     };
-    send_packet(transport, &session_request(*command))?;
-    parse_clock_register_response(&receive_packet(transport)?, index)
+    send_packet(transport, &session_request(*command)).await?;
+    parse_clock_register_response(&receive_packet(transport).await?, index)
 }
 
 /// Exercises the clock diagnostic command/response path without any MMIO read.
-pub fn probe_clock_control<T: Read + Write>(transport: &mut T) -> Result<u32, FlashError> {
-    send_packet(transport, &session_request(COMMAND_CLOCK_CONTROL_REQUEST))?;
-    let packet = receive_packet(transport)?;
+pub async fn probe_clock_control<T: LinkRead + LinkWrite>(
+    transport: &mut T,
+) -> Result<u32, FlashError> {
+    send_packet(transport, &session_request(COMMAND_CLOCK_CONTROL_REQUEST)).await?;
+    let packet = receive_packet(transport).await?;
     let payload = packet.as_slice();
     require_packet(
         payload,
@@ -1169,15 +1184,17 @@ pub fn probe_clock_control<T: Read + Write>(transport: &mut T) -> Result<u32, Fl
 }
 
 /// Waits for one exact, printable version-2 bootloader beacon.
-pub fn probe_bootloader_v2<T: Read>(transport: &mut T) -> Result<BootloaderInfo, FlashError> {
-    probe_bootloader(transport, VersionCheck::Known)
+pub async fn probe_bootloader_v2<T: LinkRead>(
+    transport: &mut T,
+) -> Result<BootloaderInfo, FlashError> {
+    probe_bootloader(transport, VersionCheck::Known).await
 }
 
-fn probe_bootloader<T: Read>(
+async fn probe_bootloader<T: LinkRead>(
     transport: &mut T,
     check: VersionCheck,
 ) -> Result<BootloaderInfo, FlashError> {
-    parse_bootloader_beacon(&receive_packet(transport)?, check)
+    parse_bootloader_beacon(&receive_packet(transport).await?, check)
 }
 
 /// Protocol shape announced by a beacon command, per `EVID-K5-015`.
@@ -1241,8 +1258,10 @@ impl BeaconObservation {
 /// envelope, the marker and the beacon layout, and it accepts any printable
 /// version, including one no evidence covers. It selects no workflow and
 /// authorises nothing.
-pub fn observe_bootloader<T: Read>(transport: &mut T) -> Result<BeaconObservation, FlashError> {
-    let (packet, response_crc) = receive_packet_with_response_crc(transport)?;
+pub async fn observe_bootloader<T: LinkRead>(
+    transport: &mut T,
+) -> Result<BeaconObservation, FlashError> {
+    let (packet, response_crc) = receive_packet_with_response_crc(transport).await?;
     let payload = packet.as_slice();
     if !is_device_marker(response_crc, payload.len()) {
         return Err(FlashError::InvalidResponseCrc(response_crc));
@@ -1270,19 +1289,21 @@ pub enum RadioPresence {
 /// It first listens for a bootloader beacon, which needs no request at all, so
 /// a radio in flashing mode is never sent anything. Only when no beacon arrives
 /// does it send the read-only normal-firmware hello.
-pub fn identify_radio<T: Read + Write>(transport: &mut T) -> Result<RadioPresence, FlashError> {
+pub async fn identify_radio<T: LinkRead + LinkWrite>(
+    transport: &mut T,
+) -> Result<RadioPresence, FlashError> {
     // A port opened partway through a beacon reads the tail of one packet
     // first. Bytes are arriving, so listen for the next packet rather than
     // reporting that nothing answered; silence goes straight to the hello.
     let mut silent = FlashError::Timeout;
     for _ in 0..IDENTIFY_LISTEN_ATTEMPTS {
-        match detect_bootloader(transport) {
+        match detect_bootloader(transport).await {
             Ok(family) => return Ok(RadioPresence::Bootloader(family)),
             Err(FlashError::Timeout) => break,
             Err(error) => silent = error,
         }
     }
-    match probe_normal_firmware(transport) {
+    match probe_normal_firmware(transport).await {
         Ok(info) => Ok(RadioPresence::Firmware(info)),
         // A beacon arriving now is a bootloader the listen missed or could not
         // classify; its own error says more than the hello's.
@@ -1328,8 +1349,10 @@ pub fn afik_image_version(raw: &[u8]) -> Option<String> {
 }
 
 /// Reads one beacon and classifies only the pinned K1 or qualified K5 protocol.
-pub fn detect_bootloader<T: Read>(transport: &mut T) -> Result<BootloaderFamily, FlashError> {
-    let (packet, response_crc) = receive_packet_with_response_crc(transport)?;
+pub async fn detect_bootloader<T: LinkRead>(
+    transport: &mut T,
+) -> Result<BootloaderFamily, FlashError> {
+    let (packet, response_crc) = receive_packet_with_response_crc(transport).await?;
     if !is_device_marker(response_crc, packet.as_slice().len()) {
         return Err(FlashError::InvalidResponseCrc(response_crc));
     }
@@ -1342,11 +1365,11 @@ pub fn detect_bootloader<T: Read>(transport: &mut T) -> Result<BootloaderFamily,
 /// The escape hatch for [`detect_bootloader`]: the marker, the `0x0518`
 /// command and the beacon layout are still required, so an AES (`0x057A`)
 /// bootloader or a malformed frame is still refused.
-pub fn force_bootloader_family<T: Read>(
+pub async fn force_bootloader_family<T: LinkRead>(
     transport: &mut T,
     family: ForcedFamily,
 ) -> Result<BootloaderFamily, FlashError> {
-    let beacon = observe_bootloader(transport)?;
+    let beacon = observe_bootloader(transport).await?;
     if beacon.protocol() != BeaconProtocol::PageWrite {
         return Err(FlashError::UnsupportedBootloader(beacon.command()));
     }
@@ -1363,13 +1386,13 @@ pub fn force_bootloader_family<T: Read>(
 ///
 /// The callback runs after each exact acknowledgement. Missing or ambiguous
 /// acknowledgements stop immediately and are never retried.
-pub fn flash_application<T, F>(
+pub async fn flash_application<T, F>(
     transport: &mut T,
     prerequisites: FlashPrerequisites<'_>,
     page_acknowledged: F,
 ) -> Result<FlashReport, FlashError>
 where
-    T: Read + Write,
+    T: LinkRead + LinkWrite,
     F: FnMut(u16),
 {
     validate_prerequisites(prerequisites)?;
@@ -1381,6 +1404,7 @@ where
         VersionCheck::Known,
         page_acknowledged,
     )
+    .await
 }
 
 /// Bootloader negotiation version sent by the default K5 AFIK flash.
@@ -1399,7 +1423,7 @@ const AFIK_K5_IDENTITY: &[u8] = b"AFIK-K5-";
 /// bootloader or EEPROM, so an image that does not boot is recovered by
 /// flashing again through the same bootloader. The image must carry an
 /// `AFIK-K5-` identity, which guards against selecting a different file.
-pub fn flash_afik_application<T, F>(
+pub async fn flash_afik_application<T, F>(
     transport: &mut T,
     image: &ApplicationImage,
     version: &FirmwareVersion,
@@ -1408,7 +1432,7 @@ pub fn flash_afik_application<T, F>(
     page_acknowledged: F,
 ) -> Result<FlashReport, FlashError>
 where
-    T: Read + Write,
+    T: LinkRead + LinkWrite,
     F: FnMut(u16),
 {
     if transaction_id == 0 {
@@ -1429,9 +1453,10 @@ where
         check,
         page_acknowledged,
     )
+    .await
 }
 
-fn write_application<T, F>(
+async fn write_application<T, F>(
     transport: &mut T,
     image: &ApplicationImage,
     version: &FirmwareVersion,
@@ -1440,14 +1465,14 @@ fn write_application<T, F>(
     mut page_acknowledged: F,
 ) -> Result<FlashReport, FlashError>
 where
-    T: Read + Write,
+    T: LinkRead + LinkWrite,
     F: FnMut(u16),
 {
-    let bootloader = probe_bootloader(transport, check)?;
+    let bootloader = probe_bootloader(transport, check).await?;
 
     let version_request = version_request(version);
-    send_packet(transport, &version_request)?;
-    let confirmed_bootloader = probe_bootloader(transport, check)?;
+    send_packet(transport, &version_request).await?;
+    let confirmed_bootloader = probe_bootloader(transport, check).await?;
     if confirmed_bootloader != bootloader {
         return Err(FlashError::UnexpectedPacket {
             expected: "stable bootloader version negotiation",
@@ -1463,8 +1488,8 @@ where
             page_number,
             &image.bytes()[start..start + FLASH_PAGE_BYTES],
         );
-        send_packet(transport, &request)?;
-        receive_page_acknowledgement(transport, transaction_id, page_number, check)?;
+        send_packet(transport, &request).await?;
+        receive_page_acknowledgement(transport, transaction_id, page_number, check).await?;
         page_acknowledged(page_number);
     }
 
@@ -1795,7 +1820,9 @@ fn validate_restore_plan(plan: &EepromRestorePlan) -> Result<(), FlashError> {
     Ok(())
 }
 
-fn read_eeprom_image<T: Read + Write>(transport: &mut T) -> Result<EepromBackup, FlashError> {
+async fn read_eeprom_image<T: LinkRead + LinkWrite>(
+    transport: &mut T,
+) -> Result<EepromBackup, FlashError> {
     let mut bytes = vec![0_u8; EEPROM_BYTES];
     for block in 0_u16..64 {
         let offset_u16 = block * u16::try_from(EEPROM_BLOCK_BYTES).expect("bounded block");
@@ -1804,12 +1831,13 @@ fn read_eeprom_image<T: Read + Write>(transport: &mut T) -> Result<EepromBackup,
             transport,
             offset_u16,
             &mut bytes[offset..offset + EEPROM_BLOCK_BYTES],
-        )?;
+        )
+        .await?;
     }
     EepromBackup::from_raw(&bytes).map_err(FlashError::InvalidEepromBackup)
 }
 
-fn read_eeprom_bytes<T: Read + Write>(
+async fn read_eeprom_bytes<T: LinkRead + LinkWrite>(
     transport: &mut T,
     offset: u16,
     output: &mut [u8],
@@ -1818,8 +1846,8 @@ fn read_eeprom_bytes<T: Read + Write>(
         return Err(FlashError::PacketTooLarge(output.len()));
     }
     let request = eeprom_read_request(offset, output.len());
-    send_packet(transport, &request)?;
-    let packet = receive_packet(transport)?;
+    send_packet(transport, &request).await?;
+    let packet = receive_packet(transport).await?;
     parse_eeprom_response(&packet, offset, output)
 }
 
@@ -1956,14 +1984,14 @@ fn page_request(transaction_id: u32, page: u16, data: &[u8]) -> [u8; 272] {
     payload
 }
 
-fn receive_page_acknowledgement<T: Read>(
+async fn receive_page_acknowledgement<T: LinkRead>(
     transport: &mut T,
     transaction_id: u32,
     expected_page: u16,
     check: VersionCheck,
 ) -> Result<(), FlashError> {
     for _ in 0..=MAX_BEACONS_BEFORE_ACK {
-        let packet = receive_packet(transport)?;
+        let packet = receive_packet(transport).await?;
         if expected_page == 0 && packet_command(packet.as_slice()) == Some(COMMAND_V2_BEACON) {
             parse_bootloader_beacon(&packet, check)?;
             continue;
@@ -2254,11 +2282,11 @@ mod tests {
         }
         let mut transport = ScriptedTransport::new(responses, 1);
         let mut progress = Vec::new();
-        let report = flash_application(
+        let report = crate::block_on(flash_application(
             &mut transport,
             afik_prerequisites(&image, &recovery, &backup, &version),
             |page| progress.push(page),
-        )
+        ))
         .unwrap();
 
         assert_eq!(report.bootloader.version(), "2.00.06");
@@ -2280,12 +2308,12 @@ mod tests {
     fn a_forced_family_takes_any_page_write_version_and_still_refuses_aes() {
         let mut k5 = ScriptedTransport::new(beacon_with_version(*b"9.00.01\0"), 1);
         assert!(matches!(
-            force_bootloader_family(&mut k5, ForcedFamily::K5V1).unwrap(),
+            crate::block_on(force_bootloader_family(&mut k5, ForcedFamily::K5V1)).unwrap(),
             BootloaderFamily::K5V1(ref info) if info.version() == "9.00.01"
         ));
         let mut k1 = ScriptedTransport::new(beacon_with_version(*b"9.00.01\0"), 1);
         assert!(matches!(
-            force_bootloader_family(&mut k1, ForcedFamily::K1).unwrap(),
+            crate::block_on(force_bootloader_family(&mut k1, ForcedFamily::K1)).unwrap(),
             BootloaderFamily::K1(_)
         ));
 
@@ -2294,7 +2322,7 @@ mod tests {
         payload[20..27].copy_from_slice(b"5.00.01");
         let mut aes = ScriptedTransport::new(encode_response_with_trailer(&payload, 0x6ED1), 1);
         assert!(matches!(
-            force_bootloader_family(&mut aes, ForcedFamily::K5V1),
+            crate::block_on(force_bootloader_family(&mut aes, ForcedFamily::K5V1)),
             Err(FlashError::UnsupportedBootloader(0x057A))
         ));
     }
@@ -2311,26 +2339,26 @@ mod tests {
             responses.extend(acknowledgement(u16::try_from(page).unwrap(), 0));
         }
         let mut transport = ScriptedTransport::new(responses.clone(), 1);
-        let report = flash_afik_application(
+        let report = crate::block_on(flash_afik_application(
             &mut transport,
             &image,
             &version,
             TEST_TRANSACTION_ID,
             VersionCheck::Any,
             |_| {},
-        )
+        ))
         .unwrap();
         assert_eq!(report.pages_acknowledged, 240);
 
         let mut transport = ScriptedTransport::new(responses, 1);
-        let error = flash_afik_application(
+        let error = crate::block_on(flash_afik_application(
             &mut transport,
             &image,
             &version,
             TEST_TRANSACTION_ID,
             VersionCheck::Known,
             |_| {},
-        )
+        ))
         .unwrap_err();
         assert_eq!(error.to_string(), "unsupported bootloader version: 9.00.01");
         assert!(transport.writes.is_empty());
@@ -2360,14 +2388,14 @@ mod tests {
             responses.extend(acknowledgement(u16::try_from(page).unwrap(), 0));
         }
         let mut transport = ScriptedTransport::new(responses, 1);
-        let report = flash_afik_application(
+        let report = crate::block_on(flash_afik_application(
             &mut transport,
             &image,
             &version,
             TEST_TRANSACTION_ID,
             VersionCheck::Known,
             |_| {},
-        )
+        ))
         .unwrap();
         assert_eq!(report.pages_acknowledged, 240);
         let requests = decode_requests(&transport.writes);
@@ -2386,14 +2414,14 @@ mod tests {
             responses.extend(acknowledgement(u16::try_from(page).unwrap(), 0));
         }
         let mut transport = ScriptedTransport::new(responses, 1);
-        let report = flash_afik_application(
+        let report = crate::block_on(flash_afik_application(
             &mut transport,
             &image,
             &version,
             TEST_TRANSACTION_ID,
             VersionCheck::Known,
             |_| {},
-        )
+        ))
         .unwrap();
         assert_eq!(report.pages_acknowledged, 240);
         assert_eq!(decode_requests(&transport.writes).len(), 241);
@@ -2401,25 +2429,25 @@ mod tests {
         let other = ApplicationImage::from_raw(&valid_raw(0xA5)).unwrap();
         let mut transport = ScriptedTransport::new(Vec::new(), 1);
         assert!(matches!(
-            flash_afik_application(
+            crate::block_on(flash_afik_application(
                 &mut transport,
                 &other,
                 &version,
                 TEST_TRANSACTION_ID,
                 VersionCheck::Known,
                 |_| {}
-            ),
+            )),
             Err(FlashError::NotAfikImage)
         ));
         assert!(matches!(
-            flash_afik_application(
+            crate::block_on(flash_afik_application(
                 &mut transport,
                 &image,
                 &version,
                 0,
                 VersionCheck::Known,
                 |_| {}
-            ),
+            )),
             Err(FlashError::InvalidTransactionId)
         ));
         assert!(transport.writes.is_empty());
@@ -2435,7 +2463,7 @@ mod tests {
         prerequisites.target_confirmation = "K5";
         let mut transport = ScriptedTransport::new(Vec::new(), 1);
         assert!(matches!(
-            flash_application(&mut transport, prerequisites, |_| {}),
+            crate::block_on(flash_application(&mut transport, prerequisites, |_| {})),
             Err(FlashError::TargetNotConfirmed)
         ));
         assert!(transport.writes.is_empty());
@@ -2443,7 +2471,7 @@ mod tests {
         let mut prerequisites = afik_prerequisites(&image, &recovery, &backup, &version);
         prerequisites.transaction_id = 0;
         assert!(matches!(
-            flash_application(&mut transport, prerequisites, |_| {}),
+            crate::block_on(flash_application(&mut transport, prerequisites, |_| {})),
             Err(FlashError::InvalidTransactionId)
         ));
         assert!(transport.writes.is_empty());
@@ -2451,7 +2479,7 @@ mod tests {
         let mut prerequisites = afik_prerequisites(&image, &recovery, &backup, &version);
         prerequisites.purpose = FlashPurpose::RecoveryRehearsal;
         assert!(matches!(
-            flash_application(&mut transport, prerequisites, |_| {}),
+            crate::block_on(flash_application(&mut transport, prerequisites, |_| {})),
             Err(FlashError::InvalidRecoveryRehearsal)
         ));
         assert!(transport.writes.is_empty());
@@ -2468,11 +2496,11 @@ mod tests {
         missing.extend(beacon());
         let mut transport = ScriptedTransport::new(missing, 1);
         assert!(matches!(
-            flash_application(
+            crate::block_on(flash_application(
                 &mut transport,
                 afik_prerequisites(&image, &recovery, &backup, &version),
                 |_| {}
-            ),
+            )),
             Err(FlashError::Timeout)
         ));
         assert_eq!(decode_requests(&transport.writes).len(), 2);
@@ -2482,11 +2510,11 @@ mod tests {
         rejected.extend(acknowledgement(0, 3));
         let mut transport = ScriptedTransport::new(rejected, 1);
         assert!(matches!(
-            flash_application(
+            crate::block_on(flash_application(
                 &mut transport,
                 afik_prerequisites(&image, &recovery, &backup, &version),
                 |_| {}
-            ),
+            )),
             Err(FlashError::PageRejected { page: 0, result: 3 })
         ));
         assert_eq!(decode_requests(&transport.writes).len(), 2);
@@ -2496,11 +2524,11 @@ mod tests {
         mismatched.extend(acknowledgement(1, 0));
         let mut transport = ScriptedTransport::new(mismatched, 1);
         assert!(matches!(
-            flash_application(
+            crate::block_on(flash_application(
                 &mut transport,
                 afik_prerequisites(&image, &recovery, &backup, &version),
                 |_| {}
-            ),
+            )),
             Err(FlashError::PageAcknowledgementMismatch { expected_page: 0 })
         ));
         assert_eq!(decode_requests(&transport.writes).len(), 2);
@@ -2514,7 +2542,7 @@ mod tests {
         payload[0..4].copy_from_slice(&[0x7A, 0x05, 0x20, 0x00]);
         let mut transport = ScriptedTransport::new(encode_response(&payload), 1);
         assert!(matches!(
-            probe_bootloader_v2(&mut transport),
+            crate::block_on(probe_bootloader_v2(&mut transport)),
             Err(FlashError::UnsupportedBootloader(0x057A))
         ));
     }
@@ -2523,7 +2551,7 @@ mod tests {
     fn detector_classifies_only_the_pinned_k1_and_k5_families() {
         let mut k5 = ScriptedTransport::new(beacon(), 1);
         assert!(matches!(
-            detect_bootloader(&mut k5).unwrap(),
+            crate::block_on(detect_bootloader(&mut k5)).unwrap(),
             BootloaderFamily::K5V1(ref info) if info.version() == "2.00.06"
         ));
 
@@ -2532,7 +2560,7 @@ mod tests {
         k1_payload[20..27].copy_from_slice(b"7.03.01");
         let mut k1 = ScriptedTransport::new(encode_response_with_trailer(&k1_payload, 0x6ED1), 1);
         assert!(matches!(
-            detect_bootloader(&mut k1).unwrap(),
+            crate::block_on(detect_bootloader(&mut k1)).unwrap(),
             BootloaderFamily::K1(ref info) if info.version() == "7.03.01"
         ));
 
@@ -2540,14 +2568,14 @@ mod tests {
         v4_payload[20..27].copy_from_slice(b"4.00.01");
         let mut v4 = ScriptedTransport::new(encode_response_with_trailer(&v4_payload, 0x6ED1), 1);
         assert!(matches!(
-            detect_bootloader(&mut v4).unwrap(),
+            crate::block_on(detect_bootloader(&mut v4)).unwrap(),
             BootloaderFamily::K5V1(ref info) if info.version() == "4.00.01"
         ));
 
         let mut unknown_payload = k1_payload;
         unknown_payload[20..27].copy_from_slice(b"7.04.01");
         let mut unknown = ScriptedTransport::new(encode_response(&unknown_payload), 1);
-        let error = detect_bootloader(&mut unknown).unwrap_err();
+        let error = crate::block_on(detect_bootloader(&mut unknown)).unwrap_err();
         assert_eq!(error.to_string(), "unsupported bootloader version: 7.04.01");
     }
 
@@ -2559,7 +2587,8 @@ mod tests {
         payload[20..27].copy_from_slice(b"4.00.01");
         let frame = encode_response_with_trailer(&payload, 0x6ED1);
 
-        let beacon = observe_bootloader(&mut ScriptedTransport::new(frame, 1)).unwrap();
+        let beacon =
+            crate::block_on(observe_bootloader(&mut ScriptedTransport::new(frame, 1))).unwrap();
         assert_eq!(beacon.version(), "4.00.01");
         assert_eq!(beacon.command(), 0x0518);
         assert_eq!(beacon.protocol(), BeaconProtocol::PageWrite);
@@ -2576,7 +2605,8 @@ mod tests {
         payload[20..27].copy_from_slice(b"5.00.01");
         let frame = encode_response_with_trailer(&payload, 0x6ED1);
 
-        let beacon = observe_bootloader(&mut ScriptedTransport::new(frame, 1)).unwrap();
+        let beacon =
+            crate::block_on(observe_bootloader(&mut ScriptedTransport::new(frame, 1))).unwrap();
         assert_eq!(beacon.command(), 0x057A);
         assert_eq!(beacon.protocol(), BeaconProtocol::AesEncrypted);
         assert_eq!(beacon.version(), "5.00.01");
@@ -2587,10 +2617,10 @@ mod tests {
         let mut short = vec![0_u8; 20];
         short[0..4].copy_from_slice(&[0x18, 0x05, 0x20, 0x00]);
         assert!(matches!(
-            observe_bootloader(&mut ScriptedTransport::new(
+            crate::block_on(observe_bootloader(&mut ScriptedTransport::new(
                 encode_response_with_trailer(&short, 0x6ED1),
                 1
-            )),
+            ))),
             Err(FlashError::UnexpectedPacket { .. })
         ));
 
@@ -2598,10 +2628,10 @@ mod tests {
         unprintable[0..4].copy_from_slice(&[0x18, 0x05, 0x20, 0x00]);
         unprintable[20..27].copy_from_slice(&[0x01; 7]);
         assert!(matches!(
-            observe_bootloader(&mut ScriptedTransport::new(
+            crate::block_on(observe_bootloader(&mut ScriptedTransport::new(
                 encode_response_with_trailer(&unprintable, 0x6ED1),
                 1
-            )),
+            ))),
             Err(FlashError::InvalidText("bootloader version"))
         ));
     }
@@ -2609,7 +2639,7 @@ mod tests {
     #[test]
     fn an_eeprom_backup_names_a_radio_in_bootloader_mode() {
         let mut transport = ScriptedTransport::new(beacon(), 1);
-        let error = backup_eeprom(&mut transport).unwrap_err();
+        let error = crate::block_on(backup_eeprom(&mut transport)).unwrap_err();
         assert!(matches!(error, FlashError::InBootloader), "{error}");
         assert!(error.to_string().contains("bootloader (flashing) mode"));
     }
@@ -2626,7 +2656,7 @@ mod tests {
             hello[0..4].copy_from_slice(&[0x15, 0x05, 0x24, 0x00]);
             hello[4..4 + identity.len()].copy_from_slice(identity.as_bytes());
             let mut transport = ScriptedTransport::new(encode_response(&hello), 1);
-            let error = backup_eeprom(&mut transport).unwrap_err();
+            let error = crate::block_on(backup_eeprom(&mut transport)).unwrap_err();
             assert!(
                 matches!(&error, FlashError::EepromNotServed(version) if version == identity),
                 "{identity}: {error}"
@@ -2668,7 +2698,7 @@ mod tests {
     #[test]
     fn identification_hears_a_bootloader_without_sending_anything() {
         let mut transport = ScriptedTransport::new(beacon(), 1);
-        let presence = identify_radio(&mut transport).unwrap();
+        let presence = crate::block_on(identify_radio(&mut transport)).unwrap();
         assert!(matches!(
             presence,
             RadioPresence::Bootloader(BootloaderFamily::K5V1(ref info)) if info.version() == "2.00.06"
@@ -2686,7 +2716,7 @@ mod tests {
         let mut stream = vec![0xAB, 0xCD, 0x04, 0x00, 1, 2, 3, 4, 5, 6, 0x8B, 0xE6];
         stream.extend(beacon());
         let mut transport = ScriptedTransport::new(stream, 1);
-        let presence = identify_radio(&mut transport).unwrap();
+        let presence = crate::block_on(identify_radio(&mut transport)).unwrap();
         assert!(matches!(presence, RadioPresence::Bootloader(_)));
         assert!(transport.writes.is_empty());
     }
@@ -2698,7 +2728,7 @@ mod tests {
             asked: false,
             position: 0,
         };
-        let presence = identify_radio(&mut radio).unwrap();
+        let presence = crate::block_on(identify_radio(&mut radio)).unwrap();
         assert!(
             matches!(presence, RadioPresence::Firmware(ref info) if info.version() == "F4HWN v4.3")
         );
@@ -2706,7 +2736,7 @@ mod tests {
         // Nothing on the cable at all is the listen's timeout.
         let mut nothing = ScriptedTransport::new(Vec::new(), 1);
         assert!(matches!(
-            identify_radio(&mut nothing),
+            crate::block_on(identify_radio(&mut nothing)),
             Err(FlashError::Timeout)
         ));
         assert!(serves_eeprom_reads("k5_2.01.23"));
@@ -2787,7 +2817,7 @@ mod tests {
             responses.extend(encode_response(&payload));
         }
         let mut transport = ScriptedTransport::new(responses, 1);
-        let (info, backup) = backup_eeprom(&mut transport).unwrap();
+        let (info, backup) = crate::block_on(backup_eeprom(&mut transport)).unwrap();
         assert_eq!(info.version(), "k5_2.01.23");
         assert_eq!(backup.bytes(), expected);
         assert_eq!(decode_requests(&transport.writes).len(), 65);
@@ -2807,13 +2837,13 @@ mod tests {
         );
         let responses = restore_responses(live.bytes(), replacement.bytes(), &[0, 8]);
         let mut transport = ScriptedTransport::new(responses, 1);
-        let plan = prepare_eeprom_restore(
+        let plan = crate::block_on(prepare_eeprom_restore(
             &mut transport,
             restore_prerequisites(&replacement, &live, &recovery, &confirmation),
-        )
+        ))
         .unwrap();
         assert_eq!(plan.changed_offsets(), [0, 8]);
-        let report = apply_eeprom_restore(&mut transport, &plan).unwrap();
+        let report = crate::block_on(apply_eeprom_restore(&mut transport, &plan)).unwrap();
         assert_eq!(report.changed_blocks, 2);
         assert!(report.verified_read_back);
         let requests = decode_requests(&transport.writes);
@@ -2844,12 +2874,12 @@ mod tests {
             ));
         }
         let mut transport = ScriptedTransport::new(responses, 1);
-        let plan = prepare_eeprom_restore(
+        let plan = crate::block_on(prepare_eeprom_restore(
             &mut transport,
             restore_prerequisites(&live, &live, &recovery, &confirmation),
-        )
+        ))
         .unwrap();
-        let report = apply_eeprom_restore(&mut transport, &plan).unwrap();
+        let report = crate::block_on(apply_eeprom_restore(&mut transport, &plan)).unwrap();
         assert_eq!(report.changed_blocks, 0);
         assert!(report.verified_read_back);
         assert!(decode_requests(&transport.writes)
@@ -2874,10 +2904,10 @@ mod tests {
         }
         let mut transport = ScriptedTransport::new(responses, 1);
         assert!(matches!(
-            prepare_eeprom_restore(
+            crate::block_on(prepare_eeprom_restore(
                 &mut transport,
                 restore_prerequisites(&expected, &expected, &recovery, &confirmation),
-            ),
+            )),
             Err(FlashError::EepromCurrentMismatch)
         ));
         assert_eq!(decode_requests(&transport.writes).len(), 65);
@@ -2889,10 +2919,10 @@ mod tests {
         let recovery = recovery_image();
         let mut transport = ScriptedTransport::new(Vec::new(), 1);
         assert!(matches!(
-            prepare_eeprom_restore(
+            crate::block_on(prepare_eeprom_restore(
                 &mut transport,
                 restore_prerequisites(&live, &live, &recovery, "UV-K5-V1-DP32G030:00000000"),
-            ),
+            )),
             Err(FlashError::EepromRestoreConfirmationMismatch)
         ));
         assert!(transport.writes.is_empty());
@@ -2908,7 +2938,7 @@ mod tests {
         prerequisites.expected_firmware = Box::leak(Box::new(expected));
         let mut transport = ScriptedTransport::new(hello_response(), 1);
         assert!(matches!(
-            prepare_eeprom_restore(&mut transport, prerequisites),
+            crate::block_on(prepare_eeprom_restore(&mut transport, prerequisites)),
             Err(FlashError::EepromFirmwareMismatch)
         ));
         assert_eq!(decode_requests(&transport.writes).len(), 1);
@@ -2923,7 +2953,7 @@ mod tests {
         prerequisites.recovery_crc32 ^= 1;
         let mut transport = ScriptedTransport::new(Vec::new(), 1);
         assert!(matches!(
-            prepare_eeprom_restore(&mut transport, prerequisites),
+            crate::block_on(prepare_eeprom_restore(&mut transport, prerequisites)),
             Err(FlashError::EepromRecoveryMismatch)
         ));
         assert!(transport.writes.is_empty());
@@ -2938,7 +2968,7 @@ mod tests {
         prerequisites.recovery_sha256[0] ^= 1;
         let mut transport = ScriptedTransport::new(Vec::new(), 1);
         assert!(matches!(
-            prepare_eeprom_restore(&mut transport, prerequisites),
+            crate::block_on(prepare_eeprom_restore(&mut transport, prerequisites)),
             Err(FlashError::EepromRecoveryMismatch)
         ));
         assert!(transport.writes.is_empty());
@@ -2970,13 +3000,13 @@ mod tests {
         let second = first + stable_len;
         responses.splice(second..second + stable_len, changed_response);
         let mut transport = ScriptedTransport::new(responses, 1);
-        let plan = prepare_eeprom_restore(
+        let plan = crate::block_on(prepare_eeprom_restore(
             &mut transport,
             restore_prerequisites(&replacement, &live, &recovery, &confirmation),
-        )
+        ))
         .unwrap();
         assert!(matches!(
-            apply_eeprom_restore(&mut transport, &plan),
+            crate::block_on(apply_eeprom_restore(&mut transport, &plan)),
             Err(FlashError::EepromBlockChangedDuringPreflight { offset: 0 })
         ));
         assert_eq!(decode_requests(&transport.writes).len(), 67);
@@ -2998,26 +3028,26 @@ mod tests {
         );
         let responses = restore_responses(live.bytes(), replacement.bytes(), &[0]);
         let mut transport = ScriptedTransport::new(responses, 1);
-        let plan = prepare_eeprom_restore(
+        let plan = crate::block_on(prepare_eeprom_restore(
             &mut transport,
             restore_prerequisites(&replacement, &live, &recovery, &confirmation),
-        )
+        ))
         .unwrap();
         let mut forged = plan.clone();
         forged.changed_offsets = vec![8, 0];
         let mut empty = ScriptedTransport::new(Vec::new(), 1);
         assert!(matches!(
-            apply_eeprom_restore(&mut empty, &forged),
+            crate::block_on(apply_eeprom_restore(&mut empty, &forged)),
             Err(FlashError::InvalidEepromRestorePlan)
         ));
         forged.changed_offsets = Vec::new();
         assert!(matches!(
-            apply_eeprom_restore(&mut empty, &forged),
+            crate::block_on(apply_eeprom_restore(&mut empty, &forged)),
             Err(FlashError::InvalidEepromRestorePlan)
         ));
         forged.changed_offsets = vec![0x2000];
         assert!(matches!(
-            apply_eeprom_restore(&mut empty, &forged),
+            crate::block_on(apply_eeprom_restore(&mut empty, &forged)),
             Err(FlashError::InvalidEepromRestorePlan)
         ));
     }
@@ -3045,13 +3075,13 @@ mod tests {
         responses.extend(eeprom_write_ack(0));
         responses.extend(eeprom_response(0, &live.bytes()[..8]));
         let mut transport = ScriptedTransport::new(responses, 1);
-        let plan = prepare_eeprom_restore(
+        let plan = crate::block_on(prepare_eeprom_restore(
             &mut transport,
             restore_prerequisites(&replacement, &live, &recovery, &confirmation),
-        )
+        ))
         .unwrap();
         assert!(matches!(
-            apply_eeprom_restore(&mut transport, &plan),
+            crate::block_on(apply_eeprom_restore(&mut transport, &plan)),
             Err(FlashError::EepromBlockVerificationFailed { offset: 0 })
         ));
         assert_eq!(decode_requests(&transport.writes).len(), 69);
@@ -3080,13 +3110,13 @@ mod tests {
         responses.extend(eeprom_response(0, &live.bytes()[..8]));
         responses.extend(eeprom_write_ack(8));
         let mut transport = ScriptedTransport::new(responses, 1);
-        let plan = prepare_eeprom_restore(
+        let plan = crate::block_on(prepare_eeprom_restore(
             &mut transport,
             restore_prerequisites(&replacement, &live, &recovery, &confirmation),
-        )
+        ))
         .unwrap();
         assert!(matches!(
-            apply_eeprom_restore(&mut transport, &plan),
+            crate::block_on(apply_eeprom_restore(&mut transport, &plan)),
             Err(FlashError::EepromWriteAcknowledgementMismatch {
                 expected_offset: 0,
                 actual_offset: 8
@@ -3116,13 +3146,13 @@ mod tests {
         responses.extend(eeprom_response(0, &live.bytes()[..8]));
         responses.extend(eeprom_response(0, &live.bytes()[..8]));
         let mut transport = ScriptedTransport::new(responses, 1);
-        let plan = prepare_eeprom_restore(
+        let plan = crate::block_on(prepare_eeprom_restore(
             &mut transport,
             restore_prerequisites(&replacement, &live, &recovery, &confirmation),
-        )
+        ))
         .unwrap();
         assert!(matches!(
-            apply_eeprom_restore(&mut transport, &plan),
+            crate::block_on(apply_eeprom_restore(&mut transport, &plan)),
             Err(FlashError::Timeout)
         ));
         assert_eq!(decode_requests(&transport.writes).len(), 68);
@@ -3140,10 +3170,10 @@ mod tests {
             let mut responses = hello_response();
             responses.extend(response);
             let mut transport = ScriptedTransport::new(responses, 1);
-            let result = prepare_eeprom_restore(
+            let result = crate::block_on(prepare_eeprom_restore(
                 &mut transport,
                 restore_prerequisites(&live, &live, &recovery, &confirmation),
-            );
+            ));
             assert!(matches!(
                 result,
                 Err(FlashError::EepromBlockMismatch { .. } | FlashError::UnexpectedPacket { .. })
@@ -3180,13 +3210,13 @@ mod tests {
             ));
         }
         let mut transport = ScriptedTransport::new(responses, 1);
-        let plan = prepare_eeprom_restore(
+        let plan = crate::block_on(prepare_eeprom_restore(
             &mut transport,
             restore_prerequisites(&replacement, &live, &recovery, &confirmation),
-        )
+        ))
         .unwrap();
         assert!(matches!(
-            apply_eeprom_restore(&mut transport, &plan),
+            crate::block_on(apply_eeprom_restore(&mut transport, &plan)),
             Err(FlashError::EepromRestoreVerificationFailed)
         ));
     }
@@ -3198,7 +3228,7 @@ mod tests {
         hello[4..16].copy_from_slice(b"AFIK-K1-0.1\0");
         let mut transport = ScriptedTransport::new(encode_response(&hello), 1);
 
-        let info = probe_normal_firmware(&mut transport).unwrap();
+        let info = crate::block_on(probe_normal_firmware(&mut transport)).unwrap();
 
         assert_eq!(info.version(), "AFIK-K1-0.1");
         let requests = decode_requests(&transport.writes);
@@ -3215,7 +3245,7 @@ mod tests {
         ];
         let mut transport = ScriptedTransport::new(encode_response(&response), 1);
 
-        let report = probe_keypad_matrix(&mut transport).unwrap();
+        let report = crate::block_on(probe_keypad_matrix(&mut transport)).unwrap();
 
         assert_eq!(
             report.gpio_b_idr_by_column(),
@@ -3231,7 +3261,7 @@ mod tests {
         let invalid = [0x11, 0x7F, 0x0C, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0];
         let mut transport = ScriptedTransport::new(encode_response(&invalid), 1);
         assert!(matches!(
-            probe_keypad_matrix(&mut transport),
+            crate::block_on(probe_keypad_matrix(&mut transport)),
             Err(FlashError::UnexpectedPacket { .. })
         ));
     }
@@ -3243,7 +3273,7 @@ mod tests {
         ];
         let mut transport = ScriptedTransport::new(encode_response(&response), 1);
 
-        let report = probe_clock_snapshot(&mut transport).unwrap();
+        let report = crate::block_on(probe_clock_snapshot(&mut transport)).unwrap();
 
         assert_eq!(report.registers(), [0x0300_0500, 0x0000_8000, 0x12, 0]);
         assert!(report.contract_valid());
@@ -3256,7 +3286,7 @@ mod tests {
         invalid[20] = 2;
         let mut transport = ScriptedTransport::new(encode_response(&invalid), 1);
         assert!(matches!(
-            probe_clock_snapshot(&mut transport),
+            crate::block_on(probe_clock_snapshot(&mut transport)),
             Err(FlashError::UnexpectedPacket { .. })
         ));
     }
@@ -3276,7 +3306,7 @@ mod tests {
         let mut transport = ScriptedTransport::new(responses, 1);
 
         assert_eq!(
-            probe_clock_registers(&mut transport).unwrap(),
+            crate::block_on(probe_clock_registers(&mut transport)).unwrap(),
             [0x1000, 0x1001, 0x1002, 0x1003]
         );
         assert_eq!(
@@ -3292,7 +3322,10 @@ mod tests {
     fn clock_control_proves_the_path_without_register_data() {
         let response = [0x1D, 0x7F, 8, 0, 0xA5, 0, 0, 0, 0x4C, 0x43, 0x31, 0x4B];
         let mut transport = ScriptedTransport::new(encode_response(&response), 1);
-        assert_eq!(probe_clock_control(&mut transport).unwrap(), 0x4B31_434C);
+        assert_eq!(
+            crate::block_on(probe_clock_control(&mut transport)).unwrap(),
+            0x4B31_434C
+        );
         assert_eq!(
             decode_requests(&transport.writes),
             vec![vec![0x1C, 0x7F, 0x04, 0x00, 0x6A, 0x39, 0x57, 0x64]]
@@ -3361,9 +3394,9 @@ mod tests {
             let mut radio = MemoryRadio::default();
             let mut steps = Vec::new();
             let written = image(16);
-            let report = write_afik_image(&mut radio, &written, |done, total| {
+            let report = crate::block_on(write_afik_image(&mut radio, &written, |done, total| {
                 steps.push((done, total));
-            })
+            }))
             .unwrap();
             let blocks = written.len().div_ceil(8);
             assert_eq!(usize::from(report.changed_blocks), blocks);
@@ -3378,7 +3411,7 @@ mod tests {
                 .iter()
                 .all(|byte| *byte == 0xFF));
 
-            let (firmware, region) = read_afik_image(&mut radio).unwrap();
+            let (firmware, region) = crate::block_on(read_afik_image(&mut radio)).unwrap();
             assert!(firmware.version().starts_with("AFIK-K5-"));
             assert_eq!(region.len(), IMAGE_REGION);
             assert_eq!(&region[..written.len()], written.as_slice());
@@ -3386,10 +3419,11 @@ mod tests {
             // Writing it again changes nothing; a new plan changes only what
             // differs.
             let writes = radio.writes();
-            let again = write_afik_image(&mut radio, &written, |_, _| {}).unwrap();
+            let again = crate::block_on(write_afik_image(&mut radio, &written, |_, _| {})).unwrap();
             assert_eq!(again.changed_blocks, 0);
             assert_eq!(radio.writes(), writes);
-            let changed = write_afik_image(&mut radio, &image(8), |_, _| {}).unwrap();
+            let changed =
+                crate::block_on(write_afik_image(&mut radio, &image(8), |_, _| {})).unwrap();
             assert!(usize::from(changed.changed_blocks) < blocks);
             assert_eq!(radio.index().unwrap().len(), 8);
         }
@@ -3398,20 +3432,25 @@ mod tests {
         fn only_an_afik_which_loads_format_5_is_written_or_read() {
             for identity in [&b"F4HWN v4.3"[..], b"AFIK-K5-7.0.16", b"AFIK-K1-7.0.5"] {
                 let mut radio = MemoryRadio::new(identity);
-                let error = write_afik_image(&mut radio, &image(16), |_, _| {}).unwrap_err();
+                let error = crate::block_on(write_afik_image(&mut radio, &image(16), |_, _| {}))
+                    .unwrap_err();
                 assert!(matches!(error, FlashError::NotAfikMemory(_)), "{error}");
-                assert!(read_afik_image(&mut radio).is_err());
+                assert!(crate::block_on(read_afik_image(&mut radio)).is_err());
                 assert_eq!(radio.writes(), 0);
             }
             let mut radio = MemoryRadio::new(b"AFIK-K1-7.0.17");
-            write_afik_image(&mut radio, &image(16), |_, _| {}).unwrap();
+            crate::block_on(write_afik_image(&mut radio, &image(16), |_, _| {})).unwrap();
         }
 
         #[test]
         fn an_image_larger_than_the_region_is_refused_before_any_request() {
             let mut radio = MemoryRadio::default();
-            let error =
-                write_afik_image(&mut radio, &vec![0; IMAGE_REGION + 1], |_, _| {}).unwrap_err();
+            let error = crate::block_on(write_afik_image(
+                &mut radio,
+                &vec![0; IMAGE_REGION + 1],
+                |_, _| {},
+            ))
+            .unwrap_err();
             assert!(matches!(
                 error,
                 FlashError::ConfigurationImageTooLarge { .. }
@@ -3422,7 +3461,12 @@ mod tests {
         #[test]
         fn a_k1_takes_an_image_filling_the_whole_region() {
             let mut radio = MemoryRadio::new(b"AFIK-K1-7.0.27");
-            write_afik_image(&mut radio, &vec![0x5A; IMAGE_REGION], |_, _| {}).unwrap();
+            crate::block_on(write_afik_image(
+                &mut radio,
+                &vec![0x5A; IMAGE_REGION],
+                |_, _| {},
+            ))
+            .unwrap();
         }
 
         /// A radio which misses some requests, as a K1 did when one arrived
@@ -3473,13 +3517,14 @@ mod tests {
         fn a_request_the_radio_misses_is_sent_again() {
             let written = image(16);
             let mut radio = Unreliable::losing(|request| request % 2 == 0);
-            let report = write_afik_image(&mut radio, &written, |_, _| {}).unwrap();
+            let report =
+                crate::block_on(write_afik_image(&mut radio, &written, |_, _| {})).unwrap();
             assert_eq!(
                 usize::from(report.changed_blocks),
                 written.len().div_ceil(8)
             );
             assert_eq!(radio.radio.index().unwrap().len(), 16);
-            let (_, region) = read_afik_image(&mut radio).unwrap();
+            let (_, region) = crate::block_on(read_afik_image(&mut radio)).unwrap();
             assert_eq!(&region[..written.len()], written.as_slice());
         }
 
@@ -3488,14 +3533,15 @@ mod tests {
             let written = image(16);
             let mut radio = Unreliable::losing(|_| false);
             radio.twice = true;
-            write_afik_image(&mut radio, &written, |_, _| {}).unwrap();
+            crate::block_on(write_afik_image(&mut radio, &written, |_, _| {})).unwrap();
             assert_eq!(radio.radio.index().unwrap().len(), 16);
         }
 
         #[test]
         fn a_radio_which_stops_answering_is_given_up_after_a_bounded_retry() {
             let mut radio = Unreliable::losing(|request| request > 1);
-            let error = write_afik_image(&mut radio, &image(16), |_, _| {}).unwrap_err();
+            let error =
+                crate::block_on(write_afik_image(&mut radio, &image(16), |_, _| {})).unwrap_err();
             assert!(matches!(error, FlashError::Timeout), "{error}");
             assert_eq!(radio.requests, 1 + super::super::EXCHANGE_ATTEMPTS);
         }
@@ -3504,14 +3550,14 @@ mod tests {
         fn a_link_test_shows_which_back_to_back_reads_were_missed() {
             use super::super::test_link;
             let mut radio = Unreliable::losing(|_| false);
-            let report = test_link(&mut radio, 6).unwrap();
+            let report = crate::block_on(test_link(&mut radio, 6)).unwrap();
             assert!(report.is_clean());
             assert_eq!(report.pattern(), "......");
 
             // The hello is request 1; it reads nothing back to back, so the
             // reads after it are lost alternately, from the first.
             let mut radio = Unreliable::losing(|request| request % 2 == 0);
-            let report = test_link(&mut radio, 6).unwrap();
+            let report = crate::block_on(test_link(&mut radio, 6)).unwrap();
             assert_eq!(report.pattern(), "X.X.X.");
             assert_eq!(report.answered_count(), 3);
             assert!(!report.is_clean());
@@ -3522,14 +3568,14 @@ mod tests {
         fn a_start_place_is_written_as_the_place_record() {
             use radio_platform::operator_state::OperatorState;
             let mut radio = MemoryRadio::default();
-            write_afik_image(&mut radio, &image(16), |_, _| {}).unwrap();
+            crate::block_on(write_afik_image(&mut radio, &image(16), |_, _| {})).unwrap();
             let start = radio_channel_plan::StartPlace {
                 group: Some(1),
                 bank: Some(BankId::new(0)),
                 channel: Some((BankId::new(0), 3)),
             };
             let record = OperatorState::starting_at(start).encode();
-            super::super::write_afik_place(&mut radio, &record).unwrap();
+            crate::block_on(super::super::write_afik_place(&mut radio, &record)).unwrap();
             let place = usize::from(radio_platform::memory_link::PLACE_ORIGIN);
             assert_eq!(&radio.memory()[place..place + record.len()], &record);
             let read = OperatorState::decode(&record).unwrap();

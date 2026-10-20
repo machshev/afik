@@ -297,10 +297,14 @@ programmer, channel plan, storage, TX policy, platform, flasher, sim), which
 build unchanged. Studio itself does not yet: `ureq`'s `ring` pulls
 `getrandom` 0.2 without its web backend. Gate: that clippy `--locked
 --target wasm32-unknown-unknown … -D warnings` clean, `actionlint` clean.
-Next: make `radio-flasher`'s stock-protocol image write (the hello and
-`write_afik_image`, which Studio uses) poll-driven (bytes and time in, bytes
-out) with the blocking `Read`/`Write` loop as a thin native driver, tested
-against the existing recorded exchanges.
+Step 3: every `radio-flasher` exchange (45 functions, from the codec up to
+image writes, EEPROM restore and K1/K5 flashing) is an `async fn` over the
+new `LinkRead`/`LinkWrite` traits; every `Read`/`Write` port is a link and
+the CLI, Studio and the K5 backup test run them through
+`radio_flasher::block_on`. The recorded exchanges pass unchanged. Gate:
+`cargo fmt --all --check` clean, workspace clippy `-D warnings` clean,
+`cargo test --workspace` 986 passed 0 failed 3 ignored (3 new link tests),
+wasm32 clippy of the shared crates clean.
 
 **`REL-079` is active alongside** (2026-10-19, operator request,
 `ADR-118`): a `v*` tag builds and publishes release packages for Linux,

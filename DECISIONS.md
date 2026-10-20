@@ -2047,9 +2047,11 @@ meaning.
   (`serialport` / Web Serial), files (paths / pick and download), background
   work (threads / `spawn_local`) and HTTP (`ureq` / `fetch`). Features and
   fixes land once.
-- Web Serial only returns Promises, so programming and flashing logic becomes
-  poll-driven state machines fed bytes and time; blocking `Read`/`Write`
-  loops stay only in the native adapter. No worker plus `SharedArrayBuffer`
+- Web Serial only returns Promises, so every flasher exchange is an `async
+  fn` over `radio_flasher::LinkRead`/`LinkWrite` (the compiler builds the
+  poll-driven state machine; the proven exchanges are unchanged line for
+  line). Time is still counted in empty reads. Any `Read`/`Write` port is a
+  link, and native callers run an exchange with `radio_flasher::block_on`. No worker plus `SharedArrayBuffer`
   scheme: GitHub Pages cannot send the COOP/COEP headers it needs.
 - `radio-programmer-web` (loopback HTTP front end) is removed as
   unmaintained.
