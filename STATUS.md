@@ -317,8 +317,12 @@ Gate: `cargo fmt --all --check` clean, `cargo clippy --workspace
 failed; `tool/build-k5.sh --release` verified, flash end `0xef80` (was
 `0xef68` on the same rustc); `tool/build-k1.sh --release` verified, 79 444
 bytes (was 78 836), `tool/test-k1-image.sh` passed. Not yet flashed.
-Next: release `v7.0.66`, pin it, flash both radios, and run `afik-flasher
-link-test` on Windows and macOS.
+CI on main green (run 39400894895, first pass in days). `v7.0.66` released
+(run 39401186449): all five platform packages, both images and
+`SHA256SUMS` at https://github.com/machshev/afik/releases/tag/v7.0.66;
+`nix/release.json` pinned to it and `nix build path:.#afik-bin` built from
+the published assets. Next: flash `v7.0.66` on the K5 and K1, and run
+`afik-flasher link-test` on Windows and macOS.
 
 **`LINK-078` done** (2026-10-19, operator request, hardware observed): the host sends every memory request again when no answer comes
 (the hello, reads and block writes; up to four sends, 1.2 s each, input
