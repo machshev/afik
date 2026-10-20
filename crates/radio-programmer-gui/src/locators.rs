@@ -6,9 +6,10 @@
 
 use std::{
     fmt::Write as _,
-    fs,
     path::{Path, PathBuf},
 };
+
+use crate::files as fs;
 
 use crate::{paths, repeaters::locator_centre};
 

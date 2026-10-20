@@ -20,7 +20,7 @@ const LAST_PROJECT_FILE: &str = "last-project";
 
 /// Returns the AFIK data directory, `$XDG_DATA_HOME/afik` or `~/.local/share/afik`.
 pub fn data_dir() -> Option<PathBuf> {
-    data_dir_from(std::env::var_os("XDG_DATA_HOME"), std::env::var_os("HOME"))
+    data_dir_from(std::env::var_os("XDG_DATA_HOME"), home())
 }
 
 /// Resolves the data directory from the two environment values, without I/O.
@@ -35,7 +35,7 @@ pub fn data_dir_from(xdg_data_home: Option<OsString>, home: Option<OsString>) ->
 /// Logs are state rather than data: worth keeping, but not something an
 /// operator would copy to another machine.
 pub fn state_dir() -> Option<PathBuf> {
-    state_dir_from(std::env::var_os("XDG_STATE_HOME"), std::env::var_os("HOME"))
+    state_dir_from(std::env::var_os("XDG_STATE_HOME"), home())
 }
 
 /// Resolves the state directory from the two environment values, without I/O.
@@ -47,7 +47,7 @@ pub fn state_dir_from(xdg_state_home: Option<OsString>, home: Option<OsString>) 
 ///
 /// What is kept here can be fetched again, such as the satellite list.
 pub fn cache_dir() -> Option<PathBuf> {
-    cache_dir_from(std::env::var_os("XDG_CACHE_HOME"), std::env::var_os("HOME"))
+    cache_dir_from(std::env::var_os("XDG_CACHE_HOME"), home())
 }
 
 /// Resolves the cache directory from the two environment values, without I/O.
@@ -55,16 +55,27 @@ pub fn cache_dir_from(xdg_cache_home: Option<OsString>, home: Option<OsString>) 
     xdg_base(xdg_cache_home, home, &[".cache"])
 }
 
+/// The home directory. The browser has none, so its files sit under a fixed
+/// root of the page's storage (see [`crate::files`]).
+fn home() -> Option<OsString> {
+    if cfg!(target_arch = "wasm32") {
+        Some(OsString::from("/"))
+    } else {
+        std::env::var_os("HOME")
+    }
+}
+
 /// Picks an absolute XDG base, or the given fallback under an absolute home.
 fn xdg_base(xdg: Option<OsString>, home: Option<OsString>, fallback: &[&str]) -> Option<PathBuf> {
-    let base = xdg
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .or_else(|| {
-            home.map(PathBuf::from)
-                .filter(|path| path.is_absolute())
-                .map(|home| fallback.iter().fold(home, |path, part| path.join(part)))
-        })?;
+    // `Path::is_absolute` is never true in the browser, where `/` is the
+    // root of the page's storage.
+    let absolute =
+        |path: &PathBuf| path.is_absolute() || cfg!(target_arch = "wasm32") && path.has_root();
+    let base = xdg.map(PathBuf::from).filter(absolute).or_else(|| {
+        home.map(PathBuf::from)
+            .filter(absolute)
+            .map(|home| fallback.iter().fold(home, |path, part| path.join(part)))
+    })?;
     Some(base.join(APPLICATION_DIR))
 }
 

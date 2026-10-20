@@ -2,9 +2,10 @@
 
 use std::{
     fmt::Write as _,
-    fs,
     path::{Path, PathBuf},
 };
+
+use crate::files as fs;
 
 use eframe::egui::{
     self, collapsing_header::CollapsingState, ComboBox, Grid, RichText, ScrollArea, TextEdit,
@@ -2463,7 +2464,7 @@ impl StudioApp {
     fn load_project(&mut self) {
         let entry = self.projects.current().clone();
         let path = entry.path.as_path();
-        let (loaded, converted) = if path.exists() {
+        let (loaded, converted) = if fs::exists(path) {
             match read_project_file(path) {
                 Ok(project) => project,
                 Err(message) => {
@@ -2475,7 +2476,7 @@ impl StudioApp {
             (ProjectModel::new(), false)
         };
         log::info!("opened project {} from {}", entry.name, path.display());
-        self.status = if path.exists() {
+        self.status = if fs::exists(path) {
             format!(
                 "Opened {}: {} channels in {} banks.{}",
                 entry.name,
@@ -5122,11 +5123,13 @@ impl StudioApp {
 
     /// Draws detection, selection, and the connection controls.
     fn device_picker(&mut self, ui: &mut egui::Ui) {
+        // The browser lists its ports itself, when the page connects.
+        let browser = cfg!(target_arch = "wasm32");
         ui.horizontal_wrapped(|ui| {
-            if ui.button("Detect devices").clicked() {
+            if !browser && ui.button("Detect devices").clicked() {
                 self.status = self.chooser.detect();
             }
-            let idle = self.job.is_none();
+            let idle = self.job.is_none() && !self.is_connecting();
             if ui.add_enabled(idle, egui::Button::new("Connect")).clicked() {
                 self.connect_serial();
             }
@@ -5156,6 +5159,13 @@ impl StudioApp {
                 });
         });
 
+        if browser {
+            ui.label(
+                "Connect asks the browser for the radio's serial port; \
+                 Chrome, Edge and recent Firefox offer one.",
+            );
+            return;
+        }
         if !self.chooser.detected {
             ui.label("Serial devices have not been scanned for yet.");
         } else if self.chooser.candidates.is_empty() {

@@ -10,6 +10,7 @@ pub mod airfields;
 pub mod airports;
 pub mod app;
 pub mod device;
+pub mod files;
 pub mod flash;
 pub mod flash_tab;
 pub mod locators;

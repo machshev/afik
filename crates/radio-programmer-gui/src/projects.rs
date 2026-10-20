@@ -5,10 +5,9 @@
 //! opened is remembered in `$XDG_STATE_HOME/afik/last-project` and opened
 //! again at start-up.
 
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
+
+use crate::files as fs;
 
 use crate::paths;
 
@@ -52,16 +51,11 @@ impl ProjectStore {
     /// failing that a project named [`DEFAULT_PROJECT`], which exists once it
     /// is first saved.
     pub fn open_in(dir: PathBuf, last: Option<PathBuf>) -> Self {
-        let mut entries = fs::read_dir(&dir)
+        let mut entries = fs::list(&dir)
             .into_iter()
-            .flatten()
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
             .filter(|path| {
-                path.is_file()
-                    && path
-                        .extension()
-                        .is_some_and(|extension| extension == PROJECT_EXTENSION)
+                path.extension()
+                    .is_some_and(|extension| extension == PROJECT_EXTENSION)
             })
             .filter_map(|path| {
                 let name = path.file_stem()?.to_str()?.to_owned();
@@ -122,7 +116,7 @@ impl ProjectStore {
             return Err(format!("A project named {name} already exists."));
         }
         let path = project_path(&self.dir, &name);
-        if path.exists() {
+        if fs::exists(&path) {
             return Err(format!("{} already exists.", path.display()));
         }
         let at = self
@@ -149,10 +143,10 @@ impl ProjectStore {
         let path = entry
             .path
             .with_file_name(format!("{name}.{PROJECT_EXTENSION}"));
-        if path.exists() {
+        if fs::exists(&path) {
             return Err(format!("{} already exists.", path.display()));
         }
-        if entry.path.exists() {
+        if fs::exists(&entry.path) {
             fs::rename(&entry.path, &path)
                 .map_err(|error| format!("Could not rename {}: {error}", entry.path.display()))?;
         }

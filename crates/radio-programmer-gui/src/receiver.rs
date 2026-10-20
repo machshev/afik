@@ -7,10 +7,9 @@
 //!
 //! The figures are estimates from aerial height and gain, not measurements.
 
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
+
+use crate::files as fs;
 
 use crate::paths;
 
