@@ -297,8 +297,10 @@ programmer, channel plan, storage, TX policy, platform, flasher, sim), which
 build unchanged. Studio itself does not yet: `ureq`'s `ring` pulls
 `getrandom` 0.2 without its web backend. Gate: that clippy `--locked
 --target wasm32-unknown-unknown … -D warnings` clean, `actionlint` clean.
-Next: make `ProgrammerSession::exchange` poll-driven (bytes and time in,
-bytes out), tested against `radio-sim`.
+Next: make `radio-flasher`'s stock-protocol image write (the hello and
+`write_afik_image`, which Studio uses) poll-driven (bytes and time in, bytes
+out) with the blocking `Read`/`Write` loop as a thin native driver, tested
+against the existing recorded exchanges.
 
 **`REL-079` is active alongside** (2026-10-19, operator request,
 `ADR-118`): a `v*` tag builds and publishes release packages for Linux,
