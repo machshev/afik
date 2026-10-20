@@ -305,6 +305,23 @@ the CLI, Studio and the K5 backup test run them through
 `cargo fmt --all --check` clean, workspace clippy `-D warnings` clean,
 `cargo test --workspace` 986 passed 0 failed 3 ignored (3 new link tests),
 wasm32 clippy of the shared crates clean.
+Step 4: Studio builds for `wasm32` from the same crate. Its session runs
+over a Web Serial link (`web_serial.rs`, the desktop's 200 ms read window,
+a cut-short read resumed), jobs run as page tasks (`platform::spawn`),
+clocks are `web-time`, and the operator's files are `localStorage` entries
+(`files.rs`). `trunk` (devshell, with wasm-bindgen-cli 0.2.129) builds
+`crates/radio-programmer-gui/index.html`; `.github/workflows/pages.yml`
+publishes it. Browser gaps: firmware flashing, list and map downloads.
+Driven in headless Chromium over CDP: Studio draws; Save survives a reload;
+the simulator connects, takes a verified 259-byte write and reads back 3
+banks, 40 channels; Connect asks the browser for a port. Gate: `cargo fmt
+--all --check` clean, `cargo clippy --workspace --all-targets -- -D
+warnings` clean, `cargo test --workspace` 989 passed 0 failed 3 ignored,
+`cargo clippy --locked --target wasm32-unknown-unknown` (shared crates,
+serial, Studio) `-D warnings` clean, `trunk build --release` passes,
+`actionlint` clean, `nix flake check path:. --no-build` passes. Next: switch
+Pages to GitHub Actions, then Connect, Test link and Write from Chrome and
+Firefox to a K5 (`RISK-050`).
 
 **`REL-079` is active alongside** (2026-10-19, operator request,
 `ADR-118`): a `v*` tag builds and publishes release packages for Linux,

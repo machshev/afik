@@ -1275,3 +1275,16 @@ lowered to the highest level within it (operator request), by nominal figures.
   power lists' drawing brought the image end to `0xef40` (192 bytes free).
 - Experiment: rank functions by size (`llvm-nm -S --size-sort`) and shrink or
   drop the largest unused paths before adding firmware code.
+
+## RISK-050 — Web Serial has not reached a radio yet
+
+- **State:** open (2026-10-20, `WEB-080`). The browser Studio writes and
+  reads the simulator through the same exchanges as the desktop, and asks
+  the browser for a port, but no write has gone over Web Serial to a K5 or
+  K1. The link's 200 ms read window is a page timer, and a read the window
+  cuts short is resumed rather than cancelled; a USB adapter that the
+  browser drives differently (buffering, a non-fatal read error that ends
+  the stream) is unobserved.
+- **Experiment:** Connect, Test link and Write project from Chrome and from
+  Firefox to a K5 and a K1 at 38 400 baud.
+

@@ -2053,6 +2053,10 @@ meaning.
   line). Time is still counted in empty reads. Any `Read`/`Write` port is a
   link, and native callers run an exchange with `radio_flasher::block_on`. No worker plus `SharedArrayBuffer`
   scheme: GitHub Pages cannot send the COOP/COEP headers it needs.
+- The operator's files (projects, settings) go through `files`: `std::fs`
+  on the desktop, the page's `localStorage` keyed by the same XDG path in
+  the browser. The browser page is built by `trunk` and published to GitHub
+  Pages from `main`.
 - `radio-programmer-web` (loopback HTTP front end) is removed as
   unmaintained.
 

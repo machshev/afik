@@ -69,6 +69,19 @@ recovery-gated flasher workflows with every confirmation gate intact. The
 editor is a local tool: it opens no network socket and holds no
 authentication. See `docs/programmer-gui.md`.
 
+## Studio in the browser
+
+The same Studio builds for the browser and reaches the radio over Web
+Serial (Chrome, Edge, recent Firefox). The `pages` workflow publishes it to
+GitHub Pages from `main`; to build and serve it locally from the devshell:
+
+```sh
+cd crates/radio-programmer-gui && trunk serve --release
+```
+
+Projects and settings are kept in the page's storage. Firmware flashing and
+the station, satellite and map downloads are desktop-only for now.
+
 ## Channels, banks, and the receive path
 
 Configuration storage holds explicit channel records, named banks, generated

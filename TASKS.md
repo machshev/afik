@@ -3433,7 +3433,10 @@
   Build the hardware-independent crates for `wasm32` in CI. Done. Make the
   flasher's exchanges async over a link trait so one engine runs over
   blocking serial and Web Serial. Done. Split
-  Studio's serial, files, workers and HTTP behind native/web modules; build
-  it with `trunk` and deploy to Pages. Write a configuration from the browser
-  to a K5 and a K1, then flash firmware from it.
+  Studio's serial, files, workers and HTTP behind native/web modules. Done.
+  Build it with `trunk` and deploy to Pages. Done (Pages must be switched to
+  "GitHub Actions" in the repository settings). Write a configuration from
+  the browser to a K5 and a K1 (`RISK-050`). Flash firmware from it: needs
+  a choice of where the browser takes the image from and gives backups to.
+  Fetch the station, satellite and map lists in the browser.
 
