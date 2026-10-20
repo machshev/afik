@@ -32,8 +32,39 @@ radio-sim = { path = "../radio-sim" }
 radio-storage = { path = "../radio-storage" }
 radio-tx-policy = { path = "../radio-tx-policy" }
 serde_json = "1"
+# `std::time::Instant` and `SystemTime` panic in the browser; these do not.
+web-time = "1.1"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Fetches the satellite list from SatNOGS; rustls, so no system TLS library.
 ureq = { version = "3.4", default-features = false, features = ["rustls"] }
+
+# The browser Studio (`ADR-119`): Web Serial, fetch and the page's storage.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.4", features = ["wasm_js"] }
+js-sys = "0.3.106"
+wasm-bindgen = "0.2.129"
+wasm-bindgen-futures = "0.4.79"
+web-sys = { version = "0.3.106", features = [
+    "Document",
+    "HtmlCanvasElement",
+    "Navigator",
+    "ReadableStream",
+    "ReadableStreamDefaultReader",
+    "ReadableStreamReadResult",
+    "Request",
+    "RequestInit",
+    "Response",
+    "Serial",
+    "SerialOptions",
+    "SerialPort",
+    "SerialPortInfo",
+    "SerialPortRequestOptions",
+    "Storage",
+    "Window",
+    "WritableStream",
+    "WritableStreamDefaultWriter",
+] }
 
 [lints]
 workspace = true

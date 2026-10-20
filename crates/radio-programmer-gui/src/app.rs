@@ -4,7 +4,6 @@ use std::{
     fmt::Write as _,
     fs,
     path::{Path, PathBuf},
-    time::Instant,
 };
 
 use eframe::egui::{
@@ -23,6 +22,7 @@ use radio_platform::operator_shell::{
     tone_at_row, TONE_ROWS, TX_CLASSES, TX_POWER_NOMINAL_MW, VFO_STEPS_HZ,
 };
 use radio_tx_policy::MAX_TX_RANGES;
+use web_time::Instant;
 
 use radio_programmer_serial::SUPPORTED_BAUDS;
 
@@ -371,6 +371,9 @@ pub struct StudioApp {
     tx_preset: usize,
     /// A write or read running on a worker, which holds the session meanwhile.
     job: Option<DeviceJob>,
+    /// A browser serial port being chosen and connected.
+    #[cfg(target_arch = "wasm32")]
+    connecting: Option<crate::session::ConnectJob>,
     /// Which banks the Banks tab lists, and a bank to open in it.
     banks_tab: BanksTab,
     /// Where SatNOGS responses are cached, and what was last read from it.
@@ -2015,6 +2018,8 @@ impl StudioApp {
             tx_preset: 0,
             banks_tab: BanksTab::default(),
             job: None,
+            #[cfg(target_arch = "wasm32")]
+            connecting: None,
             satellite_cache: SatelliteCache::none(),
             satellites: None,
             satellite_sync: None,
@@ -2127,6 +2132,10 @@ impl StudioApp {
     /// Refuses a connection change or a second job while one is running:
     /// the worker owns the session until it ends.
     fn refuse_while_busy(&mut self) -> bool {
+        if self.is_connecting() {
+            self.refuse("Wait until the studio has finished connecting the radio.");
+            return true;
+        }
         let Some(job) = &self.job else {
             return false;
         };
@@ -2153,6 +2162,54 @@ impl StudioApp {
         }
     }
 
+    /// Whether a browser serial port is being chosen and connected.
+    #[cfg(target_arch = "wasm32")]
+    fn is_connecting(&self) -> bool {
+        self.connecting.is_some()
+    }
+
+    /// Whether a browser serial port is being chosen and connected.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[allow(clippy::unused_self)]
+    const fn is_connecting(&self) -> bool {
+        false
+    }
+
+    /// Asks the browser for the radio's port and connects it in the
+    /// background; [`Self::poll_connect`] installs the session.
+    #[cfg(target_arch = "wasm32")]
+    fn connect_serial(&mut self) {
+        if self.refuse_while_busy() {
+            return;
+        }
+        let baud = self.chooser.baud;
+        if !radio_programmer_serial::is_supported_baud(baud) {
+            self.refuse(&format!("Baud {baud} is not one of {SUPPORTED_BAUDS:?}."));
+            return;
+        }
+        log::info!("asking the browser for a serial port at {baud} baud");
+        "Choose the radio's serial port in the browser…".clone_into(&mut self.status);
+        self.connecting = Some(DeviceSession::start_connect_web_serial(baud));
+    }
+
+    /// Installs the session once the browser's port has connected.
+    #[cfg(target_arch = "wasm32")]
+    fn poll_connect(&mut self) {
+        let Some(finished) = self
+            .connecting
+            .as_ref()
+            .and_then(crate::session::ConnectJob::poll)
+        else {
+            return;
+        };
+        self.connecting = None;
+        match finished {
+            Ok(session) => self.install_session(session),
+            Err(error) => self.fail("connecting a browser serial port", error.to_string()),
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     fn connect_serial(&mut self) {
         if self.refuse_while_busy() {
             return;
@@ -3087,6 +3144,8 @@ impl eframe::App for StudioApp {
         // A write or read runs on a worker; the window keeps drawing and
         // checks for its end, wherever the operator is looking.
         self.poll_job();
+        #[cfg(target_arch = "wasm32")]
+        self.poll_connect();
         self.poll_satellite_sync();
         self.poll_repeater_sync();
         self.poll_station_sync();
@@ -3096,6 +3155,7 @@ impl eframe::App for StudioApp {
         self.remember_filters();
         self.log_status();
         if self.job.is_some()
+            || self.is_connecting()
             || self.satellite_sync.is_some()
             || self.repeater_sync.is_some()
             || self.station_sync.is_some()

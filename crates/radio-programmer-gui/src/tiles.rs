@@ -10,7 +10,6 @@
 use std::{
     collections::HashMap,
     fs,
-    io::Read,
     path::{Path, PathBuf},
     sync::{mpsc, Arc, Mutex},
     thread,
@@ -18,8 +17,6 @@ use std::{
 };
 
 use eframe::egui;
-
-use crate::paths;
 
 /// Edge of a tile in pixels.
 pub const TILE_SIZE: f64 = 256.0;
@@ -30,6 +27,7 @@ pub const MIN_ZOOM: u8 = 3;
 /// The furthest north or south the Web Mercator projection reaches.
 pub const MAX_LATITUDE: f64 = 85.051_128;
 /// Where tiles are fetched from.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 const TILE_URL: &str = "https://tile.openstreetmap.org";
 /// What the map must show under it.
 pub const ATTRIBUTION: &str = "\u{a9} OpenStreetMap contributors";
@@ -38,8 +36,10 @@ const WORKERS: usize = 2;
 /// A cached tile older than this is fetched again, keeping the old one if
 /// the fetch fails.
 const STALE_AFTER: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 const TIMEOUT: Duration = Duration::from_secs(20);
 /// No tile is bigger; a larger response is not a tile.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 const MAX_TILE_BYTES: u64 = 1 << 20;
 /// Tiles kept as textures; the least recently drawn go first.
 const MAX_SLOTS: usize = 600;
@@ -81,33 +81,20 @@ pub fn lat_lon(x: f64, y: f64, zoom: u8) -> (f64, f64) {
 pub type Fetch = Arc<dyn Fn(TileId) -> Result<Vec<u8>, String> + Send + Sync>;
 
 /// Fetches one tile from OpenStreetMap.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn fetch_tile(id: TileId) -> Result<Vec<u8>, String> {
     let url = format!("{TILE_URL}/{}/{}/{}.png", id.zoom, id.x, id.y);
     log::debug!("fetching {url}");
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(TIMEOUT))
-        .user_agent(concat!(
+    crate::net::get(
+        &url,
+        TIMEOUT,
+        MAX_TILE_BYTES,
+        concat!(
             "afik-studio/",
             env!("CARGO_PKG_VERSION"),
             " (radio programmer map)"
-        ))
-        .build()
-        .into();
-    let mut response = agent
-        .get(&url)
-        .call()
-        .map_err(|error| format!("{url}: {error}"))?;
-    let mut body = Vec::new();
-    response
-        .body_mut()
-        .as_reader()
-        .take(MAX_TILE_BYTES + 1)
-        .read_to_end(&mut body)
-        .map_err(|error| format!("{url}: {error}"))?;
-    if body.len() as u64 > MAX_TILE_BYTES {
-        return Err(format!("{url}: larger than a tile"));
-    }
-    Ok(body)
+        ),
+    )
 }
 
 /// Decodes a tile's PNG into an image egui can draw.
@@ -188,10 +175,17 @@ pub struct Tiles {
 
 impl Tiles {
     /// Tiles from OpenStreetMap, cached under the XDG cache directory.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn open() -> Self {
-        let dir = paths::cache_dir().map(|dir| dir.join("tiles"));
+        let dir = crate::paths::cache_dir().map(|dir| dir.join("tiles"));
         let fetch: Fetch = Arc::new(fetch_tile);
         Self::with(dir.as_deref(), Some(&fetch))
+    }
+
+    /// No tiles in the browser yet: the tile workers would block the page.
+    #[cfg(target_arch = "wasm32")]
+    pub fn open() -> Self {
+        Self::none()
     }
 
     /// No tiles at all, for tests: every tile is blank, and nothing is read

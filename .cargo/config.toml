@@ -1,0 +1,4 @@
+# The browser Studio (`ADR-119`) talks to radios over Web Serial, which
+# web-sys still keeps behind its unstable-API flag.
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg=web_sys_unstable_apis"]

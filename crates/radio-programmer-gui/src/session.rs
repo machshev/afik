@@ -269,7 +269,7 @@ pub struct DeviceJob {
 impl DeviceJob {
     fn start<W, F>(session: DeviceSession, kind: JobKind, work: W) -> Result<Self, SessionError>
     where
-        W: FnOnce(DeviceSession, Arc<AtomicU32>) -> F + Send + 'static,
+        W: FnOnce(DeviceSession, Arc<AtomicU32>) -> F + crate::platform::MaybeSend + 'static,
         F: Future<Output = (DeviceSession, DeviceOutcome)> + 'static,
     {
         let description = session.description.clone();

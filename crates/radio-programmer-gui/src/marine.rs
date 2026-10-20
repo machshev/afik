@@ -18,7 +18,6 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::mpsc,
-    thread,
     time::{Duration, SystemTime},
 };
 
@@ -508,7 +507,8 @@ impl SyncJob {
     /// Starts asking Overpass into `cache`.
     pub fn start(cache: MarineCache) -> Self {
         let (sender, outcome) = mpsc::channel();
-        thread::spawn(move || {
+        // A worker that cannot start drops `sender`, which `poll` reports.
+        let _started = crate::platform::spawn("afik-sync", move || async move {
             // The editor may have closed; then nobody wants the outcome.
             let _ = sender.send(cache.sync_with(|url| fetch_within(url, SYNC_TIMEOUT)));
         });

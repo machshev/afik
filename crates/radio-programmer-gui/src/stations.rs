@@ -11,7 +11,6 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::mpsc,
-    thread,
     time::SystemTime,
 };
 
@@ -548,7 +547,8 @@ impl SyncJob {
     /// Starts fetching from Ofcom into `cache`.
     pub fn start(cache: StationCache) -> Self {
         let (sender, outcome) = mpsc::channel();
-        thread::spawn(move || {
+        // A worker that cannot start drops `sender`, which `poll` reports.
+        let _started = crate::platform::spawn("afik-sync", move || async move {
             // The editor may have closed; then nobody wants the outcome.
             let _ = sender.send(cache.sync_with(fetch));
         });

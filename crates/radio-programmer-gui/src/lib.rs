@@ -17,6 +17,7 @@ pub mod logging;
 pub mod map;
 pub mod marine;
 pub mod model;
+mod net;
 pub mod paths;
 pub mod platform;
 pub mod presets;
@@ -28,6 +29,8 @@ pub mod session;
 pub mod stations;
 pub mod theme;
 pub mod tiles;
+#[cfg(target_arch = "wasm32")]
+pub mod web_serial;
 pub mod world;
 
 /// Command-line help for the native editor binary.

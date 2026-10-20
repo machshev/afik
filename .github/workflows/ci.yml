@@ -23,13 +23,14 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Tests
         run: cargo test --workspace
-      - name: Shared crates build for the browser
-        # Studio's browser build (ADR-119) shares these crates unchanged.
+      - name: Studio builds for the browser
+        # One Studio for desktop and browser (ADR-119).
         run: >
           cargo clippy --locked --target wasm32-unknown-unknown
           -p radio-domain -p radio-protocol -p radio-programmer
           -p radio-channel-plan -p radio-storage -p radio-tx-policy
           -p radio-platform -p radio-flasher -p radio-sim
+          -p radio-programmer-serial -p radio-programmer-gui
           -- -D warnings
 
   target-images:

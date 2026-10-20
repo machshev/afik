@@ -8,10 +8,8 @@
 use std::{
     collections::{HashMap, HashSet},
     fs,
-    io::Read,
     path::{Path, PathBuf},
     sync::mpsc,
-    thread,
     time::{Duration, SystemTime},
 };
 
@@ -310,23 +308,14 @@ impl SatelliteCache {
 /// Fetches one URL over HTTPS.
 fn fetch(url: &str) -> Result<String, String> {
     log::debug!("fetching {url}");
-    let started = std::time::Instant::now();
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(TIMEOUT))
-        .user_agent(concat!("afik-studio/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .into();
-    let mut response = agent
-        .get(url)
-        .call()
-        .map_err(|error| format!("{url}: {error}"))?;
-    let mut body = String::new();
-    response
-        .body_mut()
-        .as_reader()
-        .take(MAX_RESPONSE_BYTES)
-        .read_to_string(&mut body)
-        .map_err(|error| format!("{url}: {error}"))?;
+    let started = web_time::Instant::now();
+    let body = crate::net::get(
+        url,
+        TIMEOUT,
+        MAX_RESPONSE_BYTES,
+        concat!("afik-studio/", env!("CARGO_PKG_VERSION")),
+    )?;
+    let body = String::from_utf8(body).map_err(|error| format!("{url}: {error}"))?;
     log::debug!(
         "fetched {} bytes from {url} in {} ms",
         body.len(),
@@ -344,7 +333,8 @@ impl SyncJob {
     /// Starts fetching from SatNOGS into `cache`.
     pub fn start(cache: SatelliteCache) -> Self {
         let (sender, outcome) = mpsc::channel();
-        thread::spawn(move || {
+        // A worker that cannot start drops `sender`, which `poll` reports.
+        let _started = crate::platform::spawn("afik-sync", move || async move {
             // The editor may have closed; then nobody wants the outcome.
             let _ = sender.send(cache.sync_with(fetch));
         });

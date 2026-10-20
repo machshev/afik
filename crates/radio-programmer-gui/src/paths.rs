@@ -7,7 +7,6 @@ use std::{
     ffi::OsString,
     fs,
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 /// Directory name under the XDG data directory.
@@ -214,8 +213,9 @@ pub fn utc_timestamp(unix_seconds: u64) -> String {
 
 /// Returns the current time in whole seconds since the Unix epoch.
 pub fn unix_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
+    // `std`'s clock panics in the browser.
+    web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs())
 }
 

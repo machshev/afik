@@ -9,6 +9,8 @@ description = "Cross-platform serial byte transport for AFIK programmer front en
 
 [dependencies]
 radio-programmer = { path = "../radio-programmer" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # No libudev: Linux discovery reads /dev itself, so the binaries need no
 # system library and the port is opened by path on every platform.
 serialport = { version = "4.10", default-features = false }

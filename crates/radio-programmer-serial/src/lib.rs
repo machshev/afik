@@ -1,16 +1,19 @@
 //! Shared cross-platform serial transport and USB candidate discovery for
-//! front ends.
+//! front ends. In the browser only the baud set and read window are shared:
+//! the page opens its port through Web Serial (`ADR-119`).
 
 #![forbid(unsafe_code)]
 
+#[cfg(not(target_arch = "wasm32"))]
 use radio_programmer::ProtocolTransport;
+use std::time::Duration;
 #[cfg(target_os = "linux")]
 use std::{ffi::OsStr, fs};
+#[cfg(not(target_arch = "wasm32"))]
 use std::{
     fmt,
     io::{self, Read, Write},
     path::{Path, PathBuf},
-    time::Duration,
 };
 
 /// Baud values accepted by the shared serial adapter.
@@ -30,6 +33,7 @@ pub const fn is_supported_baud(baud: u32) -> bool {
     )
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Finds USB serial device paths suitable for protocol-level identification.
 ///
 /// On Linux, stable `/dev/serial/by-id` USB symlinks are preferred. If that
@@ -62,6 +66,7 @@ pub fn discover_usb_serial_devices() -> io::Result<Vec<PathBuf>> {
 ///
 /// macOS lists every port as a `tty.*` dial-in device, whose open waits for
 /// carrier, and a `cu.*` call-out device, which is the one a host opens.
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg_attr(target_os = "linux", allow(dead_code))]
 fn is_candidate_port_name(name: &str) -> bool {
     !name.starts_with("/dev/tty.")
@@ -111,6 +116,7 @@ fn is_usb_serial_name(name: &OsStr) -> bool {
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Serial setup failure before protocol negotiation.
 #[derive(Debug)]
 pub enum SerialOpenError {
@@ -120,6 +126,7 @@ pub enum SerialOpenError {
     Open(serialport::Error),
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl fmt::Display for SerialOpenError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -129,11 +136,13 @@ impl fmt::Display for SerialOpenError {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Ordered byte stream over one raw 8N1 serial port.
 pub struct SerialTransport {
     port: Box<dyn serialport::SerialPort>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl SerialTransport {
     /// Opens one explicit path as raw 8N1 without flow control, with reads
     /// returning empty after [`READ_TIMEOUT`].
@@ -153,6 +162,7 @@ impl SerialTransport {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Reports a read which timed out as no bytes, as a terminal read does.
 fn timeout_as_empty(result: io::Result<usize>) -> io::Result<usize> {
     match result {
@@ -161,12 +171,14 @@ fn timeout_as_empty(result: io::Result<usize>) -> io::Result<usize> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Read for SerialTransport {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         timeout_as_empty(self.port.read(buffer))
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Write for SerialTransport {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
         self.port.write(buffer)
@@ -177,6 +189,7 @@ impl Write for SerialTransport {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl ProtocolTransport for SerialTransport {
     type Error = io::Error;
 

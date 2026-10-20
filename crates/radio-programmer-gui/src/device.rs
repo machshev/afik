@@ -8,7 +8,24 @@
 
 use std::path::{Path, PathBuf};
 
-use radio_programmer_serial::{discover_usb_serial_devices, is_supported_baud, SUPPORTED_BAUDS};
+use radio_programmer_serial::{is_supported_baud, SUPPORTED_BAUDS};
+
+/// The browser does not list serial ports: it offers its own chooser when
+/// the page connects (`ADR-119`).
+#[cfg(target_arch = "wasm32")]
+pub const BROWSER_CHOOSES_PORT: &str =
+    "The browser lists its serial ports when you connect; choose the radio there.";
+
+#[cfg(not(target_arch = "wasm32"))]
+fn discover_usb_serial_devices() -> std::io::Result<Vec<PathBuf>> {
+    radio_programmer_serial::discover_usb_serial_devices()
+}
+
+#[cfg(target_arch = "wasm32")]
+#[allow(clippy::unnecessary_wraps)]
+fn discover_usb_serial_devices() -> std::io::Result<Vec<PathBuf>> {
+    Ok(Vec::new())
+}
 
 /// Baud the shared configuration protocol uses unless told otherwise.
 pub const DEFAULT_BAUD: u32 = 38_400;
@@ -83,6 +100,12 @@ impl DeviceChooser {
 
     /// Runs discovery and returns the status line describing the outcome.
     pub fn detect(&mut self) -> String {
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.detected = true;
+            BROWSER_CHOOSES_PORT.to_owned()
+        }
+        #[cfg(not(target_arch = "wasm32"))]
         match discover_usb_serial_devices() {
             Ok(paths) => self.accept(paths.into_iter().map(DeviceCandidate::new).collect()),
             Err(error) => {

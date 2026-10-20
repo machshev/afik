@@ -11,11 +11,12 @@
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use eframe::egui::{self, Color32, ComboBox, RichText, TextEdit};
 use radio_flasher::{serves_eeprom_reads, RadioPresence};
+use web_time::Instant;
 
 use crate::{
     device::{self, DeviceCandidate},
@@ -1025,10 +1026,8 @@ fn text_field(ui: &mut egui::Ui, label: &str, value: &mut String) {
 mod tests {
     use super::{BackupState, Finding, FlashTab, RECHECK};
     use crate::flash::RadioFamily;
-    use std::{
-        path::PathBuf,
-        time::{Duration, Instant},
-    };
+    use std::{path::PathBuf, time::Duration};
+    use web_time::Instant;
 
     fn bootloader(family: RadioFamily) -> Finding {
         Finding::Bootloader {

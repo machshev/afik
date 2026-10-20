@@ -20,7 +20,6 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, Sender},
-    thread,
     time::SystemTime,
 };
 
@@ -30,7 +29,38 @@ use radio_flasher::{
     FirmwareVersion, FlashPrerequisites, FlashPurpose, ForcedFamily, RadioPresence, VersionCheck,
     FLASH_PAGE_COUNT,
 };
+#[cfg(not(target_arch = "wasm32"))]
 use radio_programmer_serial::SerialTransport;
+
+/// The browser's stand-in for the desktop port: firmware flashing does not
+/// run in the browser yet (`WEB-080`), so it never opens.
+#[cfg(target_arch = "wasm32")]
+struct SerialTransport(std::convert::Infallible);
+
+#[cfg(target_arch = "wasm32")]
+impl SerialTransport {
+    fn open(_device: &Path, _baud: u32) -> Result<Self, &'static str> {
+        Err("flashing from the browser is not available yet; use the desktop Studio")
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl std::io::Read for SerialTransport {
+    fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+        match self.0 {}
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl std::io::Write for SerialTransport {
+    fn write(&mut self, _buffer: &[u8]) -> std::io::Result<usize> {
+        match self.0 {}
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self.0 {}
+    }
+}
 
 /// Serial baud used by every supported bootloader path.
 pub const FLASH_BAUD: u32 = 38_400;
@@ -293,12 +323,10 @@ pub fn start_identify(device: PathBuf) -> Result<IdentifyJob, FlashRequestError>
         return Err(FlashRequestError::new("select a serial device path"));
     }
     let (sender, outcome) = mpsc::channel();
-    thread::Builder::new()
-        .name("afik-identify".to_owned())
-        .spawn(move || {
-            let _ignored = sender.send(identify(&device));
-        })
-        .map_err(|error| FlashRequestError::new(format!("could not start worker: {error}")))?;
+    crate::platform::spawn("afik-identify", move || async move {
+        let _ignored = sender.send(identify(&device));
+    })
+    .map_err(|error| FlashRequestError::new(format!("could not start worker: {error}")))?;
     Ok(IdentifyJob { outcome })
 }
 
@@ -507,16 +535,14 @@ pub fn start(
 ) -> Result<FlashJob, FlashRequestError> {
     validate_request(operation, &request)?;
     let (sender, progress) = mpsc::channel();
-    thread::Builder::new()
-        .name("afik-flash".to_owned())
-        .spawn(move || {
-            let outcome = match run(operation, &request, &sender) {
-                Ok(summary) => FlashProgress::Finished(summary),
-                Err(error) => FlashProgress::Failed(error.to_string()),
-            };
-            let _ignored = sender.send(outcome);
-        })
-        .map_err(|error| FlashRequestError::new(format!("could not start worker: {error}")))?;
+    crate::platform::spawn("afik-flash", move || async move {
+        let outcome = match run(operation, &request, &sender) {
+            Ok(summary) => FlashProgress::Finished(summary),
+            Err(error) => FlashProgress::Failed(error.to_string()),
+        };
+        let _ignored = sender.send(outcome);
+    })
+    .map_err(|error| FlashRequestError::new(format!("could not start worker: {error}")))?;
     Ok(FlashJob {
         operation,
         progress,

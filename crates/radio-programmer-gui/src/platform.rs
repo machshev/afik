@@ -3,6 +3,20 @@
 
 use std::{future::Future, io};
 
+/// `Send` on the desktop, where work runs on a thread; nothing in the
+/// browser, where a link holds JavaScript values that never leave the page.
+#[cfg(not(target_arch = "wasm32"))]
+pub trait MaybeSend: Send {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send> MaybeSend for T {}
+
+/// `Send` on the desktop, where work runs on a thread; nothing in the
+/// browser, where a link holds JavaScript values that never leave the page.
+#[cfg(target_arch = "wasm32")]
+pub trait MaybeSend {}
+#[cfg(target_arch = "wasm32")]
+impl<T> MaybeSend for T {}
+
 /// Runs `work` off the user interface: a named worker thread blocking on its
 /// future on the desktop, a task of the page in the browser.
 ///
@@ -11,7 +25,7 @@ use std::{future::Future, io};
 #[cfg(not(target_arch = "wasm32"))]
 pub fn spawn<W, F>(name: &str, work: W) -> io::Result<()>
 where
-    W: FnOnce() -> F + Send + 'static,
+    W: FnOnce() -> F + MaybeSend + 'static,
     F: Future<Output = ()> + 'static,
 {
     std::thread::Builder::new()
@@ -25,7 +39,7 @@ where
 #[cfg(target_arch = "wasm32")]
 pub fn spawn<W, F>(_name: &str, work: W) -> io::Result<()>
 where
-    W: FnOnce() -> F + Send + 'static,
+    W: FnOnce() -> F + MaybeSend + 'static,
     F: Future<Output = ()> + 'static,
 {
     wasm_bindgen_futures::spawn_local(work());
