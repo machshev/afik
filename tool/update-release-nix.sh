@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Pins `nix/release.json` to a published GitHub release, taking every asset's
-# hash from the release's SHA256SUMS, so the flake's `afik-bin` package
+# hash from the release's SHA256SUMS, so the flake's `afik-studio` package
 # installs that release's binaries.
 #
 #   tool/update-release-nix.sh [VERSION]

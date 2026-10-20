@@ -29,14 +29,14 @@ let
   };
   platform =
     platforms.${stdenv.hostPlatform.system}
-      or (throw "afik-bin: no release package for ${stdenv.hostPlatform.system}");
+      or (throw "afik-studio: no release package for ${stdenv.hostPlatform.system}");
   asset =
     name:
     fetchurl {
       url = "https://github.com/machshev/afik/releases/download/v${version}/${name}";
       hash =
         hashes.${name}
-          or (throw "afik-bin: nix/release.json has no hash for ${name}; run tool/update-release-nix.sh");
+          or (throw "afik-studio: nix/release.json has no hash for ${name}; run tool/update-release-nix.sh");
     };
   archive = "afik-${version}-${platform}.tar.gz";
   images =
@@ -58,9 +58,9 @@ let
     libxrandr
   ];
 in
-assert lib.assertMsg (version != "") "afik-bin: nix/release.json names no release yet";
+assert lib.assertMsg (version != "") "afik-studio: nix/release.json names no release yet";
 stdenv.mkDerivation {
-  pname = "afik-bin";
+  pname = "afik-studio";
   inherit version;
   src = if archiveOverride != null then archiveOverride else asset archive;
 

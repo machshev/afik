@@ -297,7 +297,7 @@ asserts before the extra tick. Gate: `cargo fmt --all --check` clean,
 clippy --all-targets -- -D warnings` for the CLI and serial crates on
 `x86_64-pc-windows-msvc` and `aarch64-apple-darwin` clean (Studio's `ring`
 C cannot cross-compile here; the release run builds it); `actionlint` clean.
-The flake's `afik-bin` package (`nix/afik-bin.nix`) installs the release
+The flake's `afik-studio` package (`nix/afik-studio.nix`, was `afik-bin`) installs the release
 named in `nix/release.json`, which `tool/update-release-nix.sh` pins from the
 release's `SHA256SUMS`; it is absent while nothing is pinned. Linux binaries
 are patched and Studio gets its GL/window libraries. Gate: a mock release

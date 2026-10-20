@@ -52,11 +52,11 @@
       # Absent until the first release is pinned, so the flake still checks.
       packages = nixpkgs.lib.optionalAttrs (release.version != "") (nixpkgs.lib.genAttrs releaseSystems (system:
         let
-          afik-bin = nixpkgs.legacyPackages.${system}.callPackage ./nix/afik-bin.nix { };
+          afik-studio = nixpkgs.legacyPackages.${system}.callPackage ./nix/afik-studio.nix { };
         in
         {
-          inherit afik-bin;
-          default = afik-bin;
+          inherit afik-studio;
+          default = afik-studio;
         }));
 
       formatter = forAllSystems (pkgs: pkgs.nixfmt-tree);

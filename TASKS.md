@@ -3418,5 +3418,5 @@
 - **Steps:** release workflow (`.github/workflows/release.yml`). Done.
   Serial transport on `serialport`, no `stty`/`/dev/urandom`/Unix-only file
   calls; toolchain pin follows the devshell (`ADR-118`). Done. Nix package of
-  the released binaries (`nix/afik-bin.nix`). Done. Push a tag, pin it, then try `afik-flasher link-test` on
+  the released binaries (`nix/afik-studio.nix`). Done. Push a tag, pin it, then try `afik-flasher link-test` on
   Windows and macOS.
