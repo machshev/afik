@@ -878,12 +878,12 @@ impl Index {
     /// into this index, which starts empty.
     fn decode(
         &mut self,
-        mut read: &mut impl FnMut(usize, &mut [u8]) -> bool,
+        read: &mut impl FnMut(usize, &mut [u8]) -> bool,
         bank_count: usize,
         payload_len: usize,
     ) -> Result<(), StorageError> {
         let index = self;
-        let config = read_array::<RADIO_CONFIG_ENCODED_LEN>(&mut read, 0)?;
+        let config = read_array::<RADIO_CONFIG_ENCODED_LEN>(read, 0)?;
         index.configured = true;
         index.config = decode_radio_config(&ObjectRef::new(
             ObjectKey {
@@ -895,7 +895,7 @@ impl Index {
         .validate()
         .map_err(|_| StorageError::MalformedObject)?;
         let mut at = RADIO_CONFIG_ENCODED_LEN;
-        let [range_count] = read_array::<1>(&mut read, at)?;
+        let [range_count] = read_array::<1>(read, at)?;
         at += 1;
         index.tx_ranges = u16::try_from(at).map_err(|_| StorageError::ImageTooLarge)?;
         index.tx_range_count = range_count;
@@ -903,21 +903,21 @@ impl Index {
             return Err(StorageError::MalformedObject);
         }
         for _ in 0..range_count {
-            decode_tx_range_body(&read_array(&mut read, at)?)?;
+            decode_tx_range_body(&read_array(read, at)?)?;
             at += TX_RANGE_ENCODED_LEN;
         }
         let mut first = 0_u32;
         let mut previous: Option<u8> = None;
         for _ in 0..bank_count {
-            let (id, entry) = Self::read_entry(&mut read, at)?;
+            let (id, entry) = Self::read_entry(read, at)?;
             // Ascending, so each bank appears once and channels number in
             // bank order.
             if previous.is_some_and(|previous| previous >= id) {
                 return Err(StorageError::NonCanonicalImage);
             }
             previous = Some(id);
-            Self::read_bank(&mut read, id, &entry)?;
-            let count = Self::check_body(&mut read, id, &entry)?;
+            Self::read_bank(read, id, &entry)?;
+            let count = Self::check_body(read, id, &entry)?;
             index.banks[usize::from(id)] = BankSlot {
                 entry: u16::try_from(at).map_err(|_| StorageError::ImageTooLarge)?,
                 first: u16::try_from(first).map_err(|_| StorageError::ImageTooLarge)?,
@@ -929,7 +929,7 @@ impl Index {
             index.populated.insert(BankId::new(u16::from(id)));
             at = entry.body + entry.body_len;
         }
-        let [group_count] = read_array::<1>(&mut read, at)?;
+        let [group_count] = read_array::<1>(read, at)?;
         at += 1;
         if group_count > MAX_GROUPS {
             return Err(StorageError::MalformedObject);
@@ -938,7 +938,7 @@ impl Index {
         // a group's name and banks are checked when it is read (`Self::group`).
         for slot in 0..usize::from(group_count) {
             index.groups[slot] = u16::try_from(at).map_err(|_| StorageError::ImageTooLarge)?;
-            let [name_len] = read_array::<1>(&mut read, at)?;
+            let [name_len] = read_array::<1>(read, at)?;
             if name_len == 0 || usize::from(name_len) > MAX_BANK_NAME_LEN {
                 return Err(StorageError::MalformedObject);
             }

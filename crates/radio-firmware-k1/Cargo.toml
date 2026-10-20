@@ -72,8 +72,8 @@ radio-platform = { path = "../radio-platform" }
 embassy-executor = { version = "=0.10.0", default-features = false, features = ["executor-thread", "platform-cortex-m"], optional = true }
 py32-hal = { version = "=0.4.1", default-features = false, features = ["py32f071r1b"], optional = true }
 embassy-time = { version = "=0.5.1", default-features = false, optional = true }
-cortex-m-rt = { version = "=0.7.6", optional = true }
-cortex-m = { version = "=0.7.8", optional = true }
+cortex-m-rt = { version = "=0.7.7", optional = true }
+cortex-m = { version = "=0.7.9", optional = true }
 
 [[bin]]
 name = "radio-firmware-k1"
@@ -90,3 +90,5 @@ missing_docs = "warn"
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
 missing_errors_doc = "allow"
+# `assert!(x.is_empty())` reads better than `assert_eq!(x, [] as [T; 0])`.
+assert_is_empty = "allow"

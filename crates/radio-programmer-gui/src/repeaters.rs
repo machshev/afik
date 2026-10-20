@@ -1077,17 +1077,19 @@ pub(crate) fn fetch(url: &str) -> Result<String, String> {
 pub(crate) fn fetch_within(url: &str, timeout: Duration) -> Result<String, String> {
     log::debug!("fetching {url}");
     let started = std::time::Instant::now();
-    let agent = ureq::AgentBuilder::new()
-        .timeout(timeout)
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(timeout))
         .user_agent(concat!("afik-studio/", env!("CARGO_PKG_VERSION")))
-        .build();
-    let response = agent
+        .build()
+        .into();
+    let mut response = agent
         .get(url)
         .call()
         .map_err(|error| format!("{url}: {error}"))?;
     let mut body = Vec::new();
     response
-        .into_reader()
+        .body_mut()
+        .as_reader()
         .take(MAX_RESPONSE_BYTES + 1)
         .read_to_end(&mut body)
         .map_err(|error| format!("{url}: {error}"))?;

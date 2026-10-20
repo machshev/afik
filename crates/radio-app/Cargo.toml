@@ -19,7 +19,7 @@ radio-tx-policy = { path = "../radio-tx-policy" }
 # The same pinned Embassy both targets run. No `tick-hz` feature is set here,
 # so each target's time driver keeps the default 1 MHz rate (ADR-099).
 embassy-time = { version = "=0.5.1", default-features = false }
-embassy-sync = { version = "=0.7.2", default-features = false }
+embassy-sync = { version = "=0.8.0", default-features = false }
 embassy-futures = { version = "=0.1.2", default-features = false }
 
 [lints.rust]
@@ -31,6 +31,8 @@ all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
 missing_errors_doc = "allow"
 must_use_candidate = "allow"
+# `assert!(x.is_empty())` reads better than `assert_eq!(x, [] as [T; 0])`.
+assert_is_empty = "allow"
 
 [features]
 # RISK-036 bisection: count received bytes and drop them without parsing.

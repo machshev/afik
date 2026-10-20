@@ -100,6 +100,8 @@ impl<D: Delay> Display for K5Display<D> {
     /// The waits are the reference firmware's (`driver/st7565.c`), in real
     /// milliseconds: spin-loop counts stood in for them until the size-built
     /// image made the same counts take about five seconds.
+    // The trait is async for targets that wait; this driver blocks.
+    #[allow(clippy::unused_async_trait_impl)]
     async fn initialise(&mut self) -> bool {
         let delay = &mut self.delay;
         syscon::enable(&[Peripheral::GpioB, Peripheral::PwmPlus0]);
@@ -142,6 +144,8 @@ impl<D: Delay> Display for K5Display<D> {
         BACKLIGHT.set_backlight(on);
     }
 
+    // The trait is async for targets that wait; this driver blocks.
+    #[allow(clippy::unused_async_trait_impl)]
     async fn frame(&mut self, frame: &[u8; FRAME_BYTES]) -> bool {
         write_frame(frame);
         true

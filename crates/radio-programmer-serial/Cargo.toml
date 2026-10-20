@@ -11,7 +11,7 @@ description = "Cross-platform serial byte transport for AFIK programmer front en
 radio-programmer = { path = "../radio-programmer" }
 # No libudev: Linux discovery reads /dev itself, so the binaries need no
 # system library and the port is opened by path on every platform.
-serialport = { version = "4.7", default-features = false }
+serialport = { version = "4.10", default-features = false }
 
 [lints]
 workspace = true

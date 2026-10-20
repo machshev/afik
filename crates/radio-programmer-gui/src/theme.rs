@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use eframe::egui::{
-    self, Color32, Context, FontData, FontDefinitions, FontFamily, FontId, Margin, Rounding,
+    self, Color32, Context, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Margin,
     Shadow, Stroke, Style, TextStyle, Theme, Visuals,
 };
 
@@ -21,7 +21,7 @@ const INTER_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/Inter-SemiBold.ttf
 pub const SEMIBOLD: &str = "Inter SemiBold";
 
 /// Corner rounding of widgets and panels.
-pub const ROUNDING: f32 = 6.0;
+pub const ROUNDING: u8 = 6;
 
 /// The accent: selection, focus, links and the chosen tab's text.
 pub const ACCENT_LIGHT: Color32 = Color32::from_rgb(0x1C, 0x71, 0xD8);
@@ -42,12 +42,14 @@ pub fn apply(context: &Context) {
 /// still draw what Inter lacks.
 pub fn fonts() -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
-    fonts
-        .font_data
-        .insert("Inter".to_owned(), FontData::from_static(INTER_REGULAR));
-    fonts
-        .font_data
-        .insert(SEMIBOLD.to_owned(), FontData::from_static(INTER_SEMIBOLD));
+    fonts.font_data.insert(
+        "Inter".to_owned(),
+        Arc::new(FontData::from_static(INTER_REGULAR)),
+    );
+    fonts.font_data.insert(
+        SEMIBOLD.to_owned(),
+        Arc::new(FontData::from_static(INTER_SEMIBOLD)),
+    );
     let fallbacks = fonts
         .families
         .get(&FontFamily::Proportional)
@@ -84,8 +86,8 @@ fn restyle(style: &mut Style, theme: Theme) {
     spacing.button_padding = egui::vec2(10.0, 4.0);
     spacing.interact_size.y = 26.0;
     spacing.indent = 20.0;
-    spacing.window_margin = Margin::same(12.0);
-    spacing.menu_margin = Margin::same(8.0);
+    spacing.window_margin = Margin::same(12);
+    spacing.menu_margin = Margin::same(8);
     spacing.combo_width = 120.0;
     style.visuals = palette(theme);
 }
@@ -130,7 +132,7 @@ pub fn palette(theme: Theme) -> Visuals {
         )
     };
     let accent = if dark { ACCENT_DARK } else { ACCENT_LIGHT };
-    let rounding = Rounding::same(ROUNDING);
+    let rounding = CornerRadius::same(ROUNDING);
 
     visuals.panel_fill = window;
     visuals.window_fill = view;
@@ -138,19 +140,16 @@ pub fn palette(theme: Theme) -> Visuals {
     visuals.faint_bg_color = faint;
     visuals.code_bg_color = faint;
     visuals.window_stroke = Stroke::new(1.0_f32, border);
-    visuals.window_rounding = Rounding::same(10.0);
-    visuals.menu_rounding = rounding;
+    visuals.window_corner_radius = CornerRadius::same(10);
+    visuals.menu_corner_radius = rounding;
     let shadow = Shadow {
-        offset: egui::vec2(0.0, 4.0),
-        blur: 16.0,
-        spread: 0.0,
+        offset: [0, 4],
+        blur: 16,
+        spread: 0,
         color: Color32::from_black_alpha(if dark { 110 } else { 40 }),
     };
     visuals.window_shadow = shadow;
-    visuals.popup_shadow = Shadow {
-        blur: 10.0,
-        ..shadow
-    };
+    visuals.popup_shadow = Shadow { blur: 10, ..shadow };
     visuals.hyperlink_color = accent;
     visuals.selection.bg_fill = accent.linear_multiply(if dark { 0.45 } else { 0.25 });
     visuals.selection.stroke = Stroke::new(1.5_f32, accent);
@@ -184,7 +183,7 @@ pub fn palette(theme: Theme) -> Visuals {
         &mut widgets.active,
         &mut widgets.open,
     ] {
-        state.rounding = rounding;
+        state.corner_radius = rounding;
     }
     visuals
 }
@@ -192,7 +191,7 @@ pub fn palette(theme: Theme) -> Visuals {
 #[cfg(test)]
 mod tests {
     use super::{apply, fonts, palette, ACCENT_DARK, ACCENT_LIGHT, ROUNDING, SEMIBOLD};
-    use eframe::egui::{Context, FontFamily, Rounding, TextStyle, Theme};
+    use eframe::egui::{Context, CornerRadius, FontFamily, TextStyle, Theme};
 
     #[test]
     fn inter_comes_first_and_egui_fonts_still_back_it() {
@@ -215,7 +214,10 @@ mod tests {
         assert_eq!(light.hyperlink_color, ACCENT_LIGHT);
         assert_eq!(dark.hyperlink_color, ACCENT_DARK);
         for visuals in [&light, &dark] {
-            assert_eq!(visuals.widgets.inactive.rounding, Rounding::same(ROUNDING));
+            assert_eq!(
+                visuals.widgets.inactive.corner_radius,
+                CornerRadius::same(ROUNDING)
+            );
             // Text stands out from what it is drawn on.
             let text = visuals.widgets.inactive.fg_stroke.color;
             assert_ne!(text, visuals.widgets.inactive.bg_fill);
@@ -234,8 +236,8 @@ mod tests {
         for theme in [Theme::Light, Theme::Dark] {
             context.style_mut_of(theme, |style| {
                 assert_eq!(
-                    style.visuals.widgets.inactive.rounding,
-                    Rounding::same(ROUNDING)
+                    style.visuals.widgets.inactive.corner_radius,
+                    CornerRadius::same(ROUNDING)
                 );
                 let heading = &style.text_styles[&TextStyle::Heading];
                 assert_eq!(heading.family, FontFamily::Name(SEMIBOLD.into()));

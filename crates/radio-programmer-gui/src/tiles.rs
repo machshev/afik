@@ -84,21 +84,23 @@ pub type Fetch = Arc<dyn Fn(TileId) -> Result<Vec<u8>, String> + Send + Sync>;
 fn fetch_tile(id: TileId) -> Result<Vec<u8>, String> {
     let url = format!("{TILE_URL}/{}/{}/{}.png", id.zoom, id.x, id.y);
     log::debug!("fetching {url}");
-    let agent = ureq::AgentBuilder::new()
-        .timeout(TIMEOUT)
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(TIMEOUT))
         .user_agent(concat!(
             "afik-studio/",
             env!("CARGO_PKG_VERSION"),
             " (radio programmer map)"
         ))
-        .build();
-    let response = agent
+        .build()
+        .into();
+    let mut response = agent
         .get(&url)
         .call()
         .map_err(|error| format!("{url}: {error}"))?;
     let mut body = Vec::new();
     response
-        .into_reader()
+        .body_mut()
+        .as_reader()
         .take(MAX_TILE_BYTES + 1)
         .read_to_end(&mut body)
         .map_err(|error| format!("{url}: {error}"))?;

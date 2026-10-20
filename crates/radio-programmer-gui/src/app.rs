@@ -171,13 +171,14 @@ fn generator_tab(
         } else {
             visuals.widgets.noninteractive.bg_stroke
         };
-        let rounding = egui::Rounding {
-            nw: 4.0,
-            ne: 4.0,
-            sw: 0.0,
-            se: 0.0,
+        let rounding = egui::CornerRadius {
+            nw: 4,
+            ne: 4,
+            sw: 0,
+            se: 0,
         };
-        ui.painter().rect(rect, rounding, fill, stroke);
+        ui.painter()
+            .rect(rect, rounding, fill, stroke, egui::StrokeKind::Middle);
         let colour = if selected {
             // The theme's accent.
             visuals.selection.stroke.color
@@ -3326,14 +3327,14 @@ impl StudioApp {
                         }
                         selected
                     });
-                    let panel = egui::Frame::none()
+                    let panel = egui::Frame::NONE
                         .fill(fill)
                         .stroke(stroke)
-                        .rounding(egui::Rounding {
-                            nw: 0.0,
-                            ne: 4.0,
-                            sw: 4.0,
-                            se: 4.0,
+                        .corner_radius(egui::CornerRadius {
+                            nw: 0,
+                            ne: 4,
+                            sw: 4,
+                            se: 4,
                         })
                         .inner_margin(6.0)
                         .show(ui, |ui| {
@@ -5915,7 +5916,12 @@ fn memory_segments(
     } else {
         egui::Stroke::new(1.0_f32, visuals.widgets.noninteractive.bg_stroke.color)
     };
-    painter.rect_stroke(rect.shrink(0.5), rounding, outline);
+    painter.rect_stroke(
+        rect.shrink(0.5),
+        rounding,
+        outline,
+        egui::StrokeKind::Middle,
+    );
     response
 }
 

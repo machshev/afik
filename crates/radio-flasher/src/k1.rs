@@ -366,7 +366,7 @@ fn parse_k1_beacon(packet: &Packet, check: VersionCheck) -> Result<String, K1Fla
     let end = payload[20..36]
         .iter()
         .position(|byte| *byte == 0)
-        .map_or(16, |index| index);
+        .unwrap_or(16);
     let version = String::from_utf8_lossy(&payload[20..20 + end]).into_owned();
     if check == VersionCheck::Known && !is_supported_bootloader_version(&version) {
         return Err(K1FlashError::UnsupportedBootloader(version));

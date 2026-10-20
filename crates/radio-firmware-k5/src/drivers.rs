@@ -19,6 +19,8 @@ impl K5Keypad {
 }
 
 impl Keypad for K5Keypad {
+    // The trait is async for targets that wait; this driver blocks.
+    #[allow(clippy::unused_async_trait_impl)]
     async fn scan(&mut self) -> Sample {
         // The EEPROM shares two of the row pins (`EVID-K5-025`), and the serial
         // task may have used them since the last scan, so every scan takes the

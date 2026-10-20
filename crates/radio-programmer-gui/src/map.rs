@@ -5,7 +5,7 @@
 //! Drag pans, the wheel or the buttons zoom, and a click picks the locator
 //! under the pointer.
 
-use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
+use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 
 use crate::tiles::{self, TileId, Tiles, MAX_ZOOM, MIN_ZOOM, TILE_SIZE};
 
@@ -246,7 +246,12 @@ pub fn show(
                 let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
                 painter.image(texture.id(), tile, uv, Color32::WHITE);
             } else {
-                painter.rect_stroke(tile, 0.0, Stroke::new(1.0_f32, Color32::from_gray(0xC0)));
+                painter.rect_stroke(
+                    tile,
+                    0.0,
+                    Stroke::new(1.0_f32, Color32::from_gray(0xC0)),
+                    StrokeKind::Middle,
+                );
             }
         }
     }
@@ -333,6 +338,7 @@ pub fn show(
             1.0,
             Color32::from_rgb(0x1F, 0x5F, 0xBF),
             Stroke::new(1.5_f32, Color32::WHITE),
+            StrokeKind::Middle,
         );
         text(at, &pin.label);
     }

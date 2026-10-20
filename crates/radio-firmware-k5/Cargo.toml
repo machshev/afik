@@ -31,7 +31,7 @@ radio-platform = { path = "../radio-platform" }
 radio-tx-policy = { path = "../radio-tx-policy" }
 # The same pinned Embassy the K1 runs; cortex-m supplies the single-core
 # critical section the time driver and executor use.
-cortex-m = { version = "=0.7.8", features = ["critical-section-single-core"], optional = true }
+cortex-m = { version = "=0.7.9", features = ["critical-section-single-core"], optional = true }
 embassy-executor = { version = "=0.10.0", default-features = false, features = ["executor-thread", "platform-cortex-m"], optional = true }
 embassy-time = { version = "=0.5.1", default-features = false, optional = true }
 
@@ -61,3 +61,5 @@ all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
 missing_errors_doc = "allow"
 must_use_candidate = "allow"
+# `assert!(x.is_empty())` reads better than `assert_eq!(x, [] as [T; 0])`.
+assert_is_empty = "allow"

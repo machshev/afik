@@ -305,7 +305,19 @@ staged like the CI job (Ubuntu interpreter, no RPATH) pinned through the
 script with `AFIK_RELEASES=file://…`, `nix build path:.#afik-bin` built,
 all four tools ran under `env -i`; `nix flake check path:. --no-build`
 passes unpinned, and `--all-systems` passes pinned; `shellcheck` and
-`nixfmt` clean. Next: push `v7.0.65`, pin it, and run `afik-flasher
+`nixfmt` clean. Dependencies updated to the latest (2026-10-20, operator request): nixpkgs
+(rustc 1.99.0, pinned in `rust-toolchain.toml`), eframe 0.32, ureq 3,
+getrandom 0.4, embassy-sync 0.8, cortex-m 0.7.9, cortex-m-rt 0.7.7, and
+`cargo update`. Studio ported to egui's `CornerRadius`/`StrokeKind` and
+ureq 3's agent config; the new clippy's `mut_mut` and `unwrap_or` findings
+fixed, `assert_is_empty` allowed (its rewrite reads worse), and
+`unused_async_trait_impl` allowed on the three blocking K5 driver methods.
+Gate: `cargo fmt --all --check` clean, `cargo clippy --workspace
+--all-targets -- -D warnings` clean, `cargo test --workspace` 993 passed 0
+failed; `tool/build-k5.sh --release` verified, flash end `0xef80` (was
+`0xef68` on the same rustc); `tool/build-k1.sh --release` verified, 79 444
+bytes (was 78 836), `tool/test-k1-image.sh` passed. Not yet flashed.
+Next: release `v7.0.66`, pin it, flash both radios, and run `afik-flasher
 link-test` on Windows and macOS.
 
 **`LINK-078` done** (2026-10-19, operator request, hardware observed): the host sends every memory request again when no answer comes
