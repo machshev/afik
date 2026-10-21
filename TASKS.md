@@ -3323,7 +3323,11 @@
       analogue tables placed at the towns they name; hearham's stale `4X`
       and `4Z` entries are left out. Done.
   21. Israeli regional FM stations from the Second Authority's list,
-      built in (`ADR-123`).
+      built in (`ADR-123`): all 40 frequencies of its 17 stations, a
+      Regional kind, each at the town the list names or its area's main
+      town, ranked by distance. Done. Next: hear a station and a repeater
+      in Israel, and add the national networks (Kan, Galei Tzahal) once an
+      official per-region list is found.
 
 ## BANKS-073 — Up to 254 banks, addressed by bank and position
 

@@ -160,11 +160,13 @@ pub enum StationKind {
     LowPower,
     /// US `FB`: a booster, filling in its station's area on its frequency.
     Booster,
+    /// An Israeli regional station, franchised by the Second Authority.
+    Regional,
 }
 
 impl StationKind {
     /// Every kind, in the order the checkboxes show them.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Bbc,
         Self::National,
         Self::Local,
@@ -175,6 +177,7 @@ impl StationKind {
         Self::Translator,
         Self::LowPower,
         Self::Booster,
+        Self::Regional,
     ];
 
     /// The position of this kind in [`Self::ALL`].
@@ -195,6 +198,7 @@ impl StationKind {
             Self::Translator => "Translator",
             Self::LowPower => "Low power",
             Self::Booster => "Booster",
+            Self::Regional => "Regional",
         }
     }
 
@@ -215,14 +219,23 @@ impl StationKind {
             }
             Self::LowPower => "low-power (LPFM) US community stations",
             Self::Booster => "US boosters, each filling in its station's area on its frequency",
+            Self::Regional => {
+                "Israeli regional stations the Second Authority franchises, placed at their \
+                 area's main town"
+            }
         }
     }
 
-    /// Whether the kind is one of the FCC's services.
-    const fn is_us(self) -> bool {
+    /// Whether the kind is one of Ofcom's, the only ones before the US.
+    const fn is_uk(self) -> bool {
         matches!(
             self,
-            Self::FullPower | Self::Translator | Self::LowPower | Self::Booster
+            Self::Bbc
+                | Self::National
+                | Self::Local
+                | Self::Community
+                | Self::Restricted
+                | Self::Other
         )
     }
 
@@ -239,6 +252,7 @@ impl StationKind {
             Self::Translator => "translator",
             Self::LowPower => "low-power",
             Self::Booster => "booster",
+            Self::Regional => "il-regional",
         }
     }
 
@@ -490,6 +504,96 @@ pub fn parse_fcc(text: &str) -> Result<Vec<Station>, String> {
     Ok(stations)
 }
 
+/// The power every built-in Israeli station is taken to radiate: the list
+/// gives none, so they rank by distance alone.
+const ISRAEL_NOMINAL_WATTS: f64 = 1_000.0;
+
+/// Israel's regional stations, from the Second Authority's list of
+/// franchises (rashut2.org.il, "רדיו אזורי", read 2026-10-21): the channel
+/// name, the frequency in tenths of a megahertz, and where it is placed, in
+/// degrees north and east. Israel publishes no transmitter sites, so each
+/// frequency is at the town the list names for it, else its franchise
+/// area's main town, to about a kilometre. Each frequency is its own
+/// programme, so a station's second frequency is kept too.
+const ISRAEL_REGIONAL: [(&str, u16, &str, f64, f64); 40] = [
+    // Radio Tzafon: Galilee and Golan; 104.5 for the Upper Galilee, the
+    // Galilee Panhandle and the Golan, 101.5 its second station.
+    ("RADIO TZAFON", 1_045, "Upper Galilee", 33.00, 35.58),
+    ("HATACHANA", 1_015, "Upper Galilee", 33.00, 35.58),
+    // A-Shams: the north; 101 for Nazareth and the north, 98.1 for the
+    // Triangle and the coastal plain.
+    ("A-SHAMS", 1_010, "Nazareth", 32.70, 35.30),
+    ("A-SHAMS", 981, "Tayibe", 32.27, 35.01),
+    // Radio Haifa: the Carmel and the bay; 99.5 its second station.
+    ("RADIO HAIFA", 1_075, "Haifa", 32.79, 34.99),
+    ("HAM ESH", 995, "Haifa", 32.79, 34.99),
+    // Radio Nas: the north.
+    ("RADIO NAS", 1_033, "Nazareth", 32.70, 35.30),
+    ("RADIO NAS", 1_078, "Nazareth", 32.70, 35.30),
+    // Kol Rega: the valleys; 96 for Nazareth, 91.5 for Tiberias and the
+    // Jordan Valley, 106.4 its Russian station.
+    ("KOL REGA", 960, "Nazareth", 32.70, 35.30),
+    ("KOL REGA", 915, "Tiberias", 32.79, 35.53),
+    ("LUCHSHAYA", 1_064, "Afula", 32.61, 35.29),
+    // Radio 90: Emek Hefer.
+    ("RADIO 90", 900, "Emek Hefer", 32.37, 34.90),
+    ("RADIO 90", 947, "Emek Hefer", 32.37, 34.90),
+    // Radius and Eco 99: the Sharon.
+    ("RADIUS", 1_000, "Kfar Saba", 32.18, 34.91),
+    ("RADIUS", 963, "Kfar Saba", 32.18, 34.91),
+    ("ECO 99", 990, "Kfar Saba", 32.18, 34.91),
+    // 103FM and Radio Tel Aviv: Gush Dan.
+    ("103FM", 1_030, "Tel Aviv", 32.08, 34.78),
+    ("103FM", 902, "Tel Aviv", 32.08, 34.78),
+    ("RADIO TLV", 1_020, "Tel Aviv", 32.08, 34.78),
+    ("RADIO TLV", 996, "Tel Aviv", 32.08, 34.78),
+    // Kol Chai: the centre, religious; 102.5 its Haredi music station.
+    ("KOL CHAI", 930, "Bnei Brak", 32.09, 34.83),
+    ("KOL CHAI", 928, "Bnei Brak", 32.09, 34.83),
+    ("KOL CHAI MUS", 1_025, "Bnei Brak", 32.09, 34.83),
+    // Lev HaMedina: the Judean lowlands; 89.1 its Russian station.
+    ("LEV HAMEDINA", 910, "Rehovot", 31.89, 34.81),
+    ("LEV HAMEDINA", 933, "Rehovot", 31.89, 34.81),
+    ("PERVAYA", 891, "Rehovot", 31.89, 34.81),
+    // Kol Barama: the centre; 107.6 its youth station.
+    ("KOL BARAMA", 921, "Bnei Brak", 32.09, 34.83),
+    ("KOL BARAMA", 1_057, "Bnei Brak", 32.09, 34.83),
+    ("KOL BARAMA", 1_043, "Bnei Brak", 32.09, 34.83),
+    ("KOL PLAY", 1_076, "Bnei Brak", 32.09, 34.83),
+    // Radio Jerusalem: greater Jerusalem.
+    ("RADIO JLM", 1_010, "Jerusalem", 31.78, 35.22),
+    ("RADIO JLM", 895, "Jerusalem", 31.78, 35.22),
+    // Galei Israel: Judea and Samaria.
+    ("GALEI ISRAEL", 940, "Ariel", 32.10, 35.17),
+    ("GALEI ISRAEL", 893, "Ariel", 32.10, 35.17),
+    ("GALEI ISRAEL", 1_065, "Ariel", 32.10, 35.17),
+    // Radio Darom: the Negev; 101.5 for Ashdod, Ashkelon, Lachish and the
+    // Gaza envelope.
+    ("RADIO DAROM", 970, "Be'er Sheva", 31.25, 34.79),
+    ("RADIO DAROM", 958, "Be'er Sheva", 31.25, 34.79),
+    ("RADIO DAROM", 1_015, "Ashkelon", 31.67, 34.57),
+    // Kol HaYam HaAdom: Eilat and Hevel Eilot.
+    ("RED SEA", 1_020, "Eilat", 29.56, 34.95),
+    ("RED SEA", 1_011, "Eilat", 29.56, 34.95),
+];
+
+/// The Second Authority's list, as one station per frequency.
+fn israel() -> impl Iterator<Item = Station> {
+    ISRAEL_REGIONAL
+        .iter()
+        .map(|&(name, tenths, site, latitude, longitude)| Station {
+            name: name.to_owned(),
+            station: format!("{name} {tenths}"),
+            site: site.to_owned(),
+            frequency_hz: u32::from(tenths) * RASTER_HZ,
+            erp_watts: ISRAEL_NOMINAL_WATTS,
+            height_m: None,
+            latitude,
+            longitude,
+            kind: StationKind::Regional,
+        })
+}
+
 /// The estimated strength of `station` at `km`: power over distance squared,
 /// falling a further fourth power of distance beyond the radio horizon, so a
 /// big transmitter far past it ranks below a small local one.
@@ -659,6 +763,9 @@ impl StationCache {
             stations.extend(source.parse(&String::from_utf8_lossy(&bytes))?);
             synced = Some(synced.map_or(written, |oldest| oldest.min(written)));
         }
+        // The built-in stations come with any list read, so they go with
+        // the sources' state on screen.
+        stations.extend(israel());
         Ok(synced.map(|synced| StationList {
             stations,
             synced,
@@ -745,6 +852,7 @@ impl StationCache {
         }
         let mut list = list.ok_or_else(|| failures.join("; "))?;
         list.complete = failures.is_empty();
+        list.stations.extend(israel());
         Ok(list)
     }
 }
@@ -770,8 +878,9 @@ impl Default for StationArea {
 
 impl StationArea {
     /// Every kind but the BBC, the default.
-    pub const NO_BBC: [bool; StationKind::ALL.len()] =
-        [false, true, true, true, true, true, true, true, true, true];
+    pub const NO_BBC: [bool; StationKind::ALL.len()] = [
+        false, true, true, true, true, true, true, true, true, true, true,
+    ];
 
     /// Whether `station` is of a kind taken.
     pub const fn takes(&self, station: &Station) -> bool {
@@ -806,7 +915,7 @@ impl StationArea {
         let kinds = if let Some(off) = listed(OFF_PREFIX) {
             StationKind::ALL.map(|kind| !off.contains(&kind.word()))
         } else if let Some(taken) = listed(KINDS_PREFIX) {
-            StationKind::ALL.map(|kind| taken.contains(&kind.word()) || kind.is_us())
+            StationKind::ALL.map(|kind| taken.contains(&kind.word()) || !kind.is_uk())
         } else if words().any(|word| word == KEEP_BBC) {
             [true; StationKind::ALL.len()]
         } else {
@@ -874,7 +983,7 @@ impl SyncJob {
 mod tests {
     use super::{
         parse, parse_fcc, records, station_bank, strongest, Source, StationArea, StationCache,
-        StationKind, FCC_URL, TRANSMITTERS_URL,
+        StationKind, FCC_URL, ISRAEL_REGIONAL, TRANSMITTERS_URL,
     };
     use crate::model::ProjectModel;
     use crate::receiver::Receiver;
@@ -1084,6 +1193,48 @@ Classic,A,AN000001,90.7,CLASSIC,1,1,51,0\n";
     }
 
     #[test]
+    fn israels_regional_stations_are_heard_nearest_first() {
+        let stations: Vec<_> = super::israel().collect();
+        // Every frequency the receiver can play, each its own programme.
+        assert!(stations
+            .iter()
+            .all(
+                |s| super::playable(f64::from(s.frequency_hz) / 1e6) == Some(s.frequency_hz)
+                    && s.kind == StationKind::Regional
+                    && s.name.len() <= radio_channel_plan::MAX_CHANNEL_NAME_LEN
+            ));
+        let names = |locator| {
+            let mut near = strongest(&stations, locator, Receiver::Handheld).unwrap();
+            near.truncate(4);
+            near.iter()
+                .map(|(s, _)| (s.name.clone(), s.frequency_hz))
+                .collect::<Vec<_>>()
+        };
+        // KM72JB, Tel Aviv: Gush Dan's stations, then Bnei Brak's.
+        let tel_aviv = names("KM72JB");
+        assert!(tel_aviv[..2]
+            .iter()
+            .all(|(name, _)| name == "103FM" || name == "RADIO TLV"));
+        // KM72LS, Haifa: Radio Haifa and Ham Esh first.
+        let haifa = names("KM72LS");
+        assert!(haifa[..2]
+            .iter()
+            .all(|(name, _)| name == "RADIO HAIFA" || name == "HAM ESH"));
+        // KL79LN, Eilat: the Red Sea's two frequencies.
+        let eilat = names("KL79LN");
+        assert_eq!(eilat[0].0, "RED SEA");
+        assert_eq!(eilat[1].0, "RED SEA");
+        // 101.5 is Radio Tzafon's second station in the north and Radio
+        // Darom's in Ashkelon; each locator gets its own.
+        let ashkelon = strongest(&stations, "KM71GQ", Receiver::Handheld).unwrap();
+        let on_1015 = ashkelon
+            .iter()
+            .find(|(s, _)| s.frequency_hz == 101_500_000)
+            .unwrap();
+        assert_eq!(on_1015.0.name, "RADIO DAROM");
+    }
+
+    #[test]
     fn a_roof_aerial_sees_further_past_the_horizon() {
         let station = super::Station {
             name: "FAR".to_owned(),
@@ -1187,9 +1338,12 @@ Classic,A,AN000001,90.7,CLASSIC,1,1,51,0\n";
                 Ok(VHF.to_owned())
             })
             .unwrap();
-        assert_eq!(list.stations.len(), 6);
+        assert_eq!(list.stations.len(), 6 + ISRAEL_REGIONAL.len());
         assert!(cache.sync_with(|_| Ok("not,a,list\n".to_owned())).is_err());
-        assert_eq!(cache.load().unwrap().unwrap().stations.len(), 6);
+        assert_eq!(
+            cache.load().unwrap().unwrap().stations.len(),
+            6 + ISRAEL_REGIONAL.len()
+        );
         assert!(StationCache::none()
             .sync_with(|_| Ok(VHF.to_owned()))
             .is_err());
@@ -1213,7 +1367,7 @@ Classic,A,AN000001,90.7,CLASSIC,1,1,51,0\n";
                 _ => Err(format!("unexpected {url}")),
             })
             .unwrap();
-        assert_eq!(list.stations.len(), 6 + 4);
+        assert_eq!(list.stations.len(), 6 + 4 + ISRAEL_REGIONAL.len());
         assert!(list.complete);
         // A failed source fails the sync, but the other is still cached
         // and the failed one keeps what it had.
@@ -1224,11 +1378,17 @@ Classic,A,AN000001,90.7,CLASSIC,1,1,51,0\n";
             })
             .unwrap_err();
         assert_eq!(error, "HTTP 403");
-        assert_eq!(cache.load().unwrap().unwrap().stations.len(), 1 + 4);
+        assert_eq!(
+            cache.load().unwrap().unwrap().stations.len(),
+            1 + 4 + ISRAEL_REGIONAL.len()
+        );
         // A cache from before the FCC was a source is read, but incomplete.
         std::fs::remove_dir_all(dir.join(Source::Fcc.cache_dir())).unwrap();
         let list = cache.load().unwrap().unwrap();
-        assert_eq!((list.stations.len(), list.complete), (1, false));
+        assert_eq!(
+            (list.stations.len(), list.complete),
+            (1 + ISRAEL_REGIONAL.len(), false)
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1238,11 +1398,9 @@ Classic,A,AN000001,90.7,CLASSIC,1,1,51,0\n";
         let file = dir.join("station-area");
         assert_eq!(StationArea::load(&file), StationArea::default());
         for kinds in [
-            [true; 10],
-            [false; 10],
-            [
-                true, false, true, false, false, true, false, true, true, false,
-            ],
+            [true; StationKind::ALL.len()],
+            [false; StationKind::ALL.len()],
+            StationKind::ALL.map(|kind| kind.index() % 3 != 1),
         ] {
             let area = StationArea {
                 max_channels: 12,
@@ -1257,12 +1415,21 @@ Classic,A,AN000001,90.7,CLASSIC,1,1,51,0\n";
         assert_eq!(StationArea::load(&file).max_channels, 30);
         assert_eq!(StationArea::load(&file).kinds, StationArea::NO_BBC);
         std::fs::write(&file, "bbc\n30\n").unwrap();
-        assert_eq!(StationArea::load(&file).kinds, [true; 10]);
-        // One from before the US kinds takes them all.
+        assert_eq!(
+            StationArea::load(&file).kinds,
+            [true; StationKind::ALL.len()]
+        );
+        // One from before the US kinds takes them, and every later kind.
         std::fs::write(&file, "kinds=bbc,local\n30\n").unwrap();
         assert_eq!(
             StationArea::load(&file).kinds,
-            [true, false, true, false, false, false, true, true, true, true]
+            StationKind::ALL.map(|kind| !matches!(
+                kind,
+                StationKind::National
+                    | StationKind::Community
+                    | StationKind::Restricted
+                    | StationKind::Other
+            ))
         );
         std::fs::write(&file, "0 9999\n").unwrap();
         assert_eq!(StationArea::load(&file), StationArea::default());

@@ -1302,7 +1302,7 @@ impl StudioApp {
             return "Not synced.".to_owned();
         };
         let synced = format!(
-            "{} transmitters from Ofcom and the FCC, synced {}.",
+            "{} transmitters from Ofcom, the FCC and the Second Authority, synced {}.",
             list.stations.len(),
             age(list.synced)
         );
@@ -4412,10 +4412,11 @@ impl StudioApp {
         }
     }
 
-    /// The row that adds the UK or US FM stations near the shared locator.
+    /// The row that adds the UK, US or Israeli FM stations near the shared
+    /// locator.
     fn station_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
-            ui.label("FM stations (UK, US), strongest");
+            ui.label("FM stations (UK, US, Israel), strongest");
             ui.add(
                 egui::DragValue::new(&mut self.station_area.max_channels)
                     .range(1..=stations::MAX_CHANNELS_LIMIT),
@@ -7090,7 +7091,10 @@ mod tests {
             (Generator::Repeaters, "Repeaters within"),
             (Generator::Gateways, "UK gateways within"),
             (Generator::Beacons, "UK beacons within"),
-            (Generator::Stations, "FM stations (UK, US), strongest"),
+            (
+                Generator::Stations,
+                "FM stations (UK, US, Israel), strongest",
+            ),
             (Generator::Airports, "Airports within"),
             (Generator::Airfields, "Airfields within"),
             (Generator::Marine, "Marine within"),

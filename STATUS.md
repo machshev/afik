@@ -664,6 +664,17 @@ page gave 13 repeaters (R-0 to R-19 on 2 m, R-74 on 70 cm). Gate: `cargo fmt
 warnings` clean, wasm32 clippy of Studio `-D warnings` clean, `cargo test
 --workspace` 1008 passed 0 failed 3 ignored. Not looked at on screen.
 
+`GEN-072` step 21, Israeli regional FM (2026-10-21, operator request,
+`ADR-123`): Israel publishes no transmitter list, so the FM stations row
+carries the Second Authority's franchise list built in: 40 frequencies of
+17 stations, each at the town the list names or its area's main town,
+1 kW nominal and no height, a new Regional kind. They come with any
+station list read. The national networks are left out. Gate: `cargo fmt
+--all --check` clean, `cargo clippy --workspace --all-targets -- -D
+warnings` clean, wasm32 clippy of Studio `-D warnings` clean, `cargo test
+--workspace` 1009 passed 0 failed 3 ignored. Not looked at on screen; not
+flashed (the radio image is unchanged).
+
 **`MARINE-070` is active alongside** (2026-10-16, operator request,
 `ADR-109`): step 1 done. The Banks tab has a Marine row: Sync asks Overpass
 for every OpenStreetMap place tagged with a marine VHF channel and caches
