@@ -1,12 +1,12 @@
 {
-  "version": "7.0.66",
+  "version": "7.0.69",
   "hashes": {
-    "afik-7.0.66-linux-aarch64.tar.gz": "sha256-O2VEOrj0Pxuisk90ErYiLHdwddk1mkQvAUxLHPax3cA=",
-    "afik-7.0.66-linux-x86_64.tar.gz": "sha256-TtAkHCyz7afgrHmuBSvZBPB2rNwAaopfRrurWaH3hOc=",
-    "afik-7.0.66-macos-aarch64.tar.gz": "sha256-f72BOtynOxm07VhAs7bUlZbTd8w7SSPzKGhPoCUm/3I=",
-    "afik-7.0.66-macos-x86_64.tar.gz": "sha256-spiD6j8Atl46fCJQLima8950InCXcfiEuGyPCCflryU=",
-    "afik-7.0.66-windows-x86_64.zip": "sha256-WAr+k30IvwN5kn8Z6WhI+bFULL9sCo5SgjrEnqoE46w=",
-    "afik-k1-7.0.66.raw": "sha256-hUaRkrYVXBeklWE7HGQpoZWAnd5EsNpjni0s9dzjqkg=",
-    "afik-k5-v1-7.0.66.raw": "sha256-0ic3+kD3NCeQv0uLDgrKnpTmtrfeuBcxt7ScaoTL60I="
+    "afik-7.0.69-linux-aarch64.tar.gz": "sha256-Ckb78Yf5jFIgN//p3vZLmdf4qveLKz6GMhgZ/9SQ/II=",
+    "afik-7.0.69-linux-x86_64.tar.gz": "sha256-0Ex2SQXqmXi2mvUs01iAsPlwyNU/7yCMSon3zm/KJ+0=",
+    "afik-7.0.69-macos-aarch64.tar.gz": "sha256-4gUz5bTrtdxtAwAk1z9G2z7ikOg4Iu6UnnOT/Xa7a6A=",
+    "afik-7.0.69-macos-x86_64.tar.gz": "sha256-dJt6+Z3CbztzRJc8em+T9GjgOuDHb+LtM7HEOzIf8LM=",
+    "afik-7.0.69-windows-x86_64.zip": "sha256-3nOtc+hUL9cMHkDCZXXd3jNjA7ImcWm+n1QK76bnHY8=",
+    "afik-k1-7.0.69.raw": "sha256-1JksJ7HiD92naSlaNesQ52OSp8kbCdcXK5qtV69JvaM=",
+    "afik-k5-v1-7.0.69.raw": "sha256-1kn2SdZ3V3S+J50HfZ94I6uH9ymx3H3Y0rHzlvXWFCo="
   }
 }
