@@ -27,6 +27,16 @@ AFIK is developed from the hardware datasheets. Where a datasheet is unclear,
 Armel's firmware has been the working reference that shows what the hardware
 really does, and much of AFIK's radio behaviour rests on it.
 
+## Embassy
+
+Both firmware images are built on [Embassy](https://embassy.dev), the async
+embedded Rust framework: its executor runs the application's tasks, and its
+timers, synchronisation primitives and futures hold them together. The K5
+plugs in its own Embassy time driver for the DP32G030, and the K1 runs on
+[py32-hal](https://github.com/py32-rs/py32-hal), which brings Embassy to the
+PY32 family. Embassy is what makes a heap-free, no-RTOS radio application
+this readable, and AFIK is grateful for it.
+
 ## What works
 
 Both radios run the AFIK application, built from one shared application crate.
