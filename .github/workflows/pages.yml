@@ -4,6 +4,9 @@ name: pages
 on:
   push:
     branches: [main]
+  # Weekly, so the map datasets mirrored beside the Studio stay fresh.
+  schedule:
+    - cron: "17 4 * * 1"
   workflow_dispatch:
 
 permissions:
@@ -40,6 +43,15 @@ jobs:
           mkdir dist/images
           cp target/thumbv6m-none-eabi/release/afik-k5-v1.raw \
             target/thumbv6m-none-eabi/release/radio-firmware-k1.raw dist/images/
+      # Most dataset servers refuse other origins, so the browser reads this
+      # mirror (ADR-121). A dataset whose server is down is left out rather
+      # than holding back the deploy; the step shows as failed.
+      - name: Mirror the map datasets beside the Studio
+        continue-on-error: true
+        run: >
+          nix develop path:. -c
+          cargo run --locked -p radio-programmer-gui --example mirror-datasets --
+          dist/datasets
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist

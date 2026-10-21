@@ -2,22 +2,24 @@
 //! list and cached; the Repeaters tab takes them with the ETCC's.
 //!
 //! As with the ETCC list, the studio fetches only when the operator presses
-//! Sync; otherwise it reads the raw response cached in
-//! `$XDG_CACHE_HOME/afik/hearham`.
+//! Sync or nothing is cached (`ADR-121`); otherwise it reads the raw response
+//! cached in `$XDG_CACHE_HOME/afik/hearham`.
 
 use std::{
     fs,
     path::{Path, PathBuf},
     sync::mpsc,
-    time::{Duration, SystemTime},
+    time::SystemTime,
 };
 
 use radio_channel_plan::MAX_CHANNEL_NAME_LEN;
 use serde_json::Value;
 
+#[cfg(not(target_arch = "wasm32"))]
+use crate::repeaters::fetch_within;
 use crate::{
     paths,
-    repeaters::{ctcss, fetch_within, receivable_hz, sanitise, Repeater},
+    repeaters::{ctcss, receivable_hz, sanitise, Repeater},
 };
 
 /// Every repeater hearham lists, worldwide: about 23 000, 9.5 MB.
@@ -28,10 +30,11 @@ pub const REPEATERS_URL: &str = "https://hearham.com/api/repeaters/v1";
 /// the ETCC list the Repeaters tab reads for the UK is the current one.
 const UK_PREFIXES: [char; 5] = ['G', 'M', '2', 'g', 'm'];
 
-const CACHE_DIR: &str = "hearham";
+pub(crate) const CACHE_DIR: &str = "hearham";
 const CACHE_FILE: &str = "repeaters.json";
 /// Long enough for the whole list on a slow link.
-const SYNC_TIMEOUT: Duration = Duration::from_secs(120);
+#[cfg(not(target_arch = "wasm32"))]
+const SYNC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// Picks the analogue FM repeaters out of hearham's list.
 ///
@@ -180,6 +183,23 @@ impl WorldCache {
         self.load()?
             .ok_or_else(|| "the hearham cache was not written".to_owned())
     }
+
+    /// Fetches from hearham, checks and caches what came, and returns it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn sync(&self) -> Result<WorldList, String> {
+        self.sync_with(|url| fetch_within(url, SYNC_TIMEOUT))
+    }
+
+    /// Reads what the Pages build mirrored from hearham beside the browser
+    /// Studio (`ADR-121`); the page keeps nothing.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn sync(&self) -> Result<WorldList, String> {
+        let ([json], synced) = crate::mirror::fetch(CACHE_DIR, [CACHE_FILE]).await?;
+        Ok(WorldList {
+            repeaters: parse(&json)?,
+            synced,
+        })
+    }
 }
 
 /// A sync running on a worker thread, so the window keeps drawing.
@@ -194,7 +214,11 @@ impl SyncJob {
         // A worker that cannot start drops `sender`, which `poll` reports.
         let _started = crate::platform::spawn("afik-sync", move || async move {
             // The editor may have closed; then nobody wants the outcome.
-            let _ = sender.send(cache.sync_with(|url| fetch_within(url, SYNC_TIMEOUT)));
+            #[cfg(not(target_arch = "wasm32"))]
+            let outcome = cache.sync();
+            #[cfg(target_arch = "wasm32")]
+            let outcome = cache.sync().await;
+            let _ = sender.send(outcome);
         });
         Self { outcome }
     }

@@ -2075,3 +2075,25 @@ meaning.
   locations. The `$XDG_STATE_HOME/afik/locators` file older studios wrote is
   only read: a project that keeps no locations takes its entries as an
   unsaved change.
+
+## ADR-121 — The browser reads the map datasets from a mirror; one Sync
+
+- **Date:** 2026-10-21
+- **Status:** accepted, operator request (`WEB-080`: the published Studio
+  "doesn't support syncing the datasets on the map page"; "mirror at deploy
+  all datasets and deploy them beside the page"; "remove the sync button
+  from the WASM version"; "a common sync button on the desktop version";
+  "auto sync if the datasets don't yet exist").
+- SatNOGS, hearham and Ofcom send no CORS header, so a page cannot read
+  them. The Pages build runs the desktop sync of all six datasets (ETCC,
+  hearham, Ofcom, OurAirports, Overpass, SatNOGS) into `datasets/` beside the
+  page, each in its desktop cache layout plus a `synced` file of Unix
+  seconds; it runs on every push to `main` and weekly. A dataset whose
+  source fails is left out and the step shows as failed, without holding
+  back the deploy.
+- The browser keeps no dataset (page storage is too small) and has no Sync
+  button: each start reads the whole mirror, which the HTTP cache serves.
+- The desktop has one Sync button in the tab bar, fetching every dataset not
+  synced in the last 24 hours, in place of the seven per-dataset buttons. At
+  start it fetches, once, any dataset it has never synced. Before this,
+  Studio fetched only when Sync was pressed.

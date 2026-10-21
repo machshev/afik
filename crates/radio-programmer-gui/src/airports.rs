@@ -2,9 +2,9 @@
 //! `OurAirports` (public domain) and cached.
 //!
 //! As with the repeaters, the studio fetches only when the operator presses
-//! Sync; otherwise it reads the raw CSVs cached in
-//! `$XDG_CACHE_HOME/afik/ourairports`. The locator is the repeaters' own; the
-//! radius and how many channels to take are kept in
+//! Sync or nothing is cached (`ADR-121`); otherwise it reads the raw CSVs
+//! cached in `$XDG_CACHE_HOME/afik/ourairports`. The locator is the
+//! repeaters' own; the radius and how many channels to take are kept in
 //! `$XDG_STATE_HOME/afik/airport-area`, and which services to take and
 //! whether each airport gets its own bank in `airport-options`.
 //!
@@ -28,11 +28,13 @@ use std::{
 use radio_channel_plan::{SharedSettings, MAX_BANKS, MAX_BANK_NAME_LEN, MAX_CHANNEL_NAME_LEN};
 use radio_domain::{Bandwidth, Modulation, PowerLevel};
 
+#[cfg(not(target_arch = "wasm32"))]
+use crate::repeaters::fetch;
 use crate::{
     model::{format_mhz, BankDraft, BankKind, ChannelDraft},
     paths,
     receiver::Receiver,
-    repeaters::{distance_km, fetch, locator_centre, sanitise, MAX_RADIUS_KM},
+    repeaters::{distance_km, locator_centre, sanitise, MAX_RADIUS_KM},
     stations::records,
 };
 
@@ -42,7 +44,7 @@ pub const AIRPORTS_URL: &str = "https://davidmegginson.github.io/ourairports-dat
 pub const FREQUENCIES_URL: &str =
     "https://davidmegginson.github.io/ourairports-data/airport-frequencies.csv";
 
-const CACHE_DIR: &str = "ourairports";
+pub(crate) const CACHE_DIR: &str = "ourairports";
 const AIRPORTS_FILE: &str = "airports.csv";
 const FREQUENCIES_FILE: &str = "airport-frequencies.csv";
 const AREA_FILE: &str = "airport-area";
@@ -803,6 +805,24 @@ impl AirportCache {
         self.load()?
             .ok_or_else(|| "the airport cache was not written".to_owned())
     }
+
+    /// Fetches from `OurAirports`, checks and caches what came, and returns it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn sync(&self) -> Result<AirportList, String> {
+        self.sync_with(fetch)
+    }
+
+    /// Reads what the Pages build mirrored from `OurAirports` beside the browser
+    /// Studio (`ADR-121`); the page keeps nothing.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn sync(&self) -> Result<AirportList, String> {
+        let ([airports, frequencies], synced) =
+            crate::mirror::fetch(CACHE_DIR, [AIRPORTS_FILE, FREQUENCIES_FILE]).await?;
+        Ok(AirportList {
+            frequencies: parse(&airports, &frequencies)?,
+            synced,
+        })
+    }
 }
 
 /// The radius airports are taken within before the operator chooses one, in
@@ -1019,7 +1039,11 @@ impl SyncJob {
         // A worker that cannot start drops `sender`, which `poll` reports.
         let _started = crate::platform::spawn("afik-sync", move || async move {
             // The editor may have closed; then nobody wants the outcome.
-            let _ = sender.send(cache.sync_with(fetch));
+            #[cfg(not(target_arch = "wasm32"))]
+            let outcome = cache.sync();
+            #[cfg(target_arch = "wasm32")]
+            let outcome = cache.sync().await;
+            let _ = sender.send(outcome);
         });
         Self { outcome }
     }

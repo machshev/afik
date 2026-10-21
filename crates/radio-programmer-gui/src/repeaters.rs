@@ -2,15 +2,16 @@
 //! ETCC repeater list and cached.
 //!
 //! As with the satellites, the studio fetches only when the operator presses
-//! Sync; otherwise it reads the raw response cached in
-//! `$XDG_CACHE_HOME/afik/etcc`. The operator's locator and radius are kept in
-//! `$XDG_STATE_HOME/afik/repeater-area`, so the next start offers them again.
+//! Sync or nothing is cached (`ADR-121`); otherwise it reads the raw response
+//! cached in `$XDG_CACHE_HOME/afik/etcc`. The operator's locator and radius
+//! are kept in `$XDG_STATE_HOME/afik/repeater-area`, so the next start offers
+//! them again.
 
 use std::{
     fs,
     path::{Path, PathBuf},
     sync::mpsc,
-    time::{Duration, SystemTime},
+    time::SystemTime,
 };
 
 use radio_channel_plan::{SharedSettings, MAX_BANK_NAME_LEN, MAX_CHANNEL_NAME_LEN};
@@ -28,7 +29,7 @@ use crate::{
 /// Every repeater, gateway and beacon the ETCC has licensed.
 pub const SYSTEMS_URL: &str = "https://api-beta.rsgb.online/all/systems";
 
-const CACHE_DIR: &str = "etcc";
+pub(crate) const CACHE_DIR: &str = "etcc";
 const SYSTEMS_FILE: &str = "systems.json";
 const AREA_FILE: &str = "repeater-area";
 const GATEWAY_AREA_FILE: &str = "gateway-area";
@@ -80,9 +81,11 @@ pub const RADII_KM: [u16; 26] = [
 ];
 /// The largest radius accepted; the whole UK is within it of anywhere in it.
 pub const MAX_RADIUS_KM: u16 = 1_500;
-const TIMEOUT: Duration = Duration::from_secs(30);
+#[cfg(not(target_arch = "wasm32"))]
+const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// The largest list fetched is `OurAirports`' airports, about 13 MB; this
 /// bounds a misbehaving server.
+#[cfg(not(target_arch = "wasm32"))]
 const MAX_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
 /// Receive coverage the BK4819 datasheet states, in hertz.
 const RECEIVE_BANDS: [(u64, u64); 2] = [(18_000_000, 660_000_000), (840_000_000, 1_300_000_000)];
@@ -823,6 +826,26 @@ impl RepeaterCache {
         self.load()?
             .ok_or_else(|| "the repeater cache was not written".to_owned())
     }
+
+    /// Fetches from the ETCC, checks and caches what came, and returns it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn sync(&self) -> Result<RepeaterList, String> {
+        self.sync_with(fetch)
+    }
+
+    /// Reads what the Pages build mirrored from the ETCC beside the browser
+    /// Studio (`ADR-121`); the page keeps nothing.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn sync(&self) -> Result<RepeaterList, String> {
+        let ([json], synced) = crate::mirror::fetch(CACHE_DIR, [SYSTEMS_FILE]).await?;
+        let systems = parse_systems(&json)?;
+        Ok(RepeaterList {
+            repeaters: systems.repeaters,
+            gateways: systems.gateways,
+            beacons: systems.beacons,
+            synced,
+        })
+    }
 }
 
 /// The locator and radius the operator last chose.
@@ -1067,12 +1090,14 @@ pub fn beacon_area_file() -> Option<PathBuf> {
 
 /// Fetches one URL over HTTPS. Text that is not UTF-8 is replaced rather
 /// than refused, so a stray byte in a list does not stop a sync.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn fetch(url: &str) -> Result<String, String> {
     fetch_within(url, TIMEOUT)
 }
 
 /// Fetches one URL as [`fetch`] does, allowing `timeout` for a slow server.
-pub(crate) fn fetch_within(url: &str, timeout: Duration) -> Result<String, String> {
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn fetch_within(url: &str, timeout: std::time::Duration) -> Result<String, String> {
     log::debug!("fetching {url}");
     let started = web_time::Instant::now();
     let body = crate::net::get(
@@ -1101,7 +1126,11 @@ impl SyncJob {
         // A worker that cannot start drops `sender`, which `poll` reports.
         let _started = crate::platform::spawn("afik-sync", move || async move {
             // The editor may have closed; then nobody wants the outcome.
-            let _ = sender.send(cache.sync_with(fetch));
+            #[cfg(not(target_arch = "wasm32"))]
+            let outcome = cache.sync();
+            #[cfg(target_arch = "wasm32")]
+            let outcome = cache.sync().await;
+            let _ = sender.send(outcome);
         });
         Self { outcome }
     }

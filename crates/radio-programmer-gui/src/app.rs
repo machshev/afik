@@ -560,6 +560,11 @@ impl StudioApp {
             app.load_map_view(&file);
         }
         app.remembered.last = Some(app.filter_state());
+        // A dataset never synced is fetched once on its own; the browser
+        // keeps none, so it reads the whole mirror at every start.
+        if app.datasets(never).iter().any(|(_, wanted)| *wanted) {
+            app.sync_datasets(never);
+        }
         app
     }
 
@@ -649,7 +654,7 @@ impl StudioApp {
 
     /// Reads the marine channel list from `cache`, which a sync then writes.
     ///
-    /// Reading never fetches: the network is used only when Sync is pressed.
+    /// Reading never fetches; see [`Self::sync_datasets`] for what does.
     pub fn use_marine_cache(&mut self, cache: MarineCache) {
         self.marine = match cache.load() {
             Ok(list) => list,
@@ -659,21 +664,6 @@ impl StudioApp {
             }
         };
         self.marine_cache = cache;
-    }
-
-    /// Starts asking Overpass for the marine channels on the map.
-    fn sync_marine(&mut self) {
-        if self.marine_sync.is_some() {
-            return;
-        }
-        if self.marine_cache.dir().is_none() {
-            self.refuse("Cannot sync marine channels: no XDG cache directory or HOME is set.");
-            return;
-        }
-        log::info!("syncing marine VHF channels from OpenStreetMap");
-        "Syncing marine VHF channels from OpenStreetMap (about a minute)..."
-            .clone_into(&mut self.status);
-        self.marine_sync = Some(marine::SyncJob::start(self.marine_cache.clone()));
     }
 
     /// Takes in a finished marine sync.
@@ -990,7 +980,7 @@ impl StudioApp {
     /// Reads the airport frequency list from `cache`, which a sync then
     /// writes.
     ///
-    /// Reading never fetches: the network is used only when Sync is pressed.
+    /// Reading never fetches; see [`Self::sync_datasets`] for what does.
     pub fn use_airport_cache(&mut self, cache: AirportCache) {
         self.airports = match cache.load() {
             Ok(list) => list,
@@ -1000,20 +990,6 @@ impl StudioApp {
             }
         };
         self.airport_cache = cache;
-    }
-
-    /// Starts fetching the airport lists from `OurAirports`.
-    fn sync_airports(&mut self) {
-        if self.airport_sync.is_some() {
-            return;
-        }
-        if self.airport_cache.dir().is_none() {
-            self.refuse("Cannot sync airports: no XDG cache directory or HOME is set.");
-            return;
-        }
-        log::info!("syncing airport frequencies from OurAirports");
-        "Syncing airport frequencies from OurAirports...".clone_into(&mut self.status);
-        self.airport_sync = Some(airports::SyncJob::start(self.airport_cache.clone()));
     }
 
     /// Takes in a finished airport sync.
@@ -1189,7 +1165,7 @@ impl StudioApp {
 
     /// Reads the FM station list from `cache`, which a sync then writes.
     ///
-    /// Reading never fetches: the network is used only when Sync is pressed.
+    /// Reading never fetches; see [`Self::sync_datasets`] for what does.
     pub fn use_station_cache(&mut self, cache: StationCache) {
         self.stations = match cache.load() {
             Ok(list) => list,
@@ -1199,20 +1175,6 @@ impl StudioApp {
             }
         };
         self.station_cache = cache;
-    }
-
-    /// Starts fetching the FM transmitter list from Ofcom.
-    fn sync_stations(&mut self) {
-        if self.station_sync.is_some() {
-            return;
-        }
-        if self.station_cache.dir().is_none() {
-            self.refuse("Cannot sync stations: no XDG cache directory or HOME is set.");
-            return;
-        }
-        log::info!("syncing FM stations from Ofcom");
-        "Syncing FM stations from Ofcom...".clone_into(&mut self.status);
-        self.station_sync = Some(stations::SyncJob::start(self.station_cache.clone()));
     }
 
     /// Takes in a finished station sync.
@@ -1569,7 +1531,7 @@ impl StudioApp {
 
     /// Reads the repeater list from `cache`, which a sync then writes.
     ///
-    /// Reading never fetches: the network is used only when Sync is pressed.
+    /// Reading never fetches; see [`Self::sync_datasets`] for what does.
     pub fn use_repeater_cache(&mut self, cache: RepeaterCache) {
         self.repeaters = match cache.load() {
             Ok(list) => list,
@@ -1579,22 +1541,6 @@ impl StudioApp {
             }
         };
         self.repeater_cache = cache;
-    }
-
-    /// Starts fetching the repeater lists: the ETCC's for the UK and
-    /// hearham's for everywhere else.
-    fn sync_repeaters(&mut self) {
-        if self.repeater_sync.is_some() || self.world_sync.is_some() {
-            return;
-        }
-        if self.repeater_cache.dir().is_none() || self.world_cache.dir().is_none() {
-            self.refuse("Cannot sync repeaters: no XDG cache directory or HOME is set.");
-            return;
-        }
-        log::info!("syncing repeaters from the ETCC and hearham");
-        "Syncing repeaters from the ETCC and hearham...".clone_into(&mut self.status);
-        self.repeater_sync = Some(repeaters::SyncJob::start(self.repeater_cache.clone()));
-        self.world_sync = Some(world::SyncJob::start(self.world_cache.clone()));
     }
 
     /// Every repeater synced: the ETCC's in the UK, then hearham's outside
@@ -1769,7 +1715,7 @@ impl StudioApp {
     /// Reads the worldwide repeater list from `cache`, which a sync then
     /// writes.
     ///
-    /// Reading never fetches: the network is used only when Sync is pressed.
+    /// Reading never fetches; see [`Self::sync_datasets`] for what does.
     pub fn use_world_cache(&mut self, cache: WorldCache) {
         self.world = match cache.load() {
             Ok(list) => list,
@@ -1937,7 +1883,7 @@ impl StudioApp {
 
     /// Reads the satellite list from `cache`, which a sync then writes.
     ///
-    /// Reading never fetches: the network is used only when Sync is pressed.
+    /// Reading never fetches; see [`Self::sync_datasets`] for what does.
     pub fn use_satellite_cache(&mut self, cache: SatelliteCache) {
         self.satellites = match cache.load() {
             Ok(list) => list,
@@ -1947,20 +1893,6 @@ impl StudioApp {
             }
         };
         self.satellite_cache = cache;
-    }
-
-    /// Starts fetching the satellite list from SatNOGS.
-    fn sync_satellites(&mut self) {
-        if self.satellite_sync.is_some() {
-            return;
-        }
-        if self.satellite_cache.dir().is_none() {
-            self.refuse("Cannot sync satellites: no XDG cache directory or HOME is set.");
-            return;
-        }
-        log::info!("syncing satellites from SatNOGS");
-        "Syncing satellites from SatNOGS...".clone_into(&mut self.status);
-        self.satellite_sync = Some(SyncJob::start(self.satellite_cache.clone()));
     }
 
     /// Takes in a finished satellite sync.
@@ -3229,9 +3161,37 @@ fn too_big(project: &ProjectModel) -> bool {
     matches!(project.to_radio_image(), Err(errors) if errors.iter().any(|e| e.field == "radio image"))
 }
 
+/// How long a synced dataset stays fresh: Sync fetches only those synced
+/// longer ago, or never.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+const SYNC_AFTER_SECS: u64 = 24 * 3600;
+
+/// Seconds since `written`; none for a time in the future.
+fn seconds_since(written: std::time::SystemTime) -> u64 {
+    // `SystemTime::elapsed` panics in the browser; `web_time` does not.
+    let now = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let then = written
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    now.saturating_sub(then).as_secs()
+}
+
+/// Whether a dataset last synced at `synced`, if ever, is due a sync.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+fn due(synced: Option<std::time::SystemTime>) -> bool {
+    synced.is_none_or(|synced| seconds_since(synced) >= SYNC_AFTER_SECS)
+}
+
+/// Whether a dataset last synced at `synced`, if ever, was never synced.
+const fn never(synced: Option<std::time::SystemTime>) -> bool {
+    synced.is_none()
+}
+
 /// Says how long ago a cache was written.
 fn age(written: std::time::SystemTime) -> String {
-    let age = written.elapsed().unwrap_or_default().as_secs();
+    let age = seconds_since(written);
     match age {
         0..=59 => "just now".to_owned(),
         60..=3599 => format!("{} min ago", age / 60),
@@ -3340,6 +3300,112 @@ impl eframe::App for StudioApp {
 }
 
 impl StudioApp {
+    /// The datasets, each named and whether it is `wanted`, given when it
+    /// was last synced, if ever, and not syncing now.
+    fn datasets(
+        &self,
+        wanted: fn(Option<std::time::SystemTime>) -> bool,
+    ) -> [(&'static str, bool); 6] {
+        [
+            (
+                "the ETCC's UK repeaters",
+                self.repeater_sync.is_none() && wanted(self.repeaters.as_ref().map(|l| l.synced)),
+            ),
+            (
+                "hearham's worldwide repeaters",
+                self.world_sync.is_none() && wanted(self.world.as_ref().map(|l| l.synced)),
+            ),
+            (
+                "Ofcom's FM stations",
+                self.station_sync.is_none() && wanted(self.stations.as_ref().map(|l| l.synced)),
+            ),
+            (
+                "OurAirports' airports",
+                self.airport_sync.is_none() && wanted(self.airports.as_ref().map(|l| l.synced)),
+            ),
+            (
+                "OpenStreetMap's marine channels",
+                self.marine_sync.is_none() && wanted(self.marine.as_ref().map(|l| l.synced)),
+            ),
+            (
+                "SatNOGS' satellites",
+                self.satellite_sync.is_none() && wanted(self.satellites.as_ref().map(|l| l.synced)),
+            ),
+        ]
+    }
+
+    /// Starts syncing every dataset that is `wanted`, as [`Self::datasets`]
+    /// says: on the desktop from each source into the cache, in the browser
+    /// from the Pages build's mirror.
+    fn sync_datasets(&mut self, wanted: fn(Option<std::time::SystemTime>) -> bool) {
+        if self.repeater_cache.dir().is_none() {
+            self.refuse("Cannot sync: no XDG cache directory or HOME is set.");
+            return;
+        }
+        let datasets = self.datasets(wanted);
+        let [etcc, hearham, ofcom, ourairports, marine, satnogs] = datasets.map(|(_, due)| due);
+        if etcc {
+            self.repeater_sync = Some(repeaters::SyncJob::start(self.repeater_cache.clone()));
+        }
+        if hearham {
+            self.world_sync = Some(world::SyncJob::start(self.world_cache.clone()));
+        }
+        if ofcom {
+            self.station_sync = Some(stations::SyncJob::start(self.station_cache.clone()));
+        }
+        if ourairports {
+            self.airport_sync = Some(airports::SyncJob::start(self.airport_cache.clone()));
+        }
+        if marine {
+            self.marine_sync = Some(marine::SyncJob::start(self.marine_cache.clone()));
+        }
+        if satnogs {
+            self.satellite_sync = Some(SyncJob::start(self.satellite_cache.clone()));
+        }
+        let names: Vec<_> = datasets
+            .iter()
+            .filter(|(_, due)| *due)
+            .map(|(name, _)| *name)
+            .collect();
+        self.status = if names.is_empty() {
+            "Every dataset was synced within the last day.".to_owned()
+        } else if cfg!(target_arch = "wasm32") {
+            format!("Loading {} from the Studio's mirror...", names.join(", "))
+        } else {
+            format!("Syncing {}...", names.join(", "))
+        };
+        log::info!("{}", self.status);
+    }
+
+    /// The one Sync button, for every dataset due a sync.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn sync_button(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        let names: Vec<_> = self
+            .datasets(due)
+            .into_iter()
+            .filter(|(_, due)| *due)
+            .map(|(name, _)| name)
+            .collect();
+        let help = if names.is_empty() {
+            "Every dataset was synced within the last day, or is syncing now".to_owned()
+        } else {
+            format!(
+                "Fetches and caches the lists not synced within the last day: {}. \
+                 Studio fetches on its own only a list it has never synced",
+                names.join(", ")
+            )
+        };
+        if ui
+            .add_enabled(!names.is_empty(), egui::Button::new("Sync"))
+            .on_hover_text(&help)
+            .on_disabled_hover_text(&help)
+            .clicked()
+        {
+            self.sync_datasets(due);
+        }
+    }
+
     /// The main tabs, with the open project's name, Save and Revert at the
     /// right, so they are at hand on every tab; choosing and managing
     /// projects is on the Projects tab.
@@ -3351,6 +3417,9 @@ impl StudioApp {
             ui.selectable_value(&mut self.tab, Tab::Radio, "Radio");
             ui.selectable_value(&mut self.tab, Tab::Device, "Device");
             ui.selectable_value(&mut self.tab, Tab::Flash, "Flash");
+            // The browser loads the Pages build's mirror on its own.
+            #[cfg(not(target_arch = "wasm32"))]
+            self.sync_button(ui);
             // Laid out from the right edge, so in reverse.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let dirty = self.is_dirty();
@@ -3489,17 +3558,6 @@ impl StudioApp {
             if let Some(preset) = PRESETS.get(self.preset) {
                 ui.label(preset.detail());
                 if preset.name() == SATELLITE_PRESET {
-                    let idle = self.satellite_sync.is_none();
-                    if ui
-                        .add_enabled(idle, egui::Button::new("Sync from SatNOGS"))
-                        .on_hover_text(
-                            "Fetches the current FM satellites from db.satnogs.org and \
-                             caches them; the studio never fetches on its own",
-                        )
-                        .clicked()
-                    {
-                        self.sync_satellites();
-                    }
                     ui.end_row();
                     ui.label(self.satellite_source());
                 }
@@ -3618,20 +3676,6 @@ impl StudioApp {
             {
                 self.add_repeaters();
             }
-            if ui
-                .add_enabled(
-                    self.repeater_sync.is_none() && self.world_sync.is_none(),
-                    egui::Button::new("Sync"),
-                )
-                .on_hover_text(
-                    "Fetches the UK repeater list from the RSGB ETCC and hearham.com's \
-                     list for everywhere else (free to use, about 10 MB), and caches both; \
-                     the studio never fetches on its own",
-                )
-                .clicked()
-            {
-                self.sync_repeaters();
-            }
             ui.end_row();
             ui.label(self.repeater_source());
         });
@@ -3731,19 +3775,6 @@ impl StudioApp {
             ));
             if ui.button("Add").on_hover_text(add_help).clicked() {
                 self.add_etcc(kind);
-            }
-            if ui
-                .add_enabled(
-                    self.repeater_sync.is_none(),
-                    egui::Button::new("Sync from ETCC"),
-                )
-                .on_hover_text(
-                    "Fetches the UK repeater, gateway and beacon list from the RSGB ETCC and \
-                     caches it; the studio never fetches on its own",
-                )
-                .clicked()
-            {
-                self.sync_repeaters();
             }
             ui.end_row();
             ui.label(self.etcc_source(kind));
@@ -4375,19 +4406,6 @@ impl StudioApp {
             {
                 self.add_stations();
             }
-            if ui
-                .add_enabled(
-                    self.station_sync.is_none(),
-                    egui::Button::new("Sync from Ofcom"),
-                )
-                .on_hover_text(
-                    "Fetches Ofcom's list of FM broadcast transmitters and caches it; the \
-                     studio never fetches on its own",
-                )
-                .clicked()
-            {
-                self.sync_stations();
-            }
             ui.end_row();
             ui.label(self.station_source());
         });
@@ -4470,20 +4488,6 @@ impl StudioApp {
                 .clicked()
             {
                 self.add_airports();
-            }
-            if ui
-                .add_enabled(
-                    self.airport_sync.is_none(),
-                    egui::Button::new("Sync from OurAirports"),
-                )
-                .on_hover_text(
-                    "Fetches the worldwide airport and frequency lists from OurAirports \
-                     (public domain, about 14 MB) and caches them; the studio never fetches \
-                     on its own",
-                )
-                .clicked()
-            {
-                self.sync_airports();
             }
             ui.end_row();
             ui.label(self.airport_source());
@@ -4620,20 +4624,6 @@ impl StudioApp {
             {
                 self.add_airfields();
             }
-            if ui
-                .add_enabled(
-                    self.airport_sync.is_none(),
-                    egui::Button::new("Sync from OurAirports"),
-                )
-                .on_hover_text(
-                    "Fetches the worldwide airport and frequency lists from OurAirports \
-                     (public domain, about 14 MB), which the Airports tab shares, and caches \
-                     them; the studio never fetches on its own",
-                )
-                .clicked()
-            {
-                self.sync_airports();
-            }
             ui.end_row();
             ui.label(self.airfield_source());
         });
@@ -4672,20 +4662,6 @@ impl StudioApp {
                 .clicked()
             {
                 self.add_marine();
-            }
-            if ui
-                .add_enabled(
-                    self.marine_sync.is_none(),
-                    egui::Button::new("Sync from OpenStreetMap"),
-                )
-                .on_hover_text(
-                    "Asks the Overpass API for every place in the world tagged with a marine \
-                     VHF channel (OpenStreetMap, ODbL, about 1.5 MB, takes about a minute) \
-                     and caches it; the studio never fetches on its own",
-                )
-                .clicked()
-            {
-                self.sync_marine();
             }
             ui.end_row();
             ui.label(self.marine_source());
@@ -7664,6 +7640,31 @@ mod tests {
             .iter()
             .position(|p| p.name() == name)
             .expect("preset")
+    }
+
+    #[test]
+    fn sync_takes_the_lists_never_synced_or_synced_over_a_day_ago() {
+        let mut app = simulated("datasets-due");
+        let wanted = |app: &StudioApp, wanted| -> Vec<bool> {
+            app.datasets(wanted).iter().map(|(_, want)| *want).collect()
+        };
+        assert_eq!(wanted(&app, super::never), [true; 6]);
+        assert_eq!(wanted(&app, super::due), [true; 6]);
+
+        let now = std::time::SystemTime::now();
+        app.world = Some(crate::world::WorldList {
+            repeaters: Vec::new(),
+            synced: now,
+        });
+        app.marine = Some(crate::marine::MarineList {
+            places: Vec::new(),
+            synced: now - std::time::Duration::from_secs(super::SYNC_AFTER_SECS + 60),
+        });
+        let never = [true, false, true, true, false, true];
+        let due = [true, false, true, true, true, true];
+        assert_eq!(wanted(&app, super::never), never);
+        assert_eq!(wanted(&app, super::due), due);
+        assert!(!super::due(Some(now + std::time::Duration::from_secs(60))));
     }
 
     #[test]

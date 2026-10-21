@@ -1,16 +1,17 @@
 //! The amateur FM satellites, synced from the SatNOGS database and cached.
 //!
-//! The studio fetches only when the operator presses Sync. Otherwise it reads
-//! the cache in `$XDG_CACHE_HOME/afik/satnogs`, and with no cache the built-in
-//! satellite bank applies. The raw responses are what is cached, so changing
-//! the selection below needs no new fetch.
+//! The studio fetches only when the operator presses Sync or nothing is
+//! cached (`ADR-121`). Otherwise it reads the cache in
+//! `$XDG_CACHE_HOME/afik/satnogs`, and with no cache the built-in satellite
+//! bank applies. The raw responses are what is cached, so changing the
+//! selection below needs no new fetch.
 
 use std::{
     collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::mpsc,
-    time::{Duration, SystemTime},
+    time::SystemTime,
 };
 
 use radio_channel_plan::MAX_CHANNEL_NAME_LEN;
@@ -25,13 +26,15 @@ pub const TRANSMITTERS_URL: &str =
 /// Every satellite, for its name and whether it is still in orbit.
 pub const SATELLITES_URL: &str = "https://db.satnogs.org/api/satellites/?format=json";
 
-const CACHE_DIR: &str = "satnogs";
+pub(crate) const CACHE_DIR: &str = "satnogs";
 const TRANSMITTERS_FILE: &str = "transmitters.json";
 const SATELLITES_FILE: &str = "satellites.json";
 /// The most synced channels one bank takes; the list is about thirty.
 pub const MAX_SATELLITE_CHANNELS: usize = 40;
-const TIMEOUT: Duration = Duration::from_secs(30);
+#[cfg(not(target_arch = "wasm32"))]
+const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// The responses are a few megabytes; this bounds a misbehaving server.
+#[cfg(not(target_arch = "wasm32"))]
 const MAX_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
 /// Receive coverage the BK4819 datasheet states, in hertz.
 const RECEIVE_BANDS: [(u64, u64); 2] = [(18_000_000, 660_000_000), (840_000_000, 1_300_000_000)];
@@ -303,9 +306,28 @@ impl SatelliteCache {
         self.load()?
             .ok_or_else(|| "the satellite cache was not written".to_owned())
     }
+
+    /// Fetches from SatNOGS, checks and caches what came, and returns it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn sync(&self) -> Result<SatelliteList, String> {
+        self.sync_with(fetch)
+    }
+
+    /// Reads what the Pages build mirrored from SatNOGS beside the browser
+    /// Studio (`ADR-121`); the page keeps nothing.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn sync(&self) -> Result<SatelliteList, String> {
+        let ([transmitters, satellites], synced) =
+            crate::mirror::fetch(CACHE_DIR, [TRANSMITTERS_FILE, SATELLITES_FILE]).await?;
+        Ok(SatelliteList {
+            channels: select(&transmitters, &satellites)?,
+            synced,
+        })
+    }
 }
 
 /// Fetches one URL over HTTPS.
+#[cfg(not(target_arch = "wasm32"))]
 fn fetch(url: &str) -> Result<String, String> {
     log::debug!("fetching {url}");
     let started = web_time::Instant::now();
@@ -336,7 +358,11 @@ impl SyncJob {
         // A worker that cannot start drops `sender`, which `poll` reports.
         let _started = crate::platform::spawn("afik-sync", move || async move {
             // The editor may have closed; then nobody wants the outcome.
-            let _ = sender.send(cache.sync_with(fetch));
+            #[cfg(not(target_arch = "wasm32"))]
+            let outcome = cache.sync();
+            #[cfg(target_arch = "wasm32")]
+            let outcome = cache.sync().await;
+            let _ = sender.send(outcome);
         });
         Self { outcome }
     }

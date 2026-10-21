@@ -3441,5 +3441,6 @@
   Flash tab over granted Web Serial ports, the image from the file picker,
   backups kept and downloaded. Done, not yet tried on a radio. Ship the
   release images with the Pages build as the packaged default. Done.
-  Fetch the station, satellite and map lists in the browser.
+  Fetch the station, satellite and map lists in the browser. Done: read
+  from a mirror the Pages build publishes beside the page (`ADR-121`).
 

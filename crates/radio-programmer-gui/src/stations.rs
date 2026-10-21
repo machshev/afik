@@ -2,9 +2,10 @@
 //! technical parameters for VHF radio transmitters and cached.
 //!
 //! As with the repeaters, the studio fetches only when the operator presses
-//! Sync; otherwise it reads the raw CSV cached in `$XDG_CACHE_HOME/afik/ofcom`.
-//! The locator is the repeaters' own; how many stations to take, and of
-//! which licence kinds, is kept in `$XDG_STATE_HOME/afik/station-area`.
+//! Sync or nothing is cached (`ADR-121`); otherwise it reads the raw CSV
+//! cached in `$XDG_CACHE_HOME/afik/ofcom`. The locator is the repeaters' own;
+//! how many stations to take, and of which licence kinds, is kept in
+//! `$XDG_STATE_HOME/afik/station-area`.
 
 use std::{
     collections::HashSet,
@@ -17,11 +18,13 @@ use std::{
 use radio_channel_plan::{SharedSettings, MAX_CHANNEL_NAME_LEN};
 use radio_domain::{Bandwidth, Modulation, PowerLevel, BROADCAST_FIRST_HZ, BROADCAST_LAST_HZ};
 
+#[cfg(not(target_arch = "wasm32"))]
+use crate::repeaters::fetch;
 use crate::{
     model::{format_mhz, BankDraft, BankKind, ChannelDraft},
     paths,
     receiver::Receiver,
-    repeaters::{distance_km, fetch, locator_centre, sanitise},
+    repeaters::{distance_km, locator_centre, sanitise},
 };
 
 /// Every VHF (FM) broadcast transmitter Ofcom licenses, with its frequency,
@@ -29,7 +32,7 @@ use crate::{
 pub const TRANSMITTERS_URL: &str = "https://www.ofcom.org.uk/siteassets/resources/documents/\
 spectrum/tv-transmitter-guidance/tech-parameters/txparamsvhf.csv";
 
-const CACHE_DIR: &str = "ofcom";
+pub(crate) const CACHE_DIR: &str = "ofcom";
 const TRANSMITTERS_FILE: &str = "txparamsvhf.csv";
 const AREA_FILE: &str = "station-area";
 /// The word in an area file from before the kinds that kept the BBC.
@@ -457,6 +460,23 @@ impl StationCache {
         self.load()?
             .ok_or_else(|| "the station cache was not written".to_owned())
     }
+
+    /// Fetches from Ofcom, checks and caches what came, and returns it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn sync(&self) -> Result<StationList, String> {
+        self.sync_with(fetch)
+    }
+
+    /// Reads what the Pages build mirrored from Ofcom beside the browser
+    /// Studio (`ADR-121`); the page keeps nothing.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn sync(&self) -> Result<StationList, String> {
+        let ([csv], synced) = crate::mirror::fetch(CACHE_DIR, [TRANSMITTERS_FILE]).await?;
+        Ok(StationList {
+            stations: parse(&csv)?,
+            synced,
+        })
+    }
 }
 
 /// The station count the operator last chose, and the licence kinds taken;
@@ -550,7 +570,11 @@ impl SyncJob {
         // A worker that cannot start drops `sender`, which `poll` reports.
         let _started = crate::platform::spawn("afik-sync", move || async move {
             // The editor may have closed; then nobody wants the outcome.
-            let _ = sender.send(cache.sync_with(fetch));
+            #[cfg(not(target_arch = "wasm32"))]
+            let outcome = cache.sync();
+            #[cfg(target_arch = "wasm32")]
+            let outcome = cache.sync().await;
+            let _ = sender.send(outcome);
         });
         Self { outcome }
     }

@@ -17,6 +17,7 @@ pub mod locators;
 pub mod logging;
 pub mod map;
 pub mod marine;
+pub mod mirror;
 pub mod model;
 mod net;
 pub mod paths;

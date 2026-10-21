@@ -3,10 +3,10 @@
 //! marinas, locks and lookouts nearby.
 //!
 //! As with the airports, the studio fetches only when the operator presses
-//! Sync: one Overpass query for every object in the world tagged with a
-//! marine VHF channel (about 3 000, 1.4 MB), cached raw in
-//! `$XDG_CACHE_HOME/afik/osm-marine`. The locator is the repeaters' own; the
-//! radius and how many local channels to take are kept in
+//! Sync or nothing is cached (`ADR-121`): one Overpass query for every object
+//! in the world tagged with a marine VHF channel (about 3 000, 1.4 MB),
+//! cached raw in `$XDG_CACHE_HOME/afik/osm-marine`. The locator is the
+//! repeaters' own; the radius and how many local channels to take are kept in
 //! `$XDG_STATE_HOME/afik/marine-area`.
 //!
 //! A duplex channel keeps both its frequencies, the coast station's as
@@ -18,19 +18,21 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::mpsc,
-    time::{Duration, SystemTime},
+    time::SystemTime,
 };
 
 use radio_channel_plan::{SharedSettings, MAX_BANK_NAME_LEN, MAX_CHANNEL_NAME_LEN};
 use radio_domain::{Bandwidth, Modulation, PowerLevel};
 use serde_json::Value;
 
+#[cfg(not(target_arch = "wasm32"))]
+use crate::repeaters::fetch_within;
 use crate::{
     airports::AirportArea,
     model::{format_mhz, BankDraft, BankKind, ChannelDraft},
     paths,
     presets::{marine_hz, MARINE_DUPLEX_OFFSET_HZ},
-    repeaters::{distance_km, fetch_within, locator_centre, sanitise},
+    repeaters::{distance_km, locator_centre, sanitise},
 };
 
 /// The public Overpass instance the query is sent to.
@@ -46,8 +48,9 @@ const CHANNEL_KEYS: [&str; 7] = [
     "waterway:ukw_channel",
 ];
 /// The worldwide query takes about a minute.
-const SYNC_TIMEOUT: Duration = Duration::from_secs(300);
-const CACHE_DIR: &str = "osm-marine";
+#[cfg(not(target_arch = "wasm32"))]
+const SYNC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+pub(crate) const CACHE_DIR: &str = "osm-marine";
 const CACHE_FILE: &str = "marine-vhf.json";
 const AREA_FILE: &str = "marine-area";
 /// The 25 kHz grid the bank's VFO steps on.
@@ -487,6 +490,23 @@ impl MarineCache {
         self.load()?
             .ok_or_else(|| "the marine cache was not written".to_owned())
     }
+
+    /// Fetches from Overpass, checks and caches what came, and returns it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn sync(&self) -> Result<MarineList, String> {
+        self.sync_with(|url| fetch_within(url, SYNC_TIMEOUT))
+    }
+
+    /// Reads what the Pages build mirrored from Overpass beside the browser
+    /// Studio (`ADR-121`); the page keeps nothing.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn sync(&self) -> Result<MarineList, String> {
+        let ([answer], synced) = crate::mirror::fetch(CACHE_DIR, [CACHE_FILE]).await?;
+        Ok(MarineList {
+            places: parse(&answer)?,
+            synced,
+        })
+    }
 }
 
 /// The state file the marine radius and channel count are kept in; they
@@ -510,7 +530,11 @@ impl SyncJob {
         // A worker that cannot start drops `sender`, which `poll` reports.
         let _started = crate::platform::spawn("afik-sync", move || async move {
             // The editor may have closed; then nobody wants the outcome.
-            let _ = sender.send(cache.sync_with(|url| fetch_within(url, SYNC_TIMEOUT)));
+            #[cfg(not(target_arch = "wasm32"))]
+            let outcome = cache.sync();
+            #[cfg(target_arch = "wasm32")]
+            let outcome = cache.sync().await;
+            let _ = sender.send(outcome);
         });
         Self { outcome }
     }

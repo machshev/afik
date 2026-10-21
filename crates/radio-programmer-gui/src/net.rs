@@ -1,12 +1,10 @@
 //! HTTPS fetches for the station, satellite and map lists.
 
-use std::time::Duration;
-
 /// Fetches `url`, allowing `timeout` and refusing a body over `max_bytes`.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn get(
     url: &str,
-    timeout: Duration,
+    timeout: std::time::Duration,
     max_bytes: u64,
     user_agent: &str,
 ) -> Result<Vec<u8>, String> {
@@ -60,18 +58,4 @@ pub(crate) async fn fetch(url: &str, maximum: usize) -> Result<Vec<u8>, String> 
         return Err(format!("{url}: more than {maximum} bytes"));
     }
     Ok(bytes)
-}
-
-/// Fetches `url`: not yet in the browser, where a fetch is asynchronous and
-/// each list's server must allow the page's origin.
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn get(
-    url: &str,
-    _timeout: Duration,
-    _max_bytes: u64,
-    _user_agent: &str,
-) -> Result<Vec<u8>, String> {
-    Err(format!(
-        "{url}: fetching is not available in the browser yet"
-    ))
 }

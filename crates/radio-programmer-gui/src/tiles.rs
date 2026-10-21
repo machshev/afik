@@ -87,7 +87,7 @@ fn tile_url(id: TileId) -> String {
 }
 
 /// Fetches one tile from OpenStreetMap.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg(not(target_arch = "wasm32"))]
 fn fetch_tile(id: TileId) -> Result<Vec<u8>, String> {
     let url = tile_url(id);
     log::debug!("fetching {url}");

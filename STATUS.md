@@ -381,6 +381,20 @@ failed, wasm32 clippy of the shared crates and Studio `-D warnings` clean,
 flashed: the radio image is unchanged. Tried (2026-10-21): the operator
 moved the M8LWA project, with its locations, into the published browser
 Studio by export and import; it works.
+Step 10 (operator request: the published Studio could not sync the map
+datasets, `ADR-121`): three of the six sources refuse other origins, so
+`pages.yml` runs the new `mirror-datasets` example (the desktop sync of
+every dataset) into `dist/datasets`, on push and weekly. The browser reads
+that mirror at every start and has no Sync button. The desktop's seven
+per-dataset buttons became one Sync in the tab bar for every dataset over a
+day old, and a dataset never synced is fetched once at start. Tried: the
+mirror wrote all six (30 MB); a headless Chromium on a local `trunk` build
+loaded all six from it, and the Map tab listed 481 ETCC and 11,260 hearham
+repeaters. Gate: `cargo fmt --all --check` clean, `cargo clippy --workspace
+--all-targets -- -D warnings` clean, `cargo test --workspace` 999 passed 0
+failed, wasm32 clippy of Studio `-D warnings` clean, `trunk build --release`
+passes. Not flashed: the radio image is unchanged. Next: try the published
+page after the deploy.
 
 **`REL-079` is active alongside** (2026-10-19, operator request,
 `ADR-118`): a `v*` tag builds and publishes release packages for Linux,
