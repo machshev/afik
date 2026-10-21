@@ -10,6 +10,23 @@ programs a radio over Web Serial in Chrome, Edge or a recent Firefox. Desktop
 builds for Linux, macOS and Windows are on the
 [releases page](https://github.com/machshev/afik/releases).
 
+## Armel's firmware
+
+AFIK owes a great deal to Armel F4HWN's custom firmware
+([UV-K5](https://github.com/armel/uv-k5-firmware-custom),
+[UV-K1 and K5 V3](https://github.com/armel/uv-k1-k5v3-firmware-custom)). It
+was a huge source of inspiration, and it is an excellent alternative to this
+firmware, especially on the K1.
+
+AFIK began as a way to fit more channels into the K5 by storing channel
+memory sparsely. The K1 does not have the K5's memory limit, and the new
+Labs applications Armel has introduced there are really exciting: if you
+have a K1, Armel's firmware is well worth a look.
+
+AFIK is developed from the hardware datasheets. Where a datasheet is unclear,
+Armel's firmware has been the working reference that shows what the hardware
+really does, and much of AFIK's radio behaviour rests on it.
+
 ## What works
 
 Both radios run the AFIK application, built from one shared application crate.
