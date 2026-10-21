@@ -378,7 +378,9 @@ Gate: `cargo fmt --all --check` clean, `cargo clippy --workspace
 --all-targets -- -D warnings` clean, `cargo test --workspace` 996 passed 0
 failed, wasm32 clippy of the shared crates and Studio `-D warnings` clean,
 `tool/build-k5.sh --release` and `tool/build-k1.sh --release` pass. Not
-flashed: the radio image is unchanged.
+flashed: the radio image is unchanged. Tried (2026-10-21): the operator
+moved the M8LWA project, with its locations, into the published browser
+Studio by export and import; it works.
 
 **`REL-079` is active alongside** (2026-10-19, operator request,
 `ADR-118`): a `v*` tag builds and publishes release packages for Linux,
