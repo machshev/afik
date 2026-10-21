@@ -1184,6 +1184,9 @@ pub struct StartDraft {
     pub bank: String,
     /// The channel in that bank, from one; zero is the first of the view.
     pub channel: u16,
+    /// Whether the radio lists the whole group, or every bank without one,
+    /// rather than only the bank; the channel is still the bank's.
+    pub whole_group: bool,
 }
 
 /// One editable bank group; its banks are those listing it.
@@ -1865,7 +1868,10 @@ impl ProjectModel {
         };
         Ok(StartPlace {
             group: group.and_then(|group| u8::try_from(group).ok()),
-            bank: bank.map(bank_id).transpose()?,
+            bank: bank
+                .filter(|_| !start.whole_group)
+                .map(bank_id)
+                .transpose()?,
             channel,
         })
     }
@@ -2155,8 +2161,14 @@ fn start_draft(project: &RadioProject, groups: &[GroupDraft], start: StartPlace)
             .and_then(|group| groups.get(usize::from(group)))
             .map(|group| group.name.clone())
             .unwrap_or_default(),
-        bank: start.bank.map(name_of).unwrap_or_default(),
+        // A channel with no bank filter is one in the whole group's view.
+        bank: start
+            .bank
+            .or(start.channel.map(|(bank, _)| bank))
+            .map(name_of)
+            .unwrap_or_default(),
         channel: start.channel.map_or(0, |(_, position)| position + 1),
+        whole_group: start.bank.is_none() && start.channel.is_some(),
     }
 }
 
@@ -2585,6 +2597,7 @@ mod tests {
             group: "HOME".to_owned(),
             bank: "PMR446".to_owned(),
             channel: 1,
+            whole_group: false,
         });
         assert!(model.validate().is_ok() && model.validate_for_radio().is_ok());
     }
@@ -2659,12 +2672,14 @@ mod tests {
             group: "JO02EH".to_owned(),
             bank: "RPT JO02EH".to_owned(),
             channel: 2,
+            whole_group: false,
         });
         // Slot B starts on the airband bank in the same group.
         model.starts[1] = Some(StartDraft {
             group: "JO02EH".to_owned(),
             bank: "AIR JO02EH".to_owned(),
             channel: 1,
+            whole_group: false,
         });
         let project = model.validate().unwrap();
         assert_eq!(
@@ -2685,6 +2700,20 @@ mod tests {
         let file = model.to_image().unwrap();
         assert_eq!(ProjectModel::from_image(&file).unwrap(), model);
 
+        // Slot A may list the whole group while starting on that channel.
+        model.starts[0].as_mut().unwrap().whole_group = true;
+        assert_eq!(
+            model.validate().unwrap().starts()[0],
+            Some(radio_channel_plan::StartPlace {
+                group: Some(0),
+                bank: None,
+                channel: Some((BankId::new(0), 1)),
+            })
+        );
+        let file = model.to_image().unwrap();
+        assert_eq!(ProjectModel::from_image(&file).unwrap(), model);
+        model.starts[0].as_mut().unwrap().whole_group = false;
+
         // The radio has one group, so the slots cannot start in two.
         model.starts[1] = Some(StartDraft::default());
         assert!(model.validate().is_err(), "B in every bank, A in JO02EH");
@@ -2701,6 +2730,7 @@ mod tests {
                 group: group.to_owned(),
                 bank: bank.to_owned(),
                 channel,
+                whole_group: false,
             });
             assert!(model.validate().is_err(), "{group} {bank} {channel}");
         }
@@ -2709,6 +2739,7 @@ mod tests {
             group: "OTHER".to_owned(),
             bank: "RPT JO02EH".to_owned(),
             channel: 0,
+            whole_group: false,
         });
         assert!(model.validate().is_err(), "the bank is not in the group");
         // Every bank, first channel.

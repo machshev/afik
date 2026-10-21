@@ -6393,8 +6393,34 @@ fn start_slot_editor(
                     };
                 });
                 ui.end_row();
+
+                ui.label("Lists");
+                ComboBox::from_id_salt(("start-view", slot))
+                    .selected_text(start_view_label(start.whole_group, &start.group))
+                    .show_ui(ui, |ui| {
+                        for whole in [false, true] {
+                            ui.selectable_value(
+                                &mut start.whole_group,
+                                whole,
+                                start_view_label(whole, &start.group),
+                            );
+                        }
+                    })
+                    .response
+                    .on_hover_text("What the radio lists around the channel it starts on");
+                ui.end_row();
             }
         });
+}
+
+/// What a start place lists: its bank alone, or the whole group (every
+/// bank without one).
+fn start_view_label(whole_group: bool, group: &str) -> String {
+    match (whole_group, group.is_empty()) {
+        (false, _) => "this bank".to_owned(),
+        (true, true) => "every bank".to_owned(),
+        (true, false) => format!("all of {group}"),
+    }
 }
 
 /// One slot's VFO on the Radio tab: a switch to program it, then its
