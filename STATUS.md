@@ -393,8 +393,14 @@ loaded all six from it, and the Map tab listed 481 ETCC and 11,260 hearham
 repeaters. Gate: `cargo fmt --all --check` clean, `cargo clippy --workspace
 --all-targets -- -D warnings` clean, `cargo test --workspace` 999 passed 0
 failed, wasm32 clippy of Studio `-D warnings` clean, `trunk build --release`
-passes. Not flashed: the radio image is unchanged. Next: try the published
-page after the deploy.
+passes. Not flashed: the radio image is unchanged. Published (run
+39660406041): five datasets mirrored, but Ofcom answered the runner 403.
+So a failed fetch now takes the dataset's snapshot from
+`crates/radio-programmer-gui/snapshots/` (Ofcom's committed, 2026-10-21) as
+a warning on the run; one without a snapshot is an error on the run. Gate:
+`cargo fmt --all --check` clean, `cargo clippy --workspace --all-targets --
+-D warnings` clean, `cargo test --workspace` 1002 passed 0 failed, wasm32
+clippy of Studio `-D warnings` clean.
 
 **`REL-079` is active alongside** (2026-10-19, operator request,
 `ADR-118`): a `v*` tag builds and publishes release packages for Linux,

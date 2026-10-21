@@ -2088,9 +2088,11 @@ meaning.
   them. The Pages build runs the desktop sync of all six datasets (ETCC,
   hearham, Ofcom, OurAirports, Overpass, SatNOGS) into `datasets/` beside the
   page, each in its desktop cache layout plus a `synced` file of Unix
-  seconds; it runs on every push to `main` and weekly. A dataset whose
-  source fails is left out and the step shows as failed, without holding
-  back the deploy.
+  seconds; it runs on every push to `main` and weekly. Ofcom answers the
+  runners 403, so a dataset whose fetch fails is copied from its snapshot in
+  `crates/radio-programmer-gui/snapshots/` (Ofcom's, taken 2026-10-21), a
+  warning on the run; one with no snapshot is left out, an error on the run,
+  without holding back the deploy.
 - The browser keeps no dataset (page storage is too small) and has no Sync
   button: each start reads the whole mirror, which the HTTP cache serves.
 - The desktop has one Sync button in the tab bar, fetching every dataset not
