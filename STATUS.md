@@ -1239,8 +1239,10 @@ slots now carry the next held bank's first channel, so `place_of` is a binary
 search and `span` reads its end from the next slot. Version `7.0.68`. Gate:
 `cargo fmt --all --check` clean, workspace clippy `-D warnings` clean,
 `cargo test --workspace` 1002 passed 0 failed, `tool/build-k5.sh --release`
-(flash end `0x0000ef88`) and `tool/build-k1.sh --release` pass. Not flashed.
-The overnight scan stall was on the K1, whose memory is SPI NOR; how its
+(flash end `0x0000ef88`) and `tool/build-k1.sh --release` pass. Flashed to
+the K6 (bootloader `2.00.06`, 240/240 pages, CRC-32 `df0caa9e`, not read
+back): it booted `AFIK-K5-7.0.68` with group 6 and dual watch still in its
+place record, and the operator found the keys quick again. The overnight scan stall was on the K1, whose memory is SPI NOR; how its
 channel reads could fail is not established.
 
 ## Previous work package: TXK5-059
