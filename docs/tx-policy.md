@@ -14,6 +14,16 @@ range (class `Never`, an empty or zero span, zero power) or more than
 The frequency decides, so a programmed channel and the VFO are checked alike;
 the token reports the class of the permitting range. Channels carry no class.
 
+Beneath the programmed ranges each radio has a hardware envelope
+(`radio_platform::transmit::TxTarget::envelope`): Armel's calibrated bands
+from 18 MHz to 1.3 GHz, less the chip's 630–840 MHz gap where it does not
+tune, FM at a 10 Hz resolution, up to the High level's nominal 5 W. It is
+the same on the K5 and the K1. The PA bias comes from the unit's own
+calibration rows for the band, so a band without calibration is refused
+(`NO TX BAND` on the handset). The levels are Low1–Low4, Mid and High,
+nominally 20, 125, 250 and 500 mW, 2 W and 5 W; none is measured
+(`RISK-040`), and nothing off 70 cm has been checked on air (`RISK-044`).
+
 The radio lowers the selected power to the highest level whose nominal
 output the ranges at the frequency allow (`TxPolicy::max_mw_at`,
 `transmit::level_within`); the policy itself still refuses, never clamps, a

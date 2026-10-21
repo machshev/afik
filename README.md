@@ -21,12 +21,16 @@ Both radios run the AFIK application, built from one shared application crate.
   channel plan in one small object, which the radio expands as it is used.
 - **Operation:** memory and VFO tuning, dual watch with two slots on screen,
   duplex channels heard on both sides, and fast memory scan.
-- **Transmit:** only inside the TX ranges the project programs (frequency
-  span, power ceiling, bandwidth, raster), in channel and VFO mode alike; a
-  radio with none programmed does not transmit. On the K5 the hardware
-  envelope is 400–470 MHz at up to 500 mW, and 2 m stays refused until its
-  bias is calibrated. K1 transmit is implemented and still being bench
-  checked.
+- **Transmit:** FM only, and only inside the TX ranges the project
+  programs (span, power ceiling, wide FM, raster), in channel and VFO mode
+  alike; a radio with none programmed does not transmit. Beneath the
+  ranges, both radios allow Armel's calibrated bands from 18 MHz to 1.3 GHz
+  less the chip's 630–840 MHz gap, at six levels from the unit's own
+  calibration (nominally 20, 125, 250 and 500 mW, 2 W and 5 W), lowered to
+  the range's ceiling; a band the unit has no calibration for is refused.
+  The power figures are nominal, not measured, and the K5's PA and filters
+  are designed for 2 m and 70 cm only (`RISK-040`, `RISK-044`). K1 transmit
+  is implemented and still being bench checked.
 
 What has and has not been observed on each radio is recorded per task in
 `TASKS.md`, with the hardware facts and their confidence in

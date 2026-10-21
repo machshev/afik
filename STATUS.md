@@ -36,7 +36,10 @@ programmed TX ranges protect channel and VFO mode alike.
   same frequency check covers channel and VFO mode. The fixed PMR446 policy
   is gone. The hardware envelope (`TxTarget`, was `Pmr446Target`) is now the
   calibrated 400–470 MHz band at 10 Hz, 500 mW; 2 m stays refused by
-  hardware until the VHF bias exists. Gate: `cargo fmt --all --check` clean,
+  hardware until the VHF bias exists. (Superseded: the envelope rose to 5 W
+  with Mid and High below, and `b066148` widened it to every calibrated
+  band, 18 MHz to 1.3 GHz less 630–840 MHz; see "2 m TX and NO TX BAND"
+  and `RISK-044`.) Gate: `cargo fmt --all --check` clean,
   workspace clippy `-D warnings` clean, `cargo test --workspace` 690 passed
   0 failed, `tool/build-k5.sh --release` (flash end `0x0000cc50`) and
   `tool/build-k1.sh --release` pass. Not flashed.
@@ -87,7 +90,9 @@ programmed TX ranges protect channel and VFO mode alike.
   byte, clear in older records). The studio's TX presets add `CB 27 MHz`:
   UK 27/81 and CEPT, narrow FM, 4 W, 10 kHz grid. The hardware envelope is
   still 400-470 MHz, so the radio refuses 27 MHz TX until a low-band PA
-  path is calibrated. Gate (another session's uncommitted banks work breaks
+  path is calibrated. (Superseded by `b066148`: 27 MHz is inside the
+  calibrated bands, so a programmed CB range transmits where the unit has
+  calibration for it; unmeasured, `RISK-044`.) Gate (another session's uncommitted banks work breaks
   `radio-app` in the tree, so per crate and on a clean worktree of this
   change): `cargo fmt` clean, `cargo clippy -p radio-domain -p
   radio-tx-policy -p radio-platform -p radio-programmer-gui -p radio-app

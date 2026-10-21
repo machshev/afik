@@ -3067,8 +3067,9 @@
      Done.
   4. Firmware builds its policy from the image; handset class switch in the
      radio's own record; hardware envelope widened to the calibrated
-     400–470 MHz band. Done (4a policy and envelope, 4b class switch); the
-     version is bumped with the image that is flashed.
+     400–470 MHz band, then (`b066148`) to every calibrated band, 18 MHz to
+     1.3 GHz less the chip's 630–840 MHz gap. Done (4a policy and envelope,
+     4b class switch); the version is bumped with the image that is flashed.
   4a. Full power for amateur use: Armel's Low5, Mid and High levels from the
      unit's mid/high calibration rows (nominally 1, 2 and 5 W); the hardware
      envelope rises to match and each range's ceiling still applies, so
