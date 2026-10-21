@@ -3437,7 +3437,9 @@
   Studio's serial, files, workers and HTTP behind native/web modules. Done.
   Build it with `trunk` and deploy to Pages. Done (Pages must be switched to
   "GitHub Actions" in the repository settings). Write a configuration from
-  the browser to a K5 and a K1 (`RISK-050`). Flash firmware from it: needs
-  a choice of where the browser takes the image from and gives backups to.
+  the browser to a K5 and a K1 (`RISK-050`). Flash firmware from it: the
+  Flash tab over granted Web Serial ports, the image from the file picker,
+  backups kept and downloaded. Done, not yet tried on a radio. Ship the
+  release images with the Pages build as the packaged default.
   Fetch the station, satellite and map lists in the browser.
 

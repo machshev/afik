@@ -3,6 +3,9 @@
 //! Every write reuses the recovery-gated `radio-flasher` workflows unchanged,
 //! including their exact confirmation phrases. This module only collects
 //! operator input, runs one operation on a worker thread, and reports progress.
+//! In the browser the operation runs as a task of the page over Web Serial,
+//! on a port granted to the page, and its files live in the page's storage
+//! (`ADR-119`).
 //!
 //! Firmware cannot be read back. The bootloader protocols this crate drives
 //! carry no flash-read command, so a page acknowledgement is the only evidence a
@@ -15,51 +18,45 @@
 
 use std::{
     collections::HashMap,
-    fmt,
-    fs::{self, File},
-    io::Read,
+    fmt, io,
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, Sender},
-    time::SystemTime,
 };
 
+use crate::files;
 use radio_flasher::{
     afik_image_version, crc32, detect_bootloader, flash_afik_application, force_bootloader_family,
     identify_radio, k1, k1::K1RecoveryImage, ApplicationImage, BootloaderFamily, EepromBackup,
-    FirmwareVersion, FlashPrerequisites, FlashPurpose, ForcedFamily, RadioPresence, VersionCheck,
-    FLASH_PAGE_COUNT,
+    FirmwareVersion, FlashPrerequisites, FlashPurpose, ForcedFamily, LinkRead, LinkWrite,
+    RadioPresence, VersionCheck, FLASH_PAGE_COUNT,
 };
+
+/// The port an operation runs over.
 #[cfg(not(target_arch = "wasm32"))]
-use radio_programmer_serial::SerialTransport;
-
-/// The browser's stand-in for the desktop port: firmware flashing does not
-/// run in the browser yet (`WEB-080`), so it never opens.
+type Link = radio_programmer_serial::SerialTransport;
+/// The port an operation runs over.
 #[cfg(target_arch = "wasm32")]
-struct SerialTransport(std::convert::Infallible);
+type Link = crate::web_serial::WebSerialLink;
 
-#[cfg(target_arch = "wasm32")]
-impl SerialTransport {
-    fn open(_device: &Path, _baud: u32) -> Result<Self, &'static str> {
-        Err("flashing from the browser is not available yet; use the desktop Studio")
-    }
+/// Opens the port at [`FLASH_BAUD`]: a serial device path on the desktop, a
+/// port granted to the page in the browser.
+#[cfg_attr(not(target_arch = "wasm32"), allow(clippy::unused_async))]
+async fn open_link(device: &Path) -> Result<Link, FlashRequestError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let link = Link::open(device, FLASH_BAUD).map_err(|error| error.to_string());
+    #[cfg(target_arch = "wasm32")]
+    let link = Link::open_granted(device, FLASH_BAUD).await;
+    link.map_err(|error| FlashRequestError::new(format!("serial setup failed: {error}")))
 }
 
-#[cfg(target_arch = "wasm32")]
-impl std::io::Read for SerialTransport {
-    fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
-        match self.0 {}
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-impl std::io::Write for SerialTransport {
-    fn write(&mut self, _buffer: &[u8]) -> std::io::Result<usize> {
-        match self.0 {}
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        match self.0 {}
-    }
+/// Closes the port so the next operation can open it. The browser closes a
+/// port in the background, so there this waits for it.
+#[cfg_attr(not(target_arch = "wasm32"), allow(clippy::unused_async))]
+async fn close_link(link: Link) {
+    #[cfg(not(target_arch = "wasm32"))]
+    drop(link);
+    #[cfg(target_arch = "wasm32")]
+    link.close().await;
 }
 
 /// Serial baud used by every supported bootloader path.
@@ -286,14 +283,14 @@ impl RadioFamily {
 ///
 /// A radio in flashing mode is only listened to; a radio running its firmware
 /// is sent the read-only hello. See [`radio_flasher::identify_radio`].
-pub fn identify(device: &Path) -> Result<RadioPresence, FlashRequestError> {
+pub async fn identify(device: &Path) -> Result<RadioPresence, FlashRequestError> {
     if device.as_os_str().is_empty() {
         return Err(FlashRequestError::new("select a serial device path"));
     }
-    let mut serial = SerialTransport::open(device, FLASH_BAUD)
-        .map_err(|error| FlashRequestError::new(format!("serial setup failed: {error}")))?;
-    radio_flasher::block_on(identify_radio(&mut serial))
-        .map_err(|error| FlashRequestError::new(error.to_string()))
+    let mut link = open_link(device).await?;
+    let presence = identify_radio(&mut link).await;
+    close_link(link).await;
+    presence.map_err(|error| FlashRequestError::new(error.to_string()))
 }
 
 /// A read-only identification running on a worker thread.
@@ -324,7 +321,7 @@ pub fn start_identify(device: PathBuf) -> Result<IdentifyJob, FlashRequestError>
     }
     let (sender, outcome) = mpsc::channel();
     crate::platform::spawn("afik-identify", move || async move {
-        let _ignored = sender.send(identify(&device));
+        let _ignored = sender.send(identify(&device).await);
     })
     .map_err(|error| FlashRequestError::new(format!("could not start worker: {error}")))?;
     Ok(IdentifyJob { outcome })
@@ -343,15 +340,13 @@ pub fn artefact_digest(path: &Path) -> Result<(usize, u32), FlashRequestError> {
 /// Most selected files whose digests are remembered at once.
 const MAX_CACHED_DIGESTS: usize = 16;
 
-/// What identifies one version of a file without reading it.
-type FileStamp = Option<(SystemTime, u64)>;
 /// One file's size and CRC-32, or why it could not be read.
 type Digest = Result<(usize, u32), FlashRequestError>;
 
 /// What one read of a file found.
 #[derive(Debug)]
 struct Facts {
-    stamp: FileStamp,
+    stamp: files::Stamp,
     digest: Digest,
     /// AFIK version the file carries, when it is an AFIK image.
     version: Option<String>,
@@ -380,12 +375,7 @@ impl DigestCache {
     }
 
     fn facts(&mut self, path: &Path) -> &Facts {
-        let stamp = fs::metadata(path).ok().map(|metadata| {
-            (
-                metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-                metadata.len(),
-            )
-        });
+        let stamp = files::stamp(path);
         let fresh = self
             .entries
             .get(path)
@@ -470,7 +460,7 @@ pub fn validate_request(
                     "choose an EEPROM backup output path",
                 ));
             }
-            if request.eeprom_output.exists() {
+            if files::exists(&request.eeprom_output) {
                 return Err(FlashRequestError::new(
                     "the EEPROM backup output path already exists",
                 ));
@@ -536,7 +526,7 @@ pub fn start(
     validate_request(operation, &request)?;
     let (sender, progress) = mpsc::channel();
     crate::platform::spawn("afik-flash", move || async move {
-        let outcome = match run(operation, &request, &sender) {
+        let outcome = match run(operation, &request, &sender).await {
             Ok(summary) => FlashProgress::Finished(summary),
             Err(error) => FlashProgress::Failed(error.to_string()),
         };
@@ -549,17 +539,27 @@ pub fn start(
     })
 }
 
-fn run(
+async fn run(
     operation: FlashOperation,
     request: &FlashRequest,
     sender: &Sender<FlashProgress>,
 ) -> Result<String, FlashRequestError> {
-    let mut serial = SerialTransport::open(&request.device, FLASH_BAUD)
-        .map_err(|error| FlashRequestError::new(format!("serial setup failed: {error}")))?;
+    let mut link = open_link(&request.device).await?;
+    let outcome = operate(operation, request, sender, &mut link).await;
+    close_link(link).await;
+    outcome
+}
 
+async fn operate<T: LinkRead + LinkWrite>(
+    operation: FlashOperation,
+    request: &FlashRequest,
+    sender: &Sender<FlashProgress>,
+    serial: &mut T,
+) -> Result<String, FlashRequestError> {
     match operation {
         FlashOperation::BackupEeprom => {
-            let (info, backup) = radio_flasher::block_on(radio_flasher::backup_eeprom(&mut serial))
+            let (info, backup) = radio_flasher::backup_eeprom(serial)
+                .await
                 .map_err(|error| FlashRequestError::new(error.to_string()))?;
             write_new_file(&request.eeprom_output, backup.bytes())?;
             Ok(format!(
@@ -571,31 +571,32 @@ fn run(
         FlashOperation::K1Recovery => {
             let image = read_k1_image(&request.firmware)?;
             confirm_image_crc32(&image, request.image_crc32)?;
-            classify_k1(&mut serial, &request.bootloader_version)?;
+            classify_k1(serial, &request.bootloader_version).await?;
             let total = image.page_count();
-            let report = radio_flasher::block_on(k1::flash_recovery(
-                &mut serial,
+            let report = k1::flash_recovery(
+                serial,
                 &image,
                 &request.bootloader_version,
                 &request.target_confirmation,
                 request.transaction_id,
                 |page| step(sender, page, total),
-            ))
+            )
+            .await
             .map_err(|error| FlashRequestError::new(error.to_string()))?;
             Ok(format!(
                 "wrote {} recovery pages under transaction {:08x}",
                 report.pages_acknowledged, report.transaction_id
             ))
         }
-        FlashOperation::AfikApplication => flash_afik(&mut serial, request, sender),
+        FlashOperation::AfikApplication => flash_afik(serial, request, sender).await,
         FlashOperation::K5Application => {
             let image = read_k5_image(&request.firmware)?;
             let recovery = read_k5_image(&request.recovery)?;
             let backup = read_eeprom_backup(&request.eeprom_backup)?;
             let version = FirmwareVersion::new(&request.firmware_version)
                 .map_err(|error| FlashRequestError::new(error.to_string()))?;
-            let report = radio_flasher::block_on(radio_flasher::flash_application(
-                &mut serial,
+            let report = radio_flasher::flash_application(
+                serial,
                 FlashPrerequisites {
                     image: &image,
                     recovery_image: &recovery,
@@ -609,7 +610,8 @@ fn run(
                     },
                 },
                 |page| step(sender, page, K5_PAGES),
-            ))
+            )
+            .await
             .map_err(|error| FlashRequestError::new(error.to_string()))?;
             Ok(format!(
                 "wrote {} application pages with CRC-32 {:08x}",
@@ -620,8 +622,8 @@ fn run(
 }
 
 /// Writes an AFIK application to whichever radio's bootloader answers.
-fn flash_afik(
-    serial: &mut SerialTransport,
+async fn flash_afik<T: LinkRead + LinkWrite>(
+    serial: &mut T,
     request: &FlashRequest,
     sender: &Sender<FlashProgress>,
 ) -> Result<String, FlashRequestError> {
@@ -630,12 +632,9 @@ fn flash_afik(
     // both write paths require of their caller. A forced family still needs a
     // page-write beacon, and then writes whatever version it reports.
     let (family, check) = match request.forced_family {
-        None => (
-            radio_flasher::block_on(detect_bootloader(serial)),
-            VersionCheck::Known,
-        ),
+        None => (detect_bootloader(serial).await, VersionCheck::Known),
         Some(forced) => (
-            radio_flasher::block_on(force_bootloader_family(serial, forced.forced())),
+            force_bootloader_family(serial, forced.forced()).await,
             VersionCheck::Any,
         ),
     };
@@ -643,7 +642,7 @@ fn flash_afik(
     match afik_image_for(Radio::of(&family), family.info().version(), &raw)? {
         AfikImage::K5V1(image) => {
             let version = FirmwareVersion::for_bootloader(family.info().version());
-            let report = radio_flasher::block_on(flash_afik_application(
+            let report = flash_afik_application(
                 serial,
                 &image,
                 &version,
@@ -652,7 +651,8 @@ fn flash_afik(
                 |page| {
                     step(sender, page, K5_PAGES);
                 },
-            ))
+            )
+            .await
             .map_err(|error| FlashRequestError::new(error.to_string()))?;
             Ok(format!(
                 "wrote {} K5 V1 application pages with CRC-32 {:08x} under transaction \
@@ -662,7 +662,7 @@ fn flash_afik(
         }
         AfikImage::K1(image) => {
             let total = image.page_count();
-            let report = radio_flasher::block_on(k1::flash_application(
+            let report = k1::flash_application(
                 serial,
                 &image,
                 None,
@@ -670,7 +670,8 @@ fn flash_afik(
                 request.transaction_id,
                 check,
                 |page| step(sender, page, total),
-            ))
+            )
+            .await
             .map_err(|error| FlashRequestError::new(error.to_string()))?;
             Ok(format!(
                 "wrote {} K1 application pages with CRC-32 {:08x} under transaction \
@@ -755,11 +756,12 @@ fn confirm_image_crc32(
 /// classification beacon, and a K5 in bootloader mode must never be sent a K1
 /// page sequence. The detected version must equal the confirmation the operator
 /// supplied, so a mistyped version stops the run before any page is written.
-fn classify_k1(
-    serial: &mut SerialTransport,
+async fn classify_k1<T: LinkRead + LinkWrite>(
+    serial: &mut T,
     confirmed_version: &str,
 ) -> Result<(), FlashRequestError> {
-    let family = radio_flasher::block_on(detect_bootloader(serial))
+    let family = detect_bootloader(serial)
+        .await
         .map_err(|error| FlashRequestError::new(error.to_string()))?;
     let info = match &family {
         BootloaderFamily::K1(info) => info,
@@ -790,7 +792,7 @@ fn require_file(path: &Path, description: &str) -> Result<(), FlashRequestError>
     if path.as_os_str().is_empty() {
         return Err(FlashRequestError::new(format!("select a {description}")));
     }
-    if !path.is_file() {
+    if !files::is_file(path) {
         return Err(FlashRequestError::new(format!(
             "{description} {} is not a readable file",
             path.display()
@@ -804,12 +806,7 @@ fn read_bounded(
     maximum: usize,
     description: &str,
 ) -> Result<Vec<u8>, FlashRequestError> {
-    let file = File::open(path).map_err(|error| {
-        FlashRequestError::new(format!("could not open {description}: {error}"))
-    })?;
-    let limit = u64::try_from(maximum + 1).unwrap_or(u64::MAX);
-    let mut bytes = Vec::new();
-    file.take(limit).read_to_end(&mut bytes).map_err(|error| {
+    let bytes = read_at_most(path, maximum + 1).map_err(|error| {
         FlashRequestError::new(format!("could not read {description}: {error}"))
     })?;
     if bytes.len() > maximum {
@@ -818,6 +815,24 @@ fn read_bounded(
         )));
     }
     Ok(bytes)
+}
+
+/// Reads no more than `limit` bytes of a file.
+#[cfg(not(target_arch = "wasm32"))]
+fn read_at_most(path: &Path, limit: usize) -> io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(u64::try_from(limit).unwrap_or(u64::MAX))
+        .read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+/// Reads a file of the page's storage, which holds only what an upload or a
+/// backup bounded on the way in.
+#[cfg(target_arch = "wasm32")]
+fn read_at_most(path: &Path, _limit: usize) -> io::Result<Vec<u8>> {
+    files::read(path)
 }
 
 fn read_k1_image(path: &Path) -> Result<K1RecoveryImage, FlashRequestError> {
@@ -836,7 +851,7 @@ fn read_eeprom_backup(path: &Path) -> Result<EepromBackup, FlashRequestError> {
 }
 
 fn write_new_file(path: &Path, bytes: &[u8]) -> Result<(), FlashRequestError> {
-    if path.exists() {
+    if files::exists(path) {
         return Err(FlashRequestError::new(format!(
             "{} already exists",
             path.display()
@@ -847,22 +862,32 @@ fn write_new_file(path: &Path, bytes: &[u8]) -> Result<(), FlashRequestError> {
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
     {
-        fs::create_dir_all(parent).map_err(|error| {
+        files::create_dir_all(parent).map_err(|error| {
             FlashRequestError::new(format!("could not create {}: {error}", parent.display()))
         })?;
     }
-    fs::write(path, bytes)
-        .map_err(|error| FlashRequestError::new(format!("could not write backup: {error}")))
+    files::write(path, bytes)
+        .map_err(|error| FlashRequestError::new(format!("could not write backup: {error}")))?;
+    // The page's storage is kept, but only in this browser: the operator
+    // gets a copy of their own too.
+    #[cfg(target_arch = "wasm32")]
+    if let Some(name) = path.file_name() {
+        if let Err(error) = files::download(&name.to_string_lossy(), bytes) {
+            log::warn!("{error}");
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        afik_image_for, artefact_digest, confirm_image_crc32, crc32, fresh_transaction_id,
+        afik_image_for, artefact_digest, confirm_image_crc32, crc32, fresh_transaction_id, operate,
         parse_crc32, start_identify, validate_request, write_new_file, AfikImage, DigestCache,
-        FlashOperation, FlashRequest, K1RecoveryImage, Radio,
+        FlashOperation, FlashProgress, FlashRequest, K1RecoveryImage, Radio,
     };
-    use std::path::PathBuf;
+    use radio_sim::memory_radio::MemoryRadio;
+    use std::{path::PathBuf, sync::mpsc};
 
     fn request() -> FlashRequest {
         FlashRequest {
@@ -873,6 +898,43 @@ mod tests {
             recovery_rehearsed_confirmation: "rehearsed".to_owned(),
             ..FlashRequest::default()
         }
+    }
+
+    #[test]
+    fn an_operation_runs_over_any_link_and_files_its_result() {
+        // The browser's Web Serial link and the desktop port share this path.
+        let directory =
+            std::env::temp_dir().join(format!("afik-flash-link-{}", std::process::id()));
+        let output = directory.join("eeprom.bin");
+        let request = FlashRequest {
+            eeprom_output: output.clone(),
+            ..request()
+        };
+        let (sender, _progress) = mpsc::channel::<FlashProgress>();
+        // An erased memory is refused as no credible backup, so it holds a
+        // project first.
+        let mut model = crate::model::ProjectModel::new();
+        model.add_bank();
+        model.add_channel(0);
+        let image = model.validate().unwrap().compile_radio_image().unwrap();
+        let mut radio = MemoryRadio::default();
+        radio_flasher::block_on(radio_flasher::write_afik_image(
+            &mut radio,
+            &image,
+            |_, _| {},
+        ))
+        .unwrap();
+        let summary = radio_flasher::block_on(operate(
+            FlashOperation::BackupEeprom,
+            &request,
+            &sender,
+            &mut radio,
+        ));
+        let written = std::fs::read(&output);
+        let _ = std::fs::remove_dir_all(&directory);
+        let summary = summary.unwrap();
+        assert!(summary.starts_with("backed up "), "{summary}");
+        assert!(!written.unwrap().is_empty());
     }
 
     #[test]

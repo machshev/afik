@@ -4,16 +4,21 @@
 //! control, and a read that returns nothing once
 //! [`radio_programmer_serial::READ_TIMEOUT`] passes. A read the window cuts
 //! short is kept and finished by the next call, so no byte is lost.
+//!
+//! The ports the operator has granted the page are kept by name, so the
+//! Flash tab can list and reopen them as it does desktop device paths.
 
 use std::{
+    cell::{Cell, RefCell},
     collections::VecDeque,
     future::{poll_fn, Future},
     io,
+    path::{Path, PathBuf},
     pin::Pin,
     task::Poll,
 };
 
-use js_sys::{Function, Promise, Reflect, Uint8Array};
+use js_sys::{Function, Object, Promise, Reflect, Uint8Array};
 use radio_flasher::{LinkRead, LinkWrite};
 use radio_programmer_serial::{is_supported_baud, READ_TIMEOUT};
 use wasm_bindgen::{JsCast, JsValue};
@@ -26,6 +31,106 @@ use web_sys::{
 /// Bytes the browser buffers from the port between reads.
 const BUFFER_BYTES: u32 = 4_096;
 
+thread_local! {
+    /// The ports granted to the page, each with the name it is listed by.
+    static GRANTED: RefCell<Vec<(PathBuf, SerialPort)>> = const { RefCell::new(Vec::new()) };
+    /// Counts changes to [`GRANTED`], so a list of it knows when it is stale.
+    static GENERATION: Cell<u64> = const { Cell::new(0) };
+}
+
+/// The names of the ports granted to the page, in the browser's order.
+pub fn granted() -> Vec<PathBuf> {
+    GRANTED.with_borrow(|ports| ports.iter().map(|(name, _)| name.clone()).collect())
+}
+
+/// Changes whenever the granted ports do.
+pub fn generation() -> u64 {
+    GENERATION.get()
+}
+
+/// Asks the browser again which ports the page may open; [`granted`] has
+/// the answer once it arrives.
+pub fn refresh() {
+    wasm_bindgen_futures::spawn_local(async {
+        if let Err(error) = refresh_now().await {
+            log::warn!("listing granted serial ports: {error}");
+        }
+    });
+}
+
+/// Shows the browser's port chooser, so this must follow a click. A chosen
+/// port joins [`granted`].
+pub fn choose() {
+    wasm_bindgen_futures::spawn_local(async {
+        let chosen = match serial() {
+            Ok(serial) => serial
+                .request_port()
+                .await
+                .map(drop)
+                .map_err(|error| format!("no port chosen: {}", message(&error))),
+            Err(error) => Err(error),
+        };
+        if let Err(error) = chosen {
+            log::warn!("{error}");
+        }
+        if let Err(error) = refresh_now().await {
+            log::warn!("listing granted serial ports: {error}");
+        }
+    });
+}
+
+async fn refresh_now() -> Result<(), String> {
+    let ports: Vec<SerialPort> = serial()?
+        .get_ports()
+        .await
+        .map_err(|error| message(&error))?
+        .iter()
+        .collect();
+    let unchanged = GRANTED.with_borrow(|known| {
+        known.len() == ports.len()
+            && known
+                .iter()
+                .zip(&ports)
+                .all(|((_, old), new)| Object::is(old, new))
+    });
+    if !unchanged {
+        let named = ports
+            .into_iter()
+            .enumerate()
+            .map(|(index, port)| (port_name(index, &port), port))
+            .collect();
+        GRANTED.set(named);
+        GENERATION.set(GENERATION.get().wrapping_add(1));
+    }
+    Ok(())
+}
+
+/// Names a granted port by its place in the list and its USB identity.
+fn port_name(index: usize, port: &SerialPort) -> PathBuf {
+    PathBuf::from(format!("Port {}: {}", index + 1, describe(port)))
+}
+
+/// What the browser says the port is.
+fn describe(port: &SerialPort) -> String {
+    let info = port.get_info();
+    match (info.get_usb_vendor_id(), info.get_usb_product_id()) {
+        (Some(vendor), Some(product)) => format!("USB serial {vendor:04x}:{product:04x}"),
+        _ => "serial port".to_owned(),
+    }
+}
+
+fn serial() -> Result<web_sys::Serial, String> {
+    if !WebSerialLink::is_available() {
+        return Err(
+            "this browser has no Web Serial; use a recent Chrome, Edge or Firefox".to_owned(),
+        );
+    }
+    Ok(web_sys::window()
+        .ok_or("no browser window")?
+        .navigator()
+        .serial())
+}
+
 /// One open Web Serial port, locked for reading and writing.
 pub struct WebSerialLink {
     port: SerialPort,
@@ -36,6 +141,8 @@ pub struct WebSerialLink {
     /// Bytes read but not yet taken.
     buffered: VecDeque<u8>,
     description: String,
+    /// [`Self::close`] has released the port.
+    closed: bool,
 }
 
 impl WebSerialLink {
@@ -52,18 +159,32 @@ impl WebSerialLink {
         if !is_supported_baud(baud) {
             return Err(format!("unsupported baud: {baud}"));
         }
-        if !Self::is_available() {
-            return Err(
-                "this browser has no Web Serial; use a recent Chrome, Edge or Firefox".to_owned(),
-            );
-        }
-        let window = web_sys::window().ok_or("no browser window")?;
-        let port = window
-            .navigator()
-            .serial()
+        let port = serial()?
             .request_port()
             .await
             .map_err(|error| format!("no port chosen: {}", message(&error)))?;
+        // The Flash tab lists the port from now on.
+        refresh();
+        Self::open(port, baud).await
+    }
+
+    /// Opens the granted port [`granted`] lists as `name`, at `baud`.
+    pub async fn open_granted(name: &Path, baud: u32) -> Result<Self, String> {
+        if !is_supported_baud(baud) {
+            return Err(format!("unsupported baud: {baud}"));
+        }
+        let port = GRANTED
+            .with_borrow(|ports| {
+                ports
+                    .iter()
+                    .find(|(known, _)| known == name)
+                    .map(|(_, port)| port.clone())
+            })
+            .ok_or_else(|| format!("{} is not a port granted to this page", name.display()))?;
+        Self::open(port, baud).await
+    }
+
+    async fn open(port: SerialPort, baud: u32) -> Result<Self, String> {
         let options = SerialOptions::new(baud);
         options.set_buffer_size(BUFFER_BYTES);
         port.open(&options)
@@ -77,11 +198,7 @@ impl WebSerialLink {
             .writable()
             .get_writer()
             .map_err(|error| format!("could not write to the port: {}", message(&error)))?;
-        let info = port.get_info();
-        let description = match (info.get_usb_vendor_id(), info.get_usb_product_id()) {
-            (Some(vendor), Some(product)) => format!("USB serial {vendor:04x}:{product:04x}"),
-            _ => "serial port".to_owned(),
-        };
+        let description = describe(&port);
         log::info!("opened {description} at {baud} baud");
         Ok(Self {
             port,
@@ -90,7 +207,15 @@ impl WebSerialLink {
             pending: None,
             buffered: VecDeque::new(),
             description,
+            closed: false,
         })
+    }
+
+    /// Closes the port and waits until the browser has, so it can be
+    /// opened again at once.
+    pub async fn close(mut self) {
+        self.closed = true;
+        release(&self.port, &self.reader, &self.writer).await;
     }
 
     /// What the browser says the port is.
@@ -156,15 +281,24 @@ impl LinkWrite for WebSerialLink {
 impl Drop for WebSerialLink {
     /// Unlocks and closes the port, so it can be chosen again.
     fn drop(&mut self) {
+        if self.closed {
+            return;
+        }
         let (port, reader, writer) = (self.port.clone(), self.reader.clone(), self.writer.clone());
-        wasm_bindgen_futures::spawn_local(async move {
-            let _cancelled = JsFuture::from(reader.cancel()).await;
-            reader.release_lock();
-            writer.release_lock();
-            if let Err(error) = port.close().await {
-                log::warn!("closing the serial port: {}", message(&error));
-            }
-        });
+        wasm_bindgen_futures::spawn_local(async move { release(&port, &reader, &writer).await });
+    }
+}
+
+async fn release(
+    port: &SerialPort,
+    reader: &ReadableStreamDefaultReader,
+    writer: &WritableStreamDefaultWriter,
+) {
+    let _cancelled = JsFuture::from(reader.cancel()).await;
+    reader.release_lock();
+    writer.release_lock();
+    if let Err(error) = port.close().await {
+        log::warn!("closing the serial port: {}", message(&error));
     }
 }
 

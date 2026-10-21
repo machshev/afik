@@ -327,6 +327,20 @@ serial, Studio) `-D warnings` clean, `trunk build --release` passes,
 `actionlint` clean, `nix flake check path:. --no-build` passes. Next: switch
 Pages to GitHub Actions, then Connect, Test link and Write from Chrome and
 Firefox to a K5 (`RISK-050`).
+Step 5 (operator report: Connect works in Firefox, the Flash tab does not):
+the Flash tab runs in the browser. Its devices are the ports granted to the
+page (`getPorts`, refreshed on each scan; "Choose port…" grants another),
+and each check, backup or write opens the port by name and awaits its close
+so the next can open it. The flash operations are async over any link, so
+one path serves the desktop port and Web Serial. Files go through
+`files.rs`: "Open image…" stores a picked `.bin` in the page's storage, and
+an EEPROM backup is kept there and downloaded (operator's choice). Driven
+headless: the Flash tab draws with both buttons, no console errors. Gate:
+`cargo fmt --all --check` clean, `cargo clippy --workspace --all-targets --
+-D warnings` clean, `cargo test --workspace` 991 passed 0 failed, wasm32
+clippy of Studio `-D warnings` clean, `trunk build --release` passes. Not
+yet tried against a radio. Next: ship the release images with the Pages
+build as the packaged default.
 
 **`REL-079` is active alongside** (2026-10-19, operator request,
 `ADR-118`): a `v*` tag builds and publishes release packages for Linux,

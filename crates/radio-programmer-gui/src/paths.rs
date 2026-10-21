@@ -5,7 +5,6 @@
 
 use std::{
     ffi::OsString,
-    fs,
     path::{Path, PathBuf},
 };
 
@@ -185,7 +184,7 @@ pub fn packaged_image(name: &str) -> PathBuf {
     let candidates = packaged_image_candidates(name);
     candidates
         .iter()
-        .find(|path| path.is_file())
+        .find(|path| crate::files::is_file(path))
         .or_else(|| candidates.first())
         .cloned()
         .unwrap_or_default()
@@ -195,13 +194,10 @@ pub fn packaged_image(name: &str) -> PathBuf {
 ///
 /// Backup names sort by time, so the newest is the last by name.
 pub fn newest_eeprom_backup(directory: &Path) -> Option<PathBuf> {
-    fs::read_dir(directory)
-        .ok()?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
+    crate::files::list(directory)
+        .into_iter()
         .filter(|path| {
-            path.is_file()
-                && path.extension().is_some_and(|extension| extension == "bin")
+            path.extension().is_some_and(|extension| extension == "bin")
                 && path
                     .file_name()
                     .and_then(|name| name.to_str())

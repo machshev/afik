@@ -21,10 +21,22 @@ fn discover_usb_serial_devices() -> std::io::Result<Vec<PathBuf>> {
     radio_programmer_serial::discover_usb_serial_devices()
 }
 
+/// The ports granted to the page. Asking the browser again is answered in
+/// the background, so a newly granted port shows on a later scan.
 #[cfg(target_arch = "wasm32")]
 #[allow(clippy::unnecessary_wraps)]
 fn discover_usb_serial_devices() -> std::io::Result<Vec<PathBuf>> {
-    Ok(Vec::new())
+    crate::web_serial::refresh();
+    Ok(crate::web_serial::granted())
+}
+
+/// Changes whenever what [`discover_candidates`] would find does, where
+/// that is known without scanning: in the browser, when a port is granted.
+pub fn candidates_generation() -> u64 {
+    #[cfg(target_arch = "wasm32")]
+    return crate::web_serial::generation();
+    #[cfg(not(target_arch = "wasm32"))]
+    0
 }
 
 /// Baud the shared configuration protocol uses unless told otherwise.

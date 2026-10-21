@@ -7,6 +7,10 @@
 //! the first flash of a family it asks for an EEPROM backup, but never insists:
 //! not every firmware can serve one. Every automatic choice can be overridden,
 //! and the gated recovery operations stay available under Advanced.
+//!
+//! In the browser the devices are the ports granted to the page, the image
+//! is opened through the browser's file picker, and a backup is downloaded
+//! as well as kept (`ADR-119`).
 
 use std::{
     collections::HashSet,
@@ -20,12 +24,21 @@ use web_time::Instant;
 
 use crate::{
     device::{self, DeviceCandidate},
+    files,
     flash::{
         self, DigestCache, FlashJob, FlashOperation, FlashProgress, FlashRequest,
         FlashRequestError, IdentifyJob, RadioFamily,
     },
     paths,
 };
+
+/// What the tab says while it has no device to check.
+#[cfg(not(target_arch = "wasm32"))]
+const NO_DEVICE: &str = "No USB serial device found. Plug in the programming cable (scanning \
+                         every few seconds), or type the port's path.";
+#[cfg(target_arch = "wasm32")]
+const NO_DEVICE: &str = "No serial port chosen. Plug in the programming cable and press \
+                         Choose port.";
 
 /// How often an absent device list is rescanned and a radio not yet in
 /// flashing mode is checked again.
@@ -119,6 +132,11 @@ pub struct FlashTab {
     /// The operator chose the device, so a rescan does not replace it.
     device_chosen: bool,
     last_scan: Option<Instant>,
+    /// [`device::candidates_generation`] when the devices were last scanned.
+    devices_generation: u64,
+    /// An image being chosen in the browser's file picker.
+    #[cfg(target_arch = "wasm32")]
+    upload: Option<files::Upload>,
     finding: Option<(PathBuf, Finding)>,
     /// The firmware version a device last answered with, kept while the radio
     /// sits in flashing mode, where only the bootloader answers.
@@ -147,6 +165,9 @@ impl Default for FlashTab {
             device: PathBuf::new(),
             device_chosen: false,
             last_scan: None,
+            devices_generation: 0,
+            #[cfg(target_arch = "wasm32")]
+            upload: None,
             finding: None,
             last_firmware: None,
             identify: None,
@@ -190,6 +211,8 @@ impl FlashTab {
     pub fn tick(&mut self, now: Instant) {
         self.poll_job();
         self.poll_identify();
+        #[cfg(target_arch = "wasm32")]
+        self.poll_upload();
         if self.busy() {
             return;
         }
@@ -198,7 +221,9 @@ impl FlashTab {
             self.start_backup();
             return;
         }
-        if self.devices.is_empty() && due(self.last_scan, now) {
+        if (self.devices.is_empty() && due(self.last_scan, now))
+            || device::candidates_generation() != self.devices_generation
+        {
             self.scan(now);
         }
         if !self.device.as_os_str().is_empty()
@@ -213,6 +238,7 @@ impl FlashTab {
     /// Rescans serial devices, selecting the first unless the operator chose.
     fn scan(&mut self, now: Instant) {
         self.last_scan = Some(now);
+        self.devices_generation = device::candidates_generation();
         self.devices = device::discover_candidates();
         if !self.device_chosen {
             let first = self
@@ -221,6 +247,29 @@ impl FlashTab {
                 .map(|candidate| candidate.path.clone())
                 .unwrap_or_default();
             self.select_device(first, false);
+        }
+    }
+
+    /// Uses the image the browser's file picker stored, once it has.
+    #[cfg(target_arch = "wasm32")]
+    fn poll_upload(&mut self) {
+        let Some(outcome) = self.upload.as_ref().and_then(files::Upload::poll) else {
+            return;
+        };
+        self.upload = None;
+        match outcome {
+            Ok(path) => self.image_override = Some(path),
+            Err(error) => self.fail("opening an image", error),
+        }
+    }
+
+    /// Shows the browser's file picker for the image to write.
+    #[cfg(target_arch = "wasm32")]
+    fn open_image(&mut self) {
+        let dir = paths::data_dir().unwrap_or_default().join("images");
+        match files::upload(dir, ".bin", flash::MAX_FIRMWARE_BYTES) {
+            Ok(upload) => self.upload = Some(upload),
+            Err(error) => self.fail("opening an image", error),
         }
     }
 
@@ -322,7 +371,7 @@ impl FlashTab {
 
     /// Returns the AFIK version the image to write carries, if it can be read.
     fn image_version(&mut self) -> Option<String> {
-        let image = self.image().filter(|image| image.is_file())?;
+        let image = self.image().filter(|image| files::is_file(image))?;
         self.digests.version(&image)
     }
 
@@ -360,7 +409,7 @@ impl FlashTab {
     pub fn can_flash(&self) -> bool {
         !self.busy()
             && (self.ready_to_flash() || self.forcing().is_some())
-            && self.image().is_some_and(|image| image.is_file())
+            && self.image().is_some_and(|image| files::is_file(&image))
     }
 
     /// Takes an EEPROM backup now, or as soon as the port is free.
@@ -598,20 +647,34 @@ impl FlashTab {
                         }
                     }
                 });
-            if ui.button("Rescan").clicked() {
-                self.scan(Instant::now());
-            }
-            let mut text = self.device.display().to_string();
-            if ui
-                .add(
-                    TextEdit::singleline(&mut text)
-                        .hint_text("/dev/ttyUSB0")
-                        .desired_width(300.0),
-                )
-                .on_hover_text("Type a path to use a port detection did not offer")
-                .changed()
+            #[cfg(not(target_arch = "wasm32"))]
             {
-                choice = Some(PathBuf::from(text.trim()));
+                if ui.button("Rescan").clicked() {
+                    self.scan(Instant::now());
+                }
+                let mut text = self.device.display().to_string();
+                if ui
+                    .add(
+                        TextEdit::singleline(&mut text)
+                            .hint_text("/dev/ttyUSB0")
+                            .desired_width(300.0),
+                    )
+                    .on_hover_text("Type a path to use a port detection did not offer")
+                    .changed()
+                {
+                    choice = Some(PathBuf::from(text.trim()));
+                }
+            }
+            #[cfg(target_arch = "wasm32")]
+            if ui
+                .button("Choose port…")
+                .on_hover_text(
+                    "The browser lists its serial ports; a port chosen once is offered \
+                     here again",
+                )
+                .clicked()
+            {
+                crate::web_serial::choose();
             }
             if let Some(device) = choice {
                 self.select_device(device, true);
@@ -666,12 +729,7 @@ impl FlashTab {
     /// Returns the colour and sentence describing the selected radio.
     fn radio_line(&self, image_version: Option<&str>) -> (Color32, String) {
         if self.device.as_os_str().is_empty() {
-            return (
-                WARNING_COLOUR,
-                "No USB serial device found. Plug in the programming cable (scanning every \
-                 few seconds), or type the port's path."
-                    .to_owned(),
-            );
+            return (WARNING_COLOUR, NO_DEVICE.to_owned());
         }
         let checking = self.identify.is_some();
         match self.finding() {
@@ -735,7 +793,19 @@ impl FlashTab {
                 ui.label("Once the radio is identified, this checks for a kept backup.");
             }
             BackupState::OnFile(path) => {
-                ui.colored_label(READY_COLOUR, format!("Backup kept: {}", path.display()));
+                ui.horizontal_wrapped(|ui| {
+                    ui.colored_label(READY_COLOUR, format!("Backup kept: {}", path.display()));
+                    #[cfg(target_arch = "wasm32")]
+                    if ui.button("Download").clicked() {
+                        let name = path.file_name().unwrap_or_default().to_string_lossy();
+                        let saved = files::read(&path)
+                            .map_err(|error| error.to_string())
+                            .and_then(|bytes| files::download(&name, &bytes));
+                        if let Err(error) = saved {
+                            self.fail("downloading the backup", error);
+                        }
+                    }
+                });
                 digest_label(ui, &mut self.digests, &path);
                 if can_back_up && ui.button("Take another backup").clicked() {
                     self.request_backup();
@@ -817,6 +887,13 @@ impl FlashTab {
                 let text = text.trim();
                 self.image_override = (!text.is_empty()).then(|| PathBuf::from(text));
             }
+            #[cfg(target_arch = "wasm32")]
+            if ui
+                .add_enabled(self.upload.is_none(), egui::Button::new("Open image…"))
+                .clicked()
+            {
+                self.open_image();
+            }
             if self.image_override.is_some() {
                 if family.is_some() && ui.button("Use packaged image").clicked() {
                     self.image_override = None;
@@ -826,15 +903,18 @@ impl FlashTab {
             }
         });
         if let Some(image) = image {
-            if image.is_file() {
+            if files::is_file(&image) {
                 digest_label(ui, &mut self.digests, &image);
                 self.versions(ui, &image);
             } else {
                 let hint = match (family, self.image_override.is_some()) {
+                    #[cfg(not(target_arch = "wasm32"))]
                     (Some(family), false) => format!(
                         "Not built yet. Run {} or choose an image.",
                         family.build_hint()
                     ),
+                    #[cfg(target_arch = "wasm32")]
+                    (Some(family), false) => format!("Open the {} image.", family.label()),
                     _ => "No such file.".to_owned(),
                 };
                 ui.colored_label(WARNING_COLOUR, hint);
