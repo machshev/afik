@@ -1,167 +1,141 @@
 # AFIK
 
-A ground-up modular Rust radio firmware and programming platform, initially
-targeting the DP32G030-based Quansheng UV-K5 family.
+A ground-up Rust firmware and programming platform for the Quansheng UV-K5
+(V1, DP32G030) and UV-K1 handhelds. It is not a port of the stock firmware or
+its forks: the radio crates are hardware-independent, embedded code is
+`no_std` and heap-free, and every transmit goes through one policy crate.
 
-The first eleven architecture work packages are complete. They provide
-hardware-independent domain types, channel plans, safe TX policy, protocol
-framing, transactional storage, canonical logical images, a library-first
-programmer, deterministic host simulation, the complete protocol command/error
-matrix, and an evidence-backed minimal DP32G030 Rust image with a Renode
-reset-path proof. They also provide an allocation-free boot-only TX-permission
-UI, an evidence-bounded post-initialization BK4819 command driver, explicit-input
-channel activation/scanning, and complete CLI and local-GUI programmer front
-ends. Frequency Copy research defines a receive-only candidate and
-experiment-gated design while deferring unverified BK4819 scan commands. The
-UV-K1 target runs a complete application on hardware. The UV-K5 V1/DP32G030
-target now has manual-sourced clock, gating, pin and UART drivers and an
-application which answers the read-only hello over the programming connector, so
-a write to a V1 radio can be observed rather than only acknowledged. On that
-target the display, keypad, timer, configuration memory, board RF and every
-on-air path remain unimplemented.
+**Try it:** [AFIK Studio in the browser](https://machshev.github.io/afik/)
+programs a radio over Web Serial in Chrome, Edge or a recent Firefox. Desktop
+builds for Linux, macOS and Windows are on the
+[releases page](https://github.com/machshev/afik/releases).
 
-## Releases
+## What works
 
-Each `vX.Y.Z` tag publishes the K5 and K1 images and the host tools
-(`afik-studio`, `afik-flasher`, `afik-programmer`) for
-Linux x86_64/aarch64, macOS Apple Silicon/Intel and Windows x86_64 on the
-GitHub release page, with `SHA256SUMS`. The macOS and Windows binaries are
-unsigned. Serial ports are named as the system names them: `/dev/ttyUSB0`,
-`/dev/cu.usbserial-110` or `COM3`.
+Both radios run the AFIK application, built from one shared application crate.
 
-With Nix, `nix run github:machshev/afik` starts the studio from the pinned
-release, and `nix shell github:machshev/afik` puts all four tools on the path;
-the images are in `share/afik/firmware`. After publishing a release, pin it
-with `tool/update-release-nix.sh` and commit `nix/release.json`.
+- **Receive:** FM, AM and USB through the BK4819 (BK4829 on the K1), with
+  CTCSS/DCS, squelch, an S meter, and FM broadcast through the BK1080.
+- **Memory:** up to 254 banks, addressed by bank and position, and bank
+  groups that set what the radio scans. A generated bank stores a whole
+  channel plan in one small object, which the radio expands as it is used.
+- **Operation:** memory and VFO tuning, dual watch with two slots on screen,
+  duplex channels heard on both sides, and fast memory scan.
+- **Transmit:** only inside the TX ranges the project programs (frequency
+  span, power ceiling, bandwidth, raster), in channel and VFO mode alike; a
+  radio with none programmed does not transmit. On the K5 the hardware
+  envelope is 400–470 MHz at up to 500 mW, and 2 m stays refused until its
+  bias is calibrated. K1 transmit is implemented and still being bench
+  checked.
 
-## Programmer CLI
+What has and has not been observed on each radio is recorded per task in
+`TASKS.md`, with the hardware facts and their confidence in
+`docs/hardware-evidence.md`.
 
-The CLI exposes the complete currently supported programmer surface over a
-fresh deterministic simulator or an explicit serial path and baud:
+## AFIK Studio
+
+Studio is the editor for projects: channels, banks and groups, the radio
+configuration, TX ranges, and starting slots and VFOs. It adds banks from
+default sets and from generators near a Maidenhead locator (repeaters,
+beacons, gateways, airports, marine channels, satellites), shows them on a
+map, writes the compiled image to the radio and reads it back, and tests the
+serial link. Its Flash tab detects the radio and writes AFIK firmware.
+
+The project is compiled and validated before it is written; the radio takes
+it as memory blocks over the stock programming protocol and validates it
+again before using it (`ADR-100`).
 
 ```sh
-nix develop
-cargo run --package radio-programmer-cli --bin afik-programmer -- --help
-cargo run --package radio-programmer-cli --bin afik-programmer -- --sim info
-cargo run --package radio-programmer-cli --bin afik-programmer -- \
-  --sim write --bank '1:PMR446:446006250:12500:16'
+afik-studio            # desktop
+afik-studio --sim      # with a simulated radio
+afik-studio --help
 ```
 
-`compile`, `write`, `backup`, and `restore` use negotiated capabilities,
-canonical images, validated transactions, and read-back verification from the
-programmer library. Serial use requires both `--device PATH` and `--baud BAUD`;
-no physical device/baud default or interoperability claim exists yet.
+The browser Studio is the same crate built for WebAssembly (`ADR-119`). It
+keeps projects in the page's storage. Firmware flashing and the station,
+satellite and map downloads are desktop-only for now. See
+`docs/programmer-gui.md`.
 
-## Native editor and flashing front end
+## Releases and installation
 
-`afik-studio` is a native cross-platform desktop editor for channels, banks,
-the global radio configuration, and guarded firmware and EEPROM operations:
+Each `vX.Y.Z` tag publishes the K5 and K1 firmware images and the host tools
+(`afik-studio`, `afik-flasher`, `afik-programmer`) for Linux x86_64/aarch64,
+macOS Apple Silicon/Intel and Windows x86_64, with `SHA256SUMS`. The macOS
+and Windows binaries are unsigned. Serial ports are named as the system
+names them: `/dev/ttyUSB0`, `/dev/cu.usbserial-110` or `COM3`.
+
+With Nix, `nix run github:machshev/afik` starts Studio from the pinned
+release, and `nix shell github:machshev/afik` puts the tools on the path,
+with the firmware images in `share/afik/firmware`.
+
+## Flashing firmware
+
+`afik-flasher` (and Studio's Flash tab) writes AFIK to either radio from its
+stock bootloader. It reads the bootloader beacon to tell the K5 V1 `2.*` and
+K1 `7.03.*` protocols apart and refuses an image built for the other radio:
 
 ```sh
-cargo run --package radio-programmer-gui --bin afik-studio -- --help
-cargo run --package radio-programmer-gui --bin afik-studio -- --sim
+afik-flasher identify
+afik-flasher flash-afik [IMAGE]
+afik-flasher link-test
 ```
 
-Operator input is validated before it can reach a canonical image, a device
-transaction, or a radio. Configuration writes use the programmer library's
-transactional write with read-back verification, and firmware writes reuse the
-recovery-gated flasher workflows with every confirmation gate intact. The
-editor is a local tool: it opens no network socket and holds no
-authentication. See `docs/programmer-gui.md`.
+Without IMAGE it uses the packaged image for the radio that answered. Only
+the application region is written; the bootloader and EEPROM are left alone,
+so an image that does not boot is recovered by flashing another. The K5's
+recovery-gated paths (`flash-afik --recovery`, `restore-eeprom`) need a
+complete EEPROM backup, a known-good raw image and exact confirmations. A
+bootloader beacon proves only the protocol family, not the board. Read
+`docs/k5-flashing.md` before connecting a K5; V2/V3 radios and bootloader v5
+are not supported.
 
-## Studio in the browser
+## Other tools
 
-The same Studio builds for the browser and reaches the radio over Web
-Serial (Chrome, Edge, recent Firefox). The `pages` workflow publishes it to
-GitHub Pages from `main`; to build and serve it locally from the devshell:
+`afik-programmer` is the command-line programmer for AFIK's own framed
+protocol, usable against the deterministic simulator:
 
 ```sh
-cd crates/radio-programmer-gui && trunk serve --release
+afik-programmer --sim info
+afik-programmer --sim write --bank '1:PMR446:446006250:12500:16'
 ```
 
-Projects and settings are kept in the page's storage. Firmware flashing and
-the station, satellite and map downloads are desktop-only for now.
+See `docs/programmer-cli.md` and `docs/simulator.md`.
 
-## Channels, banks, and the receive path
+## Development
 
-Configuration storage holds explicit channel records, named banks, generated
-plans, and one global radio configuration. Bank membership is a mask on the
-channel, so a channel can belong to several of the sixteen addressable banks;
-see `docs/storage-format.md`.
-
-A generated plan is the channelised space-saving model: one 46-byte object holds
-a bank of any size, carrying the arithmetic and the per-channel template every
-channel of the bank shares, against 42 bytes for each explicit channel record.
-A radio expands it into complete channel records on demand, so selection, bank
-filtering, and scanning treat an expanded channel exactly like a stored one, and
-the editor shows the channels a plan becomes before it is written. See
-`docs/channel-plans.md`.
-
-The receive path programs the BK4819 for FM, AM, and USB with filter
-bandwidth, AGC, calibration-supplied squelch thresholds, CTCSS and CDCSS
-decoding, RF filter path selection, and audio routing, and meters RSSI, glitch,
-noise, carrier squelch, and tone status. Above it, a bounded controller
-provides banked memory and VFO tuning, monitor, tone-aware audio gating,
-scanning with skip and three resume modes, and dual watch. See
-`docs/bk4819.md` and `docs/receive-control.md`. Register values and the K1
-three-wire pinout come from the pinned reference firmware recorded in
-`docs/hardware-evidence.md`; no AFIK receive register has yet been written on
-hardware.
-
-## Flashing the K5 and K1
-
-`afik-flasher` is separate from the AFIK runtime configuration programmer and
-is the one flasher for both radios. It auto-selects one USB serial candidate
-(or asks, on a terminal, when there are several) and reads the bootloader
-beacon to decide between the K5 V1 `2.*` and K1 `7.03.*` protocols:
+Everything builds in the pinned Nix development shell (`nix develop`, or
+`direnv allow` once). Host checks:
 
 ```sh
-cargo run --package radio-flasher-cli --bin afik-flasher -- --help
-cargo run --package radio-flasher-cli --bin afik-flasher -- identify
-cargo run --package radio-flasher-cli --bin afik-flasher -- flash-afik [IMAGE]
-```
-
-`flash-afik` writes to whichever radio answers and refuses an image built for
-the other one. Without IMAGE it uses that radio's packaged image under
-`target/thumbv6m-none-eabi/release/`. A beacon proves only the protocol family, not the physical board
-or MCU. K5-specific commands (`inspect`, `control`, `restore-eeprom`, and the
-recovery-gated `flash-afik --recovery`) live in the same tool.
-
-Recovery flashing and EEPROM restore require a complete read-only EEPROM
-backup, a vector-valid known-good raw recovery image, and exact destructive
-confirmations. Application flashing never writes EEPROM or the preserved
-stock bootloader and supports no V2/V3 radio or bootloader v5. See
-`docs/k5-flashing.md` before connecting hardware. No physical flash or target
-boot has yet been validated.
-
-## Host checks
-
-```sh
-nix develop
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-## Target images
+Firmware images:
 
 ```sh
-nix develop
 tool/build-k5.sh --release
 tool/build-k1.sh --release
 tool/test-k1-image.sh
 ```
 
-A release build also verifies the ELF and packages the raw image
-(`afik-k5-v1.raw`, `radio-firmware-k1.raw`) beside it, which is what
-`afik-flasher flash-afik` picks up by default.
+A release build verifies the ELF and packages the raw image
+(`afik-k5-v1.raw`, `radio-firmware-k1.raw`) beside it, which
+`afik-flasher flash-afik` picks up by default. The K5 image is exactly the
+60 KiB V1 application region.
 
-The target builds use the locked Nix compiler and standard-library sources.
-The K5 package is exactly the 60 KiB V1 application region.
+The browser Studio:
 
-With direnv installed, run `direnv allow` once and the same development shell
-loads automatically on entry. `flake.lock` pins the Nix package set; the CI
-toolchain also checks the declared Rust 1.86 minimum.
+```sh
+cd crates/radio-programmer-gui && trunk serve --release
+```
 
-See `STATUS.md` for the current work package and verified commands,
-`TASKS.md` for bounded work, and `docs/architecture.md` for crate boundaries.
+The `pages` workflow publishes it from `main`, and the `release` workflow
+builds the release packages from a `v*` tag. After a release, pin it for Nix
+with `tool/update-release-nix.sh` and commit `nix/release.json`. Firmware and
+tool versions come from the workspace `version` in `Cargo.toml`.
+
+`STATUS.md` holds the current work and the verified commands, `TASKS.md` the
+tasks, `DECISIONS.md` the decisions, `RISKS.md` the open risks, and
+`docs/architecture.md` the crate boundaries.
