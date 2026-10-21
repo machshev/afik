@@ -6,6 +6,9 @@
 //! policy is kept: the studio names itself, uses at most two connections,
 //! and reads a cached tile before fetching it, refetching only one older
 //! than [`STALE_AFTER`].
+//!
+//! In the browser (`ADR-119`) the page fetches them, two at a time, and the
+//! browser's own HTTP cache keeps them: the page's storage is too small.
 
 use std::{
     collections::HashMap,
@@ -27,7 +30,6 @@ pub const MIN_ZOOM: u8 = 3;
 /// The furthest north or south the Web Mercator projection reaches.
 pub const MAX_LATITUDE: f64 = 85.051_128;
 /// Where tiles are fetched from.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 const TILE_URL: &str = "https://tile.openstreetmap.org";
 /// What the map must show under it.
 pub const ATTRIBUTION: &str = "\u{a9} OpenStreetMap contributors";
@@ -39,7 +41,6 @@ const STALE_AFTER: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 const TIMEOUT: Duration = Duration::from_secs(20);
 /// No tile is bigger; a larger response is not a tile.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 const MAX_TILE_BYTES: u64 = 1 << 20;
 /// Tiles kept as textures; the least recently drawn go first.
 const MAX_SLOTS: usize = 600;
@@ -80,10 +81,15 @@ pub fn lat_lon(x: f64, y: f64, zoom: u8) -> (f64, f64) {
 /// Fetches a tile's PNG bytes.
 pub type Fetch = Arc<dyn Fn(TileId) -> Result<Vec<u8>, String> + Send + Sync>;
 
+/// Where one tile is fetched from.
+fn tile_url(id: TileId) -> String {
+    format!("{TILE_URL}/{}/{}/{}.png", id.zoom, id.x, id.y)
+}
+
 /// Fetches one tile from OpenStreetMap.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn fetch_tile(id: TileId) -> Result<Vec<u8>, String> {
-    let url = format!("{TILE_URL}/{}/{}/{}.png", id.zoom, id.x, id.y);
+    let url = tile_url(id);
     log::debug!("fetching {url}");
     crate::net::get(
         &url,
@@ -110,6 +116,7 @@ fn decode(bytes: &[u8]) -> Result<egui::ColorImage, String> {
 }
 
 /// Reads a tile from the cache, else fetches and caches it.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn load(
     id: TileId,
     dir: Option<&PathBuf>,
@@ -171,6 +178,40 @@ pub struct Tiles {
     frame: u64,
     requests: Option<mpsc::Sender<TileId>>,
     done: mpsc::Receiver<(TileId, Result<egui::ColorImage, String>)>,
+    /// The page's fetches, which stand in for the worker threads.
+    #[cfg(target_arch = "wasm32")]
+    page: Option<PageFetches>,
+}
+
+/// Tiles the page fetches itself, at most [`WORKERS`] at once.
+#[cfg(target_arch = "wasm32")]
+struct PageFetches {
+    queue: mpsc::Receiver<TileId>,
+    finished: mpsc::Sender<(TileId, Result<egui::ColorImage, String>)>,
+    in_flight: usize,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl PageFetches {
+    /// Starts queued fetches while fewer than [`WORKERS`] run.
+    fn start(&mut self) {
+        while self.in_flight < WORKERS {
+            let Ok(id) = self.queue.try_recv() else {
+                return;
+            };
+            self.in_flight += 1;
+            let finished = self.finished.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let image = crate::net::fetch(
+                    &tile_url(id),
+                    usize::try_from(MAX_TILE_BYTES).unwrap_or(usize::MAX),
+                )
+                .await
+                .and_then(|bytes| decode(&bytes));
+                let _ignored = finished.send((id, image));
+            });
+        }
+    }
 }
 
 impl Tiles {
@@ -182,10 +223,23 @@ impl Tiles {
         Self::with(dir.as_deref(), Some(&fetch))
     }
 
-    /// No tiles in the browser yet: the tile workers would block the page.
+    /// Tiles from OpenStreetMap, fetched by the page and kept by the
+    /// browser's HTTP cache.
     #[cfg(target_arch = "wasm32")]
     pub fn open() -> Self {
-        Self::none()
+        let (requests, queue) = mpsc::channel();
+        let (finished, done) = mpsc::channel();
+        Self {
+            slots: HashMap::new(),
+            frame: 0,
+            requests: Some(requests),
+            done,
+            page: Some(PageFetches {
+                queue,
+                finished,
+                in_flight: 0,
+            }),
+        }
     }
 
     /// No tiles at all, for tests: every tile is blank, and nothing is read
@@ -197,6 +251,8 @@ impl Tiles {
             frame: 0,
             requests: None,
             done,
+            #[cfg(target_arch = "wasm32")]
+            page: None,
         }
     }
 
@@ -234,6 +290,8 @@ impl Tiles {
             frame: 0,
             requests: Some(requests),
             done,
+            #[cfg(target_arch = "wasm32")]
+            page: None,
         }
     }
 
@@ -242,6 +300,10 @@ impl Tiles {
     pub fn poll(&mut self, context: &egui::Context) -> bool {
         self.frame += 1;
         while let Ok((id, image)) = self.done.try_recv() {
+            #[cfg(target_arch = "wasm32")]
+            if let Some(page) = &mut self.page {
+                page.in_flight = page.in_flight.saturating_sub(1);
+            }
             let slot = match image {
                 Ok(image) => {
                     let name = format!("tile-{}-{}-{}", id.zoom, id.x, id.y);
@@ -266,6 +328,10 @@ impl Tiles {
             for (_, id) in drawn.iter().take(self.slots.len() - MAX_SLOTS) {
                 self.slots.remove(id);
             }
+        }
+        #[cfg(target_arch = "wasm32")]
+        if let Some(page) = &mut self.page {
+            page.start();
         }
         self.slots
             .values()
@@ -292,7 +358,7 @@ impl Tiles {
 
 #[cfg(test)]
 mod tests {
-    use super::{lat_lon, world_point, Fetch, TileId, Tiles, TILE_SIZE};
+    use super::{lat_lon, tile_url, world_point, Fetch, TileId, Tiles, TILE_SIZE};
     use eframe::egui;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
@@ -322,6 +388,19 @@ mod tests {
         let (latitude, longitude) = lat_lon(x, y, 10);
         assert!((latitude - 51.5).abs() < 1e-9 && (longitude + 0.12).abs() < 1e-9);
         assert_eq!(world_point(0.0, -180.0, 0), (0.0, TILE_SIZE / 2.0));
+    }
+
+    #[test]
+    fn desktop_and_browser_fetch_a_tile_from_one_place() {
+        let id = TileId {
+            zoom: 10,
+            x: 511,
+            y: 340,
+        };
+        assert_eq!(
+            tile_url(id),
+            "https://tile.openstreetmap.org/10/511/340.png"
+        );
     }
 
     #[test]

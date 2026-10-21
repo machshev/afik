@@ -360,6 +360,14 @@ project, and adds it under a free name (`Club`, `Club 2`). Gate: `cargo fmt
 --all --check` clean, `cargo clippy --workspace --all-targets -- -D
 warnings` clean, `cargo test --workspace` 993 passed 0 failed, wasm32
 clippy of Studio `-D warnings` clean.
+Step 8 (operator request): the browser Map tab draws OpenStreetMap tiles.
+The page fetches them itself, two at a time as the tile policy asks
+(OpenStreetMap allows any origin), and the browser's HTTP cache keeps them.
+Driven headless: the map drew Britain and the North Sea from live tiles;
+the Projects tab shows Import… and Export. Gate: `cargo fmt --all --check`
+clean, `cargo clippy --workspace --all-targets -- -D warnings` clean,
+`cargo test --workspace` 994 passed 0 failed, wasm32 clippy of Studio `-D
+warnings` clean, `trunk build --release` passes.
 
 **`REL-079` is active alongside** (2026-10-19, operator request,
 `ADR-118`): a `v*` tag builds and publishes release packages for Linux,
