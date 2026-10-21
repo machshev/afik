@@ -137,6 +137,10 @@ pub struct FlashTab {
     /// An image being chosen in the browser's file picker.
     #[cfg(target_arch = "wasm32")]
     upload: Option<files::Upload>,
+    /// A family's packaged image being fetched from beside the page, and
+    /// the families already asked for, once each page load.
+    #[cfg(target_arch = "wasm32")]
+    packaged: (Option<files::Upload>, HashSet<RadioFamily>),
     finding: Option<(PathBuf, Finding)>,
     /// The firmware version a device last answered with, kept while the radio
     /// sits in flashing mode, where only the bootloader answers.
@@ -168,6 +172,8 @@ impl Default for FlashTab {
             devices_generation: 0,
             #[cfg(target_arch = "wasm32")]
             upload: None,
+            #[cfg(target_arch = "wasm32")]
+            packaged: (None, HashSet::new()),
             finding: None,
             last_firmware: None,
             identify: None,
@@ -212,7 +218,10 @@ impl FlashTab {
         self.poll_job();
         self.poll_identify();
         #[cfg(target_arch = "wasm32")]
-        self.poll_upload();
+        {
+            self.poll_upload();
+            self.fetch_packaged();
+        }
         if self.busy() {
             return;
         }
@@ -263,11 +272,42 @@ impl FlashTab {
         }
     }
 
+    /// Fetches the family's packaged image, published beside the page, once
+    /// a page load, so the newest published image replaces a kept one.
+    #[cfg(target_arch = "wasm32")]
+    fn fetch_packaged(&mut self) {
+        let family = self.family();
+        let (fetching, asked) = &mut self.packaged;
+        if let Some(outcome) = fetching.as_ref().and_then(files::Upload::poll) {
+            *fetching = None;
+            match outcome {
+                Ok(path) => log::info!("fetched the packaged image {}", path.display()),
+                Err(error) => log::warn!("no packaged image beside the page: {error}"),
+            }
+        }
+        let Some(family) = family else {
+            return;
+        };
+        if fetching.is_some() || !asked.insert(family) {
+            return;
+        }
+        let name = family.image_name();
+        *fetching = Some(files::fetch(
+            format!("images/{name}"),
+            paths::packaged_image(name),
+            flash::MAX_FIRMWARE_BYTES,
+        ));
+    }
+
     /// Shows the browser's file picker for the image to write.
     #[cfg(target_arch = "wasm32")]
     fn open_image(&mut self) {
-        let dir = paths::data_dir().unwrap_or_default().join("images");
-        match files::upload(dir, ".bin", flash::MAX_FIRMWARE_BYTES) {
+        // Apart from the packaged images, so neither replaces the other.
+        let dir = paths::data_dir()
+            .unwrap_or_default()
+            .join("images")
+            .join("opened");
+        match files::upload(dir, ".raw,.bin", flash::MAX_FIRMWARE_BYTES) {
             Ok(upload) => self.upload = Some(upload),
             Err(error) => self.fail("opening an image", error),
         }
@@ -914,7 +954,14 @@ impl FlashTab {
                         family.build_hint()
                     ),
                     #[cfg(target_arch = "wasm32")]
-                    (Some(family), false) => format!("Open the {} image.", family.label()),
+                    (Some(family), false) if self.packaged.0.is_some() => {
+                        format!("Fetching the packaged {} image…", family.label())
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    (Some(family), false) => format!(
+                        "No {} image is published with this page. Open one.",
+                        family.label()
+                    ),
                     _ => "No such file.".to_owned(),
                 };
                 ui.colored_label(WARNING_COLOUR, hint);

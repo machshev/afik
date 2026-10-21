@@ -19,6 +19,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/determinate-nix-action@v3.21.0
+      - name: Fetch crates for the offline K1 build
+        run: nix develop path:. -c cargo fetch --locked
+      # The Flash tab offers these as each family's packaged image.
+      - name: Build the K5 and K1 images
+        run: |
+          nix develop path:. -c tool/build-k5.sh --release
+          nix develop path:. -c tool/build-k1.sh --release
       - name: Build the browser Studio
         # trunk, wasm-bindgen-cli and binaryen come from the devshell, so the
         # wasm-bindgen CLI matches Cargo.lock.
@@ -28,6 +35,11 @@ jobs:
           trunk build --release --offline=true --locked=true
           --dist "${{ github.workspace }}/dist"
           --public-url "/${{ github.event.repository.name }}/"
+      - name: Publish the images beside the Studio
+        run: |
+          mkdir dist/images
+          cp target/thumbv6m-none-eabi/release/afik-k5-v1.raw \
+            target/thumbv6m-none-eabi/release/radio-firmware-k1.raw dist/images/
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist

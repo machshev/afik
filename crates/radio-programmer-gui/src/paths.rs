@@ -145,13 +145,17 @@ fn file_name(path: &Path) -> Option<&std::ffi::OsStr> {
 ///
 /// The workspace build output comes first, because that is where
 /// `tool/build-*.sh --release` leaves a fresh image; `$XDG_DATA_HOME/afik/images`
-/// holds images kept outside a checkout.
+/// holds images kept outside a checkout. The browser has no checkout: its
+/// packaged images are fetched from beside the page into the data directory.
 pub fn packaged_image_candidates(name: &str) -> Vec<PathBuf> {
-    let mut candidates = vec![normalise(
-        &Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../target/thumbv6m-none-eabi/release")
-            .join(name),
-    )];
+    let mut candidates = Vec::new();
+    if !cfg!(target_arch = "wasm32") {
+        candidates.push(normalise(
+            &Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/thumbv6m-none-eabi/release")
+                .join(name),
+        ));
+    }
     if let Some(data) = data_dir() {
         candidates.push(data.join("images").join(name));
     }

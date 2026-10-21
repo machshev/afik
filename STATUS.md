@@ -339,8 +339,17 @@ headless: the Flash tab draws with both buttons, no console errors. Gate:
 `cargo fmt --all --check` clean, `cargo clippy --workspace --all-targets --
 -D warnings` clean, `cargo test --workspace` 991 passed 0 failed, wasm32
 clippy of Studio `-D warnings` clean, `trunk build --release` passes. Not
-yet tried against a radio. Next: ship the release images with the Pages
-build as the packaged default.
+yet tried against a radio.
+Step 6: the Pages build ships the K5 and K1 release images in `images/`, and
+the browser Flash tab fetches the family's image from there into the page's
+storage once a page load, as its packaged default; "Open image…" files go
+apart under `images/opened`. Driven headless with a K5 image beside the
+page: choosing K5 fetched it and showed 61440 bytes, CRC-32 `f395b8e7`,
+AFIK-K5-7.0.65. Gate: `cargo fmt --all --check` clean, `cargo clippy
+--workspace --all-targets -- -D warnings` clean, `cargo test --workspace`
+991 passed 0 failed, wasm32 clippy of Studio `-D warnings` clean, `trunk
+build --release` passes, `actionlint` clean. Next: from Chrome and Firefox,
+choose the port, back up and flash a K5 (`RISK-050`).
 
 **`REL-079` is active alongside** (2026-10-19, operator request,
 `ADR-118`): a `v*` tag builds and publishes release packages for Linux,

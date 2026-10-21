@@ -5,8 +5,9 @@
 //! file system, so there each file is one entry in the page's
 //! `localStorage`, keyed by its path and held as hex; directories are
 //! implied by the keys. The calls mirror the `std::fs` ones Studio uses.
-//! The browser takes files in through its file picker ([`upload`]) and gives
-//! them out as downloads ([`download`]).
+//! The browser takes files in through its file picker ([`upload`]) or from
+//! beside the page ([`fetch`]), and gives them out as downloads
+//! ([`download`]).
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
@@ -57,8 +58,8 @@ pub fn list(dir: &Path) -> Vec<PathBuf> {
 
 #[cfg(target_arch = "wasm32")]
 pub use web::{
-    create_dir_all, download, exists, is_file, list, read, read_to_string, remove_file, rename,
-    stamp, upload, write, Upload,
+    create_dir_all, download, exists, fetch, is_file, list, read, read_to_string, remove_file,
+    rename, stamp, upload, write, Upload,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -184,7 +185,7 @@ mod web {
             .map_err(|error| refused(&error))
     }
 
-    /// A file being chosen in the browser's file picker.
+    /// A file on its way into the page's storage.
     pub struct Upload {
         outcome: Rc<RefCell<Option<Result<PathBuf, String>>>>,
     }
@@ -253,6 +254,21 @@ mod web {
         write(&path, Uint8Array::new(&buffer).to_vec()).map_err(|error| error.to_string())?;
         log::info!("stored {} from the browser", path.display());
         Ok(path)
+    }
+
+    /// Fetches `url`, relative to the page, into `path`. A response over
+    /// `maximum` bytes is refused.
+    pub fn fetch(url: String, path: PathBuf, maximum: usize) -> Upload {
+        let outcome = Rc::new(RefCell::new(None));
+        let slot = Rc::clone(&outcome);
+        wasm_bindgen_futures::spawn_local(async move {
+            let stored = crate::net::fetch(&url, maximum)
+                .await
+                .and_then(|bytes| write(&path, bytes).map_err(|error| error.to_string()))
+                .map(|()| path);
+            slot.replace(Some(stored));
+        });
+        Upload { outcome }
     }
 
     /// Gives `bytes` to the operator as a download named `name`.

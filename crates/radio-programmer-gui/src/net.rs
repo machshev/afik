@@ -35,6 +35,33 @@ pub(crate) fn get(
     Ok(body)
 }
 
+/// Fetches `url`, relative to the page, from the page's own server or one
+/// that allows its origin. A body over `maximum` bytes is refused.
+#[cfg(target_arch = "wasm32")]
+pub(crate) async fn fetch(url: &str, maximum: usize) -> Result<Vec<u8>, String> {
+    use js_sys::Uint8Array;
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_futures::JsFuture;
+
+    let failed = |error: wasm_bindgen::JsValue| format!("{url}: {error:?}");
+    let window = web_sys::window().ok_or("no browser window")?;
+    let response = JsFuture::from(window.fetch_with_str(url))
+        .await
+        .map_err(failed)?
+        .unchecked_into::<web_sys::Response>();
+    if !response.ok() {
+        return Err(format!("{url}: HTTP {}", response.status()));
+    }
+    let body = JsFuture::from(response.array_buffer().map_err(failed)?)
+        .await
+        .map_err(failed)?;
+    let bytes = Uint8Array::new(&body).to_vec();
+    if bytes.len() > maximum {
+        return Err(format!("{url}: more than {maximum} bytes"));
+    }
+    Ok(bytes)
+}
+
 /// Fetches `url`: not yet in the browser, where a fetch is asynchronous and
 /// each list's server must allow the page's origin.
 #[cfg(target_arch = "wasm32")]

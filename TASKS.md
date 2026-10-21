@@ -3440,6 +3440,6 @@
   the browser to a K5 and a K1 (`RISK-050`). Flash firmware from it: the
   Flash tab over granted Web Serial ports, the image from the file picker,
   backups kept and downloaded. Done, not yet tried on a radio. Ship the
-  release images with the Pages build as the packaged default.
+  release images with the Pages build as the packaged default. Done.
   Fetch the station, satellite and map lists in the browser.
 
