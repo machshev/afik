@@ -1302,6 +1302,18 @@ power-on timed out, the next five answered. The K5 took the same image
 `AFIK-K5-7.0.68`. The overnight scan stall was on the K1, whose memory is SPI NOR; how its
 channel reads could fail is not established.
 
+**Start place bank filter** (2026-10-22, operator report: a start place of
+HOME / PMR446 came up on all of HOME). The radio checked the place's bank
+filter against the group's banks before reading them for the new group, so
+it dropped the filter after every write and at power-on; it now checks the
+populated banks and `set_group_banks` narrows to the group. The studio's
+start place gains a Lists choice (this bank, or all of the group) beside the
+channel, written as a place with no filter. Version `7.0.69`. Gate: `cargo
+fmt --all --check` clean, workspace clippy `-D warnings` clean, `cargo test
+--workspace` 1013 passed 0 failed, `tool/build-k5.sh --release` and
+`tool/build-k1.sh --release` pass. Not flashed. Next: flash the K5, write
+M8LWA, and check A opens on PMR446 alone and stays there after a power cycle.
+
 ## Previous work package: TXK5-059
 
 **`TXK5-059` step 2 is done** (2026-10-15, operator request): per-channel
