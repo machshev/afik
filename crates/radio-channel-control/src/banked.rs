@@ -1003,19 +1003,27 @@ impl<C: ChannelSource> BankedReceiveController<C> {
         })
     }
 
+    /// Moves a scan to the next eligible channel.
+    ///
+    /// A record the source cannot read now — one failed memory read — does
+    /// not end the scan: it dwells again where it is and tries once more when
+    /// that dwell expires. Failing here instead left a scan with no timer
+    /// armed, showing that it scanned while it sat on one channel for good.
     fn advance_scan(&mut self) -> Result<ReceiveUpdate, ReceiveError> {
-        let index = self.neighbour(self.index, true, true)?;
-        let channel = self
-            .source
-            .get(index)
-            .ok_or(ReceiveError::IndexOutOfRange)?;
-        self.index = index;
-        self.channel = channel;
+        let next = self
+            .neighbour(self.index, true, true)
+            .ok()
+            .and_then(|index| Some((index, self.source.get(index)?)));
         self.state = ReceiveState::Scanning(ScanPhase::Dwell);
         self.audio_open = self.monitor;
         let timer = self.fresh_timer(self.config.scan_dwell_ms)?;
+        let activation = next.map(|(index, channel)| {
+            self.index = index;
+            self.channel = channel;
+            self.activation()
+        });
         Ok(ReceiveUpdate {
-            activation: Some(self.activation()),
+            activation,
             audio_open: self.audio_open,
             timer,
         })
@@ -1865,6 +1873,66 @@ mod tests {
         fn member_at(&self, index: u16, bank: BankId) -> bool {
             usize::from(index) < self.channels.len() && index % 2 == bank.get()
         }
+    }
+
+    /// Channel memory whose reads fail while `failing` is set.
+    struct FlakySource {
+        memory: ChannelMemory<8>,
+        failing: Cell<bool>,
+    }
+
+    impl ChannelSource for FlakySource {
+        fn len(&self) -> u16 {
+            self.memory.len()
+        }
+
+        fn get(&self, index: u16) -> Option<ChannelRecord> {
+            if self.failing.get() {
+                None
+            } else {
+                self.memory.get(index)
+            }
+        }
+    }
+
+    #[test]
+    fn a_failed_channel_read_keeps_the_scan_running() {
+        let source = FlakySource {
+            memory: memory(),
+            failing: Cell::new(false),
+        };
+        let (mut controller, _) = BankedReceiveController::activate(
+            source,
+            RadioConfig::conservative(),
+            Some(View::Bank(BankId::new(1))),
+        )
+        .unwrap();
+        let token = armed(controller.start_scanning().unwrap().timer);
+
+        // The dwell expires while memory cannot be read: the scan stays on
+        // channel 1 and dwells there again rather than losing its timer.
+        controller.source.failing.set(true);
+        let stalled = controller.timer_elapsed(token).unwrap();
+        assert!(stalled.activation.is_none());
+        assert_eq!(controller.state(), ReceiveState::Scanning(ScanPhase::Dwell));
+        assert_eq!(controller.channel().id(), ChannelId::new(1));
+        let token = armed(stalled.timer);
+
+        // A quiet skip during the failure behaves the same way.
+        let token = {
+            let skipped = controller.skip_quiet().unwrap();
+            assert!(skipped.activation.is_none());
+            let fresh = armed(skipped.timer);
+            assert_ne!(fresh, token);
+            fresh
+        };
+
+        // Once memory reads again, the next dwell moves the scan on.
+        controller.source.failing.set(false);
+        let resumed = controller.timer_elapsed(token).unwrap();
+        assert!(resumed.activation.is_some());
+        assert_eq!(controller.channel().id(), ChannelId::new(3));
+        armed(resumed.timer);
     }
 
     #[test]

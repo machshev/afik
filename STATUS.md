@@ -1198,6 +1198,19 @@ with its channels.
   500 mW, TX POWER 125 mW overrides both, CHANNEL restores them, a power
   cycle clears the override, and SQL changes squelch on a non-PMR channel.
 
+**Scan stall fix** (2026-10-21, operator report: a scan left running stopped
+on one channel with nothing heard). The interface clears the scan timer
+before `timer_elapsed`, and a failed channel read (one K5 EEPROM read, no
+retry) made `advance_scan` return an error, so the scan stayed "SCAN" with
+no timer armed until a signal or a key. `advance_scan` now dwells again on
+the current channel when it cannot read the next one and tries again on the
+next dwell. Test `a_failed_channel_read_keeps_the_scan_running`. Version
+`7.0.67`. Gate: `cargo fmt --all --check` clean, workspace clippy
+`-D warnings` clean, `cargo test --workspace` 999 passed 0 failed,
+`tool/build-k5.sh --release` (flash end `0x0000ef70`) and
+`tool/build-k1.sh --release` pass. Not flashed. Next: flash 7.0.67 and
+leave a scan running overnight.
+
 ## Previous work package: TXK5-059
 
 **`TXK5-059` step 2 is done** (2026-10-15, operator request): per-channel
