@@ -3311,6 +3311,13 @@
       bank whose channels are all FM in 156.000–162.025 MHz under MARINE,
       as Group airband does for AIRBAND; the marine generator's banks are
       filed there when added. Done.
+  19. US FM stations (operator request, "start with the FCC"; `ADR-122`):
+      the FM stations row also reads the FCC's FM Query list, licensed US
+      full-power, translator, low-power and booster transmitters, with the
+      service as the kind; no transmitter past 1000 km is offered, so a
+      locator gets its own country's stations. Done; not yet looked at on
+      screen or heard on a radio. Next: hear a US station from a generated
+      bank, and add Canada (ISED) or Australia (ACMA) if wanted.
 
 ## BANKS-073 — Up to 254 banks, addressed by bank and position
 

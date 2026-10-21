@@ -241,7 +241,7 @@ impl Generator {
             Self::Repeaters => "Repeaters",
             Self::Gateways => "UK gateways",
             Self::Beacons => "UK beacons",
-            Self::Stations => "UK FM stations",
+            Self::Stations => "FM stations",
             Self::Airports => "Airports",
             Self::Airfields => "Airfields",
             Self::Marine => "Marine",
@@ -400,10 +400,11 @@ pub struct StudioApp {
     repeater_bands_file: Option<PathBuf>,
     /// How far off a standard and a local repeater are heard.
     repeater_reach: RepeaterReach,
-    /// Where Ofcom's FM transmitter list is cached, and what was last read.
+    /// Where Ofcom's and the FCC's FM transmitter lists are cached, and what
+    /// was last read.
     station_cache: StationCache,
     stations: Option<StationList>,
-    /// An Ofcom fetch running on a worker.
+    /// An Ofcom and FCC fetch running on a worker.
     station_sync: Option<stations::SyncJob>,
     /// How many stations are added, at the repeaters' locator, and the state
     /// file it is remembered in.
@@ -1185,12 +1186,19 @@ impl StudioApp {
         self.station_sync = None;
         match outcome {
             Ok(list) => {
-                self.status = format!("Synced {} FM transmitters from Ofcom.", list.stations.len());
+                self.status = format!(
+                    "Synced {} FM transmitters from Ofcom and the FCC.",
+                    list.stations.len()
+                );
                 log::info!("{}", self.status);
                 self.stations = Some(list);
             }
-            // The cache is untouched, so the previous list still applies.
-            Err(error) => self.fail("syncing stations", format!("Station sync failed: {error}")),
+            // A source that failed kept its cache, and one that synced was
+            // cached, so the caches hold the newest of each.
+            Err(error) => {
+                self.use_station_cache(self.station_cache.clone());
+                self.fail("syncing stations", format!("Station sync failed: {error}"));
+            }
         }
     }
 
@@ -1200,7 +1208,7 @@ impl StudioApp {
         let list = self
             .stations
             .as_ref()
-            .ok_or("sync the FM station list from Ofcom first")?;
+            .ok_or("sync the FM station lists from Ofcom and the FCC first")?;
         let locator = &self.repeater_area.locator;
         // Kinds are left out before ranking, so a station sharing a frequency
         // with one left out can still take it.
@@ -1294,7 +1302,7 @@ impl StudioApp {
             return "Not synced.".to_owned();
         };
         let synced = format!(
-            "{} transmitters from Ofcom, synced {}.",
+            "{} transmitters from Ofcom and the FCC, synced {}.",
             list.stations.len(),
             age(list.synced)
         );
@@ -3316,8 +3324,15 @@ impl StudioApp {
                 self.world_sync.is_none() && wanted(self.world.as_ref().map(|l| l.synced)),
             ),
             (
-                "Ofcom's FM stations",
-                self.station_sync.is_none() && wanted(self.stations.as_ref().map(|l| l.synced)),
+                "Ofcom's and the FCC's FM stations",
+                self.station_sync.is_none()
+                    && wanted(
+                        // A source never synced is due now.
+                        self.stations
+                            .as_ref()
+                            .filter(|l| l.complete)
+                            .map(|l| l.synced),
+                    ),
             ),
             (
                 "OurAirports' airports",
@@ -4386,10 +4401,10 @@ impl StudioApp {
         }
     }
 
-    /// The row that adds the UK FM stations near the shared locator.
+    /// The row that adds the UK or US FM stations near the shared locator.
     fn station_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
-            ui.label("UK FM stations, strongest");
+            ui.label("FM stations (UK, US), strongest");
             ui.add(
                 egui::DragValue::new(&mut self.station_area.max_channels)
                     .range(1..=stations::MAX_CHANNELS_LIMIT),
@@ -4412,7 +4427,9 @@ impl StudioApp {
         ui.horizontal_wrapped(|ui| {
             ui.label("Licences");
             let counts = self.station_kind_counts();
-            for kind in StationKind::ALL {
+            // Once synced, only the kinds offered here: the UK's or the US's.
+            let offered = |kind: StationKind| counts.is_none_or(|counts| counts[kind.index()] > 0);
+            for kind in StationKind::ALL.into_iter().filter(|&kind| offered(kind)) {
                 let label = counted(kind.label(), counts.map(|counts| counts[kind.index()]));
                 ui.checkbox(&mut self.station_area.kinds[kind.index()], label)
                     .on_hover_text(format!("Takes the {}", kind.description()));
@@ -7062,7 +7079,7 @@ mod tests {
             (Generator::Repeaters, "Repeaters within"),
             (Generator::Gateways, "UK gateways within"),
             (Generator::Beacons, "UK beacons within"),
-            (Generator::Stations, "UK FM stations, strongest"),
+            (Generator::Stations, "FM stations (UK, US), strongest"),
             (Generator::Airports, "Airports within"),
             (Generator::Airfields, "Airfields within"),
             (Generator::Marine, "Marine within"),
@@ -7665,6 +7682,16 @@ mod tests {
         assert_eq!(wanted(&app, super::never), never);
         assert_eq!(wanted(&app, super::due), due);
         assert!(!super::due(Some(now + std::time::Duration::from_secs(60))));
+
+        // A station cache missing a source, from before the FCC, is due.
+        app.stations = Some(crate::stations::StationList {
+            stations: Vec::new(),
+            synced: now,
+            complete: false,
+        });
+        assert!(wanted(&app, super::due)[2]);
+        app.stations.as_mut().unwrap().complete = true;
+        assert!(!wanted(&app, super::due)[2]);
     }
 
     #[test]
@@ -9263,9 +9290,10 @@ mod tests {
         app.stations = Some(StationList {
             stations: vec![station("SOUTH", 977, 51.9), station("NORTH", 977, 54.0)],
             synced: std::time::SystemTime::now(),
+            complete: true,
         });
         "IO91WM".clone_into(&mut app.repeater_area.locator);
-        app.station_area.kinds = [true; 6];
+        app.station_area.kinds = [true; StationKind::ALL.len()];
         app.station_area.max_channels = 1;
         app.add_stations();
         assert_eq!(fm(&app), ["SOUTH"]);
@@ -9325,6 +9353,7 @@ mod tests {
                 station("FAR AWAY", 943, 125.0, 54.0),
             ],
             synced: std::time::SystemTime::now(),
+            complete: true,
         });
         app.repeater_area.locator = "io91wm".to_owned();
         assert_eq!(
@@ -9334,7 +9363,7 @@ mod tests {
         );
         app.station_area = StationArea {
             max_channels: 30,
-            kinds: [true; 6],
+            kinds: [true; StationKind::ALL.len()],
         };
         let source = app.station_source();
         assert!(
@@ -9396,7 +9425,7 @@ mod tests {
             ["FAR AWAY", "CLASSIC", "LOCAL", "TOWN FM"]
         );
         // Only community radio.
-        app.station_area.kinds = [false, false, false, true, false, false];
+        app.station_area.kinds = StationKind::ALL.map(|kind| kind == StationKind::Community);
         app.add_stations();
         assert_eq!(last_names(&app), ["TOWN FM"]);
     }

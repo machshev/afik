@@ -1,10 +1,11 @@
-//! UK FM broadcast stations near a Maidenhead locator, synced from Ofcom's
-//! technical parameters for VHF radio transmitters and cached.
+//! FM broadcast stations near a Maidenhead locator, synced from the
+//! regulators' transmitter lists and cached: Ofcom's technical parameters for
+//! VHF radio transmitters in the UK, and the FCC's FM Query in the US.
 //!
 //! As with the repeaters, the studio fetches only when the operator presses
-//! Sync or nothing is cached (`ADR-121`); otherwise it reads the raw CSV
-//! cached in `$XDG_CACHE_HOME/afik/ofcom`. The locator is the repeaters' own;
-//! how many stations to take, and of which licence kinds, is kept in
+//! Sync or nothing is cached (`ADR-121`); otherwise it reads each raw list
+//! cached in `$XDG_CACHE_HOME/afik/<source>`. The locator is the repeaters'
+//! own; how many stations to take, and of which licence kinds, is kept in
 //! `$XDG_STATE_HOME/afik/station-area`.
 
 use std::{
@@ -19,7 +20,7 @@ use radio_channel_plan::{SharedSettings, MAX_CHANNEL_NAME_LEN};
 use radio_domain::{Bandwidth, Modulation, PowerLevel, BROADCAST_FIRST_HZ, BROADCAST_LAST_HZ};
 
 #[cfg(not(target_arch = "wasm32"))]
-use crate::repeaters::fetch;
+use crate::repeaters::fetch_within;
 use crate::{
     model::{format_mhz, BankDraft, BankKind, ChannelDraft},
     paths,
@@ -32,29 +33,91 @@ use crate::{
 pub const TRANSMITTERS_URL: &str = "https://www.ofcom.org.uk/siteassets/resources/documents/\
 spectrum/tv-transmitter-guidance/tech-parameters/txparamsvhf.csv";
 
-pub(crate) const CACHE_DIR: &str = "ofcom";
-const TRANSMITTERS_FILE: &str = "txparamsvhf.csv";
+/// Every FM record the FCC holds, one line each with `|` between fields
+/// (`list=4`), vacant allotments and applications included (`vac=3`).
+pub const FCC_URL: &str =
+    "https://transition.fcc.gov/fcc-bin/fmq?freq=87.5&fre2=108.0&vac=3&list=4";
+
 const AREA_FILE: &str = "station-area";
 /// The word in an area file from before the kinds that kept the BBC.
 const KEEP_BBC: &str = "bbc";
-/// What leads the word in the area file naming the kinds taken.
+/// What leads the word in an area file from before the US kinds naming the
+/// kinds taken.
 const KINDS_PREFIX: &str = "kinds=";
+/// What leads the word in the area file naming the kinds left out.
+const OFF_PREFIX: &str = "off=";
 /// How many stations a bank takes before the operator chooses.
 pub const DEFAULT_MAX_CHANNELS: u16 = 30;
 /// The most the operator can ask for; a whole region rarely has more.
 pub const MAX_CHANNELS_LIMIT: u16 = 200;
 /// The raster broadcast channels sit on.
 const RASTER_HZ: u32 = 100_000;
+/// No transmitter further than this is offered. It is far past any FM
+/// station's horizon, and keeps one country's list out of another's bank.
+const MAX_KM: f64 = 1_000.0;
+/// How long the FCC's list, about 18 MB, may take to arrive.
+#[cfg(not(target_arch = "wasm32"))]
+const SYNC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Where a list of transmitters comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Source {
+    /// Ofcom, the UK.
+    Ofcom,
+    /// The FCC, the US and its territories.
+    Fcc,
+}
+
+impl Source {
+    /// Every source, each cached in its own directory.
+    pub const ALL: [Self; 2] = [Self::Ofcom, Self::Fcc];
+
+    /// The directory the source is cached and mirrored in.
+    pub const fn cache_dir(self) -> &'static str {
+        match self {
+            Self::Ofcom => "ofcom",
+            Self::Fcc => "fcc",
+        }
+    }
+
+    /// The file the raw list is kept in.
+    pub const fn file(self) -> &'static str {
+        match self {
+            Self::Ofcom => "txparamsvhf.csv",
+            Self::Fcc => "fmq.txt",
+        }
+    }
+
+    /// Where the list is fetched from.
+    pub const fn url(self) -> &'static str {
+        match self {
+            Self::Ofcom => TRANSMITTERS_URL,
+            Self::Fcc => FCC_URL,
+        }
+    }
+
+    /// Reads the raw list.
+    pub fn parse(self, text: &str) -> Result<Vec<Station>, String> {
+        match self {
+            Self::Ofcom => parse(text),
+            Self::Fcc => parse_fcc(text),
+        }
+    }
+}
 
 /// One transmitter of one station.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Station {
     /// Channel name: the RDS name with underscores as spaces, else the
-    /// station's name, upper case and at most a channel name long.
+    /// station's name, upper case and at most a channel name long; in the US
+    /// the call sign.
     pub name: String,
-    /// Station name as Ofcom lists it, such as `BBC Radio 4 (FM)`.
+    /// The programme: the station name as Ofcom lists it, such as `BBC Radio
+    /// 4 (FM)`, or a US call sign without its `-FM` suffix, which a station's
+    /// boosters share.
     pub station: String,
-    /// Transmitter site, such as `Wrotham`.
+    /// Transmitter site, such as `Wrotham`, or a US licence's city and
+    /// state.
     pub site: String,
     /// Carrier in hertz, on the 100 kHz raster.
     pub frequency_hz: u32,
@@ -71,8 +134,8 @@ pub struct Station {
     pub kind: StationKind,
 }
 
-/// The kind of licence a station broadcasts under, from the prefix of its
-/// Ofcom licence number.
+/// The kind of licence a station broadcasts under: in the UK from the prefix
+/// of its Ofcom licence number, in the US from the FCC's service code.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StationKind {
     /// `BBC...`, or `BBC` anywhere in the station's or channel's name.
@@ -88,17 +151,30 @@ pub enum StationKind {
     Restricted,
     /// Anything else: the Isle of Man, Gibraltar, or no licence given.
     Other,
+    /// US `FM`: a full-power station.
+    FullPower,
+    /// US `FX`: a translator, relaying another station on its own
+    /// frequency.
+    Translator,
+    /// US `FL`: a low-power (LPFM) community station.
+    LowPower,
+    /// US `FB`: a booster, filling in its station's area on its frequency.
+    Booster,
 }
 
 impl StationKind {
     /// Every kind, in the order the checkboxes show them.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 10] = [
         Self::Bbc,
         Self::National,
         Self::Local,
         Self::Community,
         Self::Restricted,
         Self::Other,
+        Self::FullPower,
+        Self::Translator,
+        Self::LowPower,
+        Self::Booster,
     ];
 
     /// The position of this kind in [`Self::ALL`].
@@ -115,6 +191,10 @@ impl StationKind {
             Self::Community => "Community",
             Self::Restricted => "Restricted",
             Self::Other => "Other",
+            Self::FullPower => "Full power",
+            Self::Translator => "Translator",
+            Self::LowPower => "Low power",
+            Self::Booster => "Booster",
         }
     }
 
@@ -129,7 +209,21 @@ impl StationKind {
                 "low-power and restricted service stations: forces bases, hospital radio, events"
             }
             Self::Other => "stations licensed elsewhere: the Isle of Man and Gibraltar",
+            Self::FullPower => "full-power US stations",
+            Self::Translator => {
+                "US translators, each relaying another station on its own frequency"
+            }
+            Self::LowPower => "low-power (LPFM) US community stations",
+            Self::Booster => "US boosters, each filling in its station's area on its frequency",
         }
+    }
+
+    /// Whether the kind is one of the FCC's services.
+    const fn is_us(self) -> bool {
+        matches!(
+            self,
+            Self::FullPower | Self::Translator | Self::LowPower | Self::Booster
+        )
     }
 
     /// The word the area file keeps the kind under.
@@ -141,6 +235,10 @@ impl StationKind {
             Self::Community => "community",
             Self::Restricted => "restricted",
             Self::Other => "other",
+            Self::FullPower => "full-power",
+            Self::Translator => "translator",
+            Self::LowPower => "low-power",
+            Self::Booster => "booster",
         }
     }
 
@@ -239,15 +337,7 @@ pub fn parse(csv: &str) -> Result<Vec<Station>, String> {
     let mut stations: Vec<Station> = rows
         .filter_map(|row| {
             let field = |at: usize| row.get(at).map_or("", String::as_str);
-            // Rounded to the raster, then checked to have been on it.
-            let mhz = number(field(frequency_at))?;
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let frequency_hz = ((mhz * 10.0).round() as u32).checked_mul(RASTER_HZ)?;
-            if (f64::from(frequency_hz) - mhz * 1e6).abs() > 1.0
-                || !(BROADCAST_FIRST_HZ..=BROADCAST_LAST_HZ).contains(&frequency_hz)
-            {
-                return None;
-            }
+            let frequency_hz = playable(number(field(frequency_at))?)?;
             let kilowatts = number(field(horizontal_at))
                 .unwrap_or(0.0)
                 .max(number(field(vertical_at)).unwrap_or(0.0));
@@ -287,6 +377,119 @@ pub fn parse(csv: &str) -> Result<Vec<Station>, String> {
     Ok(stations)
 }
 
+/// The carrier for `mhz` when the broadcast receiver can play it: inside its
+/// band and on the 100 kHz raster.
+fn playable(mhz: f64) -> Option<u32> {
+    // Rounded to the raster, then checked to have been on it.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let frequency_hz = ((mhz * 10.0).round() as u32).checked_mul(RASTER_HZ)?;
+    ((f64::from(frequency_hz) - mhz * 1e6).abs() <= 1.0
+        && (BROADCAST_FIRST_HZ..=BROADCAST_LAST_HZ).contains(&frequency_hz))
+    .then_some(frequency_hz)
+}
+
+/// Picks the transmitters on air in the US out of the FCC's FM Query list.
+///
+/// The list has no heading; each line is `|`, then each field padded and
+/// followed by `|`, in the order of the FCC's key to its text lists. A line
+/// is taken when it is licensed (`LIC`) in the US, for a full-power station,
+/// translator, low-power station or booster, and it radiates some power on a
+/// frequency the radio can play. Allotments, applications, permits not yet
+/// built, auxiliary transmitters and Canadian and Mexican records are left
+/// out.
+pub fn parse_fcc(text: &str) -> Result<Vec<Station>, String> {
+    // Field positions, counting the empty one before the leading `|`.
+    const CALL: usize = 1;
+    const FREQUENCY: usize = 2;
+    const SERVICE: usize = 3;
+    const STATUS: usize = 9;
+    const CITY: usize = 10;
+    const STATE: usize = 11;
+    const COUNTRY: usize = 12;
+    const ERP_HORIZONTAL: usize = 14;
+    const ERP_VERTICAL: usize = 15;
+    const LATITUDE: usize = 19;
+    const LONGITUDE: usize = 23;
+    const HEIGHT_HORIZONTAL: usize = 31;
+    const HEIGHT_VERTICAL: usize = 32;
+    // A number followed by its unit, such as `88.5  MHz` or `226.   m`.
+    let number = |field: &str| {
+        field
+            .trim()
+            .trim_end_matches(char::is_alphabetic)
+            .trim()
+            .parse::<f64>()
+            .ok()
+    };
+    let larger = |a: Option<f64>, b: Option<f64>| match (a, b) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    };
+    let mut stations: Vec<Station> = text
+        .lines()
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split('|').map(str::trim).collect();
+            let field = |at: usize| fields.get(at).copied().unwrap_or("");
+            let kind = match field(SERVICE) {
+                "FM" => StationKind::FullPower,
+                "FX" => StationKind::Translator,
+                "FL" => StationKind::LowPower,
+                "FB" => StationKind::Booster,
+                _ => return None,
+            };
+            if field(STATUS) != "LIC" || field(COUNTRY) != "US" {
+                return None;
+            }
+            let frequency_hz = playable(number(field(FREQUENCY))?)?;
+            let kilowatts = larger(number(field(ERP_HORIZONTAL)), number(field(ERP_VERTICAL)))?;
+            if kilowatts <= 0.0 {
+                return None;
+            }
+            // Degrees, minutes and seconds after the hemisphere.
+            let angle = |at: usize, negative: &str| {
+                let degrees = number(field(at + 1))?
+                    + number(field(at + 2))? / 60.0
+                    + number(field(at + 3))? / 3_600.0;
+                Some(if field(at) == negative {
+                    -degrees
+                } else {
+                    degrees
+                })
+            };
+            let call = field(CALL);
+            // A booster is its station's call with `-FM1` and so on, and
+            // shares the station's programme.
+            let station = match call.find("-FM") {
+                Some(at) => &call[..at],
+                None => call,
+            };
+            Some(Station {
+                name: sanitise(station, MAX_CHANNEL_NAME_LEN)?,
+                station: station.to_owned(),
+                site: format!("{}, {}", field(CITY), field(STATE)),
+                frequency_hz,
+                erp_watts: kilowatts * 1_000.0,
+                height_m: larger(
+                    number(field(HEIGHT_HORIZONTAL)),
+                    number(field(HEIGHT_VERTICAL)),
+                ),
+                latitude: angle(LATITUDE, "S")?,
+                longitude: angle(LONGITUDE, "W")?,
+                kind,
+            })
+        })
+        .collect();
+    if stations.is_empty() {
+        return Err("FCC FM list: no transmitters the radio can play".to_owned());
+    }
+    stations.sort_by(|a, b| {
+        a.station
+            .cmp(&b.station)
+            .then(a.frequency_hz.cmp(&b.frequency_hz))
+    });
+    Ok(stations)
+}
+
 /// The estimated strength of `station` at `km`: power over distance squared,
 /// falling a further fourth power of distance beyond the radio horizon, so a
 /// big transmitter far past it ranks below a small local one.
@@ -307,8 +510,9 @@ fn strength(station: &Station, km: f64, receiver: Receiver) -> f64 {
 /// Every station as heard at `locator`, strongest first, each with its
 /// transmitter's distance in kilometres.
 ///
-/// Strength is [`strength`], with no distance cut-off: a cut-off dropped a
-/// 122 kW main transmitter at 57 km and kept 130 W relays at 25 km. Each
+/// Strength is [`strength`], with no distance cut-off short of [`MAX_KM`]: a
+/// cut-off dropped a 122 kW main transmitter at 57 km and kept 130 W relays
+/// at 25 km. Each
 /// station keeps only its strongest transmitter, and each frequency only its
 /// strongest station, so a bank holds one channel per programme.
 pub fn strongest<'a>(
@@ -323,6 +527,7 @@ pub fn strongest<'a>(
             let km = distance_km(home, (station.latitude, station.longitude));
             (station, km)
         })
+        .filter(|&(_, km)| km <= MAX_KM)
         .collect();
     near.sort_by(|a, b| {
         strength(b.0, b.1, receiver)
@@ -381,101 +586,166 @@ pub fn station_bank(near: &[(&Station, f64)]) -> BankDraft {
 /// The transmitters a sync read, and when the cache was written.
 #[derive(Clone, Debug)]
 pub struct StationList {
-    /// Every transmitter the radio can play, ordered by station.
+    /// Every transmitter the radio can play, of every source read, ordered
+    /// by station within each source.
     pub stations: Vec<Station>,
-    /// When the cache was last written.
+    /// When the oldest cache read was last written.
     pub synced: SystemTime,
+    /// Whether every source was read; a cache from before a source was
+    /// added lacks it until the next sync.
+    pub complete: bool,
 }
 
-/// Where the raw Ofcom CSV is kept.
+/// Where each source's raw list is kept.
 #[derive(Clone, Debug)]
 pub struct StationCache {
-    dir: Option<PathBuf>,
+    /// Each source and its cache directory, if it has one.
+    sources: Vec<(Source, Option<PathBuf>)>,
 }
 
 impl StationCache {
-    /// The cache under the XDG cache directory.
+    /// Every source, cached under the XDG cache directory.
     pub fn open() -> Self {
+        let root = paths::cache_dir();
         Self {
-            dir: paths::cache_dir().map(|dir| dir.join(CACHE_DIR)),
+            sources: Source::ALL
+                .into_iter()
+                .map(|source| {
+                    (
+                        source,
+                        root.as_ref().map(|dir| dir.join(source.cache_dir())),
+                    )
+                })
+                .collect(),
         }
     }
 
-    /// A cache in an explicit directory.
-    pub fn in_dir(dir: PathBuf) -> Self {
-        Self { dir: Some(dir) }
+    /// One source, cached in an explicit directory.
+    pub fn in_dir(source: Source, dir: PathBuf) -> Self {
+        Self {
+            sources: vec![(source, Some(dir))],
+        }
     }
 
     /// No cache: nothing is read, and a sync is refused.
-    pub const fn none() -> Self {
-        Self { dir: None }
-    }
-
-    /// Returns the cache directory, if there is one.
-    pub fn dir(&self) -> Option<&Path> {
-        self.dir.as_deref()
-    }
-
-    /// Reads the cached list; `Ok(None)` when nothing has been synced.
-    pub fn load(&self) -> Result<Option<StationList>, String> {
-        let Some(dir) = &self.dir else {
-            return Ok(None);
-        };
-        let path = dir.join(TRANSMITTERS_FILE);
-        if !path.exists() {
-            return Ok(None);
+    pub fn none() -> Self {
+        Self {
+            sources: Source::ALL
+                .into_iter()
+                .map(|source| (source, None))
+                .collect(),
         }
-        let failed = |error: std::io::Error| format!("{}: {error}", path.display());
-        let bytes = fs::read(&path).map_err(failed)?;
-        let synced = fs::metadata(&path)
-            .and_then(|meta| meta.modified())
-            .map_err(failed)?;
-        Ok(Some(StationList {
-            stations: parse(&String::from_utf8_lossy(&bytes))?,
+    }
+
+    /// Reads each cached list; `Ok(None)` when nothing has been synced.
+    pub fn load(&self) -> Result<Option<StationList>, String> {
+        let mut stations = Vec::new();
+        let mut synced: Option<SystemTime> = None;
+        let mut complete = true;
+        for (source, dir) in &self.sources {
+            let Some(path) = dir.as_ref().map(|dir| dir.join(source.file())) else {
+                complete = false;
+                continue;
+            };
+            if !path.exists() {
+                complete = false;
+                continue;
+            }
+            let failed = |error: std::io::Error| format!("{}: {error}", path.display());
+            let bytes = fs::read(&path).map_err(failed)?;
+            let written = fs::metadata(&path)
+                .and_then(|meta| meta.modified())
+                .map_err(failed)?;
+            stations.extend(source.parse(&String::from_utf8_lossy(&bytes))?);
+            synced = Some(synced.map_or(written, |oldest| oldest.min(written)));
+        }
+        Ok(synced.map(|synced| StationList {
+            stations,
             synced,
+            complete,
         }))
     }
 
-    /// Fetches the list, checks it, caches it, and returns what it holds.
+    /// Fetches each source's list, checks it, caches it, and returns what
+    /// every cache then holds.
     ///
-    /// Nothing is written unless the response parses, so a bad fetch keeps
-    /// the cache as it was; the write goes through a temporary file and a
-    /// rename.
+    /// Nothing is written for a source unless its response parses, so a bad
+    /// fetch keeps its cache as it was; the write goes through a temporary
+    /// file and a rename. Any source that failed makes the sync fail, after
+    /// the others are cached.
     pub fn sync_with(
         &self,
         fetch: impl Fn(&str) -> Result<String, String>,
     ) -> Result<StationList, String> {
-        let dir = self
-            .dir
-            .as_ref()
-            .ok_or("no XDG cache directory or HOME is set")?;
-        let csv = fetch(TRANSMITTERS_URL)?;
-        parse(&csv)?;
-        let path = dir.join(TRANSMITTERS_FILE);
-        let partial = path.with_extension("csv.partial");
-        fs::create_dir_all(dir)
-            .and_then(|()| fs::write(&partial, &csv))
-            .and_then(|()| fs::rename(&partial, &path))
-            .map_err(|error| format!("{}: {error}", path.display()))?;
+        let mut failures = Vec::new();
+        for (source, dir) in &self.sources {
+            let synced = (|| {
+                let dir = dir
+                    .as_ref()
+                    .ok_or("no XDG cache directory or HOME is set")?;
+                let text = fetch(source.url())?;
+                source.parse(&text)?;
+                let path = dir.join(source.file());
+                let partial = path.with_extension("partial");
+                fs::create_dir_all(dir)
+                    .and_then(|()| fs::write(&partial, &text))
+                    .and_then(|()| fs::rename(&partial, &path))
+                    .map_err(|error| format!("{}: {error}", path.display()))
+            })();
+            if let Err(error) = synced {
+                failures.push(error);
+            }
+        }
+        if !failures.is_empty() {
+            return Err(failures.join("; "));
+        }
         self.load()?
             .ok_or_else(|| "the station cache was not written".to_owned())
     }
 
-    /// Fetches from Ofcom, checks and caches what came, and returns it.
+    /// Fetches from each source, checks and caches what came, and returns
+    /// it.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn sync(&self) -> Result<StationList, String> {
-        self.sync_with(fetch)
+        self.sync_with(|url| fetch_within(url, SYNC_TIMEOUT))
     }
 
-    /// Reads what the Pages build mirrored from Ofcom beside the browser
-    /// Studio (`ADR-121`); the page keeps nothing.
+    /// Reads what the Pages build mirrored from each source beside the
+    /// browser Studio (`ADR-121`); the page keeps nothing. A source the
+    /// mirror lacks leaves the list incomplete rather than empty.
     #[cfg(target_arch = "wasm32")]
     pub async fn sync(&self) -> Result<StationList, String> {
-        let ([csv], synced) = crate::mirror::fetch(CACHE_DIR, [TRANSMITTERS_FILE]).await?;
-        Ok(StationList {
-            stations: parse(&csv)?,
-            synced,
-        })
+        let mut list: Option<StationList> = None;
+        let mut failures = Vec::new();
+        for (source, _) in &self.sources {
+            let read = crate::mirror::fetch(source.cache_dir(), [source.file()])
+                .await
+                .and_then(|([text], synced)| Ok((source.parse(&text)?, synced)));
+            let (stations, synced) = match read {
+                Ok(read) => read,
+                Err(error) => {
+                    log::warn!("FM stations from {}: {error}", source.cache_dir());
+                    failures.push(error);
+                    continue;
+                }
+            };
+            match &mut list {
+                Some(list) => {
+                    list.stations.extend(stations);
+                    list.synced = list.synced.min(synced);
+                }
+                None => {
+                    list = Some(StationList {
+                        stations,
+                        synced,
+                        complete: true,
+                    });
+                }
+            }
+        }
+        let mut list = list.ok_or_else(|| failures.join("; "))?;
+        list.complete = failures.is_empty();
+        Ok(list)
     }
 }
 
@@ -500,7 +770,8 @@ impl Default for StationArea {
 
 impl StationArea {
     /// Every kind but the BBC, the default.
-    pub const NO_BBC: [bool; StationKind::ALL.len()] = [false, true, true, true, true, true];
+    pub const NO_BBC: [bool; StationKind::ALL.len()] =
+        [false, true, true, true, true, true, true, true, true, true];
 
     /// Whether `station` is of a kind taken.
     pub const fn takes(&self, station: &Station) -> bool {
@@ -513,9 +784,11 @@ impl StationArea {
     }
 
     /// Reads `MAX_CHANNELS`, the last number, so a file from when a radius
-    /// came first still reads, and the kinds from a `kinds=` word. A file
-    /// from before the kinds takes every kind for a `bbc` word, else all but
-    /// the BBC; anything missing or unreadable gives the default.
+    /// came first still reads, and the kinds left out from an `off=` word. A
+    /// file from before the US kinds names the UK kinds taken in a `kinds=`
+    /// word and takes every US kind; one from before the kinds takes every
+    /// kind for a `bbc` word, else all but the BBC; anything missing or
+    /// unreadable gives the default.
     pub fn load(file: &Path) -> Self {
         let text = fs::read_to_string(file).unwrap_or_default();
         let max_channels = text
@@ -525,9 +798,15 @@ impl StationArea {
             .filter(|value| (1..=MAX_CHANNELS_LIMIT).contains(value))
             .unwrap_or(DEFAULT_MAX_CHANNELS);
         let words = || text.split_whitespace();
-        let kinds = if let Some(list) = words().find_map(|word| word.strip_prefix(KINDS_PREFIX)) {
-            let taken: Vec<_> = list.split(',').collect();
-            StationKind::ALL.map(|kind| taken.contains(&kind.word()))
+        let listed = |prefix: &str| {
+            words()
+                .find_map(|word| word.strip_prefix(prefix))
+                .map(|list| list.split(',').collect::<Vec<_>>())
+        };
+        let kinds = if let Some(off) = listed(OFF_PREFIX) {
+            StationKind::ALL.map(|kind| !off.contains(&kind.word()))
+        } else if let Some(taken) = listed(KINDS_PREFIX) {
+            StationKind::ALL.map(|kind| taken.contains(&kind.word()) || kind.is_us())
         } else if words().any(|word| word == KEEP_BBC) {
             [true; StationKind::ALL.len()]
         } else {
@@ -544,14 +823,14 @@ impl StationArea {
         file.parent()
             .map_or(Ok(()), fs::create_dir_all)
             .and_then(|()| {
-                let kinds: Vec<_> = StationKind::ALL
+                let off: Vec<_> = StationKind::ALL
                     .into_iter()
-                    .filter(|kind| self.kinds[kind.index()])
+                    .filter(|kind| !self.kinds[kind.index()])
                     .map(StationKind::word)
                     .collect();
                 fs::write(
                     file,
-                    format!("{KINDS_PREFIX}{}\n{}\n", kinds.join(","), self.max_channels),
+                    format!("{OFF_PREFIX}{}\n{}\n", off.join(","), self.max_channels),
                 )
             })
             .map_err(|error| format!("{}: {error}", file.display()))
@@ -594,8 +873,8 @@ impl SyncJob {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse, records, station_bank, strongest, StationArea, StationCache, StationKind,
-        TRANSMITTERS_URL,
+        parse, parse_fcc, records, station_bank, strongest, Source, StationArea, StationCache,
+        StationKind, FCC_URL, TRANSMITTERS_URL,
     };
     use crate::model::ProjectModel;
     use crate::receiver::Receiver;
@@ -614,6 +893,20 @@ Site Ht,In-Use Aerial Ht,In-UseERP/HP,In-Use ERP/VP,Lat,Long,\r
 01/01/2020,Radio Scotland,Glasgow,Black Hill,BBC000041,94.3,NS,_BBC__SCOT_,C6,275,200,\"125.000,000\",\"125.000,000\",55.861,-3.873,\r
 01/01/2020,Odd Raster,London,Crystal Palace,CR5,95.05,TQ,ODD,C7,110,40,\"1.000,000\",\"1.000,000\",51.424171,-0.074944,\r
 ";
+
+    /// Lines in the shape the FCC's FM Query publishes, trimmed after the
+    /// heights: WAMU and its booster, a translator, a low-power station, and
+    /// records left out.
+    const FMQ: &str = "\
+|WAMU        |88.5  MHz |FM |203 |ND  |H  |B  |-  |LIC    |WASHINGTON   |DC |US |0000106853  |47.    kW |47.    kW |156.0   |156.0   |65399  |N |38 |56 |10.4  |W |77  |5  |31.9  |AMERICAN UNIVERSITY |   0.00 km |   0.00 mi |  0.00 deg |226.   m|226.0  m|-  |\n\
+|WAMU-FM1    |88.5  MHz |FB |203 |DA  |   |D  |-  |LIC    |SILVER SPRING|MD |US |BLFTB-1     |0.5    kW |-      kW |40.0    |-       |65400  |N |39 |0  |0     |W |77  |0  |0     |AMERICAN UNIVERSITY |   0.00 km |   0.00 mi |  0.00 deg |100.   m|       m|-  |\n\
+|W232AB      |94.3  MHz |FX |232 |ND  |   |D  |-  |LIC    |ARLINGTON    |VA |US |BLFT-2      |0.25   kW |0.25   kW |50.0    |50.0    |1      |N |38 |52 |0     |W |77  |6  |0     |SOMEONE             |   0.00 km |   0.00 mi |  0.00 deg |       m|       m|-  |\n\
+|WOOF-LP     |99.1  MHz |FL |256 |ND  |   |L1 |-  |LIC    |BETHESDA     |MD |US |BLL-3       |0.1    kW |0.1    kW |30.0    |30.0    |2      |N |38 |59 |0     |W |77  |6  |0     |COMMUNITY           |   0.00 km |   0.00 mi |  0.00 deg |120.   m|120.0  m|-  |\n\
+|WAMU        |88.5  MHz |FS |203 |ND  |H  |B  |-  |LIC    |WASHINGTON   |DC |US |BXMLED-4    |13.    kW |13.    kW |122.0   |122.0   |65399  |N |38 |56 |10.6  |W |77  |5  |31.9  |AMERICAN UNIVERSITY |   0.00 km |   0.00 mi |  0.00 deg |191.   m|191.0  m|-  |\n\
+|WNEW        |90.1  MHz |FM |211 |ND  |   |A  |-  |CP     |ROCKVILLE    |MD |US |0000000005  |6.     kW |6.     kW |100.0   |100.0   |3      |N |39 |5  |0     |W |77  |9  |0     |NEWCOMER            |   0.00 km |   0.00 mi |  0.00 deg |200.   m|200.0  m|-  |\n\
+|-           |91.1  MHz |FA |216 |ND  |   |A  |-  |VAC    |LAUREL       |MD |US |-           |-      kW |-      kW |-       |-       |4      |N |39 |6  |0     |W |76  |51 |0     |-                   |   0.00 km |   0.00 mi |  0.00 deg |       m|       m|-  |\n\
+|CBU-2-FM    |88.1  MHz |FM |201 |DA  |   |C  |-  |LIC    |VANCOUVER    |BC |CA |-           |97.6   kW |97.6   kW |605.8   |605.8   |5      |N |49 |21 |13.4  |W |122 |57 |22.7  |-                   |   0.00 km |   0.00 mi |  0.00 deg |700.   m|700.0  m|-  |\n\
+|KOFF        |96.1  MHz |FM |241 |ND  |   |A  |-  |LIC    |NOWHERE      |KS |US |0000000006  |-      kW |-      kW |-       |-       |6      |N |38 |0  |0     |W |98  |0  |0     |SILENT              |   0.00 km |   0.00 mi |  0.00 deg |       m|       m|-  |\n";
 
     fn scratch(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("afik-ofcom-{name}-{}", std::process::id()));
@@ -700,6 +993,94 @@ Classic,A,AN000001,90.7,CLASSIC,1,1,51,0\n";
                 ("Rock".to_owned(), StationKind::Other),
             ]
         );
+    }
+
+    #[test]
+    fn the_fcc_list_keeps_licensed_us_transmitters_the_radio_can_play() {
+        let stations = parse_fcc(FMQ).unwrap();
+        let summary: Vec<_> = stations
+            .iter()
+            .map(|s| {
+                (
+                    s.name.as_str(),
+                    s.site.as_str(),
+                    s.frequency_hz,
+                    s.erp_watts,
+                    s.height_m,
+                    s.kind,
+                )
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                (
+                    "W232AB",
+                    "ARLINGTON, VA",
+                    94_300_000,
+                    250.0,
+                    None,
+                    StationKind::Translator
+                ),
+                (
+                    "WAMU",
+                    "WASHINGTON, DC",
+                    88_500_000,
+                    47_000.0,
+                    Some(226.0),
+                    StationKind::FullPower
+                ),
+                (
+                    "WAMU",
+                    "SILVER SPRING, MD",
+                    88_500_000,
+                    500.0,
+                    Some(100.0),
+                    StationKind::Booster
+                ),
+                (
+                    "WOOF-LP",
+                    "BETHESDA, MD",
+                    99_100_000,
+                    100.0,
+                    Some(120.0),
+                    StationKind::LowPower
+                ),
+            ]
+        );
+        // Degrees, minutes and seconds, west negative.
+        let wamu = &stations[1];
+        assert!((wamu.latitude - (38.0 + 56.0 / 60.0 + 10.4 / 3_600.0)).abs() < 1e-9);
+        assert!((wamu.longitude + (77.0 + 5.0 / 60.0 + 31.9 / 3_600.0)).abs() < 1e-9);
+        assert!(parse_fcc("").is_err());
+        assert!(
+            parse_fcc(FMQ.lines().nth(6).unwrap()).is_err(),
+            "a vacancy only"
+        );
+    }
+
+    #[test]
+    fn a_station_and_its_booster_are_one_programme() {
+        let stations = parse_fcc(FMQ).unwrap();
+        // FN18, Washington DC.
+        let near = strongest(&stations, "FM18LV", Receiver::Handheld).unwrap();
+        let chosen: Vec<_> = near.iter().map(|(s, _)| s.name.as_str()).collect();
+        assert_eq!(chosen, ["WAMU", "W232AB", "WOOF-LP"]);
+    }
+
+    #[test]
+    fn one_countrys_stations_stay_out_of_anothers() {
+        let mut stations = parse(VHF).unwrap();
+        stations.extend(parse_fcc(FMQ).unwrap());
+        let names = |locator| {
+            strongest(&stations, locator, Receiver::Base)
+                .unwrap()
+                .iter()
+                .map(|(s, _)| s.name.clone())
+                .collect::<Vec<_>>()
+        };
+        assert!(names("IO91WM").iter().all(|name| !name.starts_with('W')));
+        assert_eq!(names("FM18LV"), ["WAMU", "W232AB", "WOOF-LP"]);
     }
 
     #[test]
@@ -798,7 +1179,7 @@ Classic,A,AN000001,90.7,CLASSIC,1,1,51,0\n";
     #[test]
     fn a_sync_caches_only_a_list_that_parses() {
         let dir = scratch("sync");
-        let cache = StationCache::in_dir(dir.clone());
+        let cache = StationCache::in_dir(Source::Ofcom, dir.clone());
         assert!(cache.load().unwrap().is_none());
         let list = cache
             .sync_with(|url| {
@@ -816,14 +1197,52 @@ Classic,A,AN000001,90.7,CLASSIC,1,1,51,0\n";
     }
 
     #[test]
+    fn every_source_is_synced_and_read_as_one_list() {
+        let dir = scratch("sources");
+        let both = |dir: &std::path::Path| StationCache {
+            sources: Source::ALL
+                .into_iter()
+                .map(|source| (source, Some(dir.join(source.cache_dir()))))
+                .collect(),
+        };
+        let cache = both(&dir);
+        let list = cache
+            .sync_with(|url| match url {
+                TRANSMITTERS_URL => Ok(VHF.to_owned()),
+                FCC_URL => Ok(FMQ.to_owned()),
+                _ => Err(format!("unexpected {url}")),
+            })
+            .unwrap();
+        assert_eq!(list.stations.len(), 6 + 4);
+        assert!(list.complete);
+        // A failed source fails the sync, but the other is still cached
+        // and the failed one keeps what it had.
+        let error = cache
+            .sync_with(|url| match url {
+                FCC_URL => Err("HTTP 403".to_owned()),
+                _ => Ok(VHF.lines().take(2).collect::<Vec<_>>().join("\n")),
+            })
+            .unwrap_err();
+        assert_eq!(error, "HTTP 403");
+        assert_eq!(cache.load().unwrap().unwrap().stations.len(), 1 + 4);
+        // A cache from before the FCC was a source is read, but incomplete.
+        std::fs::remove_dir_all(dir.join(Source::Fcc.cache_dir())).unwrap();
+        let list = cache.load().unwrap().unwrap();
+        assert_eq!((list.stations.len(), list.complete), (1, false));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn the_area_comes_back_as_saved_and_defaults_otherwise() {
         let dir = scratch("area");
         let file = dir.join("station-area");
         assert_eq!(StationArea::load(&file), StationArea::default());
         for kinds in [
-            [true; 6],
-            [false; 6],
-            [true, false, true, false, false, true],
+            [true; 10],
+            [false; 10],
+            [
+                true, false, true, false, false, true, false, true, true, false,
+            ],
         ] {
             let area = StationArea {
                 max_channels: 12,
@@ -838,7 +1257,13 @@ Classic,A,AN000001,90.7,CLASSIC,1,1,51,0\n";
         assert_eq!(StationArea::load(&file).max_channels, 30);
         assert_eq!(StationArea::load(&file).kinds, StationArea::NO_BBC);
         std::fs::write(&file, "bbc\n30\n").unwrap();
-        assert_eq!(StationArea::load(&file).kinds, [true; 6]);
+        assert_eq!(StationArea::load(&file).kinds, [true; 10]);
+        // One from before the US kinds takes them all.
+        std::fs::write(&file, "kinds=bbc,local\n30\n").unwrap();
+        assert_eq!(
+            StationArea::load(&file).kinds,
+            [true, false, true, false, false, false, true, true, true, true]
+        );
         std::fs::write(&file, "0 9999\n").unwrap();
         assert_eq!(StationArea::load(&file), StationArea::default());
         let _ = std::fs::remove_dir_all(dir);

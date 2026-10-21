@@ -638,6 +638,21 @@ at on screen. The map no longer draws a generator's radius about a locator
 where it takes nothing (gate: fmt clean, studio clippy `-D warnings` clean,
 `cargo test -p radio-programmer-gui` 226 passed 0 failed 3 ignored).
 
+`GEN-072` step 19, US FM stations (2026-10-21, operator request,
+`ADR-122`): the FM stations row reads the FCC's FM Query list (`fcc`, about
+18 MB) beside Ofcom's, and one Sync fetches both. US records are taken when
+licensed, in the US, full-power (`FM`), translator (`FX`), low-power (`FL`)
+or booster (`FB`), named by call sign, a booster sharing its station's
+programme. The Licences row shows only the kinds offered near the locator,
+and nothing past 1000 km is offered. The live list gave 22 202
+transmitters, all with heights; FM18LV, CM87WS, EN61FV and BL11BH each got
+their city's stations. The Pages mirror syncs `fcc` as its own dataset
+(no snapshot yet), and the browser reads whichever sources it has. Gate:
+`cargo fmt --all --check` clean, `cargo clippy --workspace --all-targets --
+-D warnings` clean, wasm32 clippy of Studio `-D warnings` clean, `cargo test
+--workspace` 1006 passed 0 failed 3 ignored. Not looked at on screen; not
+flashed (the radio image is unchanged).
+
 **`MARINE-070` is active alongside** (2026-10-16, operator request,
 `ADR-109`): step 1 done. The Banks tab has a Marine row: Sync asks Overpass
 for every OpenStreetMap place tagged with a marine VHF channel and caches

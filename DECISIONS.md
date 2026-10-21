@@ -2099,3 +2099,20 @@ meaning.
   synced in the last 24 hours, in place of the seven per-dataset buttons. At
   start it fetches, once, any dataset it has never synced. Before this,
   Studio fetched only when Sync was pressed.
+
+## ADR-122 — FM stations from more than one regulator
+
+- **Date:** 2026-10-21
+- **Status:** accepted, operator request (`GEN-072`: "Can we add FM channel
+  support for non UK locations?", then "start with the FCC").
+- No open worldwide FM list exists (FMLIST's is licensed), so each country
+  is its regulator's list. The FCC's FM Query (`list=4`, one `|`-separated
+  line per record) is the first after Ofcom: public, with call sign, service,
+  status, ERP and height above sea level.
+- Each source is cached and mirrored in its own directory, and they feed one
+  FM stations row and the shared `FM STATIONS` bank. Kinds are per country
+  (Ofcom licence prefixes, FCC service codes); the row shows the kinds
+  offered at the locator. The area file now names the kinds left out
+  (`off=`), so kinds added later start ticked.
+- Ranking keeps no distance cut-off short of 1000 km, beyond any FM horizon,
+  so one country's list never reaches another's bank.

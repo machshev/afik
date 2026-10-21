@@ -56,6 +56,14 @@ pub fn write_all(
     use crate::{airports, marine, repeaters, satellites, stations, world};
 
     let into = |name: &str| dir.join(name);
+    let stations_from = |source: stations::Source| {
+        (
+            source.cache_dir(),
+            stations::StationCache::in_dir(source, into(source.cache_dir()))
+                .sync()
+                .map(|list| list.stations.len()),
+        )
+    };
     let outcomes = [
         (
             repeaters::CACHE_DIR,
@@ -69,12 +77,10 @@ pub fn write_all(
                 .sync()
                 .map(|list| list.repeaters.len()),
         ),
-        (
-            stations::CACHE_DIR,
-            stations::StationCache::in_dir(into(stations::CACHE_DIR))
-                .sync()
-                .map(|list| list.stations.len()),
-        ),
+        // Each FM source is its own dataset, so one refused takes its own
+        // snapshot.
+        stations_from(stations::Source::Ofcom),
+        stations_from(stations::Source::Fcc),
         (
             airports::CACHE_DIR,
             airports::AirportCache::in_dir(into(airports::CACHE_DIR))
@@ -182,9 +188,10 @@ mod tests {
 
     #[test]
     fn the_ofcom_snapshot_is_a_list_the_studio_reads() {
-        let dir = std::path::Path::new(SNAPSHOT_DIR).join(crate::stations::CACHE_DIR);
+        let ofcom = crate::stations::Source::Ofcom;
+        let dir = std::path::Path::new(SNAPSHOT_DIR).join(ofcom.cache_dir());
         parse_synced(&std::fs::read_to_string(dir.join(SYNCED_FILE)).unwrap()).unwrap();
-        let list = crate::stations::StationCache::in_dir(dir)
+        let list = crate::stations::StationCache::in_dir(ofcom, dir)
             .load()
             .unwrap()
             .unwrap();
