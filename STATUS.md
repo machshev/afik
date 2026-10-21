@@ -352,6 +352,14 @@ build --release` passes, `actionlint` clean. Hardware (2026-10-21): the
 operator flashed a radio from the published Studio at
 `machshev.github.io/afik` in Firefox (Pages run 39591080016); flash
 successful. Next: the same from Chrome, and a K1 (`RISK-050`).
+Step 7 (operator request: a project read from the radio is lossy): the
+browser Projects tab imports and exports `.afik` files. Export downloads the
+open project's saved file (refused while it has unsaved changes); Import
+takes a file through the picker, refuses one that does not load as a
+project, and adds it under a free name (`Club`, `Club 2`). Gate: `cargo fmt
+--all --check` clean, `cargo clippy --workspace --all-targets -- -D
+warnings` clean, `cargo test --workspace` 993 passed 0 failed, wasm32
+clippy of Studio `-D warnings` clean.
 
 **`REL-079` is active alongside** (2026-10-19, operator request,
 `ADR-118`): a `v*` tag builds and publishes release packages for Linux,

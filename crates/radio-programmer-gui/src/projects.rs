@@ -187,6 +187,44 @@ impl ProjectStore {
         Ok(entry.name)
     }
 
+    /// A free project name like `wanted`, such as an imported file's name:
+    /// characters a name cannot hold become `_`, and a name already taken
+    /// gets a number, `Club 2`, `Club 3`.
+    pub fn free_name(&self, wanted: &str) -> String {
+        let cleaned: String = wanted
+            .trim()
+            .trim_start_matches('.')
+            .chars()
+            .map(|c| {
+                if c.is_alphanumeric() || matches!(c, ' ' | '-' | '_' | '.') {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .take(MAX_NAME_LEN - 4)
+            .collect();
+        let base = match valid_name(&cleaned) {
+            Ok(name) => name,
+            Err(_) => "imported".to_owned(),
+        };
+        let taken = |name: &str| {
+            self.entries.iter().any(|entry| entry.name == name)
+                || fs::exists(&project_path(&self.dir, name))
+        };
+        // N projects take at most N of the first N + 1 names.
+        (1..=self.entries.len() + 1)
+            .map(|number| {
+                if number == 1 {
+                    base.clone()
+                } else {
+                    format!("{base} {number}")
+                }
+            })
+            .find(|name| !taken(name))
+            .unwrap_or(base)
+    }
+
     /// Adds a project file named on the command line, wherever it is, and
     /// opens it.
     pub fn adopt(&mut self, path: &Path) {
@@ -387,6 +425,18 @@ mod tests {
         assert_eq!(store.entries().len(), 2);
         store.adopt(&dir.join("elsewhere").join("club.afik"));
         assert_eq!(store.entries().len(), 2);
+    }
+
+    #[test]
+    fn an_imported_name_is_cleaned_and_numbered_until_free() {
+        let dir = scratch("free-name");
+        let mut store = ProjectStore::open_in(dir.join("projects"), None);
+        assert_eq!(store.free_name("Club/2m: walk"), "Club_2m_ walk");
+        assert_eq!(store.free_name("..."), "imported");
+        store.create("Club").unwrap();
+        assert_eq!(store.free_name("Club"), "Club 2");
+        store.create("Club 2").unwrap();
+        assert_eq!(store.free_name(" Club "), "Club 3");
     }
 
     #[test]

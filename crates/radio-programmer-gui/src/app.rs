@@ -45,7 +45,7 @@ use crate::{
         RADIO_IMAGE_BYTES,
     },
     presets::{satellite_bank, PRESETS, SATELLITE_PRESET, TX_RANGE_PRESETS},
-    projects::ProjectStore,
+    projects::{ProjectStore, PROJECT_EXTENSION},
     receiver::Receiver,
     repeaters::{
         self, AmateurBand, BandFilter, Coverage, Repeater, RepeaterArea, RepeaterCache,
@@ -375,6 +375,9 @@ pub struct StudioApp {
     /// A browser serial port being chosen and connected.
     #[cfg(target_arch = "wasm32")]
     connecting: Option<crate::session::ConnectJob>,
+    /// A project file being chosen in the browser's file picker.
+    #[cfg(target_arch = "wasm32")]
+    project_upload: Option<crate::files::Upload>,
     /// Which banks the Banks tab lists, and a bank to open in it.
     banks_tab: BanksTab,
     /// Where SatNOGS responses are cached, and what was last read from it.
@@ -2021,6 +2024,8 @@ impl StudioApp {
             job: None,
             #[cfg(target_arch = "wasm32")]
             connecting: None,
+            #[cfg(target_arch = "wasm32")]
+            project_upload: None,
             satellite_cache: SatelliteCache::none(),
             satellites: None,
             satellite_sync: None,
@@ -2610,6 +2615,126 @@ impl StudioApp {
         log::info!("{}", self.status);
     }
 
+    /// Adds the project file at `staged`, such as one the browser took in,
+    /// as a new project and opens it. The staged copy is removed whatever
+    /// happens; a file that does not load as a project is refused.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    fn import_project(&mut self, staged: &Path) {
+        let bytes = fs::read(staged);
+        let loads = read_project_file(staged);
+        if let Err(error) = fs::remove_file(staged) {
+            log::warn!("removing the staged {}: {error}", staged.display());
+        }
+        if self.is_dirty() {
+            self.refuse(&format!(
+                "Save or revert {} before importing a project.",
+                self.projects.current().name
+            ));
+            return;
+        }
+        let (bytes, name) = match (bytes, loads) {
+            (Ok(bytes), Ok(_)) => {
+                let stem = staged
+                    .file_stem()
+                    .map(|stem| stem.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                (bytes, self.projects.free_name(&stem))
+            }
+            (Err(error), _) => {
+                self.fail("importing a project", error.to_string());
+                return;
+            }
+            (_, Err(message)) => {
+                self.fail(
+                    "importing a project",
+                    format!("Not an AFIK project: {message}"),
+                );
+                return;
+            }
+        };
+        let path = match self.projects.create(&name) {
+            Ok(entry) => entry.path.clone(),
+            Err(reason) => {
+                self.refuse(&reason);
+                return;
+            }
+        };
+        let written = path
+            .parent()
+            .map_or(Ok(()), fs::create_dir_all)
+            .and_then(|()| fs::write(&path, &bytes));
+        if let Err(error) = written {
+            self.fail(
+                "importing a project",
+                format!("Could not write {}: {error}", path.display()),
+            );
+            return;
+        }
+        log::info!("imported {} as project {name}", staged.display());
+        self.load_project();
+        self.status = format!("Imported {name}. {}", self.status);
+    }
+
+    /// The open project's file, named for the project, to give out; refused
+    /// while it has changes the file does not hold.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    fn project_export(&mut self) -> Option<(String, Vec<u8>)> {
+        let entry = self.projects.current().clone();
+        if self.is_dirty() {
+            self.refuse(&format!("Save {} before exporting it.", entry.name));
+            return None;
+        }
+        match fs::read(&entry.path) {
+            Ok(bytes) => Some((format!("{}.{PROJECT_EXTENSION}", entry.name), bytes)),
+            Err(error) => {
+                self.fail(
+                    "exporting the project",
+                    format!("Save {} before exporting it ({error}).", entry.name),
+                );
+                None
+            }
+        }
+    }
+
+    /// Gives the open project's file to the operator as a download.
+    #[cfg(target_arch = "wasm32")]
+    fn export_project(&mut self) {
+        let Some((name, bytes)) = self.project_export() else {
+            return;
+        };
+        match fs::download(&name, &bytes) {
+            Ok(()) => self.status = format!("Exported {name}."),
+            Err(error) => self.fail("exporting the project", error),
+        }
+    }
+
+    /// Shows the browser's file picker for a project to import.
+    #[cfg(target_arch = "wasm32")]
+    fn choose_import(&mut self) {
+        let staged = crate::paths::data_dir().unwrap_or_default().join("imports");
+        match fs::upload(staged, ".afik", MAX_PROJECT_IMAGE_BYTES) {
+            Ok(upload) => self.project_upload = Some(upload),
+            Err(error) => self.fail("importing a project", error),
+        }
+    }
+
+    /// Imports the project the browser's file picker took in, once it has.
+    #[cfg(target_arch = "wasm32")]
+    fn poll_import(&mut self) {
+        let Some(outcome) = self
+            .project_upload
+            .as_ref()
+            .and_then(crate::files::Upload::poll)
+        else {
+            return;
+        };
+        self.project_upload = None;
+        match outcome {
+            Ok(staged) => self.import_project(&staged),
+            Err(error) => self.refuse(&format!("No project imported: {error}.")),
+        }
+    }
+
     /// Deletes the open project, once confirmed, and opens the next.
     fn delete_project(&mut self) {
         self.confirm_delete = false;
@@ -3146,7 +3271,10 @@ impl eframe::App for StudioApp {
         // checks for its end, wherever the operator is looking.
         self.poll_job();
         #[cfg(target_arch = "wasm32")]
-        self.poll_connect();
+        {
+            self.poll_connect();
+            self.poll_import();
+        }
         self.poll_satellite_sync();
         self.poll_repeater_sync();
         self.poll_station_sync();
@@ -3288,6 +3416,26 @@ impl StudioApp {
                 .clicked()
             {
                 self.confirm_delete = true;
+            }
+            // The browser keeps projects in the page: these move them in
+            // and out as files.
+            #[cfg(target_arch = "wasm32")]
+            {
+                ui.separator();
+                if ui
+                    .add_enabled(self.project_upload.is_none(), egui::Button::new("Import…"))
+                    .on_hover_text("Adds a .afik project file as a new project")
+                    .clicked()
+                {
+                    self.choose_import();
+                }
+                if ui
+                    .button("Export")
+                    .on_hover_text("Downloads the open project's saved file")
+                    .clicked()
+                {
+                    self.export_project();
+                }
             }
         });
         ui.separator();
@@ -6638,6 +6786,44 @@ mod tests {
         assert_eq!(text_centres(&projects, "New project").len(), 1);
         assert_eq!(text_centres(&projects, "default").len(), 1, "listed");
         assert_eq!(text_centres(&projects, "Delete project").len(), 1);
+    }
+
+    #[test]
+    fn a_project_is_exported_as_saved_and_imported_under_a_free_name() {
+        let dir = scratch("import-export");
+        let mut app = app_in(&dir, &Options::default());
+        app.project.add_bank();
+        app.project.add_channel(0);
+        assert!(
+            app.project_export().is_none(),
+            "unsaved changes are refused"
+        );
+        app.save_project();
+        let (name, bytes) = app.project_export().unwrap();
+        assert_eq!(name, "default.afik");
+
+        // The browser stages the file it took in; importing it twice gives
+        // the second a numbered name.
+        let staged = dir.join("imports").join("default.afik");
+        for expected in ["default 2", "default 3"] {
+            std::fs::create_dir_all(staged.parent().unwrap()).unwrap();
+            std::fs::write(&staged, &bytes).unwrap();
+            app.import_project(&staged);
+            assert_eq!(app.projects.current().name, expected);
+            assert!(app.status.starts_with(&format!("Imported {expected}.")));
+            assert_eq!(app.project.channel_count(), 1);
+            assert!(!staged.exists(), "the staged copy is removed");
+        }
+
+        std::fs::write(&staged, b"not a project").unwrap();
+        app.import_project(&staged);
+        assert!(
+            app.status.starts_with("Not an AFIK project"),
+            "{}",
+            app.status
+        );
+        assert_eq!(app.projects.entries().len(), 3);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
