@@ -67,16 +67,11 @@ What has and has not been observed on each radio is recorded per task in
 
 ## AFIK Studio
 
-Studio is the editor for projects: channels, banks and groups, the radio
-configuration, TX ranges, and starting slots and VFOs. It adds banks from
-default sets and from generators near a Maidenhead locator (repeaters,
-beacons, gateways, airports, marine channels, satellites), shows them on a
-map, writes the compiled image to the radio and reads it back, and tests the
-serial link. Its Flash tab detects the radio and writes AFIK firmware.
-
-The project is compiled and validated before it is written; the radio takes
-it as memory blocks over the stock programming protocol and validates it
-again before using it (`ADR-100`).
+Studio is where a radio's channels and settings are made: a project holds
+the banks and groups, the radio configuration, the TX ranges, and the slots
+and VFOs the radio starts on. Studio compiles and validates the project
+before writing it; the radio takes it as memory blocks over the stock
+programming protocol and validates it again before using it (`ADR-100`).
 
 ```sh
 afik-studio            # desktop
@@ -84,10 +79,69 @@ afik-studio --sim      # with a simulated radio
 afik-studio --help
 ```
 
-The browser Studio is the same crate built for WebAssembly (`ADR-119`). It
-keeps projects in the page's storage. Firmware flashing and the station,
-satellite and map downloads are desktop-only for now. See
-`docs/programmer-gui.md`.
+### Map: banks near you
+
+![The Map tab: airports, airfields and FM stations around a locator](docs/images/studio-map.png)
+
+Enter a Maidenhead locator and Studio finds what you can hear there:
+repeaters (worldwide from hearham, UK from the ETCC), UK gateways and
+beacons, UK FM broadcast stations from Ofcom, airport and airfield
+frequencies from OurAirports, and marine channels from OpenStreetMap. Each
+is drawn on the map with the distance it is heard to, which follows the
+receiver you choose (handheld, mobile or base station). **Add all shown** turns them
+into banks, grouped by locator.
+
+### Banks and groups
+
+![The Banks tab: nine banks in locator, airband, marine and common groups](docs/images/studio-banks.png)
+
+A radio holds up to 254 banks. A bank is either a list of channels or a
+generated plan, such as PMR446 or a 2 m simplex band, that the radio expands
+itself, so a whole band costs one small object. Default sets add common
+plans in one go. Groups decide what the radio scans together, and the bar
+at the bottom shows how much of the radio's memory the project uses.
+
+![A bank opened: settings shared by every channel are stored once](docs/images/studio-bank.png)
+
+Settings every channel in a bank shares (here AM and a 25 kHz step) are
+stored once for the bank rather than in each channel.
+
+### Radio: receive, transmit, VFO, scan
+
+![The Transmit page with the UK TX ranges](docs/images/studio-transmit.png)
+
+The Radio tab sets squelch, dual watch and the other receive options, the
+VFOs, scanning and general settings. Transmit holds the TX ranges: the only
+places the radio will transmit, each with its own power ceiling, bandwidth
+and channel raster. Presets add the UK, EU (CEPT), US, marine and CB ranges;
+check each against your own licence.
+
+### Device: write, read and test
+
+![The Device tab after a verified write and a clean link test](docs/images/studio-device.png)
+
+Connect a radio (or the simulator), write the project, and read it back.
+Each write is verified by reading it back, and **Test link** sends
+back-to-back reads to show at a glance whether the cable is reliable.
+
+### Flash: install AFIK
+
+![The Flash tab with a K5 in its bootloader, ready to flash](docs/images/studio-flash.png)
+
+The Flash tab walks through installing AFIK: it detects the radio and its
+family, suggests an EEPROM backup (which holds the radio's calibration),
+picks the packaged image, and writes the application only, never the
+bootloader or EEPROM.
+
+### In the browser
+
+![The same Studio running in a browser](docs/images/studio-browser.png)
+
+[Studio in the browser](https://machshev.github.io/afik/) is the same code
+built for WebAssembly (`ADR-119`), reaching the radio over Web Serial in
+Chrome, Edge or a recent Firefox. It keeps projects in the page's storage.
+Firmware flashing and the list and map downloads are desktop-only for now.
+See `docs/programmer-gui.md`.
 
 ## Releases and installation
 
