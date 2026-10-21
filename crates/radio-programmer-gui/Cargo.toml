@@ -22,6 +22,8 @@ eframe = { version = "0.32", default-features = false, features = [
 getrandom = "0.4"
 image = { version = "0.25", default-features = false, features = ["png"] }
 log = "0.4"
+# Unpacks the zip ISED publishes its broadcast database in.
+miniz_oxide = "0.8"
 radio-channel-plan = { path = "../radio-channel-plan" }
 radio-domain = { path = "../radio-domain" }
 radio-flasher = { path = "../radio-flasher" }

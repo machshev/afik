@@ -2542,6 +2542,7 @@ dependencies = [
  "image",
  "js-sys",
  "log",
+ "miniz_oxide 0.8.9",
  "radio-channel-plan",
  "radio-domain",
  "radio-flasher",

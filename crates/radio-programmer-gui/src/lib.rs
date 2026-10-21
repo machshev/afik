@@ -9,6 +9,7 @@
 pub mod airfields;
 pub mod airports;
 pub mod app;
+mod archive;
 pub mod device;
 pub mod files;
 pub mod flash;

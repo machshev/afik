@@ -1187,7 +1187,7 @@ impl StudioApp {
         match outcome {
             Ok(list) => {
                 self.status = format!(
-                    "Synced {} FM transmitters from Ofcom and the FCC.",
+                    "Synced {} FM transmitters from Ofcom, the FCC and ISED.",
                     list.stations.len()
                 );
                 log::info!("{}", self.status);
@@ -1208,7 +1208,7 @@ impl StudioApp {
         let list = self
             .stations
             .as_ref()
-            .ok_or("sync the FM station lists from Ofcom and the FCC first")?;
+            .ok_or("sync the FM station lists first")?;
         let locator = &self.repeater_area.locator;
         // Kinds are left out before ranking, so a station sharing a frequency
         // with one left out can still take it.
@@ -1302,7 +1302,7 @@ impl StudioApp {
             return "Not synced.".to_owned();
         };
         let synced = format!(
-            "{} transmitters from Ofcom, the FCC and the Second Authority, synced {}.",
+            "{} transmitters from Ofcom, the FCC, ISED and the Second Authority, synced {}.",
             list.stations.len(),
             age(list.synced)
         );
@@ -3335,7 +3335,7 @@ impl StudioApp {
                     ),
             ),
             (
-                "Ofcom's and the FCC's FM stations",
+                "FM stations from Ofcom, the FCC and ISED",
                 self.station_sync.is_none()
                     && wanted(
                         // A source never synced is due now.
@@ -4412,11 +4412,11 @@ impl StudioApp {
         }
     }
 
-    /// The row that adds the UK, US or Israeli FM stations near the shared
-    /// locator.
+    /// The row that adds the UK, US, Canadian or Israeli FM stations near the
+    /// shared locator.
     fn station_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
-            ui.label("FM stations (UK, US, Israel), strongest");
+            ui.label("FM stations (UK, US, Canada, Israel), strongest");
             ui.add(
                 egui::DragValue::new(&mut self.station_area.max_channels)
                     .range(1..=stations::MAX_CHANNELS_LIMIT),
@@ -7093,7 +7093,7 @@ mod tests {
             (Generator::Beacons, "UK beacons within"),
             (
                 Generator::Stations,
-                "FM stations (UK, US, Israel), strongest",
+                "FM stations (UK, US, Canada, Israel), strongest",
             ),
             (Generator::Airports, "Airports within"),
             (Generator::Airfields, "Airfields within"),

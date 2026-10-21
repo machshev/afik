@@ -3328,6 +3328,12 @@
       town, ranked by distance. Done. Next: hear a station and a repeater
       in Israel, and add the national networks (Kan, Galei Tzahal) once an
       official per-region list is found.
+  22. Canadian FM stations (operator request, "can we also add canada and
+      australia?", then "France"; `ADR-124`): the FM stations row also reads
+      ISED's broadcast database, its FM table taken out of the zip at sync
+      and kept as CSV; operating stations, kinds CBC, Full power and Low
+      power. Done. Australia (ACMA) and France: no source reachable or
+      usable yet (`ADR-124`).
 
 ## BANKS-073 — Up to 254 banks, addressed by bank and position
 

@@ -1098,6 +1098,16 @@ pub(crate) fn fetch(url: &str) -> Result<String, String> {
 /// Fetches one URL as [`fetch`] does, allowing `timeout` for a slow server.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn fetch_within(url: &str, timeout: std::time::Duration) -> Result<String, String> {
+    fetch_bytes_within(url, timeout).map(|body| String::from_utf8_lossy(&body).into_owned())
+}
+
+/// Fetches one URL as [`fetch_within`] does, as the bytes that came, for a
+/// file that is not text.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn fetch_bytes_within(
+    url: &str,
+    timeout: std::time::Duration,
+) -> Result<Vec<u8>, String> {
     log::debug!("fetching {url}");
     let started = web_time::Instant::now();
     let body = crate::net::get(
@@ -1111,7 +1121,7 @@ pub(crate) fn fetch_within(url: &str, timeout: std::time::Duration) -> Result<St
         body.len(),
         started.elapsed().as_millis()
     );
-    Ok(String::from_utf8_lossy(&body).into_owned())
+    Ok(body)
 }
 
 /// A sync running on a worker thread, so the window keeps drawing.

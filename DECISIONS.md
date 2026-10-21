@@ -2133,3 +2133,21 @@ meaning.
   main town, with no power or height, so they rank by distance alone. The
   national networks (Kan, Galei Tzahal) are left out until an official
   per-region list is found.
+
+## ADR-124 — Canadian FM stations from ISED; Australia and France not yet
+
+- **Date:** 2026-10-21
+- **Status:** accepted, operator request (`GEN-072`: "Can we also add
+  canada and australia?", "France").
+- ISED publishes its broadcast database as a zip of dBASE tables. Studio
+  takes `fmstatio.dbf` out at sync and caches it as CSV, so the browser
+  mirror holds text and the browser needs no zip reader at run time. The
+  reader is a few dozen lines on `miniz_oxide`, already in the lock file,
+  rather than a zip crate. Operating Canadian records only; `-HD` records
+  are the digital service of an `-FM` record and are dropped.
+- ACMA's broadcast transmitter files (data.gov.au points at acma.gov.au)
+  time out or reset every request from this machine, so Australia waits for
+  a copy fetched in a browser.
+- France has no usable open list: ANFR's installations data gives FM sites
+  with the whole band, not each carrier, and Arcom publishes frequencies
+  only in per-area decision PDFs. FMLIST covers both but is licensed.

@@ -85,6 +85,7 @@ pub fn write_all(
         // snapshot.
         stations_from(stations::Source::Ofcom),
         stations_from(stations::Source::Fcc),
+        stations_from(stations::Source::Ised),
         (
             airports::CACHE_DIR,
             airports::AirportCache::in_dir(into(airports::CACHE_DIR))

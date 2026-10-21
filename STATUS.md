@@ -675,6 +675,21 @@ warnings` clean, wasm32 clippy of Studio `-D warnings` clean, `cargo test
 --workspace` 1009 passed 0 failed 3 ignored. Not looked at on screen; not
 flashed (the radio image is unchanged).
 
+`GEN-072` step 22, Canadian FM (2026-10-21, operator request, `ADR-124`):
+the FM stations row reads ISED's broadcast database (`ised`, a 27 MB zip;
+Studio unpacks `fmstatio.dbf` with a small zip and dBASE reader on
+`miniz_oxide` and caches it as CSV). Operating (`OP`) Canadian records are
+taken, HD Radio duplicates left out; kinds CBC (`CB` calls), Full power and
+Low power (`LP`, `VLP`). The live database gave 2653 stations, all with
+heights; Toronto, Montreal, Vancouver, Calgary and Halifax locators got
+their cities' stations. Australia: ACMA's site and files time out or reset
+from here and from data.gov.au's links. France: ANFR's open data lists FM
+sites with the whole 87.5–108 MHz band, no carrier, name or power, and
+Arcom publishes no list. Gate: `cargo fmt --all --check` clean, `cargo
+clippy --workspace --all-targets -- -D warnings` clean, wasm32 clippy of
+Studio `-D warnings` clean, `cargo test --workspace` 1012 passed 0 failed 3
+ignored. Not looked at on screen; not flashed.
+
 **`MARINE-070` is active alongside** (2026-10-16, operator request,
 `ADR-109`): step 1 done. The Banks tab has a Marine row: Sync asks Overpass
 for every OpenStreetMap place tagged with a marine VHF channel and caches

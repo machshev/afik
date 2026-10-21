@@ -1,6 +1,7 @@
 //! FM broadcast stations near a Maidenhead locator, synced from the
 //! regulators' transmitter lists and cached: Ofcom's technical parameters for
-//! VHF radio transmitters in the UK, and the FCC's FM Query in the US.
+//! VHF radio transmitters in the UK, the FCC's FM Query in the US and ISED's
+//! broadcast database in Canada; Israel's regional stations are built in.
 //!
 //! As with the repeaters, the studio fetches only when the operator presses
 //! Sync or nothing is cached (`ADR-121`); otherwise it reads each raw list
@@ -20,7 +21,7 @@ use radio_channel_plan::{SharedSettings, MAX_CHANNEL_NAME_LEN};
 use radio_domain::{Bandwidth, Modulation, PowerLevel, BROADCAST_FIRST_HZ, BROADCAST_LAST_HZ};
 
 #[cfg(not(target_arch = "wasm32"))]
-use crate::repeaters::fetch_within;
+use crate::repeaters::fetch_bytes_within;
 use crate::{
     model::{format_mhz, BankDraft, BankKind, ChannelDraft},
     paths,
@@ -37,6 +38,16 @@ spectrum/tv-transmitter-guidance/tech-parameters/txparamsvhf.csv";
 /// (`list=4`), vacant allotments and applications included (`vac=3`).
 pub const FCC_URL: &str =
     "https://transition.fcc.gov/fcc-bin/fmq?freq=87.5&fre2=108.0&vac=3&list=4";
+
+/// ISED's broadcast database: a zip of dBASE tables, about 27 MB, of which
+/// `fmstatio.dbf` holds every FM station and allotment.
+pub const ISED_URL: &str = "https://www.ic.gc.ca/engineering/BC_DBF_FILES/baserad.zip";
+/// The table of FM stations in ISED's zip.
+const ISED_FM_TABLE: &str = "fmstatio.dbf";
+/// The provinces and territories, which ISED's list mixes with US states.
+const CANADA: [&str; 13] = [
+    "AB", "BC", "MB", "NB", "NL", "NS", "NT", "NU", "ON", "PE", "QC", "SK", "YT",
+];
 
 const AREA_FILE: &str = "station-area";
 /// The word in an area file from before the kinds that kept the BBC.
@@ -55,7 +66,8 @@ const RASTER_HZ: u32 = 100_000;
 /// No transmitter further than this is offered. It is far past any FM
 /// station's horizon, and keeps one country's list out of another's bank.
 const MAX_KM: f64 = 1_000.0;
-/// How long the FCC's list, about 18 MB, may take to arrive.
+/// How long the FCC's list, about 18 MB, or ISED's zip, about 27 MB, may
+/// take to arrive.
 #[cfg(not(target_arch = "wasm32"))]
 const SYNC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
@@ -66,25 +78,30 @@ pub enum Source {
     Ofcom,
     /// The FCC, the US and its territories.
     Fcc,
+    /// ISED, Canada.
+    Ised,
 }
 
 impl Source {
     /// Every source, each cached in its own directory.
-    pub const ALL: [Self; 2] = [Self::Ofcom, Self::Fcc];
+    pub const ALL: [Self; 3] = [Self::Ofcom, Self::Fcc, Self::Ised];
 
     /// The directory the source is cached and mirrored in.
     pub const fn cache_dir(self) -> &'static str {
         match self {
             Self::Ofcom => "ofcom",
             Self::Fcc => "fcc",
+            Self::Ised => "ised",
         }
     }
 
-    /// The file the raw list is kept in.
+    /// The file the list is kept in: as fetched, except ISED's FM table,
+    /// kept as CSV out of its zip.
     pub const fn file(self) -> &'static str {
         match self {
             Self::Ofcom => "txparamsvhf.csv",
             Self::Fcc => "fmq.txt",
+            Self::Ised => "fmstatio.csv",
         }
     }
 
@@ -93,14 +110,26 @@ impl Source {
         match self {
             Self::Ofcom => TRANSMITTERS_URL,
             Self::Fcc => FCC_URL,
+            Self::Ised => ISED_URL,
         }
     }
 
-    /// Reads the raw list.
+    /// What is kept of a fetched `body`: the text, except that ISED's FM
+    /// table is taken out of its zip as CSV. Text that is not UTF-8 is
+    /// replaced rather than refused.
+    pub fn prepare(self, body: &[u8]) -> Result<String, String> {
+        match self {
+            Self::Ofcom | Self::Fcc => Ok(String::from_utf8_lossy(body).into_owned()),
+            Self::Ised => crate::archive::dbf_to_csv(&crate::archive::unzip(body, ISED_FM_TABLE)?),
+        }
+    }
+
+    /// Reads the list as kept.
     pub fn parse(self, text: &str) -> Result<Vec<Station>, String> {
         match self {
             Self::Ofcom => parse(text),
             Self::Fcc => parse_fcc(text),
+            Self::Ised => parse_ised(text),
         }
     }
 }
@@ -162,11 +191,13 @@ pub enum StationKind {
     Booster,
     /// An Israeli regional station, franchised by the Second Authority.
     Regional,
+    /// Canada's public broadcaster, CBC/Radio-Canada: a `CB` call sign.
+    Cbc,
 }
 
 impl StationKind {
     /// Every kind, in the order the checkboxes show them.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Bbc,
         Self::National,
         Self::Local,
@@ -178,6 +209,7 @@ impl StationKind {
         Self::LowPower,
         Self::Booster,
         Self::Regional,
+        Self::Cbc,
     ];
 
     /// The position of this kind in [`Self::ALL`].
@@ -199,6 +231,7 @@ impl StationKind {
             Self::LowPower => "Low power",
             Self::Booster => "Booster",
             Self::Regional => "Regional",
+            Self::Cbc => "CBC",
         }
     }
 
@@ -213,16 +246,19 @@ impl StationKind {
                 "low-power and restricted service stations: forces bases, hospital radio, events"
             }
             Self::Other => "stations licensed elsewhere: the Isle of Man and Gibraltar",
-            Self::FullPower => "full-power US stations",
+            Self::FullPower => "full-power US and Canadian stations",
             Self::Translator => {
                 "US translators, each relaying another station on its own frequency"
             }
-            Self::LowPower => "low-power (LPFM) US community stations",
+            Self::LowPower => {
+                "low-power stations: US LPFM community stations, Canadian LP and VLP classes"
+            }
             Self::Booster => "US boosters, each filling in its station's area on its frequency",
             Self::Regional => {
                 "Israeli regional stations the Second Authority franchises, placed at their \
                  area's main town"
             }
+            Self::Cbc => "CBC/Radio-Canada stations and their rebroadcasters",
         }
     }
 
@@ -253,6 +289,7 @@ impl StationKind {
             Self::LowPower => "low-power",
             Self::Booster => "booster",
             Self::Regional => "il-regional",
+            Self::Cbc => "cbc",
         }
     }
 
@@ -495,6 +532,97 @@ pub fn parse_fcc(text: &str) -> Result<Vec<Station>, String> {
         .collect();
     if stations.is_empty() {
         return Err("FCC FM list: no transmitters the radio can play".to_owned());
+    }
+    stations.sort_by(|a, b| {
+        a.station
+            .cmp(&b.station)
+            .then(a.frequency_hz.cmp(&b.frequency_hz))
+    });
+    Ok(stations)
+}
+
+/// Picks the stations on air in Canada out of ISED's FM table, as
+/// [`Source::prepare`] keeps it.
+///
+/// A row is taken when its province is Canadian, its banner (status) is
+/// `OP`, operating, and it radiates some power on a frequency the radio can
+/// play; allotments, applications, the US and French records ISED keeps
+/// for coordination, and the HD Radio records (a `-HD` call sign, the
+/// digital service of a station whose `-FM` record is there too) are left
+/// out. Positions are `DDMMSS` north and
+/// `DDDMMSS` west; `RAD_CENTER` is the aerial's height above sea level. A
+/// `CB` call sign is CBC/Radio-Canada's, `LP` and `VLP` classes low power.
+pub fn parse_ised(csv: &str) -> Result<Vec<Station>, String> {
+    let mut rows = records(csv).into_iter();
+    let heading = rows.next().ok_or("ISED FM table: empty")?;
+    let column = |name: &str| {
+        heading
+            .iter()
+            .position(|heading| heading.trim().eq_ignore_ascii_case(name))
+            .ok_or_else(|| format!("ISED FM table: no {name:?} column"))
+    };
+    let province_at = column("PROVINCE")?;
+    let city_at = column("CITY")?;
+    let call_at = column("CALL_SIGN")?;
+    let frequency_at = column("FREQUENCY")?;
+    let class_at = column("CLASS")?;
+    let latitude_at = column("LATITUDE")?;
+    let longitude_at = column("LONGITUDE")?;
+    let banner_at = column("BANNER")?;
+    let power_at = [column("ERPHAV")?, column("ERPVAV")?];
+    let height_at = column("RAD_CENTER").ok();
+    // Degrees, minutes and seconds run together, as `DDMMSS`.
+    let angle = |field: &str| {
+        let packed: u32 = field.trim().parse().ok()?;
+        let (degrees, minutes, seconds) = (packed / 10_000, packed / 100 % 100, packed % 100);
+        (minutes < 60 && seconds < 60)
+            .then(|| f64::from(degrees) + f64::from(minutes) / 60.0 + f64::from(seconds) / 3_600.0)
+    };
+    let mut stations: Vec<Station> = rows
+        .filter_map(|row| {
+            let field = |at: usize| row.get(at).map_or("", |field| field.trim());
+            if !CANADA.contains(&field(province_at)) || field(banner_at) != "OP" {
+                return None;
+            }
+            let frequency_hz = playable(field(frequency_at).parse().ok()?)?;
+            let watts = power_at
+                .iter()
+                .filter_map(|&at| field(at).parse::<f64>().ok())
+                .fold(0.0, f64::max);
+            if watts <= 0.0 {
+                return None;
+            }
+            let call = field(call_at);
+            if call.contains("-HD") {
+                return None;
+            }
+            // A rebroadcaster is its station's call with `-FM-2` and so on,
+            // and shares the station's programme.
+            let station = call.find("-FM").map_or(call, |at| &call[..at]);
+            let kind = if station.starts_with("CB") {
+                StationKind::Cbc
+            } else if matches!(field(class_at), "LP" | "VLP") {
+                StationKind::LowPower
+            } else {
+                StationKind::FullPower
+            };
+            Some(Station {
+                name: sanitise(station, MAX_CHANNEL_NAME_LEN)?,
+                station: station.to_owned(),
+                site: format!("{}, {}", field(city_at), field(province_at)),
+                frequency_hz,
+                erp_watts: watts,
+                height_m: height_at
+                    .and_then(|at| field(at).parse::<f64>().ok())
+                    .filter(|&height| height > 0.0),
+                latitude: angle(field(latitude_at))?,
+                longitude: -angle(field(longitude_at))?,
+                kind,
+            })
+        })
+        .collect();
+    if stations.is_empty() {
+        return Err("ISED FM table: no stations the radio can play".to_owned());
     }
     stations.sort_by(|a, b| {
         a.station
@@ -782,7 +910,7 @@ impl StationCache {
     /// the others are cached.
     pub fn sync_with(
         &self,
-        fetch: impl Fn(&str) -> Result<String, String>,
+        fetch: impl Fn(&str) -> Result<Vec<u8>, String>,
     ) -> Result<StationList, String> {
         let mut failures = Vec::new();
         for (source, dir) in &self.sources {
@@ -790,7 +918,7 @@ impl StationCache {
                 let dir = dir
                     .as_ref()
                     .ok_or("no XDG cache directory or HOME is set")?;
-                let text = fetch(source.url())?;
+                let text = source.prepare(&fetch(source.url())?)?;
                 source.parse(&text)?;
                 let path = dir.join(source.file());
                 let partial = path.with_extension("partial");
@@ -814,7 +942,7 @@ impl StationCache {
     /// it.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn sync(&self) -> Result<StationList, String> {
-        self.sync_with(|url| fetch_within(url, SYNC_TIMEOUT))
+        self.sync_with(|url| fetch_bytes_within(url, SYNC_TIMEOUT))
     }
 
     /// Reads what the Pages build mirrored from each source beside the
@@ -878,9 +1006,11 @@ impl Default for StationArea {
 
 impl StationArea {
     /// Every kind but the BBC, the default.
-    pub const NO_BBC: [bool; StationKind::ALL.len()] = [
-        false, true, true, true, true, true, true, true, true, true, true,
-    ];
+    pub const NO_BBC: [bool; StationKind::ALL.len()] = {
+        let mut kinds = [true; StationKind::ALL.len()];
+        kinds[StationKind::Bbc.index()] = false;
+        kinds
+    };
 
     /// Whether `station` is of a kind taken.
     pub const fn takes(&self, station: &Station) -> bool {
@@ -982,8 +1112,8 @@ impl SyncJob {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse, parse_fcc, records, station_bank, strongest, Source, StationArea, StationCache,
-        StationKind, FCC_URL, ISRAEL_REGIONAL, TRANSMITTERS_URL,
+        parse, parse_fcc, parse_ised, records, station_bank, strongest, Source, StationArea,
+        StationCache, StationKind, FCC_URL, ISED_URL, ISRAEL_REGIONAL, TRANSMITTERS_URL,
     };
     use crate::model::ProjectModel;
     use crate::receiver::Receiver;
@@ -1016,6 +1146,80 @@ Site Ht,In-Use Aerial Ht,In-UseERP/HP,In-Use ERP/VP,Lat,Long,\r
 |-           |91.1  MHz |FA |216 |ND  |   |A  |-  |VAC    |LAUREL       |MD |US |-           |-      kW |-      kW |-       |-       |4      |N |39 |6  |0     |W |76  |51 |0     |-                   |   0.00 km |   0.00 mi |  0.00 deg |       m|       m|-  |\n\
 |CBU-2-FM    |88.1  MHz |FM |201 |DA  |   |C  |-  |LIC    |VANCOUVER    |BC |CA |-           |97.6   kW |97.6   kW |605.8   |605.8   |5      |N |49 |21 |13.4  |W |122 |57 |22.7  |-                   |   0.00 km |   0.00 mi |  0.00 deg |700.   m|700.0  m|-  |\n\
 |KOFF        |96.1  MHz |FM |241 |ND  |   |A  |-  |LIC    |NOWHERE      |KS |US |0000000006  |-      kW |-      kW |-       |-       |6      |N |38 |0  |0     |W |98  |0  |0     |SILENT              |   0.00 km |   0.00 mi |  0.00 deg |       m|       m|-  |\n";
+
+    /// ISED's broadcast database in the shape it publishes it, trimmed: a
+    /// zip holding the FM table with the columns read, rows of each kind
+    /// and records left out.
+    fn ised_zip() -> Vec<u8> {
+        use crate::archive::tests::{dbf, zip};
+        let columns = [
+            ("PROVINCE", 2),
+            ("CITY", 20),
+            ("CALL_SIGN", 12),
+            ("FREQUENCY", 7),
+            ("CLASS", 3),
+            ("LATITUDE", 7),
+            ("LONGITUDE", 8),
+            ("BANNER", 2),
+            ("ERPHAV", 7),
+            ("ERPVAV", 7),
+            ("RAD_CENTER", 6),
+        ];
+        let row = |fields: [&'static str; 11]| fields.map(str::as_bytes);
+        let rows = [
+            row([
+                "ON", "Toronto", "CBLA-FM", "99.10", "C1", "433856", "792254", "OP", "55109",
+                "55109", "421.0",
+            ]),
+            row([
+                "ON", "Toronto", "CHFI-FM", "98.10", "C1", "433833", "792314", "OP", "36180",
+                "36180", "553.7",
+            ]),
+            row([
+                "ON", "Toronto", "CJLP-FM", "88.10", "LP", "434000", "792500", "OP", "50", "50",
+                "120.0",
+            ]),
+            row([
+                "ON",
+                "Paris",
+                "CBLA-FM-2",
+                "93.50",
+                "B",
+                "431200",
+                "802300",
+                "OP",
+                "4000",
+                "4000",
+                "0.0",
+            ]),
+            // An HD Radio record, a US record, an allotment and a silent
+            // station are left out.
+            row([
+                "ON", "Toronto", "CBLA-HD", "99.10", "C1", "433856", "792254", "OP", "98000",
+                "98000", "421.0",
+            ]),
+            row([
+                "MI", "Detroit", "WXYZ-FM", "101.10", "B", "422000", "830300", "OP", "50000",
+                "50000", "300.0",
+            ]),
+            row([
+                "ON", "Barrie", "", "95.90", "A", "442300", "794100", "AL", "", "", "",
+            ]),
+            row([
+                "ON", "Nowhere", "CQQQ-FM", "96.10", "A", "440000", "790000", "OP", "0", "0", "",
+            ]),
+            row([
+                "QC", "Gone", "CGON-FM", "97.70", "A", "453000", "733500", "OP", "1000", "1000", "",
+            ]),
+        ];
+        let records: Vec<(bool, &[&[u8]])> = rows
+            .iter()
+            .enumerate()
+            .map(|(index, fields)| (index == 8, fields.as_slice()))
+            .collect();
+        let table = dbf(&columns, &records);
+        zip(&[("allcode.txt", b"codes"), ("fmstatio.dbf", &table)], true)
+    }
 
     fn scratch(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("afik-ofcom-{name}-{}", std::process::id()));
@@ -1166,6 +1370,82 @@ Classic,A,AN000001,90.7,CLASSIC,1,1,51,0\n";
             parse_fcc(FMQ.lines().nth(6).unwrap()).is_err(),
             "a vacancy only"
         );
+    }
+
+    #[test]
+    fn iseds_table_keeps_canadian_stations_on_air() {
+        let csv = Source::Ised.prepare(&ised_zip()).unwrap();
+        let stations = Source::Ised.parse(&csv).unwrap();
+        let summary: Vec<_> = stations
+            .iter()
+            .map(|s| {
+                (
+                    s.name.as_str(),
+                    s.site.as_str(),
+                    s.frequency_hz,
+                    s.erp_watts,
+                    s.height_m,
+                    s.kind,
+                )
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                (
+                    "CBLA",
+                    "Paris, ON",
+                    93_500_000,
+                    4_000.0,
+                    None,
+                    StationKind::Cbc
+                ),
+                (
+                    "CBLA",
+                    "Toronto, ON",
+                    99_100_000,
+                    55_109.0,
+                    Some(421.0),
+                    StationKind::Cbc
+                ),
+                (
+                    "CHFI",
+                    "Toronto, ON",
+                    98_100_000,
+                    36_180.0,
+                    Some(553.7),
+                    StationKind::FullPower
+                ),
+                (
+                    "CJLP",
+                    "Toronto, ON",
+                    88_100_000,
+                    50.0,
+                    Some(120.0),
+                    StationKind::LowPower
+                ),
+            ]
+        );
+        // `DDMMSS` north and `DDDMMSS` west.
+        let toronto = &stations[1];
+        assert!((toronto.latitude - (43.0 + 38.0 / 60.0 + 56.0 / 3_600.0)).abs() < 1e-9);
+        assert!((toronto.longitude + (79.0 + 22.0 / 60.0 + 54.0 / 3_600.0)).abs() < 1e-9);
+        // FN03HP, Toronto: the CBC once, at its stronger transmitter.
+        let near = strongest(&stations, "FN03HP", Receiver::Handheld).unwrap();
+        let chosen: Vec<_> = near
+            .iter()
+            .map(|(s, _)| (s.name.as_str(), s.frequency_hz))
+            .collect();
+        assert_eq!(
+            chosen,
+            [
+                ("CBLA", 99_100_000),
+                ("CHFI", 98_100_000),
+                ("CJLP", 88_100_000)
+            ]
+        );
+        assert!(Source::Ised.prepare(b"not a zip").is_err());
+        assert!(parse_ised("PROVINCE\n").is_err());
     }
 
     #[test]
@@ -1335,18 +1615,16 @@ Classic,A,AN000001,90.7,CLASSIC,1,1,51,0\n";
         let list = cache
             .sync_with(|url| {
                 assert_eq!(url, TRANSMITTERS_URL);
-                Ok(VHF.to_owned())
+                Ok(VHF.into())
             })
             .unwrap();
         assert_eq!(list.stations.len(), 6 + ISRAEL_REGIONAL.len());
-        assert!(cache.sync_with(|_| Ok("not,a,list\n".to_owned())).is_err());
+        assert!(cache.sync_with(|_| Ok("not,a,list\n".into())).is_err());
         assert_eq!(
             cache.load().unwrap().unwrap().stations.len(),
             6 + ISRAEL_REGIONAL.len()
         );
-        assert!(StationCache::none()
-            .sync_with(|_| Ok(VHF.to_owned()))
-            .is_err());
+        assert!(StationCache::none().sync_with(|_| Ok(VHF.into())).is_err());
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1362,32 +1640,34 @@ Classic,A,AN000001,90.7,CLASSIC,1,1,51,0\n";
         let cache = both(&dir);
         let list = cache
             .sync_with(|url| match url {
-                TRANSMITTERS_URL => Ok(VHF.to_owned()),
-                FCC_URL => Ok(FMQ.to_owned()),
+                TRANSMITTERS_URL => Ok(VHF.into()),
+                FCC_URL => Ok(FMQ.into()),
+                ISED_URL => Ok(ised_zip()),
                 _ => Err(format!("unexpected {url}")),
             })
             .unwrap();
-        assert_eq!(list.stations.len(), 6 + 4 + ISRAEL_REGIONAL.len());
+        assert_eq!(list.stations.len(), 6 + 4 + 4 + ISRAEL_REGIONAL.len());
         assert!(list.complete);
         // A failed source fails the sync, but the other is still cached
         // and the failed one keeps what it had.
         let error = cache
             .sync_with(|url| match url {
                 FCC_URL => Err("HTTP 403".to_owned()),
-                _ => Ok(VHF.lines().take(2).collect::<Vec<_>>().join("\n")),
+                ISED_URL => Ok(ised_zip()),
+                _ => Ok(VHF.lines().take(2).collect::<Vec<_>>().join("\n").into()),
             })
             .unwrap_err();
         assert_eq!(error, "HTTP 403");
         assert_eq!(
             cache.load().unwrap().unwrap().stations.len(),
-            1 + 4 + ISRAEL_REGIONAL.len()
+            1 + 4 + 4 + ISRAEL_REGIONAL.len()
         );
         // A cache from before the FCC was a source is read, but incomplete.
         std::fs::remove_dir_all(dir.join(Source::Fcc.cache_dir())).unwrap();
         let list = cache.load().unwrap().unwrap();
         assert_eq!(
             (list.stations.len(), list.complete),
-            (1 + ISRAEL_REGIONAL.len(), false)
+            (1 + 4 + ISRAEL_REGIONAL.len(), false)
         );
         let _ = std::fs::remove_dir_all(dir);
     }
