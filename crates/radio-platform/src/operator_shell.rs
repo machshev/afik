@@ -1032,12 +1032,13 @@ impl Shell {
     /// [`Shell::set_banks`] must have run first: a bank the current
     /// configuration does not populate is dropped rather than restored, so a
     /// radio reprogrammed since it was last switched off cannot come back
-    /// filtered to a view with nothing in it.
+    /// filtered to a view with nothing in it. The group's banks are not read
+    /// yet, so [`Shell::set_group_banks`] drops a bank outside the group.
     pub fn restore_source(&mut self, memory_mode: bool, bank: Option<BankId>) {
         self.screen = Screen::Operating;
         self.entry = None;
         self.mode = if memory_mode { Mode::Memory } else { Mode::Vfo };
-        self.bank_filter = bank.filter(|bank| self.listed().contains(*bank));
+        self.bank_filter = bank.filter(|bank| self.banks.contains(*bank));
         self.source_cursor = self.source_row();
     }
 
@@ -1961,6 +1962,23 @@ mod tests {
         shell.set_groups(0);
         assert_eq!(shell.source_rows(), 3);
         assert_eq!(shell.source_at(3), None);
+    }
+
+    #[test]
+    fn a_restored_bank_waits_for_its_groups_banks() {
+        // The place names group 0 and bank 1; the group's banks are read
+        // after the place is restored, as the interface does.
+        let mut shell = memory_shell(&[0, 1, 2]);
+        shell.set_groups(2);
+        shell.restore_group(Some(0));
+        shell.restore_source(true, Some(BankId::new(1)));
+        shell.set_group_banks(bank_table(&[0, 1]));
+        assert_eq!(shell.group(), Some(0));
+        assert_eq!(shell.bank_filter(), Some(BankId::new(1)));
+        // A bank outside the group is still dropped once its banks arrive.
+        shell.restore_source(true, Some(BankId::new(2)));
+        shell.set_group_banks(bank_table(&[0, 1]));
+        assert_eq!(shell.bank_filter(), None);
     }
 
     /// Returns a shell listening to every programmed channel, as an operator
