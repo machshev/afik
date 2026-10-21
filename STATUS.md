@@ -1229,6 +1229,20 @@ acknowledged 240/240 pages (CRC-32 `8445ac9c`, not read back), and after a
 power cycle `probe-normal` read `firmware=AFIK-K5-7.0.67`. Next: leave a scan
 running overnight.
 
+**Slow keys with a group selected** (2026-10-21, operator report: the K5 and
+a K6 needed keys pressed twice). Bisecting on the K5 cleared it by rewriting
+the place record; the K6's record (read with `backup-eeprom`) had group 6
+selected and the K5's none, and dual watch on the K5 stayed quick. A group is a
+bank-set view, which `place_of` answered by walking all 254 bank slots per
+channel, and the interface counts the view several times a pass. Absent bank
+slots now carry the next held bank's first channel, so `place_of` is a binary
+search and `span` reads its end from the next slot. Version `7.0.68`. Gate:
+`cargo fmt --all --check` clean, workspace clippy `-D warnings` clean,
+`cargo test --workspace` 1002 passed 0 failed, `tool/build-k5.sh --release`
+(flash end `0x0000ef88`) and `tool/build-k1.sh --release` pass. Not flashed.
+The overnight scan stall was on the K1, whose memory is SPI NOR; how its
+channel reads could fail is not established.
+
 ## Previous work package: TXK5-059
 
 **`TXK5-059` step 2 is done** (2026-10-15, operator request): per-channel

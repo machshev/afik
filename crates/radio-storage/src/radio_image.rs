@@ -949,6 +949,17 @@ impl Index {
             return Err(StorageError::MalformedImage);
         }
         index.len = u16::try_from(first).unwrap_or(u16::MAX);
+        // A slot the image does not hold takes the number of the next held
+        // bank's first channel, so `first` never falls across the table and
+        // the lookups below search it rather than walk it.
+        let mut next = index.len;
+        for slot in index.banks.iter_mut().rev() {
+            if slot.entry == ABSENT {
+                slot.first = next;
+            } else {
+                next = slot.first;
+            }
+        }
         Ok(())
     }
 
@@ -1115,10 +1126,7 @@ impl Index {
         if slot.entry == ABSENT {
             return None;
         }
-        let end = self.banks[bank + 1..]
-            .iter()
-            .find(|next| next.entry != ABSENT)
-            .map_or(self.len, |next| next.first);
+        let end = self.banks.get(bank + 1).map_or(self.len, |next| next.first);
         Some(slot.first..end)
     }
 
@@ -1128,12 +1136,19 @@ impl Index {
         if index >= self.len {
             return None;
         }
-        // The last held bank starting at or before `index`.
-        let (bank, slot) = (0_u16..)
-            .zip(&self.banks)
-            .filter(|(_, slot)| slot.entry != ABSENT && slot.first <= index)
-            .last()?;
-        Some((BankId::new(bank), index - slot.first))
+        // The last slot starting at or before `index`: the bank holding it,
+        // since every slot after that bank starts where the bank ends. This
+        // runs for every channel a bank-set view counts, on every interface
+        // pass, so it searches rather than walks all the slots.
+        let bank = self
+            .banks
+            .partition_point(|slot| slot.first <= index)
+            .checked_sub(1)?;
+        let slot = self.banks[bank];
+        if slot.entry == ABSENT {
+            return None;
+        }
+        Some((BankId::new(u16::try_from(bank).ok()?), index - slot.first))
     }
 
     /// The channel number of position `position` in `bank`, if it has one.
@@ -1676,6 +1691,17 @@ mod tests {
         let index = index(&image).expect("index");
         assert_eq!(index.len(), 1 + 760 + 1);
         assert_eq!(index.place_of(761), Some((BankId::new(last), 0)));
+        // Every channel across the gaps names its own bank and position.
+        for number in 0..index.len() {
+            let want = match number {
+                0 => (BankId::new(1), 0),
+                761 => (BankId::new(last), 0),
+                _ => (BankId::new(200), number - 1),
+            };
+            assert_eq!(index.place_of(number), Some(want), "channel {number}");
+            assert!(index.member_at(number, want.0), "channel {number}");
+        }
+        assert_eq!(index.place_of(762), None);
         assert_eq!(index.index_of(BankId::new(200), 759), Some(760));
         assert!(index.member_at(761, BankId::new(last)));
         assert!(!index.member_at(760, BankId::new(last)));
