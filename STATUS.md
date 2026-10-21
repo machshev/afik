@@ -1242,7 +1242,10 @@ search and `span` reads its end from the next slot. Version `7.0.68`. Gate:
 (flash end `0x0000ef88`) and `tool/build-k1.sh --release` pass. Flashed to
 the K6 (bootloader `2.00.06`, 240/240 pages, CRC-32 `df0caa9e`, not read
 back): it booted `AFIK-K5-7.0.68` with group 6 and dual watch still in its
-place record, and the operator found the keys quick again. The overnight scan stall was on the K1, whose memory is SPI NOR; how its
+place record, and the operator found the keys quick again. The K1 took
+7.0.68 too (bootloader `7.03.01`, 311/311 pages, CRC-32 `64b66efb`, not read
+back) and answered `AFIK-K1-7.0.68`; the first two hellos straight after
+power-on timed out, the next five answered. The overnight scan stall was on the K1, whose memory is SPI NOR; how its
 channel reads could fail is not established.
 
 ## Previous work package: TXK5-059
