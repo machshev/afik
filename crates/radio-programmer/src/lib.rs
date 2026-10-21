@@ -4,8 +4,8 @@
 
 use core::fmt;
 use radio_channel_plan::{
-    BankGroup, BankOrigin, ChannelBank, ChannelRecord, GeneratedBank, PlanEncoding, StartPlace,
-    VfoStart, VFO_SLOTS,
+    BankGroup, BankOrigin, ChannelBank, ChannelRecord, GeneratedBank, PlanEncoding, SavedLocation,
+    StartPlace, VfoStart, MAX_SAVED_LOCATIONS, VFO_SLOTS,
 };
 use radio_domain::{BankId, ChannelId, RadioConfig};
 use radio_platform::memory_link::IMAGE_REGION_BYTES;
@@ -20,11 +20,11 @@ use radio_storage::radio_image;
 use radio_storage::{
     configuration_image_len, decode_bank_group, decode_bank_origin, decode_channel,
     decode_channel_bank, decode_configuration_image, decode_generated_bank, decode_radio_config,
-    decode_start_place, decode_tx_range, decode_vfo_start, encode_bank_group, encode_bank_origin,
-    encode_channel, encode_channel_bank, encode_configuration_image, encode_generated_bank,
-    encode_radio_config, encode_start_place, encode_tx_range, encode_vfo_start, ObjectKey,
-    ObjectKind, StorageError, StorageObject, StorageUsage, MAX_OBJECT_DATA,
-    OBJECT_ENTRY_HEADER_LEN, STORAGE_FORMAT_VERSION,
+    decode_saved_location, decode_start_place, decode_tx_range, decode_vfo_start,
+    encode_bank_group, encode_bank_origin, encode_channel, encode_channel_bank,
+    encode_configuration_image, encode_generated_bank, encode_radio_config, encode_saved_location,
+    encode_start_place, encode_tx_range, encode_vfo_start, ObjectKey, ObjectKind, StorageError,
+    StorageObject, StorageUsage, MAX_OBJECT_DATA, OBJECT_ENTRY_HEADER_LEN, STORAGE_FORMAT_VERSION,
 };
 use radio_tx_policy::{RangeError, TxPolicy, TxRange};
 
@@ -121,6 +121,7 @@ pub struct RadioProject {
     starts: [Option<StartPlace>; VFO_SLOTS],
     vfos: [Option<VfoStart>; VFO_SLOTS],
     origins: Vec<BankOrigin>,
+    locations: Vec<SavedLocation>,
 }
 
 impl RadioProject {
@@ -136,7 +137,19 @@ impl RadioProject {
             starts: [None; VFO_SLOTS],
             vfos: [None; VFO_SLOTS],
             origins: Vec::new(),
+            locations: Vec::new(),
         }
+    }
+
+    /// Keeps a location the operator saved (`ADR-120`); the project file
+    /// keeps it, a radio image never holds it.
+    pub fn add_location(&mut self, location: SavedLocation) {
+        self.locations.push(location);
+    }
+
+    /// Returns the saved locations, in the order they were saved.
+    pub fn locations(&self) -> &[SavedLocation] {
+        &self.locations
     }
 
     /// Records which generator made a bank (`ADR-117`); the project file
@@ -490,7 +503,8 @@ impl ConfigurationCompiler {
             + project.groups.len()
             + project.starts.iter().flatten().count()
             + project.vfos.iter().flatten().count()
-            + project.origins.len();
+            + project.origins.len()
+            + project.locations.len();
         let mut objects = Vec::with_capacity(object_count);
         for bank in &project.generated_banks {
             objects.push(encode_generated_bank(*bank)?);
@@ -524,6 +538,12 @@ impl ConfigurationCompiler {
         }
         for origin in &project.origins {
             objects.push(encode_bank_origin(*origin)?);
+        }
+        if project.locations.len() > MAX_SAVED_LOCATIONS {
+            return Err(CompileError::CapacityOverflow);
+        }
+        for (position, location) in (0_u16..).zip(&project.locations) {
+            objects.push(encode_saved_location(position, *location)?);
         }
         objects.sort_unstable_by_key(|object| object.key());
         if let Some(duplicate) = objects
@@ -631,6 +651,9 @@ impl ConfigurationCompiler {
                 }
                 ObjectKind::BankOrigin => {
                     decode_bank_origin(object)?;
+                }
+                ObjectKind::SavedLocation => {
+                    decode_saved_location(object)?;
                 }
             }
             report.object_count = report
@@ -785,6 +808,9 @@ impl ConfigurationSnapshot {
                 }
                 ObjectKind::BankOrigin => {
                     decode_bank_origin(object)?;
+                }
+                ObjectKind::SavedLocation => {
+                    decode_saved_location(object)?;
                 }
             }
             storage_bytes = storage_bytes
@@ -1559,6 +1585,45 @@ mod tests {
             project.compile_radio_image().expect("radio image"),
             image,
             "the radio image is the same with or without it"
+        );
+    }
+
+    #[test]
+    fn saved_locations_survive_the_project_file_and_never_reach_the_radio() {
+        use radio_channel_plan::{LocationName, Locator, SavedLocation, MAX_SAVED_LOCATIONS};
+        let mut project = RadioProject::new();
+        project.add_channel(channel(2, 0));
+        project.add_bank(named_bank(0));
+        let image = project.compile_radio_image().expect("radio image");
+        let home = SavedLocation {
+            locator: Locator::new("IO91WM").unwrap(),
+            name: Some(LocationName::new("Home").unwrap()),
+        };
+        let away = SavedLocation {
+            locator: Locator::new("JN18EU").unwrap(),
+            name: None,
+        };
+        project.add_location(home);
+        project.add_location(away);
+
+        let compiled = ConfigurationCompiler::new(capabilities_for(8))
+            .compile(&project)
+            .unwrap();
+        let kept: Vec<_> = compiled
+            .objects()
+            .iter()
+            .filter(|object| object.key().kind == ObjectKind::SavedLocation)
+            .map(|object| radio_storage::decode_saved_location(object).unwrap())
+            .collect();
+        assert_eq!(kept, [home, away], "in the order they were saved");
+        assert_eq!(project.compile_radio_image().expect("radio image"), image);
+
+        for _ in 0..MAX_SAVED_LOCATIONS {
+            project.add_location(away);
+        }
+        assert_eq!(
+            ConfigurationCompiler::new(capabilities_for(8)).compile(&project),
+            Err(CompileError::CapacityOverflow)
         );
     }
 

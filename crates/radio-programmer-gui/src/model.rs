@@ -14,9 +14,9 @@ use std::fmt;
 use radio_channel_plan::{
     BankFlags, BankGroup, BankName, BankOrigin, BankSet, BankSettings, BankSource, ChannelBank,
     ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord, ChannelTemplate, Designator,
-    GeneratedBank, Locator, PlanEncoding, SharedSettings, StartPlace, VfoStart,
-    GENERATED_CHANNEL_ID_BASE, MAX_BANKS, MAX_DESIGNATOR_LEN, MAX_GENERATED_CHANNELS, MAX_GROUPS,
-    VFO_SLOTS,
+    GeneratedBank, LocationName, Locator, PlanEncoding, SavedLocation, SharedSettings, StartPlace,
+    VfoStart, GENERATED_CHANNEL_ID_BASE, MAX_BANKS, MAX_DESIGNATOR_LEN, MAX_GENERATED_CHANNELS,
+    MAX_GROUPS, MAX_LOCATION_NAME_LEN, MAX_SAVED_LOCATIONS, VFO_SLOTS,
 };
 use radio_domain::tones::{standard_tone, CTCSS_COUNT, TONE_POSITIONS};
 use radio_domain::{
@@ -34,6 +34,8 @@ use radio_storage::{
     CONFIGURATION_IMAGE_VERSION, MAX_OBJECT_DATA, STORAGE_FORMAT_VERSION,
 };
 use radio_tx_policy::{TxRange, MAX_TX_RANGES};
+
+use crate::locators::{SavedLocator, SavedLocators};
 
 /// Maximum objects an offline host project may hold.
 pub const MAX_PROJECT_OBJECTS: u16 = 1_024;
@@ -107,6 +109,22 @@ impl fmt::Display for ModelScope {
             Self::TxRange(row) => write!(formatter, "TX range {}", row + 1),
             Self::Project => formatter.write_str("project"),
         }
+    }
+}
+
+/// The saved locations a project file keeps, as the Map tab edits them.
+fn saved_locations(project: &RadioProject) -> SavedLocators {
+    SavedLocators {
+        list: project
+            .locations()
+            .iter()
+            .map(|location| SavedLocator {
+                locator: location.locator.as_str().to_owned(),
+                description: location
+                    .name
+                    .map_or_else(String::new, |name| name.as_str().to_owned()),
+            })
+            .collect(),
     }
 }
 
@@ -1087,6 +1105,8 @@ pub struct ProjectModel {
     /// Each slot's programmed VFO, A first, written in the radio's place with
     /// the start places; `None` leaves that slot's VFO at the radio's defaults.
     pub vfos: [Option<VfoDraft>; VFO_SLOTS],
+    /// The locations the operator keeps for the generators (`ADR-120`).
+    pub locations: SavedLocators,
 }
 
 /// One slot's VFO as the Radio tab edits it.
@@ -1714,11 +1734,49 @@ impl ProjectModel {
                 Err(failure) => errors.push(failure),
             }
         }
+        self.validate_locations(&mut project, &mut errors);
 
         if errors.is_empty() {
             Ok(project)
         } else {
             Err(errors)
+        }
+    }
+
+    /// Checks the saved locations the project file keeps (`ADR-120`).
+    fn validate_locations(&self, project: &mut RadioProject, errors: &mut Vec<ModelError>) {
+        for saved in &self.locations.list {
+            let failed = |reason: &str| {
+                error(
+                    ModelScope::Project,
+                    "saved location",
+                    format!("{}: {reason}", saved.label()),
+                )
+            };
+            let locator = Locator::new(&saved.locator).map_err(|_| failed("not a locator"));
+            let name = if saved.description.is_empty() {
+                Ok(None)
+            } else {
+                LocationName::new(&saved.description)
+                    .map(Some)
+                    .map_err(|_| {
+                        failed(&format!(
+                            "a name is up to {MAX_LOCATION_NAME_LEN} letters, digits and \
+                         punctuation"
+                        ))
+                    })
+            };
+            match (locator, name) {
+                (Ok(locator), Ok(name)) => project.add_location(SavedLocation { locator, name }),
+                (Err(failure), _) | (_, Err(failure)) => errors.push(failure),
+            }
+        }
+        if self.locations.list.len() > MAX_SAVED_LOCATIONS {
+            errors.push(error(
+                ModelScope::Project,
+                "saved locations",
+                format!("a project keeps at most {MAX_SAVED_LOCATIONS}"),
+            ));
         }
     }
 
@@ -1956,6 +2014,11 @@ impl ProjectModel {
                     project
                         .add_origin(radio_storage::decode_bank_origin(&object).map_err(invalid)?);
                 }
+                ObjectKind::SavedLocation => {
+                    project.add_location(
+                        radio_storage::decode_saved_location(&object).map_err(invalid)?,
+                    );
+                }
                 ObjectKind::VfoStart => {
                     let (slot, vfo) = radio_storage::decode_vfo_start(&object).map_err(invalid)?;
                     project.set_vfo(usize::from(slot), Some(vfo));
@@ -2002,6 +2065,7 @@ impl ProjectModel {
                 .collect(),
             starts: [None, None],
             vfos: project.vfos().map(|vfo| vfo.map(VfoDraft::from_vfo)),
+            locations: saved_locations(project),
         };
         // A group names banks by identifier; each row below remembers its.
         let in_groups = |id: u16| -> Vec<usize> {

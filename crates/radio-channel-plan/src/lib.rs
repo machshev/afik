@@ -494,6 +494,23 @@ impl BankOrigin {
     }
 }
 
+/// Longest name a saved location carries, such as `Home`.
+pub const MAX_LOCATION_NAME_LEN: usize = 32;
+/// The most locations one project keeps.
+pub const MAX_SAVED_LOCATIONS: usize = 64;
+/// What the operator calls a saved location.
+pub type LocationName = FixedName<MAX_LOCATION_NAME_LEN>;
+
+/// A Maidenhead locator the operator keeps, and what they call it
+/// (`ADR-120`). It stays in the project; a radio never gets it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SavedLocation {
+    /// The locator.
+    pub locator: Locator,
+    /// What the operator calls it, if anything.
+    pub name: Option<LocationName>,
+}
+
 /// A compact, display-safe explicit channel name.
 pub type ChannelName = FixedName<MAX_CHANNEL_NAME_LEN>;
 /// The short prefix a plan's expanded channel names are built from.

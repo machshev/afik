@@ -1,15 +1,16 @@
 //! The Maidenhead locators the operator keeps, each with an optional
 //! description such as `Home`, for the generators' shared locator.
 //!
-//! They are kept in `$XDG_STATE_HOME/afik/locators`, one per line: the
-//! locator, then the description.
+//! They are kept in the project (`ADR-120`). Studios before that kept them
+//! in `$XDG_STATE_HOME/afik/locators`, one per line: the locator, then the
+//! description; that file is still read, so a project that has none takes
+//! them from it.
 
-use std::{
-    fmt::Write as _,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use crate::files as fs;
+
+use radio_channel_plan::MAX_LOCATION_NAME_LEN;
 
 use crate::{paths, repeaters::locator_centre};
 
@@ -43,7 +44,7 @@ pub struct SavedLocators {
 }
 
 impl SavedLocators {
-    /// The state file the locators are kept in.
+    /// The state file older studios kept the locators in.
     pub fn file() -> Option<PathBuf> {
         paths::state_dir().map(|dir| dir.join(FILE))
     }
@@ -61,8 +62,10 @@ impl SavedLocators {
         locators
     }
 
-    /// Writes the locators for the next start.
+    /// Writes the file older studios kept, as the tests stand in for one.
+    #[cfg(test)]
     pub fn save(&self, file: &Path) -> Result<(), String> {
+        use std::fmt::Write as _;
         let text = self.list.iter().fold(String::new(), |mut text, saved| {
             let _ = writeln!(text, "{} {}", saved.locator, saved.description);
             text
@@ -82,11 +85,22 @@ impl SavedLocators {
     }
 
     /// Keeps `locator` with `description`, replacing the description of one
-    /// already kept; refuses anything that is not a locator.
+    /// already kept; refuses anything that is not a locator, and a
+    /// description the project file cannot hold.
     pub fn put(&mut self, locator: &str, description: &str) -> Result<(), String> {
         locator_centre(locator)?;
         let locator = locator.trim().to_ascii_uppercase();
         let description = description.split_whitespace().collect::<Vec<_>>().join(" ");
+        if description.len() > MAX_LOCATION_NAME_LEN
+            || !description
+                .chars()
+                .all(|c| c.is_ascii_graphic() || c == ' ')
+        {
+            return Err(format!(
+                "A description is up to {MAX_LOCATION_NAME_LEN} plain letters, digits and \
+                 punctuation."
+            ));
+        }
         match self.list.iter_mut().find(|saved| saved.locator == locator) {
             Some(saved) => saved.description = description,
             None => self.list.push(SavedLocator {

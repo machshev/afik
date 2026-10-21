@@ -368,6 +368,17 @@ the Projects tab shows Import… and Export. Gate: `cargo fmt --all --check`
 clean, `cargo clippy --workspace --all-targets -- -D warnings` clean,
 `cargo test --workspace` 994 passed 0 failed, wasm32 clippy of Studio `-D
 warnings` clean, `trunk build --release` passes.
+Step 9 (operator request: an imported project lacked its locations, "they
+should be part of the project file", `ADR-120`): saved locations are project
+object kind 10 (locator, optional 32-character name), carried by
+`radio-storage`, `radio-programmer` and the Studio's project model and never
+compiled into a radio image. The Map tab's Save and Forget edit the project;
+the old `locators` state file is only read, into a project that keeps none.
+Gate: `cargo fmt --all --check` clean, `cargo clippy --workspace
+--all-targets -- -D warnings` clean, `cargo test --workspace` 996 passed 0
+failed, wasm32 clippy of the shared crates and Studio `-D warnings` clean,
+`tool/build-k5.sh --release` and `tool/build-k1.sh --release` pass. Not
+flashed: the radio image is unchanged.
 
 **`REL-079` is active alongside** (2026-10-19, operator request,
 `ADR-118`): a `v*` tag builds and publishes release packages for Linux,

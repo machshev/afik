@@ -454,10 +454,10 @@ pub struct StudioApp {
     world: Option<WorldList>,
     /// A hearham fetch running on a worker.
     world_sync: Option<world::SyncJob>,
-    /// The locators the operator keeps, their state file, and the
-    /// description being typed for the current one.
-    saved_locators: SavedLocators,
-    saved_locators_file: Option<PathBuf>,
+    /// The locators older studios kept beside the projects (`ADR-120`),
+    /// which a project with none of its own takes, and the description
+    /// being typed for the current locator.
+    legacy_locators: SavedLocators,
     locator_description: String,
     /// What the radio listens with, and its state file.
     receiver: Receiver,
@@ -501,10 +501,11 @@ impl StudioApp {
                 app.repeater_area.radius_km = radii.repeaters;
             }
         }
-        app.saved_locators_file = SavedLocators::file();
-        if let Some(file) = &app.saved_locators_file {
-            app.saved_locators = SavedLocators::load(file);
+        if let Some(file) = SavedLocators::file() {
+            app.legacy_locators = SavedLocators::load(&file);
         }
+        // The project opened before the older studios' locators were read.
+        app.adopt_legacy_locations();
         app.locator_description = app.saved_description();
         app.use_station_cache(StationCache::open());
         app.station_area_file = StationArea::file();
@@ -1390,7 +1391,8 @@ impl StudioApp {
     /// The name the location at `locator` goes by: the saved locator's
     /// description, cut to a group name, else the locator itself.
     fn location_name(&self, locator: &str) -> String {
-        self.saved_locators
+        self.project
+            .locations
             .find(locator)
             .and_then(|saved| repeaters::sanitise(&saved.description, MAX_BANK_NAME_LEN))
             .unwrap_or_else(|| locator.trim().to_ascii_uppercase())
@@ -2067,8 +2069,7 @@ impl StudioApp {
             world_cache: WorldCache::none(),
             world: None,
             world_sync: None,
-            saved_locators: SavedLocators::default(),
-            saved_locators_file: None,
+            legacy_locators: SavedLocators::default(),
             locator_description: String::new(),
             receiver: Receiver::Handheld,
             receiver_file: None,
@@ -2504,6 +2505,7 @@ impl StudioApp {
         self.project = loaded.clone();
         self.saved = loaded;
         self.errors.clear();
+        self.adopt_legacy_locations();
         let recorded = self.record_origins();
         if recorded > 0 {
             self.status = format!(
@@ -3817,7 +3819,7 @@ impl StudioApp {
                 (&self.marine_area, self.map_shown, self.receiver),
                 (
                     self.map_all_locations,
-                    &self.saved_locators.list,
+                    &self.project.locations.list,
                     &self.repeater_area.locator,
                 ),
                 (
@@ -3836,7 +3838,7 @@ impl StudioApp {
     fn map_locators(&self) -> Vec<String> {
         let mut locators = vec![self.repeater_area.locator.clone()];
         if self.map_all_locations {
-            for saved in &self.saved_locators.list {
+            for saved in &self.project.locations.list {
                 if !locators.contains(&saved.locator) {
                     locators.push(saved.locator.clone());
                 }
@@ -4090,7 +4092,8 @@ impl StudioApp {
             self.map_locator.clone_from(&self.repeater_area.locator);
         }
         let pins: Vec<Pin> = self
-            .saved_locators
+            .project
+            .locations
             .list
             .iter()
             .filter_map(|saved| {
@@ -4130,7 +4133,8 @@ impl StudioApp {
                 .changed();
             if edited {
                 if self
-                    .saved_locators
+                    .project
+                    .locations
                     .find(&self.repeater_area.locator)
                     .is_some()
                 {
@@ -4138,7 +4142,7 @@ impl StudioApp {
                 }
                 self.remember_locator();
             }
-            let current = self.saved_locators.find(&self.repeater_area.locator);
+            let current = self.project.locations.find(&self.repeater_area.locator);
             let mut chosen = None;
             let mut all = self.map_all_locations;
             let selected_text = if all {
@@ -4154,7 +4158,7 @@ impl StudioApp {
                             "Shows every saved locator on the map at once, and Add all \
                              shown adds for each",
                         );
-                    for saved in &self.saved_locators.list {
+                    for saved in &self.project.locations.list {
                         let selected = !all && current.is_some_and(|c| c.locator == saved.locator);
                         if ui.selectable_label(selected, saved.label()).clicked() {
                             chosen = Some(saved.locator.clone());
@@ -4217,7 +4221,8 @@ impl StudioApp {
 
     /// The description kept for the current locator, else none.
     fn saved_description(&self) -> String {
-        self.saved_locators
+        self.project
+            .locations
             .find(&self.repeater_area.locator)
             .map(|saved| saved.description.clone())
             .unwrap_or_default()
@@ -4282,13 +4287,19 @@ impl StudioApp {
     /// Keeps the current locator and its description in the dropdown.
     fn save_locator(&mut self) {
         let (locator, description) = (&self.repeater_area.locator, &self.locator_description);
-        if let Err(error) = self.saved_locators.put(locator, description) {
+        if let Err(error) = self.project.locations.put(locator, description) {
             self.refuse(&format!("Cannot save the locator: {error}."));
             return;
         }
-        let saved = self.saved_locators.find(locator).map(SavedLocator::label);
-        self.status = format!("Saved {}.", saved.unwrap_or_default());
-        self.write_saved_locators();
+        let saved = self
+            .project
+            .locations
+            .find(locator)
+            .map(SavedLocator::label);
+        self.status = format!(
+            "Saved {} in the project; save the project to keep it.",
+            saved.unwrap_or_default()
+        );
         // The location's group follows its description.
         let locator = self.repeater_area.locator.clone();
         if let Some(group) = self.project.location(&locator) {
@@ -4306,21 +4317,29 @@ impl StudioApp {
     /// Forgets the current locator from the dropdown; the field keeps it.
     fn forget_locator(&mut self) {
         let locator = self.repeater_area.locator.trim().to_ascii_uppercase();
-        if self.saved_locators.remove(&locator) {
-            self.status = format!("Forgot {locator}.");
-            self.write_saved_locators();
+        if self.project.locations.remove(&locator) {
+            self.status = format!("Forgot {locator}; save the project to keep that.");
         } else {
             self.status = format!("{locator} is not saved.");
         }
     }
 
-    /// Writes the kept locators for the next start.
-    fn write_saved_locators(&self) {
-        if let Some(file) = &self.saved_locators_file {
-            if let Err(error) = self.saved_locators.save(file) {
-                log::warn!("could not remember the saved locators: {error}");
-            }
+    /// Gives a project that keeps no locations the ones older studios kept
+    /// beside the projects (`ADR-120`), as an unsaved change, so saving the
+    /// project keeps them in it.
+    fn adopt_legacy_locations(&mut self) {
+        if !self.project.locations.list.is_empty() || self.legacy_locators.list.is_empty() {
+            return;
         }
+        self.project.locations = self.legacy_locators.clone();
+        let count = self.project.locations.list.len();
+        log::info!("took {count} saved locations from the older studios' file");
+        self.status = format!(
+            "{} Took {count} saved location{} from before they were kept in projects; \
+             save to keep them in this one.",
+            self.status,
+            if count == 1 { "" } else { "s" }
+        );
     }
 
     /// Keeps a locator edit for the next start once it reads as one, so the
@@ -7912,8 +7931,8 @@ mod tests {
 
         // Saved as Home without a rename of the group, as an older studio
         // or another project left it: the next add names it.
-        app.saved_locators.put("JO02EH", "Home").unwrap();
-        app.saved_locators.put("JO02BE", "Work").unwrap();
+        app.project.locations.put("JO02EH", "Home").unwrap();
+        app.project.locations.put("JO02BE", "Work").unwrap();
         app.add_marine();
         assert_eq!(app.project.groups[home].name, "HOME");
 
@@ -8299,7 +8318,7 @@ mod tests {
             synced: std::time::SystemTime::now(),
         });
         "IO91WM".clone_into(&mut app.repeater_area.locator);
-        app.saved_locators.put("IO91WM", "Home").unwrap();
+        app.project.locations.put("IO91WM", "Home").unwrap();
 
         // Each band says how many are in range, ticked or not.
         let list = &app.repeaters.as_ref().unwrap().repeaters;
@@ -8392,8 +8411,8 @@ mod tests {
             beacons: Vec::new(),
             synced: std::time::SystemTime::now(),
         });
-        app.saved_locators.put("IO91WM", "Home").unwrap();
-        app.saved_locators.put("IO83WL", "Away").unwrap();
+        app.project.locations.put("IO91WM", "Home").unwrap();
+        app.project.locations.put("IO83WL", "Away").unwrap();
         "IO91WM".clone_into(&mut app.repeater_area.locator);
         app.map_shown = [false; Generator::ALL.len()];
         app.map_shown[0] = true;
@@ -8413,13 +8432,13 @@ mod tests {
             "each saved locator's repeaters and radius"
         );
         // A saved locator with no repeaters in range gets no radius.
-        app.saved_locators.put("IO70LI", "Cornwall").unwrap();
+        app.project.locations.put("IO70LI", "Cornwall").unwrap();
         assert_eq!(
             shown(&mut app),
             (vec!["GB3LDN".to_owned(), "GB3MAN".to_owned()], 2),
             "no radius where nothing is taken"
         );
-        app.saved_locators.remove("IO70LI");
+        app.project.locations.remove("IO70LI");
 
         app.add_all_shown();
         assert_eq!(app.status, "Added or updated 2 generators at 2 locations.");
@@ -8656,7 +8675,7 @@ mod tests {
         });
         assert_eq!(app.map_locator, "IO91WM");
         let centre = app.map_view.centre;
-        app.saved_locators.put("JN18EU", "Paris").unwrap();
+        app.project.locations.put("JN18EU", "Paris").unwrap();
         app.pick_on_map((48.86, 2.35));
         assert_eq!(app.repeater_area.locator, "JN18EU");
         assert_eq!(app.locator_description, "Paris");
@@ -8668,15 +8687,13 @@ mod tests {
     }
 
     #[test]
-    fn locators_are_saved_with_a_description_and_chosen_again() {
+    fn locations_are_kept_in_the_project_and_chosen_again() {
         use crate::locators::{SavedLocator, SavedLocators};
 
-        let mut app = simulated("saved-locators");
-        let dir = std::env::temp_dir().join(format!("afik-saved-locators-{}", std::process::id()));
-        let file = dir.join("locators");
-        app.saved_locators_file = Some(file.clone());
+        let dir = scratch("saved-locators");
+        let mut app = app_in(&dir, &Options::default());
         assert!(
-            app.saved_locators.list.is_empty(),
+            app.project.locations.list.is_empty(),
             "tests never read the real file"
         );
 
@@ -8684,9 +8701,19 @@ mod tests {
         app.save_locator();
         assert!(app.status.starts_with("Cannot save"), "{}", app.status);
         "io91wm".clone_into(&mut app.repeater_area.locator);
+        "Café".clone_into(&mut app.locator_description);
+        app.save_locator();
+        assert!(
+            app.status.starts_with("Cannot save"),
+            "the file holds ASCII"
+        );
         "Home".clone_into(&mut app.locator_description);
         app.save_locator();
-        assert_eq!(app.status, "Saved Home (IO91WM).");
+        assert_eq!(
+            app.status,
+            "Saved Home (IO91WM) in the project; save the project to keep it."
+        );
+        assert!(app.is_dirty(), "a saved location is a project change");
         "JN18EU".clone_into(&mut app.repeater_area.locator);
         "Paris".clone_into(&mut app.locator_description);
         app.save_locator();
@@ -8694,19 +8721,42 @@ mod tests {
         app.choose_locator("IO91WM");
         assert_eq!(app.repeater_area.locator, "IO91WM");
         assert_eq!(app.locator_description, "Home");
-        assert_eq!(SavedLocators::load(&file), app.saved_locators, "written");
-
         app.forget_locator();
-        assert_eq!(app.status, "Forgot IO91WM.");
+        assert_eq!(app.status, "Forgot IO91WM; save the project to keep that.");
         app.forget_locator();
         assert_eq!(app.status, "IO91WM is not saved.");
         assert_eq!(app.repeater_area.locator, "IO91WM", "the field keeps it");
-        let labels: Vec<_> = SavedLocators::load(&file)
+
+        // The project file keeps them, so another studio opening it has them.
+        app.save_project();
+        let reopened = app_in(&dir, &Options::default());
+        let labels: Vec<_> = reopened
+            .project
+            .locations
             .list
             .iter()
             .map(SavedLocator::label)
             .collect();
         assert_eq!(labels, ["Paris (JN18EU)"]);
+
+        // A project with none takes the older studios' file, unsaved.
+        let mut older = app_in(&scratch("legacy-locators"), &Options::default());
+        older.legacy_locators.put("IO83WL", "Away").unwrap();
+        older.load_project();
+        assert_eq!(older.project.locations, older.legacy_locators);
+        assert!(older.is_dirty());
+        assert!(
+            older.status.contains("Took 1 saved location"),
+            "{}",
+            older.status
+        );
+        // One that keeps its own is left alone.
+        let mut kept = app_in(&dir, &Options::default());
+        kept.legacy_locators = SavedLocators::default();
+        kept.legacy_locators.put("IO83WL", "Away").unwrap();
+        kept.load_project();
+        assert_eq!(kept.project.locations.list.len(), 1);
+        assert!(!kept.is_dirty());
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -8972,8 +9022,8 @@ mod tests {
             coverage,
         };
         let mut app = simulated("share-banks");
-        app.saved_locators.put("IO91WM", "Home").unwrap();
-        app.saved_locators.put("IO91WL", "Work").unwrap();
+        app.project.locations.put("IO91WM", "Home").unwrap();
+        app.project.locations.put("IO91WL", "Work").unwrap();
         let synced = |repeaters| {
             Some(RepeaterList {
                 repeaters,

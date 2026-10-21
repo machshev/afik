@@ -7,8 +7,9 @@ use core::fmt;
 use radio_channel_plan::{
     BankFlags, BankGroup, BankName, BankOrigin, BankSet, BankSettings, BankSource, ChannelBank,
     ChannelDefinition, ChannelFlags, ChannelName, ChannelRecord, ChannelTemplate, Designator,
-    GeneratedBank, Locator, PlanEncoding, SharedSettings, StartPlace, VfoStart, MAX_BANK_NAME_LEN,
-    MAX_CHANNEL_NAME_LEN, MAX_DESIGNATOR_LEN, MAX_LOCATOR_LEN,
+    GeneratedBank, LocationName, Locator, PlanEncoding, SavedLocation, SharedSettings, StartPlace,
+    VfoStart, MAX_BANK_NAME_LEN, MAX_CHANNEL_NAME_LEN, MAX_DESIGNATOR_LEN, MAX_LOCATION_NAME_LEN,
+    MAX_LOCATOR_LEN,
 };
 use radio_domain::{
     Bandwidth, BankId, ChannelId, Frequency, FrequencyStep, Modulation, Offset, PowerLevel,
@@ -92,6 +93,9 @@ pub enum ObjectKind {
     BankOrigin = 8,
     /// One slot's programmed VFO; the identifier is the slot, A 0 and B 1.
     VfoStart = 9,
+    /// One location the operator keeps (`ADR-120`); the identifier is its
+    /// position.
+    SavedLocation = 10,
 }
 
 impl TryFrom<u8> for ObjectKind {
@@ -108,6 +112,7 @@ impl TryFrom<u8> for ObjectKind {
             7 => Ok(Self::StartPlace),
             8 => Ok(Self::BankOrigin),
             9 => Ok(Self::VfoStart),
+            10 => Ok(Self::SavedLocation),
             _ => Err(StorageError::UnsupportedObject),
         }
     }
@@ -1363,6 +1368,58 @@ pub fn decode_bank_origin(object: &impl Object) -> Result<BankOrigin, StorageErr
     BankOrigin::new(BankId::new(key.id), source, locator).map_err(|_| StorageError::MalformedObject)
 }
 
+/// Encoded byte length of a saved-location object: version, the locator's
+/// length and field, and the name's length and field.
+pub const SAVED_LOCATION_ENCODED_LEN: usize = 1 + 1 + MAX_LOCATOR_LEN + 1 + MAX_LOCATION_NAME_LEN;
+
+/// Encodes a saved location as a storage object, keyed by its position.
+pub fn encode_saved_location(
+    position: u16,
+    location: SavedLocation,
+) -> Result<StorageObject, StorageError> {
+    let mut data = [0_u8; SAVED_LOCATION_ENCODED_LEN];
+    data[0] = STORAGE_FORMAT_VERSION;
+    data[1] = location.locator.len();
+    data[2..10].copy_from_slice(&location.locator.field());
+    if let Some(name) = location.name {
+        data[10] = name.len();
+        data[11..].copy_from_slice(&name.field());
+    }
+    StorageObject::new(
+        ObjectKey {
+            kind: ObjectKind::SavedLocation,
+            id: position,
+        },
+        &data,
+    )
+}
+
+/// Decodes and fully validates a saved-location storage object.
+pub fn decode_saved_location(object: &impl Object) -> Result<SavedLocation, StorageError> {
+    if object.key().kind != ObjectKind::SavedLocation {
+        return Err(StorageError::UnsupportedObject);
+    }
+    let data = object.data();
+    if data.len() != SAVED_LOCATION_ENCODED_LEN || data[0] != STORAGE_FORMAT_VERSION {
+        return Err(StorageError::MalformedObject);
+    }
+    let mut locator = [0_u8; MAX_LOCATOR_LEN];
+    locator.copy_from_slice(&data[2..10]);
+    let locator =
+        Locator::from_field(locator, data[1]).map_err(|_| StorageError::MalformedObject)?;
+    let name = if data[10] == 0 {
+        if data[11..].iter().any(|byte| *byte != 0) {
+            return Err(StorageError::MalformedObject);
+        }
+        None
+    } else {
+        let mut field = [0_u8; MAX_LOCATION_NAME_LEN];
+        field.copy_from_slice(&data[11..]);
+        Some(LocationName::from_field(field, data[10]).map_err(|_| StorageError::MalformedObject)?)
+    };
+    Ok(SavedLocation { locator, name })
+}
+
 /// Encoded byte length of a start-place object: version, group, bank, and
 /// the channel's bank and position.
 pub const START_PLACE_ENCODED_LEN: usize = 8;
@@ -1489,6 +1546,7 @@ pub fn validate_object(object: &impl Object) -> bool {
         ObjectKind::StartPlace => decode_start_place(object).is_ok(),
         ObjectKind::VfoStart => decode_vfo_start(object).is_ok(),
         ObjectKind::BankOrigin => decode_bank_origin(object).is_ok(),
+        ObjectKind::SavedLocation => decode_saved_location(object).is_ok(),
         ObjectKind::BankGroup => decode_bank_group(object).is_ok(),
         ObjectKind::GeneratedBank => decode_generated_bank(object).is_ok(),
         ObjectKind::Channel => decode_channel(object).is_ok(),
@@ -2172,6 +2230,36 @@ mod tests {
         empty[27..59].fill(0);
         let kept = StorageObject::new(object.key(), &empty).unwrap();
         assert!(super::decode_bank_group(&kept).unwrap().banks().is_empty());
+    }
+
+    #[test]
+    fn a_saved_location_and_its_name_round_trip() {
+        use radio_channel_plan::{LocationName, Locator, SavedLocation};
+        let home = SavedLocation {
+            locator: Locator::new("IO91WM").unwrap(),
+            name: Some(LocationName::new("Home QTH").unwrap()),
+        };
+        let object = super::encode_saved_location(3, home).unwrap();
+        assert_eq!(object.key().id, 3, "keyed by its position");
+        assert_eq!(object.len(), super::SAVED_LOCATION_ENCODED_LEN);
+        assert_eq!(super::decode_saved_location(&object), Ok(home));
+        assert!(validate_object(&object));
+        let unnamed = SavedLocation { name: None, ..home };
+        assert_eq!(
+            super::decode_saved_location(&super::encode_saved_location(0, unnamed).unwrap()),
+            Ok(unnamed)
+        );
+        // No locator, or a name byte without a length, is refused.
+        for (at, length_at) in [(2, 1), (11, 10)] {
+            let mut data = object.data().to_vec();
+            data[length_at] = 0;
+            data[at] = b'J';
+            let bad = StorageObject::new(object.key(), &data).unwrap();
+            assert_eq!(
+                super::decode_saved_location(&bad),
+                Err(StorageError::MalformedObject)
+            );
+        }
     }
 
     #[test]

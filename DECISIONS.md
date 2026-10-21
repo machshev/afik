@@ -2060,3 +2060,18 @@ meaning.
 - `radio-programmer-web` (loopback HTTP front end) is removed as
   unmaintained.
 
+
+## ADR-120 — Saved locations live in the project file
+
+- **Date:** 2026-10-21
+- **Status:** accepted, operator request (`WEB-080`: "They should be part of
+  the project file").
+- A saved location is a Maidenhead locator and an optional name of up to 32
+  printable ASCII characters. It is project object kind 10, keyed by its
+  position, and like kinds 6's locator and 8 it is never compiled into a
+  radio image. A project keeps at most 64.
+- Saving or forgetting a location on the Map tab changes the project, which
+  the operator then saves, so importing or exporting a project carries its
+  locations. The `$XDG_STATE_HOME/afik/locators` file older studios wrote is
+  only read: a project that keeps no locations takes its entries as an
+  unsaved change.
