@@ -1311,8 +1311,10 @@ start place gains a Lists choice (this bank, or all of the group) beside the
 channel, written as a place with no filter. Version `7.0.69`. Gate: `cargo
 fmt --all --check` clean, workspace clippy `-D warnings` clean, `cargo test
 --workspace` 1013 passed 0 failed, `tool/build-k5.sh --release` and
-`tool/build-k1.sh --release` pass. Not flashed. Next: flash the K5, write
-M8LWA, and check A opens on PMR446 alone and stays there after a power cycle.
+`tool/build-k1.sh --release` pass. Flashed to the K5 (bootloader `4.00.01`,
+240/240 pages, CRC-32 `d081081f`, not read back); `probe-normal` answered
+`AFIK-K5-7.0.69`. Next: write M8LWA and check A opens on PMR446 alone and
+stays there after a power cycle.
 
 ## Previous work package: TXK5-059
 
