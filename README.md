@@ -3,7 +3,9 @@
 A ground-up Rust firmware and programming platform for the Quansheng UV-K5
 (V1, DP32G030) and UV-K1 handhelds. It is not a port of the stock firmware or
 its forks: the radio crates are hardware-independent, embedded code is
-`no_std` and heap-free, and every transmit goes through one policy crate.
+`no_std` and heap-free on [Embassy](https://embassy.dev), and every
+transmit goes through one policy crate. It owes a great deal to
+[Armel's firmware](#armels-firmware), its inspiration and working reference.
 
 **Try it:** [AFIK Studio in the browser](https://machshev.github.io/afik/)
 programs a radio over Web Serial in Chrome, Edge or a recent Firefox. Desktop
