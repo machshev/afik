@@ -1208,8 +1208,20 @@ next dwell. Test `a_failed_channel_read_keeps_the_scan_running`. Version
 `7.0.67`. Gate: `cargo fmt --all --check` clean, workspace clippy
 `-D warnings` clean, `cargo test --workspace` 999 passed 0 failed,
 `tool/build-k5.sh --release` (flash end `0x0000ef70`) and
-`tool/build-k1.sh --release` pass. Not flashed. Next: flash 7.0.67 and
-leave a scan running overnight.
+`tool/build-k1.sh --release` pass.
+
+Flashing it, `afik-flasher flash-afik` failed every time with `invalid packet
+footer` on the `4.00.01` K5 (`EVID-K5-037`). A trace showed the port handing
+over input buffered before it opened: 20 bytes of one beacon, then the next.
+The length spanned the cut and the read gave up. The serial port now clears
+its input on opening, and a frame with a bad footer is passed over for the
+next whole one (up to three; test
+`a_frame_cut_short_is_passed_over_for_the_next_whole_one`). Gate:
+`cargo fmt --all --check` clean, workspace clippy `-D warnings` clean,
+`cargo test --workspace` 1000 passed 0 failed. Then `flash-afik --yes`
+acknowledged 240/240 pages (CRC-32 `8445ac9c`, not read back), and after a
+power cycle `probe-normal` read `firmware=AFIK-K5-7.0.67`. Next: leave a scan
+running overnight.
 
 ## Previous work package: TXK5-059
 

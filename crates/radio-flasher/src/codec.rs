@@ -146,7 +146,35 @@ pub(crate) async fn discard_input<T: LinkRead>(transport: &mut T) -> Result<(), 
     Ok(())
 }
 
+/// Frames with a bad footer a read passes over before it gives up.
+const MAX_BROKEN_FRAMES: usize = 3;
+
+/// Reads one frame, passing over any whose footer is wrong.
+///
+/// A port can hand over input it buffered before it was opened, and that has
+/// been seen to hold a beacon cut short with the next one straight after it.
+/// The length then spans the cut, the footer lands mid-frame, and the frame
+/// after the cut is lost with it. A bootloader beacons continuously, so
+/// looking for the next header finds the next whole beacon; the footer error
+/// is reported only when no whole frame follows.
 async fn receive_frame<T: LinkRead>(
+    transport: &mut T,
+    empty_reads: usize,
+) -> Result<(Packet, u16), FlashError> {
+    let mut broken = None;
+    for _ in 0..MAX_BROKEN_FRAMES {
+        match receive_one_frame(transport, empty_reads).await {
+            Err(FlashError::InvalidFooter(footer)) => broken = Some(footer),
+            Err(FlashError::Timeout) if broken.is_some() => break,
+            result => return result,
+        }
+    }
+    Err(FlashError::InvalidFooter(
+        broken.expect("a frame was read and broken"),
+    ))
+}
+
+async fn receive_one_frame<T: LinkRead>(
     transport: &mut T,
     empty_reads: usize,
 ) -> Result<(Packet, u16), FlashError> {
@@ -349,6 +377,19 @@ mod tests {
     fn scanner_resynchronises_before_a_fragmented_response() {
         let mut input = vec![0x00, 0xAB, 0x00, 0xAB];
         input.extend(encode_response(&CLEAR_V2_BEACON));
+        let packet = crate::block_on(receive_packet(&mut Cursor::new(input))).unwrap();
+        assert_eq!(packet.as_slice(), CLEAR_V2_BEACON);
+    }
+
+    #[test]
+    fn a_frame_cut_short_is_passed_over_for_the_next_whole_one() {
+        // As read from a port on opening: the first 20 bytes of one beacon,
+        // then the beacons that follow it. The broken frame's length runs into
+        // the first of them, so the second is the one read.
+        let frame = encode_response(&CLEAR_V2_BEACON);
+        let mut input = frame[..20].to_vec();
+        input.extend(&frame);
+        input.extend(&frame);
         let packet = crate::block_on(receive_packet(&mut Cursor::new(input))).unwrap();
         assert_eq!(packet.as_slice(), CLEAR_V2_BEACON);
     }

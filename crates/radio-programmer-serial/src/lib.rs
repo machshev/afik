@@ -158,6 +158,10 @@ impl SerialTransport {
             .timeout(READ_TIMEOUT)
             .open()
             .map_err(SerialOpenError::Open)?;
+        // Input buffered before the port was opened is stale, and has been
+        // seen to hold a beacon with a gap in it. Readers resynchronise past
+        // whatever is left, so a failed clear is not worth refusing the port.
+        let _ = port.clear(serialport::ClearBuffer::Input);
         Ok(Self { port })
     }
 }
