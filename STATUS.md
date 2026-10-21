@@ -348,8 +348,10 @@ page: choosing K5 fetched it and showed 61440 bytes, CRC-32 `f395b8e7`,
 AFIK-K5-7.0.65. Gate: `cargo fmt --all --check` clean, `cargo clippy
 --workspace --all-targets -- -D warnings` clean, `cargo test --workspace`
 991 passed 0 failed, wasm32 clippy of Studio `-D warnings` clean, `trunk
-build --release` passes, `actionlint` clean. Next: from Chrome and Firefox,
-choose the port, back up and flash a K5 (`RISK-050`).
+build --release` passes, `actionlint` clean. Hardware (2026-10-21): the
+operator flashed a radio from the published Studio at
+`machshev.github.io/afik` in Firefox (Pages run 39591080016); flash
+successful. Next: the same from Chrome, and a K1 (`RISK-050`).
 
 **`REL-079` is active alongside** (2026-10-19, operator request,
 `ADR-118`): a `v*` tag builds and publishes release packages for Linux,
