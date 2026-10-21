@@ -653,6 +653,17 @@ their city's stations. The Pages mirror syncs `fcc` as its own dataset
 --workspace` 1006 passed 0 failed 3 ignored. Not looked at on screen; not
 flashed (the radio image is unchanged).
 
+`GEN-072` step 20, Israeli repeaters (2026-10-21, operator request,
+`ADR-123`): hearham has only ten Israeli entries, three operational and
+none of the 2 m network. The Repeaters tab now also reads the IARC's
+network page (`iarc`): the analogue tables, rows digital by default left
+out, each placed at the town it names from a built-in table of 15 places,
+PL(rx) as the access tone. hearham's `4X`/`4Z` entries are dropped. The live
+page gave 13 repeaters (R-0 to R-19 on 2 m, R-74 on 70 cm). Gate: `cargo fmt
+--all --check` clean, `cargo clippy --workspace --all-targets -- -D
+warnings` clean, wasm32 clippy of Studio `-D warnings` clean, `cargo test
+--workspace` 1008 passed 0 failed 3 ignored. Not looked at on screen.
+
 **`MARINE-070` is active alongside** (2026-10-16, operator request,
 `ADR-109`): step 1 done. The Banks tab has a Marine row: Sync asks Overpass
 for every OpenStreetMap place tagged with a marine VHF channel and caches

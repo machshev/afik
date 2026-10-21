@@ -1743,15 +1743,22 @@ impl StudioApp {
         self.world_sync = None;
         match outcome {
             Ok(list) => {
-                self.status = format!("Synced {} FM repeaters from hearham.", list.repeaters.len());
+                self.status = format!(
+                    "Synced {} FM repeaters from hearham and the IARC.",
+                    list.repeaters.len()
+                );
                 log::info!("{}", self.status);
                 self.world = Some(list);
             }
-            // The cache is untouched, so the previous list still applies.
-            Err(error) => self.fail(
-                "syncing worldwide repeaters",
-                format!("Worldwide repeater sync failed: {error}"),
-            ),
+            // A source that failed kept its cache, and one that synced was
+            // cached, so the caches hold the newest of each.
+            Err(error) => {
+                self.use_world_cache(self.world_cache.clone());
+                self.fail(
+                    "syncing worldwide repeaters",
+                    format!("Worldwide repeater sync failed: {error}"),
+                );
+            }
         }
     }
 
@@ -3320,8 +3327,12 @@ impl StudioApp {
                 self.repeater_sync.is_none() && wanted(self.repeaters.as_ref().map(|l| l.synced)),
             ),
             (
-                "hearham's worldwide repeaters",
-                self.world_sync.is_none() && wanted(self.world.as_ref().map(|l| l.synced)),
+                "hearham's worldwide and the IARC's repeaters",
+                self.world_sync.is_none()
+                    && wanted(
+                        // A source never synced is due now.
+                        self.world.as_ref().filter(|l| l.complete).map(|l| l.synced),
+                    ),
             ),
             (
                 "Ofcom's and the FCC's FM stations",
@@ -7672,6 +7683,7 @@ mod tests {
         app.world = Some(crate::world::WorldList {
             repeaters: Vec::new(),
             synced: now,
+            complete: true,
         });
         app.marine = Some(crate::marine::MarineList {
             places: Vec::new(),
@@ -7840,6 +7852,7 @@ mod tests {
         app.world = Some(WorldList {
             repeaters: vec![repeater("F1FAR", 49.0), repeater("F1NEAR", 48.86)],
             synced: std::time::SystemTime::now(),
+            complete: true,
         });
         "JN18EU".clone_into(&mut app.repeater_area.locator);
         let source = app.repeater_source();
@@ -8828,6 +8841,7 @@ mod tests {
         app.world = Some(WorldList {
             repeaters: vec![repeater("F1TWO", 145_650_000)],
             synced: std::time::SystemTime::now(),
+            complete: true,
         });
         assert_eq!(app.repeater_bands, BandFilter::default(), "2 m and 70 cm");
         app.add_repeaters();

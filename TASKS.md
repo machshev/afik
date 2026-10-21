@@ -3318,6 +3318,12 @@
       locator gets its own country's stations. Done; not yet looked at on
       screen or heard on a radio. Next: hear a US station from a generated
       bank, and add Canada (ISED) or Australia (ACMA) if wanted.
+  20. Israeli repeaters (operator request, "go ahead with both";
+      `ADR-123`): the Repeaters tab also reads the IARC's network page, its
+      analogue tables placed at the towns they name; hearham's stale `4X`
+      and `4Z` entries are left out. Done.
+  21. Israeli regional FM stations from the Second Authority's list,
+      built in (`ADR-123`).
 
 ## BANKS-073 — Up to 254 banks, addressed by bank and position
 

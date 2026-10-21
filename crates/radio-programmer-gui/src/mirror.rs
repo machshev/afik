@@ -56,6 +56,14 @@ pub fn write_all(
     use crate::{airports, marine, repeaters, satellites, stations, world};
 
     let into = |name: &str| dir.join(name);
+    let repeaters_from = |source: world::Source| {
+        (
+            source.cache_dir(),
+            world::WorldCache::in_dir(source, into(source.cache_dir()))
+                .sync()
+                .map(|list| list.repeaters.len()),
+        )
+    };
     let stations_from = |source: stations::Source| {
         (
             source.cache_dir(),
@@ -71,12 +79,8 @@ pub fn write_all(
                 .sync()
                 .map(|list| list.repeaters.len() + list.gateways.len() + list.beacons.len()),
         ),
-        (
-            world::CACHE_DIR,
-            world::WorldCache::in_dir(into(world::CACHE_DIR))
-                .sync()
-                .map(|list| list.repeaters.len()),
-        ),
+        repeaters_from(world::Source::Hearham),
+        repeaters_from(world::Source::Iarc),
         // Each FM source is its own dataset, so one refused takes its own
         // snapshot.
         stations_from(stations::Source::Ofcom),

@@ -84,7 +84,7 @@ afik-studio --help
 ![The Map tab: airports, airfields and FM stations around a locator](docs/images/studio-map.png)
 
 Enter a Maidenhead locator and Studio finds what you can hear there:
-repeaters (worldwide from hearham, UK from the ETCC), UK gateways and
+repeaters (worldwide from hearham, UK from the ETCC, Israel from the IARC), UK gateways and
 beacons, FM broadcast stations (UK from Ofcom, US from the FCC), airport and airfield
 frequencies from OurAirports, and marine channels from OpenStreetMap. Each
 is drawn on the map with the distance it is heard to, which follows the

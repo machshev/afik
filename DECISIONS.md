@@ -2116,3 +2116,20 @@ meaning.
   (`off=`), so kinds added later start ticked.
 - Ranking keeps no distance cut-off short of 1000 km, beyond any FM horizon,
   so one country's list never reaches another's bank.
+
+## ADR-123 — Israel: IARC repeaters and the Second Authority's FM stations
+
+- **Date:** 2026-10-21
+- **Status:** accepted, operator request (`GEN-072`: "Can we add support for
+  israel", "There don't seem to be any israeli repeaters either?", "go
+  ahead with both").
+- Repeaters come from the IARC's network page, the current list; hearham's
+  Israeli entries are stale and are dropped. The page names a town and no
+  site, so a built-in table places each town; a new town is skipped until
+  added. PL(rx) is taken as the tone the repeater receives.
+- Israel publishes no FM transmitter list (data.gov.il has none). The Second
+  Authority lists its regional stations with frequencies and franchise
+  areas; Studio carries that list built in, each frequency at its area's
+  main town, with no power or height, so they rank by distance alone. The
+  national networks (Kan, Galei Tzahal) are left out until an official
+  per-region list is found.
