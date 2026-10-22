@@ -1313,8 +1313,9 @@ fmt --all --check` clean, workspace clippy `-D warnings` clean, `cargo test
 --workspace` 1013 passed 0 failed, `tool/build-k5.sh --release` and
 `tool/build-k1.sh --release` pass. Flashed to the K5 (bootloader `4.00.01`,
 240/240 pages, CRC-32 `d081081f`, not read back); `probe-normal` answered
-`AFIK-K5-7.0.69`. Next: write M8LWA and check A opens on PMR446 alone and
-stays there after a power cycle.
+`AFIK-K5-7.0.69`. The operator wrote M8LWA and A opened on PMR446 alone.
+The operator flashed the K1 from the studio and it answered `AFIK-K1-7.0.69`.
+Released as `v7.0.69`; `nix/release.json` pinned to it.
 
 ## Previous work package: TXK5-059
 
